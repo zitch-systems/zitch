@@ -1,7 +1,7 @@
-"""Reconcile VTU / betting / exam purchases left PENDING by a provider timeout.
+﻿"""Reconcile VTU / betting / exam purchases left PENDING by a provider timeout.
 
 When a purchase send times out the outcome is unknown, so the ledger row is held
-PENDING (money still debited, flagged ``meta.reconcile``) instead of refunded —
+PENDING (money still debited, flagged ``meta.reconcile``) instead of refunded â€”
 refunding a purchase that actually went through would leak money. This command
 requeries each such transaction by its reference (the provider's idempotency key)
 and settles it: marked Successful if delivered, or refunded if it definitively
@@ -10,6 +10,7 @@ minutes (see render.yaml).
 """
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
@@ -28,8 +29,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         cutoff = timezone.now() - timedelta(minutes=options["older_than_minutes"])
-        # VTU.ng purchases only — bank-transfer payouts share the PENDING+reconcile
-        # shape but are settled by the Kora payout webhook, never a VTU
+        # VTU.ng purchases only â€” bank-transfer payouts share the PENDING+reconcile
+        # shape but are settled by the reconcile_wema poller, never a VTU
         # requery (which would hit the wrong provider for a foreign reference).
         pending = pending_vtu_purchases(cutoff)
         total = pending.count()
@@ -37,6 +38,26 @@ class Command(BaseCommand):
         for txn in pending:
             if settle_or_refund(txn, vtu_requery(txn.reference)) != "pending":
                 settled += 1
+        # A purchase stuck PENDING is invisible to every other control, exactly
+        # as a stuck bank payout is (see reconcile_wema): it is a pending DEBIT,
+        # so integrity_check counts it as owed and nothing anywhere says "this
+        # customer paid for airtime that never arrived and was never refunded".
+        # Holding an unknown outcome PENDING is right in the minutes after a
+        # timeout and wrong after hours - by then this sweep has requeried dozens
+        # of times and will not resolve it on its own, and it will keep looping
+        # in silence until the customer complains.
+        stuck_after = timedelta(
+            hours=int(getattr(settings, "VTU_PURCHASE_STUCK_HOURS", 2) or 2))
+        stuck = list(pending_vtu_purchases(timezone.now() - stuck_after)[:50])
+        if stuck:
+            from utility.alerts import alert
+
+            alert(f"reconcile_vtu: {len(stuck)} purchase(s) still PENDING after "
+                  f"{stuck_after} - the customer is debited and the service was "
+                  f"neither delivered nor refunded; no other control reports this",
+                  level="error", purchases=len(stuck),
+                  references=[t.reference for t in stuck[:10]])
+
         from whatsapp.ops import record_audit
         record_audit("recon.vtu_run", actor_type="system",
                      after={"checked": total, "settled": settled})

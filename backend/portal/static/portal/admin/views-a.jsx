@@ -178,6 +178,15 @@ function Users({ toast }) {
             </div>
             <div className="drawer-actions">
               <button className="btn ghost" disabled={!can.users} onClick={() => act('unlock_pin', 'PIN unlocked')}>Unlock PIN</button>
+              {/* The customer normally grants this themselves by replying "ai on".
+                  Support needs it too, for anyone who asks on a call — and the
+                  panel showed the state with no way to act on it, which reads as
+                  a broken integration rather than a consent that is simply off. */}
+              {sel.wa === 'active' && (sel.aiEnabled
+                ? <button className="btn ghost" disabled={!can.users}
+                          onClick={() => act('ai_off', 'smart replies off')}>Turn AI off</button>
+                : <button className="btn ghost" disabled={!can.users}
+                          onClick={() => act('ai_on', 'smart replies on')}>Turn AI on</button>)}
               {sel.status === 'frozen'
                 ? <button className="btn primary" disabled={!can.users} onClick={() => act('unfreeze', 'unfrozen')}>Unfreeze account</button>
                 : <button className="btn danger" disabled={!can.users} onClick={() => act('freeze', 'frozen — sessions revoked')}>Freeze account</button>}

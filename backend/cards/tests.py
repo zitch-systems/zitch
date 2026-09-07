@@ -76,6 +76,22 @@ class CardTests(TestCase):
         self.assertEqual(res.status_code, 403)
         self.assertEqual(self.balance(), Decimal("50000"))
 
+    def test_fund_blocked_over_daily_spend_cap(self):
+        # Card funding now counts toward (and is bounded by) the daily bill/spend
+        # aggregate, so it can't be used to move unlimited cash off-platform.
+        from wallet.models import Transaction
+        self.user.tier = 2  # bill cap = ₦100k/day
+        self.user.save(update_fields=["tier"])
+        self._create()
+        Transaction.objects.create(
+            user=self.user, service="Airtime — MTN", amount=Decimal("95000"),
+            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+            reference="SEED-CARD-DAILY")
+        res, body = self.post("/api/cards/fund/", {"access_token": self.token, "amount": "10000", "transaction_pin": "1234"})
+        self.assertEqual(res.status_code, 403)  # 95k + 10k > 100k
+        self.assertEqual(body.get("code"), "daily_limit_exceeded")
+        self.assertEqual(self.balance(), Decimal("50000"))  # not debited
+
     def test_freeze_then_fund_blocked(self):
         self._create()
         self.post("/api/cards/freeze/", {"access_token": self.token})

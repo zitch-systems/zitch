@@ -11,10 +11,13 @@ Two modes:
   * Create one real operator (works anywhere):
         python manage.py seed_ops --username ada --role finance --password '...'
   * Seed the demo operator set used by e2e_smoke.py (dapo/funmi/...), with a
-    known default password — blocked when DEBUG is off unless --force, so a
-    production box never gets default-credential operators by accident:
+    password supplied through ZITCH_DEMO_OPERATOR_PASSWORD — blocked whenever
+    DEBUG is off, so a production box never gets default-credential operators
+    by accident:
         python manage.py seed_ops
 """
+import os
+
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
@@ -23,7 +26,7 @@ from django.core.management.base import BaseCommand, CommandError
 User = get_user_model()
 
 ROLES = ["finance", "support", "read_only", "super_admin"]
-DEMO_PASSWORD = "Operator#1"
+DEMO_PASSWORD = os.environ.get("ZITCH_DEMO_OPERATOR_PASSWORD", "")
 # (username, role) — matches the operators e2e_smoke.py logs into across the ops
 # (/api/ops/) and console admin (/api/admin/) sections.
 DEMO_OPERATORS = [
@@ -42,37 +45,59 @@ class Command(BaseCommand):
         parser.add_argument("--role", choices=ROLES)
         parser.add_argument("--password")
         parser.add_argument("--email")
-        parser.add_argument("--force", action="store_true",
-                            help="Allow the demo seed (default passwords) while DEBUG is off.")
+        parser.add_argument(
+            "--preserve-existing-password",
+            action="store_true",
+            help="Use --password only when the named operator is first created.",
+        )
 
     def handle(self, *args, **opts):
         if opts.get("username"):
+            if not opts.get("password"):
+                raise CommandError(
+                    "--password is required when creating or updating a named operator."
+                )
             self._upsert(opts["username"], opts.get("role") or "read_only",
-                         opts.get("password") or DEMO_PASSWORD,
-                         opts.get("email") or f"{opts['username']}@zitch.ng")
+                         opts["password"],
+                         opts.get("email") or f"{opts['username']}@zitch.ng",
+                         preserve_existing_password=opts["preserve_existing_password"])
             return
 
-        if not settings.DEBUG and not opts.get("force"):
+        if not settings.DEBUG:
             raise CommandError(
-                "Refusing to seed demo operators with default passwords while DEBUG is off. "
-                "Create a real operator with --username/--role/--password, or pass --force "
-                "if you really intend to seed demo accounts."
+                "Refusing to seed demo operators while DEBUG is off. "
+                "Create a real operator with --username/--role/--password."
+            )
+        if not DEMO_PASSWORD:
+            raise CommandError(
+                "Set ZITCH_DEMO_OPERATOR_PASSWORD before seeding local demo operators."
             )
         for username, role in DEMO_OPERATORS:
             self._upsert(username, role, DEMO_PASSWORD, f"{username}@zitch.ng")
         self.stdout.write(self.style.SUCCESS(f"Seeded {len(DEMO_OPERATORS)} demo operators."))
 
-    def _upsert(self, username, role, password, email):
+    def _upsert(self, username, role, password, email, *, preserve_existing_password=False):
+        # phone stays NULL. It used to be fabricated from `hash(username)`, which
+        # was both non-deterministic (Python salts str hashes per process, so a
+        # re-deploy invented a different number) and a real hazard: the value
+        # looked like a Nigerian mobile and `phone` is unique, so colliding with
+        # a customer's number raised IntegrityError inside build.sh — which runs
+        # under `set -o errexit`, failing the whole deploy and leaving the
+        # previous release serving. Operators sign in by username or email, and
+        # the column is nullable (Postgres permits many NULLs under UNIQUE).
         user, created = User.objects.get_or_create(
-            username=username,
-            defaults={"email": email, "phone": f"080{abs(hash(username)) % 10 ** 8:08d}"},
+            username=username, defaults={"email": email, "phone": None},
         )
         user.is_staff = True
         user.is_active = True
-        if role == "super_admin":
-            user.is_superuser = True
-        user.set_password(password)
+        # Role updates replace privileges instead of accumulating them. Without
+        # this, downgrading a super-admin left is_superuser=True and moving an
+        # operator between groups kept the old role's capabilities.
+        user.is_superuser = role == "super_admin"
+        if created or not preserve_existing_password:
+            user.set_password(password)
         user.save()
+        user.groups.clear()
         if role != "super_admin":
             group, _ = Group.objects.get_or_create(name=role)
             user.groups.add(group)

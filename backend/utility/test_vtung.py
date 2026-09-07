@@ -17,7 +17,7 @@ from wallet.models import Transaction
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
-from utility.vtung import _build, _parse
+from utility.vtung import _build, _parse, vt_verify_customer
 
 # API_KEY set => _live() true and _token() returns it without a login round-trip.
 VT_CREDS = {"BASE_URL": "https://vtu.ng", "API_KEY": "tok123", "USERNAME": "", "PASSWORD": ""}
@@ -106,6 +106,18 @@ class VtuNgParseTests(TestCase):
         r = _parse({"code": "error", "message": "insufficient balance", "data": {}})
         self.assertFalse(r["success"])
         self.assertFalse(r.get("pending"))
+
+    @override_settings(VTUNG=VT_CREDS)
+    def test_customer_verification_extracts_the_service_address(self):
+        with patch("utility.vtung._request", return_value={
+            "code": "success",
+            "data": {"customer": {"customerName": "ADA OKON",
+                                   "serviceAddress": "14 Allen Avenue, Ikeja"}},
+        }):
+            result = vt_verify_customer("ikeja-electric", "1023542134", "prepaid")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["customer_name"], "ADA OKON")
+        self.assertEqual(result["customer_address"], "14 Allen Avenue, Ikeja")
 
 
 @override_settings(VTUNG=VT_CREDS)
@@ -208,3 +220,30 @@ class VtuNgTokenTests(TestCase):
             with patch("utility.vtung.requests.post") as p:
                 self.assertEqual(_token(), "STATIC")
                 p.assert_not_called()
+
+
+class VtuProbeTests(TestCase):
+    def test_probe_without_creds_makes_no_live_call(self):
+        from utility.vtung import vtu_probe
+        r = vtu_probe()
+        self.assertFalse(r["config"]["live"])
+        self.assertIn("hint", r)
+        self.assertNotIn("auth", r)
+
+    @override_settings(VTUNG=VT_CREDS)
+    def test_probe_reports_auth_and_balance(self):
+        from utility.vtung import vtu_probe
+        with patch("utility.vtung._request",
+                   return_value={"code": "success", "data": {"balance": "1500.00"}}):
+            r = vtu_probe()
+        self.assertTrue(r["auth"]["ok"])          # static API key counts as auth
+        self.assertTrue(r["balance"]["ok"])
+        self.assertEqual(r["balance"]["balance"], "1500.00")
+
+    @override_settings(VTUNG=VT_CREDS)
+    def test_probe_flags_empty_provider_wallet(self):
+        from utility.vtung import vtu_probe
+        with patch("utility.vtung._request",
+                   return_value={"code": "success", "data": {"balance": "0.00"}}):
+            r = vtu_probe()
+        self.assertIn("hint", r["balance"])       # empty wallet => purchases will fail

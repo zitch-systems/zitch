@@ -7,6 +7,7 @@ from django.db.models import F
 
 from common.http import (
     api,
+    check_daily_limit,
     check_send_limits,
     fail,
     idempotent_replay,
@@ -24,7 +25,7 @@ from utility.providers import (
     card_set_status,
 )
 from wallet.models import Transaction
-from wallet.services import DuplicateTransaction, InsufficientFunds, debit, existing_for_key, refund
+from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, debit, existing_for_key, refund
 
 from .models import VirtualCard
 
@@ -62,7 +63,10 @@ def create_card(request):
         return ok(success=True, card=_card_dict(user.cards.first()), message="You already have a card")
 
     holder = (user.get_full_name() or user.phone or "Zitch User").upper()
-    result = card_issue(holder, customer_ref=str(user.id), email=user.email or "")
+    # Wema keys the virtual card by the user's NUBAN; the generic issuer ignores it.
+    account_number = getattr(getattr(user, "wallet", None), "account_number", "") or ""
+    result = card_issue(holder, customer_ref=str(user.id), email=user.email or "",
+                        account_number=account_number, phone=user.phone or "")
     if not result.get("success"):
         return fail(result.get("message", "Could not create card"), status=502)
 
@@ -162,12 +166,20 @@ def fund_card(request):
     if replay:
         return replay
 
+    # Daily aggregate cap (shared "non-transfer spend" bucket) — after the replay
+    # check. The "Card funding" label is what _daily_spent matches on.
+    daily_err = check_daily_limit(user, amount, "bill")
+    if daily_err:
+        return daily_err
+
     try:
         txn = debit(user, amount, "Card funding", meta={"card": card.id}, idempotency_key=key)
     except DuplicateTransaction:
         return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
+    except LimitExceeded as exc:
+        return fail(str(exc), status=403, code="limit_exceeded")
 
     result = issuer_fund_card(card.card_token, amount)
     if not result.get("success"):

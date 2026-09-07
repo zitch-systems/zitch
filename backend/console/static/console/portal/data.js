@@ -19,13 +19,13 @@ window.ZADM = (function () {
     { id: 'ZTC-88341', user: 'Adaeze Okonkwo', type: 'transfer', channel: 'whatsapp', desc: 'To John Adeyemi · GTBank ····1234', amt: -5000, cur: 'NGN', fee: 10, status: 'success', time: ago(12) },
     { id: 'ZTC-88340', user: 'Seun Afolabi', type: 'fx', channel: 'app', desc: 'NGN → USD · $336.65 @ ₦1,485.20', amt: -500000, cur: 'NGN', fee: 0, status: 'success', time: ago(26) },
     { id: 'ZTC-88339', user: 'Ibrahim Musa', type: 'airtime', channel: 'whatsapp', desc: 'MTN · 0809 114 7765', amt: -1000, cur: 'NGN', fee: 0, status: 'success', time: ago(31) },
-    { id: 'ZTC-88338', user: 'John Adeyemi', type: 'fund', channel: 'app', desc: 'Monnify checkout', amt: 250000, cur: 'NGN', fee: 0, status: 'success', time: ago(58) },
+    { id: 'ZTC-88338', user: 'John Adeyemi', type: 'fund', channel: 'app', desc: 'Korapay checkout', amt: 250000, cur: 'NGN', fee: 0, status: 'success', time: ago(58) },
     { id: 'ZTC-88337', user: 'Kemi Balogun', type: 'electricity', channel: 'app', desc: 'IKEDC prepaid · 0414 ···· 882', amt: -10000, cur: 'NGN', fee: 100, status: 'pending', time: ago(64) },
     { id: 'ZTC-88336', user: 'Tunde Eze', type: 'transfer', channel: 'app', desc: 'To Zenith ····0099', amt: -1200000, cur: 'NGN', fee: 25, status: 'flagged', time: ago(95) },
     { id: 'ZTC-88335', user: 'Chiamaka Obi', type: 'data', channel: 'whatsapp', desc: 'Airtel 2GB · 30 days', amt: -1500, cur: 'NGN', fee: 0, status: 'success', time: ago(130) },
     { id: 'ZTC-88334', user: 'Seun Afolabi', type: 'cable', channel: 'app', desc: 'DStv Compact · IUC 7023…', amt: -19000, cur: 'NGN', fee: 0, status: 'success', time: ago(170) },
     { id: 'ZTC-88333', user: 'Adaeze Okonkwo', type: 'fx', channel: 'whatsapp', desc: 'NGN → GBP · £85.50 @ ₦1,872.45', amt: -160095, cur: 'NGN', fee: 0, status: 'success', time: ago(220) },
-    { id: 'ZTC-88332', user: 'Ngozi Umeh', type: 'fund', channel: 'app', desc: 'Monnify checkout', amt: 2500, cur: 'NGN', fee: 0, status: 'success', time: ago(300) },
+    { id: 'ZTC-88332', user: 'Ngozi Umeh', type: 'fund', channel: 'app', desc: 'Korapay checkout', amt: 2500, cur: 'NGN', fee: 0, status: 'success', time: ago(300) },
     { id: 'ZTC-88331', user: 'Ibrahim Musa', type: 'transfer', channel: 'app', desc: 'To UBA ····5521', amt: -45000, cur: 'NGN', fee: 10, status: 'failed', time: ago(340) },
     { id: 'ZTC-88330', user: 'John Adeyemi', type: 'fx', channel: 'app', desc: 'NGN → CAD · C$310.20 @ ₦1,082.10', amt: -335667, cur: 'NGN', fee: 0, status: 'success', time: ago(400) },
   ];
@@ -103,19 +103,19 @@ window.ZADM = (function () {
   ];
 
   const FLOAT = [
-    { cur: 'NGN', sym: '₦', bal: 184250300.22, provider: 'Monnify' },
+    { cur: 'NGN', sym: '₦', bal: 184250300.22, provider: 'Korapay' },
     { cur: 'USD', sym: '$', bal: 92410.55, provider: 'Fincra' },
     { cur: 'GBP', sym: '£', bal: 31206.10, provider: 'Fincra' },
     { cur: 'CAD', sym: 'C$', bal: 12880.00, provider: 'Fincra' },
   ];
 
   const PROVIDERS = [
-    { name: 'Monnify', role: 'Funding & payouts', status: 'operational', uptime: '99.98%' },
+    { name: 'Korapay', role: 'Funding · payouts · KYC', status: 'operational', uptime: '99.98%' },
     { name: 'VTU.ng', role: 'Airtime · data · bills', status: 'operational', uptime: '99.91%' },
     { name: 'Fincra', role: 'FX rates & settlement', status: 'operational', uptime: '99.95%' },
     { name: 'Meta WhatsApp', role: 'Chat channel', status: 'degraded', uptime: '98.72%' },
-    { name: 'Sendchamp', role: 'SMS / OTP', status: 'operational', uptime: '99.99%' },
-    { name: 'Prembly', role: 'KYC (BVN · NIN · face)', status: 'operational', uptime: '99.87%' },
+    { name: 'Termii', role: 'SMS / OTP', status: 'operational', uptime: '99.99%' },
+    { name: 'Prembly', role: 'KYC (face · address · ID)', status: 'operational', uptime: '99.87%' },
   ];
 
   const VOLUME_14D = [38, 44, 41, 52, 49, 61, 58, 47, 66, 72, 64, 78, 81, 74]; // ₦m/day
@@ -142,11 +142,11 @@ window.ZADM = (function () {
     { user: 'Blessing Eke', id: 'u_1014', type: 'nin', submitted: ago(260), note: 'NIN photo low-light — manual review', tier: '1 → 2' },
   ];
   const WEBHOOKS = [
-    { src: 'Monnify', event: 'fund.success', ref: 'MNFY|82|441', sig: 'verified', code: 200, time: ago(18) },
-    { src: 'Monnify', event: 'disbursement.completed', ref: 'MNFY|82|438', sig: 'verified', code: 200, time: ago(55) },
+    { src: 'Korapay', event: 'charge.success', ref: 'KPY|82|441', sig: 'verified', code: 200, time: ago(18) },
+    { src: 'Korapay', event: 'transfer.success', ref: 'KPY|82|438', sig: 'verified', code: 200, time: ago(55) },
     { src: 'Meta WA', event: 'message.delivered', ref: 'wamid.HBg…98', sig: 'verified', code: 200, time: ago(61) },
     { src: 'Meta WA', event: 'message.failed · 131049', ref: 'wamid.HBg…41', sig: 'verified', code: 200, time: ago(190), note: 'marketing limit — recorded, not retried' },
-    { src: 'Monnify', event: 'disbursement.reversed', ref: 'MNFY|82|405', sig: 'verified', code: 200, time: ago(300), note: 'wallet refunded' },
+    { src: 'Korapay', event: 'transfer.failed', ref: 'KPY|82|405', sig: 'verified', code: 200, time: ago(300), note: 'wallet refunded' },
     { src: 'VTU.ng', event: 'vtu.callback', ref: 'VTNG-77231', sig: 'n/a', code: 200, time: ago(410) },
   ];
   const RECONS = [
@@ -194,63 +194,66 @@ window.ZADM = (function () {
     return Math.round(diff / 1440) + 'd ago';
   };
 
-  return { USERS, TXNS, CONVOS, BROADCASTS, AUDIT, RATES, FLOAT, PROVIDERS, VOLUME_14D, LOANS, SAVINGS, CARDS, KYCQ, WEBHOOKS, RECONS, TEAM, PERMS, SETTINGS, fmtN, fmtT };
-})();
-
-// --- Live backend wiring (added for the operator portal) -------------------
-// Talks to the Django staff API at /api/admin (same origin as the portal). The
-// mock ZADM above stays as a fallback so the prototype still renders offline.
-window.ZADM_API = (function () {
-  const BASE = '/api/admin';
-  const KEY = 'zadm_token';
-  const getToken = () => localStorage.getItem(KEY) || '';
-  const setToken = (t) => (t ? localStorage.setItem(KEY, t) : localStorage.removeItem(KEY));
-  async function req(path, { method = 'GET', body = null } = {}) {
-    const headers = { Accept: 'application/json' };
-    const tok = getToken();
-    if (tok) headers['Authorization'] = 'Bearer ' + tok;
-    if (body) headers['Content-Type'] = 'application/json';
-    const res = await fetch(BASE + path, { method, headers, body: body ? JSON.stringify(body) : null });
-    let data = {};
-    try { data = await res.json(); } catch (e) { /* non-JSON */ }
-    if (!res.ok) {
-      const err = new Error(data.message || ('Request failed (' + res.status + ')'));
-      err.status = res.status; err.data = data;
-      throw err;
-    }
-    return data;
-  }
-  return {
-    getToken, setToken,
-    login: (username, password) => req('/login', { method: 'POST', body: { username, password } }),
-    logout: async () => { try { await req('/logout', { method: 'POST', body: {} }); } catch (e) {} setToken(''); },
-    me: () => req('/me'),
-    bootstrap: () => req('/bootstrap'),
-    act: (path, payload) => req(path, { method: 'POST', body: payload || {} }),
+  // Headline KPIs. Also new to the screen, and for the same reason — the tiles
+  // read window.ZADM.KPIS, which only the bootstrap response ever set, so with
+  // the API gone the Overview would head the page with "0 users" and, through
+  // fmtBig(undefined), a literal ₦NaN.
+  //
+  // The counts that a viewer can check against a table on the next screen are
+  // derived from it, so the demo never contradicts itself. The platform-wide
+  // aggregates have no table to agree with and are simply plausible: this is a
+  // sample of eight users standing in for a book of twelve thousand.
+  const KPIS = {
+    users: 12480,
+    wa_links: 7310,
+    wa_optin: 5120,
+    vol24h: 74200000,
+    txn24h: 1842,
+    ngn_liability: 1024000000,
+    pending_kyc: KYCQ.length,
+    flagged: TXNS.filter((t) => t.status === 'flagged' || t.flagged).length,
+    active_loans: LOANS.filter((l) => l.status === 'active').length,
+    matured_due: SAVINGS.filter((s) => s.status === 'matured').length,
   };
+
+  // Identity aliases. These arrays are new to the screen: while the demo still
+  // demanded a live sign-in, every collection rendered came from the staff API's
+  // bootstrap and the fixture below was never actually drawn. Bootstrap rows
+  // carry `uid` (users, KYC queue) and `cid` (cards); the fixture only ever had
+  // `id`. The views look identity up by the bootstrap names — patchUser(sel.uid),
+  // freeze by c.cid — so against the fixture they compared undefined to
+  // undefined and matched every row at once: freezing one user froze the table.
+  // Aliased here, so the views stay identical to the live bundle's.
+  USERS.forEach((u) => { u.uid = u.id; });
+  KYCQ.forEach((k) => { k.uid = k.id; });
+  CARDS.forEach((c) => { c.cid = c.id; });
+
+  return { USERS, TXNS, CONVOS, BROADCASTS, AUDIT, RATES, FLOAT, PROVIDERS, VOLUME_14D, LOANS, SAVINGS, CARDS, KYCQ, WEBHOOKS, RECONS, TEAM, PERMS, SETTINGS, KPIS, fmtN, fmtT };
 })();
 
-// Overwrite the mock collections in place with real data from /bootstrap,
-// reviving epoch-ms timestamps back into Dates (the views format them with fmtT).
-window.ZADM.applyBootstrap = function (d) {
-  const D = (ms) => (ms ? new Date(ms) : null);
-  if (d.users) ZADM.USERS = d.users;
-  if (d.txns) ZADM.TXNS = d.txns.map((t) => ({ ...t, time: D(t.time) }));
-  if (d.convos) ZADM.CONVOS = d.convos.map((c) => ({ ...c, last: D(c.last), msgs: (c.msgs || []).map((m) => ({ ...m, t: D(m.t) })) }));
-  if (d.broadcasts) ZADM.BROADCASTS = d.broadcasts;
-  if (d.audit) ZADM.AUDIT = d.audit.map((a) => ({ ...a, t: D(a.t) }));
-  if (d.rates) ZADM.RATES = d.rates;
-  if (d.float) ZADM.FLOAT = d.float;
-  if (d.providers) ZADM.PROVIDERS = d.providers;
-  if (d.volume_14d) ZADM.VOLUME_14D = d.volume_14d;
-  if (d.loans) ZADM.LOANS = d.loans;
-  if (d.savings) ZADM.SAVINGS = d.savings;
-  if (d.cards) ZADM.CARDS = d.cards;
-  if (d.kycq) ZADM.KYCQ = d.kycq.map((k) => ({ ...k, submitted: D(k.submitted) }));
-  if (d.webhooks) ZADM.WEBHOOKS = d.webhooks.map((w) => ({ ...w, time: D(w.time) }));
-  if (d.recons) ZADM.RECONS = d.recons;
-  if (d.team) ZADM.TEAM = d.team;
-  if (d.perms) ZADM.PERMS = d.perms;
-  if (d.settings) ZADM.SETTINGS = d.settings;
-  if (d.kpis) ZADM.KPIS = d.kpis;
-};
+// --- No backend wiring here, deliberately ----------------------------------
+// This is the demo half of /portal/ (?mode=demo) and it renders ENTIRELY from
+// the fixtures above.
+//
+// It used to ship a full client against the live staff API right here: sign-in,
+// a bootstrap read, and a generic action POST that reached wallet credits, KYC
+// review, user status, card freezes and runtime settings. The shell called the
+// bootstrap read on mount and overwrote every mock collection with real rows, so
+// the page drew live production data and its buttons fired live writes — under a
+// bar reading "DEMO DATA — NOTHING HERE IS REAL AND NO ACTION TAKES EFFECT".
+//
+// The template's safety note was scoped to the wrong mount: true that this
+// bundle never touched the live portal's own API, irrelevant because it talked
+// to the staff API instead. The mode switch had only ever changed WHICH live API
+// the page used, not whether it used one.
+//
+// So: nothing in this bundle may open a socket. portal.tests.DemoBundleTests
+// pins that — it scans every file here for network primitives, which is why
+// this note describes them in prose instead of naming them.
+
+// One-time local cleanup. Signing into the old demo stored a REAL staff bearer
+// token under `zadm_token`. Nothing reads that key any more, so clear it rather
+// than leave a live credential sitting in the browser. This is hygiene, not a
+// logout — the token keeps its own server-side TTL, and revoking it needs the
+// live portal's Sign out.
+try { localStorage.removeItem('zadm_token'); } catch (e) { /* storage disabled */ }

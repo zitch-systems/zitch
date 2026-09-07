@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text } from 'react-native';
+import { View } from 'react-native';
 import { router } from 'expo-router';
 import { Screen, Header, Card, Btn, NText } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
@@ -40,7 +40,7 @@ const FeatureScreen = ({
         <Header title={title} onBack={() => router.back()} />
       </View>
 
-      <View style={{ paddingHorizontal: 16 }}>
+      <View style={{ paddingHorizontal: 20 }}>
         <Hero style={{ padding: 18 }}>
           <View style={{ width: 54, height: 54, borderRadius: 17, backgroundColor: 'rgba(255,255,255,.18)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name={icon} size={28} color="#fff" />
@@ -78,3 +78,4 @@ const FeatureScreen = ({
 };
 
 export default FeatureScreen;
+

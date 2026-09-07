@@ -1,0 +1,375 @@
+"""The bank face check, in chat.
+
+The chat can only ever hand over a link. The outcome arrives on our own callback,
+so nothing in this module may mark anybody verified — a customer who opens the
+bank's page and closes it is exactly as unverified as one who never tapped.
+
+The other property under test is that the identity number never lands in the
+thread: it is collected in the encrypted Flow, and where there is no Flow the step
+is skipped rather than asked for in clear.
+"""
+from unittest.mock import patch
+
+from django.contrib.auth import get_user_model
+from django.test import TestCase, override_settings
+
+from wallet.models import WemaFaceSession
+from wallet.services import get_or_create_wallet
+
+from . import router
+from .models import PendingAction, WhatsAppLink
+
+User = get_user_model()
+MSISDN = "2348011113333"
+
+FACE_ON = {"KEYS": {"wallet": "k"}, "CHANNEL_ID": "c", "SIMULATION": False,
+           "FACE_VERIFY_URL": "https://face.example/", "CALLBACK_TOKEN": "tok",
+           "CALLBACK_TOKEN_PREV": "", "CALLBACK_ENFORCE_IPS": False, "CALLBACK_IPS": []}
+# The face rail needs the channel id (x_tk) and a base URL — see utility.wema._face_key.
+FACE_OFF = {**FACE_ON, "CHANNEL_ID": "", "FACE_VERIFY_URL": ""}
+
+
+#: The identity this test account has actually PROVEN. The face session must bind
+#: to it — see accounts.views.face_identity_error.
+VERIFIED_BVN = "22222222222"
+
+
+def _user(**flags):
+    from accounts.models import hash_identifier
+    u = User.objects.create(username="f1", phone="08010000009", email="f@z.ng",
+                            first_name="Ada", last_name="Eze", tier=1,
+                            email_verified=True, phone_verified=True,
+                            bvn_verified=True, nin_verified=True,
+                            bvn_hash=hash_identifier(VERIFIED_BVN), **flags)
+    u.save()
+    get_or_create_wallet(u)
+    WhatsAppLink.objects.create(user=u, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+    return u
+
+
+@override_settings(WEMA=FACE_ON)
+class FaceStepLadderTests(TestCase):
+    def test_hosted_face_is_not_a_separate_kyc_rung(self):
+        u = _user()
+        self.assertNotIn("face", router._kyc_outstanding(u))
+        self.assertNotIn("Face check", router._kyc_status_lines(u))
+
+    def test_tier2_face_status_does_not_change_the_identity_ladder(self):
+        u = _user(face_verified=True)
+        self.assertNotIn("face", router._kyc_outstanding(u))
+
+    @override_settings(WEMA=FACE_OFF)
+    def test_the_step_is_hidden_when_the_rail_is_not_configured(self):
+        # A rung nobody can ever climb reads as a broken account.
+        u = _user()
+        self.assertNotIn("face", router._kyc_outstanding(u))
+        self.assertNotIn("Face check", router._kyc_status_lines(u))
+
+    def test_unverified_identities_remain_the_only_identity_rungs(self):
+        u = _user()
+        u.bvn_verified = u.nin_verified = False
+        u.save(update_fields=["bvn_verified", "nin_verified"])
+        self.assertEqual(router._kyc_outstanding(u), ["bvn", "nin"])
+
+
+@override_settings(WEMA=FACE_ON)
+class FaceLinkTests(TestCase):
+    def setUp(self):
+        self.user = _user()
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc", state="idle",
+            payload={}, expires_at=router._flow_deadline("idle"))
+
+    def test_the_link_is_sent_as_a_button_and_nothing_is_marked_verified(self):
+        with patch.object(router, "send_cta_url") as cta, patch.object(router, "reply"):
+            router._kyc_send_face_link(self.pa, self.user, MSISDN, "bvn", "22222222222")
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.face_verified)
+        cta.assert_called_once()
+        self.assertIn("face.example", cta.call_args.args[2])
+
+    def test_account_otp_also_offers_hosted_face_as_an_alternative(self):
+        with patch.object(router, "send_cta_url", return_value={"success": True}) as cta:
+            offered = router._send_identity_face_option(
+                self.pa, self.user, MSISDN, "bvn", VERIFIED_BVN)
+        self.assertTrue(offered)
+        self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 1)
+        body, url = str(cta.call_args.args[1]), str(cta.call_args.args[2])
+        # It must read as a REPLACEMENT for the code, not a second thing to also do.
+        self.assertIn("instead", body)
+        self.assertIn("no SMS code at all", body)
+        # And it must say WHY the SMS may never arrive: ALAT sends it to the phone on
+        # the identity record, so "resend" is not the remedy this customer needs.
+        self.assertIn("registered", body)
+        self.assertIn("BVN", body)
+        self.assertNotIn(VERIFIED_BVN, body)
+        self.assertIn("face.example", url)
+
+    def test_the_session_binds_the_identity_that_was_entered(self):
+        from accounts.models import hash_identifier
+        with patch.object(router, "send_cta_url"), patch.object(router, "reply"):
+            router._kyc_send_face_link(self.pa, self.user, MSISDN, "bvn", VERIFIED_BVN)
+        s = WemaFaceSession.objects.get(user=self.user)
+        self.assertEqual(s.identity_type, "bvn")
+        self.assertEqual(s.identity_hash, hash_identifier(VERIFIED_BVN))
+        self.assertEqual(s.status, WemaFaceSession.PENDING)
+
+    def test_the_number_never_appears_in_the_chat_body(self):
+        # The URL carries the BVN to the bank, but it rides inside a CTA button where
+        # only the label shows. The message BODY must not repeat it — pasted into the
+        # text it would sit in the customer's history in clear, forever.
+        with patch.object(router, "send_cta_url") as cta, patch.object(router, "reply"):
+            router._kyc_send_face_link(self.pa, self.user, MSISDN, "bvn", "22222222222")
+        body = str(cta.call_args.args[1])
+        self.assertNotIn("22222222222", body)
+        self.assertNotIn("http", body)
+
+    def test_the_session_state_is_never_shown_to_the_customer(self):
+        # It is the capability that completes the verification; it belongs in the
+        # callback URL and nowhere a screenshot could carry it.
+        with patch.object(router, "send_cta_url") as cta, patch.object(router, "reply"):
+            router._kyc_send_face_link(self.pa, self.user, MSISDN, "bvn", "22222222222")
+        state = WemaFaceSession.objects.get(user=self.user).state
+        self.assertNotIn(state, str(cta.call_args.args[1]))
+
+    def test_without_a_flow_the_step_is_skipped_not_asked_in_chat(self):
+        # The number is only being forwarded, so a clear-text BVN in the thread
+        # would buy nothing at all.
+        with patch.object(router, "_send_identity_flow", return_value=False), \
+             patch.object(router, "reply") as rep, \
+             patch.object(router, "_kyc_next"):
+            router._kyc_start_face_step(self.pa, self.user, MSISDN)
+        sent = " ".join(str(c.args[1]) for c in rep.call_args_list)
+        self.assertNotIn("11-digit", sent)
+        self.assertIn("Zitch app", sent)
+
+
+@override_settings(WEMA=FACE_ON)
+class FaceCallbackNotifiesChatTests(TestCase):
+    def test_the_customer_is_told_when_the_bank_confirms(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from accounts.models import hash_identifier
+        user = _user()
+        session = WemaFaceSession.objects.create(
+            user=user, state="q" * 40, identity_type="bvn",
+            identity_hash=hash_identifier("22222222222"),
+            expires_at=timezone.now() + timedelta(minutes=20))
+        with patch("whatsapp.router.reply") as rep:
+            res = self.client.post(f"/webhooks/wema/face/{session.state}",
+                                   {"success": True, "c_id": "C1", "id": "22222222222"},
+                                   content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        user.refresh_from_db()
+        self.assertTrue(user.bvn_verified)
+        self.assertFalse(user.face_verified)
+        rep.assert_called_once()
+        self.assertIn("BVN verified by face", str(rep.call_args.args[1]))
+
+    def test_a_messaging_failure_never_fails_the_callback(self):
+        # The tier is already lifted; a 500 here would have the bank retry a
+        # verification that already succeeded.
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from accounts.models import hash_identifier
+        user = _user()
+        session = WemaFaceSession.objects.create(
+            user=user, state="r" * 40, identity_type="bvn",
+            identity_hash=hash_identifier("22222222222"),
+            expires_at=timezone.now() + timedelta(minutes=20))
+        with patch("whatsapp.router.reply", side_effect=RuntimeError("wa down")):
+            res = self.client.post(f"/webhooks/wema/face/{session.state}",
+                                   {"success": True, "c_id": "C1", "id": "22222222222"},
+                                   content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        user.refresh_from_db()
+        self.assertTrue(user.bvn_verified)
+        self.assertFalse(user.face_verified)
+
+    def test_failed_face_account_start_keeps_the_sms_otp_fallback(self):
+        from wallet.wema_callbacks import _tell_whatsapp_face_passed
+
+        user = _user()
+        action = PendingAction.objects.create(
+            user=user, msisdn=MSISDN, action_type="add_account", state="otp",
+            payload={"tracking_id": "TRACK"}, expires_at=router._flow_deadline("otp"),
+        )
+        with patch("whatsapp.router.reply") as rep:
+            _tell_whatsapp_face_passed(user, "bvn", account_failed=True)
+        self.assertTrue(PendingAction.objects.filter(pk=action.pk).exists())
+        self.assertIn("enter the SMS code", str(rep.call_args.args[1]))
+
+
+@override_settings(WEMA=FACE_ON)
+class TypedInChatTests(TestCase):
+    """The face step asks for the identity in the Flow — but a customer can always
+    type it into the thread instead, and that path had no branch at all.
+
+    They were told "Got it", dropped at the main menu, and no face check was ever
+    started — with their BVN left sitting in the chat. Refusing the number at that
+    point would cost them the step and save nothing, since it is already in their
+    history, so it is accepted and the deletion tip is named.
+    """
+
+    def setUp(self):
+        self.user = _user()
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc",
+            state=router.FACE_ID_STATE, payload={"id_kind": "bvn", "id_purpose": "face"},
+            expires_at=router._flow_deadline("idle"))
+
+    def test_a_typed_number_still_starts_the_face_check(self):
+        with patch.object(router, "send_cta_url") as cta, \
+             patch.object(router, "reply"), patch.object(router, "_kyc_next"):
+            router._advance_kyc(self.pa, self.user, MSISDN, "22222222222")
+        cta.assert_called_once()
+        self.assertIn("face.example", cta.call_args.args[2])
+        self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 1)
+
+    def test_the_customer_is_told_how_to_remove_it_from_the_thread(self):
+        with patch.object(router, "send_cta_url"), \
+             patch.object(router, "reply") as rep, patch.object(router, "_kyc_next"):
+            router._advance_kyc(self.pa, self.user, MSISDN, "22222222222")
+        sent = " ".join(str(c.args[1]) for c in rep.call_args_list).lower()
+        self.assertIn("delete", sent)
+
+    def test_a_short_number_is_re_asked_not_dumped_to_the_menu(self):
+        with patch.object(router, "send_cta_url") as cta, \
+             patch.object(router, "reply") as rep, patch.object(router, "send_menu") as menu:
+            router._advance_kyc(self.pa, self.user, MSISDN, "12345")
+        cta.assert_not_called()
+        menu.assert_not_called()
+        self.assertIn("11 digits", str(rep.call_args.args[1]))
+
+    def test_the_identity_is_not_re_verified(self):
+        # It is forwarded to the bank, not checked here. Routing it through the
+        # ordinary bvn/nin branch would re-run verification on an identity the
+        # customer has already proven — and never send the link.
+        with patch.object(router, "send_cta_url"), patch.object(router, "reply"), \
+             patch.object(router, "_kyc_next"), \
+             patch.object(router, "_kyc_submit_identity") as submit:
+            router._advance_kyc(self.pa, self.user, MSISDN, "22222222222")
+        submit.assert_not_called()
+
+
+@override_settings(WEMA=FACE_ON)
+class TheKycRailAlsoOffersFaceBesideItsCodeTests(TestCase):
+    """Account creation already sent the face option beside its OTP; the KYC ladder
+    did not, and that is the rail where it matters most.
+
+    Its code goes to the line registered against the IDENTITY — routinely not the
+    phone the customer is holding — so resending cannot help, and the step simply
+    ended for those customers.
+    """
+
+    def setUp(self):
+        self.user = _user()
+        self.user.bvn_verified = False
+        self.user.save()
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc", state="idle",
+            payload={}, expires_at=router._flow_deadline("idle"))
+
+    def _submit(self):
+        """Drive _kyc_submit_identity to the point where the code has just gone out."""
+        with patch.object(router, "verify_bvn",
+                          return_value={"success": True, "phone": "08099998888"}), \
+             patch.object(router, "_kyc_send_identity_otp", return_value=None), \
+             patch.object(router, "send_cta_url", return_value={"success": True}) as cta, \
+             patch.object(router, "reply"):
+            outcome = router._kyc_submit_identity(self.pa, self.user, MSISDN,
+                                                  "bvn", VERIFIED_BVN)
+        return outcome, cta
+
+    def test_the_face_option_is_offered_beside_the_identity_code(self):
+        outcome, cta = self._submit()
+        self.assertEqual(outcome, "otp")
+        cta.assert_called_once()
+        self.assertIn("face.example", str(cta.call_args.args[2]))
+
+    def test_the_code_stays_armed_so_either_proof_still_works(self):
+        # Offering the alternative must not cancel the SMS the customer may yet
+        # receive — whichever the bank answers first completes the same step.
+        outcome, _ = self._submit()
+        self.assertEqual(outcome, "otp")
+
+    def test_the_number_never_appears_in_the_chat_body(self):
+        _, cta = self._submit()
+        self.assertNotIn(VERIFIED_BVN, str(cta.call_args.args[1]))
+
+    def test_without_the_rail_the_code_step_still_proceeds(self):
+        with override_settings(WEMA=FACE_OFF), \
+             patch.object(router, "verify_bvn",
+                          return_value={"success": True, "phone": "08099998888"}), \
+             patch.object(router, "_kyc_send_identity_otp", return_value=None), \
+             patch.object(router, "send_cta_url") as cta, patch.object(router, "reply"):
+            outcome = router._kyc_submit_identity(self.pa, self.user, MSISDN,
+                                                  "bvn", VERIFIED_BVN)
+        self.assertEqual(outcome, "otp")
+        cta.assert_not_called()
+
+@override_settings(WEMA=FACE_ON)
+class BvnMethodChoiceTests(TestCase):
+    """BVN verification exposes SMS and face before either rail is started."""
+
+    def setUp(self):
+        self.user = _user()
+        self.user.bvn_verified = False
+        self.user.save(update_fields=["bvn_verified"])
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc", state="idle",
+            payload={"attempted": ["bvn"]}, expires_at=router._flow_deadline("idle"))
+
+    def test_bvn_step_shows_both_methods(self):
+        self.pa.payload["attempted"] = []
+        self.pa.save(update_fields=["payload"])
+        with patch.object(router, "reply_buttons") as buttons:
+            router._kyc_next(self.pa, self.user, MSISDN)
+        self.pa.refresh_from_db()
+        self.assertEqual(self.pa.state, router.BVN_METHOD_STATE)
+        offered = buttons.call_args.args[2]
+        self.assertIn(("bvn_sms", "SMS OTP"), offered)
+        self.assertIn(("bvn_face", "Face verification"), offered)
+
+    # These two assert on the IN-MEMORY payload, deliberately, and must not go
+    # back to refresh_from_db(). Persisting it is _send_identity_flow's job — it
+    # calls _touch as its first act, so the token it signs resolves — and these
+    # tests mock that collaborator out. Reading back from the DB therefore asserts
+    # against a row the mock never wrote, which is what made them fail with
+    # KeyError: 'id_method' rather than catching anything real. What _advance_kyc
+    # itself owns is the payload it hands to the flow, so that is what is checked.
+    def test_face_choice_collects_bvn_for_the_face_rail(self):
+        self.pa.state = router.BVN_METHOD_STATE
+        self.pa.save(update_fields=["state"])
+        with patch.object(router, "_send_identity_flow", return_value=True) as flow:
+            router._advance_kyc(self.pa, self.user, MSISDN, "bvn_face")
+        self.assertEqual(self.pa.payload["id_method"], "wema_face")
+        self.assertEqual(self.pa.payload["id_purpose"], "face")
+        flow.assert_called_once_with(self.pa, "bvn", fallback_state=router.FACE_ID_STATE)
+
+    def test_sms_choice_keeps_face_as_an_optional_fallback(self):
+        self.pa.state = router.BVN_METHOD_STATE
+        self.pa.save(update_fields=["state"])
+        self.pa.payload["id_purpose"] = "face"   # a prior face choice being switched away from
+        with patch.object(router, "_send_identity_flow", return_value=True) as flow:
+            router._advance_kyc(self.pa, self.user, MSISDN, "bvn_sms")
+        self.assertEqual(self.pa.payload["id_method"], "sms_otp")
+        # Cleared, not merely absent: picking SMS after face must not leave the
+        # session pointed at the face rail. Seeding it above is what makes this
+        # assertion mean something.
+        self.assertNotIn("id_purpose", self.pa.payload)
+        flow.assert_called_once_with(self.pa, "bvn", fallback_state="bvn")
+
+    def test_unknown_choice_repeats_the_two_buttons(self):
+        self.pa.state = router.BVN_METHOD_STATE
+        self.pa.save(update_fields=["state"])
+        with patch.object(router, "reply_buttons") as buttons:
+            router._advance_kyc(self.pa, self.user, MSISDN, "something else")
+        offered = buttons.call_args.args[2]
+        self.assertEqual(offered, [
+            ("bvn_sms", "SMS OTP"), ("bvn_face", "Face verification")])
+

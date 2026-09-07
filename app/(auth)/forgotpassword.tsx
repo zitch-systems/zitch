@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
+import { publicPost } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { ZMark } from '@/components/design/Brand';
@@ -26,11 +26,7 @@ const ForgotPassword = () => {
     }
     setBusy(true);
     try {
-      const response = await fetch(`${baseUrl}/api/password/forgot/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email_or_phone: ident.trim() }),
-      });
+      const response = await publicPost('/api/password/forgot/', { email_or_phone: ident.trim() });
       if (response.ok) {
         router.push({ pathname: '/resetpassword', params: { ident: ident.trim() } });
       } else {
@@ -52,7 +48,7 @@ const ForgotPassword = () => {
       </View>
       <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1 }}>Reset password</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 24, fontFamily: font.regular }}>
-        Enter your phone number or email and we'll send a code to reset your password.
+        Enter your phone number or email and we’ll send a code to reset your password.
       </Text>
 
       <Field
@@ -73,3 +69,4 @@ const ForgotPassword = () => {
 };
 
 export default ForgotPassword;
+

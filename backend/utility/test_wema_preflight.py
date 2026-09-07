@@ -1,0 +1,296 @@
+"""Tests for the go-live preflight command.
+
+Hard gates (Wema keys, securityInfo, live host) fail the run with exit 1; a
+fully-configured environment reports GO. Soft checks (VTU balance, email, SMS,
+cards) only fail the run under --strict.
+"""
+import os
+from io import StringIO
+from unittest import mock
+
+from django.core.management import call_command
+from django.test import Client, TestCase, override_settings
+
+_LIVE_DIAG = {"base_url": "https://api.alat.ng", "channel_id_set": True,
+              "wallet_key_set": True, "security_info_set": True, "wema_live": True,
+              "simulation": False, "status": "configured", "hint": ""}
+_VTU_OK = {"config": {"live": True, "api_key_set": True},
+           "auth": {"ok": True}, "balance": {"ok": True, "balance": "15000.00"}}
+_VTU_EMPTY = {"config": {"live": True, "api_key_set": True}, "auth": {"ok": True},
+              "balance": {"ok": True, "balance": "0.00", "hint": "empty"}}
+_SAFE_CALLBACKS = {
+    "CALLBACK_TOKEN": "x" * 40, "CALLBACK_TOKEN_PREV": "",
+    "CALLBACK_ENFORCE_IPS": True, "CALLBACK_IPS": ["135.236.18.76"],
+    "AUTH_REQUIRE_SECURITY_INFO": True,
+}
+
+_PROBE = "utility.management.commands.wema_preflight.vtu_probe"
+_DIAG = "utility.wema.wema_diagnostics"
+
+
+def _run(*args):
+    out = StringIO()
+    code = 0
+    try:
+        call_command("wema_preflight", *args, stdout=out)
+    except SystemExit as exc:
+        code = exc.code
+    return out.getvalue(), code
+
+
+@override_settings(RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
+                   TERMII={"API_KEY": "tk_x"}, CARD_ISSUER={"API_KEY": "ci_x"},
+                   WEMA=_SAFE_CALLBACKS)
+class PreflightObservedCallbackTests(TestCase):
+    """The allowlist config check only proves the list is non-empty — and it has a
+    non-empty DEFAULT. These cover the case it cannot see: enforcement on, and every
+    real callback refused because the resolved source can never match."""
+
+    def _record(self, ip, outcome):
+        from whatsapp.models import WebhookEvent
+        WebhookEvent.objects.create(source="wema.account", outcome=outcome,
+                                    remote_ip=ip, http_status=200)
+
+    def test_never_having_received_a_callback_warns_rather_than_verifying(self):
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("Callback source IPs observed", out)
+        self.assertIn("UNVERIFIED", out)
+
+    def test_every_callback_refused_by_the_allowlist_blocks_go_live(self):
+        from whatsapp.models import WebhookEvent
+        for _ in range(3):
+            self._record("10.30.1.250", WebhookEvent.REJECTED_IP)
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("the rail is dead", out)
+        self.assertIn("NOT READY", out)
+        self.assertEqual(code, 1)
+
+    def test_a_real_accepted_public_callback_satisfies_the_gate(self):
+        from whatsapp.models import WebhookEvent
+        self._record("135.236.18.76", WebhookEvent.ACCEPTED)
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("accepted from 1 public source(s)", out)
+        self.assertNotIn("NOT READY", out)
+
+    def test_accepted_only_from_a_private_hop_still_blocks(self):
+        # The exact production shape: callbacks "accepted" while enforcement was off,
+        # all recorded against the platform's internal address. Turning enforcement on
+        # would refuse every one of them, so this must not read as verified.
+        from whatsapp.models import WebhookEvent
+        self._record("10.30.1.250", WebhookEvent.ACCEPTED)
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("cannot match these", out)
+        self.assertEqual(code, 1)
+
+
+@override_settings(RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
+                   TERMII={"API_KEY": "tk_x"}, CARD_ISSUER={"API_KEY": "ci_x"},
+                   WEMA=_SAFE_CALLBACKS)
+class PreflightGoTests(TestCase):
+    def test_all_pass_is_go(self):
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("RESULT: GO", out)
+        # Asserted line by line because "RESULT: GO" is also a prefix of the degraded
+        # "GO for money rails — N soft warning(s)" summary: a soft check silently
+        # flipping to WARN would not move it. The SMS rail is named because the class
+        # keys it above, and an override for a setting that no longer exists is a
+        # no-op Django does not complain about.
+        self.assertIn("SMS (termii): keyed", out)
+        self.assertNotIn("NOT READY", out)
+        self.assertEqual(code, 0)
+
+    def test_soft_warn_alone_is_go_without_strict(self):
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_EMPTY):
+            out, code = _run()
+        self.assertIn("GO for money rails", out)
+        self.assertEqual(code, 0)
+
+    def test_strict_fails_on_soft_warn(self):
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_EMPTY):
+            out, code = _run("--strict")
+        self.assertIn("NOT READY (strict)", out)
+        self.assertEqual(code, 1)
+
+
+@override_settings(WEMA=_SAFE_CALLBACKS)
+class PreflightGateTests(TestCase):
+    def test_missing_security_info_blocks_go_live(self):
+        diag = dict(_LIVE_DIAG, security_info_set=False)
+        with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("NOT READY", out)
+        self.assertIn("securityInfo", out)
+        self.assertEqual(code, 1)
+
+    def test_short_security_info_blocks_go_live(self):
+        diag = dict(_LIVE_DIAG, security_info_strong=False)
+        with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("at least 32 characters", out)
+        self.assertEqual(code, 1)
+
+    @override_settings(VAS_PROVIDER="wema")
+    def test_explicit_wema_vas_requires_airtime_product_key(self):
+        diag = dict(_LIVE_DIAG, product_keys_set={"wallet": True, "airtime": False})
+        with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("WEMA_AIRTIME_KEY", out)
+        self.assertEqual(code, 1)
+
+    @override_settings(CARD_PROVIDER="wema", WEMA={**_SAFE_CALLBACKS, "CARD_PRODUCT_KEY": ""})
+    def test_wema_cards_require_subscription_and_product_id(self):
+        diag = dict(_LIVE_DIAG, product_keys_set={"wallet": True, "card": True})
+        with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("WEMA_CARD_PRODUCT_KEY", out)
+        self.assertEqual(code, 1)
+
+    @override_settings(WEMA={**_SAFE_CALLBACKS, "CALLBACK_ENFORCE_IPS": False})
+    def test_callback_ip_allowlist_is_a_hard_gate(self):
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("Callback source IP allowlist", out)
+        self.assertEqual(code, 1)
+
+    def test_sandbox_host_blocks(self):
+        diag = dict(_LIVE_DIAG, base_url="https://apiplayground.alat.ng")
+        with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("NOT READY", out)
+        self.assertIn("sandbox", out)
+        self.assertEqual(code, 1)
+
+    def test_unkeyed_env_blocks(self):
+        diag = {"base_url": "https://apiplayground.alat.ng", "channel_id_set": False,
+                "wallet_key_set": False, "security_info_set": False, "wema_live": False,
+                "simulation": False, "status": "keys_incomplete", "hint": "set keys"}
+        with mock.patch(_DIAG, return_value=diag), \
+             mock.patch(_PROBE, return_value={"config": {"live": False}}):
+            out, code = _run()
+        self.assertIn("NOT READY", out)
+        self.assertEqual(code, 1)
+
+
+class PreflightOverHttpTests(TestCase):
+    """The go-live gate was reachable only from a shell, and the deploys that most
+    need it are the ones without one (Render's free tier has none). Same command,
+    same wording, same exit status — over the diagnostic bearer token."""
+
+    def setUp(self):
+        self.client = Client()
+        self._patch = mock.patch.dict(os.environ, {"DIAG_TOKEN": "diag-token"})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def _get(self, qs="", token="diag-token"):
+        return self.client.get(f"/preflight{qs}", HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    def test_requires_the_diagnostic_token(self):
+        self.assertEqual(self.client.get("/preflight").status_code, 403)
+        self.assertEqual(self._get(token="wrong").status_code, 403)
+
+    def test_a_failing_gate_answers_503_with_the_report(self):
+        # SystemExit(1) is how the command says NOT READY; it must not read as a crash.
+        with mock.patch(_DIAG, return_value=dict(_LIVE_DIAG, wema_live=False)), \
+             mock.patch(_PROBE, return_value=_VTU_OK):
+            res = self._get()
+        self.assertEqual(res.status_code, 503)
+        body = res.json()["preflight"]
+        self.assertFalse(body["ready"])
+        self.assertTrue(any("NOT READY" in line for line in body["report"]))
+        self.assertNotIn("error", body)          # a failing gate is not an error
+
+    def test_strict_is_passed_through(self):
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), \
+             mock.patch(_PROBE, return_value=_VTU_EMPTY):
+            strict = self._get("?strict=1")
+        self.assertTrue(strict.json()["preflight"]["strict"])
+        self.assertFalse(strict.json()["preflight"]["ready"])
+
+    def test_a_broken_preflight_is_not_a_passing_preflight(self):
+        with mock.patch(_DIAG, side_effect=RuntimeError("boom")):
+            res = self._get()
+        self.assertEqual(res.status_code, 503)
+        body = res.json()["preflight"]
+        self.assertFalse(body["ready"])
+        self.assertIn("RuntimeError", body["error"])
+
+
+@override_settings(RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
+                   TERMII={"API_KEY": "tk_x"}, CARD_ISSUER={"API_KEY": "ci_x"},
+                   WEMA=_SAFE_CALLBACKS)
+class PreflightTotpKeyTests(TestCase):
+    """Operator MFA secrets fall back to DJANGO_SECRET_KEY when no dedicated key
+    is set — the same fallback the securityInfo check refuses, with a worse
+    failure (every enrolled operator locked out of the portal, unrecoverably).
+    Reported as a WARN, not a gate: the fix is to set a key before enrolment, and
+    failing an existing deployment would not undo the binding."""
+
+    @override_settings(TOTP_ENCRYPTION_KEYS=[])
+    def test_unset_totp_key_is_reported(self):
+        with mock.patch(_DIAG, return_value=dict(_LIVE_DIAG)), \
+             mock.patch(_PROBE, return_value=_VTU_OK):
+            out, _ = _run()
+        self.assertIn("TOTP_ENCRYPTION_KEYS is unset", out)
+
+    @override_settings(TOTP_ENCRYPTION_KEYS=["a-dedicated-operator-totp-key-value"])
+    def test_a_dedicated_key_passes(self):
+        with mock.patch(_DIAG, return_value=dict(_LIVE_DIAG)), \
+             mock.patch(_PROBE, return_value=_VTU_OK):
+            out, _ = _run()
+        self.assertNotIn("TOTP_ENCRYPTION_KEYS is unset", out)
+        self.assertIn("independent of DJANGO_SECRET_KEY", out)
+
+    @override_settings(TOTP_ENCRYPTION_KEYS=[])
+    def test_it_does_not_block_go_live_on_its_own(self):
+        with mock.patch(_DIAG, return_value=dict(_LIVE_DIAG)), \
+             mock.patch(_PROBE, return_value=_VTU_OK):
+            _, code = _run()
+        self.assertEqual(code, 0)
+
+
+class NonProductionFaceVerifierIsRefusedTests(TestCase):
+    """ALAT's non-production face verifiers answer happily and prove nothing about a
+    real person, so pointing at one must fail go-live rather than quietly pass.
+
+    The check used to look for "-dev." alone. The moment Wema moved us to
+    face-verification-pilot it stopped applying — a different hostname, the identical
+    problem — and the preflight went green on a verifier that decides nothing. That
+    is the exact shape of thing this check exists to catch, so it now recognises the
+    whole family of non-production names.
+    """
+
+    def _nonprod(self, url: str) -> bool:
+        from utility.wema import face_verify_on_nonprod_host
+        with override_settings(WEMA={"FACE_VERIFY_URL": url}):
+            return face_verify_on_nonprod_host()
+
+    def test_the_pilot_verifier_is_not_production(self):
+        # The regression: this returned False and the preflight reported "live verifier".
+        self.assertTrue(self._nonprod("https://face-verification-pilot.azurewebsites.net/"))
+
+    def test_the_dev_verifier_is_still_caught(self):
+        self.assertTrue(self._nonprod("https://face-verification-dev.azurewebsites.net/"))
+
+    def test_other_non_production_names_are_caught(self):
+        for host in ("uat", "test", "sandbox", "staging"):
+            with self.subTest(host=host):
+                self.assertTrue(
+                    self._nonprod(f"https://face-verification-{host}.azurewebsites.net/"))
+
+    def test_the_production_verifier_passes(self):
+        # The check must not be so broad that the real host can never go live.
+        self.assertFalse(self._nonprod("https://face-verification.azurewebsites.net/"))
+
+    def test_the_report_names_the_host_it_found(self):
+        # "the DEV verifier" sent whoever read it looking for a -dev URL they no
+        # longer had. The line has to say which host is actually configured.
+        from utility.management.commands.wema_preflight import _face_host
+        with override_settings(
+                WEMA={"FACE_VERIFY_URL": "https://face-verification-pilot.azurewebsites.net/"}):
+            self.assertEqual(_face_host(), "face-verification-pilot.azurewebsites.net")

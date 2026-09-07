@@ -1,8 +1,10 @@
 import { Platform } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { clearTransactionPin, hasTransactionPin } from '@/lib/secureStore';
 
-const ENABLED_KEY = 'z-biometrics';
+const ENABLED_KEY = 'z-biometrics';       // biometric SIGN-IN opt-in
+const BIO_TXN_KEY = 'z-bio-txn';          // biometric TRANSACTION-approval opt-in (separate toggle)
 const CRED_KEY = 'z-bio-cred'; // web: stored WebAuthn credential id (base64url)
 const isWeb = Platform.OS === 'web';
 
@@ -18,10 +20,11 @@ const isWeb = Platform.OS === 'web';
 const hasWebAuthn = () =>
   typeof window !== 'undefined' && !!(window as any).PublicKeyCredential && !!window.navigator?.credentials;
 
-function randomBytes(n: number): Uint8Array {
-  const a = new Uint8Array(n);
-  (window.crypto || (window as any).msCrypto).getRandomValues(a);
-  return a;
+function randomBuffer(n: number): ArrayBuffer {
+  const buffer = new ArrayBuffer(n);
+  const bytes = new Uint8Array(buffer);
+  (window.crypto || (window as any).msCrypto).getRandomValues(bytes);
+  return buffer;
 }
 
 function bufToB64url(buf: ArrayBuffer): string {
@@ -57,9 +60,9 @@ async function webAuthenticate(): Promise<boolean> {
     if (!stored) {
       const cred = (await navigator.credentials.create({
         publicKey: {
-          challenge: randomBytes(32),
+          challenge: randomBuffer(32),
           rp: { name: 'Zitch', id: window.location.hostname },
-          user: { id: randomBytes(16), name: 'zitch-user', displayName: 'Zitch user' },
+          user: { id: randomBuffer(16), name: 'zitch-user', displayName: 'Zitch user' },
           pubKeyCredParams: [
             { type: 'public-key', alg: -7 },
             { type: 'public-key', alg: -257 },
@@ -78,7 +81,7 @@ async function webAuthenticate(): Promise<boolean> {
     }
     const assertion = await navigator.credentials.get({
       publicKey: {
-        challenge: randomBytes(32),
+        challenge: randomBuffer(32),
         allowCredentials: [{ type: 'public-key', id: b64urlToBuf(stored), transports: ['internal'] }],
         userVerification: 'required',
         timeout: 60000,
@@ -121,14 +124,23 @@ export async function biometricLabel(): Promise<'face' | 'fingerprint' | 'biomet
   return 'biometrics';
 }
 
-/** Prompts the OS biometric sheet. Resolves true only on a successful scan. */
-export async function authenticate(prompt = 'Authenticate'): Promise<boolean> {
+/**
+ * Prompts the OS biometric sheet. Resolves true only on a successful scan.
+ *
+ * `biometricOnly` (default false) controls whether the device passcode/pattern
+ * may substitute for a fingerprint/face. For money-authorizing prompts (paying
+ * with the cached PIN, large-transfer step-up) pass `true` so the device-unlock
+ * secret — which a thief may have shoulder-surfed — cannot stand in for the
+ * account owner's biometric; the typed transaction PIN remains the fallback.
+ * Convenience flows (e.g. app unlock) can keep the passcode fallback.
+ */
+export async function authenticate(prompt = 'Authenticate', biometricOnly = false): Promise<boolean> {
   if (isWeb) return webAuthenticate();
   try {
     const result = await LocalAuthentication.authenticateAsync({
       promptMessage: prompt,
       fallbackLabel: 'Use PIN',
-      disableDeviceFallback: false,
+      disableDeviceFallback: biometricOnly,
     });
     return result.success;
   } catch {
@@ -136,14 +148,49 @@ export async function authenticate(prompt = 'Authenticate'): Promise<boolean> {
   }
 }
 
-/** Whether the user has opted into biometrics inside the app. */
+/** Whether the user has opted into biometric SIGN-IN inside the app. */
 export async function isBiometricEnabled(): Promise<boolean> {
   return (await AsyncStorage.getItem(ENABLED_KEY)) === '1';
 }
 
-export async function setBiometricEnabled(on: boolean): Promise<void> {
-  await AsyncStorage.setItem(ENABLED_KEY, on ? '1' : '0');
-  // On the web, forget the platform credential when disabling so re-enabling
-  // re-enrols cleanly.
-  if (isWeb && !on) await AsyncStorage.removeItem(CRED_KEY);
+/** Whether the user has opted into approving TRANSACTIONS with biometrics — a
+ *  separate toggle from sign-in. Unset on older builds: fall back to "on" only
+ *  when a pay PIN is already cached (i.e. they'd previously opted into pay), so
+ *  existing users aren't silently broken and new users default off. */
+export async function isBiometricTxnEnabled(): Promise<boolean> {
+  const v = await AsyncStorage.getItem(BIO_TXN_KEY);
+  if (v === '1') return true;
+  if (v === '0') return false;
+  return hasTransactionPin();
 }
+
+/** Turn transaction-biometric approval on/off. Off clears the cached money PIN
+ *  so the biometric shortcut disappears and the spending secret isn't left at
+ *  rest. On is completed by capturing the PIN (saveTransactionPin) at the call site. */
+export async function setBiometricTxnEnabled(on: boolean): Promise<void> {
+  await AsyncStorage.setItem(BIO_TXN_KEY, on ? '1' : '0');
+  if (!on) await clearTransactionPin();
+}
+
+/**
+ * Legacy cleanup: older builds cached the money PIN for every user at PIN setup,
+ * even those who never used biometric pay. If biometrics are disabled, there is
+ * no reason for a cached spending PIN to sit at rest — drop it. Safe to call on
+ * every launch; it's a no-op once the keychain is clean.
+ */
+export async function reconcileCachedPin(): Promise<void> {
+  if (isWeb) return;
+  // Drop a cached spending PIN only when transaction-biometrics is explicitly OFF
+  // (not merely because sign-in biometrics is off — the two are separate now).
+  if ((await AsyncStorage.getItem(BIO_TXN_KEY)) === '0') await clearTransactionPin();
+}
+
+export async function setBiometricEnabled(on: boolean): Promise<void> {
+  // Sign-in biometrics only — does NOT touch the transaction PIN (that's governed
+  // by setBiometricTxnEnabled), so turning off biometric sign-in leaves
+  // biometric payment approval intact.
+  await AsyncStorage.setItem(ENABLED_KEY, on ? '1' : '0');
+  // On the web, forget the platform credential when disabling so re-enabling re-enrols cleanly.
+  if (!on && isWeb) await AsyncStorage.removeItem(CRED_KEY);
+}
+

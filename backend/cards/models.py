@@ -17,7 +17,7 @@ class VirtualCard(models.Model):
     FROZEN = "frozen"
     STATUSES = [(ACTIVE, "Active"), (FROZEN, "Frozen")]
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="cards")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="cards")
     # Issuer reference for the card (Sudo/Flutterwave card id). Mock in dev.
     card_token = models.CharField(max_length=80, blank=True, default="")
     brand = models.CharField(max_length=20, default="Verve")

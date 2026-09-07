@@ -1,11 +1,13 @@
 """Tests for VTU purchases: the debit -> provider -> settle/refund invariant
 that protects users from losing money when an aggregator call fails."""
 import json
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import Client, TestCase
+from django.utils import timezone
 
 from wallet.models import Transaction
 from wallet.services import get_or_create_wallet
@@ -48,6 +50,49 @@ class UtilityTests(TestCase):
         self.assertEqual(self.balance(), Decimal("20000"))  # fully refunded
         self.assertTrue(Transaction.objects.filter(user=self.user, transaction_status=Transaction.FAILED).exists())
 
+    def test_airtime_is_velocity_limited(self):
+        # VTU must run the SAME fraud velocity brake as transfers — previously it
+        # skipped check_send_limits, so airtime was the one un-throttled cash-out.
+        from django.test import override_settings
+        Transaction.objects.create(user=self.user, amount=Decimal("100"), direction=Transaction.OUT,
+                                   service="Airtime — MTN", transaction_status=Transaction.SUCCESS,
+                                   reference="ZTC-VEL1")
+        with override_settings(VELOCITY_MAX_OUT_10MIN=1):
+            res, body = self.post("/api/utility/buyairtime/", {
+                "access_token": self.token, "amount": "1000", "network": "1",
+                "phone": "08010000001", "transaction_pin": "1234"})
+        self.assertEqual(res.status_code, 429)
+        self.assertEqual(body.get("code"), "velocity")
+        self.assertEqual(self.balance(), Decimal("20000"))   # no debit
+
+    # --- remita ---
+    def test_validate_rrr(self):
+        with patch("utility.views.remita_validate",
+                   return_value={"success": True, "name": "ADA EZE", "amount": Decimal("5000.00")}):
+            res, body = self.post("/api/utility/validate_rrr/",
+                                  {"access_token": self.token, "rrr": "120000000001"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["name"], "ADA EZE")
+        self.assertEqual(body["amount"], "5000.00")
+
+    def test_payremita_success_debits_once(self):
+        with patch("utility.views.remita_pay", return_value={"success": True, "status": "SUCCESS"}):
+            res, body = self.post("/api/utility/payremita/", {
+                "access_token": self.token, "rrr": "120000000001", "amount": "5000",
+                "transaction_pin": "1234"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self.balance(), Decimal("15000"))
+        self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status,
+                         Transaction.SUCCESS)
+
+    def test_payremita_refunds_on_failure(self):
+        with patch("utility.views.remita_pay",
+                   return_value={"success": False, "message": "invalid rrr"}):
+            res, _ = self.post("/api/utility/payremita/", {
+                "access_token": self.token, "rrr": "BAD", "amount": "5000", "transaction_pin": "1234"})
+        self.assertEqual(res.status_code, 502)
+        self.assertEqual(self.balance(), Decimal("20000"))   # fully refunded
+
     def test_airtime_rejects_wrong_pin_without_debit(self):
         res, _ = self.post("/api/utility/buyairtime/", {
             "access_token": self.token, "amount": "1000", "network": "1",
@@ -88,6 +133,48 @@ class UtilityTests(TestCase):
                               {"access_token": self.token, "disco": "1", "meter": "1234567890"})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["customer_name"])
+        self.assertTrue(body["customer_address"])
+
+    def test_electricity_purchase_returns_and_persists_the_verified_address(self):
+        with patch("utility.views.vtu_verify_customer", return_value={
+            "success": True, "customer_name": "ADEYEMI WILLIAM",
+            "customer_address": "12 Marina Road, Lagos",
+        }):
+            res, body = self.post("/api/utility/buyelectricity/", {
+                "access_token": self.token, "amount": "1000", "disco": "1",
+                "meter": "1023542134", "meter_type": "prepaid",
+                "transaction_pin": "1234",
+            })
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["customer_address"], "12 Marina Road, Lagos")
+        txn = Transaction.objects.get(reference=body["reference"])
+        self.assertEqual(txn.meta["customer_address"], "12 Marina Road, Lagos")
+        self.assertEqual(txn.meta["channel"], "app")
+
+    def test_electricity_retry_replays_before_calling_the_provider_again(self):
+        payload = {
+            "access_token": self.token, "amount": "1000", "disco": "1",
+            "meter": "1023542134", "meter_type": "prepaid",
+            "transaction_pin": "1234", "idempotency_key": "electricity-retry-1",
+        }
+        with patch("utility.views.vtu_verify_customer", return_value={
+            "success": True, "customer_name": "ADEYEMI WILLIAM",
+            "customer_address": "12 Marina Road, Lagos",
+        }):
+            first, first_body = self.post("/api/utility/buyelectricity/", payload)
+        self.assertEqual(first.status_code, 200)
+
+        with patch("utility.views.vtu_verify_customer",
+                   side_effect=RuntimeError("verification provider offline")) as verify, \
+             patch("utility.views.vtu_purchase",
+                   side_effect=RuntimeError("purchase provider called twice")) as purchase:
+            retry, retry_body = self.post("/api/utility/buyelectricity/", payload)
+        self.assertEqual(retry.status_code, 200)
+        self.assertTrue(retry_body["duplicate"])
+        self.assertEqual(retry_body["reference"], first_body["reference"])
+        verify.assert_not_called()
+        purchase.assert_not_called()
+        self.assertEqual(self.balance(), Decimal("19000"))
 
     def test_validate_iuc_requires_auth(self):
         res, _ = self.post("/api/utility/validate_iuc/", {"cablenetwork": "2", "iuc": "1234567890"})
@@ -162,6 +249,30 @@ class VtuReconciliationTests(TestCase):
             call_command("reconcile_vtu", older_than_minutes=0)  # second run must not double-refund
         self.assertEqual(self.balance(), Decimal("20000"))
 
+    def test_a_freshly_pending_purchase_does_not_page(self):
+        """Minutes after a timeout, holding PENDING is the correct behaviour."""
+        _, body = self._buy_airtime_timed_out()
+        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
+                   return_value={"success": False, "pending": True}), \
+             patch("utility.alerts.alert") as alerted:
+            call_command("reconcile_vtu", older_than_minutes=0)
+        self.assertFalse([c for c in alerted.call_args_list if "still PENDING" in str(c)])
+
+    def test_a_purchase_stuck_for_hours_pages(self):
+        """After hours the sweep will not resolve it on its own, and nothing else
+        reports that the customer paid for a service never delivered."""
+        _, body = self._buy_airtime_timed_out()
+        old = timezone.now() - timedelta(hours=6)
+        # created is auto_now_add, so it has to be back-dated after the fact.
+        Transaction.objects.filter(reference=body["reference"]).update(created=old)
+        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
+                   return_value={"success": False, "pending": True}), \
+             patch("utility.alerts.alert") as alerted:
+            call_command("reconcile_vtu", older_than_minutes=0)
+        stuck = [c for c in alerted.call_args_list if "still PENDING" in str(c)]
+        self.assertTrue(stuck, "a purchase stuck for hours must page")
+        self.assertIn(body["reference"], str(stuck[0]))
+
     def test_crash_after_debit_leaves_a_reconcilable_row(self):
         """Worker dies mid-provider-call: the debit has committed but settle never
         runs. The committed PENDING row must still carry meta.reconcile so the
@@ -191,3 +302,24 @@ class VtuReconciliationTests(TestCase):
         txn.refresh_from_db()
         self.assertEqual(txn.transaction_status, Transaction.FAILED)
         self.assertEqual(self.balance(), Decimal("20000"))  # money returned
+
+
+class FxFailClosedTests(TestCase):
+    """FX (Fincra) must fail closed in production like every other money provider
+    — a mock rate settling the real ledger would book phantom liability."""
+
+    def test_fx_mock_fails_closed_in_prod(self):
+        from django.test import override_settings
+
+        from .providers import fx_execute, fx_quote
+        with override_settings(DEBUG=False, TESTING=False,
+                               FINCRA={"SECRET_KEY": "", "BASE_URL": "https://x"}):
+            self.assertFalse(fx_quote("NGN", "USD", "16000").get("success"))
+            self.assertFalse(fx_execute("FXQ-TEST").get("success"))
+
+    def test_fx_mock_still_works_in_dev(self):
+        from django.test import override_settings
+
+        from .providers import fx_quote
+        with override_settings(DEBUG=True, FINCRA={"SECRET_KEY": "", "BASE_URL": "https://x"}):
+            self.assertTrue(fx_quote("NGN", "USD", "16000").get("success"))

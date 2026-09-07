@@ -16,6 +16,8 @@ export const Keypad = ({ onKey }: { onKey: (k: string) => void }) => {
           ) : (
             <Pressable
               onPress={() => onKey(k)}
+              accessibilityRole="button"
+              accessibilityLabel={k === 'del' ? 'Delete digit' : `Digit ${k}`}
               style={({ pressed }) => ({
                 height: 58,
                 borderRadius: 14,
@@ -39,3 +41,4 @@ export const Keypad = ({ onKey }: { onKey: (k: string) => void }) => {
 };
 
 export default Keypad;
+

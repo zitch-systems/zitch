@@ -21,7 +21,7 @@ class FixedSave(models.Model):
     MATURED = "matured"
     STATUSES = [(ACTIVE, "Active"), (MATURED, "Matured")]
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="savings")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="savings")
     principal = models.DecimalField(max_digits=14, decimal_places=2)
     interest = models.DecimalField(max_digits=14, decimal_places=2)
     rate = models.DecimalField(max_digits=5, decimal_places=4)

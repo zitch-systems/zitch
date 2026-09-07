@@ -15,7 +15,7 @@ class ConversionRequest(models.Model):
     FAILED = "Failed"
     STATUSES = [(PENDING, PENDING), (SUCCESS, SUCCESS), (FAILED, FAILED)]
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="conversions")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="conversions")
     network = models.CharField(max_length=20)            # network id ("1".."4")
     phone = models.CharField(max_length=20)              # the SIM the airtime comes from
     airtime_amount = models.DecimalField(max_digits=14, decimal_places=2)

@@ -1,16 +1,19 @@
 """Third-party integration layer.
 
-Providers: Kora/Korapay (payments — funding, virtual accounts, payouts, and KYC
-BVN/NIN/vNIN; client in utility/kora.py), VTU.ng (airtime/data/cable/electricity/
-betting), Sendchamp (SMS/OTP), Resend (email/OTP), Prembly/IdentityPass (face /
-liveness KYC only), Fincra (FX). Each function returns {"success": bool, ...}.
-When the relevant key is blank it runs in MOCK mode and simulates success so the
-whole app flow is testable without an external account — EXCEPT in production
-(DEBUG off), where money/identity mocks fail closed (see mock_disabled_in_prod)
-so a misconfigured deploy never fakes a money movement.
+Providers: Wema / ALAT (money movement — funding via OTP-provisioned NUBANs,
+payouts + name enquiry + balance, and BVN/NIN identity via the name-matched
+account-creation flow; client in utility/wema.py),
+VTU.ng (airtime/data/cable/electricity/betting), Termii (SMS/OTP), Resend
+(email/OTP), Prembly/IdentityPass (selfie / liveness + address + ID-document KYC —
+the image/biometric checks the account-creation flow doesn't cover), Fincra (FX). Each
+function returns {"success": bool, ...}. When the relevant key is blank it runs in
+MOCK mode and simulates success so the whole app flow is testable without an external
+account — EXCEPT in production (DEBUG off), where money/identity mocks fail closed
+(see mock_disabled_in_prod) so a misconfigured deploy never fakes a money movement.
 
 The funding_* / payout_* / card_* / verify_* wrappers are the stable, provider-
-agnostic contract the views and services call; they delegate to the Kora client.
+agnostic contract the views and services call; they delegate to the Wema client
+(utility.wema), the sole money-movement + Nigeria-KYC rail.
 """
 import hashlib
 import logging
@@ -30,6 +33,15 @@ log = logging.getLogger("zitch")
 # contract the views and the reconcile job call, so callers never import the
 # provider module directly.
 # ---------------------------------------------------------------------------
+def simulation_mode() -> bool:
+    """WEMA_SIMULATION doubles as the DEPLOY-WIDE simulation switch: when on, the whole
+    payment/identity stack (Wema, VTU.ng airtime/data/bills, cards, FX, Mono, KYC)
+    serves its MOCK paths, so the app can be walked end-to-end with no real money or
+    identity. It is a HARD go-live blocker — wema_preflight fails while it is set — so
+    it can only ever be on in a test deploy, never in production."""
+    return bool(settings.WEMA.get("SIMULATION"))
+
+
 def mock_disabled_in_prod() -> bool:
     """True when a provider's MOCK responses must be suppressed.
 
@@ -38,7 +50,14 @@ def mock_disabled_in_prod() -> bool:
     their airtime/data purchase succeeded while nothing was delivered (and the
     wallet was debited). When this returns True, the provider must fail closed
     instead — the debit is then refunded by the normal failure path.
+
+    A simulation deploy is the deliberate exception: WEMA_SIMULATION marks the deploy
+    as fake-money end-to-end, so mocks are allowed even with DEBUG off. This is safe
+    because simulation is a hard go-live gate (see wema_preflight), so it is never on
+    in a real-money deploy.
     """
+    if simulation_mode():
+        return False
     return not settings.DEBUG and not getattr(settings, "TESTING", False)
 
 
@@ -48,14 +67,128 @@ def vtu_live() -> bool:
     return _live()
 
 
-def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
-    """Submit a VTU purchase via VTU.ng.
+def vas_provider() -> str:
+    """VAS (airtime/data/bills) rail — 'wema' or 'vtung'.
 
-    Pass the wallet ledger `reference` so it becomes VTU.ng's request_id
-    (idempotency key + requery handle). On a network error returns
-    ``pending=True``: the purchase may have landed, so the caller must NOT refund
-    — reconciliation requeries it by reference instead.
-    """
+    Explicit VAS_PROVIDER wins. Blank => AUTO: use Wema once its VAS keys are
+    configured AND it can SETTLE a purchase (or simulation is on), else VTU.ng — so
+    airtime/data/bills never break on a deploy that has no Wema VAS keys yet. When
+    Wema is selected the routing is still per-service: AIRTIME (network + amount, no
+    catalogue) always goes to Wema; DATA and CABLE go to Wema once the plan's
+    `wema_code` is synced (`manage.py seed_wema_plans`), else VTU.ng; ELECTRICITY and
+    BETTING stay on VTU.ng until their Wema billers are mapped.
+
+    "Can settle" is the load-bearing half. A Wema VAS purchase usually comes back
+    PROCESSING and is resolved by requerying its INTEGER transactionStatus, whose
+    meaning ALAT does not publish — so without WEMA_VAS_STATUS_LEGEND configured the
+    requery can never decode, and the top-up sits PENDING forever: the customer is
+    DEBITED and the airtime neither arrives nor refunds. Auto-selecting Wema in that
+    state is exactly how "debited but not delivered" happens, so AUTO refuses it and
+    stays on the proven VTU.ng rail until the legend is set. An operator who knows
+    their Wema VAS settles synchronously can still force it with VAS_PROVIDER=wema."""
+    choice = (getattr(settings, "VAS_PROVIDER", "") or "").strip().lower()
+    if choice in ("wema", "vtung"):
+        return choice
+    from . import wema
+    if wema.wema_simulation():
+        return "wema"
+    if wema._vas_live("airtime") and wema._vas_legend("airtime"):
+        return "wema"
+    return "vtung"
+
+
+def _wema_vas_route(service_id: str, payload: dict):
+    """Resolve how Wema would fulfil this purchase, or None to stay on VTU.ng.
+
+    Returns {"type": "airtime"|"data"|"bill", "code": <wema code>, "amount": <naira>}.
+    Airtime always resolves; data/cable resolve once the plan's `wema_code` has been
+    synced; electricity/betting resolve once a WemaBiller row maps their service_id.
+    A missing code returns None and keeps that ONE service on VTU.ng — never an
+    error, so a partly-synced catalogue degrades per service instead of failing.
+
+    Electricity and betting take their amount from the request rather than a plan
+    row: the customer types it, there is no bundle with a price to read."""
+    if service_id.endswith("-airtime"):
+        return {"type": "airtime", "code": "", "amount": payload.get("amount")}
+    if service_id.endswith("-electric") or service_id.endswith("-betting"):
+        from .models import WemaBiller
+        b = (WemaBiller.objects.filter(service_id=service_id, active=True)
+             .only("package_id").first())
+        if not (b and b.package_id):
+            return None
+        amount = payload.get("amount")
+        if amount in (None, ""):
+            # A variable-amount bill with no amount cannot be paid on either rail;
+            # returning None hands it to VTU.ng, which reports the error properly.
+            return None
+        return {"type": "bill", "code": b.package_id, "amount": amount}
+    var = str(payload.get("variation_code", "") or "")
+    if not var:
+        return None  # no plan code -> nothing to map to a Wema catalogue code
+    if service_id.endswith("-data"):
+        from .models import DataPlan
+        p = DataPlan.objects.filter(plan_code=var).only("wema_code", "price").first()
+        return {"type": "data", "code": p.wema_code, "amount": p.price} if (p and p.wema_code) else None
+    if service_id in ("dstv", "gotv", "startimes"):
+        from .models import CablePlan
+        p = CablePlan.objects.filter(cable_plan_code=var).only("wema_code", "price").first()
+        return {"type": "bill", "code": p.wema_code, "amount": p.price} if (p and p.wema_code) else None
+    return None
+
+
+def _vas_source_account(payload: dict, reference: str | None) -> str:
+    """The NUBAN a Wema VAS purchase debits (per-user-balance money-flow model).
+
+    An explicit ``payload["source_account"]`` wins; otherwise the buyer's own
+    wallet NUBAN is resolved from the ledger row the purchase is keyed on (the
+    row exists by the time the provider call runs), so EVERY caller — app views
+    and the WhatsApp router alike — debits the buyer's account rather than
+    silently falling back to the shared WEMA_SOURCE_ACCOUNT pool, which would
+    leak pool float while the buyer's NUBAN keeps its money. Blank only when the
+    buyer has no Wema NUBAN yet (the Wema client then uses the pool)."""
+    src = str(payload.get("source_account", "") or "")
+    if src or not reference:
+        return src
+    from wallet.models import Transaction
+    txn = Transaction.objects.filter(reference=reference).select_related("user").first()
+    if txn is None:
+        return ""
+    return getattr(getattr(txn.user, "wallet", None), "account_number", "") or ""
+
+
+def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
+    """Submit a VAS purchase via the selected rail.
+
+    Pass the wallet ledger `reference` so it becomes the provider's request_id
+    (idempotency key + requery handle). On a network error returns ``pending=True``:
+    the purchase may have landed, so the caller must NOT refund — reconciliation
+    requeries it by reference instead.
+
+    With VAS_PROVIDER=wema (the default) each service routes to Wema only where a
+    Wema catalogue code resolves (see `_wema_vas_route`); anything else falls through
+    to VTU.ng. The chosen rail is stamped on the result (`vas_rail`/`vas_type`) so a
+    PENDING purchase is requeried against the SAME rail that fulfilled it."""
+    if vas_provider() == "wema":
+        route = _wema_vas_route(service_id, payload)
+        if route is not None:
+            from . import wema
+            src = _vas_source_account(payload, reference)
+            phone = payload.get("phone", "")
+            if route["type"] == "airtime":
+                network = service_id.rsplit("-airtime", 1)[0]
+                res = wema.purchase_airtime(route["amount"], reference or "", phone, network,
+                                            source_account=src)
+            elif route["type"] == "data":
+                network = service_id.rsplit("-data", 1)[0]
+                res = wema.purchase_data(route["amount"], reference or "", phone, network,
+                                         route["code"], source_account=src)
+            else:  # bill (cable)
+                res = wema.pay_bill(route["amount"], reference or "", package_id=route["code"],
+                                    identifier=payload.get("billersCode", ""), source_account=src,
+                                    phone=phone)
+            res.setdefault("vas_rail", "wema")
+            res.setdefault("vas_type", route["type"])
+            return res
     from .vtung import vt_purchase
     return vt_purchase(service_id, payload, reference)
 
@@ -66,60 +199,184 @@ def vtu_requery(reference: str) -> dict:
 
     Returns the {"success", "pending", ...} shape settle_or_refund expects:
     success => delivered; pending => still unknown (retry later); neither =>
-    a definitive failure the caller refunds.
-    """
+    a definitive failure the caller refunds. The rail is read from the ledger row's
+    stamped `vas_rail`/`vas_type` (set at purchase), so a Wema purchase requeries via
+    wema.vas_status and a VTU.ng one via vt_requery — even in the mixed state."""
+    from wallet.models import Transaction
+    txn = Transaction.objects.filter(reference=reference).only("meta").first()
+    meta = (txn.meta if txn else None) or {}
+    if meta.get("vas_rail") == "wema":
+        from . import wema
+        return wema.vas_status(reference, meta.get("vas_type", "airtime"))
     from .vtung import vt_requery
     return vt_requery(reference)
 
 
 def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "") -> dict:
-    """Validate a meter / smartcard number, returning the customer name."""
+    """Validate a meter / smartcard number, returning the customer name.
+
+    Validation follows the PURCHASE rail rather than always asking VTU.ng. It used
+    not to, which was harmless while the two rails agreed and is not once a service
+    routes to Wema: the customer would be shown a name VTU.ng resolved, then have the
+    payment executed against a Wema packageId that may reject the same identifier —
+    confirming a name against one biller and paying another. Falls back to VTU.ng
+    whenever Wema has no code for this service, which is the same rail the purchase
+    will take."""
+    if vas_provider() == "wema":
+        route = _wema_vas_route(service_id, {"variation_code": variation,
+                                             "billersCode": billers_code,
+                                             # Validation carries no amount; supply a
+                                             # placeholder so a variable-amount biller
+                                             # still resolves its package id.
+                                             "amount": "0"})
+        if route is not None and route["type"] == "bill" and route["code"]:
+            from . import wema
+            res = wema.validate_bill_customer(package_id=route["code"], identifier=billers_code)
+            # Translated to the VTU.ng contract every caller reads. Wema answers
+            # `name`; the app, the chat and utility.views all read `customer_name`,
+            # so returning Wema's dict verbatim rendered the meter owner as blank —
+            # silently disabling the ONE control that catches a mistyped meter
+            # number before ₦20,000 goes to a stranger's meter.
+            #
+            # Success also requires a resolved NAME, not just a clean envelope.
+            # vt_verify_customer returns success=bool(name); Wema's returns the
+            # envelope's own flag, so a `hasError: false` reply with no customerName
+            # counted as a confirmed owner.
+            name = str(res.get("name") or "").strip()
+            if res.get("success") and name:
+                return {**res, "success": True, "customer_name": name,
+                        "customer_address": res.get("address", "")}
+            # A Wema validation failure is not proof the identifier is bad (an
+            # unmapped package or a gateway hiccup looks the same), so fall through
+            # rather than telling the customer their own meter number is wrong.
     from .vtung import vt_verify_customer
     return vt_verify_customer(service_id, billers_code, variation)
 
 
 # ---------------------------------------------------------------------------
-# SMS / OTP — Sendchamp
+# SMS / OTP — Termii
 # ---------------------------------------------------------------------------
-def send_sms(phone: str, message: str) -> dict:
-    cfg = settings.SENDCHAMP
-    if not cfg["API_KEY"]:
-        return {"success": True, "mock": True, "message": "SMS sent (mock mode)"}
+def _ng_msisdn(phone: str) -> str:
+    """Nigerian phone in Termii's expected international format (234XXXXXXXXXX).
+
+    The app stores/handles numbers in local '080…' format, but Termii's DND
+    route (needed to reach the DND-registered numbers most Nigerian lines are) does
+    not reliably deliver to a local-format number — so normalise before send: strip
+    non-digits, drop a single leading 0, and ensure the 234 country code.
+    """
+    digits = "".join(c for c in (phone or "") if c.isdigit())
+    if digits.startswith("234"):
+        return digits
+    if digits.startswith("0"):
+        return "234" + digits[1:]
+    if len(digits) == 10:  # 803… supplied without the leading 0
+        return "234" + digits
+    return digits  # already international, or non-NG — pass through unchanged
+
+
+def sms_live() -> bool:
+    """Whether the SMS rail has a key (i.e. a real send will be attempted)."""
+    return bool(settings.TERMII["API_KEY"])
+
+
+def email_live() -> bool:
+    """Whether the email rail has a key (i.e. a real send will be attempted).
+
+    The mirror of sms_live(), and needed for the same reason: send_email returns
+    a silent-success dict when unkeyed, so a caller that only checks `success`
+    will report a code it never delivered."""
+    return bool(settings.RESEND["API_KEY"])
+
+
+def _send_sms_termii(phone: str, message: str, timeout: float = REQUEST_TIMEOUT) -> dict:
+    """Termii `POST /api/sms/send`.
+
+    Two details of this request shape are easy to get wrong and fail silently: the
+    api_key travels in the BODY (there is no Authorization header — a bearer token
+    here authenticates as nobody), and `to` is a bare string, not a list. A malformed
+    request is accepted-looking but never delivers, which the signup flow hides by
+    design — hence sms_probe.
+    """
+    cfg = settings.TERMII
     try:
         resp = requests.post(
-            f"{cfg['BASE_URL']}/sms/send",
+            f"{cfg['BASE_URL']}/api/sms/send",
             json={
-                "to": [phone],
-                "message": message,
-                "sender_name": cfg["SENDER_NAME"],
-                "route": "dnd",
+                "to": _ng_msisdn(phone),
+                "from": cfg["SENDER_ID"],
+                "sms": message,
+                "type": "plain",
+                "channel": cfg["CHANNEL"],
+                "api_key": cfg["API_KEY"],
             },
-            headers={
-                "Authorization": f"Bearer {cfg['API_KEY']}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            timeout=REQUEST_TIMEOUT,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            timeout=timeout,
         )
-        data = resp.json()
-        return {"success": resp.ok and str(data.get("status", "")).lower() == "success", "raw": data}
+        data = resp.json() if resp.content else {}
+        if not isinstance(data, dict):
+            data = {"raw": str(data)[:200]}
+        # Accepted == a message_id came back. Termii also returns
+        # message="Successfully Sent", but the id is the load-bearing field: it is what
+        # a delivery report later refers to.
+        ok = bool(resp.ok and data.get("message_id"))
+        if not ok:
+            # Most callers deliberately drop this dict (anti-enumeration), so without
+            # a log here a rejected SMS is invisible: the customer waits for a code
+            # that was never accepted and the operator sees nothing at all. An
+            # unapproved Sender ID is the usual cause and says so in `message`.
+            log.warning("sms_rejected status=%s reason=%s",
+                        resp.status_code, str(data.get("message") or data)[:200])
+        return {"success": ok,
+                "message_id": str(data.get("message_id") or ""), "raw": data}
     except requests.RequestException as exc:
         return {"success": False, "message": f"SMS provider unreachable: {exc}"}
+    except ValueError as exc:                       # non-JSON body (HTML error page)
+        return {"success": False, "message": f"SMS provider returned non-JSON: {exc}"}
 
 
-def send_email(to: str, subject: str, message: str, html: str | None = None) -> dict:
+def send_sms(phone: str, message: str, timeout: float = REQUEST_TIMEOUT) -> dict:
+    """Send one SMS. Blank key => mock success, so this return value CANNOT tell
+    "delivered to a handset" apart from "silently discarded by an unkeyed deploy".
+    A caller that owes someone a real delivery must therefore check sms_live() before
+    promising one — the OTP endpoints do exactly that
+    (accounts.views._otp_undeliverable), because the signup reply is otherwise a
+    cheerful "a code has been sent" over a rail that sent nothing."""
+    if not sms_live():
+        return {"success": True, "mock": True, "message": "SMS sent (mock mode)"}
+    return _send_sms_termii(phone, message, timeout=timeout)
+
+
+def send_email(to: str, subject: str, message: str, html: str | None = None,
+               attachments: list | None = None, timeout: float = REQUEST_TIMEOUT) -> dict:
     """Send a transactional email via Resend. Mirrors send_sms's mock-mode
     contract: blank API_KEY or empty `to` returns a silent-success dict so
     callers can fire-and-forget without branching on configuration. Used as a
-    parallel OTP channel alongside Sendchamp so SMS routing issues never strand
-    a user mid-signup. Pass `html` for a branded body (the plain `message` is
-    kept as the text fallback for clients that don't render HTML)."""
+    channel for ACCOUNT-RECOVERY codes, which go to the address already on file —
+    never for the signup OTP, whose email is caller-supplied and unverified. Pass
+    `html` for a branded body (the plain `message` is
+    kept as the text fallback for clients that don't render HTML).
+
+    `attachments` is [{"filename": str, "content": bytes|str}] — used by the NDPR
+    data-subject export, which must arrive as a file rather than a body: it is a
+    complete personal record, and a mail body is quoted, forwarded and trimmed by
+    clients in ways a file is not.
+    """
     cfg = settings.RESEND
     if not cfg["API_KEY"] or not to:
         return {"success": True, "mock": True, "message": "Email sent (mock mode)"}
     payload = {"from": cfg["FROM_EMAIL"], "to": [to], "subject": subject, "text": message}
     if html:
         payload["html"] = html
+    if attachments:
+        import base64
+
+        payload["attachments"] = [
+            {"filename": a["filename"],
+             "content": base64.b64encode(
+                 a["content"].encode() if isinstance(a["content"], str) else a["content"]
+             ).decode()}
+            for a in attachments
+        ]
     try:
         resp = requests.post(
             f"{cfg['BASE_URL']}/emails",
@@ -128,19 +385,155 @@ def send_email(to: str, subject: str, message: str, html: str | None = None) -> 
                 "Authorization": f"Bearer {cfg['API_KEY']}",
                 "Content-Type": "application/json",
             },
-            timeout=REQUEST_TIMEOUT,
+            timeout=timeout,
         )
         data = resp.json() if resp.content else {}
-        return {"success": resp.ok and "id" in data, "raw": data}
+        ok = bool(resp.ok and "id" in data)
+        if not ok:
+            # Same reasoning as sms_rejected: the reason is thrown away by most
+            # callers, so it has to reach the log here or nowhere. Resend's usual
+            # rejection is FROM_EMAIL sitting on a domain that is not verified on
+            # the account the API key belongs to — "configured" is not "working",
+            # and that distinction is exactly what goes unnoticed otherwise. The
+            # recipient is not logged; the reason concerns the sender.
+            log.warning("email_rejected status=%s from=%s reason=%s",
+                        resp.status_code, cfg["FROM_EMAIL"],
+                        str(data.get("message") or data.get("error") or data)[:200])
+        return {"success": ok, "raw": data}
     except requests.RequestException as exc:
+        log.warning("email_unreachable error=%s", str(exc)[:200])
         return {"success": False, "message": f"Email provider unreachable: {exc}"}
 
 
+def sms_probe(phone: str = "") -> dict:
+    """Live self-test for the SMS rail — returns NO secrets.
+
+    Proves the key authenticates and, when a phone is supplied, sends ONE real test
+    SMS and returns the provider's raw response — so a non-delivery (unapproved or
+    non-whitelisted sender ID, empty provider wallet, bad number) is actually
+    visible. The signup flow deliberately hides send failures (anti-enumeration), so
+    this is the only place OTP delivery can be observed end to end.
+    """
+    cfg = settings.TERMII
+    config = {"provider": "termii", "base_url": cfg["BASE_URL"],
+              "api_key_set": bool(cfg["API_KEY"]), "sender_id": cfg["SENDER_ID"],
+              "channel": cfg["CHANNEL"]}
+    unset_hint = "TERMII_API_KEY unset — no real SMS sends, so the signup OTP won't deliver."
+    fail_hint = (
+        f"Termii accepted the request but returned no message_id. Most common causes: "
+        f"the sender ID '{cfg['SENDER_ID']}' is not whitelisted for the '{cfg['CHANNEL']}' "
+        f"route (DND whitelisting is required to reach most Nigerian numbers), the Termii "
+        f"wallet is empty, the number is invalid, or TERMII_BASE_URL is not the host for "
+        f"this account.")
+
+    out = {"config": config}
+    if not cfg["API_KEY"]:
+        out["hint"] = unset_hint
+        return out
+    if not phone:
+        out["hint"] = ("Key present. Add &phone=<number> to send a real test SMS and see the "
+                       "delivery status.")
+        return out
+    res = send_sms(phone, "Zitch test SMS — your OTP delivery is working.")
+    out["send"] = {"ok": bool(res.get("success")), "to_normalised": _ng_msisdn(phone),
+                   "raw": str(res.get("raw", res.get("message", "")))[:400]}
+    if res.get("message_id"):
+        out["send"]["message_id"] = res["message_id"]
+    if not res.get("success"):
+        out["send"]["hint"] = fail_hint
+    # Accepted is not delivered. Termii answers "accepted" long before the handset
+    # sees anything, and an unapproved sender ID fails at exactly that later step.
+    out["note"] = ("ok=true means the provider ACCEPTED the message, not that it was "
+                   "delivered. Confirm the handset actually received it.")
+    return out
+
+
+def sender_domain() -> str:
+    """The bare domain Resend will be asked to send from.
+
+    FROM_EMAIL is a display-name form ("Zitch <no-reply@send.zitch.ng>"), so the
+    domain has to be parsed out rather than string-matched.
+    """
+    from email.utils import parseaddr
+
+    _, addr = parseaddr(settings.RESEND["FROM_EMAIL"] or "")
+    local, at, domain = addr.rpartition("@")
+    # rpartition puts the whole string in the tail when the separator is absent,
+    # so an address-less value would otherwise come back looking like a domain.
+    return domain.strip().lower() if (at and local) else ""
+
+
+def email_probe() -> dict:
+    """Live self-test for the email rail — returns NO secrets.
+
+    Answers the question a key check cannot: is FROM_EMAIL's domain actually
+    verified on the account this key belongs to? Resend refuses a send from an
+    unverified sender domain, and because every OTP caller drops the result by
+    design, that refusal looks exactly like a working rail from the outside —
+    the customer is told a code is on its way and simply never receives one.
+
+    Read-only: it lists domains, it does not send.
+    """
+    cfg = settings.RESEND
+    domain = sender_domain()
+    out = {"config": {"provider": "resend", "base_url": cfg["BASE_URL"],
+                      "api_key_set": bool(cfg["API_KEY"]),
+                      "from_email": cfg["FROM_EMAIL"], "sender_domain": domain}}
+    if not cfg["API_KEY"]:
+        out["hint"] = "RESEND_API_KEY unset — no transactional email, so email OTP won't deliver."
+        return out
+    if not domain:
+        out["ok"] = False
+        out["hint"] = "RESEND_FROM_EMAIL has no parseable address — expected 'Name <user@domain>'."
+        return out
+    try:
+        resp = requests.get(f"{cfg['BASE_URL']}/domains",
+                            headers={"Authorization": f"Bearer {cfg['API_KEY']}"},
+                            timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        out["ok"] = False
+        out["hint"] = f"Resend unreachable: {exc}"
+        return out
+    if resp.status_code in (401, 403):
+        out["ok"] = False
+        out["hint"] = ("Resend rejected the key itself (%s). It is set but not valid for any "
+                       "account — check it was copied whole and has not been revoked."
+                       % resp.status_code)
+        return out
+    try:
+        rows = (resp.json() or {}).get("data") or []
+    except ValueError:
+        rows = []
+    verified = sorted({str(r.get("name", "")).lower() for r in rows
+                       if str(r.get("status", "")).lower() == "verified"})
+    out["verified_domains"] = verified
+    out["ok"] = domain in verified
+    if not out["ok"]:
+        out["hint"] = (
+            f"'{domain}' is not a verified domain on the account this API key belongs to, so "
+            f"Resend will refuse every send and no email OTP can arrive. "
+            + (f"Verified on this account: {', '.join(verified)}. "
+               "Either add and verify the sender domain there, or point RESEND_FROM_EMAIL at "
+               "one of these / RESEND_API_KEY at the account that owns it."
+               if verified else
+               "This account has no verified domain at all — add and verify one."))
+    return out
+
+
 # ---------------------------------------------------------------------------
-# KYC — BVN / NIN / liveness — Prembly (IdentityPass)
+# KYC — selfie/liveness + address + ID-document — Prembly (IdentityPass)
+#
+# Prembly is retained ONLY for the image/biometric checks the Wema account-creation
+# flow can't do: selfie/liveness (kyc_verify_face — the ≥₦100k transfer gate + Tier 2),
+# address (kyc_verify_address — Tier 2), and document-image OCR (kyc_verify_nin_document /
+# kyc_verify_id_document — Tier 1 NIN slip / Tier 3 government ID). BVN/NIN identity is
+# verified by the name-matched NUBAN account-creation flow (see verify_bvn/nin/vnin).
 # ---------------------------------------------------------------------------
 def _prembly_live() -> bool:
-    return bool(settings.PREMBLY["API_KEY"] and settings.PREMBLY["APP_ID"])
+    # A deploy-wide simulation must not leak real identity data to Prembly just
+    # because credentials remain configured for the later go-live.
+    return (not simulation_mode()
+            and bool(settings.PREMBLY["API_KEY"] and settings.PREMBLY["APP_ID"]))
 
 
 def _prembly_headers() -> dict:
@@ -151,40 +544,19 @@ def _prembly_headers() -> dict:
     }
 
 
-def kyc_verify_bvn(bvn: str) -> dict:
-    """Verify a BVN. MOCK mode accepts any 11-digit value."""
-    if len(bvn) != 11 or not bvn.isdigit():
-        return {"success": False, "message": "BVN must be 11 digits"}
-    if not _prembly_live():
-        return {"success": True, "mock": True, "first_name": "", "last_name": ""}
-    try:
-        resp = requests.post(
-            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/bvn",
-            json={"number": bvn}, headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        d = data.get("data", {}) or {}
-        return {"success": bool(data.get("status")) and bool(d), "raw": data,
-                "first_name": d.get("first_name", ""), "last_name": d.get("last_name", "")}
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+def _kyc_mock_or_unavailable() -> dict:
+    """Return a simulated pass only on an explicitly non-live deployment.
 
-
-def kyc_verify_nin(nin: str) -> dict:
-    """Verify a NIN. MOCK mode accepts any 11-digit value."""
-    if len(nin) != 11 or not nin.isdigit():
-        return {"success": False, "message": "NIN must be 11 digits"}
-    if not _prembly_live():
-        return {"success": True, "mock": True}
-    try:
-        resp = requests.post(
-            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/nin",
-            json={"number": nin}, headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        return {"success": bool(data.get("status")), "raw": data}
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+    These checks lift KYC tiers and clear the face step-up on large payments. A
+    missing provider in production must therefore be an outage, never a pass.
+    ``WEMA_SIMULATION`` remains the deliberate end-to-end test exception.
+    """
+    if mock_disabled_in_prod():
+        return {
+            "success": False,
+            "message": "Identity verification is temporarily unavailable. Please try again later.",
+        }
+    return {"success": True, "mock": True}
 
 
 def kyc_verify_nin_document(image: str) -> dict:
@@ -193,7 +565,7 @@ def kyc_verify_nin_document(image: str) -> dict:
     a real pass. VERIFY-BEFORE-LIVE: confirm the exact endpoint/field names on
     the Prembly dashboard before relying on this."""
     if not _prembly_live():
-        return {"success": True, "mock": True}
+        return _kyc_mock_or_unavailable()
     if not image:
         return {"success": False, "message": "Upload your NIN slip to continue"}
     try:
@@ -216,7 +588,7 @@ def kyc_verify_face(selfie: str = "") -> dict:
     genuine verification once a provider is configured.
     """
     if not _prembly_live():
-        return {"success": True, "mock": True}
+        return _kyc_mock_or_unavailable()
     if not selfie:
         return {"success": False, "message": "A selfie capture is required for face verification"}
     try:
@@ -231,62 +603,268 @@ def kyc_verify_face(selfie: str = "") -> dict:
         return {"success": False, "message": f"KYC provider unreachable: {exc}"}
 
 
+def kyc_verify_address(address: str, document: str = "") -> dict:
+    """Verify a residential address (Tier 2). MOCK accepts offline; LIVE should
+    call the KYC provider's address / proof-of-address endpoint and fail closed
+    without a real pass. VERIFY-BEFORE-LIVE: confirm the endpoint/fields first."""
+    if not _prembly_live():
+        return _kyc_mock_or_unavailable()
+    if not (address or document):
+        return {"success": False, "message": "Enter your residential address"}
+    try:
+        resp = requests.post(
+            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/address",
+            json={"address": address, "document": document},
+            headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return {"success": bool(data.get("status")), "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
+def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
+    """Verify a government-issued ID document (Tier 3): passport / driver's
+    licence / voter's card / NIN slip. MOCK accepts offline; LIVE must call the
+    provider's document-analysis endpoint and fail closed. VERIFY-BEFORE-LIVE."""
+    if not _prembly_live():
+        return _kyc_mock_or_unavailable()
+    if not image:
+        return {"success": False, "message": "Upload a clear photo of your ID document"}
+    try:
+        resp = requests.post(
+            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/document/analysis",
+            json={"doc_type": doc_type or "generic", "image": image},
+            headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return {"success": bool(data.get("status")), "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
 # ---------------------------------------------------------------------------
-# KYC — Kora Identity (BVN / NIN / vNIN)
+# KYC — BVN / NIN / vNIN (Wema)
 #
-# verify_bvn / verify_nin / verify_vnin are the provider-agnostic entry points
-# the rest of the app calls; they delegate to Kora (utility.kora). The selfie /
-# liveness step (kyc_verify_face, in the Prembly block above) stays on Prembly —
-# Kora has no liveness check. Each fails closed in production when Kora has no
-# keys, so a money app never mock-passes identity on a misconfigured deploy;
-# dev/tests keep the offline mock.
+# verify_bvn / verify_nin / verify_vnin are the provider-agnostic entry points the
+# rest of the app calls. ALAT has NO standalone identity lookup, so BVN/NIN are
+# verified by the NUBAN account-creation flow (which name-matches the holder record
+# ALAT returns — see wema.holder_name_mismatch + wallet.views.wema_wallet_verify_otp).
+# These entry points therefore no longer call a lookup endpoint: in production they
+# return an otp_required redirect to account setup; dev/tests keep the mock so the
+# offline KYC flow still exercises. The image/biometric steps (selfie/liveness,
+# address, ID-document OCR) stay on Prembly above. Identity never mock-passes in prod.
 # ---------------------------------------------------------------------------
-def _kora_kyc_live() -> bool:
-    from . import kora
-    return kora.kora_live()
-
-
 def kyc_provider() -> str:
-    """The BVN/NIN/vNIN backend — always 'kora'."""
-    return "kora"
+    """The BVN/NIN backend — 'wema' (the sole rail). Retained so any caller/diagnostic
+    that reads the selector keeps working."""
+    choice = (getattr(settings, "KYC_PROVIDER", "") or "").strip().lower()
+    return choice if choice == "wema" else "wema"
 
 
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
-    """Verify a BVN via Kora Identity.
+    """BVN verification entry point.
 
-    name/DOB/mobile are accepted for call-site compatibility; Kora's lookup is
-    number-based. Fails closed in production without Kora keys; dev/tests mock."""
-    from . import kora
-    if not kora.kora_live() and mock_disabled_in_prod():
-        return {"success": False, "message": "Identity verification is temporarily unavailable"}
-    return kora.verify_bvn(bvn)
+    Prembly first when configured and simulation is OFF. During an end-to-end
+    simulation, no identity number may leave Zitch merely because live Prembly
+    credentials are staged in the environment; the dedicated simulated-KYC path
+    supplies namespaced fake hashes without accepting or storing a real BVN.
 
-
-def verify_nin(nin: str) -> dict:
-    """Verify a NIN via Kora Identity. Fails closed in prod without keys."""
-    from . import kora
-    if not kora.kora_live() and mock_disabled_in_prod():
-        return {"success": False, "message": "Identity verification is temporarily unavailable"}
-    return kora.verify_nin(nin)
+    Falls back to the Wema behaviour when Prembly is unconfigured or the
+    deploy-wide simulation switch is on.
+    """
+    if _prembly_live():
+        return prembly_verify_bvn(bvn, name=name)
+    from . import wema
+    return wema.verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
 
 
-def verify_vnin(vnin: str) -> dict:
-    """Verify a Virtual NIN (16-char tokenised NIN).
+def prembly_verify_bvn(bvn: str, name: str = "") -> dict:
+    """Look a BVN up at Prembly and name-match the record. Fails CLOSED on every
+    uncertainty, exactly like the NIN path — this result lifts a tier and, unlike
+    NIN, currently gates whether an account may spend at all.
 
-    Only Kora exposes a vNIN lookup among the configured backends, so this routes
-    to Kora directly. Fails closed in production when Kora has no keys; dev/tests
-    keep the offline mock."""
-    from . import kora
-    if not kora.kora_live() and mock_disabled_in_prod():
-        return {"success": False, "message": "Identity verification is temporarily unavailable"}
-    return kora.verify_vnin(vnin)
+    Uses Prembly's BVN Advance product because the ownership challenge needs the
+    identity-registered phone number as well as the holder's name.
+    """
+    if len(bvn) != 11 or not bvn.isdigit():
+        return {"success": False, "invalid": True, "message": "BVN must be 11 digits"}
+    return _prembly_identity_lookup("bvn", bvn, name)
+
+
+def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
+    """Shared BVN/NIN lookup: one request shape, one name match, one failure
+    policy. Written once so the two identities cannot drift on what counts as a
+    pass — they gate the same money."""
+    # Prembly's current IdentityPass API does not use the older
+    # ``/identitypass/verification/{kind}`` route for these products.  Keep the
+    # product routes explicit so a future API change cannot silently make BVN
+    # and NIN drift onto the wrong verification level.
+    paths = {
+        "bvn": "/verification/bvn",       # BVN Advance
+        "nin": "/verification/vnin",     # NIN Advance
+    }
+    path = paths.get(kind)
+    if path is None:
+        return {"success": False, "message": "Unsupported identity type."}
+
+    try:
+        resp = requests.post(
+            f"{settings.PREMBLY['BASE_URL'].rstrip('/')}{path}",
+            json={"number": number}, headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("prembly_%s_unreachable error_type=%s", kind, type(exc).__name__)
+        # NOT invalid: we could not ask. Reviewable.
+        return {"success": False, "message": f"Identity provider unreachable: {exc}"}
+
+    # HTTP failures are gateway/auth/product problems, never proof that the
+    # customer's identity is wrong.  In particular, treating a 401/403/404 as
+    # ``invalid`` shows "check the digits" for a Zitch configuration fault.
+    if resp.status_code >= 400:
+        log.warning("prembly_%s_http_error status=%s", kind, resp.status_code)
+        return {"success": False,
+                "message": "Identity verification service is temporarily unavailable."}
+
+    record = data.get("data") or data.get(f"{kind}_data") or {}
+    if not (data.get("status") is True and isinstance(record, dict)):
+        # The provider answered, and the answer is no. `invalid` means definitive:
+        # a wrong number is the customer's to correct, not an operator's to
+        # approve — queueing it would put a human in front of a decision the
+        # authoritative source has already made.
+        return {"success": False, "invalid": True,
+                "message": data.get("message") or f"That {kind.upper()} could not be confirmed.",
+                "raw": data}
+    first = str(record.get("firstname") or record.get("first_name") or
+                record.get("firstName") or "").strip()
+    last = str(record.get("surname") or record.get("lastname") or
+               record.get("last_name") or record.get("lastName") or "").strip()
+    middle = str(record.get("middlename") or record.get("middle_name") or
+                 record.get("middleName") or "").strip()
+    resolved = " ".join(p for p in (first, middle, last) if p).strip()
+    if name and resolved:
+        from transfers.views import _names_match
+
+        if not _names_match(name, resolved):
+            # Never echo the resolved name: it belongs to whoever owns the
+            # number, who may not be the person asking.
+            log.warning("prembly_%s_name_mismatch", kind)
+            # Definitive, and deliberately not reviewable: "this number belongs
+            # to someone else" is precisely the case an operator must never be
+            # asked to wave through.
+            return {"success": False, "invalid": True,
+                    "message": f"That {kind.upper()} does not match the name on this account.",
+                    "raw": data}
+    elif not resolved:
+        return {"success": False, "invalid": True,
+                "message": f"That {kind.upper()} could not be confirmed.", "raw": data}
+    return {"success": True, "first_name": first, "last_name": last,
+            "phone": _record_phone(record), "email": _record_email(record), "raw": data}
+
+
+#: Field names the BVN and NIN records use for the registered line. Both are
+#: tried for both identities because the provider's own naming is not stable
+#: across products, and a lookup that silently found no phone is indistinguishable
+#: from one that found an empty string.
+_PHONE_FIELDS = ("phoneNumber1", "phone_number1", "phoneNumber", "phone_number",
+                 "telephoneno", "telephone_no", "phone", "msisdn")
+
+
+def _record_phone(record: dict) -> str:
+    """The line registered against the identity, normalised, or "".
+
+    This is the number the OTP goes to — NOT the number on the Zitch account.
+    That difference is the entire point: matching a name proves someone knows a
+    name, while a code delivered to the line the bank or NIMC holds proves the
+    person asking controls it.
+    """
+    for field in _PHONE_FIELDS:
+        raw = str(record.get(field) or "").strip()
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if len(digits) >= 10:
+            return _ng_msisdn(digits)
+    return ""
+
+
+#: Field names the BVN and NIN records use for the registered email address.
+#: Tried for both identities for the same reason as _PHONE_FIELDS: the provider's
+#: naming is not stable across products.
+_EMAIL_FIELDS = ("email", "emailAddress", "email_address", "emailaddress")
+
+
+def _record_email(record: dict) -> str:
+    """The email registered against the identity, or "".
+
+    The companion to _record_phone, and it earns its place for the same reason:
+    this address belongs to the BVN/NIN HOLDER, so a code sent there proves the
+    same thing the SMS does. The Zitch account's own email proves nothing at all
+    about who owns the identity — whoever is logged in reads that inbox — so it is
+    never a substitute here.
+
+    Often absent: NIMC records rarely carry an email and bank records carry one
+    inconsistently. "" is the normal answer, not an error, and the caller falls
+    back to SMS alone rather than to the account address.
+    """
+    for field in _EMAIL_FIELDS:
+        value = str(record.get(field) or "").strip().lower()
+        # Deliberately shallow: this is a "did the provider give us something
+        # postable" check, not address validation. Resend is the authority on
+        # deliverability, and a stricter regex here would silently drop valid
+        # addresses rather than let it answer.
+        local, _, domain = value.partition("@")
+        if local and "." in domain and " " not in value and len(value) <= 254:
+            return value
+    return ""
+
+
+def verify_nin(nin: str, name: str = "") -> dict:
+    """NIN verification entry point.
+
+    Prembly first when it is configured: it has the standalone NIN lookup the
+    bank does not. That matters because the NUBAN flow name-matches exactly ONE
+    identity — whichever opened the account, in practice the BVN — so without a
+    second rail every NIN falls to the operator review queue, and nobody can
+    spend until a human clears them.
+
+    Falls back to the Wema behaviour when Prembly is unconfigured, so a deploy
+    without those keys behaves exactly as it did before.
+    """
+    if _prembly_live():
+        return prembly_verify_nin(nin, name=name)
+    from . import wema
+    return wema.verify_nin(nin, name=name)
+
+
+def prembly_verify_nin(nin: str, name: str = "") -> dict:
+    """Look a NIN up at Prembly and name-match the record against `name`.
+
+    Fails CLOSED on every uncertainty — provider down, malformed response, no
+    name on the record, or a name that does not match. A NIN that cannot be
+    checked must land in the review queue rather than be waved through: this
+    result is what lifts a tier.
+
+    Uses Prembly's NIN Advance endpoint so the result contains sufficient
+    holder information for name matching and the registered-line challenge.
+    """
+    if len(nin) != 11 or not nin.isdigit():
+        return {"success": False, "invalid": True, "message": "NIN must be 11 digits"}
+    return _prembly_identity_lookup("nin", nin, name)
+
+def verify_vnin(vnin: str, name: str = "") -> dict:
+    """Virtual-NIN verification entry point — see verify_bvn. Verification is the
+    name-matched NUBAN account-creation flow; production routes there, dev/tests mock."""
+    from . import wema
+    return wema.verify_vnin(vnin, name=name)
 
 
 # ---------------------------------------------------------------------------
 # Card issuer (virtual cards) — provider TBD. Blank key => MOCK mode.
 # ---------------------------------------------------------------------------
 def _card_issuer_live() -> bool:
-    return bool(settings.CARD_ISSUER["API_KEY"])
+    # Keep card creation fake while the deploy-wide simulation switch is on,
+    # even if the production issuer key is already staged in the environment.
+    return not simulation_mode() and bool(settings.CARD_ISSUER["API_KEY"])
 
 
 def _card_issuer_headers() -> dict:
@@ -397,7 +975,9 @@ def fund_card(card_token: str, amount) -> dict:
 # deterministic mid-market rates + auto-settle, so the flow is testable offline.
 # --------------------------------------------------------------------------- #
 def fincra_live() -> bool:
-    return bool(settings.FINCRA.get("SECRET_KEY"))
+    # A simulated conversion must use the deterministic mock rate and must not
+    # execute at Fincra merely because credentials are present.
+    return not simulation_mode() and bool(settings.FINCRA.get("SECRET_KEY"))
 
 
 # Mock mid-market reference (NGN per 1 unit) — only used without keys.
@@ -410,6 +990,11 @@ def fx_quote(from_ccy: str, to_ccy: str, sell_amount) -> dict:
     from decimal import Decimal
 
     if not fincra_live():
+        # Fail closed in production (like every other money provider): a mock FX
+        # quote would settle the REAL NGN ledger against a fabricated rate and
+        # book phantom foreign-currency liability. Only the mock in dev/tests.
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "FX is not configured"}
         f, t = _NGN_PER.get(from_ccy), _NGN_PER.get(to_ccy)
         if f is None or t is None:
             return {"success": False, "message": f"Unsupported pair {from_ccy}/{to_ccy}"}
@@ -436,6 +1021,8 @@ def fx_quote(from_ccy: str, to_ccy: str, sell_amount) -> dict:
 def fx_execute(quote_ref: str) -> dict:
     """Execute a previously quoted conversion against its quote reference."""
     if not fincra_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "FX is not configured"}
         return {"success": True, "mock": True}
     try:
         r = requests.post(
@@ -449,127 +1036,200 @@ def fx_execute(quote_ref: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Money-movement rail — Kora (funding / virtual accounts / payouts)
+# Money-movement rail — Wema / ALAT (funding / virtual accounts / payouts)
 #
 # The funding_* / payout_* wrappers are the provider-agnostic contract the views
-# and services call; they delegate to the Kora client (utility.kora). Kora is the
-# sole rail. The *_provider() selectors are retained (returning "kora") so any
-# remaining callers keep working. Kora pay-in/payout webhooks land on the
-# wallet/transfers webhook routes.
+# and services call; they delegate to the Wema client (utility.wema), the sole
+# money-movement rail. Wema funds by bank transfer to an OTP-provisioned NUBAN (no
+# hosted checkout, no webhook — inbound deposits AND payout settlement are handled
+# by the reconcile_wema poller). The *_provider() selectors are retained (returning
+# "wema") so any remaining callers/diagnostics keep working.
 # ---------------------------------------------------------------------------
-def _kora_live() -> bool:
-    from . import kora
-    return kora.kora_live()
+def _wema_live() -> bool:
+    from . import wema
+    return wema.wema_live()
 
 
 def payment_provider() -> str:
-    """The wallet-funding rail — always 'kora'."""
-    return "kora"
+    """The wallet FUND-IN rail — 'wema' (the sole rail). Wema funds by bank transfer
+    to an OTP-provisioned NUBAN (no hosted checkout, no webhook — deposits are
+    reconciled by the reconcile_wema poller). Retained as a selector so callers keep
+    working."""
+    choice = (getattr(settings, "PAYMENT_PROVIDER", "") or "").strip().lower()
+    return choice if choice == "wema" else "wema"
 
 
 def payout_provider() -> str:
-    """The bank-payout rail — always 'kora'."""
-    return "kora"
+    """The bank-payout + recipient name-enquiry rail — 'wema' (the sole rail).
+    Retained as a selector so callers keep working."""
+    choice = (getattr(settings, "PAYOUT_PROVIDER", "") or "").strip().lower()
+    return choice if choice == "wema" else "wema"
 
 
 def payout_live() -> bool:
-    """Whether the payout rail has live keys (else MOCK)."""
-    return _kora_live()
+    """Whether the Wema payout rail has live keys (else MOCK)."""
+    return _wema_live()
 
 
 def card_provider() -> str:
-    """'issuer' (the generic CARD_ISSUER) or 'kora' — the virtual-card backend."""
+    """Virtual-card backend — 'wema' or 'issuer'. Explicit CARD_PROVIDER wins; blank
+    => AUTO: use Wema only when its separate Virtual Naira Card subscription key is
+    set, else use the generic CARD_ISSUER. The Wema rail supports neither reversible
+    freeze nor top-up."""
     choice = (getattr(settings, "CARD_PROVIDER", "") or "").strip().lower()
-    if choice in ("issuer", "kora"):
+    if choice in ("wema", "issuer"):
         return choice
-    if _card_issuer_live():
-        return "issuer"
-    if _kora_live():
-        return "kora"
-    return "issuer"
+    from . import wema
+    return "wema" if wema.card_opted_in() else "issuer"
 
 
-# --- Funding (wallet top-up) dispatch ---
+# --- Funding (wallet top-up) dispatch — Wema (OTP-provisioned NUBAN) ---
 def funding_initialize(email: str, amount_naira, reference: str, *,
                        name: str = "", redirect_url: str = "") -> dict:
-    """Start a funding charge via Kora -> {success, authorization_url}."""
-    from . import kora
-    return kora.payment_initialize(email, amount_naira, reference,
-                                   name=name, redirect_url=redirect_url)
+    """Wema/ALAT has no hosted checkout — funding is by bank transfer to the user's
+    dedicated NUBAN (credited by the reconcile_wema poller), so there is no charge to
+    start. Returns a graceful message the app shows instead of a checkout URL."""
+    return {"success": False,
+            "message": "Top up by bank transfer to your dedicated account number."}
 
 
 def funding_verify(reference: str, provider: str = "") -> dict:
-    """Verify a funding charge via Kora."""
-    from . import kora
-    return kora.payment_verify(reference)
+    """Wema deposits are credited by the reconcile poller, not a synchronous verify
+    call, so there is nothing to confirm here."""
+    # White-label: no provider name in customer-facing copy.
+    return {"success": False, "message": "Deposits are credited automatically on receipt."}
 
 
 def funding_account_reserve(account_reference: str, account_name: str, customer_email: str,
                             customer_name: str, bvn: str = "", nin: str = "") -> dict:
-    """Provision a dedicated funding (virtual) account via Kora.
+    """Provision a dedicated funding (virtual) account.
 
-    Returns {success, account_number, bank_name, account_name, reference} so
-    wallet.services.ensure_reserved_account stays agnostic.
+    Wema can't mint an account synchronously — it needs a BVN/NIN + OTP round-trip
+    driven by the /api/wallet/wema/* endpoints. Signal that so ensure_reserved_account
+    leaves the wallet numberless (the OTP flow fills it) rather than surfacing a hard
+    error.
     """
-    from . import kora
-    return kora.create_virtual_account(account_reference, account_name, customer_email,
-                                       customer_name, bvn=bvn, nin=nin)
+    return {"success": False, "otp_required": True,
+            "message": "Verify the OTP to finish setting up your account."}
 
 
 def funding_account_get(account_reference: str) -> dict:
-    """Fetch an existing Kora virtual account (duplicate recovery)."""
-    from . import kora
-    return kora.get_virtual_account(account_reference)
+    """Fetch an existing dedicated account (duplicate recovery).
+
+    Wema accounts are provisioned by the OTP endpoints, not a synchronous lookup, so
+    this signals otp_required rather than performing a wrong-rail lookup."""
+    return {"success": False, "otp_required": True,
+            "message": "Verify the OTP to finish setting up your account."}
 
 
-# --- Payout (bank transfer) dispatch ---
+# --- Payout (bank transfer) dispatch — Wema ---
 def payout_resolve_account(account_number: str, bank_code: str) -> dict:
-    """Name enquiry via Kora."""
-    from . import kora
-    return kora.resolve_account(account_number, bank_code)
+    """Recipient name enquiry via Wema.
+
+    Returns {success, name, ...}. Wema resolves by (account_number, bank_code); no
+    securityInfo is needed for enquiry."""
+    from . import wema
+    return wema.resolve_account(account_number, bank_code)
 
 
 def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
-                account_number: str, account_name: str) -> dict:
-    """Single bank payout via Kora. Returns {success, status, ...}; Kora yields
+                account_number: str, account_name: str, bank_name: str = "",
+                source_account: str = "") -> dict:
+    """Single bank payout via Wema. Returns {success, status, ...}; Wema yields
     success/processing/pending — execute_payout treats PROCESSING/PENDING as
-    not-yet-confirmed."""
-    from . import kora
-    return kora.disburse(amount_naira, reference, narration, bank_code,
-                         account_number, account_name)
+    not-yet-confirmed.
+
+    `bank_name` is sent to Wema's ProcessClientTransfer (destinationBankName)
+    alongside the code.
+
+    MONEY-FLOW: Wema uses a per-user-balance model, so this debits the SENDER's own
+    NUBAN — `source_account`, which execute_payout passes as the sender's
+    wallet.account_number — falling back to the shared WEMA_SOURCE_ACCOUNT pool only
+    for a sender who has no Wema NUBAN yet, and failing closed (refundable) on a live
+    call with neither."""
+    from . import wema
+    src = source_account or settings.WEMA.get("SOURCE_ACCOUNT", "")
+    if wema.wema_live() and not src:
+        return {"success": False,
+                "message": "Payouts are temporarily unavailable — please try again shortly."}
+    return wema.transfer(
+        amount_naira, reference, narration,
+        source_account=src, destination_account=account_number,
+        destination_bank_code=bank_code, destination_bank_name=bank_name,
+        destination_name=account_name,
+    )
 
 
 # --- Virtual card dispatch ---
-# Kora issues cards in two steps (cardholder -> card) and has no PAN-reveal
-# endpoint, so card_reveal degrades gracefully on Kora. The generic CARD_ISSUER
-# path is unchanged. VERIFY-BEFORE-LIVE for the Kora card endpoints (see kora.py).
-def card_issue(holder: str, customer_ref: str, email: str = "") -> dict:
-    if card_provider() == "kora":
-        from . import kora
-        ch = kora.create_cardholder(holder, email or f"{customer_ref}@zitch.app")
-        if not ch.get("success"):
-            return ch
-        return kora.create_card(ch["reference"])
+# Two card backends: the generic CARD_ISSUER (default) and ALAT Card-Management
+# (NUBAN-keyed; selected when card_provider() is "wema" — see wema.card_*). When no
+# backend is configured the calls mock in dev/test and fail closed in production
+# (see issue_card / card_secure_details).
+def card_issue(holder: str, customer_ref: str, email: str = "", *, account_number: str = "",
+               phone: str = "") -> dict:
+    if card_provider() == "wema":
+        from . import wema
+        # Wema keys the virtual card by the user's NUBAN — thread it through.
+        return wema.card_issue(holder, customer_ref, account_number=account_number,
+                               email=email, phone=phone)
     return issue_card(holder, customer_ref)
 
 
 def card_set_status(card_token: str, active: bool) -> dict:
-    if card_provider() == "kora":
-        from . import kora
-        return kora.set_card_status(card_token, active)
+    if card_provider() == "wema":
+        from . import wema
+        return wema.card_set_status(card_token, active)
     return set_card_status(card_token, active)
 
 
 def card_fund(card_token: str, amount) -> dict:
-    if card_provider() == "kora":
-        from . import kora
-        return kora.fund_card(card_token, amount)
+    if card_provider() == "wema":
+        from . import wema
+        return wema.card_fund(card_token, amount)
     return fund_card(card_token, amount)
 
 
 def card_reveal(card_token: str) -> dict:
-    if card_provider() == "kora":
-        # Kora exposes card details (masked) but no full PAN/CVV reveal endpoint.
-        return {"success": False,
-                "message": "Card detail reveal isn't available on this card provider"}
+    if card_provider() == "wema":
+        from . import wema
+        return wema.card_reveal(card_token)
     return card_secure_details(card_token)
+
+
+# ---------------------------------------------------------------------------
+# NIP transfer charges / Remita / BNPL — Wema-only rails (no alternative provider).
+# The wrappers keep the views off the wema client directly and give tests one seam.
+# ---------------------------------------------------------------------------
+def payout_charge(amount_naira):
+    """The NIP fee a bank transfer of `amount_naira` attracts (naira Decimal), or None
+    if the schedule isn't available. Caches the near-static fee schedule for an hour.
+    INFORMATIONAL — it does not change what the send flow debits."""
+    from django.core.cache import cache
+
+    from . import wema
+    charges = cache.get("wema_nip_charges")
+    if charges is None:
+        res = wema.get_nip_charges()
+        if not res.get("success"):
+            return None
+        charges = res.get("charges", []) or []
+        cache.set("wema_nip_charges", charges, 3600)
+    return wema.nip_fee_for(amount_naira, charges)
+
+
+def remita_validate(rrr: str) -> dict:
+    """Validate a Remita RRR (read-only)."""
+    from . import wema
+    return wema.validate_rrr(rrr)
+
+
+def remita_pay(amount_naira, reference: str, *, rrr: str, source_account: str = "", **kw) -> dict:
+    """Pay a Remita RRR debiting the user's NUBAN."""
+    from . import wema
+    return wema.pay_remita(amount_naira, reference, rrr=rrr, source_account=source_account, **kw)
+
+
+def bnpl_offers() -> dict:
+    """The BNPL product offers a customer is eligible for (read-only)."""
+    from . import wema
+    return wema.bnpl_offers()

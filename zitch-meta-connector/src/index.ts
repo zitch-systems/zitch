@@ -1,0 +1,168 @@
+/**
+ * Entry point: an Express app exposing
+ *   POST /mcp        — the MCP Streamable HTTP endpoint (for Claude / any MCP client)
+ *   GET  /rest/*      — a plain REST mirror of the same tools (for a future GPT Action)
+ *   GET  /healthz     — unauthenticated liveness probe (no config/secrets in the response)
+ *
+ * Every request to /mcp and /rest/* passes through, in order: JSON body
+ * limits -> per-IP rate limiting (pre-auth) -> API key auth -> per-key rate
+ * limiting (post-auth) -> audit-logged tool execution. The IP-keyed stage
+ * runs BEFORE auth specifically so a flood of wrong/missing-key requests
+ * gets throttled too, not just successfully authenticated traffic — see the
+ * module comment in rateLimit.ts. auth.ts, rateLimit.ts, audit.ts cover each
+ * stage in detail.
+ */
+import { randomUUID } from 'node:crypto';
+
+import express from 'express';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+
+import { loadConfig } from './config.js';
+import { registerSecret } from './redact.js';
+import { requireApiKey } from './auth.js';
+import {
+  RateLimiter,
+  ipRateLimitMiddleware,
+  rateLimitMiddleware,
+  startRateLimiterSweep,
+} from './rateLimit.js';
+import { buildMcpServer } from './mcpServer.js';
+import { buildRestRouter } from './rest.js';
+import { buildOAuthRouter } from './oauth/router.js';
+import { toolsFor } from './tools/registry.js';
+import { JSON_BODY_LIMIT_BYTES } from './httpLimits.js';
+
+const config = loadConfig();
+
+// Defense in depth (see redact.ts) — the token must never appear in a
+// response body, log line, or error message, even by accident.
+registerSecret(config.metaAccessToken);
+registerSecret(config.connectorApiKey);
+if (config.metaAppSecret) registerSecret(config.metaAppSecret);
+
+const app = express();
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+  );
+  next();
+});
+// Bounded but large enough for update_whatsapp_flow_json: the Flow carries its
+// logo inline and its JSON-RPC envelope is currently >256 KB. Keep this limit
+// paired with MAX_FLOW_JSON_CHARS and its regression test in httpLimits.ts.
+app.use(express.json({ limit: JSON_BODY_LIMIT_BYTES }));
+
+app.get('/healthz', (_req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    service: 'zitch-meta-connector',
+    readOnly: config.readOnly,
+    // Read from the registry rather than hardcoded: a literal here silently
+    // goes stale the moment a tool is added, and this endpoint is exactly what
+    // someone checks to confirm a deploy shipped what they expected.
+    toolsExposed: toolsFor(config).length,
+  });
+});
+
+const limiter = new RateLimiter(config.rateLimitWindowMs, config.rateLimitMaxRequests);
+startRateLimiterSweep(limiter);
+
+// Separate limiter/budget so a burst of bad-auth traffic and a legitimate
+// authenticated caller's own budget can never share (and drain) one bucket.
+const ipLimiter = new RateLimiter(config.rateLimitWindowMs, config.ipRateLimitMaxRequests);
+startRateLimiterSweep(ipLimiter);
+
+// The OAuth endpoints sit BEFORE the authentication middleware, because
+// authenticating is what they are for — a client with no token has to be able
+// to reach /oauth/authorize and /oauth/token to get one, and an MCP client
+// that has never seen this server has to be able to read the .well-known
+// metadata to discover them. They are still behind the per-IP rate limiter:
+// unauthenticated by design is not the same as unmetered, and /oauth/authorize
+// takes a passphrase, so it is exactly the endpoint worth throttling.
+app.use(ipRateLimitMiddleware(ipLimiter), buildOAuthRouter(config));
+
+const authenticated = [
+  ipRateLimitMiddleware(ipLimiter),
+  requireApiKey(config),
+  rateLimitMiddleware(config, limiter),
+];
+
+app.post('/mcp', ...authenticated, async (req, res) => {
+  const requestMeta = {
+    keyFingerprint: (res.locals.keyFingerprint as string | undefined) ?? '(none)',
+    authMethod: res.locals.authMethod as string | undefined,
+    ip: req.ip,
+  };
+  const server = buildMcpServer(config, requestMeta);
+  try {
+    // Stateless: a fresh transport (no sessionIdGenerator) per request, so
+    // there is no session store to secure, expire, or leak across callers.
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on('close', () => {
+      transport.close();
+      server.close();
+    });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch {
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: '2.0',
+        error: { code: -32603, message: 'Internal server error' },
+        id: null,
+      });
+    }
+  }
+});
+
+// The Streamable HTTP transport also defines GET (server-initiated stream)
+// and DELETE (session teardown) — neither applies in stateless mode.
+app.get('/mcp', ...authenticated, (_req, res) => {
+  res.status(405).json({
+    jsonrpc: '2.0',
+    error: { code: -32000, message: 'Method not allowed in stateless mode.' },
+    id: null,
+  });
+});
+app.delete('/mcp', ...authenticated, (_req, res) => {
+  res.status(405).json({
+    jsonrpc: '2.0',
+    error: { code: -32000, message: 'Method not allowed in stateless mode.' },
+    id: null,
+  });
+});
+
+app.use('/rest', ...authenticated, buildRestRouter(config));
+
+app.use((_req, res) => {
+  res.status(404).json({ error: 'not_found' });
+});
+
+const server = app.listen(config.port, () => {
+  process.stdout.write(
+    `${JSON.stringify({
+      at: new Date().toISOString(),
+      level: 'info',
+      msg: 'zitch-meta-connector listening',
+      port: config.port,
+      readOnly: config.readOnly,
+      instanceId: randomUUID(),
+    })}\n`,
+  );
+});
+
+function shutdown(signal: string): void {
+  process.stdout.write(`${JSON.stringify({ level: 'info', msg: `received ${signal}, shutting down` })}\n`);
+  server.close(() => process.exit(0));
+  // Belt-and-braces: force-exit if connections don't drain in time.
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

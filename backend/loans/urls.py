@@ -7,4 +7,5 @@ urlpatterns = [
     path("quote/", views.loan_quote),
     path("request/", views.loan_request),
     path("repay/", views.loan_repay),
+    path("bnpl/offers/", views.bnpl_offers),
 ]

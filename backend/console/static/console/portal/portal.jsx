@@ -1,5 +1,6 @@
-// Zitch Admin — app shell: sidebar, topbar, role switcher, routing
-const { useState, useEffect } = React;
+// Zitch Admin (demo bundle) — app shell: sidebar, topbar, role switcher, routing
+// Served only at /portal/?mode=demo. The live shell is static/portal/admin/portal.jsx.
+const { useState } = React;
 
 function initials(name) {
   return (name || 'OP').split(' ').filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || 'OP';
@@ -9,27 +10,25 @@ function AdminApp({ me, initialRole, onSignOut }) {
   const [view, setView] = useState('overview');
   const [role, setRole] = useState(initialRole || (me && me.role) || 'read_only');
   const [toasts, setToasts] = useState([]);
-  // Bumping dataV remounts the active view, so it re-reads the freshly
-  // bootstrapped ZADM collections (views capture them in useState on mount).
+  // Bumping dataV remounts the active view, so it re-reads the ZADM collections
+  // (views capture them in useState on mount).
   const [dataV, setDataV] = useState(0);
-  const [refreshing, setRefreshing] = useState(false);
 
+  // Marked at this one point rather than at the ~30 call sites that raise a
+  // toast, so a view added later cannot forget to say which portal it is.
   const toast = (text) => {
     const id = Date.now() + Math.random();
-    setToasts((t) => [...t, { id, text }]);
+    setToasts((t) => [...t, { id, text: 'Demo — ' + text }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3200);
   };
 
-  const refresh = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    try {
-      ZADM.applyBootstrap(await ZADM_API.bootstrap());
-      setDataV((v) => v + 1);
-      toast('Data refreshed');
-    } catch (e) {
-      toast('⚠ ' + (e.message || 'Could not refresh'));
-    } finally { setRefreshing(false); }
+  // There is nothing to refresh from — the fixture is the whole data layer.
+  // Remount so the control still demonstrates the interaction, and say plainly
+  // that nothing was fetched rather than toasting a "Data refreshed" that would
+  // read exactly like the live portal's.
+  const refresh = () => {
+    setDataV((v) => v + 1);
+    toast('Demo data — nothing to fetch');
   };
 
   const NAV = [
@@ -76,7 +75,9 @@ function AdminApp({ me, initialRole, onSignOut }) {
         </aside>
         <div className="main">
           <header className="topbar">
-            <div className="env-pill"><span className="dot"></span> Production</div>
+            {/* Hardcoded "Production" used to sit here, in the one bundle that
+                can never show production. Styled by body.is-demo in admin.html. */}
+            <div className="env-pill"><span className="dot"></span> Demo data</div>
             <div style={{ flex: 1 }}></div>
             {(me && me.role === 'super_admin') ? (
               <label className="role-pick">
@@ -91,11 +92,12 @@ function AdminApp({ me, initialRole, onSignOut }) {
                 <Icon name="shield" size={13} /> {role}
               </span>
             )}
-            <button className="btn ghost sm-btn" disabled={refreshing} onClick={refresh}>
-              <Icon name="refresh" size={14} /> {refreshing ? 'Refreshing…' : 'Refresh'}
+            <button className="btn ghost sm-btn" onClick={refresh}>
+              <Icon name="refresh" size={14} /> Refresh
             </button>
             <div className="me"><span className="avatar">{initials(me && me.name)}</span> {(me && me.name) || 'Operator'}</div>
-            <button className="btn ghost sm-btn" onClick={onSignOut}><Icon name="logout" size={14} /> Sign out</button>
+            {/* No session to end here — this leaves the demo for the live portal. */}
+            <button className="btn ghost sm-btn" onClick={onSignOut}><Icon name="logout" size={14} /> Exit demo</button>
           </header>
           <main className="content">
             <View key={view + ':' + dataV} toast={toast} />
@@ -107,89 +109,29 @@ function AdminApp({ me, initialRole, onSignOut }) {
   );
 }
 
-// --- Auth gate: staff sign-in → load real data → render the shell ----------
-function Login({ onSignedIn }) {
-  const [u, setU] = useState('');
-  const [p, setP] = useState('');
-  const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
-  const submit = async (e) => {
-    e.preventDefault();
-    setErr(''); setBusy(true);
-    try {
-      const res = await ZADM_API.login(u.trim(), p);
-      ZADM_API.setToken(res.token);
-      onSignedIn(res);
-    } catch (ex) {
-      setErr(ex.message || 'Sign in failed');
-    } finally { setBusy(false); }
-  };
-  return (
-    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--navy)' }}>
-      <form onSubmit={submit} className="card" style={{ width: 360, padding: 28 }}>
-        <div className="side-brand" style={{ padding: 0, marginBottom: 8, color: 'var(--navy)' }}>
-          <img src="/static/console/assets/brand/zitch-ribbon2.png" alt="Zitch" style={{ height: 26 }} />
-          <span style={{ letterSpacing: '.14em', fontWeight: 700 }}>ZITCH <em style={{ fontStyle: 'normal', color: 'var(--teal-deep)' }}>Admin</em></span>
-        </div>
-        <p className="dim sm" style={{ margin: '0 0 16px' }}>Operator sign in</p>
-        <label className="f-label">Username or email</label>
-        <input className="f-input" value={u} onChange={(e) => setU(e.target.value)} autoFocus />
-        <label className="f-label">Password</label>
-        <input className="f-input" type="password" value={p} onChange={(e) => setP(e.target.value)} />
-        {err && <div className="note warn" style={{ marginTop: 12 }}>{err}</div>}
-        <button className="btn primary" style={{ marginTop: 18, width: '100%' }} disabled={busy || !u || !p}>
-          {busy ? 'Signing in…' : 'Sign in'}
-        </button>
-        <p className="dim sm" style={{ marginTop: 14, textAlign: 'center' }}>Staff accounts only · every action is audited</p>
-      </form>
-    </div>
-  );
-}
+// --- No auth gate: fixtures only, so there is nothing to sign into ---------
+// The live bundle gates on a staff token before it will render. This one has no
+// API to authenticate against, so it goes straight to the shell as a fictional
+// operator.
+//
+// Dropping the sign-in form is the point, not a shortcut. The old one was a
+// real login: it posted whatever you typed to the live staff endpoint and kept
+// the returned bearer token. Even made inert it would be the wrong shape — a
+// password field on a page stamped DEMO trains operators to type live
+// credentials into a mock, which is the habit an attacker only has to imitate.
+// The demo has no field to type them into now.
+//
+// super_admin is deliberate: the role picker is the most useful thing to
+// demonstrate, and every capability it unlocks here is a fixture. The live
+// portal resolves the role server-side on every call and never trusts this.
+const DEMO_ME = { name: 'Demo Operator', email: 'demo@zitch.example', role: 'super_admin' };
 
 function Root() {
-  const [phase, setPhase] = useState('init'); // init | login | loading | ready | error
-  const [me, setMe] = useState(null);
-  const [error, setError] = useState('');
-
-  const load = async () => {
-    setPhase('loading');
-    try {
-      const [meRes, boot] = await Promise.all([ZADM_API.me(), ZADM_API.bootstrap()]);
-      ZADM.applyBootstrap(boot);
-      setMe(meRes);
-      setPhase('ready');
-    } catch (ex) {
-      if (ex.status === 401) { ZADM_API.setToken(''); setPhase('login'); }
-      else { setError(ex.message || 'Could not load the portal'); setPhase('error'); }
-    }
-  };
-
-  useEffect(() => {
-    if (ZADM_API.getToken()) load();
-    else setPhase('login');
-  }, []);
-
-  const signOut = async () => { await ZADM_API.logout(); setMe(null); setPhase('login'); };
-
-  if (phase === 'login') return <Login onSignedIn={() => load()} />;
-  if (phase === 'error') {
-    return (
-      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
-        <div className="card" style={{ padding: 28, maxWidth: 420, textAlign: 'center' }}>
-          <div className="card-title" style={{ marginBottom: 8 }}>Couldn’t load the portal</div>
-          <p className="dim sm">{error}</p>
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 14 }}>
-            <button className="btn primary" onClick={load}>Retry</button>
-            <button className="btn ghost" onClick={signOut}>Sign out</button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-  if (phase !== 'ready') {
-    return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', color: 'var(--t3)' }}>Loading operator portal…</div>;
-  }
-  return <AdminApp me={me} initialRole={me && me.role} onSignOut={signOut} />;
+  // "Exit demo" leaves for the live portal rather than clearing a session that
+  // does not exist. Full page load: the two bundles share component names, so
+  // the mode is a navigation, never a client-side swap.
+  const exit = () => { window.location.href = '/portal/'; };
+  return <AdminApp me={DEMO_ME} initialRole={DEMO_ME.role} onSignOut={exit} />;
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<Root />);

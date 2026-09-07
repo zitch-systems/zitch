@@ -6,13 +6,15 @@ aggregator -> mark the row Successful, or refund on failure.
 from decimal import Decimal, InvalidOperation
 
 from common.http import (
-    api, check_daily_limit, fail, idempotent_replay, ok, parse_amount, provider_purchase_response,
-    require_user, spend_key, verify_transaction_pin,
+    MIN_AIRTIME, MIN_ELECTRICITY, api, check_daily_limit, check_send_limits, fail,
+    idempotent_replay, ok, parse_amount, provider_purchase_response, require_user,
+    spend_key, verify_transaction_pin,
 )
-from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
+from common.ratelimit import ratelimit
+from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key, run_provider_purchase
 
 from .models import CablePlan, DataPlan
-from .providers import vtu_purchase, vtu_verify_customer
+from .providers import remita_pay, remita_validate, vtu_purchase, vtu_verify_customer
 
 NETWORK_NAMES = {"1": "MTN", "2": "GLO", "3": "Airtel", "4": "9mobile"}
 CABLE_NAMES = {"1": "GoTV", "2": "DSTV", "3": "StarTimes"}
@@ -42,6 +44,13 @@ def _run_purchase(user, amount, service, meta, provider_call, idempotency_key=""
     replay = idempotent_replay(existing_for_key(user, idempotency_key))
     if replay:
         return replay
+    # Per-txn tier ceiling + large-txn face gate + fraud VELOCITY brake — the same
+    # guard every other spend flow (transfers/betting/exams/cards) runs. Without
+    # it, VTU was the one category not velocity-guarded, so a stolen session+PIN
+    # could cash out via rapid airtime buys at a rate transfers would throttle.
+    limit_err = check_send_limits(user, amount)
+    if limit_err:
+        return limit_err
     # Daily bill cap (after replay so a retried purchase replays cleanly).
     daily_err = check_daily_limit(user, amount, "bill")
     if daily_err:
@@ -53,6 +62,8 @@ def _run_purchase(user, amount, service, meta, provider_call, idempotency_key=""
         return idempotent_replay(existing_for_key(user, idempotency_key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
+    except LimitExceeded as exc:
+        return fail(str(exc), status=403, code="limit_exceeded")
 
 
 # ---------------- AIRTIME ----------------
@@ -68,11 +79,15 @@ def buyairtime(request):
         return fail("Enter a valid amount")
     net = str(data.get("network", ""))
     phone = data.get("phone", "")
+    # Sender's own NUBAN — the source for a Wema airtime buy (per-user model);
+    # ignored by VTU.ng, so harmless when Wema VAS is off.
+    source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
     outcome = _run_purchase(
         user, amount, f"Airtime — {NETWORK_NAMES.get(net, net)}",
         {"phone": phone, "network": net},
         lambda ref: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-airtime",
-                                 {"amount": str(amount), "phone": phone}, reference=ref),
+                                 {"amount": str(amount), "phone": phone, "source_account": source},
+                                 reference=ref),
         idempotency_key=spend_key(data.get("idempotency_key"), user, "airtime", net, phone, amount),
     )
     if not isinstance(outcome, tuple):
@@ -144,6 +159,12 @@ def get_cable_plans_price(request):
 
 
 @api
+# Third-party PII lookups, so throttled for the same reason wallet.resolve_recipient
+# is: each call discloses a NON-customer's details by number — the meter one returns
+# the holder's name AND home address — which unthrottled is an enumeration oracle
+# over arbitrary Nigerians, not a convenience for the person paying a bill. Each
+# lookup also costs money at the VTU provider, so the cap bounds that too.
+@ratelimit("validate_iuc", limit=20, window=300)
 @require_user
 def validate_iuc(request):
     prov = str(request.data.get("cablenetwork", ""))
@@ -180,6 +201,7 @@ def buycable(request):
 
 # ---------------- ELECTRICITY ----------------
 @api
+@ratelimit("validate_meter", limit=20, window=300)
 @require_user
 def validate_meter(request):
     disco = str(request.data.get("disco", ""))
@@ -187,7 +209,9 @@ def validate_meter(request):
     meter_type = request.data.get("meter_type", "prepaid")
     res = vtu_verify_customer(f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric", meter, meter_type)
     if res.get("success"):
-        return ok(customer_name=res.get("customer_name", ""), name=res.get("customer_name", ""))
+        address = res.get("customer_address", "")
+        return ok(customer_name=res.get("customer_name", ""), name=res.get("customer_name", ""),
+                  customer_address=address, address=address)
     return fail(res.get("message", "Could not verify meter number"), status=400)
 
 
@@ -199,17 +223,36 @@ def buyelectricity(request):
     if err:
         return err
     amount = _amount(data.get("amount"))
-    if amount is None or amount < 500:
-        return fail("Minimum amount is ₦500")
+    if amount is None or amount < MIN_ELECTRICITY:
+        return fail(f"Minimum amount is ₦{MIN_ELECTRICITY:,.0f}")
     disco = str(data.get("disco", ""))
-    meter = data.get("meter", "")
+    meter = str(data.get("meter", "") or "").strip()
     meter_type = data.get("meter_type", "prepaid")
+    disco_name = DISCO_NAMES.get(disco, disco)
+    idempotency_key = spend_key(
+        data.get("idempotency_key"), user, "electricity", disco, meter, amount)
+    # A connectivity retry after the provider has already accepted the payment
+    # must replay from our ledger even if customer verification is temporarily
+    # unavailable. Re-verifying before this lookup turned a completed purchase
+    # into an apparent validation failure on retry.
+    replay = idempotent_replay(existing_for_key(user, idempotency_key))
+    if replay:
+        return replay
+    verified = vtu_verify_customer(
+        f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric", meter, meter_type)
+    if not verified.get("success"):
+        return fail(verified.get("message", "Could not verify meter number"), status=400)
+    customer_name = str(verified.get("customer_name", "") or "").strip()
+    customer_address = str(verified.get("customer_address", "") or "").strip()
     outcome = _run_purchase(
-        user, amount, f"Electricity — {DISCO_NAMES.get(disco, disco)}",
-        {"meter": meter, "disco": disco, "meter_type": meter_type},
+        user, amount, f"Electricity — {disco_name}",
+        {"meter": meter, "disco": disco, "meter_type": meter_type,
+         "customer_name": customer_name, "customer": customer_name,
+         "customer_address": customer_address, "address": customer_address,
+         "channel": "app"},
         lambda ref: vtu_purchase(f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric",
                                  {"billersCode": meter, "variation_code": meter_type, "amount": str(amount)}, reference=ref),
-        idempotency_key=spend_key(data.get("idempotency_key"), user, "electricity", disco, meter, amount),
+        idempotency_key=idempotency_key,
     )
     if not isinstance(outcome, tuple):
         return outcome
@@ -217,4 +260,56 @@ def buyelectricity(request):
     # Prepaid purchases return a recharge token from the aggregator (success only).
     token = (result.get("token") or result.get("provider_reference", "")) if status == "success" else ""
     return provider_purchase_response(status, txn, result,
-                                      success_message="Electricity purchase successful", token=token)
+                                      success_message="Electricity purchase successful", token=token,
+                                      customer_name=customer_name,
+                                      customer_address=customer_address,
+                                      address=customer_address)
+
+
+# ---------------- REMITA (RRR bill payment) ----------------
+@api
+@ratelimit("validate_rrr", limit=20, window=300)
+@require_user
+def validate_rrr(request):
+    """POST /api/utility/validate_rrr/ {access_token, rrr} -> {success, name, amount}"""
+    rrr = (request.data.get("rrr") or "").strip()
+    if not rrr:
+        return fail("Enter the Remita RRR")
+    res = remita_validate(rrr)
+    if not res.get("success"):
+        return fail(res.get("message", "Could not validate this RRR"), status=400)
+    amount = res.get("amount")
+    return ok(success=True, name=res.get("name", ""),
+              amount=str(amount) if amount is not None else "", mock=bool(res.get("mock")))
+
+
+@api
+@require_user
+def payremita(request):
+    """POST /api/utility/payremita/ {access_token, rrr, amount, transaction_pin}
+
+    Debit the wallet and pay the Remita RRR from the user's NUBAN. A timed-out payment
+    stays PENDING (ALAT has no Remita status endpoint — see wema.vas_status); it is
+    never auto-refunded, so a maybe-paid bill is not double-spent."""
+    user, data = request.user_obj, request.data
+    err = _check_pin(user, data)
+    if err:
+        return err
+    rrr = (data.get("rrr") or "").strip()
+    if not rrr:
+        return fail("Enter the Remita RRR")
+    amount = _amount(data.get("amount"))
+    if amount is None or amount < 100:
+        return fail("Enter a valid amount")
+    source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
+    name = user.get_full_name() or user.phone or "Zitch User"
+    outcome = _run_purchase(
+        user, amount, f"Remita — {rrr}",
+        {"rrr": rrr, "vas_rail": "wema", "vas_type": "remita"},
+        lambda ref: remita_pay(amount, ref, rrr=rrr, source_account=source,
+                               email=user.email or "", phone=user.phone or "", name=name),
+        idempotency_key=spend_key(data.get("idempotency_key"), user, "remita", rrr, amount),
+    )
+    if not isinstance(outcome, tuple):
+        return outcome
+    return provider_purchase_response(*outcome, success_message="Remita payment successful")

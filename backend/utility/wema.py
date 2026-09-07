@@ -1,0 +1,2312 @@
+"""Wema / ALAT (Banking-as-a-Service) integration — Phase 1: the money rails.
+
+Covers, mock-first:
+- Wallet creation: provision a dedicated NUBAN per user via a BVN/NIN + OTP flow
+  (request -> validate OTP -> fetch account details). Funds arrive by bank
+  transfer; Wema exposes NO inbound-credit webhook in the specs, so credits are
+  reconciled by POLLING balance / transaction history.
+- Balance + transaction history (account maintenance).
+- Payout: bank list, recipient name enquiry, process transfer, poll status.
+- Credit wallet: push a credit into a wallet from the channel funding account.
+
+AUTH (Azure APIM) — TWO credentials per call:
+  * per-PRODUCT subscription key -> header ``Ocp-Apim-Subscription-Key``
+  * channel id -> header ``x-api-key`` on most products, ``access`` on the
+    credit/debit-wallet products. (Same value; different header name.)
+Per-product base path under one host: sandbox ``https://apiplayground.alat.ng``;
+the LIVE host differs (set WEMA_BASE_URL).
+
+securityInfo: every MONEY-MOVEMENT call (transfer / credit / VAS) carries a
+per-transaction HMAC derived from a private value chosen by Zitch and the transaction
+reference. Wema echoes it with that reference to our authentication callback. The
+portal requires the value to be dynamic and unique per transaction; the secret seed
+itself is never sent.
+Account creation / balance / name-enquiry do not use it.
+
+Envelopes (two shapes, both handled by ``_ok``):
+  * creation/acct-mgt: {message, status(bool), code, statusCode, errors[], data}
+  * credit/debit:      {result, errorMessage, errorMessages[], hasError(bool), ...}
+
+MOCK mode when unconfigured; fails closed in production (providers.mock_disabled_in_prod)
+so a misconfigured deploy never fabricates an account/credit. WEMA_SIMULATION=true
+serves the mock flow even in production to test a real build without live keys.
+
+RECONCILED against the full ALAT OpenAPI spec set (see docs/wema-migration.md §Spec
+reconciliation). Funding rails — wallet-creation, balance/history, payout/transfer,
+credit-wallet, airtime/data, bills — have CONFIRMED-correct paths, fields, auth and
+envelopes. The card + KYC rails were re-pointed to the real endpoints:
+  * Card rail — moved to the real /card-management partnerCard endpoints, NUBAN-keyed
+    (issue/reveal/block); no reversible freeze or top-up (report unsupported).
+  * KYC rail — Wema has no standalone BVN/NIN lookup, so identity is verified by the
+    name-matched account-creation flow (see the KYC section).
+Still open before go-live:
+  * set and rotate Zitch's private securityInfo value in each environment.
+  * tx-status legends — payout status strings, and the VAS/bills CheckTransactionStatus
+    INTEGER enums, are undocumented in the specs; get the code→meaning map from Wema.
+  * live host (WEMA_BASE_URL) + production keys.
+"""
+import hashlib
+import hmac
+import json
+import logging
+import re
+import secrets
+from decimal import Decimal, InvalidOperation
+
+import requests
+from django.conf import settings
+
+from common.http_pool import pooled_session
+
+from .providers import mock_disabled_in_prod
+
+REQUEST_TIMEOUT = 30
+log = logging.getLogger("zitch")
+
+# Per-product base path under settings.WEMA["BASE_URL"]. Each ALAT product is a
+# distinct Azure APIM path; the mounts below are confirmed against the ALAT OpenAPI
+# specs (Wema API bundle).
+_PATH = {
+    # Each identity has its OWN product, endpoints and OTP. The code ALAT sends goes
+    # to the line held on THAT identity's register (NIMC for a NIN, the BVN record
+    # for a BVN) — never to the number the customer typed into Zitch.
+    "wallet_nin": "/wallet-creation",        # NIN: validate + OTP to the NIN's registered phone
+    "wallet_bvn": "/account-creation",       # BVN: validate + OTP to the BVN's registered phone
+    "face_account": "/create-account-face",  # the documented NO-OTP route: face correlation instead
+    "acct_mgt": "/ws-acct-mgt",              # balance + transaction history
+    "upgrade": "/account-upgrade",           # tier upgrade + KYC/PND status read
+    "credit": "/credit-wallet",              # fund a wallet from the channel account
+    "debit": "/debit-wallet",                # payout / name enquiry / banks
+    "airtime": "/airtime-data",              # airtime + data (VAS)
+    "bills": "/bills-payment",               # bills payment (VAS)
+    "remita": "/remita-payment",             # Remita RRR bill payment (VAS)
+    "bnpl": "/alat-bnpl",                    # Buy-Now-Pay-Later (merchant-auth)
+    "kyc": "/kyc",                           # Nigeria identity lookups (see KYC section)
+    "card": "/card-management",              # Virtual Naira Card (partnerCard endpoints)
+}
+# Products whose channel-id header is `access` (not `x-api-key`).
+_ACCESS_PRODUCTS = {"credit", "debit", "airtime", "bills", "remita"}
+
+
+# ALAT's published wallet tier limits (Getting Started guide, 2026-07-27). The BANK
+# enforces these on the NUBAN itself, on its own tier ladder — Tier 1 = BVN or NIN,
+# Tier 2 = BVN and NIN, Tier 3 = both plus address verification — which is NOT our KYC
+# ladder. A transfer our tier permits can therefore still be refused at the gateway, so
+# these are checked as an additional ceiling wherever we know the account's bank tier.
+# None means the bank imposes no cap at that tier.
+BANK_TIER_LIMITS = {
+    1: {"single_inflow": Decimal("50000"), "daily_spend": Decimal("30000"),
+        "max_balance": Decimal("300000")},
+    2: {"single_inflow": Decimal("100000"), "daily_spend": Decimal("100000"),
+        "max_balance": Decimal("500000")},
+    3: {"single_inflow": None, "daily_spend": None, "max_balance": None},
+}
+
+
+def bank_tier_limit(tier, kind: str):
+    """The bank's cap for `kind` ("single_inflow" | "daily_spend" | "max_balance") at
+    `tier`, or None when unknown or uncapped. Tier 0 means we have never read the
+    account's tier back, so no bank cap is asserted."""
+    return (BANK_TIER_LIMITS.get(int(tier or 0)) or {}).get(kind)
+
+
+def wema_live() -> bool:
+    """Whether real Wema calls are made: keys configured AND simulation off.
+
+    Simulation is checked HERE, in the gate every rail asks, rather than only where
+    an unkeyed deploy decides between a mock and failing closed. It used to be the
+    latter, which made WEMA_SIMULATION a no-op on the deploys most likely to set it:
+    with keys present this returned True and every call went to WEMA_BASE_URL for
+    real. On the sandbox host that was merely surprising; pointed at the live host it
+    would move REAL MONEY while the operator believed — from the variable's name, its
+    own docstring, and the runbook — that nothing could. A safety switch that silently
+    does nothing is worse than no switch, because it is trusted.
+    """
+    if wema_simulation():
+        return False
+    m = settings.WEMA
+    return bool(m.get("CHANNEL_ID") and (m.get("KEYS") or {}).get("wallet"))
+
+
+def wema_keys_configured() -> bool:
+    """Whether the credentials exist, regardless of simulation.
+
+    Separate from wema_live() because "has keys" and "will make a real call" are now
+    different questions, and diagnostics need the first to tell a simulation deploy
+    apart from an unconfigured one.
+    """
+    m = settings.WEMA
+    return bool(m.get("CHANNEL_ID") and (m.get("KEYS") or {}).get("wallet"))
+
+
+def wema_simulation() -> bool:
+    """WEMA_SIMULATION — serve the mock flow even in production (no real money)."""
+    return bool(settings.WEMA.get("SIMULATION"))
+
+
+def _mock_blocked() -> bool:
+    return mock_disabled_in_prod() and not wema_simulation()
+
+
+# Products this module will let the Wallet Services key authenticate BY DEFAULT.
+#
+# Deliberately narrower than what a given Wema tenant may actually allow. Ours, for
+# instance, has one Wallet Services subscription whose API list also covers Airtime
+# and Data, Bills, Card Management, Account Upgrade, Remita, KYC and Face Biometric —
+# but that is a fact about our tenant, not about ALAT, and widening the default here
+# would send the wallet key to those products on EVERY deploy, including ones where
+# APIM rejects it. Point a product's own env var at the wallet key when the tenant
+# permits it (WEMA_AIRTIME_KEY=<wallet key>, and so on); explicit beats inferred, and
+# it stays visible when the products are later split onto their own subscriptions.
+#
+# One product is excluded from any fallback on purpose: the key the face-biometric
+# WEB app receives travels in a URL the customer's browser loads. See _face_key.
+_WALLET_COVERED = ("wallet_nin", "wallet_bvn", "acct_mgt", "credit", "debit", "bills")
+
+
+def _sub_key(product: str) -> str:
+    """Return only a subscription key that the ALAT product is documented to accept.
+
+    Wallet Services covers the six rails in _WALLET_COVERED. Every other product is
+    fail-closed unless its own key is configured; cross-product fallback can mask a
+    bad deployment until a real request is rejected by APIM.
+    """
+    keys = settings.WEMA.get("KEYS") or {}
+    own = keys.get(product, "")
+    if own:
+        return own
+    return keys.get("wallet", "") if product in _WALLET_COVERED else ""
+
+
+def _product_live(product: str) -> bool:
+    """Whether a channel-authenticated ALAT product may make real calls."""
+    if wema_simulation():
+        return False
+    return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key(product))
+
+
+def _product_config_diag(product: str) -> dict:
+    """Secret-free config flags for diagnosing product gate failures."""
+    return {
+        "simulation": bool(wema_simulation()),
+        "has_channel": bool(settings.WEMA.get("CHANNEL_ID")),
+        "has_product_key": bool((settings.WEMA.get("KEYS") or {}).get(product)),
+        "has_fallback_wallet_key": bool((settings.WEMA.get("KEYS") or {}).get("wallet")),
+        "product_allows_wallet_fallback": product in _WALLET_COVERED,
+        "has_effective_key": bool(_sub_key(product)),
+    }
+
+
+def _bnpl_headers() -> dict:
+    """BNPL uses merchant credentials (x-merchant-id + x-merchant-authorization-key)
+    alongside its APIM subscription key — NOT the channel id the other products use."""
+    m = settings.WEMA
+    return {
+        "Ocp-Apim-Subscription-Key": (m.get("KEYS") or {}).get("bnpl", ""),
+        "x-merchant-id": m.get("BNPL_MERCHANT_ID", ""),
+        "x-merchant-authorization-key": m.get("BNPL_AUTH_KEY", ""),
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def _headers(product: str) -> dict:
+    if product == "bnpl":
+        return _bnpl_headers()
+    channel = settings.WEMA.get("CHANNEL_ID", "")
+    channel_header = "access" if product in _ACCESS_PRODUCTS else "x-api-key"
+    return {
+        "Ocp-Apim-Subscription-Key": _sub_key(product),
+        channel_header: channel,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def _base_url(product: str) -> str:
+    product_bases = settings.WEMA.get("BASE_URLS") or {}
+    return (product_bases.get(product) or settings.WEMA["BASE_URL"]).rstrip("/")
+
+
+def _url(product: str, path: str) -> str:
+    return f"{_base_url(product)}{_PATH[product]}{path}"
+
+
+def _url_for_base(product: str, base: str, path: str) -> str:
+    return f"{base.rstrip('/')}{_PATH[product]}{path}"
+
+
+def _ok(data: dict) -> bool:
+    """Success across both ALAT envelope shapes."""
+    if not isinstance(data, dict):
+        return False
+    if data.get("status") is True:               # creation / acct-mgt envelope
+        return True
+    if "hasError" in data:                        # credit / debit envelope
+        return not data.get("hasError")
+    return False
+
+
+# Zitch is white-labelled: the customer must never see the upstream bank's brand.
+# Gateway messages are written for the bank's own channels and can name it outright
+# — e.g. "Hi, Kindly download ALAT and sign in to see Wema Bank account details" —
+# which would both leak the provider and push our customer into another app. Any
+# message naming the provider is therefore dropped in favour of a neutral string.
+# The word-boundary anchor is only at the START so "ALATbyWEMA" is caught while
+# ordinary words that merely contain the letters (e.g. "escalate") are not.
+# The untouched envelope is still returned as `raw` for logs and diagnostics.
+_PROVIDER_BRAND = re.compile(r"\b(alat|wema)", re.I)
+
+
+def _first_text(v) -> str:
+    """First human-readable string out of an ALAT error field, whatever shape it took.
+
+    The gateway is not consistent about these fields. `errors` is an array of strings
+    on the account-creation ResponseModel, but ALAT is a .NET service and its
+    validation failures answer with the framework's ValidationProblemDetails shape,
+    where `errors` is an OBJECT keyed by field name:
+
+        {"errors": {"accountNumber": ["The field is required."]}, "status": 400}
+
+    Indexing that with [0] raised `KeyError: 0` and turned a routine 400 into a 500 —
+    observed in production 2026-07-29, which 500'd the account callback after the
+    wallet had already been provisioned. A bare string would have been just as wrong
+    the other way, silently yielding a single character. Normalising by shape instead
+    of assuming one keeps every caller safe from whichever the gateway sends.
+    """
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):                      # {"field": ["msg"]} -> "msg"
+        return _first_text(next(iter(v.values()), ""))
+    if isinstance(v, (list, tuple)):
+        return _first_text(v[0]) if v else ""
+    return ""
+
+
+def _msg(data: dict) -> str:
+    # `errors` is the error-detail collection on the account-creation ResponseModel;
+    # `errorMessage`/`errorMessages` are the credit/debit envelope's. This helper is
+    # shared across both, so it reads all three (message wins when present). Every
+    # field goes through _first_text because the gateway types them inconsistently —
+    # see that docstring. Guards a non-dict `data` for the same reason _ok does: a
+    # gateway that answers with a bare list or string must not take the process down.
+    if not isinstance(data, dict):
+        return "Request failed"
+    text = (_first_text(data.get("message")) or _first_text(data.get("errorMessage"))
+            or _first_text(data.get("errorMessages"))
+            or _first_text(data.get("errors")))
+    if not text or _PROVIDER_BRAND.search(text):
+        return "Request failed"
+    return text
+
+
+def _as_int(v):
+    """ALAT types bills/cable ``packageId`` as int32, but our catalogue stores the
+    code as a string (``CablePlan.wema_code``). Coerce to int for the wire so the
+    gateway's System.Text.Json binding accepts it; leave a non-numeric value as-is so
+    a misconfigured code fails visibly rather than being silently mistyped."""
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return v
+
+
+def _naira(v) -> Decimal | None:
+    """Parse an ALAT money value to Decimal, tolerating thousands separators and a
+    currency symbol/code (history amounts can arrive as "1,000.00" or "₦1,000").
+    Returns None only when genuinely unparseable — callers must treat None as
+    'skip', never as zero."""
+    if v is None:
+        return None
+    s = str(v).strip().replace(",", "").replace("₦", "").replace("NGN", "").strip()
+    if not s:
+        return None
+    try:
+        return Decimal(s).quantize(Decimal("0.01"))
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+
+
+#: HTTP statuses where the gateway itself failed or shed load, so the body says
+#: NOTHING about what the transfer processor behind it did. 429 and 5xx bodies are
+#: APIM's own (`{"statusCode":429,"message":"Rate limit is exceeded..."}`), not
+#: ALAT's envelope, so `_ok()` reads them as a negative envelope and every caller
+#: would otherwise treat "the gateway is having a bad minute" as "the bank refused"
+#: — which on a transfer means refunding a sender whose recipient was already paid.
+#:
+#: Raised as HTTPError (a RequestException) so they land in the same handler as a
+#: timeout, which every call site in this module already has and which the money
+#: paths already resolve to PENDING. 4xx codes NOT listed here are deliberate
+#: exclusions: 400/401/403/404/422 mean the gateway understood the request and
+#: refused it, so nothing was executed and a definitive failure is correct.
+def _raise_if_ambiguous(resp: requests.Response) -> requests.Response:
+    if resp.status_code in (408, 429) or resp.status_code >= 500:
+        raise requests.HTTPError(
+            f"bank gateway returned HTTP {resp.status_code}", response=resp)
+    return resp
+
+
+def _gateway():
+    """One pooled HTTPS connection pool for the bank gateway.
+
+    Every call here used to open a fresh connection, so a transfer paid for a TCP
+    and TLS handshake to the gateway before the request itself started — on the
+    critical path of the thing a customer is watching a spinner for, in the app
+    and on WhatsApp alike, and again for each of the several calls one movement
+    makes (transfer, then status, then balance). See common.http_pool; it never
+    retries, which matters more here than anywhere else, because replaying a POST
+    to a money endpoint is a duplicated payment. _raise_if_ambiguous below stays
+    the only thing that decides which gateway responses may be retried at all.
+    """
+    return pooled_session("wema-gateway")
+
+
+def _get(product: str, path: str, params: dict | None = None) -> requests.Response:
+    return _raise_if_ambiguous(
+        _gateway().get(_url(product, path), params=params or {},
+                       headers=_headers(product), timeout=REQUEST_TIMEOUT))
+
+
+def _post(product: str, path: str, body: dict, params: dict | None = None) -> requests.Response:
+    return _raise_if_ambiguous(
+        _gateway().post(_url(product, path), json=body, params=params or {},
+                        headers=_headers(product), timeout=REQUEST_TIMEOUT))
+
+
+def _response_meta(resp: requests.Response, data) -> dict:
+    """Small, secret-free diagnostics for gateway envelopes."""
+    return {
+        "http_status": resp.status_code,
+        "gateway_successful": data.get("successful") if isinstance(data, dict) else None,
+        "gateway_status_code": data.get("statusCode") if isinstance(data, dict) else None,
+        "gateway_code": data.get("code") if isinstance(data, dict) else None,
+        "message": _msg(data),
+    }
+
+
+def _fingerprint(value: str) -> str:
+    """A short, non-reversible stand-in for a value too sensitive to log raw.
+
+    KEYED, not a bare digest, and the difference matters here. One caller
+    fingerprints the GATEWAY'S OWN ERROR MESSAGE — free text that has been
+    observed to quote back the identifier it just rejected. An 11-digit BVN or
+    NIN behind an unkeyed SHA-256 is a few CPU-hours from being recovered, so an
+    unkeyed digest would leave the logs exactly as sensitive as the raw value it
+    was meant to protect. Keying with the deployment secret makes the digest
+    useless to anyone holding only the logs.
+
+    Stable within a deployment, so support can still tell "the same failure
+    again" from "a new one" — which is the entire reason to log anything here.
+
+    Empty in, empty out: an absent value should read as absent, not as the
+    perfectly stable fingerprint of the empty string.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    secret = (getattr(settings, "SECRET_KEY", "") or "").encode()
+    if not secret:
+        # No key material to key with. Still never log the value itself; a short
+        # digest is a weaker correlator and a smaller target than a full one.
+        return hashlib.sha256(text.encode()).hexdigest()[:8]
+    return hmac.new(secret, b"zitch:wema:fingerprint:" + text.encode(),
+                    hashlib.sha256).hexdigest()[:12]
+
+
+def _mask_account(value: str) -> str:
+    """Keep enough account-number shape for support without logging the full NUBAN."""
+    s = re.sub(r"\D", "", str(value or ""))
+    if len(s) <= 4:
+        return "****" if s else ""
+    return "*" * max(0, len(s) - 4) + s[-4:]
+
+
+def _unreachable(exc: Exception, *, pending: bool = False) -> dict:
+    """Return a safe provider-unavailable result.
+
+    pending is required for non-idempotent money POSTs and their status
+    requeries: a timeout does not prove that the bank rejected the instruction.
+    Callers must hold the debit until a later authenticated requery establishes a
+    terminal outcome. Do not echo the exception to clients; request exceptions can
+    contain provider URLs and customer identifiers.
+    """
+    log.warning("wema_gateway_unreachable operation_pending=%s error_type=%s",
+                pending, type(exc).__name__)
+    return {"success": False, "pending": pending,
+            "message": "Bank gateway is temporarily unavailable",
+            "diagnostic": {"error_type": type(exc).__name__}}
+
+def security_info_value() -> str:
+    """Return the private seed used to derive per-transaction securityInfo.
+
+    Wema does not issue this secret: Zitch chooses it. When WEMA_SECURITY_INFO is not
+    set, derive a stable deployment seed from SECRET_KEY so ALAT never receives the
+    blank value it rejects. Production preflight still requires an explicit secret so
+    rotating Django's key cannot invalidate callbacks for transactions in flight.
+
+    The seed itself is never sent to ALAT.
+    """
+    configured = (settings.WEMA.get("SECURITY_INFO", "") or "").strip()
+    if configured:
+        return configured
+    secret = (getattr(settings, "SECRET_KEY", "") or "").encode()
+    if not secret:
+        return ""
+    return hmac.new(secret, b"zitch:wema:security-info", hashlib.sha256).hexdigest()
+
+
+def security_info_for_reference(reference: str) -> str:
+    """Derive the dynamic, unique value ALAT echoes for one transaction reference."""
+    seed = security_info_value()
+    ref = str(reference or "").strip()
+    if not seed or not ref:
+        return ""
+    message = f"zitch:wema:transaction:{ref}".encode()
+    return hmac.new(seed.encode(), message, hashlib.sha256).hexdigest()
+
+
+def _security_info(**kwargs) -> str:
+    """Bind securityInfo to the transaction reference."""
+    return security_info_for_reference(kwargs.get("reference", ""))
+
+
+# ---------------------------------------------------------------------------
+# Wallet creation (dedicated funding account) — BVN/NIN + OTP flow
+# ---------------------------------------------------------------------------
+def _mock_account(reference: str, name: str) -> dict:
+    seed = int(hashlib.sha256(reference.encode()).hexdigest(), 16)
+    return {"success": True, "mock": True,
+            "account_number": "01" + f"{seed % 10**8:08d}",
+            "account_name": name or "ADEYEMI WILLIAM", "bank_name": "Wema Bank (demo)",
+            "reference": reference}
+
+
+def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "") -> dict:
+    """Step 1 — request wallet creation; the bank validates the ID and sends its OTP.
+
+    What ALAT actually does (developer portal, wallet-creation + account-creation
+    products): it checks the NIN (or BVN) against the issuing register on its own
+    side, and then sends an SMS OTP **to the phone number carried on that identity
+    record** — the NIMC line for a NIN, the BVN line for a BVN — to capture the
+    customer's consent. It is NOT a code sent to the number the customer typed into
+    Zitch, and the NIN rail's code is a NIN code: the two identities have separate
+    endpoints, separate tracking ids and separate registered lines.
+
+    That distinction is the whole reason `otp_destination` is not defaulted to
+    `phone` here any more. ALAT does not document an `otpDestination` field, so the
+    fallback was inventing one — and every caller then told the customer to watch a
+    handset that, by design, receives nothing. An empty destination means "we do not
+    know the number"; say where the code went by IDENTITY (`otp_destination_kind`),
+    not by guessing a number.
+
+    Returns {success, tracking_id, otp_destination, otp_destination_kind, message}.
+    Use BVN or NIN.
+    """
+    kind = "bvn" if bvn else "nin"
+    if not wema_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Bank account creation is not configured"}
+        # No SMS leaves the building in a demo, so naming a destination would be a
+        # lie in the one mode where the tester cannot check it against a handset.
+        return {"success": True, "mock": True, "tracking_id": "WEMA-SIM-" + secrets.token_hex(6),
+                "otp_destination": "", "otp_destination_kind": kind,
+                "message": "OTP sent (demo)"}
+    try:
+        if bvn:
+            resp = _post("wallet_bvn", "/api/CustomerAccount/PostPartnershipAccountCreationWithBvn",
+                         {"phoneNumber": phone, "email": email, "bvn": bvn})
+        else:
+            resp = _post("wallet_nin", "/api/CustomerAccount/GenerateWalletAccountForPartnerships/Request",
+                         {"phoneNumber": phone, "email": email, "nin": nin})
+        data = resp.json()
+        log.info(
+            "wema_wallet_otp_request kind=%s status=%s success=%s response_keys=%s",
+            kind, resp.status_code, _ok(data),
+            sorted(str(key) for key in data.keys()) if isinstance(data, dict) else [],
+        )
+        # The documented ResponseModel has no `data` envelope, but the live gateway
+        # returns the OTP tracking id (schemas B2BOTPResponseModel/B2BOnboardingResponse)
+        # — look for it at the top level and under data/result so we don't depend on
+        # one undocumented shape. An empty tracking_id would break OTP validation.
+        d = data.get("data") or data.get("result") or {}
+        if not isinstance(d, dict):
+            d = {}
+        tracking = (d.get("trackingId") or d.get("otpTrackingID")
+                    or data.get("trackingId") or data.get("otpTrackingID") or "")
+        # Only ever the bank's own answer. Undocumented today, so expect "" — see
+        # the docstring for why that is better than substituting the Zitch number.
+        dest = d.get("otpDestination") or data.get("otpDestination") or ""
+        # The gateway can answer status=True with NO data envelope and no tracking id —
+        # observed against sandbox 2026-07-27 for an identity already registered with
+        # the partner bank, which provisions nothing and replies with a message telling
+        # the customer to use the bank's own app. Reporting that as success sends the
+        # client to an OTP screen it can never satisfy: validation needs the tracking
+        # id, so the flow dead-ends with no recovery path. Fail closed instead, with OUR
+        # wording — the gateway's message names the provider and would both break
+        # white-labelling and push the customer into another app. `raw` keeps the
+        # original for support.
+        if _ok(data) and not tracking:
+            return {"success": False, "tracking_id": "", "otp_destination": dest,
+                    "otp_destination_kind": kind,
+                    "message": "We couldn't complete your account setup. "
+                               "Please contact support.", "raw": data}
+        return {"success": _ok(data), "tracking_id": tracking,
+                "otp_destination": dest, "otp_destination_kind": kind,
+                "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def validate_wallet_otp(phone: str, otp: str, tracking_id: str, *, bvn: bool = False) -> dict:
+    """Step 2 — validate the OTP and enqueue account creation.
+
+    ``bvn`` picks the product, and the two are not interchangeable: a NIN attempt
+    validated against the BVN path is a different tracking-id namespace on a
+    different APIM subscription, so it fails no matter how good the code is. The
+    caller must take it from the stored attempt, never from a client claim.
+    """
+    if not wema_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Bank account creation is not configured"}
+        return {"success": True, "mock": True, "message": "OTP validated (demo)"}
+    try:
+        path = ("/api/CustomerAccount/ValidateBVNandEnqueueAccountCreation" if bvn
+                else "/api/CustomerAccount/GenerateWalletAccountForPartnershipsV2/Otp")
+        product = "wallet_bvn" if bvn else "wallet_nin"
+        resp = _post(product, path, {
+            "phoneNumber": phone, "otp": otp, "trackingId": tracking_id,
+        })
+        data = resp.json()
+        log.info(
+            "wema_wallet_otp_validate kind=%s status=%s success=%s has_tracking=%s",
+            "bvn" if bvn else "nin", resp.status_code, _ok(data), bool(tracking_id),
+        )
+        return {"success": _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def resend_wallet_otp(phone: str, tracking_id: str, *, bvn: bool = False) -> dict:
+    """Ask the bank to re-send the same identity's code to the same registered line.
+
+    Worth stating because it is the step customers reach for when nothing arrives:
+    a resend cannot redirect the code to the handset they are holding. It goes back
+    to the number on the NIN/BVN record. When that line is unreachable the answer is
+    the face route (``create_wallet_with_face``), not another resend.
+    """
+    if not wema_live():
+        return {"success": not _mock_blocked(), "mock": True, "message": "OTP resent (demo)"}
+    try:
+        product = "wallet_bvn" if bvn else "wallet_nin"
+        resp = _post(product, "/api/CustomerAccount/ResendOtpRequest/ResendOtp",
+                     {"trackingId": tracking_id, "phoneNumber": phone})
+        # The spec documents ResendOtp as 200 No-Content: a bare .json() on an empty
+        # body raises ValueError (not a RequestException) and would crash a genuine
+        # success. Treat any 2xx with an empty/non-JSON body as resent.
+        if resp.status_code < 300 and not (resp.content or b"").strip():
+            log.info(
+                "wema_wallet_otp_resend kind=%s status=%s success=True empty_body=True",
+                "bvn" if bvn else "nin", resp.status_code,
+            )
+            return {"success": True, "message": "OTP resent"}
+        try:
+            data = resp.json()
+        except ValueError:
+            return {"success": resp.status_code < 300, "message": "OTP resent"}
+        log.info(
+            "wema_wallet_otp_resend kind=%s status=%s success=%s empty_body=False",
+            "bvn" if bvn else "nin", resp.status_code, _ok(data),
+        )
+        return {"success": _ok(data), "message": _msg(data)}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def address_verify_live() -> bool:
+    """Whether the bank can verify a residential address for real.
+
+    Address verification is the Tier 3 upgrade call, so it rides the Account Upgrade
+    subscription. Unkeyed, the KYC screen falls back to the document rail rather
+    than silently marking addresses verified against a mock.
+    """
+    return _product_live("upgrade")
+
+
+def _face_key() -> str:
+    """The value ALAT's face-biometric web app expects as `x_tk`.
+
+    It is the CHANNEL ID (the x-api-key), not an APIM subscription key. Wema
+    confirmed this directly, with a sample URL whose x_tk is the same GUID shape as
+    the channel id — subscription keys are 32 hex characters with no dashes, so the
+    two are not interchangeable and sending the wrong one simply fails the check.
+
+    Worth stating plainly because of where this value goes: `x_tk` travels in a URL
+    the CUSTOMER'S BROWSER loads, so it is readable by the customer, their history,
+    and anything with sight of the address bar. Treat the channel id as public.
+    That it is only half the credential pair — every APIM call also needs
+    Ocp-Apim-Subscription-Key, which never leaves our server — is what makes the
+    bank's design survivable. Never put a subscription key here.
+    """
+    return settings.WEMA.get("CHANNEL_ID", "")
+
+
+def face_verify_live() -> bool:
+    """Whether the ALAT face-biometric web app can be used for real.
+
+    Needs the channel id (what ALAT calls x_tk — see _face_key) and a base URL. It
+    does NOT need a product subscription key: the web app authenticates the customer,
+    not us.
+    """
+    if wema_simulation():
+        return False
+    if not (_face_key() and settings.WEMA.get("FACE_VERIFY_URL")):
+        return False
+    # The callback that grants the tier is authenticated by source IP alone (its URL
+    # is shown to the customer, so it can carry no secret). With no allowlist there
+    # is nothing to authenticate it WITH, and offering the rail would mean granting
+    # face_verified to anyone who read the URL out of their own browser. Local
+    # development and tests are exempt because _ip_ok already short-circuits there.
+    if getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False):
+        return True
+    return bool(settings.WEMA.get("FACE_CALLBACK_IPS"))
+
+
+#: Hostname labels that mark a verifier as non-production. Matched as WHOLE
+#: dot/dash-separated labels, never as substrings: the production host is
+#: ``face-verification.azurewebsites.net``, and a substring rule broad enough to
+#: be useful is one "test" away from condemning it — a gate that can never go
+#: green gets deleted, which is worse than one that is slightly narrow.
+_NONPROD_HOST_LABELS = frozenset({
+    "dev", "development", "devtest", "qa", "uat", "sit", "test", "testing",
+    "sandbox", "staging", "stage", "pilot", "demo", "preprod", "preproduction",
+    "nonprod", "beta",
+})
+
+
+def face_verify_on_nonprod_host() -> bool:
+    """True while the face app points at one of ALAT's non-production verifiers.
+
+    Separate from face_verify_live() because these hosts answer happily — they
+    just do not prove anything about a real person, which makes them exactly the
+    kind of thing that survives to production unnoticed. This is a go-live gate:
+    a tier lifted by a verifier that decides nothing is a tier lifted on nothing.
+
+    Replaces an earlier check that looked for ``-dev.`` alone. When Wema moved us
+    to ``face-verification-pilot`` that rule stopped applying — a different
+    hostname, the identical problem — and the preflight reported "live verifier"
+    on a verifier that was nothing of the kind. Matching the whole family is the
+    fix; matching by LABEL rather than substring is what keeps the real host able
+    to pass.
+
+    A URL with no scheme still gets classified rather than waved through:
+    ``urlparse`` puts a bare host in ``path``, and a missing ``https://`` in an
+    env var is precisely the config slip this gate should survive.
+    """
+    from urllib.parse import urlparse
+
+    raw = (settings.WEMA.get("FACE_VERIFY_URL", "") or "").strip().lower()
+    if not raw:
+        # Nothing configured is not a non-production host — the face rail simply
+        # is not live, which the preflight reports on its own separate line.
+        return False
+    parsed = urlparse(raw)
+    host = parsed.hostname or parsed.path.split("/", 1)[0].split(":", 1)[0]
+    labels = {part for chunk in host.split(".") for part in chunk.split("-") if part}
+    return bool(labels & _NONPROD_HOST_LABELS)
+
+
+
+def face_verify_on_nonprod_host() -> bool:
+    """True while the face app points at any of ALAT's non-production verifiers.
+
+    Superset of face_verify_on_dev_host: the check looked for "-dev." alone until
+    Wema moved us to face-verification-pilot, a different hostname with the identical
+    problem — it answers happily and proves nothing about a real person. Matched on
+    the host label so a path or query cannot make a production host look non-prod.
+    """
+    from urllib.parse import urlparse
+
+    host = (urlparse(settings.WEMA.get("FACE_VERIFY_URL", "") or "").hostname or "").lower()
+    label = host.split(".")[0] if host else ""
+    return any(label.endswith(f"-{name}") or label == name
+               for name in ("dev", "pilot", "uat", "test", "sandbox", "staging", "sit", "qa"))
+
+
+def face_cb_mode() -> str:
+    """Return registered, session, or none for the hosted verifier callback."""
+    mode = str(settings.WEMA.get("FACE_CB_MODE") or "").strip().lower()
+    if mode in {"registered", "session", "none"}:
+        return mode
+    return "registered" if settings.WEMA.get("FACE_INCLUDE_CALLBACK", True) else "none"
+
+
+def face_verification_url(identity_type: str, identity_value: str, callback_url: str) -> str:
+    """Build the customer-facing URL for ALAT's face-biometric web app.
+
+    Query shape is the bank's: `?{bvn|nin}={value}&x_tk={key}&cb_uri={callback}`.
+    On success it POSTs {success, c_id, id, id_type} to `cb_uri`.
+
+    We pass cb_uri, never rd_uri. A redirect hands the result to whatever opened the
+    page — which for WhatsApp onboarding is a browser we do not control, and for the
+    app is a WebView whose navigation a determined user can drive by hand. The server
+    callback is the only variant where the bank tells US the outcome directly.
+
+    SECURITY: `x_tk` is the channel id (see _face_key), and the bank's design puts it
+    in a URL the customer's browser loads — so treat the channel id as public. It is
+    only half the credential pair; every APIM call also needs a subscription key,
+    which never leaves our server. A subscription key must never be sent here.
+    """
+    from urllib.parse import quote, urlencode
+
+    base = (settings.WEMA.get("FACE_VERIFY_URL", "") or "").rstrip("/")
+    kind = "bvn" if str(identity_type).lower() == "bvn" else "nin"
+    params = {kind: identity_value, "x_tk": _face_key()}
+    if face_cb_mode() != "none":
+        params["cb_uri"] = callback_url
+    query = urlencode(params, quote_via=quote)
+    return f"{base}/?{query}"
+
+
+def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
+                            identity_value: str, correlation_id: str) -> dict:
+    """Create a Tier-1 partnership NUBAN after Wema's hosted face check.
+
+    This is the documented OTP alternative. The hosted verifier returns the
+    correlationId to our authenticated callback; only then do we call the
+    ``*-withoutOtp-v2`` account-creation endpoint. It is deliberately separate
+    from ``upgrade_tier2``: this proves one BVN/NIN and creates Tier 1, while the
+    Tier-2 endpoint needs both identities plus a Prembly-approved live image.
+    """
+    kind = "bvn" if str(identity_type).lower() == "bvn" else "nin"
+    if not _product_live("face_account"):
+        if _mock_blocked():
+            return {"success": False,
+                    "message": "Face-based account creation is not configured",
+                    "diagnostic": _product_config_diag("face_account")}
+        return {"success": True, "mock": True, "tracking_id": "mock-face"}
+    if not correlation_id:
+        return {"success": False, "message": "Missing face verification reference"}
+    path = f"/api/partnership/tier1-{kind}-withoutOtp-v2"
+    body = {
+        "phoneNumber": phone,
+        "email": email,
+        kind: identity_value,
+        "correlationId": correlation_id,
+    }
+    try:
+        resp = _post("face_account", path, body)
+        data = resp.json()
+        d = data.get("data", {}) if isinstance(data, dict) else {}
+        ok = _ok(data)
+        message = _msg(data)
+        if not ok:
+            log.warning(
+                "wema_face_account_failed status=%s message_fingerprint=%s",
+                resp.status_code, _fingerprint(message),
+            )
+        return {
+            "success": ok,
+            "message": message,
+            "tracking_id": str((d or {}).get("trackingId") or ""),
+            "account_status": str((d or {}).get("accountGenerationStatus") or ""),
+            "raw": data,
+        }
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def _ci_get(mapping, *names, default=""):
+    if not isinstance(mapping, dict):
+        return default
+    lowered = {str(k).casefold(): v for k, v in mapping.items()}
+    for name in names:
+        value = lowered.get(str(name).casefold())
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _find_account_payload(value):
+    if isinstance(value, dict):
+        number = _ci_get(value, "accountNumber", "account_number", "nuban",
+                         "walletAccountNumber", "accountNo", "account")
+        if number:
+            return value
+        for key in ("data", "result", "response", "customer", "account", "accounts"):
+            found = _find_account_payload(value.get(key))
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_account_payload(item)
+            if found:
+                return found
+    return {}
+
+
+def get_account_details(phone: str, *, bvn: bool = False) -> dict:
+    """Step 3 — fetch the created account (poll until accountNumber is populated)."""
+    if not wema_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Bank account creation is not configured"}
+        return _mock_account(f"phone:{phone}", "")
+    product = "wallet_bvn" if bvn else "wallet_nin"
+    try:
+        resp = _get(product, "/api/CustomerAccount/GetPartnershipAccountDetails",
+                    {"phoneNumber": phone})
+        try:
+            data = resp.json()
+        except ValueError:
+            log.warning("wema_account_details_bad_json product=%s status=%s",
+                        product, resp.status_code)
+            return {"success": False, "message": "Invalid bank response"}
+        d = _find_account_payload(data)
+        num = str(_ci_get(d, "accountNumber", "account_number", "nuban",
+                          "walletAccountNumber", "accountNo", "account") or "").strip()
+        account_name = str(_ci_get(d, "accountName", "account_name", "nubanName") or "").strip()
+        if not account_name:
+            account_name = " ".join(str(x).strip() for x in (
+                _ci_get(d, "firstName", "firstname"),
+                _ci_get(d, "lastName", "lastname"),
+            ) if str(x or "").strip()).strip()
+        envelope_ok = _ok(data) or bool(_ci_get(data, "successful", "success"))
+        log.info("wema_account_details_read product=%s status=%s envelope_keys=%s has_account=%s",
+                 product, resp.status_code,
+                 sorted(str(k) for k in data.keys()) if isinstance(data, dict) else type(data).__name__,
+                 bool(num))
+        return {"success": envelope_ok and bool(num), "account_number": num,
+                "account_name": account_name, "bank_name": "Wema Bank",
+                "email": _ci_get(d, "email", "emailAddress"), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def lift_debit_restriction(account_number: str, *, bvn: bool | None = None,
+                             place: bool = False) -> dict:
+    """Lift (or place) the Post-No-Debit hold on a provisioned NUBAN.
+
+    ``bvn=True/False`` selects the known creation product.  ``None`` is used by
+    callbacks/reconciliation, where the original identity rail is no longer
+    available: try both account-creation products and accept only an authenticated
+    success. LiftPnd is idempotent, so this safely repairs accounts that were
+    previously retried against the wrong product."""
+    if not wema_live():
+        return {"success": not _mock_blocked(), "mock": True}
+
+    products = (("wallet_bvn", "wallet_nin") if bvn is None else
+                (("wallet_bvn",) if bvn else ("wallet_nin",)))
+    last = {"success": False, "message": "Request failed"}
+    for product in products:
+        try:
+            data = _post(product, "/api/CustomerAccount/PartnerDebitRestrictionManagement",
+                         {"pndType": "PlacePnd" if place else "LiftPnd",
+                          "accountNumber": account_number}).json()
+            last = {"success": _ok(data), "message": _msg(data), "raw": data,
+                    "product": product}
+            if last["success"]:
+                return last
+        except requests.RequestException as exc:
+            last = _unreachable(exc)
+            last["product"] = product
+
+    # The live gateway returns "Resource not found" when this account has no PND
+    # record to mutate. Distinguish that benign absence from a nonexistent NUBAN
+    # using the separately authenticated account-maintenance product. Only a bank-
+    # confirmed account read can turn this into success.
+    if (not place and "resource not found" in str(last.get("message") or "").casefold()):
+        account = get_balance(account_number)
+        if account.get("success"):
+            return {"success": True, "already_clear": True,
+                    "message": "No debit restriction is registered",
+                    "product": last.get("product", ""), "raw": last.get("raw")}
+    return last
+
+
+def get_kyc_status(account_number: str) -> dict:
+    """Read a partnership NUBAN's KYC/tier + restriction state from the ALAT
+    Account-Upgrade product (partner-account-kyc-status). Read-only — used to
+    reconcile the account's real tier / PND state with our records.
+
+    Returns {success, tier, account_status, restriction_status,
+    address_verification, name}."""
+    if not _product_live("upgrade"):
+        if _mock_blocked():
+            return {"success": False, "message": "Account services are not configured",
+                    "diagnostic": _product_config_diag("upgrade")}
+        return {"success": True, "mock": True, "tier": "", "restriction_status": ""}
+    try:
+        data = _get("upgrade", "/api/partnership/partner-account-kyc-status",
+                    {"accountNumber": account_number}).json()
+        d = data.get("data", {}) or {}
+        return {"success": _ok(data) and bool(d), "tier": d.get("accountTier", ""),
+                "account_status": d.get("accountStatus", ""),
+                "restriction_status": d.get("restrictionStatus", ""),
+                "address_verification": d.get("addressVerificationStatus", ""),
+                "name": d.get("accountName", ""), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def _residential_address(address) -> dict:
+    """Map a free-form/partial address into ALAT's residentialAddress object. Accepts a
+    string (used as fullAddress) or a dict of the known fields."""
+    fields = ("buildingNumber", "apartment", "street", "city", "town", "state", "lga",
+              "lcda", "landmark", "additionalInformation", "country", "fullAddress", "postalCode")
+    if not isinstance(address, dict):
+        return {"fullAddress": str(address or ""), "country": "Nigeria"}
+    out = {k: address.get(k, "") for k in fields}
+    if not out.get("country"):
+        out["country"] = "Nigeria"
+    if not out.get("fullAddress"):
+        out["fullAddress"] = " ".join(v for v in (address.get("street"), address.get("city"),
+                                                  address.get("state")) if v)
+    return out
+
+
+def upgrade_tier2(account_number: str, *, bvn: str = "", nin: str = "", live_image: str = "") -> dict:
+    """Upgrade a partnership NUBAN to Tier 2 at the bank (partner-account-upgrade-tier2
+    {accountNumber, nin, bvn, liveImageOfFace}).
+
+    Best-effort sync of the account's BANK-side tier (and thus its NUBAN limits) when
+    the user completes the matching Zitch KYC step — it does NOT change Zitch's own tier
+    policy. Fails soft in production when unkeyed."""
+    if not _product_live("upgrade"):
+        return {"success": not _mock_blocked(), "mock": True}
+    body = {"accountNumber": account_number, "nin": nin, "bvn": bvn,
+            "liveImageOfFace": live_image}
+    path = "/api/partnership/partner-account-upgrade-tier2"
+    try:
+        resp = _post("upgrade", path, body)
+        data = resp.json()
+        msg = _msg(data)
+        ok = _ok(data)
+        if not ok:
+            log.warning("wema_upgrade_tier2_failed status=%s base=%s msg=%s",
+                        resp.status_code, _base_url("upgrade"), msg)
+        return {"success": ok, "message": msg, "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def upgrade_tier3(account_number: str, address) -> dict:
+    """Upgrade a partnership NUBAN to Tier 3 at the bank via address verification
+    (partner-account-upgrade-tier3 {residentialAddress{...}, accountNumber}). Best-effort
+    bank-side sync (see upgrade_tier2)."""
+    if not _product_live("upgrade"):
+        return {"success": not _mock_blocked(), "mock": True}
+    try:
+        data = _post("upgrade", "/api/partnership/partner-account-upgrade-tier3",
+                     {"accountNumber": account_number,
+                      "residentialAddress": _residential_address(address)}).json()
+        return {"success": _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+# ---------------------------------------------------------------------------
+# Account maintenance — balance + history (credit detection is by polling)
+# ---------------------------------------------------------------------------
+def get_balance(account_number: str) -> dict:
+    if not _product_live("acct_mgt"):
+        if _mock_blocked():
+            return {"success": False, "message": "Account services are not configured",
+                    "diagnostic": _product_config_diag("acct_mgt")}
+        return {"success": True, "mock": True, "balance_naira": Decimal("0.00")}
+    try:
+        resp = _get("acct_mgt",
+                    f"/api/AccountMaintenance/CustomerAccount/GetAccountV2/accountNumber/{account_number}")
+        data = resp.json()
+        if not isinstance(data, dict):
+            return {"success": False, "balance_naira": None,
+                    "message": "Request failed", "diagnostic": _response_meta(resp, data),
+                    "raw": data}
+        r = data.get("result", {}) or {}
+        # GetAccountV2 uses the account-maintenance envelope {result, successful,
+        # message} — no status/hasError — so _ok() alone would report every valid
+        # read as a failure (same envelope handled in get_transactions).
+        ok = bool(data.get("successful")) or _ok(data)
+        return {"success": ok, "balance_naira": _naira(r.get("availableBalance")),
+                "wallet_status": r.get("walletStatus", ""), "message": _msg(data),
+                "diagnostic": _response_meta(resp, data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def get_transactions(account_number: str, date_from: str, date_to: str, keyword: str = "") -> dict:
+    """Transaction history — the source for detecting inbound credits (creditType=='Credit')."""
+    if not _product_live("acct_mgt"):
+        if _mock_blocked():
+            return {"success": False, "message": "Account services are not configured",
+                    "diagnostic": _product_config_diag("acct_mgt")}
+        return {"success": True, "mock": True, "transactions": []}
+    try:
+        resp = _post("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
+                     {"accountNumber": account_number, "from": date_from, "to": date_to,
+                      "keyword": keyword})
+        data = resp.json()
+        if not isinstance(data, dict):
+            return {"success": False, "transactions": [], "message": "Request failed",
+                    "diagnostic": _response_meta(resp, data), "raw": data}
+        # This envelope uses {successful, result[], message} rather than status/hasError.
+        ok = bool(data.get("successful")) or _ok(data)
+        rows = data.get("result", data.get("data", []))
+        # Account-Maintenance deployments have returned both result[] and
+        # data:{result[]} / data:{transactions[]} envelopes. Accept all documented
+        # shapes so a successful statement cannot be mistaken for an empty wallet.
+        if isinstance(rows, dict):
+            rows = rows.get("result", rows.get("transactions", rows.get("data", [])))
+        if not isinstance(rows, list):
+            rows = []
+        return {"success": ok, "transactions": rows,
+                "message": _msg(data), "diagnostic": _response_meta(resp, data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+# transhistoryV2 `status` legend (documented in the Account-Maintenance OpenAPI:
+# TransactionHistoryModel.status enum = Default | Successfull | Failed | Pending;
+# note ALAT's "Successfull" spelling). Only a genuinely SETTLED credit is funding —
+# a Failed row never arrived and a Pending one hasn't yet, so both are held back
+# from the funding sweep (a Pending deposit is credited on a later run once it
+# flips to Successfull, idempotent on referenceId). An absent/Default status
+# carries no negative signal, so it stays creditable (never regress a deposit whose
+# gateway omits the field).
+_TX_UNSETTLED = {"failed", "reversed", "declined", "returned", "cancelled",
+                 "pending", "processing", "inprogress", "in_progress"}
+
+
+def normalize_transaction(tx: dict) -> dict:
+    """Flatten one ALAT TransactionHistoryModel row to the fields reconciliation
+    needs: {reference, amount_naira, is_credit, settled, status, narration, sender}.
+
+    `referenceId` (fallback `tranId`) is the unique per-transaction key used as
+    the ledger idempotency guard; `creditType == "Credit"` marks an inbound
+    deposit; `settled` is False for a row the documented `status` marks Failed/
+    Pending, so the funding sweep (apply_wema_credit) never credits a deposit that
+    hasn't actually landed."""
+    if not isinstance(tx, dict):
+        return {"reference": "", "amount_naira": None, "is_credit": False,
+                "settled": False, "status": "", "narration": "", "sender": ""}
+    ref = str(tx.get("referenceId") or tx.get("tranId") or "").strip()
+    # ALAT TransactionStatus enum is {Default, Successfull(sic), Failed, Pending}
+    # (confirmed against wallet-services-account-maintenance-api). Only a SETTLED
+    # credit is fundable, so `settled` blocks clearly-non-final rows; unknown /
+    # blank / Successfull / Default still count, so a live gateway that omits or
+    # re-spells the field can't strand real money — a Pending row simply credits on
+    # a later sweep once it settles. apply_wema_credit gates on `settled`.
+    is_credit = str(tx.get("creditType") or "").strip().lower() == "credit"
+    status = str(tx.get("status") or "").strip().lower()
+    return {"reference": ref, "amount_naira": _naira(tx.get("amount")),
+            "is_credit": is_credit, "settled": status not in _TX_UNSETTLED,
+            "status": status, "narration": tx.get("narration") or "",
+            "sender": tx.get("sender") or tx.get("senderAccountNumber") or ""}
+
+
+# ---------------------------------------------------------------------------
+# Payout — bank list, name enquiry, transfer, status
+# ---------------------------------------------------------------------------
+def get_banks() -> dict:
+    if not wema_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Transfers are not configured"}
+        return {"success": True, "mock": True,
+                "banks": [{"bank_name": "Wema Bank", "bank_code": "035"}]}
+    try:
+        data = _get("debit", "/api/Shared/GetAllBanks").json()
+        raw = data.get("result", []) or []
+        rows = raw if isinstance(raw, list) else [raw]
+        banks = [{"bank_name": b.get("bankName", ""), "bank_code": b.get("bankCode", "")}
+                 for b in rows if b.get("bankCode")]
+        return {"success": _ok(data), "banks": banks, "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def get_nip_charges() -> dict:
+    """The NIP transfer fee schedule (GET /debit-wallet/api/Shared/GetNIPCharges).
+
+    Returns {success, charges: [{name, transaction_type, charge, lower, upper}], terms,
+    terms_url}. Each band applies a `charge` to amounts in [lower, upper]; `nip_fee_for`
+    resolves the fee for a given amount."""
+    if not wema_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Transfers are not configured"}
+        return {"success": True, "mock": True, "charges": []}
+    try:
+        data = _get("debit", "/api/Shared/GetNIPCharges").json()
+        r = data.get("result", {}) or {}
+        raw = r.get("chargeFees", []) or []
+        charges = [{"name": c.get("chargeFeeName", ""), "transaction_type": c.get("transactionType"),
+                    "charge": _naira(c.get("charge")), "lower": _naira(c.get("lower")),
+                    "upper": _naira(c.get("upper"))}
+                   for c in (raw if isinstance(raw, list) else [raw]) if isinstance(c, dict)]
+        return {"success": _ok(data), "charges": charges,
+                "terms": r.get("termsAndConditions", ""),
+                "terms_url": r.get("termsAndConditionsUrl", ""), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def nip_fee_for(amount_naira, charges: list) -> Decimal | None:
+    """The NIP fee that applies to `amount_naira` from a `get_nip_charges()` charge list,
+    matching the first band whose [lower, upper] contains the amount (upper<=0 means open-
+    ended). Returns None when no band matches (caller decides a default)."""
+    amt = _naira(amount_naira)
+    if amt is None:
+        return None
+    for c in charges or []:
+        lo, up, ch = c.get("lower"), c.get("upper"), c.get("charge")
+        if ch is None or lo is None:
+            continue
+        if amt >= lo and (up is None or up <= 0 or amt <= up):
+            return ch
+    return None
+
+
+def resolve_account(account_number: str, bank_code: str) -> dict:
+    """Name enquiry — (account number, bank code) -> holder name."""
+    if not wema_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Name enquiry is not configured"}
+        return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM"}
+    try:
+        resp = _get("debit", f"/api/Shared/AccountNameEnquiry/{bank_code}/{account_number}")
+        data = resp.json()
+        r = data.get("result", {}) or {}
+        name = r.get("accountName", "")
+        explicit_error = data.get("hasError") is True or data.get("status") is False
+        out = {"success": bool(name) and not explicit_error, "name": name,
+               "bank_code": r.get("bankCode", bank_code), "raw": data}
+        if not out["success"]:
+            # Carry the gateway's own reason (brand-stripped by _msg) rather than
+            # letting the caller fall back to a bare "could not verify". The rail
+            # blames the account number for BOTH an unknown account and a bank code
+            # it doesn't recognise, and that reason is the only clue which side is
+            # wrong — our bank_codes are a NIBSS/Paystack mirror, not the rail's own
+            # list (see wema_banks_sync).
+            out["message"] = _msg(data)
+            log.warning(
+                "wema_name_enquiry_failed bank_code=%s account=%s meta=%s raw=%s",
+                bank_code, _mask_account(account_number), _response_meta(resp, data), _trim(data),
+            )
+        return out
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+TRANSFER_SETTLED_STATUSES = {
+    "SUCCESS", "SUCCESSFUL", "SUCCESSFULL", "COMPLETED", "PAID", "APPROVED",
+}
+TRANSFER_FAILED_STATUSES = {
+    "FAILED", "FAILURE", "REVERSED", "DECLINED", "CANCELLED", "CANCELED",
+    "REJECTED", "RETURNED", "NOT_PROCESSED",
+}
+
+
+def classify_transfer_status(status: str, *, envelope_ok: bool = True) -> str:
+    """Classify an ALAT transfer without treating APIM acceptance as settlement.
+
+    The public contract does not enumerate every in-flight spelling.  Therefore a
+    known success settles, a known terminal failure can be refunded, and every
+    other status (including blank/new spellings) is ambiguous and remains pending.
+    A negative APIM envelope is a definitive provider rejection because a response
+    was received; transport failures are handled separately as ambiguous.
+    """
+    if not envelope_ok:
+        return "failed"
+    normalized = str(status or "").strip().upper()
+    if normalized in TRANSFER_SETTLED_STATUSES:
+        return "success"
+    if normalized in TRANSFER_FAILED_STATUSES:
+        return "failed"
+    return "pending"
+
+
+def _transfer_value(result: dict, *names, default=""):
+    """Read ALAT transfer fields despite camel/Pascal-case response drift."""
+    if not isinstance(result, dict):
+        return default
+    folded = {str(k).casefold(): v for k, v in result.items()}
+    for name in names:
+        value = folded.get(name.casefold())
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _transfer_payload(data: dict) -> dict:
+    """Find the status-bearing object in direct and nested ALAT envelopes."""
+    if not isinstance(data, dict):
+        return {}
+    queue = [data.get("result"), data.get("data"), data]
+    seen = set()
+    while queue:
+        item = queue.pop(0)
+        if not isinstance(item, dict) or id(item) in seen:
+            continue
+        seen.add(id(item))
+        keys = {str(k).casefold() for k in item}
+        if keys & {"status", "transactionstatus", "transferstatus"}:
+            return item
+        queue.extend(item.get(k) for k in ("data", "result") if isinstance(item.get(k), dict))
+    return {}
+
+
+def _transfer_result(data: dict, reference: str, result: dict, *,
+                     lookup: bool = False) -> dict:
+    """Normalise a transfer envelope into success / pending / failed.
+
+    ``lookup=True`` for confirm_transfer_status. A negative envelope on the transfer
+    POST is a verdict on the transfer — the bank read the instruction and refused it,
+    so a refund is right. A negative envelope on a STATUS QUERY is not a verdict on
+    anything: it means we failed to ask the question. The commonest cause is benign
+    (ALAT answers `hasError: true` for a reference its status store has not indexed
+    yet, which is normal seconds after send, exactly when the callback fires), and
+    treating it as "the transfer failed" refunds a sender whose recipient was already
+    paid — unrecoverably, because the row then goes terminal and is never re-swept.
+
+    So a lookup only ever yields a definitive failure when the bank actually named a
+    terminal status. Anything else stays PENDING for the poller, which is what this
+    function's caller has always claimed to do on the transport-error path.
+    """
+    status = str(_transfer_value(result, "status", "transactionStatus", "transferStatus")).strip().upper()
+    envelope_ok = _ok(data)
+    if lookup and not envelope_ok:
+        outcome = "pending"
+    else:
+        outcome = classify_transfer_status(status, envelope_ok=envelope_ok)
+    return {
+        "success": outcome == "success",
+        "pending": outcome == "pending",
+        "status": status,
+        "reference": _transfer_value(result, "transactionReference", "reference",
+                                     default=reference),
+        "platform_reference": _transfer_value(
+            result, "platformTransactionReference", "platformReference"),
+        "message": _transfer_value(result, "message", "statusDescription") or _msg(data),
+        "raw": data,
+    }
+
+
+def _parse_transfer(data: dict, reference: str) -> dict:
+    return _transfer_result(data, reference, _transfer_payload(data))
+
+
+def transfer(amount_naira, reference: str, narration: str, *, source_account: str,
+             destination_account: str, destination_bank_code: str, destination_bank_name: str,
+             destination_name: str) -> dict:
+    """ProcessClientTransfer — debit source wallet, credit destination (intra/inter bank).
+
+    Requires the opaque ``securityInfo`` value (see _security_info). ``reference`` is
+    our idempotency key; poll confirm_transfer_status(reference) for terminal state.
+    """
+    if not wema_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Transfers are not configured"}
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference,
+                "platform_reference": "WEMA-SIM-" + secrets.token_hex(6)}
+    try:
+        body = {
+            "securityInfo": _security_info(op="transfer", reference=reference, amount=amount_naira),
+            "amount": float(amount_naira),
+            "destinationBankCode": destination_bank_code,
+            "destinationBankName": destination_bank_name,
+            "destinationAccountNumber": destination_account,
+            "destinationAccountName": destination_name,
+            "sourceAccountNumber": source_account,
+            "narration": narration,
+            "transactionReference": reference,
+            "useCustomNarration": bool(narration),
+        }
+        resp = _post("debit", "/api/Shared/ProcessClientTransfer", body)
+        data = resp.json()
+        out = _parse_transfer(data, reference)
+        if out.get("pending"):
+            log.info(
+                "wema_transfer_pending ref=%s source=%s dest=%s bank_code=%s meta=%s raw=%s",
+                reference, _mask_account(source_account), _mask_account(destination_account),
+                destination_bank_code, _response_meta(resp, data), _trim(data),
+            )
+        elif not out["success"]:
+            log.warning(
+                "wema_transfer_failed ref=%s source=%s dest=%s bank_code=%s meta=%s raw=%s",
+                reference, _mask_account(source_account), _mask_account(destination_account),
+                destination_bank_code, _response_meta(resp, data), _trim(data),
+            )
+        return out
+    except (requests.RequestException, ValueError) as exc:
+        # The transfer POST is non-idempotent.  A timeout, broken connection, or
+        # non-JSON response may occur after Wema accepted the instruction, so the
+        # only safe outcome is PENDING until confirm_transfer_status resolves it.
+        return _unreachable(exc, pending=True)
+
+
+def confirm_transfer_status(reference: str, *, platform_reference: str = "") -> dict:
+    """Poll terminal transfer status using both references returned by ALAT.
+
+    ProcessClientTransfer returns our transactionReference and Wema's
+    platformTransactionReference. In production ALAT has indexed some payouts
+    under only one of them. Query the client reference first, then the platform
+    reference when available; a terminal result from either is authoritative.
+    Unknown or unreachable lookups remain PENDING and are never refunded.
+    """
+    if not wema_live():
+        return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS",
+                "reference": reference}
+
+    candidates = []
+    for value in (reference, platform_reference):
+        value = str(value or "").strip()
+        if value and value not in candidates:
+            candidates.append(value)
+
+    first_result = None
+    for lookup_reference in candidates:
+        try:
+            resp = _get(
+                "debit",
+                f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{lookup_reference}",
+            )
+            data = resp.json()
+            result = _transfer_result(
+                data, reference, _transfer_payload(data), lookup=True)
+            result["lookup_reference"] = lookup_reference
+            if first_result is None:
+                first_result = result
+            # A named terminal status from either reference settles or reverses.
+            if result.get("success") or (
+                    result.get("status")
+                    and classify_transfer_status(
+                        result["status"], envelope_ok=True) == "failed"):
+                return result
+        except (requests.RequestException, ValueError) as exc:
+            result = _unreachable(exc, pending=True)
+            result.update({"reference": reference,
+                           "lookup_reference": lookup_reference})
+            if first_result is None:
+                first_result = result
+
+    result = first_result or {
+        "success": False,
+        "pending": True,
+        "status": "",
+        "reference": reference,
+        "message": "Transfer status is not available yet",
+    }
+    log.warning(
+        "wema_transfer_status_unresolved ref=%s platform_ref=%s "
+        "lookup_ref=%s status=%s",
+        reference, _fingerprint(str(platform_reference or "")),
+        _fingerprint(str(result.get("lookup_reference") or "")),
+        result.get("status", ""),
+    )
+    return result
+
+def credit_wallet(amount_naira, reference: str, narration: str, *, destination_account: str) -> dict:
+    """FundWallet — push a credit into a wallet from the channel funding account.
+
+    Requires ``securityInfo``. Used to credit a user's wallet from our settlement
+    balance (NOT for detecting third-party deposits — that's polling). Poll
+    confirm_credit_status(reference) when the initial result is ambiguous.
+    """
+    if not wema_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Wallet crediting is not configured"}
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
+    try:
+        body = {
+            "securityInfo": _security_info(op="credit", reference=reference, amount=amount_naira),
+            "destinationAccountNumber": destination_account,
+            "amount": float(amount_naira),
+            "narration": narration,
+            "transactionReference": reference,
+            "useCustomNarration": bool(narration),
+        }
+        data = _post("credit", "/api/IntraBankTransfer/FundWallet", body).json()
+        return _parse_transfer(data, reference)
+    except (requests.RequestException, ValueError) as exc:
+        # FundWallet is non-idempotent.  A transport failure or invalid response
+        # may happen after ALAT accepted the credit, so never report a retryable
+        # terminal failure until the authenticated credit status endpoint resolves it.
+        return _unreachable(exc, pending=True)
+
+
+def confirm_credit_status(reference: str) -> dict:
+    """Poll terminal status of a FundWallet credit by our transactionReference."""
+    if not wema_live():
+        return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS", "reference": reference}
+    try:
+        resp = _get("credit", f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{reference}")
+        data = resp.json()
+        result = _transfer_result(data, reference, _transfer_payload(data), lookup=True)
+        if not result["status"]:
+            log.warning("wema_credit_status_unresolved ref=%s meta=%s raw=%s",
+                        reference, _response_meta(resp, data), _trim(data))
+        return result
+    except (requests.RequestException, ValueError) as exc:
+        # A failed status lookup cannot disprove the credit; retain PENDING and
+        # reconcile again rather than issuing a duplicate FundWallet request.
+        return _unreachable(exc, pending=True)
+
+
+# ---------------------------------------------------------------------------
+# VAS — airtime / data / bills (opt-in; VTU.ng stays the default)
+#
+# The Client (single-account) variants debit the user's own NUBAN
+# (accountNumber / customerAccount) — matching the per-user-balance model — so
+# `source_account` is the sender's wallet.account_number (falls back to the pool
+# WEMA_SOURCE_ACCOUNT). Money-movement calls carry securityInfo (nullable in
+# sandbox). Purchases mirror the VTU contract: success => delivered; a network
+# error returns pending=True so the caller never refunds a maybe-delivered buy.
+# Data/bills need Wema's own packageCode/packageId catalog (differs from our
+# stored VTU.ng codes) — see docs/wema-migration.md.
+# ---------------------------------------------------------------------------
+def _vas_live(product: str) -> bool:
+    """Whether a VAS product may make real calls with its documented key."""
+    return _product_live(product)
+
+
+def _vas_source() -> str:
+    return settings.WEMA.get("SOURCE_ACCOUNT", "")
+
+
+def purchase_airtime(amount_naira, reference: str, phone: str, network: str, *,
+                     source_account: str = "") -> dict:
+    """Airtime purchase debiting the user's NUBAN (Client single-account variant)."""
+    if not _vas_live("airtime"):
+        if _mock_blocked():
+            return {"success": False, "message": "Airtime is not configured"}
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
+    src = source_account or _vas_source()
+    if not src:
+        return {"success": False, "message": "Airtime is temporarily unavailable"}
+    try:
+        body = {"transactionReference": reference, "accountNumber": src, "network": network,
+                "phoneNumber": phone, "amount": float(amount_naira),
+                "securityInfo": _security_info(op="airtime", reference=reference, amount=amount_naira),
+                "clientId": settings.WEMA.get("CHANNEL_ID", "")}
+        data = _post("airtime", "/api/Airtime/Client/PurchaseAirtime", body).json()
+        return _parse_vas(data, reference)
+    except requests.RequestException as exc:
+        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def _flatten_data_plans(result, network: str = "") -> list:
+    """Flatten ALAT's GetDataPlans envelope (result[] of {networkProvider,
+    dataPackages[]: {id, name, amount, validity_Period, ...}}) into normalised plan
+    rows. Each row's ``code`` is the dataPackage ``id`` — the integer packageCode
+    PurchaseData expects. Optionally filter to one network (normalised substring)."""
+    want = re.sub(r"[^a-z0-9]", "", network.lower()) if network else ""
+    rows = []
+    for grp in result if isinstance(result, list) else []:
+        if not isinstance(grp, dict):
+            continue
+        prov = str(grp.get("networkProvider") or grp.get("network") or "")
+        if want and want not in re.sub(r"[^a-z0-9]", "", prov.lower()):
+            continue
+        for pkg in grp.get("dataPackages") or grp.get("packages") or []:
+            if not isinstance(pkg, dict):
+                continue
+            rows.append({
+                "code": str(pkg.get("id") or pkg.get("packageCode") or ""),
+                "name": pkg.get("name") or pkg.get("dataPlan") or "",
+                "amount": pkg.get("amount"),
+                "network": prov,
+                "validity": pkg.get("validity_Period") or pkg.get("validity") or "",
+                "description": pkg.get("description") or "",
+            })
+    return rows
+
+
+def get_data_plans(network: str = "") -> dict:
+    """Wema's own data-plan catalog, flattened to {code, name, amount, network,
+    validity, description} rows (``code`` = the dataPackage id PurchaseData wants).
+
+    ALAT returns every network in one call, nested as result[].dataPackages[]
+    (no server-side network filter), so `network` filters client-side."""
+    if not _vas_live("airtime"):
+        if _mock_blocked():
+            return {"success": False, "message": "Data is not configured"}
+        return {"success": True, "mock": True, "plans": []}
+    try:
+        data = _get("airtime", "/api/Data/GetDataPlans").json()
+        ok = _ok(data) or bool(data.get("successful"))
+        return {"success": ok,
+                "plans": _flatten_data_plans(data.get("result", []) or [], network),
+                "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def purchase_data(amount_naira, reference: str, phone: str, network: str, package_code: str, *,
+                  source_account: str = "") -> dict:
+    """Data purchase (Client single-account). `package_code` is Wema's plan code."""
+    if not _vas_live("airtime"):
+        if _mock_blocked():
+            return {"success": False, "message": "Data is not configured"}
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
+    src = source_account or _vas_source()
+    if not src:
+        return {"success": False, "message": "Data is temporarily unavailable"}
+    try:
+        body = {"transactionReference": reference, "accountNumber": src, "phoneNumber": phone,
+                "packageCode": package_code, "amount": float(amount_naira), "network": network,
+                "securityInfo": _security_info(op="data", reference=reference, amount=amount_naira),
+                "clientId": settings.WEMA.get("CHANNEL_ID", "")}
+        data = _post("airtime", "/api/Data/Client/PurchaseData", body).json()
+        return _parse_vas(data, reference)
+    except requests.RequestException as exc:
+        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def _flatten_bills(result) -> list:
+    """Flatten ALAT's GetAllBills envelope (result[] categories -> billers[] ->
+    packages[]) into purchasable rows keyed by the PackageViewModel ``id`` — the
+    integer packageId ValidateCustomer / PayBill expect. A biller with no packages
+    is emitted as its own row (code = biller id) so nothing is dropped."""
+    rows = []
+    for cat in result if isinstance(result, list) else []:
+        if not isinstance(cat, dict):
+            continue
+        cat_name = cat.get("name") or ""
+        for biller in cat.get("billers") or []:
+            if not isinstance(biller, dict):
+                continue
+            base = {"biller": biller.get("name") or "", "biller_id": biller.get("id"),
+                    "category": cat_name, "identifier": biller.get("identifier") or "",
+                    "requires_validation": bool(biller.get("requiredValidation")),
+                    "charge": biller.get("charge")}
+            pkgs = biller.get("packages") or []
+            if isinstance(pkgs, list) and pkgs:
+                for pkg in pkgs:
+                    if isinstance(pkg, dict):
+                        rows.append({**base, "code": str(pkg.get("id") or ""),
+                                     "name": pkg.get("name") or biller.get("name") or "",
+                                     "amount": pkg.get("amount")})
+            else:
+                rows.append({**base, "code": str(biller.get("id") or ""),
+                             "name": biller.get("name") or "", "amount": None})
+    return rows
+
+
+def get_bills() -> dict:
+    """Wema biller catalog, flattened to {code, name, amount, biller, category,
+    identifier, requires_validation, charge} rows (``code`` = the packageId
+    ValidateCustomer / PayBill want). ALAT nests it as
+    result[] categories -> billers[] -> packages[]."""
+    if not _vas_live("bills"):
+        if _mock_blocked():
+            return {"success": False, "message": "Bills are not configured"}
+        return {"success": True, "mock": True, "bills": []}
+    try:
+        data = _get("bills", "/api/BillsPayment/GetAllBills").json()
+        ok = _ok(data) or bool(data.get("successful"))
+        return {"success": ok, "bills": _flatten_bills(data.get("result", []) or []), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def validate_bill_customer(identifier: str, package_id: str) -> dict:
+    """Validate a bill customer identifier (meter/smartcard) -> customer name."""
+    if not _vas_live("bills"):
+        if _mock_blocked():
+            return {"success": False, "message": "Bills are not configured"}
+        return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM"}
+    try:
+        body = {"channelId": settings.WEMA.get("CHANNEL_ID", ""), "identifier": identifier,
+                "packageId": _as_int(package_id)}
+        data = _post("bills", "/api/BillsPayment/ValidateCustomer", body).json()
+        r = data.get("result", {}) or {}
+        return {"success": _ok(data) or bool(data.get("successful")),
+                "name": r.get("customerName") or r.get("name", ""), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, source_account: str = "",
+             email: str = "", phone: str = "", name: str = "", charge=0) -> dict:
+    """Pay a bill debiting the user's NUBAN (Client PayBill variant)."""
+    if not _vas_live("bills"):
+        if _mock_blocked():
+            return {"success": False, "message": "Bills are not configured"}
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
+    src = source_account or _vas_source()
+    if not src:
+        return {"success": False, "message": "Bill payment is temporarily unavailable"}
+    try:
+        body = {"clientId": settings.WEMA.get("CHANNEL_ID", ""), "customerAccount": src,
+                "amount": float(amount_naira), "charge": float(charge),
+                "transactionReference": reference, "packageId": _as_int(package_id),
+                "customerIdentifier": identifier, "customerEmail": email,
+                "customerPhoneNumber": phone, "customerName": name,
+                "securityInfo": _security_info(op="bill", reference=reference, amount=amount_naira)}
+        data = _post("bills", "/api/Shared/PayBill", body).json()
+        return _parse_vas(data, reference, product="bills")
+    except requests.RequestException as exc:
+        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def vas_status(reference: str, txn_type: str = "") -> dict:
+    """Requery a VAS purchase by our transactionReference (settle/refund helper).
+
+    The airtime/data status check takes an INTEGER ``transactionType`` (1 = airtime,
+    2 = data); the bills check takes only the reference. Both return an integer
+    ``transactionStatus`` whose legend ALAT doesn't publish — see _parse_vas for how
+    that is handled money-safely."""
+    if txn_type == "remita":
+        # ProcessRemitaPayment is synchronous and ALAT exposes NO Remita status
+        # endpoint, so a timed-out Remita payment can't be auto-requeried — leave it
+        # PENDING for manual reconciliation (never auto-settle/refund, never mis-route
+        # to the airtime status endpoint).
+        return {"success": False, "pending": True, "status": "REMITA_MANUAL", "reference": reference}
+    product = "bills" if txn_type == "bill" else "airtime"
+    if not _vas_live(product):
+        if _mock_blocked():
+            # This requeries an already-submitted, ambiguous purchase. Missing
+            # credentials on a cron cannot prove delivery failed, so never refund.
+            return {"success": False, "pending": True, "status": "UNCONFIGURED",
+                    "reference": reference,
+                    "message": "VAS status service is not configured"}
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
+    try:
+        if product == "bills":
+            data = _post("bills", "/api/PartnerPayment/checktransactionstatus",
+                         {"transactionReference": reference}).json()
+        else:
+            data = _post("airtime", "/api/PartnerPayment/CheckTransactionStatus",
+                         {"transactionReference": reference,
+                          "transactionType": 2 if txn_type == "data" else 1}).json()
+        # The two status endpoints answer with DIFFERENT integer enums (1..11 vs 1..9),
+        # so the legend must be picked per product or a code would be decoded against
+        # the wrong ladder.
+        return _parse_vas(data, reference, product=product)
+    except requests.RequestException as exc:
+        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+_VAS_OUTCOMES = ("success", "pending", "failed")
+
+# Which env-backed legend decodes each product's integer transactionStatus. Remita
+# has its own: it is a DIFFERENT ALAT product with its own status enum, and it used
+# to fall through to the airtime legend by way of _parse_vas's default argument. On a
+# deploy that buys Remita but not Airtime/Data — which is the shape of our
+# subscription — that meant the airtime legend was never set, so every integer-shaped
+# Remita result decoded to PENDING and every debited bill payment waited on a human.
+_LEGEND_SETTING = {
+    "airtime": "VAS_STATUS_LEGEND",
+    "bills": "BILLS_STATUS_LEGEND",
+    "remita": "REMITA_STATUS_LEGEND",
+}
+
+
+def _vas_legend(product: str) -> dict[str, str]:
+    """The configured integer→outcome map for a VAS status check, or {} when unset.
+
+    ALAT's PartnerPayment status endpoints answer with a bare integer
+    ``transactionStatus`` (1..11 airtime/data, 1..9 bills) and publish no legend, so
+    the code cannot know what any value means. This reads the legend from
+    configuration instead of hardcoding a guess — the day Wema supplies it, it is a
+    Render env var rather than a deploy.
+
+    Parsing is strict on purpose. An entry that isn't ``<int>=success|pending|failed``
+    is DROPPED with an error, not defaulted, because the fallback for an unknown code
+    (leave the purchase PENDING) is the only money-safe outcome: a typo that silently
+    resolved to ``success`` would settle undelivered top-ups.
+    """
+    raw = str(settings.WEMA.get(_LEGEND_SETTING.get(product, "VAS_STATUS_LEGEND")) or "").strip()
+    if not raw:
+        return {}
+    legend: dict[str, str] = {}
+    for entry in raw.replace(",", " ").split():
+        code, sep, outcome = entry.partition("=")
+        outcome = outcome.strip().lower()
+        code = code.strip()
+        if not sep or not code.isdigit() or outcome not in _VAS_OUTCOMES:
+            log.error("wema_vas_legend_bad_entry product=%s entry=%r (ignored — codes it "
+                      "would have covered stay PENDING)", product, entry)
+            continue
+        legend[code] = outcome
+    return legend
+
+
+def _parse_vas(data: dict, reference: str, product: str = "airtime") -> dict:
+    """Normalise a VAS response to the {success, pending, status, reference} shape
+    settle_or_refund expects.
+
+    Two response shapes: a purchase carries a STRING ``result.status``
+    (SUCCESS/PROCESSING/…), while the PartnerPayment status-check carries only an
+    INTEGER ``result.transactionStatus`` (enum 1..11) whose meaning ALAT doesn't
+    document. On the integer-only shape the outcome is decided by the configured
+    legend (``WEMA_VAS_STATUS_LEGEND`` / ``WEMA_BILLS_STATUS_LEGEND``); with no
+    legend, or for a code the legend doesn't cover, we report ``pending`` — never
+    auto-settle (which would strand a failed purchase debited) or auto-refund (which
+    would double-spend a delivered one) on an un-decodable code — and surface the raw
+    code for review."""
+    r = data.get("result", {}) or {}
+    if not isinstance(r, dict):
+        r = {}
+    status = str(r.get("status") or data.get("status") or "").upper()
+    if not status and "transactionStatus" in r:
+        code = r.get("transactionStatus")
+        outcome = _vas_legend(product).get(str(code).strip())
+        if outcome is None:
+            log.warning("wema_vas_status_code ref=%s product=%s transactionStatus=%r "
+                        "(no legend entry — left pending)", reference, product, code)
+        else:
+            log.info("wema_vas_status_decoded ref=%s product=%s transactionStatus=%r -> %s",
+                     reference, product, code, outcome)
+        return {"success": outcome == "success", "pending": outcome in (None, "pending"),
+                "status": f"CODE_{code}",
+                "reference": r.get("transactionReference", reference),
+                "message": _msg(data), "raw": data}
+    ok = _ok(data) or bool(data.get("successful"))
+    ref = r.get("transactionReference", reference)
+    msg = r.get("message") or _msg(data)
+    # hasError=false is NOT itself a delivery confirmation. A purchase — or a requery
+    # of a reference the bank never recorded — can answer hasError=false with an
+    # empty/absent result and no status string; settling on that would mark an
+    # undelivered top-up Successful with no refund. Require a positive status signal,
+    # mirroring the integer-only branch above, which also refuses to guess.
+    if not status:
+        return {"success": False, "pending": True, "status": "",
+                "reference": ref, "message": msg, "raw": data}
+    # An explicit failure string must refund, not settle — previously any non-pending
+    # status with hasError=false was treated as success, so a FAILED/DECLINED buy left
+    # the customer debited for nothing.
+    if status in ("FAILED", "FAILURE", "DECLINED", "REJECTED", "REVERSED", "NOT_PROCESSED"):
+        return {"success": False, "pending": False, "status": status,
+                "reference": ref, "message": msg, "raw": data}
+    pending = status in ("PENDING", "PROCESSING", "IN_PROGRESS", "INPROGRESS")
+    return {"success": ok and not pending, "pending": pending, "status": status,
+            "reference": ref, "message": msg, "raw": data}
+
+
+# ---------------------------------------------------------------------------
+# Remita — pay a Remita RRR (bill payment) debiting the user's NUBAN.
+#
+# validate_rrr -> confirm the RRR + amount before paying; pay_remita -> the money call
+# (carries securityInfo; mirrors the bill/VAS contract — success => paid; a network
+# error returns pending=True so the caller never refunds a maybe-paid bill).
+# ---------------------------------------------------------------------------
+def validate_rrr(rrr: str) -> dict:
+    """Validate a Remita Retrieval Reference (RRR) -> {success, name, amount, message}."""
+    if not _vas_live("remita"):
+        if _mock_blocked():
+            return {"success": False, "message": "Remita is not configured"}
+        return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM", "amount": None}
+    try:
+        channel = settings.WEMA.get("CHANNEL_ID", "")
+        data = _get("remita", f"/api/RemitaPayment/ValidateRrr/{rrr}/{channel}").json()
+        r = data.get("result") or data.get("data") or {}
+        if not isinstance(r, dict):
+            r = {}
+        return {"success": _ok(data) or bool(data.get("successful") or r.get("isValidated")),
+                "name": r.get("name") or r.get("customerName", ""), "amount": _naira(r.get("amount")),
+                "message": r.get("message") or _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def pay_remita(amount_naira, reference: str, *, rrr: str, source_account: str = "", charge=0,
+               email: str = "", phone: str = "", name: str = "", payer_name: str = "",
+               payer_email: str = "", payer_number: str = "", description: str = "") -> dict:
+    """Pay a Remita RRR debiting the user's NUBAN (ProcessRemitaPayment)."""
+    if not _vas_live("remita"):
+        if _mock_blocked():
+            return {"success": False, "message": "Remita is not configured"}
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
+    src = source_account or _vas_source()
+    if not src:
+        return {"success": False, "message": "Remita is temporarily unavailable"}
+    try:
+        body = {"channelId": settings.WEMA.get("CHANNEL_ID", ""), "customerAccount": src,
+                "amount": float(amount_naira), "charge": float(charge),
+                "transactionReference": reference, "customerEmail": email,
+                "customerPhoneNumber": phone, "customerName": name, "channelType": "API",
+                "accountName": name, "rrr": rrr, "payerEmail": payer_email or email,
+                "payerName": payer_name or name, "payerNumber": payer_number or phone,
+                "description": description or f"Remita {rrr}",
+                "securityInfo": _security_info(op="remita", reference=reference, amount=amount_naira)}
+        data = _post("remita", "/api/RemitaPayment/ProcessRemitaPayment", body).json()
+        return _parse_vas(data, reference, product="remita")
+    except requests.RequestException as exc:
+        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def remita_receipt(rrr: str) -> dict:
+    """Fetch a Remita payment receipt for a paid RRR (PrintRemitaReceipt)."""
+    if not _vas_live("remita"):
+        return {"success": not _mock_blocked(), "mock": True, "receipt": None}
+    try:
+        data = _get("remita", f"/api/RemitaPayment/PrintRemitaReceipt/{rrr}").json()
+        return {"success": _ok(data) or bool(data.get("successful")),
+                "receipt": data.get("result") or data.get("data"), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+# ---------------------------------------------------------------------------
+# Buy-Now-Pay-Later (ALAT BNPL) — external credit against the user's NUBAN.
+#
+# Distinct auth (merchant headers, see _bnpl_headers) and a multi-step flow: offers
+# (eligibility) -> consent (accountNumber, amount, tenor) -> accept terms -> poll status
+# -> liquidate. This is REAL debt: only the read-only `offers` step is exposed to end
+# users today; the commitment steps (consent/accept/liquidate) are built here but gated
+# behind a product/compliance decision (see the loans app).
+# ---------------------------------------------------------------------------
+def _bnpl_live() -> bool:
+    """BNPL creates real debt: simulation and every credential fail closed."""
+    if wema_simulation():
+        return False
+    m = settings.WEMA
+    keys = m.get("KEYS") or {}
+    return bool(keys.get("bnpl") and m.get("BNPL_MERCHANT_ID") and m.get("BNPL_AUTH_KEY"))
+
+
+def bnpl_offers() -> dict:
+    """Get the BNPL product offers a customer is eligible for (read-only)."""
+    if not _bnpl_live():
+        if _mock_blocked():
+            return {"success": False, "message": "BNPL is not configured"}
+        return {"success": True, "mock": True, "offers": []}
+    try:
+        data = _get("bnpl", "/api/Eligibility/productoffers").json()
+        rows = data.get("result") if isinstance(data, dict) else None
+        if rows is None:
+            rows = data.get("data") if isinstance(data, dict) else None
+        if rows is None:
+            rows = data if isinstance(data, list) else [data]
+        rows = rows if isinstance(rows, list) else [rows]
+        ok = _ok(data) if isinstance(data, dict) and ("status" in data or "hasError" in data) else bool(rows)
+        return {"success": ok, "offers": rows, "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def bnpl_consent(account_number: str, product_amount, tenor: int, customer_reference: str, *,
+                 equity_amount=0) -> dict:
+    """Request BNPL consent for a loan against the NUBAN (ConsentRequest)."""
+    if not _bnpl_live():
+        if _mock_blocked():
+            return {"success": False, "message": "BNPL is not configured"}
+        return {"success": True, "mock": True, "eligibility_id": "BNPL-SIM-" + secrets.token_hex(6),
+                "account_name": "ADEYEMI WILLIAM"}
+    try:
+        data = _post("bnpl", "/api/Eligibility/ConsentRequest",
+                     {"accountNumber": account_number, "productAmount": float(product_amount),
+                      "equityAmount": float(equity_amount or 0), "tenor": int(tenor),
+                      "customerReference": customer_reference}).json()
+        r = data.get("response", {}) or {}
+        if not isinstance(r, dict):
+            r = {}
+        return {"success": bool(data.get("successful")) or _ok(data),
+                "eligibility_id": r.get("eligibilityId") or data.get("eligibilityId", ""),
+                "account_name": r.get("accountName", ""),
+                "message": data.get("message") or _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def bnpl_accept_terms(eligibility_id: str, accepted: bool = True) -> dict:
+    """Accept (or decline) the BNPL loan terms (AcceptTerms — a 200 No-Content endpoint)."""
+    if not _bnpl_live():
+        return {"success": not _mock_blocked(), "mock": True}
+    try:
+        resp = _post("bnpl", "/api/LoanApplication/AcceptTerms",
+                     {"eligibilityId": eligibility_id, "isTermsAccepted": bool(accepted)})
+        if resp.status_code < 300 and not (resp.content or b"").strip():
+            return {"success": True}
+        try:
+            data = resp.json()
+        except ValueError:
+            return {"success": resp.status_code < 300}
+        return {"success": bool(data.get("successful")) or _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def bnpl_status(customer_reference: str) -> dict:
+    """Poll a BNPL loan application's status by our customer reference."""
+    if not _bnpl_live():
+        return {"success": not _mock_blocked(), "mock": True, "status": "PENDING"}
+    try:
+        # ALAT spells the query param "customeReference" (sic).
+        data = _get("bnpl", "/api/LoanApplication/loan-application-status",
+                    {"customeReference": customer_reference}).json()
+        r = data.get("result") or data.get("data") or data
+        status = (r.get("status") if isinstance(r, dict) else "") or ""
+        return {"success": bool(data.get("successful")) or _ok(data), "status": str(status), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def bnpl_liquidate(customer_reference: str, *, amount=None) -> dict:
+    """Liquidate (early-repay) a BNPL loan (loan-liquidation)."""
+    if not _bnpl_live():
+        return {"success": not _mock_blocked(), "mock": True}
+    try:
+        body = {"customerReference": customer_reference}
+        if amount is not None:
+            body["amount"] = float(amount)
+        data = _post("bnpl", "/api/LoanApplication/loan-liquidation", body).json()
+        return {"success": bool(data.get("successful")) or _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+# ---------------------------------------------------------------------------
+# Virtual Naira Card — ALAT Card-Management product (/card-management).
+#
+# ALAT keys a customer's virtual card by their NUBAN (accountNo), NOT a card token,
+# so the "card_token" the cards app stores IS the account number. Three operations
+# map to real endpoints: issue (partnerCard/virtualCard, funded at creation),
+# reveal (partnerCard/virtual-card-details/{accountNo}) and a PERMANENT block
+# (partnerCard/hotlistCard). ALAT's virtual-card product exposes NO reversible
+# freeze and NO incremental top-up, so card_set_status(active=True) and card_fund
+# report "unsupported" (the generic CARD_ISSUER, still the default, supports both) —
+# they never fake a success against money/state ALAT can't move.
+#
+# Mock-first with a deterministic fake card offline; fails closed in production when
+# unkeyed so a misconfigured deploy never fabricates a card that looks real.
+#
+# VERIFY-BEFORE-LIVE: issue/reveal return an OPAQUE `data` field whose structure
+# isn't in the OpenAPI (masked PAN / expiry / CVV / card ref) and the virtualCard
+# request's `cardKey` (card product id) must come from Wema — confirm both against
+# Wema's card integration guide before go-live. (retrieveCard/{accountNo} is an
+# alternative reveal endpoint if virtual-card-details doesn't return the full PAN/CVV.)
+# ---------------------------------------------------------------------------
+def _card_live() -> bool:
+    """Whether the separately subscribed Virtual Naira Card product is live."""
+    return _product_live("card")
+
+
+def card_opted_in() -> bool:
+    """Whether Wema should be AUTO-SELECTED as the card backend.
+
+    Deliberately stricter than _card_live(): it requires a dedicated WEMA_CARD_KEY.
+    The wallet key authenticates the product, but letting that alone flip the backend
+    would silently move every wallet-keyed deploy onto the Wema card rail, which
+    supports neither reversible freeze nor top-up while the generic CARD_ISSUER
+    supports both. CARD_PROVIDER=wema still forces it explicitly.
+    """
+    keys = settings.WEMA.get("KEYS") or {}
+    return bool(settings.WEMA.get("CHANNEL_ID") and keys.get("card"))
+
+
+def _card_data(data: dict) -> dict:
+    """Best-effort dict view of ALAT's opaque card `data`/`result` field, which the
+    OpenAPI types only as a string — it may arrive as a nested object or a JSON
+    string. Returns {} when it can't be read as an object."""
+    d = data.get("result")
+    if d is None:
+        d = data.get("data")
+    if isinstance(d, str):
+        try:
+            d = json.loads(d)
+        except (ValueError, TypeError):
+            return {}
+    return d if isinstance(d, dict) else {}
+
+
+def card_issue(holder: str, customer_ref: str, *, account_number: str = "", email: str = "",
+               phone: str = "", amount=0, address: str = "") -> dict:
+    """Issue a virtual Naira card against the customer's NUBAN.
+
+    Returns {success, card_token, brand, last4, expiry}. ALAT keys the card by the
+    account number, so ``card_token`` is the NUBAN (the app reveals/blocks by it). A
+    live issue needs the user's provisioned NUBAN; without one it fails closed."""
+    if not _card_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Card issuing is not configured"}
+        seed = int(hashlib.sha256((account_number or customer_ref or holder or "x").encode()).hexdigest(), 16)
+        return {"success": True, "mock": True,
+                "card_token": account_number or ("wema_" + f"{seed % 10**12:012d}"),
+                "brand": "Verve", "last4": f"{seed % 10000:04d}",
+                "expiry": f"{1 + seed % 12:02d}/{29 + seed % 3}"}
+    if not account_number:
+        return {"success": False, "message": "Set up your Zitch account before creating a card"}
+    if not settings.WEMA.get("CARD_PRODUCT_KEY"):
+        return {"success": False, "message": "Card issuing is not configured"}
+    try:
+        body = {"emailaddress": email, "phoneNumber": phone, "amount": float(amount or 0),
+                "accountNo": account_number, "customerAddress": address,
+                "cardKey": settings.WEMA.get("CARD_PRODUCT_KEY", ""), "currency": "NGN"}
+        data = _post("card", "/api/Partner/partnerCard/virtualCard", body).json()
+        ok = bool(data.get("status")) or _ok(data)
+        d = _card_data(data)
+        pan = str(d.get("maskedPan") or d.get("cardPan") or d.get("cardNumber") or "")
+        return {"success": ok, "card_token": account_number,
+                "brand": d.get("scheme") or d.get("brand") or "Verve",
+                "last4": pan[-4:] if pan else "",
+                "expiry": d.get("expiryDate") or d.get("expiry") or "",
+                "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def card_set_status(card_token: str, active: bool, *, masked_pan: str = "") -> dict:
+    """Block a virtual card (permanent hotlist). ``card_token`` is the NUBAN.
+
+    ALAT has no reversible freeze, so unfreezing (active=True) is reported
+    unsupported rather than faked; blocking (active=False) hotlists the card
+    permanently (also passes the masked PAN when the caller has it)."""
+    if not _card_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Card issuing is not configured"}
+        return {"success": True, "mock": True}
+    if active:
+        return {"success": False,
+                "message": "This card was blocked and can't be reactivated — request a new card."}
+    try:
+        data = _post("card", "/api/Partner/partnerCard/hotlistCard", {},
+                     params={"maskedPan": masked_pan, "accountNumber": card_token}).json()
+        return {"success": bool(data.get("successful")) or _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def card_fund(card_token: str, amount) -> dict:
+    """Incremental top-up. ALAT's virtual card is funded at issue and exposes no
+    top-up endpoint, so a live call reports unsupported (the caller refunds the
+    debit) rather than faking a success against a card it can't move."""
+    if not _card_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Card issuing is not configured"}
+        return {"success": True, "mock": True}
+    return {"success": False, "message": "Top-up isn't supported for this card"}
+
+
+def card_reveal(card_token: str) -> dict:
+    """Fetch card details for a one-time reveal (never persisted). ``card_token`` is
+    the NUBAN ALAT keys the card by."""
+    if not _card_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Card issuing is not configured"}
+        seed = int(hashlib.sha256(card_token.encode()).hexdigest(), 16)
+        pan = "5061" + "".join(str((seed >> (i * 4)) % 10) for i in range(12))
+        return {"success": True, "mock": True, "pan": pan, "cvv": f"{seed % 1000:03d}"}
+    try:
+        data = _get("card", f"/api/Partner/partnerCard/virtual-card-details/{card_token}").json()
+        d = _card_data(data)
+        ok = bool(data.get("status")) or bool(data.get("successful")) or _ok(data)
+        return {"success": ok and bool(d),
+                "pan": d.get("cardPan") or d.get("cardNumber") or d.get("pan", ""),
+                "cvv": d.get("cvv") or d.get("cvv2", ""), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+# ---------------------------------------------------------------------------
+# KYC — Nigeria identity (BVN / NIN / vNIN)
+#
+# ALAT has NO standalone BVN/NIN/vNIN lookup: its "Full KYC" product opens/upgrades
+# accounts and returns the holder's name only AFTER a full OTP account-creation
+# round-trip. So identity is verified by the NUBAN provisioning flow (the
+# /api/wallet/wema/* endpoints -> create_wallet_request / validate_wallet_otp /
+# get_account_details), and the holder name ALAT returns is name-matched against the
+# user's registered name (holder_name_mismatch) before the KYC tier is lifted — see
+# wallet.views.wema_wallet_verify_otp.
+#
+# The verify_bvn / verify_nin / verify_vnin entry points are kept for the
+# provider-agnostic contract but no longer call a (non-existent) lookup endpoint: in
+# production they direct the caller to account setup; dev/tests keep a mock so the
+# offline KYC flow still exercises. Identity NEVER mock-passes in production, so a
+# misconfigured deploy can't fabricate one.
+# ---------------------------------------------------------------------------
+def _name_tokens(name: str) -> set:
+    """Significant lowercased word tokens of a holder name (drops 1-char bits),
+    for tolerant BVN/NIN name comparison."""
+    return {t for t in re.sub(r"[^a-z ]", " ", (name or "").lower()).split() if len(t) > 1}
+
+
+def holder_name_mismatch(supplied: str, resolved: str) -> bool:
+    """Fail-closed legal-name comparison for identity-backed onboarding.
+
+    Names must be present on both sides and share at least two significant tokens
+    (normally first name + surname). Order and extra middle names are tolerated,
+    but one common name is not enough evidence to lift a financial KYC tier.
+    Missing/unreadable bank data is a mismatch and routes the customer to review.
+
+    Used to name-match the holder record ALAT returns during NUBAN provisioning
+    against the user's registered name before the KYC tier is lifted, so a BVN/NIN
+    that demonstrably belongs to someone else can't lift the requester's tier."""
+    a, b = _name_tokens(supplied), _name_tokens(resolved)
+    return not (a and b and len(a & b) >= 2)
+
+
+def _identity_unavailable_standalone() -> dict:
+    """What verify_* returns in production: ALAT can't verify a number standalone, so
+    route the user to account setup, where provisioning does the real name-matched
+    check. otp_required signals the app to run the NUBAN OTP flow."""
+    return {"success": False, "otp_required": True,
+            "message": "Verify your identity when you set up your Zitch account."}
+
+
+def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
+    """BVN verification entry point (provider-agnostic contract).
+
+    ALAT has no standalone BVN lookup — verification happens in the name-matched
+    NUBAN account-creation flow. In production this directs the caller there; dev and
+    tests keep a mock so the offline flow still works."""
+    if len(bvn) != 11 or not bvn.isdigit():
+        return {"success": False, "message": "BVN must be 11 digits"}
+    if mock_disabled_in_prod():
+        return _identity_unavailable_standalone()
+    return {"success": True, "mock": True, "first_name": "", "last_name": ""}
+
+
+def verify_nin(nin: str, name: str = "") -> dict:
+    """NIN verification entry point — see verify_bvn. ALAT has no standalone NIN
+    lookup; verification is the name-matched NUBAN account-creation flow."""
+    if len(nin) != 11 or not nin.isdigit():
+        return {"success": False, "message": "NIN must be 11 digits"}
+    if mock_disabled_in_prod():
+        return _identity_unavailable_standalone()
+    return {"success": True, "mock": True, "first_name": "", "last_name": ""}
+
+
+def verify_vnin(vnin: str, name: str = "") -> dict:
+    """Virtual-NIN (16-char) verification entry point — see verify_bvn. No standalone
+    ALAT lookup; verification is the name-matched NUBAN account-creation flow."""
+    if not vnin or len(vnin) != 16:
+        return {"success": False, "message": "Virtual NIN must be 16 characters"}
+    if mock_disabled_in_prod():
+        return _identity_unavailable_standalone()
+    return {"success": True, "mock": True, "first_name": "", "last_name": ""}
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics — mirrors mono diagnostics
+# ---------------------------------------------------------------------------
+def _trim(raw, limit: int = 500):
+    """Short, printable, PII-minimised provider response for diagnostics."""
+    if raw is None:
+        return None
+    from whatsapp.models import WebhookEvent
+
+    safe = WebhookEvent.redact(raw) if isinstance(raw, (dict, list)) else str(raw)
+    s = safe if isinstance(safe, str) else json.dumps(safe, default=str)
+    # Defence in depth for provider fields whose names are not in the known model.
+    s = re.sub(r"(?<!\d)\d{10,16}(?!\d)", "[identifier redacted]", s)
+    s = re.sub(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b",
+               "[email redacted]", s)
+    return s[:limit]
+
+
+def wema_probe(account_number: str = "", bank_code: str = "", phone: str = "",
+               bvn: str = "", nin: str = "", otp: str = "", tracking_id: str = "") -> dict:
+    """Live self-test against the configured Wema gateway (returns NO secrets).
+
+    Runs the real calls a deploy needs, so ops can see exactly what auth /
+    connectivity error the sandbox returns — without the app, a NUBAN, or a shell.
+    Read-only by default. Two optional provisioning steps let you create a test
+    NUBAN end-to-end from the browser:
+      * phone + bvn/nin              -> step 1: start creation (sends a real OTP)
+      * phone + otp + tracking_id    -> step 2: validate OTP + fetch the NUBAN
+    """
+    out = {"config": wema_diagnostics()}
+    if not (wema_live() or wema_simulation()):
+        out["hint"] = ("Wema keys are not fully configured — set WEMA_CHANNEL_ID + "
+                       "WEMA_WALLET_KEY (and per-product keys). No live call was made.")
+        return out
+
+    # 1) Bank list — the simplest authenticated call (debit product, `access` header).
+    banks = get_banks()
+    out["banks"] = {"ok": banks.get("success"), "count": len(banks.get("banks", []) or []),
+                    "message": banks.get("message", ""), "raw": _trim(banks.get("raw"))}
+
+    # 1b) …and whether OUR payout codes match the rail's. This is the read-only half
+    # of `manage.py wema_banks_sync`, exposed here because a wrong bank code surfaces
+    # to the user as "account enquiry failed, confirm that the account number is
+    # valid" — indistinguishable from a bad account number without this comparison,
+    # and not everyone operating the deploy has a shell. Bank names/codes are public
+    # reference data, so nothing here is redacted. Skipped in mock mode, whose stub
+    # list would report every bank as missing.
+    if banks.get("success") and not banks.get("mock"):
+        from transfers.services import compare_bank_codes
+
+        cmp = compare_bank_codes(banks.get("banks") or [])
+        out["bank_codes"] = {
+            "ok": cmp["ok"], "agree": len(cmp["agree"]), "rail_count": cmp["remote_count"],
+            # Only the actionable rows travel — the agreeing ones are just a count.
+            "differ": cmp["differ"], "ambiguous": cmp["ambiguous"], "unmatched": cmp["unmatched"],
+            # Each unmatched bank carries its own shortlist of likely rail names
+            # (see `suggestions` on those rows); only the COUNT of the rail's
+            # leftovers travels, because the live rail returns ~1000 of them and
+            # the full list buried the names that mattered.
+            "rail_unmatched_count": cmp["rail_unmatched_count"],
+            "hint": ("Codes match the rail." if cmp["ok"] else
+                     "Recipient resolution uses these codes; a wrong one reads to the user as "
+                     "'account enquiry failed'. Fix from Django admin (Banks -> Sync bank codes "
+                     "from the payout rail) or `manage.py wema_banks_sync --apply`."),
+        }
+
+    # 2) Name enquiry — the read used before every transfer.
+    if account_number and bank_code:
+        enq = resolve_account(account_number, bank_code)
+        out["name_enquiry"] = {"ok": enq.get("success"), "name": enq.get("name", ""),
+                               "message": enq.get("message", ""), "raw": _trim(enq.get("raw"))}
+
+    # 3) Data plans — tests the airtime/VAS product subscription (read-only).
+    plans = get_data_plans()
+    out["airtime_product"] = {"ok": plans.get("success"), "message": plans.get("message", ""),
+                              "raw": _trim(plans.get("raw"))}
+
+    using_bvn = bool(bvn)
+    # 4a) Provision step 2 — validate OTP + fetch the created NUBAN.
+    if phone and otp and tracking_id:
+        val = validate_wallet_otp(phone, otp, tracking_id, bvn=using_bvn)
+        acct = get_account_details(phone, bvn=using_bvn) if val.get("success") else {}
+        out["wallet_verify"] = {"ok": val.get("success") and bool(acct.get("account_number")),
+                                "account_number": acct.get("account_number", ""),
+                                "account_name": acct.get("account_name", ""),
+                                "message": val.get("message", "") or acct.get("message", ""),
+                                "raw": _trim(val.get("raw"))}
+    # 4b) Provision step 1 — start creation (sends a real OTP).
+    elif phone and (bvn or nin):
+        cw = create_wallet_request(phone, f"{phone}@zitch.app", bvn=bvn, nin=nin)
+        out["wallet_create"] = {"ok": cw.get("success"), "tracking_id": cw.get("tracking_id", ""),
+                                "message": cw.get("message", ""), "raw": _trim(cw.get("raw"))}
+    return out
+
+
+def wema_diagnostics() -> dict:
+    m = settings.WEMA
+    keys = m.get("KEYS") or {}
+    configured_security = (m.get("SECURITY_INFO", "") or "").strip()
+    out = {"base_url": m["BASE_URL"], "channel_id_set": bool(m.get("CHANNEL_ID")),
+           "wallet_key_set": bool(keys.get("wallet")),
+           "product_keys_set": {name: bool(keys.get(name)) for name in
+                                ("wallet", "card", "airtime", "bills", "upgrade",
+                                 "kyc", "remita", "bnpl")},
+           "security_info_set": bool(configured_security),
+           "security_info_strong": len(configured_security) >= 32,
+           # False above only means WEMA_SECURITY_INFO is unset — money calls still
+           # derive a nonblank per-reference HMAC from SECRET_KEY. This says whether
+           # an effective private seed exists without exposing it.
+           "security_info_effective": bool(security_info_value()),
+           "wema_live": wema_live(), "keys_configured": wema_keys_configured(),
+           "simulation": wema_simulation()}
+    if not wema_live():
+        # A simulation deploy WITH keys reads identically to an unconfigured one on
+        # wema_live alone, and they need opposite fixes — so say which it is.
+        if wema_simulation():
+            out["status"] = "simulation"
+            out["hint"] = (
+                "WEMA_SIMULATION is on, so every Wema call is mocked and no real money "
+                "or identity moves — even though the keys are "
+                + ("present" if wema_keys_configured() else "absent")
+                + ". Clear WEMA_SIMULATION to make real calls; wema_preflight hard-fails "
+                  "while it is set.")
+        else:
+            out["status"] = "keys_incomplete"
+            out["hint"] = ("Set WEMA_CHANNEL_ID + WEMA_WALLET_KEY (and the per-product keys) and the "
+                           "live WEMA_BASE_URL. WEMA_SIMULATION=true tests the flow without live keys.")
+        return out
+    # securityInfo is OUR value, echoed back by the bank to the authentication callback
+    # (Wema, 2026-07-27), never a bank-issued scheme. Its boolean is reported above;
+    # wema_preflight enforces it as a go-live gate.
+    out["status"] = "configured"
+    out["hint"] = ("Keys present. Confirm the live host and tx-status legend against Wema's "
+                   "integration guide before go-live.")
+    return out

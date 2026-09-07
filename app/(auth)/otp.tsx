@@ -3,10 +3,11 @@ import { View, Text, TextInput, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import baseUrl from '@/components/configFiles/apiConfig';
-import { saveToken } from '@/lib/secureStore';
+import { publicPost } from '@/lib/api';
+import { storeSession } from '@/lib/secureStore';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header } from '@/components/design/ui';
+import { Stepper } from '@/components/design/Stepper';
 import { useTheme, font } from '@/lib/theme';
 
 const OTP_LEN = 6;
@@ -15,6 +16,7 @@ const OTPVerification = () => {
   const { c } = useTheme();
   const [otp, setOtp] = useState('');
   const [isCheckingOtp, setIsCheckingOtp] = useState(false);
+  const [isResending, setIsResending] = useState(false);
   const [userPhone, setUserPhone] = useState('');
   const [seconds, setSeconds] = useState(24);
   const inputRef = useRef<TextInput>(null);
@@ -38,14 +40,20 @@ const OTPVerification = () => {
     submittedRef.current = otp;
     setIsCheckingOtp(true);
     try {
-      const response = await fetch(`${baseUrl}/api/verify_otp/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ otp, phone: userPhone }),
+      // Read the name (captured at register) at submit time rather than from
+      // async-loaded state, so an instant SMS autofill can't race the load and
+      // send an unnamed verify — the account is created here, and it's opened in
+      // this name.
+      const [first, last] = await Promise.all([
+        AsyncStorage.getItem('UserFirstName'),
+        AsyncStorage.getItem('UserLastName'),
+      ]);
+      const response = await publicPost('/api/verify_otp/', {
+        otp, phone: userPhone, first_name: first || '', last_name: last || '',
       });
       const result = await response.json();
       if (response.ok && result.access_token) {
-        await saveToken(result.access_token);
+        await storeSession(result);
         await AsyncStorage.removeItem('otpPending'); // verification done
         router.replace('/setpassword');
       } else {
@@ -53,7 +61,7 @@ const OTPVerification = () => {
         setOtp('');
         submittedRef.current = ''; // let them try a fresh code
       }
-    } catch (error) {
+    } catch {
       notify('Error', 'Something went wrong. Please try again later.');
       submittedRef.current = '';
     } finally {
@@ -63,26 +71,37 @@ const OTPVerification = () => {
 
   // Auto-submit once all digits are entered (guarded above against re-runs).
   useEffect(() => {
-    if (otp.length === OTP_LEN) handleCheckOtp();
+    if (otp.length !== OTP_LEN) return;
+    const timer = setTimeout(() => void handleCheckOtp(), 0);
+    return () => clearTimeout(timer);
   }, [otp, handleCheckOtp]);
 
   const handleResendOtp = async () => {
-    if (seconds > 0) return;
+    if (seconds > 0 || isResending) return;
+    if (!userPhone) {
+      notify('Error', 'Your phone number is still loading. Please try again.');
+      return;
+    }
+    setIsResending(true);
     try {
-      const response = await fetch(`${baseUrl}/api/resend_verify_otp/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: userPhone }),
-      });
+      const response = await publicPost('/api/resend_verify_otp/', { phone: userPhone });
       const result = await response.json();
       if (response.ok) {
+        // A resent code is a fresh attempt. Clear any partial/previous digits,
+        // release the one-submit guard, and return focus to the native input so
+        // typing and Android/iOS SMS autofill work immediately.
+        setOtp('');
+        submittedRef.current = '';
         setSeconds(24);
+        requestAnimationFrame(() => inputRef.current?.focus());
         notify('Success', 'OTP has been resent');
       } else {
         notify('Error', result.message || 'Failed to resend OTP');
       }
-    } catch (error) {
+    } catch {
       notify('Error', 'Something went wrong. Please try again later.');
+    } finally {
+      setIsResending(false);
     }
   };
 
@@ -97,8 +116,9 @@ const OTPVerification = () => {
   }
 
   return (
-    <Screen scroll={false}>
+    <Screen>
       <Header onBack={() => { AsyncStorage.removeItem('otpPending'); router.replace('/register'); }} />
+      <Stepper step={2} total={4} label="Step 2 of 4 · Verify phone" />
       <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Verify your number</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular }}>
         Enter the {OTP_LEN}-digit code sent to <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{masked}</Text>
@@ -141,16 +161,29 @@ const OTPVerification = () => {
           autoComplete="sms-otp"
           importantForAutofill="yes"
           // Cover the boxes so taps focus it; invisible so only the boxes show.
-          style={{ position: 'absolute', top: 28, left: 0, right: 0, height: 58, opacity: 0 }}
+          // Keep the native field visually hidden without opacity:0. Some Android
+          // autofill services ignore a fully transparent OTP target after resend.
+          style={{ position: 'absolute', top: 28, left: 0, right: 0, height: 58, color: 'transparent', backgroundColor: 'transparent' }}
         />
       </Pressable>
 
-      <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular }}>
-        Didn't get it?{' '}
-        <Text onPress={handleResendOtp} style={{ color: c.brand, fontFamily: font.bold }}>
-          {seconds > 0 ? `Resend in 0:${String(seconds).padStart(2, '0')}` : 'Resend code'}
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular }}>
+          Didn’t get it?{' '}
         </Text>
-      </Text>
+        <Pressable
+          onPress={handleResendOtp}
+          disabled={seconds > 0 || isResending || !userPhone}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Resend verification code"
+          accessibilityState={{ disabled: seconds > 0 || isResending || !userPhone }}
+        >
+          <Text style={{ color: seconds > 0 || isResending || !userPhone ? c.ink3 : c.brand, fontFamily: font.bold, fontSize: 13.5 }}>
+            {isResending ? 'Sending…' : seconds > 0 ? `Resend in 0:${String(seconds).padStart(2, '0')}` : 'Resend code'}
+          </Text>
+        </Pressable>
+      </View>
       <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 12 }}>
         Already have an account?{' '}
         <Text

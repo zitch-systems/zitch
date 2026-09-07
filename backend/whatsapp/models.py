@@ -3,6 +3,8 @@
 Later slices add broadcasts, conversation handover, and admin surfaces; this is
 the minimum the webhook + deterministic router need.
 """
+from datetime import timedelta
+
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -24,7 +26,15 @@ class WhatsAppLink(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="whatsapp_links")
     wa_msisdn = models.CharField(max_length=20, blank=True, default="", db_index=True)
     status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
-    link_code = models.CharField(max_length=12, blank=True, default="", db_index=True)
+    link_code = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    # Explicit opt-in: configuring an LLM key must not silently export every
+    # customer's free-form chat to a third party.
+    # On by default. It began as opt-in consent, but the effect in practice was
+    # that every customer got "Sorry, I didn't get that" for natural language
+    # while the console reported the AI as live — a consent nobody could discover
+    # is not a choice, it is an off switch nobody can find. The customer can
+    # still turn it off ("ai off"), and the global kill switch still governs
+    # everyone at once.
     ai_enabled = models.BooleanField(default=True)            # per-user AI scope (§8)
     marketing_opt_in = models.BooleanField(default=False)     # broadcasts (§9)
     expires_at = models.DateTimeField(null=True, blank=True)  # link_code TTL
@@ -108,6 +118,18 @@ class WaMessageLog(models.Model):
     text = models.TextField(blank=True, default="")
     intent_json = models.JSONField(default=dict, blank=True)  # parsed AI intent (later slices)
     flagged = models.BooleanField(default=False)
+    # Durable inbound processing state. A row is no longer synonymous with
+    # "processed": if the worker/request dies after claiming it, Meta's retry may
+    # reclaim the message after the short lease instead of silently dropping it.
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    processing_attempts = models.PositiveSmallIntegerField(default=0)
+    processing_error = models.CharField(max_length=64, blank=True, default="")
+    # Only the worker needs the original command text. It is authenticated-
+    # encrypted before insertion and erased after successful processing, so PINs,
+    # BVNs and free-form chat never appear in a readable database column.
+    processing_payload = models.BinaryField(blank=True, default=bytes, editable=False)
+    next_attempt_at = models.DateTimeField(null=True, blank=True)
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -115,6 +137,46 @@ class WaMessageLog(models.Model):
         indexes = [
             # The operator inbox replays a conversation oldest-first per number.
             models.Index(fields=["msisdn", "created"], name="wamsg_msisdn_created_idx"),
+            # The worker's queue poll, and the web drain that shadows it.
+            #
+            # This table is an append-only audit of EVERY message in both
+            # directions, so it grows without bound, while the queue inside it —
+            # inbound rows not yet processed — is nearly always empty. Without a
+            # partial index Postgres answered "anything to do?" with a parallel
+            # sequential scan of the whole table: measured on a 300k-row table,
+            # 21ms and ~38MB of buffer traffic across three backends to return
+            # zero rows. The worker asks that twice a second forever, and
+            # jobs.drain_in_background asks it again on every inbound webhook.
+            #
+            # The cost is therefore continuous, proportional to the whole history
+            # rather than to the backlog, and paid on the same 0.1-CPU Postgres
+            # instance every app request uses. It is not what makes the product
+            # feel slow TODAY — production sits at a few percent of that CPU, on a
+            # table nowhere near 300k rows — but it is the one load here that
+            # grows without a ceiling while doing no work, and it saturates that
+            # instance long before the traffic does.
+            #
+            # Partial, on the exact predicate both queries carry. A row enters the
+            # index when it is queued and leaves for good when processed_at is
+            # set, so the index stays at the size of the backlog (usually zero)
+            # rather than the size of the history, and the poll becomes an index
+            # scan that stops at the first row.
+            models.Index(
+                fields=["created"],
+                name="wamsg_inbound_queue_idx",
+                condition=models.Q(direction="in", processed_at__isnull=True),
+            ),
+            # jobs._claim_inbound's per-sender ordering check ("is an earlier
+            # message from this number still unprocessed?"). Served before this by
+            # wamsg_msisdn_created_idx, which is keyed on the sender's ENTIRE
+            # history: it re-read every message that number ever exchanged to find
+            # the handful still pending. Same partial predicate, so it too is
+            # bounded by the backlog.
+            models.Index(
+                fields=["msisdn", "created"],
+                name="wamsg_inbound_pending_idx",
+                condition=models.Q(direction="in", processed_at__isnull=True),
+            ),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -170,12 +232,64 @@ class ConversationState(models.Model):
     status = models.CharField(max_length=8, choices=STATUSES, default=BOT)
     assigned_agent = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
                                        on_delete=models.SET_NULL, related_name="wa_conversations")
+    # Conversation-level operations switch. Per-user consent remains on
+    # WhatsAppLink.ai_enabled; a new bot conversation may run AI only when that
+    # explicit consent and the global kill switch are also on.
     ai_enabled = models.BooleanField(default=True)
+    #: When this conversation last proved who it was — a correct PIN in the
+    #: encrypted Flow, or a verified biometric through the app hand-off. Read by
+    #: the idle re-auth gate; null means "never", which reads as expired.
+    #:
+    #: WhatsApp's own Chat Lock is the only thing that can gate the chat WINDOW,
+    #: and it is user-side and unverifiable, so it can never be a control. What
+    #: the bot is willing to REVEAL is ours to gate, and this is how.
+    last_verified = models.DateTimeField(null=True, blank=True)
+    #: The ledger reference of the transaction this conversation last talked
+    #: ABOUT — set when the assistant answers a question about one specific
+    #: payment, or sends a receipt for one.
+    #:
+    #: Without it every message is read in isolation, and a customer who was
+    #: just told "your ₦1,000 Electricity — Ikeja was successful" and replies
+    #: "Report it" is asked which transaction they mean. They already said. The
+    #: word "it" is only meaningful against what was said last, so the channel
+    #: has to remember what it said last.
+    #:
+    #: A reference, not a foreign key: it is what the customer sees on their
+    #: receipt, and it survives the row being reversed or re-keyed.
+    last_txn_ref = models.CharField(max_length=64, blank=True, default="")
+    last_txn_at = models.DateTimeField(null=True, blank=True)
     updated = models.DateTimeField(auto_now=True)
+
+    #: How long "it" keeps meaning the same payment. Long enough for a customer
+    #: to read a receipt and type a reply, short enough that tomorrow's "report
+    #: it" is not silently filed against yesterday's transaction.
+    REFERENT_TTL = timedelta(minutes=30)
 
     @classmethod
     def for_msisdn(cls, msisdn):
         return cls.objects.get_or_create(msisdn=msisdn)[0]
+
+    def remember_txn(self, reference: str) -> None:
+        """Record which payment this conversation is currently about."""
+        ref = (reference or "").strip()[:64]
+        if not ref or ref == self.last_txn_ref:
+            if ref:
+                # Same payment, fresh mention — push the clock out so a
+                # follow-up question doesn't fall off the end of the window.
+                self.last_txn_at = timezone.now()
+                self.save(update_fields=["last_txn_at", "updated"])
+            return
+        self.last_txn_ref = ref
+        self.last_txn_at = timezone.now()
+        self.save(update_fields=["last_txn_ref", "last_txn_at", "updated"])
+
+    def referenced_txn(self) -> str:
+        """The payment "it" refers to, or "" once the window has passed."""
+        if not self.last_txn_ref or self.last_txn_at is None:
+            return ""
+        if timezone.now() - self.last_txn_at > self.REFERENT_TTL:
+            return ""
+        return self.last_txn_ref
 
     def __str__(self):
         return f"{self.msisdn} [{self.status}]"
@@ -200,17 +314,128 @@ class AuditLog(models.Model):
             models.Index(fields=["action"], name="audit_action_idx"),
         ]
 
+    def save(self, *args, **kwargs):
+        # Append-only, enforced at the ORM layer: an audit row can be created but
+        # never edited. A back-office bug (or a compromised operator) must not be
+        # able to rewrite history to cover a fraudulent action.
+        if self.pk is not None:
+            raise ValueError("AuditLog rows are immutable and cannot be modified")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("AuditLog rows are immutable and cannot be deleted")
+
     def __str__(self):
         return f"{self.actor_type}:{self.actor_id} {self.action} {self.target}"
+
+
+class WebhookEvent(models.Model):
+    """Append-only forensic record of every inbound provider callback.
+
+    Lives beside ``AuditLog`` because this app is where the project keeps its
+    append-only logs — the app name is historical, not a scope. ``AuditLog`` records
+    what WE did; this records what arrived, including the calls we REFUSED, which by
+    definition never reach a handler and so leave no other trace but a log line that
+    rotates away.
+
+    ``docs/hardening/GAP_ANALYSIS.md`` deferred this as "nice-to-have" because
+    redelivery is already idempotent (unique ledger references), which is true and is
+    not what this is for. It answers the questions an incident asks and idempotency
+    cannot: did the bank ever call at all, how many times, from which IP, with what
+    body, and did we accept it. Callback profiling in particular is silent bank-side
+    state — the only evidence it took effect is a request arriving.
+
+    Recording is strictly best-effort at every call site: a forensic log must never be
+    the reason a callback fails and the bank retries.
+    """
+
+    # Verification outcomes. A row exists for a rejected call precisely because a
+    # rejected call is the interesting one.
+    ACCEPTED = "accepted"
+    REJECTED_TOKEN = "rejected_token"
+    REJECTED_IP = "rejected_ip"
+    REJECTED_SIGNATURE = "rejected_signature"
+    REJECTED_METHOD = "rejected_method"
+    BAD_BODY = "bad_body"
+    OUTCOMES = [(ACCEPTED, ACCEPTED), (REJECTED_TOKEN, REJECTED_TOKEN),
+                (REJECTED_IP, REJECTED_IP), (REJECTED_SIGNATURE, REJECTED_SIGNATURE),
+                (REJECTED_METHOD, REJECTED_METHOD), (BAD_BODY, BAD_BODY)]
+
+    # Keys redacted from the stored envelope. A forensic log is read by more people,
+    # for longer, than any request log — so identity numbers, card data and the
+    # secrets that authenticate the call itself never land in it. The envelope keeps
+    # its SHAPE (the key survives, the value becomes "[redacted]"), because "the bank
+    # sent no BVN" and "we redacted the BVN" must stay distinguishable.
+    REDACT_KEYS = frozenset({
+        "bvn", "nin", "vnin", "pin", "transactionpin", "otp", "password",
+        "securityinfo", "pan", "cardnumber", "cvv", "cvv2", "expirydate",
+        "accesstoken", "token", "authorization", "nuban", "accountnumber",
+        "email", "phone", "phonenumber", "msisdn", "from", "nubanname", "accountname",
+        "customerid", "billerscode", "meter", "meternumber", "smartcard", "iuc",
+        # ALAT's face callback names the identity number "id" — but so does every
+        # WhatsApp message envelope, where it is a correlation handle rather than
+        # PII, and redacting those would blind the forensic trail this table exists
+        # for. "id" is therefore scrubbed AT THE FACE HANDLER instead (see
+        # wallet.wema_callbacks.wema_face_callback), which is the only place the key
+        # carries an identity number.
+        "identityvalue", "identifiervalue", "bvnornin",
+    })
+
+    source = models.CharField(max_length=40)          # wema.account | whatsapp | mono …
+    outcome = models.CharField(max_length=24, choices=OUTCOMES, default=ACCEPTED)
+    verified = models.BooleanField(default=False)     # did transport auth pass
+    http_status = models.PositiveSmallIntegerField(default=200)
+    remote_ip = models.CharField(max_length=64, blank=True, default="")
+    reference = models.CharField(max_length=120, blank=True, default="")
+    action = models.CharField(max_length=80, blank=True, default="")   # what we did as a result
+    payload = models.JSONField(default=dict, blank=True)
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created"]
+        indexes = [
+            models.Index(fields=["-created"], name="webhook_created_idx"),
+            models.Index(fields=["source"], name="webhook_source_idx"),
+            # "show me every call carrying this reference" is the question an
+            # investigation actually starts from.
+            models.Index(fields=["reference"], name="webhook_reference_idx"),
+        ]
+
+    @classmethod
+    def redact(cls, value):
+        """Deep-copy `value` with sensitive leaf values replaced. Matching is on the
+        lower-cased key with separators stripped, so nubanName-style camelCase and
+        snake_case spellings of the same field are both caught."""
+        if isinstance(value, dict):
+            out = {}
+            for key, inner in value.items():
+                flat = str(key).lower().replace("_", "").replace("-", "")
+                out[key] = "[redacted]" if flat in cls.REDACT_KEYS else cls.redact(inner)
+            return out
+        if isinstance(value, list):
+            return [cls.redact(v) for v in value]
+        return value
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValueError("WebhookEvent rows are immutable and cannot be modified")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("WebhookEvent rows are immutable and cannot be deleted")
+
+    def __str__(self):
+        return f"{self.source} {self.outcome} {self.reference}"
 
 
 class Broadcast(models.Model):
     """An outbound template campaign to opted-in users (§9)."""
 
     DRAFT = "draft"
+    QUEUED = "queued"
     SENDING = "sending"
     DONE = "done"
-    STATUSES = [(DRAFT, DRAFT), (SENDING, SENDING), (DONE, DONE)]
+    STATUSES = [(DRAFT, DRAFT), (QUEUED, QUEUED), (SENDING, SENDING), (DONE, DONE)]
 
     UTILITY = "utility"
     MARKETING = "marketing"
@@ -224,11 +449,16 @@ class Broadcast(models.Model):
     status = models.CharField(max_length=10, choices=STATUSES, default=DRAFT)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
                                    on_delete=models.SET_NULL, related_name="wa_broadcasts")
+    approval_request = models.OneToOneField(
+        "ApprovalRequest", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="broadcast",
+    )
     count_queued = models.IntegerField(default=0)
     count_sent = models.IntegerField(default=0)
     count_delivered = models.IntegerField(default=0)
     count_read = models.IntegerField(default=0)
     count_failed = models.IntegerField(default=0)
+    count_unknown = models.IntegerField(default=0)
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -241,14 +471,123 @@ class Broadcast(models.Model):
 class BroadcastRecipient(models.Model):
     """One row per recipient of a broadcast, tracked from queued -> read/failed."""
 
+    QUEUED = "queued"
+    SENT = "sent"
+    DELIVERED = "delivered"
+    READ = "read"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
     broadcast = models.ForeignKey(Broadcast, on_delete=models.CASCADE, related_name="recipients")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
                              on_delete=models.SET_NULL, related_name="wa_broadcast_receipts")
     wa_msisdn = models.CharField(max_length=20, db_index=True)
-    status = models.CharField(max_length=12, default="queued")  # queued|sent|delivered|read|failed
+    status = models.CharField(max_length=12, default=QUEUED)
     wa_message_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
     error = models.CharField(max_length=200, blank=True, default="")
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    processing_attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(null=True, blank=True)
     created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["broadcast", "wa_msisdn"], name="uniq_broadcast_recipient",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.wa_msisdn} [{self.status}]"
+
+
+class ApprovalRequest(models.Model):
+    """A high-risk operator action held for a SECOND operator to approve.
+
+    Maker/checker, deferred in docs/hardening/GAP_ANALYSIS.md on the grounds that
+    multi-admin workflows matter once there is a real ops team. The reasoning holds for
+    most of the portal and fails for one endpoint: a manual wallet credit creates money
+    from nothing. A single compromised or dishonest operator account can mint a balance
+    and withdraw it, and every control downstream — tier caps, velocity, the ledger —
+    treats that balance as legitimate, because as far as the ledger is concerned it is.
+
+    So the request is stored INSTEAD of executing, and the same payload is executed
+    only after a different operator approves it. The action's own code is untouched:
+    it runs later through exactly the path it would have taken, which is what keeps
+    this from becoming a second, less-tested way to move money.
+
+    Rows are not immutable — a decision has to be recorded on them — but they are
+    append-then-decide-once: `decide()` refuses a request that is not pending.
+    """
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXECUTED = "executed"
+    FAILED = "failed"
+    STATUSES = [(PENDING, PENDING), (APPROVED, APPROVED), (REJECTED, REJECTED),
+                (EXECUTED, EXECUTED), (FAILED, FAILED)]
+
+    action = models.CharField(max_length=64)          # e.g. "wallet.credit"
+    payload = models.JSONField(default=dict, blank=True)
+    reason = models.CharField(max_length=200, blank=True, default="")
+    status = models.CharField(max_length=12, choices=STATUSES, default=PENDING)
+
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                     related_name="approval_requests")
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                   null=True, blank=True, related_name="approval_decisions")
+    decision_note = models.CharField(max_length=200, blank=True, default="")
+    result = models.JSONField(default=dict, blank=True)
+
+    created = models.DateTimeField(auto_now_add=True)
+    decided = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created"]
+        indexes = [
+            models.Index(fields=["status", "-created"], name="approval_status_idx"),
+        ]
+
+    @property
+    def is_pending(self) -> bool:
+        return self.status == self.PENDING
+
+    def __str__(self):
+        return f"{self.action} {self.status} (by u_{self.requested_by_id})"
+
+
+class ScanSession(models.Model):
+    """One run of the hosted QR scanner page.
+
+    WhatsApp cannot open a camera from a message, but it can open a URL — and a web
+    page CAN open the camera. So the scanner is a page we host: the customer taps a
+    button in the chat, the camera opens immediately, and the decoded code comes back
+    to our server rather than being photographed and sent as a message.
+
+    The token in the page's URL is what ties a scan to the chat that started it. It
+    is single-use and short-lived for the ordinary reason, but the stakes here are
+    much lower than the face check's: a scan only ever PROPOSES a transfer, which
+    still has to clear name enquiry, the confirm card and the PIN. Someone who forged
+    a scan could at most make a confirm card appear in a customer's own chat.
+    """
+
+    token = models.CharField(max_length=64, unique=True)
+    msisdn = models.CharField(max_length=20, db_index=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name="scan_sessions")
+    used_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField()
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["expires_at"], name="scan_expiry_idx")]
+
+    @property
+    def usable(self) -> bool:
+        from django.utils import timezone
+        return self.used_at is None and timezone.now() < self.expires_at
+
+    def __str__(self):
+        return f"scan:{self.msisdn}"

@@ -114,7 +114,7 @@ window.ZADM = (function () {
     { name: 'Baxi', role: 'Airtime · data · bills', status: 'operational', uptime: '99.91%' },
     { name: 'Fincra', role: 'FX rates & settlement', status: 'operational', uptime: '99.95%' },
     { name: 'Meta WhatsApp', role: 'Chat channel', status: 'degraded', uptime: '98.72%' },
-    { name: 'Sendchamp', role: 'SMS / OTP', status: 'operational', uptime: '99.99%' },
+    { name: 'Termii', role: 'SMS / OTP', status: 'operational', uptime: '99.99%' },
     { name: 'Prembly', role: 'KYC (BVN · NIN · face)', status: 'operational', uptime: '99.87%' },
   ];
 

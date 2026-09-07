@@ -9,7 +9,10 @@ function WaInbox({ toast, refresh }) {
   const [selIdx, setSelIdx] = useStateB(0);
   const [msgs, setMsgs] = useStateB([]);
   const [reply, setReply] = useStateB('');
-  const c = convos[selIdx];
+  // Clamp: a reload can shrink the list below the selected index (the inbox is
+  // the top-50 by activity), which would render `c.user` of undefined — a
+  // white-screen crash of the whole portal.
+  const c = convos[Math.min(selIdx, convos.length - 1)];
 
   const loadThread = (msisdn) =>
     ZAPI.thread(msisdn).then((r) => setMsgs(r.msgs)).catch((e) => toast('⚠ ' + e.message));
@@ -100,12 +103,22 @@ function Broadcasts({ toast, refresh }) {
   const [tpl, setTpl] = useStateB('');
   const [busy, setBusy] = useStateB(false);
   const { opted_in: optedIn, linked } = DB.BC_META;
+  const pending = (DB.APPROVALS || []).filter((r) => r.action === 'whatsapp.broadcast');
   const queue = async () => {
     setBusy(true);
     try {
       const r = await ZAPI.broadcast(tpl.trim(), cat);
-      toast('Broadcast sent to ' + r.queued + ' recipient(s) — ' + r.sent + ' delivered to provider (audit logged)');
+      toast('Broadcast approval request #' + r.approval_id + ' created — a different operator must approve it');
       setTpl(''); refresh();
+    } catch (e) { toast('⚠ ' + e.message); }
+    setBusy(false);
+  };
+  const decide = async (id, approve) => {
+    setBusy(true);
+    try {
+      await ZAPI.approvalDecide(id, approve, approve ? 'Campaign checked' : 'Campaign rejected');
+      toast(approve ? 'Campaign approved and queued for delivery' : 'Campaign rejected');
+      await refresh();
     } catch (e) { toast('⚠ ' + e.message); }
     setBusy(false);
   };
@@ -116,7 +129,7 @@ function Broadcasts({ toast, refresh }) {
         <Card title="Campaigns" pad={false}>
           {DB.BROADCASTS.length ? (
             <table className="tbl">
-              <thead><tr><th>Template</th><th>Category</th><th>Status</th><th className="r">Queued</th><th className="r">Delivered</th><th className="r">Read</th><th className="r">Failed</th></tr></thead>
+              <thead><tr><th>Template</th><th>Category</th><th>Status</th><th className="r">Queued</th><th className="r">Delivered</th><th className="r">Read</th><th className="r">Failed</th><th className="r">Unknown</th></tr></thead>
               <tbody>
                 {DB.BROADCASTS.map((b) => (
                   <tr key={b.id}>
@@ -127,6 +140,7 @@ function Broadcasts({ toast, refresh }) {
                     <td className="r num">{b.delivered.toLocaleString()}</td>
                     <td className="r num">{b.read.toLocaleString()}</td>
                     <td className="r num">{b.failed.toLocaleString()}</td>
+                    <td className="r num">{(b.unknown || 0).toLocaleString()}</td>
                   </tr>
                 ))}
               </tbody>
@@ -151,6 +165,27 @@ function Broadcasts({ toast, refresh }) {
           {!can.broadcast && <p className="rbac-note"><Icon name="lock" size={13} /> Support or super admin only.</p>}
         </Card>
       </div>
+      <div style={{ marginTop: 16 }}>
+        <Card title="Pending approvals" sub="A campaign can only be approved by a different broadcast operator" pad={false}>
+          {pending.length ? (
+            <table className="tbl">
+              <thead><tr><th>Request</th><th>Template</th><th>Category</th><th>Requested by</th><th></th></tr></thead>
+              <tbody>{pending.map((r) => (
+                <tr key={r.id}>
+                  <td className="mono">#{r.id}</td>
+                  <td className="mono">{r.payload.template_name}</td>
+                  <td>{r.payload.category}</td>
+                  <td>{r.requested_by}{r.is_own_request ? ' (you)' : ''}</td>
+                  <td className="r">
+                    <button className="btn ghost sm-btn" disabled={busy || !r.can_decide} onClick={() => decide(r.id, false)}>Reject</button>{' '}
+                    <button className="btn primary sm-btn" disabled={busy || !r.can_decide} onClick={() => decide(r.id, true)}>Approve</button>
+                  </td>
+                </tr>
+              ))}</tbody>
+            </table>
+          ) : <Empty text="No campaigns are waiting for your role." />}
+        </Card>
+      </div>
     </div>
   );
 }
@@ -163,9 +198,23 @@ function AiControls({ toast, refresh }) {
     catch (e) { toast('⚠ ' + e.message); }
   };
   const on = DB.AI.enabled;
+  const configured = (DB.AI_CFG || {}).configured;
+  // Four scopes gate the AI and only two are knowable from here, so the page
+  // says which of those two is blocking rather than leaving an operator to
+  // guess why a switch reading ON produces no intents.
+  const blocker = !configured
+    ? { text: 'No model key saved — nothing can parse a sentence yet. Add one under Model provider.', tone: 'warn' }
+    : !on
+      ? { text: 'A key is installed but the kill switch is off, so every message goes down the deterministic path.', tone: 'warn' }
+      : (DB.AI.consented === 0 && DB.AI.linked > 0)
+        ? { text: 'Key installed and the switch is on, but none of your ' + DB.AI.linked + ' linked customers have opted in yet — free-form text goes to a third-party model, so each customer grants that themselves by replying “ai on” in the chat.', tone: 'warn' }
+        : { text: 'Key installed, switch on, ' + (DB.AI.consented || 0) + ' of ' + (DB.AI.linked || 0) + ' linked customers opted in (they reply “ai on”). Handover disables it per conversation.', tone: 'ok' };
   return (
     <div>
       <PageHead title="AI controls" sub="The model only proposes — validation, confirm and PIN still gate every movement." />
+      <div className={'ai-status ' + blocker.tone} style={{ marginBottom: 14 }}>
+        <Icon name={blocker.tone === 'ok' ? 'check' : 'lock'} size={14} /> <span>{blocker.text}</span>
+      </div>
       <div className="grid-2-1">
         <Card title="Recent parsed intents" sub="Stored on each inbound message" pad={false}>
           {DB.AI.intents.length ? (
@@ -202,9 +251,101 @@ function AiControls({ toast, refresh }) {
               <div className="rule"><Icon name="check" size={15} /> Handover to a human auto-disables AI for that conversation.</div>
             </div>
           </Card>
+          <ModelProviderCard toast={toast} refresh={refresh} />
         </div>
       </div>
     </div>
+  );
+}
+
+// ---- model provider: which LLM reads the customer's sentence -------------- //
+function ModelProviderCard({ toast, refresh }) {
+  const { can } = useRole();
+  const cfg = DB.AI_CFG || {};
+  const [provider, setProvider] = useStateB(cfg.provider || 'anthropic');
+  const [model, setModel] = useStateB(cfg.model || '');
+  const [baseUrl, setBaseUrl] = useStateB(cfg.base_url || '');
+  const [apiKey, setApiKey] = useStateB('');
+  const [busy, setBusy] = useStateB(false);
+
+  if (cfg.denied) {
+    return (
+      <Card title="Model provider">
+        <p className="rbac-note"><Icon name="lock" size={13} /> Super admin only.</p>
+      </Card>
+    );
+  }
+  const spec = (cfg.providers || []).find((p) => p.id === provider) || {};
+  const pick = (id) => {
+    setProvider(id);
+    const s = (cfg.providers || []).find((p) => p.id === id) || {};
+    // Follow the provider's own default rather than carrying the previous
+    // provider's model name across, which would never be a valid id.
+    setModel(s.default_model || '');
+    setBaseUrl(s.base_url || '');
+  };
+  const save = async () => {
+    setBusy(true);
+    try {
+      // api_key is sent only when the operator typed a new one — the server
+      // keeps the existing key otherwise, so editing a model never wipes it.
+      const body = { provider, model, base_url: baseUrl };
+      if (apiKey) body.api_key = apiKey;
+      await ZAPI.aiConfigSave(body);
+      setApiKey('');
+      toast('Model provider saved (audit logged)');
+      refresh();
+    } catch (e) { toast('⚠ ' + e.message); }
+    setBusy(false);
+  };
+  const test = async () => {
+    setBusy(true);
+    try { const r = await ZAPI.aiTest(); toast((r.success ? '✅ ' : '⚠ ') + r.message); }
+    catch (e) { toast('⚠ ' + e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <Card title="Model provider" sub="Which LLM reads the customer's sentence. Swapping it cannot change what the platform will do — the router still validates every intent.">
+      <div className="form-rows">
+        <label className="fr">
+          <span>Provider</span>
+          <select value={provider} disabled={!can.settings} onChange={(e) => pick(e.target.value)}>
+            {(cfg.providers || []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+          </select>
+        </label>
+        <label className="fr">
+          <span>Model</span>
+          <input value={model} disabled={!can.settings} placeholder={spec.default_model || 'model id'}
+                 onChange={(e) => setModel(e.target.value)} />
+        </label>
+        {spec.needs_base_url && (
+          <label className="fr">
+            <span>Base URL</span>
+            <input value={baseUrl} disabled={!can.settings} placeholder="https://…/v1"
+                   onChange={(e) => setBaseUrl(e.target.value)} />
+          </label>
+        )}
+        <label className="fr">
+          <span>API key</span>
+          <input type="password" value={apiKey} disabled={!can.settings} autoComplete="new-password"
+                 placeholder={cfg.api_key_masked ? `${cfg.api_key_masked} — leave blank to keep` : 'paste the provider key'}
+                 onChange={(e) => setApiKey(e.target.value)} />
+        </label>
+      </div>
+      <p className="dim sm" style={{ margin: '10px 0 0' }}>
+        Stored encrypted; never shown again after saving.
+        {spec.key_url ? <> <a href={spec.key_url} target="_blank" rel="noreferrer noopener">Get a key ↗</a></> : null}
+      </p>
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <button className="btn" disabled={!can.settings || busy} onClick={save}>Save</button>
+        <button className="btn ghost" disabled={!can.settings || busy} onClick={test}>Test connection</button>
+      </div>
+      {!cfg.configured && <p className="rbac-note" style={{ marginTop: 10 }}>
+        <Icon name="lock" size={13} /> Not configured — the channel is fully deterministic until a key is saved.
+      </p>}
+      {!can.settings && <p className="rbac-note"><Icon name="lock" size={13} /> Super admin only.</p>}
+    </Card>
   );
 }
 
@@ -238,8 +379,40 @@ function Audit({ toast }) {
   );
 }
 
+// ---- one settings row: editable where the value is a plain number or flag --- //
+function SettingRow({ s, toast, refresh }) {
+  const { can } = useRole();
+  const [val, setVal] = useStateB(s.value);
+  const [busy, setBusy] = useStateB(false);
+  const save = async () => {
+    setBusy(true);
+    try { await ZAPI.settingSave(s.key, val); toast(s.key + ' saved (audit logged)'); refresh(); }
+    catch (e) { toast('\u26a0 ' + e.message); }
+    setBusy(false);
+  };
+  return (
+    <tr>
+      <td><span className="mono sm">{s.key}</span></td>
+      <td>
+        {s.secret
+          // Encrypted is not the same as safe to display: it is still credential
+          // material on a screen that gets shared.
+          ? <span className="dim mono sm" title="Hidden — stored encrypted, never shown">••••••••</span>
+          : s.editable && can.settings
+            ? <span style={{ display: 'flex', gap: 6 }}>
+                <input className="mono sm" value={val} style={{ width: 110 }}
+                       onChange={(e) => setVal(e.target.value)} />
+                <button className="btn ghost sm" disabled={busy || val === s.value} onClick={save}>Save</button>
+              </span>
+            : <b className="num">{s.value || '—'}</b>}
+      </td>
+      <td className="dim sm">{s.desc}</td>
+    </tr>
+  );
+}
+
 // ================= SETTINGS & TEAM =================
-function Settings({ toast }) {
+function Settings({ toast, refresh }) {
   return (
     <div>
       <PageHead title="Settings & team" sub="Runtime configuration and role-based access." />
@@ -249,11 +422,7 @@ function Settings({ toast }) {
             <thead><tr><th>Key</th><th>Value</th><th>Description</th></tr></thead>
             <tbody>
               {DB.SETTINGS.map((s) => (
-                <tr key={s.key}>
-                  <td><span className="mono sm">{s.key}</span></td>
-                  <td><b className="num">{s.value || '—'}</b></td>
-                  <td className="dim sm">{s.desc}</td>
-                </tr>
+                <SettingRow key={s.key} s={s} toast={toast} refresh={refresh} />
               ))}
             </tbody>
           </table>
@@ -265,9 +434,10 @@ function Settings({ toast }) {
               <Badge v={m.role === 'super_admin' ? 'success' : m.role === 'finance' ? 'human' : m.role === 'support' ? 'bot' : 'draft'}>{m.role}</Badge>
             </div>
           ))}
-          <div className="note" style={{ marginTop: 12 }}><Icon name="lock" size={14} /> Staff accounts and role groups are managed in Django admin (<span className="mono sm">/admin/</span>).</div>
+          <div className="note" style={{ marginTop: 12 }}><Icon name="lock" size={14} /> Staff accounts and role groups are managed in Django admin.</div>
         </Card>
       </div>
+      <DjangoAdminCard />
       <Card title="Role permissions" sub="Enforced server-side on every endpoint" pad={false}>
         <table className="tbl">
           <thead><tr><th>Permission</th>{DB.ROLES.map((r) => <th key={r} className="r">{r}</th>)}</tr></thead>
@@ -284,6 +454,25 @@ function Settings({ toast }) {
         </table>
       </Card>
     </div>
+  );
+}
+
+// ---- Django admin: the escape hatch for the long tail ------------------- //
+function DjangoAdminCard() {
+  const d = DB.DJANGO_ADMIN || {};
+  return (
+    <Card title="Django admin"
+          sub="The portal owns the daily workflows; this is the full model surface for everything else. Opens in a new tab.">
+      {d.available ? (
+        <div className="admin-links">
+          {(d.sections || []).map((sec) => (
+            <a key={sec.url} href={sec.url} target="_blank" rel="noreferrer noopener">{sec.label} ↗</a>
+          ))}
+        </div>
+      ) : (
+        <p className="rbac-note"><Icon name="lock" size={13} /> {d.message || 'Restricted to superusers.'}</p>
+      )}
+    </Card>
   );
 }
 

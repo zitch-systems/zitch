@@ -21,7 +21,7 @@ const SafetyTips = () => {
         <Header title="5 Safety Tips" sub="Keep your account secure" onBack={() => router.back()} />
       </View>
 
-      <View style={{ paddingHorizontal: 16, gap: 12 }}>
+      <View style={{ paddingHorizontal: 20, gap: 12 }}>
         {TIPS.map((t) => (
           <Card key={t.title} style={{ flexDirection: 'row', gap: 14 }}>
             <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>

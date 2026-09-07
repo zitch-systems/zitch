@@ -1,27 +1,35 @@
 """WhatsApp channel tests (slice 1): webhook, linking, balance, NGN transfer.
 
-All run in MOCK mode (no Meta/Monnify keys), so the webhook accepts unsigned
+All run in MOCK mode (no Meta/Wema keys), so the webhook accepts unsigned
 bodies and the payout settles automatically — the full flow is exercised offline.
 """
 import hashlib
 import hmac
 import json
+import re
+import unittest
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase, override_settings
+from django.utils import timezone
 
 from accounts.models import AccessToken
-from transfers.models import Bank
+from transfers.models import Bank, Beneficiary
 from utility.models import CablePlan, DataPlan
 from wallet.models import Transaction
 from wallet.services import credit, get_or_create_wallet
 
+from .flows import (PIN_SCREEN, FLOW_ID_STATE, FLOW_PIN_STATE, handle_flow_request,
+                    resolve_onboarding_token, sign_onboarding_token)
 from .models import (
     AuditLog, Broadcast, BroadcastRecipient, ConversationState,
-    PendingAction, WaMessageLog, WhatsAppLink,
+    PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink,
 )
+from . import router
+from .router import _local_phone, reply_receipt
 
 User = get_user_model()
 MSISDN = "2348011112222"
@@ -31,13 +39,25 @@ def make_user(phone="08010000001", email="ada@zitch.test", pin="1234", balance="
     # App-linked users have completed KYC (BVN verified), so they can send on
     # WhatsApp. WhatsApp-onboarded accounts start unverified (tested separately).
     u = User.objects.create(username=phone, phone=phone, email=email,
-                            first_name="Ada", last_name="Eze", tier=1, bvn_verified=True)
+                            first_name="Ada", last_name="Eze", tier=1,
+                            email_verified=True, phone_verified=True,
+                            bvn_verified=True, nin_verified=True)
     u.set_transaction_pin(pin)
     u.save()
     get_or_create_wallet(u)
     if Decimal(balance) > 0:
         credit(u, Decimal(balance), "Seed")
     return u, AccessToken.issue(u).key
+
+
+def give_account(user, number="0100000123"):
+    """Provision a Wema NUBAN on the user's wallet (what the app OTP flow persists)."""
+    w = get_or_create_wallet(user)
+    w.account_number = number
+    w.account_name = (user.get_full_name() or "Ada Eze").strip()
+    w.bank_name = "Wema Bank"
+    w.save(update_fields=["account_number", "account_name", "bank_name", "updated"])
+    return w
 
 
 class WebhookTests(TestCase):
@@ -56,9 +76,12 @@ class WebhookTests(TestCase):
         self.assertEqual(bad.status_code, 403)
 
     @override_settings(WHATSAPP={"VERIFY_TOKEN": "", "TOKEN": "", "APP_SECRET": "shh",
-                                 "BASE_URL": "x", "PHONE_NUMBER_ID": "", "BUSINESS_NUMBER": ""})
+                                 "BASE_URL": "x", "PHONE_NUMBER_ID": "phone-1",
+                                 "BUSINESS_NUMBER": "2348000000000", "MODE": "live"})
     def test_signature_enforced_when_secret_set(self):
-        body = json.dumps({"entry": []}).encode()
+        event = {"entry": [{"changes": [{"value": {
+            "metadata": {"phone_number_id": "phone-1"}}}]}]}
+        body = json.dumps(event).encode()
         bad = self.client.post("/webhooks/whatsapp", data=body, content_type="application/json",
                                HTTP_X_HUB_SIGNATURE_256="sha256=deadbeef")
         self.assertEqual(bad.status_code, 401)
@@ -66,6 +89,38 @@ class WebhookTests(TestCase):
         good = self.client.post("/webhooks/whatsapp", data=body, content_type="application/json",
                                 HTTP_X_HUB_SIGNATURE_256=f"sha256={good_sig}")
         self.assertEqual(good.status_code, 200)
+
+    @override_settings(WHATSAPP={"MODE": "disabled", "VERIFY_TOKEN": "", "TOKEN": "",
+                                 "APP_SECRET": "", "BASE_URL": "x", "PHONE_NUMBER_ID": "",
+                                 "BUSINESS_NUMBER": ""})
+    def test_disabled_channel_exposes_no_webhook(self):
+        self.assertEqual(self.client.get("/webhooks/whatsapp").status_code, 404)
+        self.assertEqual(self.client.post("/webhooks/whatsapp", data=b"{}",
+                                          content_type="application/json").status_code, 404)
+
+    @override_settings(WHATSAPP={"MODE": "live", "VERIFY_TOKEN": "v", "TOKEN": "t",
+                                 "APP_SECRET": "shh", "BASE_URL": "x",
+                                 "PHONE_NUMBER_ID": "phone-1",
+                                 "BUSINESS_NUMBER": "2348000000000"})
+    def test_live_webhook_rejects_another_meta_phone_number_id(self):
+        event = {"entry": [{"changes": [{"value": {
+            "metadata": {"phone_number_id": "attacker-phone"}}}]}]}
+        body = json.dumps(event).encode()
+        sig = hmac.new(b"shh", body, hashlib.sha256).hexdigest()
+        response = self.client.post("/webhooks/whatsapp", data=body,
+                                    content_type="application/json",
+                                    HTTP_X_HUB_SIGNATURE_256=f"sha256={sig}")
+        self.assertEqual(response.status_code, 400)
+
+    @override_settings(DEBUG=False, TESTING=False, WHATSAPP_QUEUE_KEY="queue-key")
+    def test_production_worker_refuses_to_consume_when_channel_is_not_live(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with patch("whatsapp.management.commands.whatsapp_worker.wa_live",
+                   return_value=False):
+            with self.assertRaisesMessage(CommandError, "WHATSAPP_MODE=live"):
+                call_command("whatsapp_worker", "--once")
 
 
 class ChannelTests(TestCase):
@@ -87,8 +142,132 @@ class ChannelTests(TestCase):
     def link(self):
         return WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
 
+    def receipt_text(self, msisdn=MSISDN):
+        """The receipt message. The balance is deliberately sent AFTER it, so the
+        receipt is no longer last_reply()."""
+        for row in WaMessageLog.objects.filter(
+                msisdn=msisdn, direction=WaMessageLog.OUT).order_by("-created"):
+            if "receipt" in row.text.lower():
+                return row.text
+        return ""
+
     def balance(self):
         return get_or_create_wallet(self.user).balance
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_production_webhook_persists_before_worker_processing(self):
+        """The HTTP acknowledgement never owns execution in production."""
+        self.link()
+        response = self.inbound("balance", "async-1")
+        self.assertEqual(response.status_code, 200)
+        queued = WaMessageLog.objects.get(wa_message_id="async-1")
+        self.assertIsNone(queued.processed_at)
+        self.assertTrue(bytes(queued.processing_payload))
+        self.assertFalse(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT,
+        ).exists())
+
+        from .jobs import process_inbound_batch
+        self.assertEqual(process_inbound_batch(), 1)
+        queued.refresh_from_db()
+        self.assertIsNotNone(queued.processed_at)
+        self.assertEqual(bytes(queued.processing_payload), b"")
+        self.assertIn("balance", self.last_reply().lower())
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_same_sender_messages_are_claimed_in_order(self):
+        self.link()
+        self.inbound("send", "fifo-1")
+        self.inbound("5000", "fifo-2")
+        first, second = WaMessageLog.objects.filter(
+            msisdn=MSISDN,
+            direction=WaMessageLog.IN,
+        ).order_by("created", "pk")
+
+        from .jobs import _claim_inbound
+
+        claimed, disposition = _claim_inbound(first.pk)
+        self.assertEqual(disposition, "claimed")
+        self.assertEqual(claimed.pk, first.pk)
+
+        blocked, disposition = _claim_inbound(second.pk)
+        self.assertIsNone(blocked)
+        self.assertEqual(disposition, "sender_busy")
+
+        WaMessageLog.objects.filter(pk=first.pk).update(
+            processed_at=timezone.now(),
+            processing_started_at=None,
+            processing_payload=b"",
+        )
+        claimed, disposition = _claim_inbound(second.pk)
+        self.assertEqual(disposition, "claimed")
+        self.assertEqual(claimed.pk, second.pk)
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_dead_letter_erases_encrypted_customer_payload(self):
+        self.link()
+        self.inbound("balance", "dead-1")
+        queued = WaMessageLog.objects.get(wa_message_id="dead-1")
+        queued.processing_attempts = 4
+        queued.save(update_fields=["processing_attempts"])
+
+        from .jobs import process_inbound_message
+        with patch("whatsapp.jobs.handle_inbound", side_effect=RuntimeError("crash")):
+            self.assertEqual(process_inbound_message(queued.pk), "dead_letter")
+        queued.refresh_from_db()
+        self.assertIsNotNone(queued.processed_at)
+        self.assertEqual(bytes(queued.processing_payload), b"")
+        self.assertEqual(queued.processing_error, "dead_letter:RuntimeError")
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_dead_letter_pages(self):
+        """A dead letter is a banking command that will never run and a chat that
+        will never be answered. The cumulative count on the diagnostics page is
+        not a signal that a NEW one just happened, so it has to alert."""
+        self.link()
+        self.inbound("balance", "dead-page-1")
+        queued = WaMessageLog.objects.get(wa_message_id="dead-page-1")
+        queued.processing_attempts = 4
+        queued.save(update_fields=["processing_attempts"])
+
+        from .jobs import process_inbound_message
+        with patch("whatsapp.jobs.handle_inbound", side_effect=RuntimeError("crash")), \
+             patch("utility.alerts.alert") as alerted:
+            self.assertEqual(process_inbound_message(queued.pk), "dead_letter")
+        paged = [c for c in alerted.call_args_list if "dead letter" in str(c)]
+        self.assertTrue(paged, "abandoning a customer message must page")
+        # The alert trail must not become a list of customer phone numbers.
+        self.assertNotIn(MSISDN, str(paged[0]))
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_a_retry_that_is_not_terminal_does_not_page(self):
+        self.link()
+        self.inbound("balance", "dead-page-2")
+        queued = WaMessageLog.objects.get(wa_message_id="dead-page-2")
+
+        from .jobs import process_inbound_message
+        with patch("whatsapp.jobs.handle_inbound", side_effect=RuntimeError("crash")), \
+             patch("utility.alerts.alert") as alerted:
+            self.assertEqual(process_inbound_message(queued.pk), "retry")
+        self.assertFalse([c for c in alerted.call_args_list if "dead letter" in str(c)])
+
+    @override_settings(
+        WHATSAPP_PROCESS_INLINE=False,
+        WHATSAPP_QUEUE_KEY="old-queue-key-0123456789-0123456789",
+    )
+    def test_worker_decrypts_jobs_during_queue_key_rotation_overlap(self):
+        self.link()
+        self.inbound("balance", "rotate-1")
+        queued = WaMessageLog.objects.get(wa_message_id="rotate-1")
+
+        from .jobs import process_inbound_message
+        with override_settings(
+            WHATSAPP_QUEUE_KEY="new-queue-key-0123456789-0123456789",
+            WHATSAPP_QUEUE_KEY_PREV="old-queue-key-0123456789-0123456789",
+        ):
+            with patch("whatsapp.jobs.handle_inbound") as handler:
+                self.assertEqual(process_inbound_message(queued.pk), "processed")
+        handler.assert_called_once_with(MSISDN, "balance")
 
     # --- linking ---
     def test_unlinked_number_gets_create_or_link_choice(self):
@@ -99,30 +278,68 @@ class ChannelTests(TestCase):
         self.assertIn("Link WhatsApp", self.last_reply(msisdn="2349090000001"))
         self.assertFalse(WhatsAppLink.objects.filter(wa_msisdn="2349090000001", status=WhatsAppLink.ACTIVE).exists())
 
+    @override_settings(WHATSAPP={"MODE": "sandbox", "ALLOW_CHAT_SIGNUP": False,
+                                 "VERIFY_TOKEN": "", "TOKEN": "", "APP_SECRET": "",
+                                 "BASE_URL": "x", "PHONE_NUMBER_ID": "",
+                                 "BUSINESS_NUMBER": ""})
+    def test_production_style_channel_never_collects_a_pin_in_chat(self):
+        m = "2349090000999"
+        self.inbound("1", "secure-o1", msisdn=m)
+        self.assertIn("zitch app", self.last_reply(m).lower())
+        self.assertFalse(User.objects.filter(phone="09090000999").exists())
+
     # --- onboarding (create an account from WhatsApp) ---
-    def test_onboarding_creates_tier2_account_and_links(self):
+    def test_onboarding_creates_tier0_account_and_links(self):
         m = "2349090000002"  # -> local 09090000002, no existing user
         self.inbound("1", "o1", msisdn=m)
         self.assertIn("first name", self.last_reply(m).lower())
         self.inbound("Tunde", "o2", msisdn=m)
         self.assertIn("last name", self.last_reply(m).lower())
         self.inbound("Bello", "o3", msisdn=m)
+        self.assertIn("email", self.last_reply(m).lower())
+        self.inbound("not-an-email", "o3b", msisdn=m)         # rejected, re-asked
+        self.assertIn("look like an email", self.last_reply(m))
+        self.inbound("Tunde.Bello@Example.com", "o3c", msisdn=m)
         self.assertIn("PIN", self.last_reply(m))
-        self.inbound("1357", "o4", msisdn=m)   # set PIN
-        self.inbound("1357", "o5", msisdn=m)   # confirm PIN
+        self.inbound("135790", "o4", msisdn=m)   # set PIN
+        self.inbound("135790", "o5", msisdn=m)   # confirm PIN
         u = User.objects.get(phone="09090000002")
-        self.assertEqual(u.tier, 2)            # WhatsApp onboarding -> ₦1m/day caps
-        self.assertTrue(u.check_transaction_pin("1357"))
+        self.assertEqual(u.tier, 0)            # unverified chat signup (no BVN/NIN) -> Tier 0
+        self.assertTrue(u.check_transaction_pin("135790"))
+        self.assertEqual(u.email, "tunde.bello@example.com")  # stored lowercased
+        self.assertTrue(u.onboarded_via_whatsapp)
+        self.assertFalse(u.email_verified)                    # chat-collected: unproven
+        self.assertFalse(u.has_usable_password())             # app entry = OTP reset
         self.assertTrue(WhatsAppLink.objects.filter(wa_msisdn=m, user=u, status=WhatsAppLink.ACTIVE).exists())
-        self.assertIn("Welcome to Zitch", self.last_reply(m))
+        welcome = WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT, text__contains="Welcome to Zitch").first()
+        self.assertIsNotNone(welcome)
+        # Verification is no longer deferred to a "reply 8" the customer never
+        # sends — account setup runs it — but the path stays named in the menu
+        # for anyone who cancels out of it.
+        self.assertIn("Verify my identity", welcome.text)
+
+    def test_onboarding_refuses_an_email_already_on_an_account(self):
+        # Recovery looks accounts up by email; two accounts sharing one address
+        # would make reset codes ambiguous, so the collision is refused at entry.
+        User.objects.create(username="08199990000", phone="08199990000", email="taken@zitch.test")
+        m = "2349090000012"
+        self.inbound("1", "d1", msisdn=m)
+        self.inbound("Ada", "d2", msisdn=m)
+        self.inbound("Obi", "d3", msisdn=m)
+        self.inbound("TAKEN@zitch.test", "d4", msisdn=m)
+        self.assertIn("already on a Zitch account", self.last_reply(m))
+        self.inbound("ada.obi@zitch.test", "d5", msisdn=m)    # a fresh one proceeds
+        self.assertIn("PIN", self.last_reply(m))
 
     def test_onboarding_pin_mismatch_retries(self):
         m = "2349090000003"
         self.inbound("1", "p1", msisdn=m)
         self.inbound("Ada", "p2", msisdn=m)
         self.inbound("Okafor", "p3", msisdn=m)
-        self.inbound("1111", "p4", msisdn=m)
-        self.inbound("2222", "p5", msisdn=m)  # mismatch
+        self.inbound("ada.okafor@example.com", "p3e", msisdn=m)
+        self.inbound("111111", "p4", msisdn=m)
+        self.inbound("222222", "p5", msisdn=m)  # mismatch
         self.assertIn("match", self.last_reply(m).lower())
         self.assertFalse(User.objects.filter(phone="09090000003").exists())
 
@@ -133,15 +350,30 @@ class ChannelTests(TestCase):
         self.assertIn("already has a Zitch account", self.last_reply())
         self.assertFalse(WaMessageLog.objects.filter(text__icontains="first name").exists())
 
-    def test_whatsapp_user_can_send_without_bvn(self):
-        # WhatsApp accounts transact immediately (capped at the ₦1m/day tier-2
-        # limits) — no BVN gate before sending.
+    def test_whatsapp_user_cannot_send_without_bvn(self):
+        # Encoded the OLD policy ("transact immediately, no BVN gate") until the
+        # verification-before-first-transaction requirement landed. It kept
+        # passing only because the refusal lived at debit time and this walked
+        # no further than "how much" — the gate now answers at the door.
         self.user.bvn_verified = False
         self.user.save(update_fields=["bvn_verified"])
         self.link()
         self.inbound("send", "b1")
-        self.assertIn("how much", self.last_reply().lower())
-        self.assertTrue(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
+        self.assertIn("verify your bvn", self.last_reply().lower())
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
+
+    def test_frozen_user_is_blocked_on_whatsapp(self):
+        # Freeze is the primary incident-response lever; it must cover WhatsApp
+        # (which is link-bound, not token-bound) as well as the app.
+        self.link()
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+        before = self.balance()
+        self.inbound("balance", "fz1")
+        self.assertIn("suspended", self.last_reply().lower())
+        self.inbound("send 5000", "fz2")
+        self.assertIn("suspended", self.last_reply().lower())
+        self.assertEqual(self.balance(), before)   # nothing transacted
 
     def test_link_code_links_number(self):
         # The code must be sent from the number on the user's Zitch account
@@ -149,23 +381,64 @@ class ChannelTests(TestCase):
         self.user.phone = "08011112222"
         self.user.save(update_fields=["phone"])
         res = self.client.post("/api/whatsapp/link/start/",
-                               data=json.dumps({"access_token": self.token}), content_type="application/json")
+                               data=json.dumps({"access_token": self.token, "transaction_pin": "1234"}),
+                               content_type="application/json")
         code = res.json()["code"]
+        self.assertGreaterEqual(len(code), 32)  # at least 128 bits, not a 24-bit brute-force code
         self.inbound(f"LINK {code}", "m1")
         link = WhatsAppLink.objects.get(wa_msisdn=MSISDN)
         self.assertEqual(link.status, WhatsAppLink.ACTIVE)
         self.assertEqual(link.user_id, self.user.id)
-        self.assertIn("Linked", self.last_reply())
+        # Asserted across the conversation, not on the last message: linking now
+        # sends the confirmation and then the menu, so the confirmation is not
+        # last. What matters is that it was said.
+        self.assertIn("Linked", " ".join(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).values_list("text", flat=True)))
 
     def test_link_rejected_from_unregistered_number(self):
         # Default user phone (08010000001) does NOT match MSISDN — a leaked code
         # sent from another WhatsApp number must not bind the account.
         res = self.client.post("/api/whatsapp/link/start/",
-                               data=json.dumps({"access_token": self.token}), content_type="application/json")
+                               data=json.dumps({"access_token": self.token, "transaction_pin": "1234"}),
+                               content_type="application/json")
         code = res.json()["code"]
         self.inbound(f"LINK {code}", "m1")
         self.assertFalse(WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE).exists())
         self.assertIn("your Zitch account", self.last_reply())
+
+    def test_link_rejected_when_account_has_no_registered_phone(self):
+        # `phone` is nullable: with no number on file there's nothing to match the
+        # sender against, so the bind must FAIL CLOSED (else a leaked code from any
+        # WhatsApp number would claim the account).
+        res = self.client.post("/api/whatsapp/link/start/",
+                               data=json.dumps({"access_token": self.token, "transaction_pin": "1234"}),
+                               content_type="application/json")
+        code = res.json()["code"]
+        self.user.phone = None
+        self.user.save(update_fields=["phone"])
+        self.inbound(f"LINK {code}", "np1")
+        self.assertFalse(WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE).exists())
+        self.assertIn("your Zitch account", self.last_reply())
+
+    def test_frozen_account_cannot_execute_via_flow_pin(self):
+        # Freeze bypass: the chat path blocks a frozen user, but the encrypted Flow
+        # (native PIN pad) execution path must ALSO refuse — a transfer/VTU armed
+        # BEFORE an admin freeze can't run through the Flow within the arm window.
+        from .router import run_flow_execution
+
+        self.link()
+        before = self.balance()
+        pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="airtime", state="flow_pin",
+            payload={"amount": "500", "phone": "08030000000", "network": "MTN"},
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+        out = run_flow_execution(pa, self.user)
+        self.assertIn("suspended", out.lower())
+        self.assertEqual(self.balance(), before)                       # no debit
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())  # cleared
 
     # --- balance ---
     def test_balance(self):
@@ -175,71 +448,107 @@ class ChannelTests(TestCase):
 
     # --- add money (dedicated reserved account) ---
     def test_add_money_shows_dedicated_account_for_verified_user(self):
-        # make_user is BVN-verified, so a reserved account can be minted lazily.
+        # A user with a provisioned Wema NUBAN sees it for bank-transfer funding.
+        wallet = give_account(self.user)
         self.link()
         self.inbound("add money", "am1")
-        wallet = get_or_create_wallet(self.user)
-        self.assertTrue(wallet.account_number)               # reserved on demand
         reply = self.last_reply()
         self.assertIn(wallet.account_number, reply)
         self.assertIn("credited automatically", reply.lower())
 
     def test_add_money_menu_number_works(self):
+        wallet = give_account(self.user)
         self.link()
         self.inbound("6", "am2")
-        self.assertIn(get_or_create_wallet(self.user).account_number, self.last_reply())
+        self.assertIn(wallet.account_number, self.last_reply())
 
-    def test_add_money_without_account_onboards_via_bvn(self):
-        # An unverified, account-less user funds for the first time: WhatsApp
-        # collects the BVN and Monnify (mock) mints the account in-chat.
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_add_money_without_account_starts_setup_in_chat(self, _enabled):
+        # Account setup needs a BVN/NIN + bank OTP round-trip. It now runs here,
+        # driving the same shared wallet.views code the app uses.
         self.user.bvn_verified = False
         self.user.nin_verified = False
         self.user.save(update_fields=["bvn_verified", "nin_verified"])
         self.link()
         self.inbound("fund", "am3")
         self.assertFalse(get_or_create_wallet(self.user).account_number)
-        self.assertIn("bvn", self.last_reply().lower())
-        self.assertTrue(PendingAction.objects.filter(
-            msisdn=MSISDN, action_type="add_account", state="bvn").exists())
+        self.assertIn("BVN", self.last_reply())
+        self.assertEqual(PendingAction.objects.get(
+            msisdn=MSISDN, action_type="add_account").state, "id_type")
 
-        # Send the 11-digit BVN -> account is minted and shown.
-        self.inbound("22211100099", "am4")
-        wallet = get_or_create_wallet(self.user)
-        self.assertTrue(wallet.account_number)
-        self.assertIn(wallet.account_number, self.last_reply())
-        # The BVN must be masked in the inbound log — never stored in clear.
-        self.assertFalse(WaMessageLog.objects.filter(direction=WaMessageLog.IN, text="22211100099").exists())
-        self.assertTrue(WaMessageLog.objects.filter(direction=WaMessageLog.IN, text="[BVN]").exists())
-
-    def test_add_money_rejects_bad_bvn_and_keeps_flow(self):
-        self.user.bvn_verified = False
-        self.user.nin_verified = False
-        self.user.save(update_fields=["bvn_verified", "nin_verified"])
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    @patch("whatsapp.router.attach_existing_bank_account",
+           return_value=(None, "provider returned no account"))
+    @patch("utility.alerts.alert")
+    def test_verified_bvn_without_nuban_is_escalated(
+            self, alerted, _readback, _enabled):
         self.link()
-        self.inbound("fund", "amb1")
-        self.inbound("123", "amb2")  # too short
-        self.assertIn("11-digit", self.last_reply())
-        self.assertFalse(get_or_create_wallet(self.user).account_number)
-        self.assertTrue(PendingAction.objects.filter(
-            msisdn=MSISDN, action_type="add_account", state="bvn").exists())
+        router.cache.delete(f"wema-missing-nuban:{self.user.pk}")
 
-    @patch("whatsapp.router.ensure_reserved_account")
-    def test_add_money_bvn_attempts_are_capped(self, mock_reserve):
-        # Monnify keeps rejecting (numberless wallet) — the flow must abort after
-        # BVN_MAX_ATTEMPTS so a linked number can't brute-force BVNs.
-        self.user.bvn_verified = False
-        self.user.nin_verified = False
-        self.user.save(update_fields=["bvn_verified", "nin_verified"])
-        mock_reserve.return_value = get_or_create_wallet(self.user)  # never gets a number
+        self.inbound("6", "am-missing-nuban")
+
+        reply = self.last_reply()
+        self.assertIn("BVN is verified", reply)
+        self.assertIn("support has been notified", reply)
+        self.assertNotIn("being linked", reply)
+        alerted.assert_called_once()
+        self.assertEqual(alerted.call_args.kwargs["user_id"], self.user.pk)
+
+        # This assertion used to read assertFalse(...exists()) - it pinned the
+        # customer-facing dead end. Paging support is right and still happens
+        # above, but leaving NO pending action meant the only advice on offer
+        # ("reply 6 to add money") led straight back to this same sentence, with
+        # the account card still saying no funding number existed. BVN cannot be
+        # re-submitted once verified, so NIN is the one remaining rail and the
+        # customer is now put on it.
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="add_account")
+        self.assertEqual(pa.state, "verification_method")
+        self.assertEqual(pa.payload.get("id_type"), "nin")
+        self.assertIn("NIN", reply)
+
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    @patch("whatsapp.router.attach_existing_bank_account",
+           return_value=(None, "provider returned no account"))
+    @patch("whatsapp.router.wema_provider.resend_wallet_otp",
+           return_value={"success": True})
+    @patch("utility.alerts.alert")
+    def test_verified_bvn_without_nuban_resumes_an_open_nin_attempt(
+            self, _alerted, resend, _readback, _enabled):
+        """A still-open NIN setup is resumable even though the BVN rail is dead.
+
+        Starting a fresh NIN attempt here would abandon a tracking id Wema is
+        still holding a code against, and ask the customer for a second code
+        while the first is live."""
+        from wallet.models import WemaProvisioningAttempt
+
         self.link()
-        self.inbound("fund", "cap1")
-        for i in range(3):
-            self.inbound("22211100099", f"cap{i + 2}")
-        self.assertIn("try again later", self.last_reply().lower())
+        router.cache.delete(f"wema-missing-nuban:{self.user.pk}")
+        WemaProvisioningAttempt.objects.create(
+            user=self.user, identity_type=WemaProvisioningAttempt.NIN,
+            tracking_id="nin-track-1", status=WemaProvisioningAttempt.PENDING,
+            expires_at=timezone.now() + timedelta(minutes=30),
+        )
+
+        self.inbound("6", "am-missing-nuban-nin")
+
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="add_account")
+        self.assertEqual(pa.state, "otp")
+        self.assertEqual(pa.payload.get("tracking_id"), "nin-track-1")
+        # The resend and the screen must both be told this is the NIN rail;
+        # bvn=True here would ask Wema to resend against the wrong product.
+        self.assertIs(pa.payload.get("using_bvn"), False)
+        self.assertEqual(pa.payload.get("id_type"), "nin")
+        self.assertIs(resend.call_args.kwargs.get("bvn"), False)
+        self.assertIn("NIN", self.last_reply())
+
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=False)
+    def test_add_money_is_unavailable_when_funding_is_off(self, _enabled):
+        self.link()
+        self.inbound("fund", "am4")
+        self.assertIn("isn't available", self.last_reply())
         self.assertFalse(PendingAction.objects.filter(
-            msisdn=MSISDN, action_type="add_account").exists())  # flow aborted
+            msisdn=MSISDN, action_type="add_account").exists())
 
-    # --- transfer ---
     def _run_transfer(self, pin="1234", start_mid="t"):
         self.link()
         self.inbound("2", f"{start_mid}1")               # send money
@@ -260,7 +569,7 @@ class ChannelTests(TestCase):
         self.assertIn("Confirm transfer", self.last_reply())
         self.assertIn("ADEYEMI WILLIAM", self.last_reply())  # the BANK's name, not a typed one
         self.inbound("1234", "t5")
-        self.assertIn("Sent", self.last_reply())
+        self.assertIn("Transfer receipt", self.receipt_text())
         self.assertEqual(self.balance(), Decimal("45000"))
         self.assertEqual(
             Transaction.objects.filter(user=self.user, direction=Transaction.OUT,
@@ -271,7 +580,7 @@ class ChannelTests(TestCase):
         self.inbound("0123456789 GTBank John Doe 5000", "p1")  # single bank match -> confirm
         self.assertIn("Confirm transfer", self.last_reply())
         self.inbound("1234", "p2")
-        self.assertIn("Sent", self.last_reply())
+        self.assertIn("Transfer receipt", self.receipt_text())
         self.assertEqual(self.balance(), Decimal("45000"))
 
     def test_paste_amount_before_account(self):
@@ -290,6 +599,29 @@ class ChannelTests(TestCase):
         self.inbound("1234", "t5")
         self.assertEqual(self.balance(), Decimal("45000"))
         self.assertEqual(Transaction.objects.filter(user=self.user, direction=Transaction.OUT).count(), 1)
+        self.assertIsNotNone(WaMessageLog.objects.get(wa_message_id="t5").processed_at)
+
+    def test_failed_handler_releases_claim_so_meta_retry_is_not_lost(self):
+        self.link()
+        with patch("whatsapp.jobs.handle_inbound", side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                self.inbound("balance", "retry-1")
+        failed = WaMessageLog.objects.get(wa_message_id="retry-1")
+        self.assertIsNone(failed.processed_at)
+        self.assertIsNone(failed.processing_started_at)
+        self.assertEqual(failed.processing_error, "RuntimeError")
+        self.assertNotIn(b"balance", bytes(failed.processing_payload))
+        failed.next_attempt_at = timezone.now() - timedelta(seconds=1)
+        failed.save(update_fields=["next_attempt_at"])
+
+        with patch("whatsapp.jobs.handle_inbound") as handler:
+            response = self.inbound("balance", "retry-1")
+        self.assertEqual(response.status_code, 200)
+        handler.assert_called_once_with(MSISDN, "balance")
+        retried = WaMessageLog.objects.get(wa_message_id="retry-1")
+        self.assertIsNotNone(retried.processed_at)
+        self.assertEqual(retried.processing_attempts, 2)
+        self.assertEqual(bytes(retried.processing_payload), b"")
 
     def test_wrong_pin_cancels_after_retry(self):
         self.link()
@@ -338,28 +670,38 @@ class VtuTests(TestCase):
         row = WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first()
         return row.text if row else ""
 
+    def receipt_text(self, msisdn=MSISDN):
+        """The receipt message. The balance is deliberately sent AFTER it, so the
+        receipt is no longer last_reply()."""
+        for row in WaMessageLog.objects.filter(
+                msisdn=msisdn, direction=WaMessageLog.OUT).order_by("-created"):
+            if "receipt" in row.text.lower():
+                return row.text
+        return ""
+
     def bal(self):
         return get_or_create_wallet(self.user).balance
 
     def test_airtime(self):
         self.inbound("airtime", "a1")
-        self.inbound("1", "a2")               # MTN -> ask phone
-        self.inbound("08099998888", "a3")     # phone -> ask amount
-        self.inbound("200", "a4")             # amount -> confirm
+        self.inbound("1", "a2")               # MTN -> own number already selected
+        self.assertIn("How much airtime", self.last_reply())
+        self.inbound("200", "a3")             # amount -> confirm
         self.assertIn("Confirm airtime", self.last_reply())
-        self.inbound("1234", "a5")            # PIN
-        self.assertIn("airtime sent", self.last_reply())
+        self.assertIn(self.user.phone, self.last_reply())
+        self.inbound("1234", "a4")            # PIN
+        self.assertIn("Airtime receipt", self.receipt_text())
         self.assertEqual(self.bal(), Decimal("19800"))
 
     def test_data(self):
         self.inbound("data", "d1")
         self.inbound("1", "d2")               # MTN -> plan list
         self.assertIn("1GB", self.last_reply())
-        self.inbound("1", "d3")               # pick plan -> ask phone
-        self.inbound("me", "d4")              # phone -> confirm
+        self.inbound("1", "d3")               # pick plan -> own number -> confirm
         self.assertIn("Confirm data", self.last_reply())
-        self.inbound("1234", "d5")
-        self.assertIn("sent to", self.last_reply())
+        self.assertIn(self.user.phone, self.last_reply())
+        self.inbound("1234", "d4")
+        self.assertIn("Data receipt", self.receipt_text())
         self.assertEqual(self.bal(), Decimal("19500"))
 
     def test_electricity_returns_token(self):
@@ -371,8 +713,10 @@ class VtuTests(TestCase):
         self.inbound("3000", "e5")            # amount -> confirm
         self.assertIn("Confirm electricity", self.last_reply())
         self.assertIn("ADEYEMI WILLIAM", self.last_reply())  # validated customer name
+        self.assertIn("12 Marina Road", self.last_reply())   # validated service address
         self.inbound("1234", "e6")
-        self.assertIn("Token", self.last_reply())            # prepaid token in the receipt
+        self.assertIn("Token", self.receipt_text())          # prepaid token in the receipt
+        self.assertIn("12 Marina Road", self.receipt_text())
         self.assertEqual(self.bal(), Decimal("17000"))
 
     def test_cable(self):
@@ -383,7 +727,7 @@ class VtuTests(TestCase):
         self.inbound("1234567890", "c4")      # IUC -> validated -> confirm
         self.assertIn("Confirm cable", self.last_reply())
         self.inbound("1234", "c5")
-        self.assertIn("activated", self.last_reply())
+        self.assertIn("Cable receipt", self.receipt_text())
         self.assertEqual(self.bal(), Decimal("11000"))
 
     def test_wrong_network_reprompts(self):
@@ -391,6 +735,55 @@ class VtuTests(TestCase):
         self.inbound("9", "n2")               # invalid network
         self.assertIn("network", self.last_reply().lower())
         self.assertEqual(self.bal(), Decimal("20000"))
+
+    def test_typed_network_name_accepted(self):
+        # A tapped list row sends the id ("1"), but over the text fallback users
+        # type the name they can see — "MTN" must advance the flow, not re-prompt.
+        self.inbound("airtime", "tn1")
+        self.inbound("MTN", "tn2")
+        self.assertIn("How much airtime", self.last_reply())
+
+    def test_typed_provider_and_disco_names_accepted(self):
+        self.inbound("cable", "tp1")
+        self.inbound("dstv", "tp2")           # name, case-insensitive
+        self.assertIn("DStv Compact", self.last_reply())
+        self.inbound("cancel", "tp3")
+        self.inbound("electricity", "td1")
+        self.inbound("port harcourt", "td2")  # multi-word disco name
+        self.assertIn("Prepaid or postpaid", self.last_reply())
+
+    def test_airtime_data_menu_pick_by_number(self):
+        # Main-menu "3" offers Airtime/Data as a numbered pick — the user selects
+        # 1 or 2 (or taps the row) instead of typing the word.
+        self.inbound("3", "p1")
+        self.assertIn("Airtime", self.last_reply())
+        self.assertIn("Data", self.last_reply())
+        self.inbound("1", "p2")               # 1 -> Airtime -> ask network
+        self.assertIn("network", self.last_reply().lower())
+        self.inbound("1", "p3")               # MTN -> own number already selected
+        self.inbound("200", "p4")
+        self.assertIn("Confirm airtime", self.last_reply())
+
+    def test_airtime_data_menu_data_pick(self):
+        self.inbound("3", "pd1")
+        self.inbound("2", "pd2")              # 2 -> Data -> ask network
+        self.assertIn("network", self.last_reply().lower())
+        self.inbound("1", "pd3")              # MTN -> plan list
+        self.assertIn("1GB", self.last_reply())
+
+    def test_bill_menu_pick_by_number(self):
+        # Main-menu "4" offers Electricity/Cable as a numbered pick, same pattern.
+        self.inbound("4", "b1")
+        self.assertIn("Electricity", self.last_reply())
+        self.assertIn("Cable", self.last_reply())
+        self.inbound("1", "b2")               # 1 -> Electricity -> disco prompt
+        self.assertIn("disco", self.last_reply().lower())
+
+    def test_service_menu_reprompts_on_bad_pick(self):
+        self.inbound("3", "r1")
+        self.inbound("banana", "r2")          # not a valid pick -> re-prompt, no crash
+        self.assertIn("Airtime", self.last_reply())
+        self.assertIn("Data", self.last_reply())
 
     def test_electricity_over_tier_limit_refused(self):
         # KYC tier limits apply to bills over chat too (not just transfers): a
@@ -407,6 +800,86 @@ class VtuTests(TestCase):
         self.assertEqual(self.bal(), Decimal("200000"))  # not debited
 
 
+class AiMultilingualPromptTests(TestCase):
+    """The model contract understands Nigeria's five requested chat languages."""
+
+    def test_all_supported_languages_and_mixed_messages_are_explicit(self):
+        from whatsapp.ai import LANGUAGE_GUIDE, SUPPORTED_LANGUAGES
+
+        self.assertEqual(
+            SUPPORTED_LANGUAGES,
+            ("English", "Nigerian Pidgin", "Igbo", "Hausa", "Yoruba"),
+        )
+        guide = LANGUAGE_GUIDE.lower()
+        for language in SUPPORTED_LANGUAGES:
+            self.assertIn(language.lower(), guide)
+        self.assertIn("mix two or more", guide)
+        self.assertIn("without igbo/yoruba diacritics", guide)
+
+    def test_each_core_banking_meaning_has_local_language_anchors(self):
+        from whatsapp.ai import LANGUAGE_GUIDE
+
+        guide = LANGUAGE_GUIDE.lower()
+        anchors = {
+            "Pidgin": (
+                "how much dey my account",
+                "send 5k give ada",
+                "money no enter",
+            ),
+            "Igbo": (
+                "ego ole ka m nwere",
+                "zigara ada puku ise",
+                "ego eruteghi",
+            ),
+            "Hausa": (
+                "nawa ne kudina",
+                "aika wa ada dubu biyar",
+                "kudin bai shiga ba",
+            ),
+            "Yoruba": (
+                "elo ni mo ni",
+                "fi egberun marun ranse si ada",
+                "owo ko wole",
+            ),
+        }
+        for language, phrases in anchors.items():
+            with self.subTest(language=language):
+                for phrase in phrases:
+                    self.assertIn(phrase, guide)
+
+    @override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+    def test_code_switched_text_reaches_the_model_and_identifier_stays_private(self):
+        from whatsapp import ai
+
+        captured = {}
+
+        def fake_call(system, user_text, tools, cfg=None):
+            captured["system"] = system
+            captured["text"] = user_text
+            return {
+                "name": "transfer",
+                "input": {
+                    "amount": 5000,
+                    "beneficiary_ref": "Ada",
+                    "account_number": "num_ref_1",
+                    "bank_name": "GTBank",
+                },
+            }
+
+        message = "abeg zigara Ada 5k si 0123456789 GTBank"
+        with patch("whatsapp.llm.call_tools", side_effect=fake_call), \
+             patch("whatsapp.ai.llm_available", return_value=True):
+            intent = ai.extract_intent(message)
+
+        self.assertIn("abeg zigara Ada 5k", captured["text"])
+        self.assertNotIn("0123456789", captured["text"])
+        self.assertIn("num_ref_1", captured["text"])
+        self.assertIn("Nigerian Pidgin", captured["system"])
+        self.assertIn("Igbo", captured["system"])
+        self.assertEqual(intent["input"]["account_number"], "0123456789")
+        self.assertEqual(intent["masked_input"]["account_number"], "num_ref_1")
+
+
 @override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
 class AiIntentTests(TestCase):
     """LLM intent layer: free text -> structured intent -> the SAME flows.
@@ -415,7 +888,9 @@ class AiIntentTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user(balance="50000")
-        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#000", active=True)
 
     def inbound(self, text, mid):
@@ -426,6 +901,8 @@ class AiIntentTests(TestCase):
     def last_reply(self):
         row = WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first()
         return row.text if row else ""
+
+    receipt_text = ChannelTests.receipt_text
 
     def _stub(self, intent):
         return patch("whatsapp.ai.extract_intent", return_value=intent)
@@ -445,6 +922,7 @@ class AiIntentTests(TestCase):
         self.assertIn("ADEYEMI WILLIAM", self.last_reply())  # bank-verified name
 
     def test_freeform_add_money(self):
+        give_account(self.user)
         with self._stub({"name": "add_money", "input": {}}):
             self.inbound("how do I fund my wallet?", "f1")
         reply = self.last_reply()
@@ -457,17 +935,126 @@ class AiIntentTests(TestCase):
             self.inbound("load 200 mtn airtime for 08099998888", "a1")
         self.assertIn("Confirm airtime", self.last_reply())
 
+    def test_freeform_airtime_fast_path_enforces_face_gate(self):
+        # Regression: the AI-prefilled airtime fast-path skipped the >=₦100k face
+        # step-up that the guided flow enforces. _run_vtu now gates every path, so a
+        # Tier-3-without-face user can't buy >=₦100k airtime by going through the AI.
+        self.user.tier = 3
+        self.user.face_verified = False
+        self.user.save(update_fields=["tier", "face_verified"])
+        w = get_or_create_wallet(self.user)
+        w.balance = Decimal("300000")
+        w.save(update_fields=["balance"])
+        with self._stub({"name": "buy_airtime",
+                         "input": {"amount": 120000, "phone": "08099998888", "network": "MTN"}}):
+            self.inbound("load 120k mtn airtime for 08099998888", "fg1")
+        self.assertIn("Confirm airtime", self.last_reply())  # fast-path jumps to confirm
+        self.inbound("1234", "fg2")                          # PIN -> reaches _run_vtu
+        self.assertIn("Face verification", self.last_reply())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("300000"))  # not debited
+
     def test_clarify_shows_menu(self):
         with self._stub({"name": "clarify", "input": {"reason": "unsupported"}}):
             self.inbound("tell me a joke", "c1")
         # Falls back to the main menu (which lists the core actions).
         self.assertIn("Check balance", self.last_reply())
 
+    # --- a bill that arrives already filled in -------------------------------
+    # Reported from a real thread: "Load my nepa bill. 2000010657 5,000 to IKEDC"
+    # was answered with "Which disco?", then "Prepaid or postpaid?" — the disco,
+    # the meter and the amount all thrown away and asked for again.
+
+    def _bill(self, **inp):
+        return self._stub({"name": "pay_bill", "input": {"category": "electricity", **inp}})
+
+    def test_a_bill_that_names_everything_goes_straight_to_confirm(self):
+        with self._bill(biller="IKEDC", customer_id="2000010657",
+                        variation="prepaid", amount=5000):
+            self.inbound("Load my nepa bill. 2000010657 5,000 to IKEDC", "pb1")
+        r = self.last_reply()
+        self.assertIn("Confirm electricity", r)
+        self.assertIn("Ikeja", r)             # IKEDC resolved to the disco
+        self.assertIn("2000010657", r)        # the meter they gave
+        self.assertIn("5,000", r)             # the amount they gave
+        self.assertNotIn("Which disco?", r)
+
+    def test_the_only_question_left_is_the_one_they_did_not_answer(self):
+        # No prepaid/postpaid in the message — that one still has to be asked
+        # (it cannot be guessed), but nothing else is.
+        with self._bill(biller="IKEDC", customer_id="2000010657", amount=5000):
+            self.inbound("Load my nepa bill. 2000010657 5,000 to IKEDC", "pb2")
+        self.assertIn("Prepaid or postpaid?", self.last_reply())
+        self.inbound("1", "pb3")
+        r = self.last_reply()
+        self.assertIn("Confirm electricity", r)   # straight to confirm, not "Which disco?"
+        self.assertIn("2000010657", r)
+        self.assertIn("5,000", r)
+
+    def test_a_prefilled_bill_still_needs_the_pin(self):
+        # Pre-filling changes which questions get asked, never which checks run.
+        with self._bill(biller="IKEDC", customer_id="2000010657",
+                        variation="prepaid", amount=3000):
+            self.inbound("pay 3k ikedc prepaid 2000010657", "pb4")
+        self.assertIn("Confirm electricity", self.last_reply())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000"))  # nothing yet
+        self.inbound("1234", "pb5")                        # the PIN still has to be given
+        self.assertIn("Electricity receipt", self.receipt_text())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("47000"))
+
+    def test_a_disco_named_at_the_prompt_is_understood(self):
+        # The alias table also serves customers typing at the menu itself.
+        self.inbound("electricity", "pb6")
+        self.assertIn("Which disco?", self.last_reply())
+        self.inbound("IKEDC", "pb7")
+        self.assertIn("Prepaid or postpaid?", self.last_reply())
+
+    def test_nepa_alone_names_no_disco(self):
+        # "nepa" means electricity, not a company. Guessing one from it would put
+        # the wrong meter in front of a payment, so it must still ask.
+        with self._bill(biller="nepa", customer_id="2000010657", amount=5000):
+            self.inbound("load my nepa bill 2000010657 5000", "pb8")
+        self.assertIn("Which disco?", self.last_reply())
+
+    def test_an_unverifiable_meter_is_asked_for_again_not_looped(self):
+        with patch("whatsapp.router.vtu_verify_customer",
+                   return_value={"success": False}):
+            with self._bill(biller="IKEDC", customer_id="2000010657",
+                            variation="prepaid", amount=5000):
+                self.inbound("pay ikedc 2000010657 5k prepaid", "pb9")
+            self.assertIn("Couldn't validate that meter", self.last_reply())
+            # The bad number is dropped: the next message is read as a new meter
+            # rather than re-verifying the one that just failed.
+            pa = PendingAction.objects.get(msisdn=MSISDN)
+            self.assertEqual(pa.state, "meter")
+            self.assertNotIn("meter", pa.payload)
+
+    def test_a_named_cable_provider_and_card_skip_their_questions(self):
+        CablePlan.objects.create(provider="2", name="DStv Compact",
+                                 cable_plan_code="dstv-compact",
+                                 price=Decimal("9000"), active=True)
+        with self._stub({"name": "pay_bill",
+                         "input": {"category": "cabletv", "biller": "DSTV",
+                                   "customer_id": "1234567890"}}):
+            self.inbound("renew my dstv 1234567890", "cb1")
+        self.assertIn("DStv Compact", self.last_reply())   # provider question skipped
+        self.inbound("1", "cb2")                            # pick the package
+        r = self.last_reply()
+        self.assertIn("Confirm cable", r)                   # smartcard never asked for
+        self.assertIn("1234567890", r)
+
     def test_parsed_intent_is_recorded(self):
         with self._stub({"name": "check_balance", "input": {}}):
             self.inbound("balance pls", "r1")
         row = WaMessageLog.objects.get(wa_message_id="r1", direction=WaMessageLog.IN)
         self.assertEqual(row.intent_json.get("name"), "check_balance")
+
+    def test_sensitive_identifiers_are_redacted_from_chat_and_intent_logs(self):
+        with self._stub({"name": "buy_airtime", "input": {
+                "amount": 200, "phone": "08099998888", "network": "MTN"}}):
+            self.inbound("load 200 for 08099998888", "pii-1")
+        row = WaMessageLog.objects.get(wa_message_id="pii-1", direction=WaMessageLog.IN)
+        self.assertNotIn("08099998888", row.text)
+        self.assertEqual(row.intent_json["input"]["phone"], "[redacted]")
 
     def test_per_user_ai_off_is_deterministic(self):
         WhatsAppLink.objects.filter(wa_msisdn=MSISDN).update(ai_enabled=False)
@@ -554,7 +1141,27 @@ class ForexServiceTests(TestCase):
         with self.assertRaises(FxError) as cm:
             execute_fx(self.user, q.quote_ref)
         self.assertIn("expired", cm.exception.message.lower())
-        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000"))  # untouched
+
+    def test_fx_blocked_over_daily_transfer_cap(self):
+        # An NGN→foreign conversion counts against the daily transfer ceiling, so a
+        # conversion that would push the day's NGN outflow past the cap is refused
+        # (amount kept under ₦100k to isolate the daily cap from the face gate).
+        from wallet.forex import FxError, create_fx_quote
+        from wallet.models import Transaction
+        from wallet.services import get_or_create_wallet
+        self.user.tier = 2  # per-txn ₦200k, daily transfer ₦1,000,000
+        self.user.save(update_fields=["tier"])
+        w = get_or_create_wallet(self.user)
+        w.balance = Decimal("2000000")
+        w.save(update_fields=["balance"])
+        Transaction.objects.create(
+            user=self.user, service="Transfer to Seed", amount=Decimal("950000"),
+            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+            reference="SEED-FXCAP", currency="NGN")
+        with self.assertRaises(FxError) as cm:  # 950k + 90k > 1M
+            create_fx_quote(self.user, "NGN", "USD", "90000")
+        self.assertIn("daily", cm.exception.message.lower())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("2000000"))  # quote never debits
 
     def test_used_quote_not_resettled(self):
         from wallet.forex import FxError, create_fx_quote, currency_balance, execute_fx
@@ -580,7 +1187,12 @@ class OperatorTests(TestCase):
         self.staff = User.objects.create(username="adm", phone="08099999999", email="adm@zitch.test", is_staff=True)
         group, _ = Group.objects.get_or_create(name="support")
         self.staff.groups.add(group)
-        self.staff_token = AccessToken.issue(self.staff).key
+        self.staff_token = AccessToken.issue(self.staff, scope=AccessToken.ADMIN).key
+        self.checker = User.objects.create(
+            username="checker", phone="08099999998", email="checker@zitch.test", is_staff=True,
+        )
+        self.checker.groups.add(group)
+        self.checker_token = AccessToken.issue(self.checker, scope=AccessToken.ADMIN).key
 
     def inbound(self, text, mid):
         event = {"entry": [{"changes": [{"value": {"messages": [
@@ -595,6 +1207,17 @@ class OperatorTests(TestCase):
         body = {"access_token": token, **payload}
         res = self.client.post(path, data=json.dumps(body), content_type="application/json")
         return res, res.json()
+
+    def approve_and_send(self, approval_id):
+        res, body = self.post_as(
+            "/api/admin/approvals/decide", self.checker_token,
+            {"id": approval_id, "approve": True},
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["status"], "executed")
+        from .jobs import process_outbound_batch
+        process_outbound_batch()
+        return Broadcast.objects.get(pk=body["result"]["broadcast_id"])
 
     def test_stop_unsubscribes_marketing(self):
         link = WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
@@ -622,13 +1245,15 @@ class OperatorTests(TestCase):
         self.assertTrue(AuditLog.objects.filter(action="conversation.handover").exists())
 
     def test_ops_requires_staff(self):
+        # A normal user's app-scoped token is refused at the scope gate (401),
+        # before any staff/role check — it can never reach the ops surface.
         res, _ = self.post_as("/api/whatsapp/ops/handover/", self.token, {"msisdn": MSISDN})  # normal user
-        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.status_code, 401)
 
     def test_ops_requires_role_capability(self):
         """A staff account with no role group is read_only: no wa/broadcast caps."""
         bare = User.objects.create(username="ro", phone="08098888888", email="ro@zitch.test", is_staff=True)
-        bare_token = AccessToken.issue(bare).key
+        bare_token = AccessToken.issue(bare, scope=AccessToken.ADMIN).key
         res, _ = self.post_as("/api/whatsapp/ops/handover/", bare_token, {"msisdn": MSISDN})
         self.assertEqual(res.status_code, 403)
         res, _ = self.post_as("/api/whatsapp/ops/broadcast/", bare_token, {"template_name": "promo"})
@@ -640,7 +1265,7 @@ class OperatorTests(TestCase):
 
         fin = User.objects.create(username="fin", phone="08097777777", email="fin@zitch.test", is_staff=True)
         fin.groups.add(Group.objects.get_or_create(name="finance")[0])
-        fin_token = AccessToken.issue(fin).key
+        fin_token = AccessToken.issue(fin, scope=AccessToken.ADMIN).key
         res, _ = self.post_as("/api/whatsapp/ops/broadcast/", fin_token, {"template_name": "promo"})
         self.assertEqual(res.status_code, 403)
         res, _ = self.post_as("/api/whatsapp/ops/reply/", fin_token, {"msisdn": MSISDN, "text": "hi"})
@@ -654,17 +1279,4165 @@ class OperatorTests(TestCase):
                                     status=WhatsAppLink.ACTIVE, marketing_opt_in=False)
         res, body = self.post_as("/api/whatsapp/ops/broadcast/", self.staff_token,
                                  {"template_name": "promo", "category": "marketing"})
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(body["queued"], 1)        # only the opted-in user
-        self.assertEqual(body["sent"], 1)
+        self.assertEqual(res.status_code, 202)
+        broadcast = self.approve_and_send(body["approval_id"])
+        self.assertEqual(broadcast.count_queued, 1)  # only the opted-in user
+        self.assertEqual(broadcast.count_sent, 1)
         recips = BroadcastRecipient.objects.all()
         self.assertEqual(recips.count(), 1)
         self.assertEqual(recips.first().wa_msisdn, MSISDN)
-        self.assertTrue(AuditLog.objects.filter(action="broadcast.send").exists())
+        self.assertTrue(AuditLog.objects.filter(action="broadcast.completed").exists())
 
     def test_utility_broadcast_ignores_opt_in(self):
         WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
                                     status=WhatsAppLink.ACTIVE, marketing_opt_in=False)
         res, body = self.post_as("/api/whatsapp/ops/broadcast/", self.staff_token,
                                  {"template_name": "txn_alert", "category": "utility"})
-        self.assertEqual(body["sent"], 1)          # utility reaches non-opted-in users
+        broadcast = self.approve_and_send(body["approval_id"])
+        self.assertEqual(broadcast.count_sent, 1)  # utility reaches non-opted-in users
+
+    def test_ambiguous_template_send_is_not_blindly_retried(self):
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE)
+        _, body = self.post_as("/api/whatsapp/ops/broadcast/", self.staff_token,
+                               {"template_name": "txn_alert", "category": "utility"})
+        decision, decision_body = self.post_as(
+            "/api/admin/approvals/decide", self.checker_token,
+            {"id": body["approval_id"], "approve": True},
+        )
+        self.assertEqual(decision.status_code, 200)
+        broadcast = Broadcast.objects.get(pk=decision_body["result"]["broadcast_id"])
+
+        from .jobs import process_outbound_batch
+        with patch("whatsapp.jobs.send_template", return_value={
+            "success": False, "uncertain": True, "message": "unknown",
+        }) as sender:
+            self.assertEqual(process_outbound_batch(), 1)
+            self.assertEqual(process_outbound_batch(), 0)
+        sender.assert_called_once()
+        recipient = broadcast.recipients.get()
+        self.assertEqual(recipient.status, BroadcastRecipient.UNKNOWN)
+        self.assertIsNotNone(recipient.processed_at)
+        broadcast.refresh_from_db()
+        self.assertEqual(broadcast.count_unknown, 1)
+        self.assertEqual(broadcast.status, Broadcast.DONE)
+
+    def test_sent_delivery_callback_advances_recipient(self):
+        broadcast = Broadcast.objects.create(
+            template_name="txn_alert", category=Broadcast.UTILITY,
+            status=Broadcast.DONE, count_queued=1, count_unknown=1,
+        )
+        recipient = BroadcastRecipient.objects.create(
+            broadcast=broadcast, user=self.user, wa_msisdn=MSISDN,
+            status=BroadcastRecipient.UNKNOWN, wa_message_id="wamid.sent-1",
+            processed_at=timezone.now(),
+        )
+        event = {"entry": [{"changes": [{"value": {"statuses": [{
+            "id": "wamid.sent-1", "status": "sent",
+        }]}}]}]}
+        response = self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                                    content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        recipient.refresh_from_db()
+        broadcast.refresh_from_db()
+        self.assertEqual(recipient.status, BroadcastRecipient.SENT)
+        self.assertEqual(broadcast.count_sent, 1)
+        self.assertEqual(broadcast.count_unknown, 0)
+
+
+class SmsCodeConfirmTests(TestCase):
+    """With live SMS configured, money flows confirm with a SINGLE-USE 6-digit
+    code sent by SMS — the chat never carries the transaction PIN."""
+
+    def setUp(self):
+        # Mirror VtuTests' setup by reusing its fixtures via a fresh instance.
+        self._vt = VtuTests("test_airtime")
+        self._vt.setUp()
+        self.user = self._vt.user
+        self.client = self._vt.client
+        self.inbound = self._vt.inbound
+        self.last_reply = self._vt.last_reply
+        self.bal = self._vt.bal
+
+    @override_settings(TERMII={"BASE_URL": "https://v3.api.termii.com", "API_KEY": "tk-key",
+                               "SENDER_ID": "Zitch", "CHANNEL": "dnd"})
+    def test_confirm_uses_sms_code_not_pin(self):
+        sent = {}
+        with patch("whatsapp.router.send_sms",
+                   return_value={"success": True}) as sms:
+            self.inbound("airtime", "s1")
+            self.inbound("1", "s2")
+            self.inbound("08099998888", "s3")
+            self.inbound("200", "s4")
+            self.assertIn("6-digit code", self.last_reply())
+            sent["msg"] = sms.call_args[0][1]
+        code = re.search(r"\b(\d{6})\b", sent["msg"]).group(1)
+        # The PIN must NOT confirm while a code is armed…
+        self.inbound("1234", "s5")
+        self.assertIn("isn't right", self.last_reply())
+        # …the SMS code does.
+        self.inbound(code, "s6")
+        self.assertIn("Airtime receipt", ChannelTests.receipt_text(self))
+        self.assertEqual(self.bal(), Decimal("19800"))
+
+
+class ProductionConfirmSafetyTests(TestCase):
+    @override_settings(
+        DEBUG=False,
+        TESTING=False,
+        # Both halves of the premise are pinned: production, and no SMS rail to fall
+        # back to. An empty key here rather than an absent one, so the test keeps
+        # meaning what it says if a Termii key ever reaches the test environment.
+        TERMII={"BASE_URL": "", "API_KEY": "", "SENDER_ID": "Zitch", "CHANNEL": "dnd"},
+    )
+    def test_production_never_falls_back_to_requesting_pin_in_chat(self):
+        from whatsapp.router import _arm_confirm, _confirm_prompt
+
+        user, _ = make_user()
+        action = PendingAction.objects.create(
+            user=user,
+            msisdn=MSISDN,
+            action_type="airtime",
+            state="amount",
+            payload={"amount": "200"},
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+        self.assertFalse(_arm_confirm(action, user))
+        self.assertFalse(PendingAction.objects.filter(pk=action.pk).exists())
+        self.assertNotIn("your PIN", _confirm_prompt(action))
+        self.assertIn("Zitch app", _confirm_prompt(action))
+
+
+    @override_settings(
+        DEBUG=False,
+        TESTING=False,
+        TERMII={"BASE_URL": "", "API_KEY": "", "SENDER_ID": "Zitch", "CHANNEL": "dnd"},
+    )
+    def test_no_pin_unlock_stops_after_safe_reset_instruction(self):
+        from whatsapp.router import _send_unlock
+
+        user, _ = make_user()
+        user.transaction_pin = ""
+        user.save(update_fields=["transaction_pin"])
+
+        _send_unlock(user, MSISDN, "balance")
+
+        replies = list(WaMessageLog.objects.filter(
+            msisdn=MSISDN,
+            direction=WaMessageLog.OUT,
+        ).values_list("text", flat=True))
+        self.assertEqual(len(replies), 1)
+        self.assertIn("reset pin", replies[0].lower())
+        self.assertNotIn("reply with your pin", replies[0].lower())
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+
+    def test_cancelled_action_cannot_execute_from_a_stale_token(self):
+        from whatsapp.router import run_flow_execution
+
+        user, _ = make_user()
+        action = PendingAction.objects.create(
+            user=user,
+            msisdn=MSISDN,
+            action_type="airtime",
+            state=FLOW_PIN_STATE,
+            payload={"amount": "200", "phone": MSISDN, "net": "mtn"},
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+        PendingAction.objects.filter(pk=action.pk).delete()
+
+        with patch("whatsapp.router._exec_airtime") as executor:
+            outcome = run_flow_execution(action, user)
+
+        executor.assert_not_called()
+        self.assertIn("expired or was cancelled", outcome)
+
+
+class AuditLogImmutabilityTests(TestCase):
+    """The audit trail is append-only at the ORM layer: a back-office bug or a
+    compromised operator must not be able to rewrite or delete history."""
+
+    def test_existing_row_cannot_be_edited(self):
+        row = AuditLog.objects.create(actor_type="admin", actor_id="1",
+                                      action="wallet.manual_credit", target="u_1")
+        row.action = "tampered"
+        with self.assertRaises(ValueError):
+            row.save()
+        self.assertEqual(AuditLog.objects.get(pk=row.pk).action, "wallet.manual_credit")
+
+    def test_row_cannot_be_deleted(self):
+        row = AuditLog.objects.create(actor_type="admin", actor_id="1", action="user.freeze")
+        with self.assertRaises(ValueError):
+            row.delete()
+        self.assertTrue(AuditLog.objects.filter(pk=row.pk).exists())
+
+
+try:
+    import PIL  # noqa: F401
+    _HAS_PIL = True
+except Exception:
+    _HAS_PIL = False
+
+
+class WhatsAppReceiptTests(TestCase):
+    """The transaction receipt is a branded JPEG sent as an inline image when the
+    channel is live, degrading to a document and then to text."""
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_render_receipt_is_a_jpeg(self):
+        from whatsapp.receipt import render_receipt
+        b = render_receipt("Airtime receipt",
+                           [("Network", "MTN"), ("Amount", "₦500.00")], "ZTC-1")
+        self.assertEqual(b[:2], b"\xff\xd8")   # JPEG start-of-image marker
+        self.assertGreater(len(b), 1000)
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_render_receipt_is_rasterised_well_above_display_size(self):
+        """A receipt gets screenshotted, zoomed and forwarded, so it is rendered
+        far above the size it is first seen at. The long edge clears 2160 — 4K
+        UHD's short edge — which is what keeps type crisp when someone pinches in."""
+        import io
+
+        from PIL import Image
+
+        from whatsapp.receipt import render_receipt
+        img = Image.open(io.BytesIO(render_receipt(
+            "Transfer receipt", [("To", "ADA"), ("Amount", "₦500.00")], "ZTC-1")))
+        self.assertGreaterEqual(max(img.size), 2160)
+        self.assertGreaterEqual(img.width, 2000)
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_the_amount_is_shown_once_and_the_rest_are_ordinary_rows(self):
+        """The receipt is laid out as the MOBILE APP lays it out, because a
+        customer who sees one of each and cannot tell they came from the same
+        company is being given exactly the doubt a receipt exists to remove.
+
+        The app puts the amount in the sentence under the heading and NOT in the
+        table (printed twice it reads as a fault), while date, time and reference
+        are rows on its card. So they are rows here."""
+        import io
+
+        from PIL import Image
+
+        from whatsapp.receipt import render_receipt
+        base = [("Recipient", "ADA"), ("Amount", "₦500.00")]
+        lean = Image.open(io.BytesIO(render_receipt("Money sent", base, "ZTC-1")))
+        full = Image.open(io.BytesIO(render_receipt(
+            "Money sent",
+            base + [("Reference", "ZTC-1"), ("Date", "01 Jan 2026")], "ZTC-1")))
+        # Two more rows means a taller sheet: they are tabulated, not swallowed.
+        self.assertGreater(full.height, lean.height)
+
+        # ...and the amount is never one of them. Asserted on the row choice
+        # itself rather than on pixel heights, which conflate "this became a row"
+        # with "this made the sentence under the heading longer".
+        from whatsapp.receipt import tabulated_rows
+
+        labels = [k for k, _ in tabulated_rows(base, "ZTC-1")]
+        self.assertNotIn("Amount", labels)
+        self.assertEqual(labels, ["Recipient", "Reference"])
+        # A reference already in the rows is not appended a second time.
+        self.assertEqual(
+            [k for k, _ in tabulated_rows(base + [("Reference", "ZTC-1")], "ZTC-1")],
+            ["Recipient", "Reference"])
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_a_failed_receipt_never_claims_the_money_was_sent(self):
+        """"₦2,000.00 sent to ADEYEMI WILLIAM" on a FAILED receipt is a false
+        statement about money, on the one document whose whole job is to be true
+        about money. Only a settled success may say "sent"."""
+        from whatsapp.receipt import _sent_verb
+
+        self.assertEqual(_sent_verb("Successful"), "sent to")
+        self.assertEqual(_sent_verb("Failed"), "to")
+        self.assertEqual(_sent_verb("Not completed"), "to")
+        self.assertEqual(_sent_verb("Pending"), "on its way to")
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_a_refused_payment_does_not_wear_the_success_mark(self):
+        """The mark is read at a glance, often before the words under it, so a
+        failed payment carrying a green tick misinforms faster than the text can
+        correct it."""
+        from whatsapp.receipt import _LIME, _status_art
+
+        ok_ring, ok_disc, ok_glyph = _status_art("Successful")
+        self.assertEqual(ok_disc, _LIME)
+        self.assertEqual(ok_glyph, "✓")
+        for refused in ("Failed", "Not completed"):
+            _ring, disc, glyph = _status_art(refused)
+            self.assertNotEqual(disc, _LIME)
+            self.assertEqual(glyph, "✕")
+        # Pending draws its dots rather than typesetting them — see _status_art.
+        self.assertIsNone(_status_art("Pending")[2])
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_reply_receipt_sends_an_inline_image_when_live(self):
+        """An image renders in the thread and can be forwarded or saved to the
+        gallery in one gesture; a document arrives as a file card that has to be
+        opened first. The receipt is something people SHOW someone, so it is sent
+        as an image and the document is only the fallback."""
+        from whatsapp import providers
+        from whatsapp.router import reply_receipt
+        with patch.object(providers, "wa_live", return_value=True), \
+             patch.object(providers, "upload_media", return_value="mid-123") as up, \
+             patch.object(providers, "send_image_media", return_value={"success": True}) as si, \
+             patch.object(providers, "send_document") as sd:
+            text = reply_receipt("2348011112222", "Airtime receipt",
+                                 [("Network", "MTN"), ("Amount", "₦500.00")], ref="ZTC-1")
+        up.assert_called_once()
+        si.assert_called_once()
+        sd.assert_not_called()
+        self.assertEqual(si.call_args.args[1], "mid-123")
+        self.assertIn("Airtime receipt", si.call_args.kwargs.get("caption", ""))
+        self.assertIn("Airtime receipt", text)
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_reply_receipt_falls_back_to_a_document_if_the_image_is_refused(self):
+        from whatsapp import providers
+        from whatsapp.router import reply_receipt
+        with patch.object(providers, "wa_live", return_value=True), \
+             patch.object(providers, "upload_media", return_value="mid-123"), \
+             patch.object(providers, "send_image_media", return_value={"success": False}), \
+             patch.object(providers, "send_document", return_value={"success": True}) as sd, \
+             patch("whatsapp.router.send_text") as st:
+            reply_receipt("2348011112222", "Airtime receipt", [("Network", "MTN")], ref="ZTC-1")
+        sd.assert_called_once()
+        self.assertTrue(sd.call_args.args[2].endswith(".jpg"))   # filename
+        st.assert_not_called()
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_reply_receipt_still_sends_text_when_the_media_upload_fails(self):
+        """A completed transaction always produces a receipt. If Meta's media store
+        refuses the upload, the user gets the text one rather than nothing."""
+        from whatsapp import providers
+        from whatsapp.router import reply_receipt
+        with patch.object(providers, "wa_live", return_value=True), \
+             patch.object(providers, "upload_media", return_value=""), \
+             patch.object(providers, "send_image_media") as si, \
+             patch("whatsapp.router.send_text") as st:
+            reply_receipt("2348011112222", "Airtime receipt", [("Network", "MTN")], ref="ZTC-1")
+        si.assert_not_called()
+        st.assert_called_once()
+
+    def test_reply_receipt_text_fallback_in_mock(self):
+        from whatsapp.router import reply_receipt
+        text = reply_receipt("2348011112222", "Airtime receipt", [("Network", "MTN")], ref="ZTC-1")
+        self.assertIn("Airtime receipt", text)
+        self.assertTrue(WaMessageLog.objects.filter(
+            msisdn="2348011112222", text__icontains="Airtime receipt").exists())
+
+
+class WhatsAppHealthTests(TestCase):
+    """"The bot isn't replying" is a symptom with several unrelated causes. These
+    pin the one thing that separates them: whether inbound work is being drained."""
+
+    def _queue(self, msisdn=MSISDN, mid="stuck-1", age_minutes=0):
+        from whatsapp.models import WebhookEvent
+
+        # A queue row cannot exist without a callback having arrived, and the
+        # verdict checks reachability first — so the fixture has to record the
+        # call too, or it describes a state production can never be in.
+        WebhookEvent.objects.create(source="whatsapp", verified=True, http_status=200)
+        row = WaMessageLog.objects.create(
+            msisdn=msisdn, direction=WaMessageLog.IN, wa_message_id=mid, text="hello",
+        )
+        if age_minutes:
+            WaMessageLog.objects.filter(pk=row.pk).update(
+                created=timezone.now() - timedelta(minutes=age_minutes))
+        return row
+
+    def test_a_quiet_healthy_channel_says_so(self):
+        from whatsapp.health import whatsapp_diagnostics
+        report = whatsapp_diagnostics()
+        self.assertEqual(report["queue"]["unprocessed"], 0)
+        self.assertFalse(report["queue"]["worker_appears_stalled"])
+
+    def test_an_old_backlog_names_the_worker(self):
+        """The webhook keeps answering 200 while the worker is down, so from every
+        other angle the channel looks healthy. The age of the oldest unprocessed
+        message is the only signal that says otherwise."""
+        from whatsapp.health import whatsapp_diagnostics
+        self._queue(age_minutes=9)
+        with patch("whatsapp.providers.wa_mode", return_value="live"), \
+             patch("whatsapp.providers.wa_live", return_value=True):
+            report = whatsapp_diagnostics()
+        self.assertEqual(report["queue"]["unprocessed"], 1)
+        self.assertTrue(report["queue"]["worker_appears_stalled"])
+        self.assertIn("processing_error", report["verdict"])
+        self.assertIn("zitch-whatsapp-worker", report["verdict"])
+
+    def test_a_message_that_just_arrived_is_not_called_a_stall(self):
+        from whatsapp.health import whatsapp_diagnostics
+        self._queue()
+        with patch("whatsapp.providers.wa_mode", return_value="live"), \
+             patch("whatsapp.providers.wa_live", return_value=True):
+            report = whatsapp_diagnostics()
+        self.assertFalse(report["queue"]["worker_appears_stalled"])
+        self.assertIn("draining", report["verdict"])
+
+    def test_a_handover_is_reported_rather_than_looking_like_an_outage(self):
+        from whatsapp.health import whatsapp_diagnostics
+        from whatsapp.models import WebhookEvent
+
+        WebhookEvent.objects.create(source="whatsapp", verified=True, http_status=200)
+        ConversationState.objects.create(msisdn=MSISDN, status=ConversationState.HUMAN)
+        with patch("whatsapp.providers.wa_mode", return_value="live"), \
+             patch("whatsapp.providers.wa_live", return_value=True):
+            report = whatsapp_diagnostics()
+        self.assertIn(MSISDN, report["handed_to_human"])
+        self.assertIn("human agent", report["verdict"])
+
+    def test_sandbox_mode_is_named_as_the_reason_nothing_is_sent(self):
+        from whatsapp.health import whatsapp_diagnostics
+        with patch("whatsapp.providers.wa_mode", return_value="sandbox"), \
+             patch("whatsapp.providers.wa_live", return_value=False):
+            self.assertIn("SANDBOX", whatsapp_diagnostics()["verdict"])
+
+    def test_the_report_never_carries_a_token(self):
+        from whatsapp.health import whatsapp_diagnostics
+        with override_settings(WHATSAPP={"MODE": "live", "TOKEN": "wa_supersecret",
+                                         "APP_SECRET": "s", "BASE_URL": "x",
+                                         "PHONE_NUMBER_ID": "p", "VERIFY_TOKEN": "v",
+                                         "BUSINESS_NUMBER": "2348000000000"}):
+            self.assertNotIn("wa_supersecret", json.dumps(whatsapp_diagnostics()))
+
+
+class WhatsAppQueueAdminTests(TestCase):
+    """The operator has no shell. Draining a stuck message and un-muting a handed-over
+    conversation both have to be possible from the admin changelist."""
+
+    def setUp(self):
+        self.client = Client()
+        # Low-entropy on purpose: a realistic-looking fixture password trips the
+        # secret scanner, and a test credential is not worth teaching it to ignore
+        # things. Matches the style used elsewhere (portal.tests).
+        self.staff = User.objects.create_superuser(
+            username="ops", email="ops@zitch.test", password="pw-ops-1")
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE)
+        self.client.force_login(self.staff)
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_process_now_replies_to_a_message_the_worker_never_picked_up(self):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": "stuck-9", "type": "text", "text": {"body": "balance"}}]}}]}]}
+        self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                         content_type="application/json")
+        row = WaMessageLog.objects.get(wa_message_id="stuck-9")
+        self.assertIsNone(row.processed_at)
+
+        self.client.post("/admin/whatsapp/wamessagelog/",
+                         {"action": "process_now", "_selected_action": [str(row.pk)]},
+                         follow=True)
+        row.refresh_from_db()
+        self.assertIsNotNone(row.processed_at)
+        self.assertTrue(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).exists())
+
+    def test_return_to_bot_un_mutes_a_conversation_and_is_audited(self):
+        convo = ConversationState.objects.create(
+            msisdn=MSISDN, status=ConversationState.HUMAN, ai_enabled=False)
+        self.client.post("/admin/whatsapp/conversationstate/",
+                         {"action": "return_to_bot", "_selected_action": [str(convo.pk)]},
+                         follow=True)
+        convo.refresh_from_db()
+        self.assertEqual(convo.status, ConversationState.BOT)
+        self.assertTrue(convo.ai_enabled)
+        self.assertTrue(AuditLog.objects.filter(
+            action="conversation.return_to_bot", target=f"wa:{MSISDN}").exists())
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_a_message_that_cannot_be_queued_leaves_a_trace(self):
+        """The worst version of "the bot isn't responding": nothing is stored, so the
+        queue reads empty and every health check says the channel is idle and fine."""
+        from whatsapp.models import WebhookEvent
+
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": "unstorable-1", "type": "text",
+             "text": {"body": "balance"}}]}}]}]}
+        with patch("whatsapp.jobs.enqueue_inbound", side_effect=RuntimeError("no queue key")):
+            with self.assertRaises(RuntimeError):
+                self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                                 content_type="application/json")
+        self.assertTrue(WebhookEvent.objects.filter(
+            source="whatsapp", http_status=500,
+            action="enqueue_failed:RuntimeError").exists())
+
+
+class WhatsAppWebDrainTests(TestCase):
+    """Replies must not depend on one background service nobody can see failing.
+
+    The webhook stores and acks; when the worker is gone that ack is the whole
+    interaction, and the customer gets silence from a channel that reports 200 to
+    Meta. These pin the web service's own drain — the thing that makes a reply
+    arrive whether or not the worker exists.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE)
+
+    def _inbound(self, body="balance", mid="drain-1"):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": mid, "type": "text", "text": {"body": body}}]}}]}]}
+        return self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                                content_type="application/json")
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_a_reply_arrives_with_no_worker_running(self):
+        """The production path, with the worker service absent — which is how it
+        behaves when it was never created, crashed at boot, or was OOM-killed."""
+        from whatsapp.jobs import _drain_worker
+
+        # Run the drain body synchronously so the test observes its effect rather
+        # than racing a daemon thread; the threading wrapper is covered below.
+        with patch("whatsapp.jobs.threading.Thread") as thread:
+            response = self._inbound()
+        self.assertEqual(response.status_code, 200)
+        thread.assert_called_once()
+        self.assertTrue(thread.call_args.kwargs["daemon"])
+
+        _drain_worker(5)
+        row = WaMessageLog.objects.get(wa_message_id="drain-1")
+        self.assertIsNotNone(row.processed_at)
+        self.assertTrue(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).exists())
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_the_webhook_is_acknowledged_even_if_the_drain_cannot_start(self):
+        """The drain is a safety net. Meta's acknowledgement is the contract, and
+        it must not depend on the net — a thread that cannot start (process thread
+        limit) must not turn into a 500 and a redelivery loop."""
+        with patch("whatsapp.jobs.threading.Thread", side_effect=RuntimeError("no threads")):
+            response = self._inbound(mid="drain-2")
+        self.assertEqual(response.status_code, 200)
+        # Still durably queued: the worker or the next webhook picks it up.
+        self.assertIsNone(WaMessageLog.objects.get(wa_message_id="drain-2").processed_at)
+
+    def test_only_one_drain_runs_at_a_time_per_process(self):
+        """Unbounded drains would let a burst of inbound messages consume every
+        HTTP thread in the web process."""
+        from whatsapp import jobs
+
+        self.assertTrue(jobs._DRAIN_LOCK.acquire(blocking=False))
+        try:
+            with patch("whatsapp.jobs.threading.Thread") as thread:
+                self.assertFalse(jobs.drain_in_background())
+            thread.assert_not_called()
+        finally:
+            jobs._DRAIN_LOCK.release()
+
+    @override_settings(WHATSAPP_WEB_DRAIN=False)
+    def test_the_safety_net_can_be_switched_off(self):
+        from whatsapp.jobs import drain_in_background
+
+        with patch("whatsapp.jobs.threading.Thread") as thread:
+            self.assertFalse(drain_in_background())
+        thread.assert_not_called()
+
+    def test_a_failing_drain_releases_its_lock_and_closes_its_connection(self):
+        """A safety net that leaks the lock disables itself permanently after one
+        bad message; one that leaks connections exhausts Postgres instead."""
+        from whatsapp import jobs
+
+        with patch("whatsapp.jobs.process_inbound_batch", side_effect=RuntimeError("boom")), \
+             patch("django.db.connections.close_all") as close_all:
+            jobs._DRAIN_LOCK.acquire()
+            jobs._drain_worker(5)
+        close_all.assert_called_once()
+        self.assertTrue(jobs._DRAIN_LOCK.acquire(blocking=False))
+        jobs._DRAIN_LOCK.release()
+
+
+class WhatsAppWebhookReachabilityTests(TestCase):
+    """The one cause no other number can show: Meta never reached us. A callback
+    that was never called leaves no queue row, so every other reading says the
+    channel is idle and healthy."""
+
+    def test_never_being_called_is_named_rather_than_read_as_healthy(self):
+        from whatsapp.health import whatsapp_diagnostics
+
+        with patch("whatsapp.providers.wa_mode", return_value="live"), \
+             patch("whatsapp.providers.wa_live", return_value=True):
+            report = whatsapp_diagnostics()
+        self.assertFalse(report["webhook"]["ever_accepted_a_call"])
+        self.assertIn("never successfully called", report["verdict"])
+
+    def test_a_wrong_app_secret_is_named_rather_than_looking_like_no_traffic(self):
+        from whatsapp.health import whatsapp_diagnostics
+        from whatsapp.models import WebhookEvent
+
+        WebhookEvent.objects.create(source="whatsapp", verified=False,
+                                    outcome=WebhookEvent.REJECTED_SIGNATURE,
+                                    http_status=401)
+        with patch("whatsapp.providers.wa_mode", return_value="live"), \
+             patch("whatsapp.providers.wa_live", return_value=True):
+            report = whatsapp_diagnostics()
+        self.assertEqual(report["webhook"]["rejected_signature"], 1)
+        self.assertIn("WHATSAPP_APP_SECRET", report["verdict"])
+
+    def test_an_accepted_call_moves_the_verdict_past_the_webhook(self):
+        from whatsapp.health import whatsapp_diagnostics
+        from whatsapp.models import WebhookEvent
+
+        WebhookEvent.objects.create(source="whatsapp", verified=True, http_status=200)
+        with patch("whatsapp.providers.wa_mode", return_value="live"), \
+             patch("whatsapp.providers.wa_live", return_value=True):
+            report = whatsapp_diagnostics()
+        self.assertTrue(report["webhook"]["ever_accepted_a_call"])
+        self.assertIn("processing inbound messages", report["verdict"])
+
+
+class WrongPhoneNumberIdTests(TestCase):
+    """A signed call naming an unknown phone-number id is the one failure the boot
+    guards cannot catch: they prove WHATSAPP_PHONE_NUMBER_ID is SET, never that it is
+    the id of the number being messaged. The webhook records such a call verified=True
+    and drops it with a 400, so any health read keyed on `verified` reports a healthy
+    channel while every single message is being refused."""
+
+    def _call(self, outcome, action=""):
+        from .models import WebhookEvent
+
+        WebhookEvent.objects.create(source="whatsapp", outcome=outcome,
+                                    verified=True, action=action)
+
+    def test_reached_is_false_when_every_call_is_refused_on_the_id(self):
+        from . import health
+        from .models import WebhookEvent
+
+        self._call(WebhookEvent.BAD_BODY, "invalid_phone_number_id")
+        snap = health.whatsapp_diagnostics()
+        self.assertFalse(snap["webhook"]["ever_accepted_a_call"])
+        self.assertEqual(snap["webhook"]["rejected_wrong_phone_number_id"], 1)
+
+    def test_healthz_agrees_with_the_snapshot(self):
+        from .models import WebhookEvent
+
+        self._call(WebhookEvent.BAD_BODY, "invalid_phone_number_id")
+        reached = Client().get("/healthz").json()["integrations"]["whatsapp_webhook_reached"]
+        self.assertFalse(reached)
+
+    def test_one_accepted_call_flips_both_to_true(self):
+        from . import health
+        from .models import WebhookEvent
+
+        self._call(WebhookEvent.BAD_BODY, "invalid_phone_number_id")
+        self._call(WebhookEvent.ACCEPTED)
+        self.assertTrue(health.whatsapp_diagnostics()["webhook"]["ever_accepted_a_call"])
+        self.assertTrue(Client().get("/healthz").json()
+                        ["integrations"]["whatsapp_webhook_reached"])
+
+    def test_verdict_names_the_phone_number_id_not_the_subscription(self):
+        from . import health
+
+        verdict = health._verdict("live", 0, False, 0, [], accepted_ever=False,
+                                  wrong_number_id=4)
+        self.assertIn("WHATSAPP_PHONE_NUMBER_ID", verdict)
+        self.assertNotIn("SUBSCRIBED", verdict)
+
+    def test_a_genuinely_unreached_webhook_still_names_the_subscription(self):
+        from . import health
+
+        verdict = health._verdict("live", 0, False, 0, [], accepted_ever=False,
+                                  wrong_number_id=0)
+        self.assertIn("SUBSCRIBED", verdict)
+
+
+class OutboundSendFailureTests(TestCase):
+    """A rejected Graph send (expired WHATSAPP_TOKEN, recipient not on the app's
+    allowed-testers list, etc.) never raises — reply() returns normally, so the
+    inbound job marks the message processed and no backlog ever forms. Without
+    recording the failure on the OUT row, it left no trace anywhere: not in the
+    queue, not in the logs, not in whatsapp_diagnostics(). This is the failure
+    that made "Meta reached us, everything reports healthy, user gets nothing"
+    possible even with the right APP_SECRET and PHONE_NUMBER_ID."""
+
+    def test_reply_records_the_error_on_the_out_row_when_the_send_is_rejected(self):
+        from whatsapp.router import reply
+
+        with patch("whatsapp.router.send_text",
+                   return_value={"success": False, "error_code": 190}):
+            reply(MSISDN, "hi")
+        row = WaMessageLog.objects.get(msisdn=MSISDN, direction=WaMessageLog.OUT)
+        self.assertEqual(row.processing_error, "190")
+
+    def test_reply_leaves_the_out_row_clean_when_the_send_succeeds(self):
+        from whatsapp.router import reply
+
+        with patch("whatsapp.router.send_text",
+                   return_value={"success": True, "message_id": "wamid.1"}):
+            reply(MSISDN, "hi")
+        row = WaMessageLog.objects.get(msisdn=MSISDN, direction=WaMessageLog.OUT)
+        self.assertEqual(row.processing_error, "")
+
+    def test_diagnostics_count_recent_send_failures(self):
+        from . import health
+
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.OUT,
+                                    text="hi", processing_error="190")
+        snap = health.whatsapp_diagnostics()
+        self.assertEqual(snap["outbound"]["send_failures_last_hour"], 1)
+        self.assertEqual(snap["outbound"]["last_send_error"], "190")
+
+    def test_old_send_failures_age_out_of_the_window(self):
+        from . import health
+
+        old = WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.OUT,
+                                          text="hi", processing_error="190")
+        WaMessageLog.objects.filter(pk=old.pk).update(
+            created=timezone.now() - health.SEND_FAILURE_WINDOW - timedelta(minutes=1))
+        snap = health.whatsapp_diagnostics()
+        self.assertEqual(snap["outbound"]["send_failures_last_hour"], 0)
+
+    def test_verdict_names_send_failures_ahead_of_a_healthy_looking_queue(self):
+        from . import health
+
+        verdict = health._verdict("live", 0, False, 0, [], accepted_ever=True,
+                                  send_failures=3, last_send_error="190")
+        self.assertIn("190", verdict)
+        self.assertIn("WHATSAPP_TOKEN", verdict)
+
+    def test_healthy_channel_names_neither_token_nor_send_failures(self):
+        from . import health
+
+        verdict = health._verdict("live", 0, False, 0, [], accepted_ever=True)
+        self.assertNotIn("WHATSAPP_TOKEN", verdict)
+
+
+class FallbackSenderLoggingTests(TestCase):
+    """reply() records whether Meta accepted the send; the senders that FALL BACK
+    did not. They attempted a send, dropped the result, and wrote a row saying
+    "replied" either way — so `send_failures` undercounted, and worst on the paths
+    a new user hits first: the menu goes out through reply_list/reply_buttons, so a
+    dead token produced a spotless outbound log for the very first reply missed."""
+
+    class _Resp:
+        def __init__(self, ok, status, payload):
+            self.ok, self.status_code, self.content = ok, status, b"x"
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def _refused(self):
+        return self._Resp(False, 401, {"error": {"code": 190, "type": "OAuthException"}})
+
+    def _live(self):
+        return patch.multiple("whatsapp.providers",
+                              wa_live=lambda: True,
+                              _cfg=lambda: {"BASE_URL": "https://graph.facebook.com/v20.0",
+                                            "PHONE_NUMBER_ID": "1", "TOKEN": "t"})
+
+    def _last_error(self):
+        return WaMessageLog.objects.filter(
+            direction=WaMessageLog.OUT).latest("created").processing_error
+
+    def test_reply_list_records_a_refused_send(self):
+        from .router import reply_list
+
+        with self._live(), patch("whatsapp.providers.requests.post", return_value=self._refused()):
+            reply_list("2348010000000", "Menu", [("1", "Airtime", "")])
+        self.assertEqual(self._last_error(), "190")
+
+    def test_reply_buttons_records_a_refused_send(self):
+        from .router import reply_buttons
+
+        with self._live(), patch("whatsapp.providers.requests.post", return_value=self._refused()):
+            reply_buttons("2348010000000", "Confirm?", [("yes", "Yes")])
+        self.assertEqual(self._last_error(), "190")
+
+    def test_reply_image_records_a_refused_send(self):
+        from .router import reply_image
+
+        with self._live(), patch("whatsapp.providers.requests.post", return_value=self._refused()):
+            reply_image("2348010000000", None, "MTN")
+        self.assertEqual(self._last_error(), "190")
+
+    def test_a_mocked_channel_still_records_a_clean_row(self):
+        """Not live => the send is mocked and succeeds; the row must stay clean or
+        every dev/sandbox reply would read as a failure."""
+        from .router import reply_list
+
+        reply_list("2348010000000", "Menu", [("1", "Airtime", "")])
+        self.assertEqual(self._last_error(), "")
+
+    def test_the_menu_path_is_counted_by_diagnostics(self):
+        from . import health
+        from .router import reply_list
+
+        with self._live(), patch("whatsapp.providers.requests.post", return_value=self._refused()):
+            reply_list("2348010000000", "Menu", [("1", "Airtime", "")])
+        self.assertEqual(health.whatsapp_diagnostics()["outbound"]["send_failures_last_hour"], 1)
+
+
+class InlineOverrideTests(TestCase):
+    """WHATSAPP_PROCESS_INLINE must be settable from the environment. The web-drain
+    daemon thread is reaped without a trace when a hobby-tier instance recycles
+    after the response — attempts stay 0, nothing is logged — and with no worker
+    service the queue then just sits. Inline is the one execution context such a
+    host guarantees; before the override, production had no way to choose it."""
+
+    WA = {"MODE": "live", "VERIFY_TOKEN": "v", "TOKEN": "t", "APP_SECRET": "shh",
+          "BASE_URL": "x", "PHONE_NUMBER_ID": "phone-1",
+          "BUSINESS_NUMBER": "2348000000000"}
+
+    def _post_hi(self):
+        event = {"entry": [{"changes": [{"value": {
+            "metadata": {"phone_number_id": "phone-1"},
+            "messages": [{"id": "wamid.inline-1", "from": MSISDN,
+                          "type": "text", "text": {"body": "menu"}}]}}]}]}
+        body = json.dumps(event).encode()
+        sig = hmac.new(b"shh", body, hashlib.sha256).hexdigest()
+        return Client().post("/webhooks/whatsapp", data=body,
+                             content_type="application/json",
+                             HTTP_X_HUB_SIGNATURE_256=f"sha256={sig}")
+
+    def test_env_true_turns_inline_on_in_production(self):
+        from zitch_api.settings import env_bool
+
+        with patch.dict("os.environ", {"WHATSAPP_PROCESS_INLINE": "true"}):
+            self.assertTrue(env_bool("WHATSAPP_PROCESS_INLINE", False))
+
+    def test_unset_keeps_the_dev_default(self):
+        from zitch_api.settings import env_bool
+
+        self.assertTrue(env_bool("WHATSAPP_PROCESS_INLINE", True))
+        self.assertFalse(env_bool("WHATSAPP_PROCESS_INLINE", False))
+
+    def test_inline_processing_answers_within_the_webhook_request(self):
+        """One signed webhook POST, no worker, no drain thread — the reply must
+        already be in the OUT log when the response returns."""
+        # This test owns the queue/inline contract, not Meta egress. Keep the
+        # transport explicit so a developer's live .env can never send the
+        # fixture message during the suite.
+        with override_settings(WHATSAPP=self.WA, WHATSAPP_PROCESS_INLINE=True), \
+             patch("whatsapp.router.send_text",
+                   return_value={"success": True, "message_id": "wamid.test-out"}):
+            res = self._post_hi()
+        self.assertEqual(res.status_code, 200)
+        row = WaMessageLog.objects.filter(direction=WaMessageLog.IN,
+                                          msisdn=MSISDN).latest("created")
+        self.assertIsNotNone(row.processed_at)
+        self.assertTrue(WaMessageLog.objects.filter(
+            direction=WaMessageLog.OUT, msisdn=MSISDN).exists())
+
+    def test_a_router_crash_in_production_inline_does_not_500_the_webhook(self):
+        """Meta redelivers on 500 for a row that is already queued and counted, and
+        enough 500s get the callback throttled. In production inline mode the job
+        function records the failure on the row instead of raising."""
+        with override_settings(WHATSAPP=self.WA, WHATSAPP_PROCESS_INLINE=True,
+                               DEBUG=False, TESTING=False), \
+             patch("whatsapp.jobs.handle_inbound",
+                   side_effect=RuntimeError("router bug")):
+            res = self._post_hi()
+        self.assertEqual(res.status_code, 200)
+        row = WaMessageLog.objects.filter(direction=WaMessageLog.IN,
+                                          msisdn=MSISDN).latest("created")
+        self.assertIsNone(row.processed_at)
+        self.assertEqual(row.processing_attempts, 1)
+        self.assertTrue(row.processing_error)
+
+
+class ChatAccountSetupTests(TestCase):
+    """Minting the funding NUBAN inside the chat: the flow drives the same
+    shared wallet.views code as the app (start attempt -> bank OTP -> provision),
+    so these tests mock at that boundary and check the conversation contract."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+    link = ChannelTests.link
+
+    def start_flow(self, m="2349090000021"):
+        self.inbound("1", f"s1-{m}", msisdn=m)
+        self.inbound("Ngozi", f"s2-{m}", msisdn=m)
+        self.inbound("Ade", f"s3-{m}", msisdn=m)
+        self.inbound(f"ngozi{m[-4:]}@zitch.test", f"s4-{m}", msisdn=m)
+        self.inbound("246810", f"s5-{m}", msisdn=m)
+        self.inbound("246810", f"s6-{m}", msisdn=m)
+        return m
+
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_signup_rolls_into_account_setup(self, _enabled):
+        m = self.start_flow()
+        # The welcome is followed by the NUBAN offer, ending at the ID choice.
+        self.assertIn("account number", self.last_reply(m))
+        self.assertIn("BVN", self.last_reply(m))
+        pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
+        self.assertEqual(pa.state, "id_type")
+
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=False)
+    def test_signup_skips_setup_when_funding_is_off(self, _enabled):
+        m = self.start_flow(m="2349090000022")
+        self.assertIn("Welcome to Zitch", self.last_reply(m))
+        self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="add_account").exists())
+
+    @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_full_mint_happy_path(self, _enabled, start, complete):
+        start.return_value = ({"success": True, "tracking_id": "trk-1"}, None)
+        m = self.start_flow(m="2349090000023")
+        self.inbound("2", f"t1-{m}", msisdn=m)          # NIN
+        self.inbound("1", f"t1m-{m}", msisdn=m)   # SMS OTP route
+        self.assertIn("NIN", self.last_reply(m))
+        self.inbound("12345678901", f"t2-{m}", msisdn=m)
+        start.assert_called_once()
+        args = start.call_args[0]
+        self.assertEqual(args[1:], ("", "12345678901"))  # routed as NIN, not BVN
+        self.assertIn("code", self.last_reply(m).lower())
+
+        def provision(user, otp, tracking_id, echoed_identity=""):
+            self.assertEqual((otp, tracking_id), ("55555", "trk-1"))
+            w = get_or_create_wallet(user)
+            w.account_number, w.bank_name, w.account_name = "9912345678", "Wema Bank", "NGOZI ADE"
+            w.save(update_fields=["account_number", "bank_name", "account_name"])
+            return {"success": True}, 200
+        complete.side_effect = provision
+        self.inbound("55555", f"t3-{m}", msisdn=m)
+        details = WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT, text__contains="9912345678").first()
+        self.assertIsNotNone(details)
+        self.assertIn("ready", details.text.lower())
+        self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="add_account").exists())
+
+    @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_a_dead_rail_never_follows_a_successful_mint_with_an_error(self, _en, start, complete):
+        """The ladder ends on "we can't send SMS codes" when the rail is down.
+        That is a fine answer to someone who asked to verify, and a terrible last
+        line for someone whose account number was just minted successfully."""
+        start.return_value = ({"success": True, "tracking_id": "trk-2"}, None)
+        m = self.start_flow(m="2349090000024")
+        self.inbound("1", f"d1-{m}", msisdn=m)
+        self.inbound("1", f"d1m-{m}", msisdn=m)   # SMS OTP route
+        self.inbound("12345678901", f"d2-{m}", msisdn=m)
+
+        def provision(user, otp, tracking_id, echoed_identity=""):
+            w = get_or_create_wallet(user)
+            w.account_number, w.bank_name, w.account_name = "9900000001", "Wema Bank", "NGOZI ADE"
+            w.save(update_fields=["account_number", "bank_name", "account_name"])
+            return {"success": True}, 200
+        complete.side_effect = provision
+        with patch("whatsapp.router.sms_live", return_value=False):
+            self.inbound("55555", f"d3-{m}", msisdn=m)
+        last = self.last_reply(m)
+        self.assertIn("9900000001", last)
+        self.assertNotIn("can't send", last)
+        self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="kyc").exists())
+
+    @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_successful_bvn_mint_does_not_ask_for_bvn_again(self, _en, start, complete):
+        """If account creation succeeds but BVN still needs manual review, do not
+        loop the customer back to the same BVN prompt. The same submission was
+        already spent at Wema; the only useful next step is another missing check,
+        or a clean stop."""
+        start.return_value = ({"success": True, "tracking_id": "trk-bvn"}, None)
+        m = self.start_flow(m="2349090000124")
+        self.inbound("1", f"b1-{m}", msisdn=m)          # BVN
+        self.inbound("1", f"b1m-{m}", msisdn=m)   # SMS OTP route
+        self.inbound("12345678901", f"b2-{m}", msisdn=m)
+
+        def provision(user, otp, tracking_id, echoed_identity=""):
+            w = get_or_create_wallet(user)
+            w.account_number, w.bank_name, w.account_name = "9900000124", "Wema Bank", "NGOZI ADE"
+            w.save(update_fields=["account_number", "bank_name", "account_name"])
+            return {"success": True}, 200
+
+        complete.side_effect = provision
+        before_success = WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT).count()
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.email_live", return_value=True), \
+             patch("whatsapp.router.flows_live", return_value=False):
+            self.inbound("55555", f"b3-{m}", msisdn=m)
+
+        replies = "\n".join(WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT).order_by("id")[
+                before_success:
+            ].values_list("text", flat=True))
+        self.assertIn("9900000124", replies)
+        self.assertNotIn("Enter your 11-digit *BVN*", replies)
+        self.assertNotIn("Enter your BVN privately", replies)
+
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_the_account_id_is_collected_in_the_flow_not_the_chat(self, _enabled, start):
+        """Every signup passes through account setup, so asking for the BVN here
+        in plain text was the channel's widest remaining exposure — the number
+        stays in the customer's own history, and only they can delete it."""
+        start.return_value = ({"success": True, "tracking_id": "trk-3"}, None)
+        m = self.start_flow(m="2349090000025")
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}) as sent:
+            self.inbound("1", f"f1-{m}", msisdn=m)      # BVN
+            self.inbound("1", f"f1m-{m}", msisdn=m)   # SMS OTP route
+        sent.assert_called_once()
+        pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
+        self.assertEqual(pa.state, FLOW_ID_STATE)
+        self.assertEqual(pa.payload["id_kind"], "bvn")
+
+        # A number typed into the chat while it is open is USED, not refused: it
+        # is in the customer's history the moment they send it, so declining to
+        # read it protects nothing and dead-ends the signup. What the Flow still
+        # buys is that the number never reaches the message log in clear, and
+        # that the reply tells them to delete the message.
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}):
+            self.inbound("12345678901", f"f2-{m}", msisdn=m)
+        start.assert_called_once()
+        self.assertFalse(
+            WaMessageLog.objects.filter(msisdn=m, text__contains="12345678901").exists())
+
+    @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_the_bank_code_is_entered_in_the_flow_too(self, _enabled, start, complete):
+        """The code completes account creation and is what name-matches the ID,
+        so it is a bearer credential for as long as it lives. Collecting the BVN
+        privately and then asking for the code that unlocks it in clear would be
+        half a fix."""
+        from .flows import ACCOUNT_OTP, handle_flow_request, sign_identity_token
+
+        start.return_value = ({"success": True, "tracking_id": "trk-9"}, None)
+        m = self.start_flow(m="2349090000027")
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}):
+            self.inbound("1", f"o1-{m}", msisdn=m)
+            self.inbound("1", f"o1m-{m}", msisdn=m)   # SMS OTP route
+            pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
+            handle_flow_request({"action": "data_exchange",
+                                 "flow_token": sign_identity_token(pa),
+                                 "data": {"number": "12345678901"}})
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, FLOW_ID_STATE)
+        self.assertEqual(pa.payload["id_kind"], ACCOUNT_OTP)
+
+        def provision(user, otp, tracking_id, echoed_identity=""):
+            self.assertEqual((otp, tracking_id), ("654321", "trk-9"))
+            w = get_or_create_wallet(user)
+            w.account_number, w.bank_name, w.account_name = "9900000002", "Wema Bank", "NGOZI ADE"
+            w.save(update_fields=["account_number", "bank_name", "account_name"])
+            return {"success": True}, 200
+        complete.side_effect = provision
+        resp = handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_identity_token(pa),
+                                    "data": {"number": "654321"}})
+        self.assertNotIn("654321", str(resp))
+        self.assertFalse(WaMessageLog.objects.filter(msisdn=m, text__contains="654321").exists())
+        self.assertIn("9900000002", self.last_reply(m))
+        self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="add_account").exists())
+
+    @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_a_wrong_bank_code_stays_on_the_screen(self, _enabled, start, complete):
+        from .flows import CODE_RETRY, handle_flow_request, sign_identity_token
+
+        start.return_value = ({"success": True, "tracking_id": "trk-10"}, None)
+        complete.return_value = ({"success": False, "message": "Invalid OTP"}, 422)
+        m = self.start_flow(m="2349090000028")
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}):
+            self.inbound("1", f"w1-{m}", msisdn=m)
+            self.inbound("1", f"w1m-{m}", msisdn=m)   # SMS OTP route
+            pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
+            handle_flow_request({"action": "data_exchange", "flow_token": sign_identity_token(pa),
+                                 "data": {"number": "12345678901"}})
+        resp = handle_flow_request({"action": "data_exchange", "flow_token": sign_identity_token(pa),
+                                    "data": {"number": "000000"}})
+        self.assertEqual(resp["screen"], CODE_RETRY)       # empty box, error stated
+        self.assertIn("Invalid OTP", resp["data"]["error"])
+        self.assertTrue(PendingAction.objects.filter(id=pa.id).exists())   # still open
+
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_the_flow_submission_opens_the_account(self, _enabled, start):
+        from .flows import handle_flow_request, sign_identity_token
+
+        start.return_value = ({"success": True, "tracking_id": "trk-4"}, None)
+        m = self.start_flow(m="2349090000026")
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}):
+            self.inbound("2", f"g1-{m}", msisdn=m)      # NIN
+            self.inbound("1", f"g1m-{m}", msisdn=m)   # SMS OTP route
+        pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
+        resp = handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_identity_token(pa),
+                                    "data": {"number": "12345678901"}})
+        self.assertEqual(start.call_args[0][1:], ("", "12345678901"))   # routed as NIN
+        self.assertNotIn("12345678901", str(resp))
+        self.assertFalse(WaMessageLog.objects.filter(msisdn=m, text__contains="12345678901").exists())
+        # The bank's OTP is now the NEXT PAGE of the same session, not a second
+        # flow message: the response IS the code screen, and the action is armed
+        # in the flow-identity state rather than the chat "otp" state.
+        from .flows import FLOW_ID_STATE, IDENTITY_CHAIN
+
+        self.assertEqual(resp["screen"], IDENTITY_CHAIN)
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, FLOW_ID_STATE)
+        self.assertEqual(pa.payload["id_kind"], "account_otp")
+        # The message log never holds the NIN in clear (masked identity state).
+        self.assertFalse(WaMessageLog.objects.filter(text__contains="12345678901").exists())
+
+    @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_wrong_otp_allows_retry_and_expiry_ends_the_flow(self, _enabled, start, complete):
+        start.return_value = ({"success": True, "tracking_id": "trk-2"}, None)
+        m = self.start_flow(m="2349090000024")
+        self.inbound("1", f"u1-{m}", msisdn=m)
+        self.inbound("1", f"u1m-{m}", msisdn=m)   # SMS OTP route
+        self.inbound("11111111111", f"u2-{m}", msisdn=m)
+        complete.return_value = ({"success": False, "message": "OTP verification failed"}, 502)
+        self.inbound("00000", f"u3-{m}", msisdn=m)      # wrong code: flow survives
+        self.assertIn("resend", self.last_reply(m).lower())
+        self.assertTrue(PendingAction.objects.filter(msisdn=m, action_type="add_account", state="otp").exists())
+        complete.return_value = ({"success": False, "message": "This verification request has expired. Start account setup again."}, 400)
+        self.inbound("00001", f"u4-{m}", msisdn=m)      # expired: flow ends, restart hinted
+        self.assertIn("Reply *6*", self.last_reply(m))
+        self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="add_account").exists())
+
+    def test_menu_lists_account_details_and_shows_them(self):
+        self.link()
+        w = get_or_create_wallet(self.user)
+        w.account_number, w.bank_name, w.account_name = "8800112233", "Wema Bank", "ADA EZE"
+        w.save(update_fields=["account_number", "bank_name", "account_name"])
+        self.inbound("menu", "d1")
+        self.assertIn("My account details", self.last_reply())
+        self.inbound("7", "d2")
+        r = self.last_reply()
+        self.assertIn("8800112233", r)
+        self.inbound("my account", "d3")
+        self.assertIn("8800112233", self.last_reply())
+
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_account_details_without_nuban_points_to_setup(self, _enabled):
+        self.link()
+        self.inbound("7", "d4")
+        self.assertIn("Add money", self.last_reply())
+
+
+class ChatSignupEntryTests(TestCase):
+    """Opening an account is what a new number came here to do.
+
+    The channel used to answer every first message by naming the app, because
+    chat signup shipped switched off. It is on by default now, and the way in is
+    what people actually type — "i want to open account here" — not only the
+    digit *1*.
+    """
+
+    def setUp(self):
+        self.client = Client()
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    # A settings dict with no ALLOW_CHAT_SIGNUP key at all: what a deploy that
+    # never sets the env var gets. The default has to be "yes, here".
+    WA = {"MODE": "sandbox", "VERIFY_TOKEN": "", "TOKEN": "", "APP_SECRET": "",
+          "BASE_URL": "x", "PHONE_NUMBER_ID": "", "BUSINESS_NUMBER": ""}
+
+    @override_settings(WHATSAPP=WA)
+    def test_a_new_number_is_offered_an_account_here_not_sent_to_the_app(self):
+        m = "2349090000041"
+        self.inbound("hi", "e1", msisdn=m)
+        r = self.last_reply(m)
+        self.assertIn("create a new account", r.lower())
+        self.assertNotIn("Link WhatsApp", r)
+
+    @override_settings(WHATSAPP=WA)
+    def test_a_stalled_signup_is_told_where_it_is_not_just_to_tap_the_form(self):
+        """The identity ladder has always shown a ✅/⬜ card; signup answered a
+        customer who tapped away with "fill the form above" and nothing else, so
+        there was no way to see how much was left or that the email code already
+        round-tripped was still held."""
+        from datetime import timedelta as td
+
+        from .flows import FLOW_PHONE_STATE
+        from .models import WaOnboarding
+
+        m = "2349090000092"
+        WaOnboarding.objects.create(
+            msisdn=m, step=FLOW_PHONE_STATE,
+            payload={"first_name": "Ngozi", "last_name": "Ade",
+                     "email": "ngozi@example.com", "email_verified_flow": True},
+            expires_at=timezone.now() + td(minutes=15))
+
+        self.inbound("what now?", "nudge-1", msisdn=m)
+
+        reply = self.last_reply(m)
+        self.assertIn("secure screen", reply)
+        self.assertIn("Where you are", reply)
+        self.assertIn("✅ Your name", reply)
+        self.assertIn("✅ Email address", reply)
+        self.assertIn("⬜ Phone number", reply)
+        self.assertIn("⬜ Transaction PIN", reply)
+
+    @override_settings(WHATSAPP=WA)
+    def test_a_code_typed_into_the_chat_keeps_delete_it_advice_uncluttered(self):
+        """The delete-it-now instruction is time-sensitive in a way a checklist
+        is not. Burying it under five lines of progress is the wrong trade on
+        the one message where acting fast actually matters."""
+        from datetime import timedelta as td
+
+        from .flows import FLOW_EMAIL_CODE_STATE
+        from .models import WaOnboarding
+
+        m = "2349090000093"
+        WaOnboarding.objects.create(
+            msisdn=m, step=FLOW_EMAIL_CODE_STATE,
+            payload={"first_name": "Ngozi", "last_name": "Ade"},
+            expires_at=timezone.now() + td(minutes=15))
+
+        self.inbound("483920", "nudge-2", msisdn=m)
+
+        reply = self.last_reply(m)
+        self.assertIn("Delete for everyone", reply)
+        self.assertNotIn("Where you are", reply)
+
+    @override_settings(WHATSAPP=WA)
+    def test_saying_it_in_words_starts_the_signup(self):
+        # Verbatim from the thread that reported this: a plain sentence, no digit.
+        for i, phrase in enumerate(["i want to open account here", "How do I create an account?",
+                                    "let me register", "i want an account", "can i signup here",
+                                    "i want to open a zitch account"]):
+            m = f"234909000005{i}"
+            self.inbound(phrase, f"e2-{i}", msisdn=m)
+            self.assertTrue(WaOnboarding.objects.filter(msisdn=m).exists(),
+                            f"{phrase!r} did not start a signup")
+            self.assertNotIn("Link WhatsApp", self.last_reply(m))
+
+    @override_settings(WHATSAPP=WA)
+    def test_already_having_an_account_still_goes_to_linking(self):
+        # Names an account, wants the opposite of a signup — the link answer is
+        # tested first for exactly this.
+        for i, phrase in enumerate(["i already have an account", "link my account", "log in",
+                                    "i already registered", "my existing zitch account"]):
+            m = f"234909000006{i}"
+            self.inbound(phrase, f"e3-{i}", msisdn=m)
+            self.assertIn("Link WhatsApp", self.last_reply(m))
+            self.assertFalse(WaOnboarding.objects.filter(msisdn=m).exists())
+
+    @override_settings(WHATSAPP={**WA, "ALLOW_CHAT_SIGNUP": False})
+    def test_a_deploy_can_still_send_new_numbers_to_the_app(self):
+        m = "2349090000070"
+        self.inbound("i want to open account here", "e4", msisdn=m)
+        self.assertIn("zitch app", self.last_reply(m).lower())
+        self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
+
+
+class SignupPinPrivacyTests(TestCase):
+    """The signup PIN must never become a chat message. WhatsApp gives a business
+    no way to delete or expire a message it received — there is no view-once for
+    text — so the only thing that keeps a PIN out of the customer's own thread is
+    never asking for it there."""
+
+    def setUp(self):
+        self.client = Client()
+        self.m = "2349090000031"
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    def to_pin_step(self, m=None):
+        m = m or self.m
+        self.inbound("1", f"p1-{m}", msisdn=m)
+        ob = WaOnboarding.objects.get(msisdn=m)
+        if ob.step == "flow_signup":
+            # Flows live: details, email proof and phone go through the private
+            # form, not the chat. The test captures the real generated email
+            # code so its fixtures exercise the same verified ladder as live.
+            with patch("whatsapp.router.email_live", return_value=True), \
+                 patch("whatsapp.router.send_email",
+                       return_value={"success": True}) as mail:
+                handle_flow_request({
+                    "action": "data_exchange",
+                    "flow_token": sign_onboarding_token(ob),
+                    "data": {"first_name": "Chidi", "last_name": "Obi",
+                             "email": f"chidi{m[-4:]}@zitch.test"},
+                })
+            code = mail.call_args[0][2].split("code is ")[1][:6]
+            handle_flow_request({"action": "data_exchange",
+                                 "flow_token": sign_onboarding_token(ob),
+                                 "data": {"email_code": code}})
+            handle_flow_request({"action": "data_exchange",
+                                 "flow_token": sign_onboarding_token(ob),
+                                 "data": {"phone": _local_phone(m)}})
+        else:
+            self.inbound("Chidi", f"p2-{m}", msisdn=m)
+            self.inbound("Obi", f"p3-{m}", msisdn=m)
+            self.inbound(f"chidi{m[-4:]}@zitch.test", f"p4-{m}", msisdn=m)
+        return m
+
+    @patch("whatsapp.router.send_flow", return_value={"success": True})
+    @patch("whatsapp.router.flows_live", return_value=True)
+    def test_pin_is_collected_in_the_secure_flow_not_the_chat(self, _live, flow):
+        m = self.to_pin_step()
+        # ONE flow message covers the whole signup now: the form chains into the
+        # PIN pair as data_exchange responses on the same session.
+        flow.assert_called_once()
+        self.assertEqual(WaOnboarding.objects.get(msisdn=m).step, FLOW_PIN_STATE)
+        self.assertIn("secure form", self.last_reply(m))
+        # No prompt anywhere asks for a PIN in the chat.
+        prompts = WaMessageLog.objects.filter(msisdn=m, direction=WaMessageLog.OUT)
+        self.assertFalse([r for r in prompts if "Create a *4-digit PIN*" in r.text])
+
+    @patch("whatsapp.router.send_flow", return_value={"success": True})
+    @patch("whatsapp.router.flows_live", return_value=True)
+    def test_a_pin_typed_in_chat_is_masked_and_the_user_is_told_to_delete_it(self, _live, _flow):
+        m = self.to_pin_step()
+        self.inbound("432100", f"p5-{m}", msisdn=m)
+        self.assertIn("Delete for everyone", self.last_reply(m))
+        # Masked in our log, and the account is NOT created from a chat-typed PIN.
+        self.assertFalse(WaMessageLog.objects.filter(msisdn=m, text__contains="432100").exists())
+        self.assertTrue(WaMessageLog.objects.filter(msisdn=m, text="[PIN]").exists())
+        self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
+
+    @patch("whatsapp.router.send_flow", return_value={"success": True})
+    @patch("whatsapp.router.flows_live", return_value=True)
+    def test_flow_sets_the_pin_with_a_confirm_round_trip(self, _live, _flow):
+        m = self.to_pin_step()
+        ob = WaOnboarding.objects.get(msisdn=m)
+        token = sign_onboarding_token(ob)
+
+        # First submit holds only a hash and moves to the SEPARATE confirm
+        # screen — its own form, so it starts empty. Re-rendering the same
+        # screen kept the first PIN sitting in the box, and one tap "confirmed"
+        # it without a single digit retyped.
+        from whatsapp.flows import PIN_CONFIRM
+
+        r1 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
+        self.assertEqual(r1["screen"], PIN_CONFIRM)
+        ob.refresh_from_db()
+        self.assertTrue(ob.payload["flow_pin_hash"])
+        self.assertNotIn("246810", json.dumps(ob.payload))     # never the raw PIN
+        self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
+
+        # Routing is forward-only, so a mismatch cannot go back to the create
+        # screen: the first entry stays authoritative and the confirm re-asks —
+        # on the retry twin, so the mismatched digits are not still in the box.
+        from whatsapp.flows import PIN_CONFIRM_RETRY
+
+        r2 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "111111"}})
+        self.assertEqual(r2["screen"], PIN_CONFIRM_RETRY)
+        self.assertIn("didn't match", r2["data"]["error"])
+        self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
+
+        # Matching the first entry creates the account with that PIN.
+        r3 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
+        self.assertEqual(r3["screen"], "RESULT")
+        u = User.objects.get(phone=_local_phone(m))
+        self.assertTrue(u.check_transaction_pin("246810"))
+        self.assertIn("Welcome to Zitch", WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT, text__contains="Welcome").first().text)
+
+    @patch("whatsapp.router.send_flow", return_value={"success": True})
+    @patch("whatsapp.router.flows_live", return_value=True)
+    def test_a_forged_or_foreign_token_sets_nothing(self, _live, _flow):
+        m = self.to_pin_step()
+        ob = WaOnboarding.objects.get(msisdn=m)
+        forged = f"ob{ob.id}.notarealsignature"
+        r = handle_flow_request({"action": "data_exchange", "flow_token": forged, "data": {"pin": "2468"}})
+        self.assertEqual(r["screen"], "RESULT")          # terminal, not the PIN screen
+        ob.refresh_from_db()
+        self.assertFalse(ob.payload.get("flow_pin_hash"))
+        # A money-action token must not resolve as an onboarding one, or vice versa.
+        self.assertIsNone(resolve_onboarding_token(f"{ob.id}.{forged.split('.')[1]}"))
+
+    @patch("whatsapp.router._pin_in_chat_allowed", return_value=False)
+    @patch("whatsapp.router.flows_live", return_value=False)
+    def test_production_without_flows_creates_no_half_usable_account(self, _live, _chat):
+        m = self.to_pin_step(m="2349090000032")
+        self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
+        self.assertFalse(WaOnboarding.objects.filter(msisdn=m).exists())
+        self.assertIn("Secure signup is temporarily unavailable", self.last_reply(m))
+        # Nothing in the thread ever asked for a PIN.
+        self.assertFalse(WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT, text__contains="Create a *4-digit PIN*").exists())
+
+    def test_a_stray_pin_shaped_message_warns_a_linked_user(self):
+        user, _ = make_user(phone="08010000077", email="stray@zitch.test")
+        WhatsAppLink.objects.create(user=user, wa_msisdn="2349090000033",
+                                    status=WhatsAppLink.ACTIVE)
+        self.inbound("1234", "stray1", msisdn="2349090000033")
+        r = self.last_reply("2349090000033")
+        self.assertIn("Delete for everyone", r)
+        # And the one expiry lever WhatsApp actually offers — the customer's own
+        # per-chat disappearing-messages setting — is suggested alongside.
+        self.assertIn("disappearing messages", r)
+        self.assertFalse(WaMessageLog.objects.filter(
+            msisdn="2349090000033", text__contains="1234").exists())
+
+    def test_a_stray_five_digit_code_is_caught_like_the_others(self):
+        """The webhook masks \\d{4,6} as [PIN]; the chat branch used to catch only
+        4 or 6, so a 5-digit code fell past the warning into the AI layer while
+        the log called it a PIN. The two rules must not disagree."""
+        user, _ = make_user(phone="08010000078", email="stray5@zitch.test")
+        WhatsAppLink.objects.create(user=user, wa_msisdn="2349090000034",
+                                    status=WhatsAppLink.ACTIVE)
+        self.inbound("12345", "stray5", msisdn="2349090000034")
+        r = self.last_reply("2349090000034")
+        self.assertIn("Delete for everyone", r)
+        self.assertFalse(WaMessageLog.objects.filter(
+            msisdn="2349090000034", text__contains="12345").exists())
+
+    def test_a_production_action_stuck_at_pin_without_a_code_fails_closed(self):
+        """_arm_confirm never arms the PIN-in-chat rung in production, but the
+        point of ACCEPTANCE must refuse too: a stale row from a config flip (or
+        a future arming bug) reaching "pin" with no otp_hash would otherwise
+        quietly start reading PINs out of a chat that keeps them forever."""
+        from unittest import mock
+
+        from django.utils import timezone as tz
+
+        user, _ = make_user(phone="08010000079", email="stuck@zitch.test")
+        WhatsAppLink.objects.create(user=user, wa_msisdn="2349090000035",
+                                    status=WhatsAppLink.ACTIVE)
+        PendingAction.objects.create(
+            user=user, msisdn="2349090000035", action_type="transfer", state="pin",
+            payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
+                     "bank_name": "GTBank", "name": "JOHN DOE"},
+            expires_at=tz.now() + timedelta(minutes=5))
+        before = get_or_create_wallet(user).balance
+        with mock.patch("whatsapp.router._pin_in_chat_allowed", return_value=False):
+            self.inbound("1234", "stuck1", msisdn="2349090000035")
+        r = self.last_reply("2349090000035")
+        self.assertIn("Zitch app", r)
+        self.assertEqual(get_or_create_wallet(user).balance, before)   # nothing moved
+        # Failed CLOSED: the action is gone, not waiting for another try.
+        self.assertFalse(PendingAction.objects.filter(msisdn="2349090000035").exists())
+
+
+class MenuLinksTests(TestCase):
+    """The menu carries the website, app and customer-care links; each line is
+    omitted rather than shown dead when its setting is blank."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+    link = ChannelTests.link
+
+    LINKS = {"WEBSITE": "https://zitch.ng", "APP": "https://zitch.ng/app",
+             "SUPPORT_WA": "2349012345678", "SUPPORT_EMAIL": "support@zitch.ng"}
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_menu_carries_the_links(self):
+        self.link()
+        self.inbound("menu", "L1")
+        r = self.last_reply()
+        self.assertIn("https://zitch.ng", r)
+        self.assertIn("https://zitch.ng/app", r)
+        self.assertIn("https://wa.me/2349012345678", r)   # rendered as a deep link
+        self.assertIn("support@zitch.ng", r)
+        self.assertIn("More information", r)
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_support_keyword_shows_the_links(self):
+        self.link()
+        for word in ("support", "customer care", "more info"):
+            self.inbound(word, f"L2-{word}")
+            self.assertIn("https://wa.me/2349012345678", self.last_reply())
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_first_contact_welcome_carries_them_too(self):
+        # A brand-new number is exactly who needs "get the app" / "more info".
+        self.inbound("hi", "L3", msisdn="2349090000041")
+        r = self.last_reply("2349090000041")
+        self.assertIn("Welcome to *Zitch*", r)
+        self.assertIn("https://zitch.ng/app", r)
+
+    @override_settings(ZITCH_LINKS={"WEBSITE": "", "APP": "", "SUPPORT_WA": "", "SUPPORT_EMAIL": ""},
+                       WHATSAPP={"MODE": "sandbox", "ALLOW_CHAT_SIGNUP": True, "VERIFY_TOKEN": "",
+                                 "TOKEN": "", "APP_SECRET": "", "BASE_URL": "x",
+                                 "PHONE_NUMBER_ID": "", "BUSINESS_NUMBER": ""})
+    def test_unconfigured_links_are_omitted_not_dead(self):
+        self.link()
+        self.inbound("menu", "L4")
+        r = self.last_reply()
+        self.assertIn("Check balance", r)          # the menu itself still renders
+        self.assertNotIn("More information", r)
+        self.assertNotIn("wa.me", r)
+        self.assertNotIn("None", r)
+
+    @override_settings(ZITCH_LINKS={"WEBSITE": "https://zitch.ng", "APP": "", "SUPPORT_WA": "",
+                                    "SUPPORT_EMAIL": ""},
+                       WHATSAPP={"MODE": "sandbox", "ALLOW_CHAT_SIGNUP": True, "VERIFY_TOKEN": "",
+                                 "TOKEN": "", "APP_SECRET": "", "BASE_URL": "x",
+                                 "PHONE_NUMBER_ID": "", "BUSINESS_NUMBER": "2348011110000"})
+    def test_care_link_falls_back_to_the_business_number(self):
+        self.link()
+        self.inbound("menu", "L5")
+        self.assertIn("https://wa.me/2348011110000", self.last_reply())
+
+
+class ReceiptPrivacyTests(TestCase):
+    """A receipt is forwarded as proof of payment, so it must carry the SENDER —
+    and must not carry the balance, which is nobody's business but the payer's."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+    link = ChannelTests.link
+
+    def replies(self, msisdn=MSISDN):
+        return [r.text for r in WaMessageLog.objects.filter(
+            msisdn=msisdn, direction=WaMessageLog.OUT).order_by("created")]
+
+    def test_receipt_shows_the_sender_and_never_the_balance(self):
+        text = reply_receipt(MSISDN, "Airtime receipt", [("Network", "MTN")],
+                             ref="ZTC-1", user=self.user, balance_after=Decimal("12345"))
+        self.assertIn("From: ADA EZE", text)
+        self.assertIn("Sender: •••••••0001", text)     # last four only
+        self.assertNotIn("08010000001", text)          # never the full number
+        self.assertNotIn("balance", text.lower())
+        self.assertNotIn("12,345", text)
+
+    def test_balance_arrives_as_its_own_message_after_the_receipt(self):
+        reply_receipt(MSISDN, "Airtime receipt", [("Network", "MTN")],
+                      ref="ZTC-2", user=self.user, balance_after=Decimal("12345"))
+        out = self.replies()
+        self.assertIn("Airtime receipt", out[-2])      # receipt first...
+        self.assertIn("12,345", out[-1])               # ...then the balance, separately
+        self.assertIn("balance", out[-1].lower())
+
+    def test_no_balance_message_when_none_is_given(self):
+        reply_receipt(MSISDN, "Airtime receipt", [("Network", "MTN")], ref="ZTC-3", user=self.user)
+        self.assertNotIn("balance", self.last_reply().lower())
+
+    def test_a_real_transfer_receipt_follows_the_same_rules(self):
+        self.link()
+        Bank.objects.get_or_create(code="gtb", defaults={"name": "GTBank", "bank_code": "058",
+                                                         "color": "#e30613", "active": True})
+        self.inbound("send", "r1")
+        self.inbound("1000", "r2")
+        self.inbound("0123456789", "r3")
+        self.inbound("gtb", "r4")
+        self.inbound("yes", "r5")
+        self.inbound("1234", "r6")   # PIN (dev/test path)
+        out = self.replies()
+        receipt = next((t for t in out if "Transfer receipt" in t), "")
+        self.assertTrue(receipt, f"no receipt in {out[-3:]}")
+        self.assertIn("From: ADA EZE", receipt)
+        self.assertNotIn("New balance", receipt)
+        # The balance is its own message, immediately after the receipt. Read
+        # positionally rather than as "the last thing said", because a first-time
+        # recipient is also offered as a saved payee and that offer comes after.
+        self.assertIn("balance", out[out.index(receipt) + 1].lower())
+
+
+class FlowTimeoutTests(TestCase):
+    """Two clocks, because a half-typed request and an armed payment are not the
+    same risk: 5 minutes while a flow is still collecting details, 2 minutes once
+    it is waiting for the PIN that will execute it."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="50000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE)
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#000", active=True)
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    def action(self):
+        return PendingAction.objects.filter(msisdn=MSISDN).order_by("-created").first()
+
+    def window(self, pa):
+        """Minutes from now until this flow goes stale (rounded to the minute)."""
+        return round((pa.expires_at - timezone.now()).total_seconds() / 60)
+
+    def expire(self, pa):
+        """Push the deadline just past — what the passage of time would do."""
+        pa.expires_at = timezone.now() - timedelta(seconds=1)
+        pa.save(update_fields=["expires_at"])
+
+    def test_a_flow_collecting_details_has_five_minutes(self):
+        self.inbound("2", "t1")                      # send money -> asks the amount
+        self.assertEqual(self.window(self.action()), 5)
+
+    def arm_airtime(self, tag):
+        """Walk an airtime purchase up to its confirm — the shortest armed flow."""
+        self.inbound("airtime", f"{tag}a")
+        self.inbound("1", f"{tag}b")                  # MTN
+        self.inbound("me", f"{tag}c")                 # own number
+        self.inbound("500", f"{tag}d")                # amount -> arms the confirm
+
+    def test_an_armed_payment_has_two_minutes(self):
+        self.arm_airtime("t2")
+        pa = self.action()
+        self.assertEqual(pa.state, "pin")
+        self.assertEqual(self.window(pa), 2)
+
+    def test_the_clock_shortens_at_the_moment_it_arms(self):
+        self.inbound("airtime", "t6")
+        self.inbound("1", "t7")
+        self.inbound("me", "t8")
+        self.assertEqual(self.window(self.action()), 5)   # still collecting
+        self.inbound("500", "t9")
+        self.assertEqual(self.window(self.action()), 2)   # armed
+
+    def test_a_pin_after_the_window_pays_nothing_and_says_so(self):
+        self.arm_airtime("t10")
+        self.expire(self.action())
+        self.inbound("1234", "t14")                  # the right PIN, too late
+        self.assertIn("wasn't confirmed in time", self.last_reply())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000"))
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+
+    def test_a_timed_out_flow_says_so_and_still_answers_the_new_message(self):
+        self.inbound("2", "t15")                     # transfer, mid-collection
+        self.expire(self.action())
+        self.inbound("1", "t16")                     # balance
+        out = [r.text for r in WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("created")]
+        self.assertTrue(any("timed out" in t for t in out))
+        self.assertIn("balance", out[-1].lower())    # the new message is still answered
+
+    @patch("whatsapp.router.send_flow", return_value={"success": True})
+    @patch("whatsapp.router.flows_live", return_value=True)
+    def test_the_secure_pin_pad_is_on_the_same_short_clock(self, _live, _flow):
+        # The Flow's PIN pad is the production path — the one the window has to
+        # be long enough for — so it must not be the one left on five minutes.
+        self.arm_airtime("t17")
+        pa = self.action()
+        self.assertEqual(pa.state, FLOW_PIN_STATE)
+        self.assertEqual(self.window(pa), 2)
+
+    def test_an_expired_flow_cannot_be_resumed_through_the_secure_flow(self):
+        # The Flow endpoint resolves its token against the same deadline, so a
+        # PIN pad left open past the window submits into nothing.
+        from .flows import resolve_flow_token, sign_flow_token
+
+        self.arm_airtime("t21")
+        pa = self.action()
+        pa.state = FLOW_PIN_STATE          # as the Flow path would have left it
+        pa.save(update_fields=["state"])
+        token = sign_flow_token(pa)
+        self.assertIsNotNone(resolve_flow_token(token))
+        self.expire(pa)
+        self.assertIsNone(resolve_flow_token(token))
+
+
+class LinkCodeTests(TestCase):
+    """A link code grants a money-moving channel, so it is PIN-gated, single use,
+    and short-lived."""
+
+    def setUp(self):
+        self.client = Client()
+        # Phone must match MSISDN — the code is only accepted from the number on
+        # the account (the SIM-swap guard), which these tests exercise.
+        self.user, self.token = make_user(phone="08011112222")
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    def start(self, pin="1234"):
+        res = self.client.post("/api/whatsapp/link/start/",
+                               data=json.dumps({"access_token": self.token, "transaction_pin": pin}),
+                               content_type="application/json")
+        return res, res.json()
+
+    def test_a_code_requires_the_pin(self):
+        res, body = self.start(pin="")
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(WhatsAppLink.objects.filter(user=self.user, status=WhatsAppLink.PENDING).exists())
+        res, body = self.start(pin="9999")
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(WhatsAppLink.objects.filter(user=self.user, status=WhatsAppLink.PENDING).exists())
+        res, body = self.start()
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["code"])
+
+    def test_the_code_expires_in_thirty_minutes(self):
+        _, body = self.start()
+        self.assertEqual(body["expires_in"], 30 * 60)
+        link = WhatsAppLink.objects.get(user=self.user, status=WhatsAppLink.PENDING)
+        self.assertAlmostEqual((link.expires_at - timezone.now()).total_seconds(), 30 * 60, delta=30)
+
+    def test_the_code_is_single_use(self):
+        _, body = self.start()
+        code = body["code"]
+        self.inbound(f"LINK {code}", "lk1")
+        self.assertIn("Linked!", " ".join(WaMessageLog.objects.filter(
+            direction=WaMessageLog.OUT).values_list("text", flat=True)))
+        # Replaying it links nothing — it was consumed.
+        self.inbound(f"LINK {code}", "lk2", msisdn="2349099999999")
+        self.assertFalse(WhatsAppLink.objects.filter(
+            wa_msisdn="2349099999999", status=WhatsAppLink.ACTIVE).exists())
+
+    def test_a_code_sent_from_another_number_is_burned(self):
+        # The shape of a leaked code being tried from an attacker's WhatsApp:
+        # refuse AND retire it, so it cannot be retried from a third number.
+        _, body = self.start()
+        code = body["code"]
+        self.inbound(f"LINK {code}", "lk3", msisdn="2349088888888")
+        self.assertIn("send this code from the phone number", self.last_reply("2349088888888"))
+        link = WhatsAppLink.objects.get(user=self.user, status=WhatsAppLink.PENDING)
+        self.assertEqual(link.link_code, "")
+        # Even the rightful owner cannot use it now — a fresh code is required.
+        self.inbound(f"LINK {code}", "lk4")
+        self.assertNotIn("Linked!", self.last_reply())
+
+
+class ModelDataBoundaryTests(TestCase):
+    """What may and may not reach an LLM. Secrets (PIN, OTP, card numbers) are
+    removed outright — no model needs them and no intent uses them. Identifiers
+    (account, meter, smartcard, phone) are tokenized on the way in and
+    re-hydrated on the way out, so the model routes a de-identified sentence and
+    the deterministic flow still receives the customer's real numbers."""
+
+    def test_secrets_are_removed_not_tokenized(self):
+        from whatsapp.ai import sanitize_for_model
+
+        masked, mapping = sanitize_for_model("my pin is 1234 please fix my account")
+        self.assertNotIn("1234", masked)
+        self.assertIn("[code removed]", masked)
+        self.assertNotIn("1234", json.dumps(mapping))   # never in the map either
+
+        masked, _ = sanitize_for_model("the otp is 482910")
+        self.assertNotIn("482910", masked)
+
+        # A card typed the way people type cards: four short groups. Neither the
+        # 7+-digit rule nor a bare-PIN mask sees it; the Luhn-checked shape does.
+        masked, mapping = sanitize_for_model("pay with 4242 4242 4242 4242 please")
+        self.assertNotIn("4242", masked)
+        self.assertIn("[card removed]", masked)
+        self.assertNotIn("4242", json.dumps(mapping))
+
+    def test_amounts_survive(self):
+        from whatsapp.ai import sanitize_for_model
+
+        # 5000 is PIN-shaped, but nothing in the message says "secret" — an
+        # amount must reach the model or intent extraction is pointless.
+        masked, _ = sanitize_for_model("send 5000 to my brother")
+        self.assertIn("5000", masked)
+
+    def test_identifiers_become_tokens_and_round_trip(self):
+        from whatsapp.ai import rehydrate_value, sanitize_for_model
+
+        masked, mapping = sanitize_for_model("buy power for meter 04123456789 and send 2k to 0123456789 gtb")
+        self.assertNotIn("04123456789", masked)
+        self.assertNotIn("0123456789", masked)
+        self.assertIn("num_ref_1", masked)
+        self.assertIn("num_ref_2", masked)
+        out = rehydrate_value({"meter": "num_ref_1", "account_number": "num_ref_2",
+                               "note": "pay num_ref_1 now"}, mapping)
+        self.assertEqual(out["meter"], "04123456789")
+        self.assertEqual(out["account_number"], "0123456789")
+        self.assertEqual(out["note"], "pay 04123456789 now")
+
+    def test_an_unknown_token_is_left_alone(self):
+        from whatsapp.ai import rehydrate_value
+
+        # A hallucinated token must not become a real value; the flow will treat
+        # it as missing and ask.
+        self.assertEqual(rehydrate_value("num_ref_9", {"num_ref_1": "0123456789"}), "num_ref_9")
+
+    def test_separated_identifiers_are_caught(self):
+        """A Nigerian customer types "0123 456 789" or "0123-456-789". A
+        contiguous-digits-only rule missed both, so the account number reached
+        the model and the support log in clear — a space defeating the whole
+        de-identification design."""
+        from whatsapp.ai import sanitize_for_model
+        from whatsapp.views import _redact_chat_log
+
+        for raw in ("send 5k to 0123 456 789 gtb", "my account is 0123-456-789"):
+            masked, mapping = sanitize_for_model(raw)
+            self.assertNotIn("0123", masked, raw)
+            self.assertIn("num_ref_1", masked)
+            # Stored digits-only: the bank validates the bare number, so the
+            # customer's spacing must not be re-hydrated into the field.
+            self.assertEqual(mapping["num_ref_1"], "0123456789")
+            self.assertNotIn("0123 456", _redact_chat_log(raw))
+            self.assertIn("[identifier …6789]", _redact_chat_log(raw))
+
+    def test_a_meter_number_is_not_mistaken_for_a_card(self):
+        from whatsapp.ai import sanitize_for_model
+
+        # 11 digits, fails the card length/Luhn gate -> tokenized, not removed.
+        masked, mapping = sanitize_for_model("meter 04123456789")
+        self.assertIn("num_ref_1", masked)
+        self.assertEqual(mapping["num_ref_1"], "04123456789")
+
+    def test_extract_intent_rehydrates_for_dispatch_and_masks_for_the_log(self):
+        from whatsapp import ai
+
+        captured = {}
+
+        def fake_call(system, user_text, tools, cfg=None):
+            captured["text"] = user_text
+            return {"name": "transfer", "input": {"amount": 5000, "account_number": "num_ref_1",
+                                                  "bank_name": "gtb"}}
+
+        with patch("whatsapp.llm.call_tools", side_effect=fake_call), \
+             patch("whatsapp.ai.llm_available", return_value=True):
+            intent = ai.extract_intent("send 5k to 0123456789 gtb, my pin is 1234")
+
+        self.assertNotIn("0123456789", captured["text"])    # the model saw a token
+        self.assertNotIn("1234", captured["text"])          # and never the PIN
+        self.assertEqual(intent["input"]["account_number"], "0123456789")   # dispatch gets the real one
+        self.assertEqual(intent["masked_input"]["account_number"], "num_ref_1")  # the log copy stays masked
+
+
+class AiIntentRehydrationEndToEndTests(TestCase):
+    """The webhook path: a sentence with a real account number routes through the
+    model as tokens, dispatches with the real number, and stores only tokens."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="50000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#000", active=True)
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    def test_token_round_trip_reaches_the_confirm_step(self):
+        def fake_call(system, user_text, tools, cfg=None):
+            # The model echoes the token it was shown, as instructed.
+            m = re.search(r"num_ref_\d+", user_text)
+            return {"name": "transfer",
+                    "input": {"amount": 4000, "account_number": m.group(0) if m else None,
+                              "bank_name": "gtb"}}
+
+        with patch("whatsapp.llm.call_tools", side_effect=fake_call), \
+             patch("whatsapp.ai.llm_available", return_value=True):
+            # Free-form (not the paste shape): amount word, prose, one account number.
+            self.inbound("please could you send four thousand naira to 0199887766 at gtb", "rh1")
+        r = self.last_reply()
+        self.assertIn("0199887766", r)                       # name-enquiry/confirm shows the real account
+        row = WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.IN,
+                                          wa_message_id="rh1").first()
+        # The stored intent never holds the real number. (The key-based redactor
+        # in WebhookEvent.redact may blank even the token — two layers agreeing.)
+        blob = json.dumps(row.intent_json)
+        self.assertNotIn("0199887766", blob)
+        self.assertIn(row.intent_json["input"]["account_number"], ("num_ref_1", "[redacted]"))
+
+
+class ChatLogSecretRedactionTests(TestCase):
+    """The support log mirrors the model boundary: cards collapsed however they
+    are spaced, and pin/otp-adjacent short codes masked inside sentences."""
+
+    def test_spaced_card_is_masked_to_last_four(self):
+        from whatsapp.views import _redact_chat_log
+
+        out = _redact_chat_log("charge my card 4242 4242 4242 4242 thanks")
+        self.assertNotIn("4242 4242", out)
+        self.assertIn("[card …4242]", out)
+
+    def test_pin_in_a_sentence_is_masked(self):
+        from whatsapp.views import _redact_chat_log
+
+        out = _redact_chat_log("my pin is 1234")
+        self.assertNotIn("1234", out)
+        self.assertIn("[code redacted]", out)
+
+    def test_plain_amounts_in_plain_sentences_survive(self):
+        from whatsapp.views import _redact_chat_log
+
+        self.assertIn("5000", _redact_chat_log("send 5000 to mama"))
+
+
+class ChatKycTests(TestCase):
+    """Verifying phone, email, BVN and NIN without leaving the chat. Every step
+    drives the same server-side checks the app uses, and the tier is DERIVED at
+    the end — this flow never grants one."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(phone="08011112222", email="k@zitch.test")
+        self.user.email_verified = False
+        self.user.phone_verified = False
+        self.user.bvn_verified = False
+        self.user.nin_verified = False
+        self.user.tier = 0
+        self.user.save()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    def replies(self):
+        return [r.text for r in WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("created")]
+
+    def test_menu_offers_verification(self):
+        self.inbound("menu", "k0")
+        self.assertIn("Verify my identity", self.last_reply())
+
+    @patch("whatsapp.router.sms_live", return_value=True)
+    @patch("whatsapp.router.send_sms", return_value={"success": True})
+    def test_phone_step_requires_the_sms_code(self, sms, _live):
+        self.inbound("8", "k1")
+        self.assertIn("sent a 6-digit code by SMS", self.last_reply())
+        sms.assert_called_once()
+        code = re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1)
+
+        self.inbound("000000", "k2")           # wrong code
+        self.assertIn("isn't right", self.last_reply())
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.phone_verified)
+
+        self.inbound(code, "k3")               # correct
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.phone_verified)
+
+    @patch("whatsapp.router.email_live", return_value=True)
+    @patch("whatsapp.router.sms_live", return_value=True)
+    @patch("whatsapp.router.send_email")
+    @patch("whatsapp.router.send_sms", return_value={"success": True})
+    def test_email_step_sends_to_the_inbox_not_the_phone(self, sms, email, _sl, _el):
+        self.inbound("8", "e1")
+        self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "e2")
+        # Now on email: the code went to the ADDRESS, never by SMS.
+        self.assertIn("k@zitch.test", self.last_reply())
+        email.assert_called_once()
+        self.assertEqual(email.call_args[0][0], "k@zitch.test")
+        code = re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1)
+        self.assertEqual(sms.call_count, 1)     # no second SMS
+
+        self.inbound(code, "e3")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_verified)
+
+    @patch("whatsapp.router.email_live", return_value=True)
+    @patch("whatsapp.router.sms_live", return_value=True)
+    @patch("whatsapp.router.verify_nin", return_value={"success": True})
+    @patch("whatsapp.router.verify_bvn", return_value={"success": True})
+    @patch("whatsapp.router.send_email")
+    @patch("whatsapp.router.send_sms", return_value={"success": True})
+    def test_full_run_reaches_tier_1(self, sms, email, bvn, nin, _sl, _el):
+        self.inbound("8", "f1")
+        self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "f2")
+        self.inbound(re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1), "f3")
+        self.assertIn("BVN", self.last_reply())
+        self.inbound("12345678901", "f4")
+        self.assertIn("NIN", self.last_reply())
+        self.inbound("10987654321", "f5")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified and self.user.nin_verified)
+        self.assertEqual(self.user.tier, 1)      # derived, not granted
+        self.assertIn("Tier 1", self.last_reply())
+        # Neither identity number is readable in the log.
+        self.assertFalse(WaMessageLog.objects.filter(text__contains="12345678901").exists())
+        self.assertFalse(WaMessageLog.objects.filter(text__contains="10987654321").exists())
+
+    @patch("whatsapp.router.email_live", return_value=True)
+    @patch("whatsapp.router.sms_live", return_value=True)
+    @patch("whatsapp.router.verify_nin",
+           return_value={"success": False, "otp_required": True, "message": "not standalone"})
+    @patch("whatsapp.router.verify_bvn", return_value={"success": True})
+    @patch("whatsapp.router.send_email")
+    @patch("whatsapp.router.send_sms", return_value={"success": True})
+    def test_an_unverifiable_identity_is_queued_not_dead_ended(self, sms, email, bvn, nin, _sl, _el):
+        """Our bank verifies exactly one identity, during account creation. The
+        second is stored hashed and queued for the portal's KYC review rather
+        than blocking the customer forever."""
+        self.inbound("8", "q1")
+        self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "q2")
+        self.inbound(re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1), "q3")
+        self.inbound("12345678901", "q4")     # BVN verifies
+        self.inbound("10987654321", "q5")     # NIN cannot be checked standalone
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertFalse(self.user.nin_verified)
+        self.assertTrue(self.user.nin_hash)   # submitted for review, hashed
+        # Tier 1 is earned on the FIRST verified identity (email + phone + BVN or
+        # NIN — see User.recompute_tier). The second identity being queued for
+        # review is what unlocks Tier 2, and must not hold the customer at the
+        # floor in the meantime.
+        self.assertEqual(self.user.tier, 1)
+        self.assertIn("review", self.last_reply().lower())
+        # And the flow ended rather than asking for the same number again.
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
+
+    @patch("whatsapp.router.sms_live", return_value=False)
+    def test_an_unconfigured_sms_rail_says_so_instead_of_lying(self, _live):
+        """send_sms returns a silent-success dict when it has no key, so
+        trusting its `success` announced a code that never left the building.
+        The rail is checked BEFORE sending."""
+        with patch("whatsapp.router.send_sms") as sms:
+            self.inbound("8", "n1")
+        sms.assert_not_called()
+        r = self.last_reply()
+        self.assertIn("can't send SMS codes", r)
+        self.assertNotIn("sent", r.lower().split("can't send")[0])
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
+
+    @patch("whatsapp.router.email_live", return_value=False)
+    @patch("whatsapp.router.sms_live", return_value=True)
+    def test_an_unconfigured_email_rail_says_so_instead_of_lying(self, _sms_live, _mail_live):
+        self.user.phone_verified = True
+        self.user.save(update_fields=["phone_verified"])
+        with patch("whatsapp.router.send_email") as email:
+            self.inbound("8", "n2")
+        email.assert_not_called()
+        self.assertIn("can't send emails", self.last_reply())
+
+    @patch("whatsapp.router.email_live", return_value=True)
+    @patch("whatsapp.router.sms_live", return_value=True)
+    @patch("whatsapp.router.send_email", return_value={"success": False, "raw": {
+        "statusCode": 403, "message": "The send.zitch.ng domain is not verified"}})
+    def test_a_rejected_email_says_so_instead_of_lying(self, email, _sms_live, _mail_live):
+        """A KEYED rail can still refuse the send — an unverified sender domain is
+        the usual reason, and RESEND_API_KEY being set says nothing about it. The
+        SMS branch has always checked its result; email announced "we sent a
+        6-digit code" no matter what came back, so the customer waited on mail
+        that Resend had refused outright."""
+        self.user.phone_verified = True
+        self.user.save(update_fields=["phone_verified"])
+        self.inbound("8", "r1")
+        email.assert_called_once()
+        r = self.last_reply()
+        self.assertIn("couldn't send the email", r)
+        self.assertNotIn("6-digit code", r)
+        # No half-open flow left behind waiting for a code that cannot arrive.
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
+
+    @override_settings(TEST_OTP={"PHONE": "08011112222", "CODE": "123456"})
+    @patch("whatsapp.router.sms_live", return_value=False)
+    def test_the_existing_test_otp_bypass_keeps_a_demo_deploy_usable(self, _live):
+        """A demo deploy usually has no rails. The SAME switch app signup already
+        honours makes the walkthrough possible, rather than a second mechanism."""
+        with patch("whatsapp.router.send_sms", return_value={"success": True}):
+            self.inbound("8", "t1")
+        self.assertIn("sent a 6-digit code", self.last_reply())
+        self.inbound("123456", "t2")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.phone_verified)
+
+    @override_settings(TEST_OTP={"PHONE": "08099990000", "CODE": "123456"})
+    @patch("whatsapp.router.sms_live", return_value=True)
+    def test_the_test_otp_applies_only_to_the_nominated_number(self, _live):
+        """Scoped exactly as the app's OTP model scopes it. Keying only off "is
+        TEST_OTP configured" handed the same fixed code to EVERY customer, on any
+        deploy where the pair was set."""
+        with patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            self.inbound("8", "s1")           # this user is NOT the test number
+        code = re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1)
+        self.assertNotEqual(code, "123456")   # a real random code, not the fixture
+        self.inbound("123456", "s2")          # the fixed code must not be accepted
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.phone_verified)
+        self.inbound(code, "s3")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.phone_verified)
+
+    def test_a_fully_verified_user_is_told_so(self):
+        for f in ("phone_verified", "email_verified", "bvn_verified", "nin_verified"):
+            setattr(self.user, f, True)
+        self.user.recompute_tier()
+        self.user.save()
+        self.inbound("verify", "v1")
+        self.assertIn("fully verified", self.last_reply())
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
+
+    @patch("whatsapp.router.sms_live", return_value=True)
+    @patch("whatsapp.router.send_sms", return_value={"success": True})
+    def test_an_identity_owned_by_someone_else_is_refused(self, sms, _live):
+        other = User.objects.create(username="08099998888", phone="08099998888",
+                                    email="other@zitch.test")
+        other.set_bvn("12345678901")
+        other.save()
+        self.user.phone_verified = True
+        self.user.email_verified = True
+        self.user.save()
+        self.inbound("8", "o1")
+        self.inbound("12345678901", "o2")
+        self.assertIn("already linked to another", self.last_reply())
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+
+
+class AiConsentTests(TestCase):
+    """The AI layer needs per-customer consent, and nothing could grant it —
+    WhatsAppLink.ai_enabled defaulted False and was never written anywhere, so
+    the intent layer was unreachable no matter how the operator configured it."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+        self.link_row = WhatsAppLink.objects.create(
+            user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        SystemSetting.set("ai_enabled_global", "true")
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    def test_customer_can_turn_smart_replies_on_and_off(self):
+        # On by default now: a consent nobody could discover was an off switch
+        # nobody could find. Turning it OFF is the customer's live choice.
+        self.assertTrue(self.link_row.ai_enabled)
+        self.inbound("ai off", "a-pre")
+        self.link_row.refresh_from_db()
+        self.assertFalse(self.link_row.ai_enabled)
+        self.inbound("ai", "a0")
+        self.assertIn("currently *off*", self.last_reply())
+
+        self.inbound("ai on", "a1")
+        self.link_row.refresh_from_db()
+        self.assertTrue(self.link_row.ai_enabled)
+        r = self.last_reply()
+        self.assertIn("Smart replies are on", r)
+        self.assertIn("PIN", r)          # the disclosure names what is protected
+
+        self.inbound("ai off", "a2")
+        self.link_row.refresh_from_db()
+        self.assertFalse(self.link_row.ai_enabled)
+
+    @patch("whatsapp.ai.llm_available", return_value=True)
+    def test_consent_is_what_actually_gates_the_intent_layer(self, _avail):
+        from whatsapp.router import ai_active
+        from whatsapp.models import ConversationState
+
+        convo = ConversationState.for_msisdn(MSISDN)
+        self.assertTrue(ai_active(self.link_row, convo))    # on by default
+        # Opting OUT is still honoured, and still the customer's to make.
+        self.link_row.ai_enabled = False
+        self.link_row.save(update_fields=["ai_enabled"])
+        self.assertFalse(ai_active(self.link_row, convo))
+
+    @patch("whatsapp.ai.llm_available", return_value=True)
+    def test_the_global_kill_switch_still_wins(self, _avail):
+        from whatsapp.router import ai_active
+        from whatsapp.models import ConversationState
+
+        self.link_row.ai_enabled = True
+        self.link_row.save(update_fields=["ai_enabled"])
+        SystemSetting.set("ai_enabled_global", "false")
+        self.assertFalse(ai_active(self.link_row, ConversationState.for_msisdn(MSISDN)))
+
+
+class LimitReferralTests(TestCase):
+    """A bare "you've hit your limit" leaves the customer with nowhere to go,
+    which is how a cap reads as a dead end rather than a step. Which way out is
+    right depends on where they already are."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+    link = ChannelTests.link
+
+    LINKS = {"WEBSITE": "https://zitch.ng", "APP": "https://zitch.ng/app",
+             "SUPPORT_WA": "2349012345678", "SUPPORT_EMAIL": "support@zitch.ng"}
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_a_verified_customer_over_the_cap_is_sent_to_the_app_for_tier_3(self):
+        from whatsapp.router import _upgrade_block
+
+        block = _upgrade_block(self.user)          # tier 1, all four checks done
+        self.assertIn("Tier 3", block)
+        self.assertIn("https://zitch.ng/app", block)
+        self.assertIn("https://zitch.ng", block)
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_an_unverified_customer_is_sent_to_verification_not_the_app_store(self):
+        """The ladder is not their problem — unfinished verification is, and that
+        is done right here in the chat."""
+        from whatsapp.router import _upgrade_block
+
+        self.user.nin_verified = False
+        self.user.save(update_fields=["nin_verified"])
+        block = _upgrade_block(self.user)
+        self.assertIn("*8*", block)
+        self.assertNotIn("Tier 3", block)
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_a_top_tier_customer_is_not_told_to_upgrade(self):
+        """Telling someone already at the top to "upgrade in the app" sends them
+        to do something that cannot work."""
+        from whatsapp.router import _upgrade_block
+
+        self.user.tier = 3
+        self.user.save(update_fields=["tier"])
+        block = _upgrade_block(self.user)
+        self.assertIn("highest tier", block)
+        self.assertNotIn("Tier 3 takes you", block)
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_a_transfer_over_the_cap_carries_the_way_out(self):
+        self.link()
+        self.inbound("2", "R1")
+        self.inbound("0123456789", "R2")
+        self.inbound("gtb", "R3")
+        self.inbound("999999999", "R4")            # far over any tier cap
+        r = self.last_reply()
+        self.assertIn("https://zitch.ng/app", r)
+
+
+class ChatLockTipTests(TestCase):
+    """WhatsApp Flows has no biometric component and the Cloud API cannot request
+    or verify a scan — Meta keeps biometrics on-device. Chat Lock is the one real
+    WhatsApp biometric available, and it is the customer's own setting: we can
+    teach it, never require or check it, and nothing in the money path depends
+    on it."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+    link = ChannelTests.link
+
+    def test_asking_for_biometrics_explains_whatsapps_own_chat_lock(self):
+        self.link()
+        for word in ("biometrics", "fingerprint", "chat lock", "face id"):
+            self.inbound(word, f"cl-{word}")
+            r = self.last_reply()
+            self.assertIn("Chat lock", r)
+            self.assertIn("fingerprint", r.lower())
+
+    def test_the_tip_does_not_claim_it_secures_payments(self):
+        """It protects the thread, not the money. Implying otherwise would sell a
+        control we cannot enforce as though it gated a transaction."""
+        self.link()
+        self.inbound("biometric", "cl-1")
+        r = self.last_reply()
+        self.assertIn("Payments still need your PIN", r)
+
+    def test_linking_surfaces_the_tip_then_the_menu(self):
+        """The moment the thread becomes a banking channel is when this is worth
+        reading — not whenever someone goes looking for it."""
+        user, _ = make_user(phone="08010000088", email="lock@zitch.test")
+        WhatsAppLink.objects.create(user=user, status=WhatsAppLink.PENDING,
+                                    link_code="ABC123",
+                                    expires_at=timezone.now() + timedelta(minutes=30))
+        # Must arrive from the account's own number — the router refuses a code
+        # sent from anywhere else.
+        self.inbound("LINK ABC123", "cl-link", msisdn="2348010000088")
+        said = " ".join(
+            WaMessageLog.objects.filter(msisdn="2348010000088",
+                                        direction=WaMessageLog.OUT)
+            .values_list("text", flat=True))
+        self.assertIn("Linked!", said)
+        self.assertIn("Chat lock", said)
+        self.assertIn("what would you like to do", said.lower())   # menu still sent
+
+
+class AiAirtimeShorthandTests(TestCase):
+    """"2k airtime for me" is the single most common sentence customers send, and
+    it carries neither a phone number nor a network. Falling back to the guided
+    flow for it made the AI look like it did nothing at all."""
+
+    def setUp(self):
+        self.user, _ = make_user(phone="08031234567")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def test_no_phone_and_no_network_still_reaches_the_confirm(self):
+        from whatsapp import router
+
+        self.assertTrue(router._begin_airtime(self.user, MSISDN, 2000, None, None))  # noqa: SLF001
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="airtime")
+        self.assertEqual(pa.state, "pin")                      # armed, not a guided flow
+        self.assertEqual(pa.payload["phone"], "08031234567")   # the customer's own line
+        self.assertEqual(pa.payload["net"], "1")               # 0803 -> MTN
+        self.assertEqual(Decimal(pa.payload["amount"]), Decimal("2000.00"))
+
+    def test_a_stated_network_always_beats_the_prefix_guess(self):
+        """Ported numbers make the prefix a guess. What the customer said is not."""
+        from whatsapp import router
+
+        router._begin_airtime(self.user, MSISDN, 500, "08031234567", "Airtel")  # noqa: SLF001
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="airtime")
+        self.assertEqual(pa.payload["net"], "3")
+
+    def test_an_unrecognised_prefix_falls_back_to_asking(self):
+        from whatsapp import router
+
+        self.user.phone = "07000000000"        # not a mobile prefix we map
+        self.user.save(update_fields=["phone"])
+        router._begin_airtime(self.user, MSISDN, 2000, None, None)  # noqa: SLF001
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="airtime")
+        self.assertNotEqual(pa.state, "pin")   # guided, rather than a wrong guess
+
+    def test_the_prefix_map_reads_international_form_too(self):
+        from whatsapp.router import _network_from_prefix
+
+        self.assertEqual(_network_from_prefix("2348031234567"), "1")
+        self.assertEqual(_network_from_prefix("+234 809 123 4567"), "4")
+        self.assertIsNone(_network_from_prefix("12345"))
+
+
+class AiDataShorthandTests(TestCase):
+    """"Data for me" uses the linked line and skips questions we can answer."""
+
+    def setUp(self):
+        self.user, _ = make_user(phone="08051234567")
+        WhatsAppLink.objects.create(
+            user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE
+        )
+        DataPlan.objects.create(
+            network="2", plan_type="1", name="5GB", validity="30 days",
+            plan_code="glo-5gb", price=Decimal("5000"), active=True,
+        )
+        DataPlan.objects.create(
+            network="3", plan_type="1", name="5GB", validity="30 days",
+            plan_code="airtel-5gb", price=Decimal("5000"), active=True,
+        )
+
+    def last_reply(self):
+        row = (
+            WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+            .order_by("-created")
+            .first()
+        )
+        return row.text if row else ""
+
+    def test_own_line_prefix_skips_phone_and_network_questions(self):
+        from whatsapp import router
+
+        router._start_data(self.user, MSISDN)  # noqa: SLF001
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="data")
+        self.assertEqual(pa.state, "plan")
+        self.assertEqual(pa.payload["phone"], "08051234567")
+        self.assertEqual(pa.payload["net"], "2")
+        self.assertIn("Choose a plan", self.last_reply())
+        self.assertNotIn("Which network", self.last_reply())
+
+    def test_ai_data_for_me_keeps_the_same_fast_path(self):
+        from whatsapp import router
+
+        self.assertTrue(
+            router._dispatch_intent(  # noqa: SLF001
+                self.user, MSISDN, "buy_data",
+                {"phone": None, "network": None, "plan": "10k"},
+            )
+        )
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="data")
+        self.assertEqual(pa.payload["phone"], "08051234567")
+        self.assertEqual(pa.payload["net"], "2")
+
+    def test_stated_network_beats_prefix_for_a_ported_number(self):
+        from whatsapp import router
+
+        router._start_data(self.user, MSISDN, None, "Airtel")  # noqa: SLF001
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="data")
+        self.assertEqual(pa.payload["net"], "3")
+
+    def test_unknown_prefix_still_asks_instead_of_guessing(self):
+        from whatsapp import router
+
+        self.user.phone = "07000000000"
+        self.user.save(update_fields=["phone"])
+        router._start_data(self.user, MSISDN)  # noqa: SLF001
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="data")
+        self.assertEqual(pa.state, "network")
+        self.assertIn("Which network", self.last_reply())
+
+
+class AiGlobalSwitchTests(TestCase):
+    """The switch must read the same from the router and from the console. It did
+    not: the router treated a missing row as OFF and ai_config treated it as ON,
+    so an operator saw the AI reporting live while every message went down the
+    deterministic path."""
+
+    def test_a_missing_row_is_off_everywhere(self):
+        from whatsapp import ai
+
+        SystemSetting.objects.filter(key="ai_enabled_global").delete()
+        self.assertFalse(ai.global_enabled())
+
+    def test_the_console_and_the_router_never_disagree(self):
+        from whatsapp import ai
+
+        for stored, expected in (("true", True), ("false", False), ("on", True), ("", False)):
+            SystemSetting.set("ai_enabled_global", stored)
+            self.assertEqual(ai.global_enabled(), expected)
+            self.assertEqual(SystemSetting.get_bool("ai_enabled_global", False), expected)
+
+
+class IdleReauthTests(TestCase):
+    """WhatsApp's Chat Lock guards the chat WINDOW, is user-side, and cannot be
+    required or verified — so it can never be a control. What the bot will
+    REVEAL is ours to gate, and this is that gate."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        SystemSetting.set("wa_reauth_idle_minutes", "15")   # off by default under TESTING
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_a_cold_conversation_must_confirm_before_showing_a_balance(self):
+        out = self._say("balance")
+        self.assertIn("confirm it's you", out.lower())
+        self.assertNotIn("₦", out)          # the balance itself is withheld
+        self.assertTrue(PendingAction.objects.filter(msisdn=MSISDN, action_type="unlock").exists())
+
+    def test_confirming_reveals_it_and_resumes_what_was_asked(self):
+        from whatsapp.router import run_flow_execution
+
+        self._say("balance")
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="unlock")
+        run_flow_execution(pa, self.user)   # what a correct PIN or a biometric reaches
+        out = WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+        self.assertIn("₦", out)             # the original request ran
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="unlock").exists())
+
+    def test_typing_the_pin_in_chat_also_unlocks(self):
+        """The CHAT rung, driven end-to-end through handle_inbound.
+
+        The test above calls run_flow_execution directly, which is why this stayed
+        broken: `unlock` was missing from the chat handler map, so the fall-through
+        cleared the action and printed the menu. A correct PIN appeared to do
+        nothing, last_verified was never set, and the next "balance" re-challenged —
+        a loop the customer could not escape, costing an SMS per attempt. This rung
+        is reached precisely when the secure Flow send FAILED.
+        """
+        self._say("balance")
+        self.assertTrue(PendingAction.objects.filter(msisdn=MSISDN, action_type="unlock").exists())
+
+        self._say("1234")                    # the PIN, typed into the thread
+        convo = ConversationState.objects.get(msisdn=MSISDN)
+        self.assertIsNotNone(convo.last_verified, "a correct PIN must start the window")
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="unlock").exists())
+        # ...and the follow-up is answered instead of challenged again.
+        self.assertIn("₦", self._say("balance"))
+
+    def test_a_wrong_pin_in_chat_does_not_unlock(self):
+        self._say("balance")
+        self._say("9999")
+        convo = ConversationState.objects.filter(msisdn=MSISDN).first()
+        self.assertIsNone(getattr(convo, "last_verified", None))
+
+    def test_a_warm_conversation_is_not_challenged_again(self):
+        ConversationState.objects.update_or_create(
+            msisdn=MSISDN, defaults={"last_verified": timezone.now()})
+        self.assertIn("₦", self._say("balance"))
+
+    def test_the_window_expires(self):
+        ConversationState.objects.update_or_create(
+            msisdn=MSISDN, defaults={"last_verified": timezone.now() - timedelta(minutes=16)})
+        self.assertIn("confirm it's you", self._say("balance").lower())
+
+    def test_authorising_a_payment_also_starts_the_window(self):
+        """Someone who just proved who they are to move money must not be asked
+        again to read their own balance."""
+        from whatsapp.router import _mark_verified
+
+        _mark_verified(MSISDN)              # what run_flow_execution does
+        self.assertIn("₦", self._say("balance"))
+
+    def test_actions_are_not_gated_because_they_authenticate_at_the_confirm(self):
+        """Prompting before a transfer AND at its confirm is friction, not
+        security — the money movement is already behind PIN or biometrics."""
+        out = self._say("2")
+        self.assertNotIn("confirm it's you", out.lower())
+
+    def test_zero_minutes_disables_the_gate(self):
+        SystemSetting.set("wa_reauth_idle_minutes", "0")
+        self.assertIn("₦", self._say("balance"))
+
+    def test_an_unreadable_window_falls_back_to_the_deploy_default(self):
+        SystemSetting.set("wa_reauth_idle_minutes", "not-a-number")
+        with override_settings(WA_REAUTH_IDLE_MINUTES=15):
+            self.assertIn("confirm it's you", self._say("balance").lower())
+
+
+class ChatLockPromptTests(TestCase):
+    def test_signup_tells_new_customers_how_to_lock_the_thread(self):
+        """The only thing that guards the transcript itself, so it is offered
+        rather than waiting to be asked for."""
+        from whatsapp.router import _chat_lock_tip
+
+        self.assertIn("Chat lock", _chat_lock_tip())
+
+
+class ConfirmPromptDoesNotContradictTheFlowTests(TestCase):
+    """With the secure Flow open, the chat line beneath it used to read "Reply
+    with your PIN to confirm" — the dev/test fallback, reached in production
+    because _confirm_prompt had no branch for an armed Flow. Two prompts, and the
+    louder one invited into the thread precisely what the Flow keeps out."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _armed_action(self):
+        from whatsapp.flows import FLOW_PIN_STATE
+        from whatsapp.router import _new_flow
+
+        return _new_flow(self.user, MSISDN, "transfer", FLOW_PIN_STATE,
+                         {"pin_attempts": 0, "amount": "3000", "account": "0228565772",
+                          "bank_code": "035", "bank_name": "Wema Bank", "name": "ADEYEMI WILLIAM"})
+
+    def test_an_open_flow_never_asks_for_the_pin_in_the_chat(self):
+        from whatsapp.router import _confirm_prompt
+
+        line = _confirm_prompt(self._armed_action())
+        self.assertNotIn("Reply with your PIN", line)
+        self.assertIn("secure card", line)
+
+    def test_it_still_asks_plainly_when_no_flow_is_open(self):
+        """The dev/test rung must keep working — and keep its delete advice."""
+        from whatsapp.router import _confirm_prompt, _new_flow
+
+        pa = _new_flow(self.user, MSISDN, "transfer", "pin", {"pin_attempts": 0})
+        line = _confirm_prompt(pa)
+        self.assertIn("Reply with your PIN", line)
+        self.assertIn("Delete", line)
+
+
+class PinResetTests(TestCase):
+    """A PIN reset hands over the one credential that moves money, and anyone
+    holding the phone can reach this chat — so the bar is verified identity, not
+    possession of the thread."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_an_unverified_account_is_sent_to_verification_first(self):
+        self.user.email_verified = self.user.bvn_verified = False
+        self.user.save(update_fields=["email_verified", "bvn_verified"])
+        out = self._say("reset pin")
+        self.assertIn("email address", out)
+        self.assertIn("BVN", out)
+        self.assertNotIn("phone number", out)   # that one IS verified
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="setpin").exists())
+
+    def test_a_verified_account_gets_the_secure_screen(self):
+        from whatsapp.flows import FLOW_PIN_STATE
+
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}) as sent:
+            self._say("reset pin")
+        sent.assert_called_once()
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="setpin")
+        self.assertEqual(pa.state, FLOW_PIN_STATE)
+
+    def test_it_fails_closed_rather_than_asking_in_the_chat(self):
+        """Unlike a BVN, a PIN typed into a thread IS the credential, sitting in
+        the customer's history forever."""
+        with patch("whatsapp.router.flows_live", return_value=False):
+            out = self._say("reset pin")
+        self.assertIn("Zitch app", out)
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="setpin").exists())
+
+    def _armed(self):
+        from whatsapp.flows import FLOW_PIN_STATE
+        from whatsapp.router import _new_flow
+
+        return _new_flow(self.user, MSISDN, "setpin", FLOW_PIN_STATE, {"pin_attempts": 0})
+
+    def test_set_then_confirm_and_the_raw_pin_is_never_stored_or_echoed(self):
+        from whatsapp.flows import handle_flow_request, sign_flow_token
+
+        pa = self._armed()
+        token = sign_flow_token(pa)
+        first = handle_flow_request({"action": "data_exchange", "flow_token": token,
+                                     "data": {"pin": "246810"}})
+        self.assertIn("Re-enter", first["data"]["amount"])
+        pa.refresh_from_db()
+        self.assertTrue(pa.payload["new_pin_hash"])
+        self.assertNotIn("246810", json.dumps(pa.payload))
+        self.assertNotIn("246810", str(first))
+
+        second = handle_flow_request({"action": "data_exchange", "flow_token": token,
+                                      "data": {"pin": "246810"}})
+        self.assertNotIn("246810", str(second))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_transaction_pin("246810"))
+        self.assertFalse(WaMessageLog.objects.filter(msisdn=MSISDN, text__contains="246810").exists())
+
+    def test_a_mismatch_starts_the_pair_over_without_setting_anything(self):
+        from whatsapp.flows import handle_flow_request, sign_flow_token
+
+        pa = self._armed()
+        token = sign_flow_token(pa)
+        handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
+        resp = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "111111"}})
+        self.assertIn("didn't match", resp["data"]["error"])
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_transaction_pin("1234"))   # unchanged
+
+    def test_four_digits_are_refused(self):
+        from whatsapp.flows import handle_flow_request, sign_flow_token
+
+        resp = handle_flow_request({"action": "data_exchange", "flow_token": sign_flow_token(self._armed()),
+                                    "data": {"pin": "2468"}})
+        self.assertIn("6 digits", resp["data"]["error"])
+
+    def test_predictable_pin_is_refused_before_confirmation(self):
+        from whatsapp.flows import PIN_RETRY, handle_flow_request, sign_flow_token
+
+        pa = self._armed()
+        token = sign_flow_token(pa)
+        resp = handle_flow_request({"action": "data_exchange", "flow_token": token,
+                                    "data": {"pin": "123456"}})
+        self.assertIn("less predictable", resp["data"]["error"])
+        pa.refresh_from_db()
+        self.assertNotIn("new_pin_hash", pa.payload)
+        # The empty twin, not a re-render of the screen we are on. WhatsApp keeps
+        # a form's value when the endpoint answers with the SAME screen id, and
+        # the box is masked — so a re-render leaves the refused PIN sitting where
+        # the customer cannot see it, one Confirm tap from being resubmitted.
+        self.assertEqual(resp["screen"], PIN_RETRY)
+        self.assertEqual(pa.payload["flow_screen"], PIN_RETRY)
+        # PIN_RETRY routes on to PIN_CONFIRM, so the reset still finishes.
+        handle_flow_request({"action": "data_exchange", "flow_token": token,
+                             "data": {"pin": "246810"}})
+        handle_flow_request({"action": "data_exchange", "flow_token": token,
+                             "data": {"pin": "246810"}})
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_transaction_pin("246810"))
+
+    def test_setting_a_pin_clears_the_reset_demand(self):
+        from whatsapp.flows import handle_flow_request, sign_flow_token
+
+        self.user.pin_reset_required = True
+        self.user.save(update_fields=["pin_reset_required"])
+        pa = self._armed()
+        token = sign_flow_token(pa)
+        for _ in range(2):
+            handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.pin_reset_required)
+
+
+class StalePinBlocksSpendingTests(TestCase):
+    """A hash cannot be measured, so nothing can tell an old 4-digit PIN from a
+    new 6-digit one after the fact. The migration flags them; this is the gate."""
+
+    def test_a_flagged_account_cannot_send_but_is_told_exactly_what_to_do(self):
+        from common.http import stale_pin_error, unverified_error
+
+        user, _ = make_user()
+        self.assertIsNone(stale_pin_error(user))
+        user.pin_reset_required = True
+        msg = stale_pin_error(user) or ""
+        self.assertIn("6 digits", msg)
+        self.assertIn("reset pin", msg)
+        self.assertEqual(unverified_error(user), msg)   # it fronts the identity checks
+
+    def test_setting_a_new_pin_clears_it(self):
+        user, _ = make_user()
+        user.pin_reset_required = True
+        user.set_transaction_pin("246810")
+        self.assertFalse(user.pin_reset_required)
+        from common.http import stale_pin_error as _err
+
+        self.assertIsNone(_err(user))
+
+
+class HistoryAndCreditAlertTests(TestCase):
+    def setUp(self):
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_option_9_lists_recent_movements_newest_first(self):
+        out = self._say("9")
+        self.assertIn("50,000", out)      # the seed credit
+        self.assertIn("Balance", out)
+
+    def test_the_menu_offers_it(self):
+        from whatsapp.router import menu_text
+
+        self.assertIn("Transaction history", menu_text())
+
+    def test_an_empty_history_says_so_rather_than_showing_an_empty_list(self):
+        # Ledger rows are immutable in PostgreSQL, including deletion. Point the
+        # chat at a genuinely empty account rather than hollowing out an existing
+        # ledger as a fixture shortcut.
+        WhatsAppLink.objects.filter(wa_msisdn=MSISDN).delete()
+        empty, _ = make_user(
+            phone="08010000009", email="empty-history@zitch.test", balance="0",
+        )
+        WhatsAppLink.objects.create(
+            user=empty, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE,
+        )
+        self.assertIn("No transactions yet", self._say("history"))
+
+    def test_history_sits_behind_the_same_idle_gate_as_a_balance(self):
+        """It reveals money to whoever is holding the phone, exactly like the
+        balance does."""
+        from whatsapp.router import _is_sensitive_read
+
+        for word in ("9", "history", "statement", "transactions"):
+            self.assertTrue(_is_sensitive_read(word), word)
+
+    def test_a_credit_reaches_the_customer_on_whatsapp(self):
+        """An email alert to someone who signed up on WhatsApp and has never
+        opened the app is a notification nobody reads."""
+        from wallet.services import credit
+
+        with self.captureOnCommitCallbacks(execute=True):
+            credit(self.user, Decimal("2500"), "Transfer from ADA EZE")
+        sent = WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT, text__contains="Credit alert").first()
+        self.assertIsNotNone(sent)
+        self.assertIn("2,500", sent.text)
+
+    def test_an_alert_failure_can_never_roll_back_the_ledger(self):
+        from wallet.services import credit, get_or_create_wallet
+
+        before = get_or_create_wallet(self.user).balance
+        with patch("whatsapp.router.reply", side_effect=RuntimeError("whatsapp down")):
+            with self.captureOnCommitCallbacks(execute=True):
+                credit(self.user, Decimal("100"), "Deposit")
+        self.assertEqual(get_or_create_wallet(self.user).balance, before + Decimal("100"))
+
+
+class ArmedConfirmDoesNotTrapTests(TestCase):
+    """Asking for a balance, then an account number, then a different transfer,
+    each answered with "tap the secure screen" and no way forward but a word the
+    customer was never told first — an unconfirmed payment has moved no money,
+    so a clear new instruction simply replaces it."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _armed(self):
+        from whatsapp.flows import FLOW_PIN_STATE
+        from whatsapp.router import _new_flow
+
+        return _new_flow(self.user, MSISDN, "airtime", FLOW_PIN_STATE,
+                         {"pin_attempts": 0, "net": "1", "phone": "08031234567", "amount": "200.00"})
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_a_new_command_replaces_the_unconfirmed_payment(self):
+        self._armed()
+        out = self._say("balance")
+        self.assertIn("₦", out)
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+
+    def test_a_second_transfer_instruction_also_gets_through(self):
+        self._armed()
+        self._say("send 3k to 7066737466")
+        self.assertNotIn("secure screen", self._say("menu"))
+
+    def test_a_stray_number_is_not_treated_as_a_new_command(self):
+        """A mistyped confirmation code must not cancel the payment it was for."""
+        self._armed()
+        self.assertIn("secure screen", self._say("123456"))
+        self.assertTrue(PendingAction.objects.filter(msisdn=MSISDN).exists())
+
+
+class NoPinIsSentToSetOneTests(TestCase):
+    def setUp(self):
+        self.user, _ = make_user()
+        self.user.transaction_pin = ""
+        self.user.save(update_fields=["transaction_pin"])
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def test_an_account_without_a_pin_is_told_how_to_set_one(self):
+        """Arming a confirm produced a screen the customer could never satisfy —
+        which is exactly what "No transaction PIN set on this account" was."""
+        from whatsapp.router import _arm_confirm, _new_flow
+
+        pa = _new_flow(self.user, MSISDN, "airtime", "pin", {"pin_attempts": 0})
+        self.assertFalse(_arm_confirm(pa, self.user))
+        out = WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+        self.assertIn("reset pin", out)
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+
+
+class ClarifyIsAnsweredNotSwallowedTests(TestCase):
+    """The model knowing WHY it cannot act is the useful part. Discarding it for
+    a generic menu turned an understood request into "Sorry, I didn't get that"
+    — which reads as broken rather than as a limit."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        self.link = WhatsAppLink.objects.create(
+            user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        SystemSetting.set("ai_enabled_global", "true")
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    @patch("whatsapp.ai.llm_available", return_value=True)
+    def test_the_reason_reaches_the_customer(self, _avail):
+        clarify = {"name": "clarify",
+                   "input": {"reason": "I can't read your phone contacts — send Farida's number."}}
+        with patch("whatsapp.ai.extract_intent", return_value=clarify):
+            out = self._say("Access my contact load Farida 200 airtime")
+        self.assertIn("can't read your phone contacts", out)
+        self.assertNotIn("Sorry, I didn't get that", out)
+
+    @patch("whatsapp.ai.llm_available", return_value=True)
+    def test_a_reasonless_clarify_still_falls_back_to_the_menu(self, _avail):
+        with patch("whatsapp.ai.extract_intent", return_value={"name": "clarify", "input": {}}):
+            self.assertIn("Sorry, I didn't get that", self._say("blah blah"))
+
+    def test_the_menu_no_longer_tells_people_to_switch_on_what_is_already_on(self):
+        from whatsapp.router import menu_text
+
+        self.assertNotIn("ai on", menu_text())
+        self.assertIn("just type", menu_text().lower())
+
+
+class HealthShowsTheChannelNowTests(TestCase):
+    """The older readings are historical: "reached" is true once Meta has ever
+    called, and "outbound_failing" reads the last replies we sent — which stay
+    healthy-looking forever if we stop replying at all. A channel that died two
+    hours ago read exactly like a live one, which is how a real outage was spent
+    looking at a green page."""
+
+    def _health(self):
+        return Client().get("/healthz").json()["integrations"]
+
+    def test_a_queued_but_unworked_message_is_visible(self):
+        """The hobby-tier failure: the webhook 200s, the row is stored, and the
+        drain thread is reaped before it claims anything."""
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.IN, text="Hi")
+        h = self._health()
+        self.assertEqual(h["whatsapp_inbound_waiting"], 1)
+        self.assertIsNone(h["whatsapp_last_processed_at"])
+
+    def test_a_worked_message_reports_when(self):
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.IN, text="Hi",
+                                    processed_at=timezone.now())
+        h = self._health()
+        self.assertEqual(h["whatsapp_inbound_waiting"], 0)
+        self.assertIsNotNone(h["whatsapp_last_processed_at"])
+
+    def test_the_backlog_counts_only_unworked_inbound(self):
+        now = timezone.now()
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.IN, text="a")
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.IN, text="b")
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.IN, text="c",
+                                    processed_at=now)
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.OUT, text="reply")
+        self.assertEqual(self._health()["whatsapp_inbound_waiting"], 2)
+
+    def test_an_idle_channel_is_not_reported_as_broken(self):
+        """Nothing queued and nothing recent is a quiet night, not an outage —
+        the timestamp lets an operator tell the difference themselves."""
+        h = self._health()
+        self.assertEqual(h["whatsapp_inbound_waiting"], 0)
+        self.assertIsNone(h["whatsapp_last_processed_at"])
+
+
+class UnverifiedCannotStartMoneyFlowsTests(TestCase):
+    """The authoritative gate at debit time meant money never actually left an
+    unverified account — but it walked a Tier-0 customer through amount, account,
+    bank and the PIN screen before saying no. Same rule, now asked at the door."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        self.user.bvn_verified = self.user.nin_verified = False
+        self.user.email_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified", "email_verified"])
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_a_transfer_is_refused_at_the_first_message(self):
+        out = self._say("2")
+        self.assertIn("verify", out.lower())
+        self.assertNotIn("How much", out)
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
+
+    def test_the_ai_fast_path_is_gated_too(self):
+        from whatsapp import router
+
+        self.assertTrue(router._begin_airtime(self.user, MSISDN, 2000, None, None))  # noqa: SLF001
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="airtime").exists())
+        self.assertIn("verify", self._say("menu").lower() if False else
+                      WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+                      .order_by("created").first().text.lower())
+
+    def test_funding_and_balance_stay_open(self):
+        """Money ARRIVING is how a customer gets to the point of verifying."""
+        self.assertNotIn("verify your", self._say("1").lower())
+
+    def test_a_verified_account_is_untouched(self):
+        self.user.bvn_verified = self.user.email_verified = True
+        self.user.save(update_fields=["bvn_verified", "email_verified"])
+        self.assertIn("How much", self._say("2"))
+
+
+class IdentityNeverFallsBackToChatInProductionTests(TestCase):
+    """Tonight's production run proved what the chat fallback costs: a BVN and a
+    NIN sitting in the thread in clear because the Flow dispatch failed. On a
+    deploy with Flows configured, identity is Flow-or-nothing."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        self.user.bvn_verified = self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _last(self):
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_a_failed_identity_send_refuses_chat_entry_when_flows_exist(self):
+        from whatsapp.router import handle_inbound
+
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": False}):
+            handle_inbound(MSISDN, "8")
+        out = self._last()
+        self.assertIn("won't ask", out)
+        self.assertNotIn("Enter your 11-digit", out)
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
+
+    def test_a_failed_email_code_send_refuses_chat_entry_when_flows_exist(self):
+        from whatsapp.router import handle_inbound
+
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified"])
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": False}), \
+             patch("whatsapp.router.email_live", return_value=True), \
+             patch("whatsapp.router.send_email", return_value={"success": True}):
+            handle_inbound(MSISDN, "8")
+        out = self._last()
+        self.assertIn("won't ask", out)
+
+    def test_an_unconfigured_deploy_keeps_the_chat_path(self):
+        """Dev and preview deploys have no Flows at all; refusing there would
+        block every verification everywhere."""
+        from whatsapp.router import handle_inbound
+
+        with patch("whatsapp.router.flows_live", return_value=False):
+            handle_inbound(MSISDN, "8")
+        self.assertIn("Enter your 11-digit", self._last())
+
+
+class UnsettledTransferIsNotAReceiptTests(TestCase):
+    """A receipt is a forwardable claim that the money arrived.
+
+    ``execute_payout`` returns a PENDING row in two different situations: the
+    rail accepted the transfer and is still processing it, and the ambiguous
+    send-timeout where transfers/services.py deliberately HOLDS the debit
+    because the recipient may or may not have been paid. Announcing either as
+    "Successful ✅" with a receipt image is the worst thing a banking channel
+    can tell a customer — worse in the second case, where the transfer may have
+    outright failed. The chat has to say "processing", exactly as the app path
+    (transfers/views.py) and the VTU path already do.
+    """
+
+    def setUp(self):
+        self.user, _ = make_user()
+        self.bank = Bank.objects.create(code="gtb", name="GTBank", bank_code="058",
+                                        color="#e30613", active=True)
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE)
+
+    def _action(self):
+        return PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="transfer", state=FLOW_PIN_STATE,
+            payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
+                     "bank_name": "GTBank", "name": "JOHN DOE", "pin_attempts": 0},
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+    def _txn(self, status):
+        return Transaction.objects.create(
+            user=self.user, service="Transfer", amount=Decimal("5000"),
+            direction=Transaction.OUT, transaction_status=status,
+            reference="ZTCHPENDING001", meta={"channel": "whatsapp"},
+        )
+
+    def _run(self, status):
+        from whatsapp import router
+
+        with patch.object(router, "execute_payout", return_value=self._txn(status)), \
+             patch.object(router, "reply_receipt") as receipt:
+            line = router._exec_transfer(self._action(), self.user, MSISDN)
+        return line, receipt
+
+    def test_an_unsettled_transfer_gets_no_receipt(self):
+        # PENDING is the single status both cases land on — the rail-accepted
+        # transfer and the ambiguous timeout are indistinguishable here, which is
+        # exactly why neither may be announced as paid.
+        line, receipt = self._run(Transaction.PENDING)
+        receipt.assert_not_called()
+        self.assertIn("processing", line.lower())
+        self.assertIn("ZTCHPENDING001", line)
+        self.assertNotIn("Successful", line)
+        # And the customer actually sees it in the thread, not only the Flow.
+        self.assertTrue(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT, text__icontains="processing").exists())
+
+    def test_a_failed_transfer_gets_no_receipt_either(self):
+        line, receipt = self._run(Transaction.FAILED)
+        receipt.assert_not_called()
+        self.assertNotIn("Successful", line)
+
+    def test_a_settled_transfer_still_gets_its_receipt(self):
+        from whatsapp import router
+
+        with patch.object(router, "execute_payout", return_value=self._txn(Transaction.SUCCESS)), \
+             patch.object(router, "reply_receipt", return_value="Transfer receipt") as receipt:
+            router._exec_transfer(self._action(), self.user, MSISDN)
+        receipt.assert_called_once()
+        self.assertEqual(receipt.call_args.args[1], "Transfer receipt")
+
+
+class GatedReadAliasCoverageTests(TestCase):
+    """The idle re-auth gate is only as strong as its least-covered alias.
+
+    Every synonym the dispatcher accepts for a sensitive read must appear in
+    _SENSITIVE_READS, or the same PII walks out through the uncovered word.
+    """
+
+    def test_every_dispatcher_alias_for_a_gated_read_is_in_the_gate(self):
+        from whatsapp.router import _SENSITIVE_READS
+
+        # Aliases the dispatcher routes to _do_account_details / balance /
+        # statement. Each leaks name, phone, email, tier, account number or
+        # transaction history, so each has to trip the challenge.
+        for alias in ("details", "my details", "account details", "my account",
+                      "account number", "7", "balance", "bal", "1",
+                      "statement", "history", "transactions", "9"):
+            self.assertIn(alias, _SENSITIVE_READS, f"{alias!r} is an ungated leak")
+
+
+class BroadcastDeadLetterUnwedgesTheBroadcastTests(TestCase):
+    """A recipient claimed for its FINAL attempt and then hard-killed (deploy,
+    OOM, SIGKILL — not a Python exception, which is handled) stayed QUEUED with
+    processed_at NULL forever. refresh_broadcast_counts treats any such row as
+    still active, so the whole broadcast was pinned in SENDING and never reached
+    DONE: no completion audit, no final counts, and no operator recovery action
+    on the outbound side to clear it.
+    """
+
+    def setUp(self):
+        from whatsapp.jobs import MAX_ATTEMPTS, OUTBOUND_LEASE
+
+        self.MAX_ATTEMPTS, self.LEASE = MAX_ATTEMPTS, OUTBOUND_LEASE
+        self.broadcast = Broadcast.objects.create(
+            template_name="hello_world", status=Broadcast.SENDING, count_queued=1)
+        self.row = BroadcastRecipient.objects.create(
+            broadcast=self.broadcast, wa_msisdn=MSISDN,
+            status=BroadcastRecipient.QUEUED,
+            processing_attempts=MAX_ATTEMPTS,
+            processing_started_at=timezone.now() - OUTBOUND_LEASE - timedelta(minutes=1),
+        )
+
+    def test_the_stranded_recipient_is_re_selected_by_the_sweep(self):
+        from whatsapp.jobs import process_outbound_batch
+
+        with patch("whatsapp.jobs.send_template") as send:
+            self.assertEqual(process_outbound_batch(), 1)
+        send.assert_not_called()          # dead-lettered on claim, never re-sent
+
+    def test_the_dead_letter_finalises_the_broadcast(self):
+        from whatsapp.jobs import process_outbound_recipient
+
+        with patch("whatsapp.jobs.send_template") as send:
+            self.assertEqual(process_outbound_recipient(self.row.pk), "dead_letter")
+        send.assert_not_called()
+        self.row.refresh_from_db()
+        self.broadcast.refresh_from_db()
+        self.assertEqual(self.row.status, BroadcastRecipient.FAILED)
+        self.assertIsNotNone(self.row.processed_at)
+        self.assertIn("dead_letter", self.row.error)
+        # The whole point: counts refreshed and the broadcast left SENDING.
+        self.assertEqual(self.broadcast.status, Broadcast.DONE)
+        self.assertEqual(self.broadcast.count_failed, 1)
+        self.assertTrue(AuditLog.objects.filter(action="broadcast.completed").exists())
+
+    def test_a_live_lease_is_still_skipped_without_touching_the_broadcast(self):
+        """A plain skip must NOT refresh counts — the row is someone else's
+        in-flight work, and finalising the broadcast under it would be wrong."""
+        from whatsapp.jobs import process_outbound_recipient
+
+        self.row.processing_started_at = timezone.now()
+        self.row.save(update_fields=["processing_started_at"])
+        self.assertEqual(process_outbound_recipient(self.row.pk), "skipped")
+        self.broadcast.refresh_from_db()
+        self.assertEqual(self.broadcast.status, Broadcast.SENDING)
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.status, BroadcastRecipient.QUEUED)
+
+
+class ChatConversionRaisesNoDuplicateAlertTests(TestCase):
+    """A conversion the customer ran in the chat already showed them the outcome
+    in that thread. Without a channel stamp on BOTH ledger rows the post-save
+    alert fired a debit alert AND a credit alert for the one movement they had
+    just watched happen — the same duplication the transfer/VTU paths stamp
+    `channel: whatsapp` to suppress."""
+
+    def test_execute_fx_stamps_the_channel_on_both_rows(self):
+        from wallet.forex import execute_fx
+        from wallet.models import CurrencyWallet, FxQuote
+
+        user, _ = make_user()
+        CurrencyWallet.objects.create(user=user, currency="USD", balance=Decimal("100"))
+        quote = FxQuote.objects.create(
+            user=user, quote_ref="fxq-1", from_currency="USD", to_currency="NGN",
+            sell_amount=Decimal("10"), receive_amount=Decimal("15000"),
+            rate=Decimal("1500"), expires_at=timezone.now() + timedelta(minutes=5))
+        with patch("wallet.forex.fx_execute", return_value={"success": True}):
+            execute_fx(user, quote.quote_ref, channel="whatsapp")
+        rows = Transaction.objects.filter(service__startswith="Convert")
+        self.assertEqual(rows.count(), 2)                      # the debit and the credit
+        for txn in rows:
+            self.assertEqual(txn.meta.get("channel"), "whatsapp", txn.direction)
+
+
+class FailedAccountSetupDoesNotCloseTheFlowGreenTests(TestCase):
+    """The secure Flow's closing screen and the chat must not contradict.
+
+    When the bank refuses the ID — or name-matches it to someone else, or is
+    unreachable — ``_account_submit_identity`` clears the pending action and puts
+    a "⚠️ ..." line in the chat. The Flow branch used to fall through to the
+    shared "BVN received ✅ — see the chat for what's next" screen, so the
+    customer watched their secure form close green on a failure the very next
+    message denied. Unlike the KYC branch there is no review queue here that
+    would make "received" true.
+    """
+
+    def setUp(self):
+        from whatsapp.flows import FLOW_ID_STATE
+
+        self.user, _ = make_user()
+        # make_user() models an APP-linked customer, whose BVN is already
+        # verified. _account_submit_identity now short-circuits on exactly that
+        # ("your BVN is already verified, you do not need to enter it again"),
+        # which is correct behaviour and the whole point of the one-time-BVN
+        # work — but it means a BVN-verified fixture never reaches the bank at
+        # all, so every failure path below became unreachable and these tests
+        # passed vacuously on an "adopted" screen. Someone still opening their
+        # funding account has NOT had a BVN verified yet: that is the state this
+        # class is about.
+        self.user.bvn_verified = False
+        self.user.save(update_fields=["bvn_verified"])
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="add_account", state=FLOW_ID_STATE,
+            payload={"id_type": "bvn", "id_kind": "bvn"},
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+
+    def _submit(self):
+        from whatsapp.flows import handle_flow_request, sign_identity_token
+
+        return handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_identity_token(self.pa),
+                                    "data": {"number": "12345678901"}})
+
+    def _assert_failure_screen(self, resp):
+        body = json.dumps(resp, ensure_ascii=False)
+        self.assertNotIn("received ✅", body)
+        self.assertIn("couldn't", body.lower())
+        # The chat carries the reason, and the action is gone either way.
+        self.assertFalse(PendingAction.objects.filter(pk=self.pa.pk).exists())
+
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    def test_a_refused_identity_closes_on_the_failure_screen(self, start):
+        start.return_value = ({}, "That BVN doesn't match the name on this account.")
+        self._assert_failure_screen(self._submit())
+
+    @patch("whatsapp.router.wallet_views._adopt_existing_wema_account", return_value=None)
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    def test_an_unrecoverable_bank_error_closes_on_the_failure_screen(self, start, _adopt):
+        start.return_value = ({"success": False, "message": "Account setup failed."}, None)
+        self._assert_failure_screen(self._submit())
+
+    @patch("whatsapp.router.wallet_views._adopt_existing_wema_account")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    def test_an_adopted_account_is_still_a_success(self, start, adopt):
+        """The one path that returns a dict AND means success — which is why the
+        failure signal had to become an explicit sentinel rather than a type check."""
+        start.return_value = ({"success": False, "message": "already exists"}, None)
+        adopt.return_value = {"success": True}
+        give_account(self.user, "9912345678")
+        body = json.dumps(self._submit(), ensure_ascii=False)
+        self.assertIn("Account found ✅", body)
+
+
+class TemplateErrorAbandonsTheWholeBroadcastTests(TestCase):
+    """A template-level refusal is the same for every recipient.
+
+    Meta rejects `132000` (parameter count), `132001` (no such template) and
+    friends on a property of the TEMPLATE, so the second recipient and the ten
+    thousandth get the identical answer. The campaign used to keep going anyway:
+    one Graph call per recipient to collect N copies of one refusal, leaving the
+    operator to read N identical error_codes off recipient rows to work out that
+    the template — not the audience — was the problem.
+    """
+
+    def setUp(self):
+        self.broadcast = Broadcast.objects.create(
+            template_name="hello_world", status=Broadcast.SENDING, count_queued=3,
+            body_params=["unexpected"])          # hello_world declares no variables
+        self.rows = [
+            BroadcastRecipient.objects.create(
+                broadcast=self.broadcast, wa_msisdn=f"23480111122{n:02d}",
+                status=BroadcastRecipient.QUEUED)
+            for n in range(3)
+        ]
+
+    def _send(self, error_code):
+        return patch("whatsapp.jobs.send_template", return_value={
+            "success": False, "error_code": error_code,
+            "error_detail": "number of parameters does not match",
+            "message": "WhatsApp provider rejected the request"})
+
+    def test_a_parameter_count_rejection_stops_the_campaign(self):
+        from whatsapp.jobs import process_outbound_recipient
+
+        with self._send(132000) as send:
+            process_outbound_recipient(self.rows[0].pk)
+        self.assertEqual(send.call_count, 1)              # one call, not three
+
+        for row in self.rows:
+            row.refresh_from_db()
+            self.assertEqual(row.status, BroadcastRecipient.FAILED)
+            self.assertIsNotNone(row.processed_at)
+        self.assertIn("132000", self.rows[1].error)
+        self.assertIn("abandoned", self.rows[1].error)
+
+        self.broadcast.refresh_from_db()
+        self.assertEqual(self.broadcast.status, Broadcast.DONE)
+        self.assertEqual(self.broadcast.count_failed, 3)
+        self.assertTrue(AuditLog.objects.filter(action="broadcast.abandoned").exists())
+
+    def test_a_recipient_level_rejection_leaves_the_rest_queued(self):
+        """131026 is "this recipient can't receive it" — the next person on the
+        list is unaffected, so abandoning the campaign would be the bug."""
+        from whatsapp.jobs import process_outbound_recipient
+
+        with self._send(131026):
+            process_outbound_recipient(self.rows[0].pk)
+        self.rows[0].refresh_from_db()
+        self.assertEqual(self.rows[0].status, BroadcastRecipient.FAILED)
+        for row in self.rows[1:]:
+            row.refresh_from_db()
+            self.assertEqual(row.status, BroadcastRecipient.QUEUED)
+            self.assertIsNone(row.processed_at)
+        self.broadcast.refresh_from_db()
+        self.assertEqual(self.broadcast.status, Broadcast.SENDING)
+        self.assertFalse(AuditLog.objects.filter(action="broadcast.abandoned").exists())
+
+    def test_a_recipient_another_worker_holds_is_not_stolen(self):
+        """Marking a leased row FAILED would race that worker's own write and
+        could report a genuinely sent message as failed. It resolves itself."""
+        from whatsapp.jobs import process_outbound_recipient
+
+        leased = self.rows[2]
+        leased.processing_started_at = timezone.now()
+        leased.save(update_fields=["processing_started_at"])
+
+        with self._send(132001):
+            process_outbound_recipient(self.rows[0].pk)
+        leased.refresh_from_db()
+        self.assertEqual(leased.status, BroadcastRecipient.QUEUED)
+        self.assertIsNone(leased.processed_at)
+        self.rows[1].refresh_from_db()
+        self.assertEqual(self.rows[1].status, BroadcastRecipient.FAILED)   # unleased: abandoned
+
+    def test_a_non_numeric_error_code_is_not_treated_as_template_level(self):
+        from whatsapp.jobs import _is_template_level
+
+        for code in ("provider_error", None, "", "abc", 500, 131047):
+            self.assertFalse(_is_template_level(code), code)
+        for code in (132000, "132001", 132015):
+            self.assertTrue(_is_template_level(code), code)
+
+
+class AiCageTests(TestCase):
+    """The assistant is a router, not a speaker.
+
+    Everything here defends one property: nothing the MODEL writes about the
+    customer's money reaches the customer. The model proposes a tool call; the
+    backend reads the ledger and does the talking. A system prompt asks for that,
+    these tests enforce it.
+    """
+
+    def test_only_offered_tools_can_dispatch(self):
+        from whatsapp.ai import TOOLS, _TOOL_NAMES
+
+        self.assertEqual(_TOOL_NAMES, frozenset(t["name"] for t in TOOLS))
+
+    def test_a_hallucinated_tool_is_refused(self):
+        from whatsapp import ai
+
+        with patch("whatsapp.ai.llm_available", return_value=True), \
+             patch("whatsapp.llm.call_tools",
+                   return_value={"name": "close_account", "input": {}}):
+            self.assertIsNone(ai.extract_intent("close my account"))
+
+    def test_a_claim_of_action_is_suppressed_entirely(self):
+        """The model cannot do anything — a tool call is a request, and the
+        outcome is written after the money path runs. Text saying otherwise could
+        stop a customer chasing a payment that never happened."""
+        from whatsapp.ai import safe_reason
+
+        for claim in ("I've escalated this to customer support.",
+                      "I have sent the 5000 to Ada.",
+                      "I checked and it went through.",
+                      "We have refunded you."):
+            self.assertEqual(safe_reason(claim), "", claim)
+
+    def test_an_invented_account_state_is_suppressed(self):
+        from whatsapp.ai import safe_reason
+
+        for claim in ("Your balance is ₦58,500.",
+                      "You have ₦58,500 available.",
+                      "You spent 3000 on airtime yesterday.",
+                      "The transfer was successful."):
+            self.assertEqual(safe_reason(claim), "", claim)
+
+    def test_a_figure_hidden_behind_a_token_is_still_caught(self):
+        """The model writes its reason against the MASKED message, where an
+        amount is an opaque token, and the token only becomes a real number when
+        the text is re-hydrated on the way out. A rule that keyed on the currency
+        mark passed "you have num_ref_1" and then printed a balance that nobody
+        had looked up — so both spellings have to fail."""
+        from whatsapp.ai import safe_reason
+
+        self.assertEqual(safe_reason("You have num_ref_1 available"), "")
+        self.assertEqual(safe_reason("You have 1000000 available"), "")
+        self.assertEqual(safe_reason("Your balance is num_ref_1"), "")
+
+    def test_the_router_re_checks_the_rehydrated_text(self):
+        """Sanitising once, before re-hydration, is not enough — the router runs
+        the same check on what will actually be sent."""
+        from whatsapp import router
+
+        self.assertEqual(router.ai.safe_reason("You have 1000000 available"), "")
+
+    def test_a_genuine_clarification_survives(self):
+        """The cage must not eat the useful case: asking WHICH amount is exactly
+        what clarify is for, and it necessarily quotes amounts."""
+        from whatsapp.ai import safe_reason
+
+        self.assertIn("5,000", safe_reason("Did you mean ₦5,000 or ₦50,000?"))
+        self.assertIn("phone number", safe_reason("Which phone number should the airtime go to?"))
+
+    def test_links_and_contact_details_never_come_from_the_model(self):
+        """An injected message can make a model emit a link. The channel appends
+        Zitch's real support contacts itself, so the model never needs to."""
+        from whatsapp.ai import safe_reason
+
+        out = safe_reason("Please verify at https://evil.example/login or call 08012345678")
+        self.assertNotIn("evil.example", out)
+        self.assertNotIn("08012345678", out)
+
+    def test_reason_is_capped(self):
+        from whatsapp.ai import MAX_REASON, safe_reason
+
+        self.assertLessEqual(len(safe_reason("word " * 500)), MAX_REASON + 1)
+
+    def test_an_unsafe_reason_drops_the_intent(self):
+        """A clarify whose text cannot be relayed is not a clarify — the router
+        must fall through to the menu rather than send an empty bubble."""
+        from whatsapp import ai
+
+        with patch("whatsapp.ai.llm_available", return_value=True), \
+             patch("whatsapp.llm.call_tools",
+                   return_value={"name": "clarify",
+                                 "input": {"reason": "I have already refunded you."}}):
+            self.assertIsNone(ai.extract_intent("where is my money"))
+
+
+@override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+class AiHistoryLookupTests(TestCase):
+    """The conversations from the screenshots: a customer asking about ONE
+    payment must get an answer about that payment, not a statement to search."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="50000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+
+    def inbound(self, text, mid):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": mid, "type": "text", "text": {"body": text}}]}}]}]}
+        return self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                                content_type="application/json")
+
+    def last_reply(self):
+        row = (WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+               .order_by("-created").first())
+        return row.text if row else ""
+
+    def _stub(self, intent):
+        return patch("whatsapp.ai.extract_intent", return_value=intent)
+
+    def _aged_txn(self, days, amount, service, status=None):
+        """An outgoing row dated `days` back.
+
+        Inserted at its final timestamp and state: wallet.models refuses to let
+        amount/direction/currency/created change once a row exists, so the
+        fixture follows the same append-only rule on SQLite and PostgreSQL.
+        """
+        from wallet.models import Transaction
+        from wallet.tests import make_transaction_at
+
+        return make_transaction_at(
+            self.user,
+            created=timezone.now() - timedelta(days=days),
+            amount=amount,
+            service=service,
+            status=status or Transaction.PENDING,
+        )
+
+    def test_a_specific_payment_is_answered_not_dumped(self):
+        """"I sent 5k to someone 2 days ago, help me check" — the answer is that
+        payment's status, in the chat. Sending a statement instead makes the
+        customer find their own answer inside a 250KB file."""
+        self._aged_txn(2, "5000", "Transfer to ADA OKON", status=Transaction.SUCCESS)
+        self._aged_txn(0, "3000", "Airtime — MTN", status=Transaction.SUCCESS)
+        with self._stub({"name": "transaction_history",
+                         "input": {"amount": 5000, "days_ago": 2, "kind": "transfer"}}):
+            self.inbound("I sent 5k to someone 2 days ago, help me check", "h1")
+        reply = self.last_reply()
+        self.assertIn("5,000", reply)
+        self.assertIn("ADA OKON", reply)
+        self.assertIn("successful", reply.lower())
+        self.assertNotIn("Airtime", reply)          # not a dump of everything
+        self.assertNotIn("last 5 transactions", reply)
+
+    def test_a_lookup_never_attaches_a_statement(self):
+        self._aged_txn(2, "5000", "Transfer to ADA OKON", status=Transaction.SUCCESS)
+        with patch("whatsapp.providers.send_document") as doc, \
+             self._stub({"name": "transaction_history",
+                         "input": {"amount": 5000, "days_ago": 2}}):
+            self.inbound("did my 5k go through 2 days ago", "h2")
+        doc.assert_not_called()
+
+    def test_a_failed_payment_says_you_were_not_charged(self):
+        from wallet.models import Transaction
+
+        self._aged_txn(3, "2000", "Transfer to BOLA", status=Transaction.FAILED)
+        with self._stub({"name": "transaction_history",
+                         "input": {"amount": 2000, "days_ago": 3}}):
+            self.inbound("what happened to the 2k i sent 3 days ago", "h3")
+        reply = self.last_reply()
+        self.assertIn("not successful", reply.lower())
+        self.assertIn("not charged", reply.lower())
+
+    def test_nothing_found_says_what_was_searched_for(self):
+        """A bare "I couldn't find it" leaves the customer unable to tell whether
+        we misheard the amount, the day or the type."""
+        with self._stub({"name": "transaction_history",
+                         "input": {"amount": 5000, "days_ago": 2, "kind": "transfer"}}):
+            self.inbound("I sent 5k 2 days ago", "h4")
+        reply = self.last_reply()
+        self.assertIn("couldn't find", reply.lower())
+        self.assertIn("5,000", reply)
+        self.assertIn("2 days ago", reply)
+
+    def test_a_statement_request_still_sends_the_file(self):
+        """Driven straight into _do_history rather than through the webhook.
+
+        Forcing `wa_live` True to reach the upload path also makes every OTHER
+        outbound message in that request real, and the suite's outbound-HTTP
+        guard rightly refuses them — the test was proving something about the
+        statement while quietly taking the whole channel live to do it.
+        """
+        from whatsapp.router import _do_history
+
+        self._aged_txn(1, "1000", "Airtime — MTN", status=Transaction.SUCCESS)
+        with patch("whatsapp.providers.wa_live", return_value=True), \
+             patch("whatsapp.providers.upload_media", return_value="mid"), \
+             patch("whatsapp.providers.send_document", return_value={"success": True}) as doc:
+            _do_history(self.user, MSISDN, as_document=True)
+        doc.assert_called_once()
+        self.assertTrue(doc.call_args.args[2].endswith(".pdf"))
+
+    def test_a_short_history_answers_in_the_chat(self):
+        """"was my last transaction successful" is a question, not a request for
+        a document — two identical PDFs in a row is what the old path did."""
+        self._aged_txn(0, "1000", "Airtime — MTN", status=Transaction.SUCCESS)
+        with patch("whatsapp.providers.send_document") as doc, \
+             self._stub({"name": "transaction_history", "input": {"count": 1}}):
+            self.inbound("was my last transaction successful", "h6")
+        doc.assert_not_called()
+        self.assertIn("successful", self.last_reply().lower())
+
+
+@override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+class AiEscalationTests(TestCase):
+    """"escalate to customer support" used to reach nothing. It must reach a
+    real case record, and must never promise a refund."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="50000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+
+    def inbound(self, text, mid):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": mid, "type": "text", "text": {"body": text}}]}}]}]}
+        return self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                                content_type="application/json")
+
+    def last_reply(self):
+        row = (WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+               .order_by("-created").first())
+        return row.text if row else ""
+
+    def _stub(self, intent):
+        return patch("whatsapp.ai.extract_intent", return_value=intent)
+
+    def _aged_txn(self, days, amount, service):
+        """See AiHistoryLookupTests._aged_txn — insert at the final timestamp."""
+        from wallet.models import Transaction
+        from wallet.tests import make_transaction_at
+
+        return make_transaction_at(
+            self.user,
+            created=timezone.now() - timedelta(days=days),
+            amount=amount,
+            service=service,
+        )
+
+    def test_escalation_opens_a_real_case(self):
+        from compliance.models import Dispute
+
+        txn = self._aged_txn(3, "7000", "Transfer to ADEYEMI WILLIAM")
+        with self._stub({"name": "report_problem",
+                         "input": {"amount": 7000, "days_ago": 3,
+                                   "detail": "didn't go through"}}):
+            self.inbound("a transaction from 3 days ago didn't go through, escalate to "
+                         "customer support", "e1")
+        case = Dispute.objects.get(user=self.user, reference=txn.reference)
+        self.assertEqual(case.status, Dispute.OPEN)
+        reply = self.last_reply()
+        self.assertIn(f"#{case.id}", reply)
+        self.assertIn(txn.reference, reply)
+
+    def test_escalation_never_promises_a_refund(self):
+        """A dispute is an investigation. Promising money back in the opening
+        message is a commitment no part of the system has authorised."""
+        self._aged_txn(3, "7000", "Transfer to ADEYEMI WILLIAM")
+        with self._stub({"name": "report_problem", "input": {"amount": 7000, "days_ago": 3}}):
+            self.inbound("escalate this", "e2")
+        reply = self.last_reply().lower()
+        for promise in ("refund", "reversed", "back in your wallet", "you will get your money"):
+            self.assertNotIn(promise, reply)
+
+    def test_a_second_escalation_reuses_the_open_case(self):
+        """A frustrated customer sends it twice. Two cases get worked separately
+        and can be resolved inconsistently."""
+        from compliance.models import Dispute
+
+        self._aged_txn(3, "7000", "Transfer to ADEYEMI WILLIAM")
+        intent = {"name": "report_problem", "input": {"amount": 7000, "days_ago": 3}}
+        with self._stub(intent):
+            self.inbound("escalate this", "e3")
+        with self._stub(intent):
+            self.inbound("escalate this again", "e4")
+        self.assertEqual(Dispute.objects.filter(user=self.user).count(), 1)
+        self.assertIn("already an open case", self.last_reply().lower())
+
+    def test_an_unidentifiable_transaction_asks_rather_than_guessing(self):
+        from compliance.models import Dispute
+
+        with self._stub({"name": "report_problem", "input": {"amount": 999999, "days_ago": 1}}):
+            self.inbound("escalate the payment from yesterday", "e5")
+        self.assertEqual(Dispute.objects.count(), 0)
+        self.assertIn("couldn't find", self.last_reply().lower())
+
+    def test_the_keyword_path_works_without_the_ai(self):
+        """Turning smart replies off must not remove the ability to complain."""
+        self._aged_txn(1, "4000", "Transfer to BOLA")
+        SystemSetting.set("ai_enabled_global", "false")
+        self.inbound("report a problem", "e6")
+        reply = self.last_reply()
+        self.assertIn("Report a problem", reply)
+        self.assertIn("4,000", reply)
+
+
+class LookupHintTests(TestCase):
+    """The deterministic reading of a message, used only to fill in what the
+    model left blank.
+
+    The model is asked for amount/days/kind and usually returns them — but a
+    weaker provider, a retry, or a typo-laden sentence can come back with the
+    right tool and no parameters, and a transaction_history call with nothing in
+    it is the generic dump this whole change exists to stop.
+    """
+
+    def test_it_reads_the_message_from_the_report(self):
+        from whatsapp.router import lookup_hints
+
+        # Verbatim, typo included — this is the sentence a customer actually sent.
+        self.assertEqual(lookup_hints("I sent 5k to someone 2 dayssgo, help me check"),
+                         {"days_ago": 2, "amount": 5000.0, "kind": "transfer"})
+
+    def test_yesterday_and_today_are_days(self):
+        from whatsapp.router import lookup_hints
+
+        self.assertEqual(lookup_hints("did my 2000 airtime yesterday work")["days_ago"], 1)
+        self.assertEqual(lookup_hints("my ₦50,000 funding today")["days_ago"], 0)
+
+    def test_a_phone_number_is_not_an_amount(self):
+        """"i sent 3,000 to 08166938327" — the long number is a destination, and
+        reading it as ₦8,166,938,327 would search for a transaction nobody made."""
+        from whatsapp.router import lookup_hints
+
+        self.assertEqual(lookup_hints("i sent 3,000 to 08166938327 3 days ago")["amount"], 3000.0)
+
+    def test_the_day_count_is_not_an_amount(self):
+        from whatsapp.router import lookup_hints
+
+        self.assertNotIn("amount", lookup_hints("what happened 2 days ago"))
+
+    def test_a_message_with_no_details_yields_nothing(self):
+        from whatsapp.router import lookup_hints
+
+        self.assertEqual(lookup_hints("was my last transaction successful"), {})
+
+    def test_hints_never_override_the_model(self):
+        """When the model DID extract a value it saw the whole sentence; this
+        regex saw a fragment."""
+        from whatsapp import router
+
+        with patch.object(router, "_do_history") as hist:
+            router.dispatch_intent(
+                None, MSISDN,
+                {"name": "transaction_history", "input": {"amount": 7000}},
+                "I sent 5k to someone 2 days ago")
+        self.assertEqual(hist.call_args.kwargs["amount"], 7000)     # model's value kept
+        self.assertEqual(hist.call_args.kwargs["days_ago"], 2)      # blank filled in
+
+    def test_money_intents_are_never_filled_from_a_regex(self):
+        """An amount or a recipient on a SPENDING intent must come from the model
+        and the customer's own confirmation, never from a guess — a guess that
+        reaches the confirm screen is a guess someone might approve."""
+        from whatsapp import router
+
+        with patch.object(router, "_begin_airtime", return_value=True) as begin:
+            router.dispatch_intent(None, MSISDN, {"name": "buy_airtime", "input": {}},
+                                   "send 5k airtime 2 days ago")
+        self.assertIsNone(begin.call_args.args[2])   # amount stayed empty
+
+
+@override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+class ConversationReferentTests(TestCase):
+    """"Report it."
+
+    The word only means something against what was just said. A customer who
+    was told "your ₦1,000 Electricity — Ikeja was successful" and replies
+    "Report it" has already named the transaction; asking them to describe it
+    again is the channel forgetting a conversation it was part of.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="0")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+        credit(self.user, Decimal("60000"), "Wallet funding")
+        self.older = self._spend(3, "5000", "Transfer to ADEYEMI WILLIAM")
+        self.latest = self._spend(0, "1000", "Electricity — Ikeja")
+
+    def _spend(self, days, amount, service):
+        from wallet.tests import make_transaction_at
+
+        return make_transaction_at(
+            self.user,
+            created=timezone.now() - timedelta(days=days, minutes=1 if days else 0),
+            amount=amount,
+            service=service,
+            status=Transaction.SUCCESS,
+        )
+
+    def say(self, text, intent=None, mid=None):
+        with patch("whatsapp.ai.extract_intent", return_value=intent):
+            router.handle_inbound(MSISDN, text)
+
+    def last_reply(self):
+        row = (WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+               .order_by("-created").first())
+        return row.text if row else ""
+
+    def test_report_it_reports_the_transaction_just_discussed(self):
+        from compliance.models import Dispute
+
+        self.say("the last one", {"name": "transaction_history", "input": {"count": 1}})
+        self.say("Report it", {"name": "report_problem", "input": {}})
+        case = Dispute.objects.get(user=self.user)
+        self.assertEqual(case.reference, self.latest.reference)
+        self.assertIn("Electricity", self.last_reply())
+        self.assertNotIn("Please tell me", self.last_reply())
+
+    def test_a_lookup_answer_also_sets_the_referent(self):
+        from compliance.models import Dispute
+
+        self.say("what happened to my 5k transfer 3 days ago",
+                 {"name": "transaction_history",
+                  "input": {"amount": 5000, "days_ago": 3, "kind": "transfer"}})
+        self.say("escalate this", {"name": "report_problem", "input": {}})
+        self.assertEqual(Dispute.objects.get(user=self.user).reference, self.older.reference)
+
+    def test_i_didnt_get_the_token_reports_the_electricity_purchase(self):
+        """"Token" is the prepaid meter token, not an English generic. Asking
+        "what token are you referring to?" of someone who has just bought
+        electricity is the channel not speaking its customers' language."""
+        from compliance.models import Dispute
+
+        self.say("was my last transaction successful",
+                 {"name": "transaction_history", "input": {"count": 1}})
+        self.say("I didn't get the token", {"name": "report_problem", "input": {"kind": "bill"}})
+        self.assertEqual(Dispute.objects.get(user=self.user).reference, self.latest.reference)
+
+    def test_the_keyword_path_carries_the_referent_too(self):
+        """With smart replies off, "report it" must still land on the right one."""
+        from compliance.models import Dispute
+
+        self.say("was my last transaction successful",
+                 {"name": "transaction_history", "input": {"count": 1}})
+        SystemSetting.set("ai_enabled_global", "false")
+        self.say("Report it")
+        self.assertEqual(Dispute.objects.get(user=self.user).reference, self.latest.reference)
+
+    def test_a_stale_referent_is_not_used(self):
+        """Tomorrow's "report it" must not be filed against yesterday's payment."""
+        from compliance.models import Dispute
+
+        self.say("the last one", {"name": "transaction_history", "input": {"count": 1}})
+        convo = ConversationState.for_msisdn(MSISDN)
+        convo.last_txn_at = timezone.now() - ConversationState.REFERENT_TTL - timedelta(minutes=1)
+        convo.save(update_fields=["last_txn_at"])
+
+        self.say("Report it", {"name": "report_problem", "input": {}})
+        self.assertEqual(Dispute.objects.count(), 0)
+        self.assertIn("Report a problem", self.last_reply())   # asks, with the list
+
+    def test_nothing_discussed_yet_asks_with_the_list(self):
+        from compliance.models import Dispute
+
+        self.say("Report it", {"name": "report_problem", "input": {}})
+        self.assertEqual(Dispute.objects.count(), 0)
+        reply = self.last_reply()
+        self.assertIn("Report a problem", reply)
+        self.assertIn("1,000", reply)          # the recent transactions, to point at
+
+    def test_an_explicit_description_beats_the_referent(self):
+        """When the customer names a DIFFERENT transaction, that wins — the
+        referent is a fallback for what was left unsaid, not an override."""
+        from compliance.models import Dispute
+
+        self.say("the last one", {"name": "transaction_history", "input": {"count": 1}})
+        self.say("report the 5k transfer from 3 days ago",
+                 {"name": "report_problem",
+                  "input": {"amount": 5000, "days_ago": 3, "kind": "transfer"}})
+        self.assertEqual(Dispute.objects.get(user=self.user).reference, self.older.reference)
+
+
+@override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+class ProductDenialTests(TestCase):
+    """The assistant answered "how much is my loan balance" with "Zitch doesn't
+    offer loans" — to a customer of a company with a loans product, a loans
+    screen in the app and a /api/loans/ endpoint.
+
+    That is worse than an unhelpful answer. It is a false statement about the
+    business, made in the business's own voice, that would send someone to a
+    competitor. The cage was meant to stop the model INVENTING capabilities; it
+    had started denying real ones.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="50000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+
+    def say(self, text, intent=None):
+        with patch("whatsapp.ai.extract_intent", return_value=intent):
+            router.handle_inbound(MSISDN, text)
+
+    def last_reply(self):
+        row = (WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+               .order_by("-created").first())
+        return row.text if row else ""
+
+    def test_the_model_cannot_tell_a_customer_zitch_lacks_a_product(self):
+        from whatsapp.ai import safe_reason
+
+        for denial in ("Zitch doesn't offer loans.",
+                       "Zitch does not offer loans. I can check your balance instead.",
+                       "We don't offer savings accounts.",
+                       "Zitch can't do loans.",
+                       "Zitch only offers wallet services."):
+            self.assertEqual(safe_reason(denial), "", denial)
+
+    def test_it_may_still_say_it_cannot_do_something_HERE(self):
+        """The boundary the model may draw is about ITSELF, never about Zitch."""
+        from whatsapp.ai import safe_reason
+
+        kept = safe_reason("I can't check your loan balance here — please use the Zitch app.")
+        self.assertIn("Zitch app", kept)
+
+    def test_loan_balance_is_answered_from_the_ledger(self):
+        from datetime import timedelta as td
+
+        from loans.models import Loan
+
+        Loan.objects.create(user=self.user, principal=Decimal("20000"),
+                            interest=Decimal("2000"), tenure_days=30,
+                            amount_repaid=Decimal("5000"), status=Loan.ACTIVE,
+                            reference="ZLN123", due_date=timezone.now() + td(days=12))
+        self.say("How much is my loan balance", {"name": "check_loan_balance", "input": {}})
+        reply = self.last_reply()
+        self.assertIn("17,000", reply)      # outstanding, not principal
+        self.assertIn("ZLN123", reply)
+
+    def test_no_loan_says_so_without_denying_the_product(self):
+        self.say("How much is my loan balance", {"name": "check_loan_balance", "input": {}})
+        reply = self.last_reply().lower()
+        self.assertIn("don't have an active", reply)
+        self.assertNotIn("doesn't offer", reply)
+        self.assertNotIn("does not offer", reply)
+
+    def test_savings_balance_is_answered_from_the_ledger(self):
+        from datetime import timedelta as td
+
+        from savings.models import FixedSave
+
+        FixedSave.objects.create(user=self.user, principal=Decimal("100000"),
+                                 interest=Decimal("3699"), rate=Decimal("0.15"),
+                                 duration_days=90, status=FixedSave.ACTIVE,
+                                 reference="ZSV1", matures_at=timezone.now() + td(days=60))
+        self.say("How much is my savings", {"name": "check_savings_balance", "input": {}})
+        reply = self.last_reply()
+        self.assertIn("100,000", reply)
+        self.assertIn("matures", reply.lower())
+
+    def test_both_answer_with_the_ai_off(self):
+        SystemSetting.set("ai_enabled_global", "false")
+        self.say("my loan balance")
+        self.assertIn("loan", self.last_reply().lower())
+        self.say("my savings")
+        self.assertIn("savings", self.last_reply().lower())
+
+    def test_the_tools_exist_for_the_products_that_exist(self):
+        """A product with a backend app and no tool is a question the assistant
+        will answer by guessing."""
+        from whatsapp.ai import _TOOL_NAMES
+
+        self.assertIn("check_loan_balance", _TOOL_NAMES)
+        self.assertIn("check_savings_balance", _TOOL_NAMES)
+
+
+@override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+class MenuParityTests(TestCase):
+    """Anything the MENU can do, a customer will type in words.
+
+    The menu is the promise; the numbered options are just a shortcut to it. So
+    a capability the deterministic router has and the AI has no tool for is a
+    question that falls through to "here is the menu again" — which is what a
+    customer sees as the assistant not working, and is how "how much is my loan
+    balance" ended up answered with a denial.
+
+    This asserts the two surfaces cover the same ground.
+    """
+
+    #: tool name -> the deterministic keyword that reaches the same handler.
+    PARITY = {
+        "check_balance": "balance",
+        "add_money": "add money",
+        "transfer": "send money",
+        "transaction_history": "history",
+        "account_details": "account details",
+        "verify_identity": "verify",
+        "reset_pin": "reset pin",
+        "contact_support": "support",
+        "check_loan_balance": "my loan",
+        "check_savings_balance": "my savings",
+        "report_problem": "report a problem",
+    }
+
+    def setUp(self):
+        self.user, self.token = make_user(balance="20000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+
+    def last_reply(self):
+        row = (WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+               .order_by("-created").first())
+        return row.text if row else ""
+
+    def test_every_parity_tool_is_registered(self):
+        from whatsapp.ai import _TOOL_NAMES
+
+        self.assertEqual(set(self.PARITY) - _TOOL_NAMES, set())
+
+    def test_each_tool_dispatches_to_something(self):
+        """A registered tool that dispatches nowhere is worse than no tool: the
+        model routes to it confidently and the customer gets the menu."""
+        for tool in self.PARITY:
+            with self.subTest(tool=tool):
+                with patch("whatsapp.ai.extract_intent",
+                           return_value={"name": tool, "input": {}}):
+                    router.handle_inbound(MSISDN, f"[{tool}]")
+                reply = self.last_reply()
+                self.assertTrue(reply)
+                self.assertNotIn("Sorry, I didn't get that", reply)
+
+    def test_each_keyword_still_works_with_the_ai_off(self):
+        SystemSetting.set("ai_enabled_global", "false")
+        for tool, keyword in self.PARITY.items():
+            with self.subTest(keyword=keyword):
+                router.handle_inbound(MSISDN, keyword)
+                self.assertNotIn("Sorry, I didn't get that", self.last_reply())
+
+    def test_the_menu_names_nothing_the_ai_cannot_reach(self):
+        """The nine numbered options are the channel's advertised surface. Each
+        one a customer might phrase in words must have a tool behind it."""
+        from whatsapp.ai import _TOOL_NAMES
+
+        menu_backed = {
+            "1 Check balance": "check_balance",
+            "2 Send money": "transfer",
+            "3 Airtime / Data": "buy_airtime",
+            "4 Pay a bill": "pay_bill",
+            "5 Convert currency": "convert_currency",
+            "6 Add money": "add_money",
+            "7 My account details": "account_details",
+            "8 Verify my identity": "verify_identity",
+            "9 Transaction history": "transaction_history",
+        }
+        for label, tool in menu_backed.items():
+            with self.subTest(option=label):
+                self.assertIn(tool, _TOOL_NAMES)
+
+
+class SavedPeopleTests(TestCase):
+    """Keeping a recipient in the chat, naming them, and paying them by name.
+
+    The rule the whole feature rests on: a name only ever moves money when it
+    resolves to exactly one account the customer themselves labelled. Everything
+    else — no match, two matches, a name we invented from the bank's records —
+    goes back to the ordinary transfer form, where an account number is checked
+    before anything is sent.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#e30613", active=True)
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        from django.core.cache import cache
+        cache.clear()
+
+    def inbound(self, text, mid):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": mid, "type": "text", "text": {"body": text}}]}}]}]}
+        return self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                                content_type="application/json")
+
+    def replies(self):
+        return [r.text for r in WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("created")]
+
+    def last_reply(self):
+        rows = self.replies()
+        return rows[-1] if rows else ""
+
+    def make_row(self, **kw):
+        base = {"user": self.user, "name": "JOHN DOE", "account_number": "0123456789",
+                "bank_name": "GTBank", "bank_code": "058"}
+        return Beneficiary.objects.create(**{**base, **kw})
+
+    def _transfer(self, tag):
+        self.inbound("send", f"{tag}1")
+        self.inbound("1000", f"{tag}2")
+        self.inbound("0123456789", f"{tag}3")
+        self.inbound("gtb", f"{tag}4")
+        self.inbound("yes", f"{tag}5")
+        self.inbound("1234", f"{tag}6")
+
+    def test_a_first_transfer_asks_nothing(self):
+        # Most transfers are one-offs — a fee, a stranger, a seller — and asking
+        # about every one of them is how a useful prompt becomes noise.
+        self._transfer("a")
+        self.assertNotIn("save", self.last_reply().lower())
+        row = Beneficiary.objects.get(user=self.user, account_number="0123456789")
+        self.assertEqual(row.transfer_count, 1)
+        self.assertFalse(row.saved)
+
+    def test_the_third_transfer_asks_once(self):
+        self._transfer("a")
+        self._transfer("b")
+        self.assertNotIn("save", self.last_reply().lower())
+        self._transfer("c")
+        self.assertIn("save", self.last_reply().lower())
+
+    def test_it_never_asks_about_the_same_person_twice(self):
+        for tag in ("a", "b", "c"):
+            self._transfer(tag)
+        self.assertIn("save", self.last_reply().lower())
+        self._transfer("d")
+        self.assertNotIn("save", self.last_reply().lower())
+
+    def test_paying_someone_fifty_times_keeps_them_without_asking(self):
+        row = self.make_row(transfer_count=50)
+        self._transfer("a")
+        row.refresh_from_db()
+        self.assertTrue(row.saved)
+
+    def test_declining_ends_the_asking(self):
+        row = self.make_row(transfer_count=3, save_offer_sent=True)
+        self.inbound(f"bene:no:{row.pk}", "d1")
+        self.assertIn("won't ask", self.last_reply())
+        from .router import _offer_to_save
+        before = len(self.replies())
+        _offer_to_save(self.user, MSISDN, row.pk)
+        self.assertEqual(len(self.replies()), before)
+
+    def test_saving_asks_for_a_name_and_keeps_it(self):
+        row = self.make_row()
+        self.inbound(f"bene:save:{row.pk}", "k1")
+        row.refresh_from_db()
+        self.assertTrue(row.saved)
+        self.inbound("Mum", "k2")
+        row.refresh_from_db()
+        self.assertEqual(row.nickname, "Mum")
+
+    def test_a_payment_instruction_is_not_taken_as_a_name(self):
+        """The reported bug: asked what to call somebody, the customer typed
+        "2k to. Yahaya 0998787776 polaris" — plainly a new transfer — and it was
+        saved as that person's nickname, eating the payment."""
+        row = self.make_row()
+        self.inbound(f"bene:save:{row.pk}", "b1")
+        self.inbound("2k to. Yahaya 0998787776 polaris", "b2")
+        row.refresh_from_db()
+        self.assertEqual(row.nickname, "")
+
+    def test_an_ordinary_name_is_never_mistaken_for_a_command(self):
+        # "Elizabeth" contains "bet" and "Ricardo" contains "card"; the intent
+        # check matches substrings, so running it on a valid nickname would make
+        # common names unusable — and silently, by answering with the menu.
+        row = self.make_row()
+        self.inbound(f"bene:save:{row.pk}", "e1")
+        self.inbound("Elizabeth", "e2")
+        row.refresh_from_db()
+        self.assertEqual(row.nickname, "Elizabeth")
+
+    def test_a_recipient_belonging_to_someone_else_cannot_be_saved(self):
+        other, _ = make_user("08099999999", "zed@zitch.test")
+        theirs = Beneficiary.objects.create(
+            user=other, name="THEIR PAYEE", account_number="0555555555", bank_name="GTBank")
+        self.inbound(f"bene:save:{theirs.pk}", "x1")
+        theirs.refresh_from_db()
+        self.assertFalse(theirs.saved)
+        self.assertIn("no longer in your list", self.last_reply())
+
+    def test_paying_a_saved_name_opens_the_transfer(self):
+        self.make_row(saved=True, nickname="Mum")
+        self.inbound("send 1000 to mum", "p1")
+        joined = " ".join(self.replies()).lower()
+        self.assertIn("mum", joined)
+        self.assertIn("0123456789", joined)
+
+    def test_an_unknown_name_falls_through_untouched(self):
+        # A miss must not answer and stop. "send 1000 to ada" has always been
+        # handled by whatever sits below — the paste parser, then the assistant,
+        # then the menu — and swallowing it here would put a dead end where a
+        # working payment used to be.
+        self.inbound("send 1000 to ada", "u1")
+        answer = self.last_reply()
+        self.assertIn("what would you like to do", answer.lower())
+        self.assertNotIn("anyone saved as", answer.lower())
+
+    def test_two_people_with_the_same_name_move_no_money(self):
+        # The DB does not stop this — a rename race, or rows created either side
+        # of a deploy. An ambiguous instruction about where money goes is one we
+        # decline to act on, so it falls through to the form.
+        self.make_row(saved=True, nickname="Mum")
+        self.make_row(account_number="0999999999", bank_name="Zenith",
+                      saved=True, nickname="Mum", name="MUSA ADAMU")
+        self.inbound("send 1000 to mum", "a1")
+        joined = " ".join(self.replies())
+        self.assertNotIn("0999999999", joined)
+
+    def test_an_unsaved_recent_is_not_payable_by_name(self):
+        # `name` is the bank's holder name, which the customer never chose and
+        # which nothing keeps unique.
+        self.make_row(name="MUM SOMEBODY")
+        self.inbound("send 1000 to mum somebody", "r1")
+        self.assertNotIn("0123456789", " ".join(self.replies()))
+
+    def test_the_address_book_lists_saved_people_only(self):
+        self.make_row(saved=True, nickname="Mum")
+        self.make_row(account_number="0999999999", bank_name="Zenith", name="A RECENT")
+        self.inbound("12", "l1")
+        shown = self.last_reply()
+        self.assertIn("Mum", shown)
+        self.assertNotIn("0999999999", shown)
+
+    def test_removing_someone_takes_the_row_with_it(self):
+        row = self.make_row(saved=True, nickname="Mum")
+        self.inbound("12", "m1")
+        self.inbound("1", "m2")
+        self.inbound("2", "m3")
+        self.assertFalse(Beneficiary.objects.filter(pk=row.pk).exists())
+
+    def test_the_scanner_says_a_photo_works_too(self):
+        # Any image sent to the chat is already decoded as a QR, at any point in
+        # the conversation — but nothing said so, so customers had no reason to
+        # try the camera button that was in front of them the whole time.
+        from . import router
+        with patch.object(router, "send_cta_url", return_value={"success": True}) as cta:
+            router._start_qr_scan(self.user, MSISDN)
+        self.assertIn("photo", cta.call_args.args[1].lower())

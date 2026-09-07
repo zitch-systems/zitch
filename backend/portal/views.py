@@ -31,6 +31,7 @@ from whatsapp.models import (
     WaMessageLog,
     WhatsAppLink,
 )
+from whatsapp import ai
 from whatsapp.ops import record_audit
 from whatsapp.router import reply as wa_reply
 
@@ -50,20 +51,41 @@ def login(request):
     Staff-only: a valid password on a non-staff account is still a 403, and the
     failure is audited so brute-force attempts on operator accounts are visible.
     """
+    from common.http import mask_pii
+    from common.ratelimit import clear_login_failures, login_locked, note_login_failure
+
     ident = (request.data.get("identifier") or "").strip()
     password = request.data.get("password") or ""
     if not ident or not password:
         return fail("identifier and password required")
+    # Per-account lockout on top of the per-IP ratelimit (@ratelimit above) — a
+    # distributed brute force against one operator account is capped here.
+    if login_locked("ops", ident):
+        record_audit("ops.login_locked", target=mask_pii(ident), actor_type="system")
+        return fail("Too many failed attempts. Try again later.", status=429, code="locked")
     user = User.objects.filter(
         Q(username__iexact=ident) | Q(email__iexact=ident) | Q(phone=ident)
     ).first()
     if user is None or not user.check_password(password):
-        record_audit("ops.login_failed", target=ident, actor_type="system")
+        note_login_failure("ops", ident)
+        # Mask the identifier in the audit trail — a failed-login log must not be
+        # a plaintext list of real operator emails/phones.
+        record_audit("ops.login_failed", target=mask_pii(ident), actor_type="system")
         return fail("Invalid credentials", status=401)
     if not (user.is_staff and user.is_active):
-        record_audit("ops.login_denied", actor=user, target=ident)
+        record_audit("ops.login_denied", actor=user, target=mask_pii(ident))
         return fail("Staff access required", status=403)
-    token = AccessToken.issue(user)
+    # Second factor, shared with /api/admin/ so the two operator surfaces cannot
+    # diverge — an MFA gate on one login form and not the other is no gate at all.
+    from admin_api.views import _mfa_login_error
+    mfa_error = _mfa_login_error(user, request.data.get("code") or request.data.get("mfa_code") or "")
+    if mfa_error is not None:
+        note_login_failure("ops", ident)
+        record_audit("ops.login_mfa_failed", target=mask_pii(ident), actor_type="system")
+        return mfa_error
+    clear_login_failures("ops", ident)
+    # Admin-scoped, short-lived token so it never resolves on the mobile surface.
+    token = AccessToken.issue(user, scope=AccessToken.ADMIN)
     record_audit("ops.login", actor=user, target=user.username)
     return ok(
         token=token.key,
@@ -72,6 +94,21 @@ def login(request):
         name=(f"{user.first_name} {user.last_name}".strip() or user.username),
         email=user.email,
     )
+
+
+@api
+@require_cap()
+def logout(request):
+    """POST /api/ops/logout/ — revoke the presented admin token server-side.
+
+    Without this, the SPA's Sign out only cleared localStorage and the
+    admin-scoped token stayed valid until its TTL — a copied token (shared
+    machine, shoulder-surfed devtools) outlived the visible sign-out."""
+    from common.http import resolve_token
+
+    AccessToken.objects.filter(key=AccessToken._hash(resolve_token(request))).delete()
+    record_audit("ops.logout", actor=request.user_obj, target=request.user_obj.username)
+    return ok(success=True, message="Signed out")
 
 
 # --------------------------------------------------------------------------- #
@@ -184,16 +221,16 @@ def _success_rate() -> float:
 
 def _providers() -> list:
     from django.conf import settings as st
-    from utility.providers import _prembly_live, payout_live, vtu_live
+    from utility.providers import _prembly_live, payout_live, sms_live, vtu_live
 
     rows = [
-        ("Kora", "Funding & payouts", payout_live()),
+        ("Wema", "Funding · payouts · KYC", payout_live()),
         ("VTU.ng", "Airtime · data · bills", vtu_live()),
         ("Fincra", "FX rates & settlement", bool(getattr(st, "FINCRA", {}).get("SECRET_KEY"))),
         ("Meta WhatsApp", "Chat channel", bool(st.WHATSAPP.get("TOKEN"))),
-        ("Sendchamp", "SMS / OTP", bool(st.SENDCHAMP["API_KEY"])),
+        ("Termii", "SMS / OTP", sms_live()),
         ("Resend", "Email / OTP fallback", bool(st.RESEND["API_KEY"])),
-        ("Prembly", "KYC (BVN · NIN · face)", _prembly_live()),
+        ("Prembly", "KYC (face · address · ID)", _prembly_live()),
     ]
     return [
         {"name": n, "role": r, "status": "operational" if live else "mock", "uptime": "live" if live else "mock mode"}
@@ -225,7 +262,10 @@ def users(request):
             Q(first_name__icontains=q) | Q(last_name__icontains=q)
             | Q(username__icontains=q) | Q(email__icontains=q) | Q(phone__icontains=q)
         )
-    return ok(rows=_user_rows(qs), total=User.objects.filter(is_staff=False).count())
+    # `total` reflects the ACTIVE filter — the header reads "<total> users ·
+    # <rows> shown", which lied whenever a search was active (all-users count
+    # next to a filtered page).
+    return ok(rows=_user_rows(qs), total=qs.count())
 
 
 @api
@@ -249,11 +289,27 @@ def user_action(request):
         record_audit("user.unfreeze", actor=request.user_obj, target=f"user:{user.id}",
                      before=before, after={"is_active": True})
     elif action == "unlock_pin":
-        before = {"pin_locked_until": str(user.pin_locked_until or "")}
+        before = {"pin_locked_until": str(user.pin_locked_until or ""),
+                  "pin_lockout_strikes": user.pin_lockout_strikes}
         user.pin_failed_attempts = 0
         user.pin_locked_until = None
-        user.save(update_fields=["pin_failed_attempts", "pin_locked_until"])
+        # Strikes too — otherwise the next wrong-PIN run after an unlock jumps
+        # to the 24-hour tier, which is not what "unlock" means to the operator
+        # doing it or the customer on the phone to them.
+        user.pin_lockout_strikes = 0
+        user.save(update_fields=["pin_failed_attempts", "pin_locked_until", "pin_lockout_strikes"])
         record_audit("user.pin_unlock", actor=request.user_obj, target=f"user:{user.id}", before=before)
+    elif action in ("ai_on", "ai_off"):
+        # Per-customer AI consent. Customers can set this themselves in chat
+        # ("ai on"); support needs it too, for anyone who asks on a call.
+        link = user.whatsapp_links.filter(status="active").first()
+        if link is None:
+            return fail("This user has no linked WhatsApp number", status=404)
+        before = {"ai_enabled": link.ai_enabled}
+        link.ai_enabled = action == "ai_on"
+        link.save(update_fields=["ai_enabled"])
+        record_audit("user.wa_ai", actor=request.user_obj, target=f"user:{user.id}",
+                     before=before, after={"ai_enabled": link.ai_enabled})
     else:
         return fail("Unknown action")
     return ok(success=True)
@@ -263,15 +319,22 @@ def user_action(request):
 @require_cap()
 def kyc_queue(request):
     """Users whose submitted identity (BVN/NIN) hasn't verified, or who are
-    still below the tier their verified checks support — the manual-review pile."""
+    still below the tier their verified checks support — the manual-review pile.
+
+    Only ACTIONABLE rows: a bare Q(tier=0) (as before) also listed every fresh
+    signup with nothing submitted — rows approve provably no-ops on and reject
+    can't clear, so the queue grew forever. A tier-0 user belongs here only when
+    their verified checks already support Tier 1 (a stale/derived-tier mismatch
+    an approve actually fixes)."""
     qs = User.objects.filter(is_staff=False, is_active=True).filter(
-        Q(bvn_hash__gt="", bvn_verified=False) | Q(nin_hash__gt="", nin_verified=False) | Q(tier=0)
+        Q(bvn_hash__gt="", bvn_verified=False) | Q(nin_hash__gt="", nin_verified=False)
+        | Q(tier=0, bvn_verified=True, nin_verified=True)
     ).order_by("-date_joined")
     rows = [
         {
             "user": (f"{u.first_name} {u.last_name}".strip() or u.username),
             "id": u.id,
-            "type": "nin" if (u.nin and not u.nin_verified) else ("bvn" if u.bvn else "pending"),
+            "type": "nin" if (u.nin_hash and not u.nin_verified) else ("bvn" if u.bvn_hash else "pending"),
             "submitted": u.date_joined.isoformat(),
             "note": f"BVN {'✓' if u.bvn_verified else '—'} · NIN {'✓' if u.nin_verified else '—'} · Face {'✓' if u.face_verified else '—'}",
             "tier": f"{u.tier} → {min(u.tier + 1, 3)}",
@@ -289,14 +352,44 @@ def kyc_review(request):
     if user is None:
         return fail("User not found", status=404)
     approve = bool(request.data.get("approve"))
-    before = {"tier": user.tier}
+    before = {"tier": user.tier, "bvn_verified": user.bvn_verified, "nin_verified": user.nin_verified}
     if approve:
-        user.tier = min(user.tier + 1, 3)
-        user.save(update_fields=["tier"])
+        # Mark the SUBMITTED identity verified, then DERIVE the tier from the flags
+        # (recompute_tier) — the same path admin_api.kyc_review takes. Bumping
+        # user.tier directly (as this did) sets no flag, so the next recompute_tier
+        # silently reverts the approval while the user meanwhile holds transfer
+        # limits their verifications don't support (an AML/KYC control gap).
+        fields = []
+        if user.bvn_hash and not user.bvn_verified:
+            user.bvn_verified = True
+            fields.append("bvn_verified")
+        if user.nin_hash and not user.nin_verified:
+            user.nin_verified = True
+            fields.append("nin_verified")
+        user.recompute_tier()
+        fields.append("tier")
+        user.save(update_fields=fields)
+    else:
+        # Reject clears the UNVERIFIED submitted identifier(s), so the user drops
+        # out of the review queue and must resubmit correct details. It was a
+        # pure-audit no-op before, which meant a rejected row reappeared on every
+        # queue load — the pile could never drain. Verified identities and the
+        # derived tier are untouched (reject never revokes an accepted check).
+        fields = []
+        if user.bvn_hash and not user.bvn_verified:
+            user.bvn_hash = user.bvn_last4 = ""
+            fields += ["bvn_hash", "bvn_last4"]
+        if user.nin_hash and not user.nin_verified:
+            user.nin_hash = user.nin_last4 = ""
+            fields += ["nin_hash", "nin_last4"]
+        if fields:
+            user.save(update_fields=fields)
     record_audit(
         "kyc.approve" if approve else "kyc.reject",
         actor=request.user_obj, target=f"user:{user.id}",
-        before=before, after={"tier": user.tier},
+        before=before, after={"tier": user.tier, "bvn_verified": user.bvn_verified,
+                              "nin_verified": user.nin_verified,
+                              **({} if approve else {"submission_cleared": True})},
     )
     return ok(success=True, tier=user.tier)
 
@@ -335,7 +428,7 @@ def txn_requery(request):
     if not (txn.transaction_status == Transaction.PENDING and (txn.meta or {}).get("reconcile")):
         return fail("Only provider-pending purchases can be requeried", status=409)
     if is_bank_payout(txn):
-        # A bank transfer settles via the Kora payout webhook, not a VTU
+        # A bank transfer settles via the reconcile_wema poller, not a VTU
         # requery — don't query the wrong provider for a reference it never saw.
         return fail("Bank transfers reconcile via the disbursement webhook, not VTU requery", status=409)
     result = vtu_requery(txn.reference)
@@ -379,7 +472,7 @@ def fx(request):
             "vol24": float(vol),
             "settle": _corridor_enabled(ccy),
         })
-    float_rows = [{"cur": "NGN", "bal": float(Wallet.objects.aggregate(v=Sum("balance"))["v"] or 0), "provider": "Kora"}]
+    float_rows = [{"cur": "NGN", "bal": float(Wallet.objects.aggregate(v=Sum("balance"))["v"] or 0), "provider": "Wema"}]
     for row in CurrencyWallet.objects.values("currency").annotate(v=Sum("balance")).order_by("currency"):
         float_rows.append({"cur": row["currency"], "bal": float(row["v"] or 0), "provider": "Fincra"})
     return ok(margin=int(margin), rates=rates, float=float_rows)
@@ -466,11 +559,20 @@ def products(request):
 @api
 @require_cap("users")
 def card_action(request):
+    from utility.providers import card_set_status
+
     card = VirtualCard.objects.filter(id=request.data.get("card_id")).first()
     if card is None:
         return fail("Card not found", status=404)
+    going_active = card.status == VirtualCard.FROZEN
+    # Freeze/unfreeze at the ISSUER first, exactly like the user-facing
+    # cards.toggle_freeze. Flipping only our DB row left the real card active at
+    # the issuer — an admin fraud-freeze that didn't actually stop the card.
+    result = card_set_status(card.card_token, active=going_active)
+    if not result.get("success"):
+        return fail(result.get("message", "Could not update card"), status=502)
     before = {"status": card.status}
-    card.status = VirtualCard.ACTIVE if card.status == VirtualCard.FROZEN else VirtualCard.FROZEN
+    card.status = VirtualCard.ACTIVE if going_active else VirtualCard.FROZEN
     card.save(update_fields=["status"])
     record_audit("card.freeze_toggle", actor=request.user_obj, target=f"card:{card.id}",
                  before=before, after={"status": card.status})
@@ -557,6 +659,10 @@ def thread(request):
     msisdn = (request.data.get("msisdn") or "").strip()
     if not msisdn:
         return fail("msisdn required")
+    # LATEST 200, oldest-first for display. Slicing the ascending queryset (as
+    # before) pinned a long conversation to its OLDEST 200 rows — the inbox
+    # thread never showed anything new once a chat passed 200 messages.
+    latest = list(WaMessageLog.objects.filter(msisdn=msisdn).order_by("-created", "-id")[:200])
     msgs = [
         {
             "dir": m.direction.lower(),
@@ -566,7 +672,7 @@ def thread(request):
             "flagged": m.flagged,
             "agent": m.text.startswith("[Agent"),
         }
-        for m in WaMessageLog.objects.filter(msisdn=msisdn).order_by("created")[:200]
+        for m in reversed(latest)
     ]
     return ok(msgs=msgs)
 
@@ -598,7 +704,7 @@ def broadcasts(request):
             "created": b.created.strftime("%b %d, %Y"),
             "by": (b.created_by.email or b.created_by.username) if b.created_by else "system",
             "queued": b.count_queued, "sent": b.count_sent, "delivered": b.count_delivered,
-            "read": b.count_read, "failed": b.count_failed,
+            "read": b.count_read, "failed": b.count_failed, "unknown": b.count_unknown,
         }
         for b in Broadcast.objects.select_related("created_by").order_by("-created")[:PAGE]
     ]
@@ -622,7 +728,12 @@ def ai_state(request):
         for m in WaMessageLog.objects.exclude(intent_json={}).order_by("-created")[:25]
     ]
     return ok(
-        enabled=SystemSetting.get("ai_enabled_global", "true") != "false",
+        enabled=ai.global_enabled(),
+        # Per-user consent is the scope operators cannot set and cannot see, so
+        # it is the one that silently explains "the AI is on and does nothing".
+        # The customer grants it themselves by replying "ai on".
+        linked=WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE).count(),
+        consented=WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE, ai_enabled=True).count(),
         intents=intents,
     )
 
@@ -631,11 +742,131 @@ def ai_state(request):
 @require_cap("ai")
 def ai_global(request):
     enabled = bool(request.data.get("enabled"))
-    before = SystemSetting.get("ai_enabled_global", "true")
+    before = ai.global_enabled()
     SystemSetting.set("ai_enabled_global", "true" if enabled else "false")
     record_audit("ai.global_toggle", actor=request.user_obj, target="ai_enabled_global",
                  before={"enabled": before}, after={"enabled": enabled})
     return ok(success=True, enabled=enabled)
+
+
+@api
+@require_cap("settings")
+def ai_config(request):
+    """GET-style: the provider catalogue plus what is configured right now.
+
+    The API key is returned MASKED and never in full. An operator needs to know
+    which key is installed, not what it is — and a console page that echoes live
+    provider credentials turns every screen-share into a leak."""
+    from whatsapp import llm
+
+    cfg = llm.active_config()
+    return ok(
+        providers=[
+            {"id": pid, "label": spec["label"], "default_model": spec["default_model"],
+             "needs_base_url": pid == "custom", "key_url": spec["key_url"],
+             "base_url": spec["base_url"]}
+            for pid, spec in llm.PROVIDERS.items()
+            if pid != "custom" or llm.custom_endpoint_allowed()
+        ],
+        provider=cfg["provider"],
+        model=cfg["model"],
+        base_url=cfg["base_url"],
+        api_key_masked=llm.masked_key(cfg["api_key"]),
+        configured=llm.configured(),
+        enabled=ai.global_enabled(),
+    )
+
+
+@api
+@require_cap("settings")
+def ai_config_save(request):
+    """Set provider / model / base URL / key. The key is stored encrypted and is
+    only replaced when a new one is supplied — so saving a model change does not
+    require re-pasting the credential (and does not silently wipe it)."""
+    from whatsapp import llm
+
+    provider = (request.data.get("provider") or "").strip()
+    if provider not in llm.PROVIDERS:
+        return fail("Unknown provider")
+    if provider == "custom" and not llm.custom_endpoint_allowed():
+        return fail("Custom model endpoints are disabled in production.", status=403)
+    spec = llm.PROVIDERS[provider]
+    model = (request.data.get("model") or "").strip() or spec["default_model"]
+    base_url = (request.data.get("base_url") or "").strip().rstrip("/")
+    if provider == "custom" and not base_url:
+        return fail("A custom provider needs its OpenAI-compatible base URL")
+    # Only a custom endpoint is operator-supplied; the built-in providers carry
+    # their own vetted URLs and must not be re-validated (or blocked) here.
+    if provider == "custom":
+        err = llm.base_url_error(base_url)
+        if err:
+            return fail(err)
+    if not model:
+        return fail("Choose a model")
+
+    before = llm.active_config()
+    SystemSetting.set(llm.K_PROVIDER, provider)
+    SystemSetting.set(llm.K_MODEL, model)
+    SystemSetting.set(llm.K_BASE_URL, base_url)
+    raw_key = (request.data.get("api_key") or "").strip()
+    key_changed = bool(raw_key)
+    if key_changed:
+        llm.set_api_key(raw_key)
+
+    # Audited WITHOUT the key, before or after — an audit trail is read by more
+    # people than the settings page is.
+    record_audit("ai.config", actor=request.user_obj, target=provider,
+                 before={"provider": before["provider"], "model": before["model"],
+                         "base_url": before["base_url"]},
+                 after={"provider": provider, "model": model, "base_url": base_url,
+                        "key_changed": key_changed})
+    cfg = llm.active_config()
+    return ok(success=True, provider=cfg["provider"], model=cfg["model"],
+              base_url=cfg["base_url"], api_key_masked=llm.masked_key(cfg["api_key"]),
+              configured=llm.configured())
+
+
+@api
+@require_cap("settings")
+def ai_test(request):
+    """Live round-trip against the configured provider. An operator should learn
+    a key is wrong here, not from customers getting nonsense."""
+    from whatsapp import llm
+
+    res = llm.test_connection()
+    record_audit("ai.test", actor=request.user_obj, target=llm.active_config()["provider"],
+                 after={"ok": res["ok"]})
+    return ok(success=res["ok"], message=res["message"])
+
+
+@api
+@require_cap("settings")
+def django_admin(request):
+    """Deep links into the Django admin for the models operators actually need.
+
+    The portal owns the daily workflows; the Django admin is the escape hatch for
+    the long tail. Surfacing it here means an operator does not have to be told a
+    secret URL — and the link only appears for a superuser, since that is what
+    the admin itself requires. Anyone else is told plainly rather than sent to a
+    login they cannot pass.
+    """
+    if not request.user_obj.is_superuser:
+        return ok(available=False,
+                  message="The Django admin is restricted to superusers. Ask an owner to make the change.")
+    base = "/admin/"
+    return ok(
+        available=True,
+        base=base,
+        sections=[
+            {"label": "Users", "url": f"{base}accounts/user/"},
+            {"label": "Wallets", "url": f"{base}wallet/wallet/"},
+            {"label": "Transactions", "url": f"{base}wallet/transaction/"},
+            {"label": "WhatsApp links", "url": f"{base}whatsapp/whatsapplink/"},
+            {"label": "WhatsApp message log", "url": f"{base}whatsapp/wamessagelog/"},
+            {"label": "System settings", "url": f"{base}whatsapp/systemsetting/"},
+            {"label": "Audit log", "url": f"{base}whatsapp/auditlog/"},
+        ],
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -685,6 +916,9 @@ def recon(request):
 
 SETTING_DESCRIPTIONS = {
     "ai_enabled_global": "Master switch for the WhatsApp AI intent layer. Off ⇒ channel is fully menu-driven.",
+    "wa_reauth_idle_minutes": ("Minutes of silence before WhatsApp asks a customer to re-confirm "
+                               "(biometric in the app, or PIN) before revealing balance or account "
+                               "details. 0 disables the gate."),
     "fx_margin_bps": "Margin added over the provider rate on every conversion quote.",
     "fx_corridor_usd_enabled": "NGN/USD settlement corridor.",
     "fx_corridor_gbp_enabled": "NGN/GBP settlement corridor.",
@@ -692,12 +926,60 @@ SETTING_DESCRIPTIONS = {
 }
 
 
+#: Rows whose VALUE must never reach a console screen. The settings table lists
+#: every SystemSetting row, so anything secret stored there is rendered in full
+#: to anyone who opens the page — llm_api_key_enc was, as ciphertext. Encrypted
+#: is not the same as safe to display: it is still credential material on a
+#: screen that gets shared, and llm.masked_key exists precisely to avoid it.
+#: Substring match, so a future llm_api_key_v2 is covered without an edit.
+_SECRET_SETTING_MARKERS = ("key", "secret", "token", "password", "_enc")
+
+#: Editable from the console, with the type each value must parse as. Anything
+#: not listed is shown but not writable: a money-math or security setting gets
+#: its own audited endpoint (fx/margin, ai-global) rather than a free-text box.
+_EDITABLE_SETTINGS = {
+    "wa_reauth_idle_minutes": ("int", 0, 1440),
+    "wa_pin_max_attempts": ("int", 1, 10),
+    "fx_quote_ttl_seconds": ("int", 5, 3600),
+    "broadcast_marketing_optin_only": ("bool", None, None),
+    "cny_settlement_enabled": ("bool", None, None),
+}
+
+
+def _is_secret_setting(key: str) -> bool:
+    low = (key or "").lower()
+    return any(marker in low for marker in _SECRET_SETTING_MARKERS)
+
+
+def _clean_setting(key: str, raw):
+    """(value, error). Console writes must parse as what their consumer reads —
+    an unparseable wa_reauth_idle_minutes would fall back silently and an absurd
+    one would disable a security gate by accident."""
+    kind, low, high = _EDITABLE_SETTINGS[key]
+    if kind == "bool":
+        text = str(raw).strip().lower()
+        if text not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+            return None, "Value must be true or false"
+        return ("true" if text in {"true", "1", "yes", "on"} else "false"), None
+    try:
+        number = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None, "Value must be a whole number"
+    if number < low or number > high:
+        return None, f"Value must be between {low} and {high}"
+    return str(number), None
+
+
 @api
 @require_cap()
 def settings_view(request):
     keys = sorted(set(SETTING_DESCRIPTIONS) | set(SystemSetting.objects.values_list("key", flat=True)))
     rows = [
-        {"key": k, "value": SystemSetting.get(k, ""), "desc": SETTING_DESCRIPTIONS.get(k, "")}
+        {"key": k,
+         "value": "••••••••" if _is_secret_setting(k) else SystemSetting.get(k, ""),
+         "secret": _is_secret_setting(k),
+         "editable": k in _EDITABLE_SETTINGS,
+         "desc": SETTING_DESCRIPTIONS.get(k, "")}
         for k in keys
     ]
     team = [
@@ -721,3 +1003,26 @@ def settings_view(request):
         ]
     ]
     return ok(settings=rows, team=team, perms=perms, roles=list(ROLES))
+
+
+@api
+@require_cap("settings")
+def setting_save(request):
+    """Write one allow-listed runtime setting, audited.
+
+    Deliberately narrow. The console showed every setting and could save none of
+    them, which reads as broken — but the answer is not a free-text box over
+    every key: the ones that drive money math or a security decision keep their
+    own endpoints, where the validation and the audit trail can be specific.
+    """
+    key = str(request.data.get("key") or "").strip()
+    if key not in _EDITABLE_SETTINGS:
+        return fail("That setting isn't editable here", status=400)
+    value, error = _clean_setting(key, request.data.get("value"))
+    if error:
+        return fail(error, status=400)
+    before = SystemSetting.get(key, "")
+    SystemSetting.set(key, value)
+    record_audit("settings.update", actor=request.user_obj, target=key,
+                 before={"value": before}, after={"value": value})
+    return ok(success=True, key=key, value=value)

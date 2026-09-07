@@ -4,6 +4,7 @@ import { Redirect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { isSessionLocked } from '@/lib/session';
 import { Loading } from '@/components/design/Loading';
+import { useTheme } from '@/lib/theme';
 
 type AuthState = 'loading' | 'authed' | 'unauthed';
 
@@ -25,8 +26,12 @@ let lastKnownAuth: AuthState | null = null;
  * not just on mount — so a session that LOCKS while an authed screen is already
  * rendered is dropped to /signin rather than staying visible until remount.
  */
-const AuthGuard = ({ children }: { children: React.ReactNode }) => {
-  const [state, setState] = useState<AuthState>(lastKnownAuth ?? 'loading');
+const AuthGuard = ({ children, fresh = false }: { children: React.ReactNode; fresh?: boolean }) => {
+  const { c } = useTheme();
+  // Deep-link payment approvals opt out of the navigation cache: the app may
+  // have been locked while it was backgrounded in WhatsApp, so the previous
+  // route's authenticated result is not safe enough to render payment details.
+  const [state, setState] = useState<AuthState>(fresh ? 'loading' : (lastKnownAuth ?? 'loading'));
 
   useEffect(() => {
     let active = true;
@@ -58,7 +63,7 @@ const AuthGuard = ({ children }: { children: React.ReactNode }) => {
 
   if (state === 'loading') {
     return (
-      <View style={{ flex: 1, backgroundColor: '#EFF7F5' }}>
+      <View style={{ flex: 1, backgroundColor: c.bg }}>
         <Loading />
       </View>
     );

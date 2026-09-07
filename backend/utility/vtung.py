@@ -30,11 +30,14 @@ customer-verification endpoint path, the prepaid-meter token field, the 9mobile
 service_id, and that your data/cable variation_id codes match VTU.ng's. All are
 isolated in the maps/constants below.
 """
+import logging
 import secrets
 
 import requests
 from django.conf import settings
 from django.core.cache import cache
+
+log = logging.getLogger("zitch")
 
 VT_TIMEOUT = 30
 _TOKEN_CACHE_KEY = "vtung_jwt_token"
@@ -73,6 +76,11 @@ _VT_FAILED = {"failed", "refunded", "cancelled", "reversed", "declined"}
 
 
 def _live() -> bool:
+    # WEMA_SIMULATION is the deploy-wide payment switch. It must override staged
+    # VTU.ng credentials too; otherwise electricity/data can leave the mock Wema
+    # route and buy a real product during an end-to-end simulation.
+    if bool((getattr(settings, "WEMA", {}) or {}).get("SIMULATION")):
+        return False
     cfg = settings.VTUNG
     return bool(cfg["API_KEY"] or (cfg["USERNAME"] and cfg["PASSWORD"]))
 
@@ -88,11 +96,19 @@ def _login() -> str:
         resp = requests.post(f"{_base()}/{_TOKEN_PATH}",
                              json={"username": cfg["USERNAME"], "password": cfg["PASSWORD"]},
                              timeout=VT_TIMEOUT)
-        token = (resp.json() or {}).get("token", "")
+        body = resp.json() or {}
+        # Accept the token at the top level or nested under "data" (provider JSON
+        # shapes vary); without this a nested token reads as "" and every call goes
+        # out unauthenticated -> 401 -> the purchase looks like a provider failure.
+        token = body.get("token", "") or (body.get("data") or {}).get("token", "")
     except (requests.RequestException, ValueError):
         return ""
     if token:
         cache.set(_TOKEN_CACHE_KEY, token, _TOKEN_TTL)
+    else:
+        # Surface a silent auth failure instead of letting it masquerade as a VTU
+        # failure (which would refund the user but never explain why).
+        log.warning("vtung_login_no_token status=%s", getattr(resp, "status_code", "?"))
     return token
 
 
@@ -126,6 +142,70 @@ def _request(method: str, path: str, *, json_body=None, params=None) -> dict:
         resp = requests.request(method, url, headers=headers, json=json_body,
                                 params=params, timeout=VT_TIMEOUT)
     return resp.json()
+
+
+def provider_wallet_balance():
+    """Our own VTU.ng wallet balance as a Decimal, or None when it can't be read.
+
+    This is a SECOND asset rail alongside the bank: an airtime/data/bills purchase
+    debits the customer's Zitch wallet (our liability falls) but is paid out of this
+    provider wallet — the NUBAN the customer funded is untouched. Any settlement
+    statement that only compares the ledger against the bank therefore reads a
+    growing surplus that is really a sweep obligation to this balance. Read-only.
+
+    None (not 0) on failure or in mock mode, so a caller can tell "unknown" from
+    "empty" — treating an unreachable provider as a zero balance would report a
+    fictitious shortfall.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    if not _live():
+        return None
+    try:
+        body = _request("GET", f"{_V2}/balance")
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("vtu_balance_unreachable %s", exc)
+        return None
+    raw = (body.get("data") or {}).get("balance", body.get("balance"))
+    if raw is None:
+        return None
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, TypeError, ValueError):
+        log.warning("vtu_balance_unparseable raw=%r", raw)
+        return None
+
+
+def vtu_probe() -> dict:
+    """Live self-test against VTU.ng (returns NO secrets): proves the credentials
+    authenticate and the wallet balance is readable — the two things every
+    airtime/data/bill purchase depends on. Read-only; buys nothing."""
+    cfg = settings.VTUNG
+    out = {"config": {"base_url": _base(), "api_key_set": bool(cfg["API_KEY"]),
+                      "username_set": bool(cfg["USERNAME"]), "live": _live(),
+                      "auth_mode": "api_key" if cfg["API_KEY"] else "username_password"}}
+    if not _live():
+        out["hint"] = ("No VTU.ng credentials — set VTUNG_API_KEY or VTUNG_USERNAME + "
+                       "VTUNG_PASSWORD. No live call was made.")
+        return out
+    token = _token(force_refresh=not cfg["API_KEY"])
+    out["auth"] = {"ok": bool(token)}
+    if not token:
+        out["auth"]["hint"] = ("Login failed ('authorization header malformed' in the app comes "
+                               "from this) — check VTUNG_USERNAME/VTUNG_PASSWORD, or set a "
+                               "long-lived VTUNG_API_KEY instead.")
+        return out
+    try:
+        body = _request("GET", f"{_V2}/balance")
+        bal = (body.get("data") or {}).get("balance", body.get("balance"))
+        out["balance"] = {"ok": bal is not None, "balance": str(bal) if bal is not None else "",
+                          "raw": str(body)[:300]}
+        if bal is not None and _amount(bal) is not None and _amount(bal) <= 0:
+            out["balance"]["hint"] = ("VTU.ng wallet is EMPTY — purchases will fail with "
+                                      "'insufficient balance' until you top up your VTU.ng account.")
+    except (requests.RequestException, ValueError) as exc:
+        out["balance"] = {"ok": False, "message": f"unreachable: {exc}"}
+    return out
 
 
 def _build(service_id: str, payload: dict, reference: str):
@@ -215,6 +295,15 @@ def vt_purchase(service_id: str, payload: dict, reference: str | None = None) ->
     endpoint, json_body = _build(service_id, payload, ref)
     if endpoint is None:
         return {"success": False, "message": f"Unsupported service: {service_id}"}
+    if not _token():
+        # Configured (_live) but no usable token — the JWT login failed (wrong
+        # VTUNG_USERNAME/PASSWORD, or the account's JWT auth isn't enabled). Don't
+        # send a guaranteed-bad "Bearer " header (VTU.ng answers the cryptic
+        # "Authorization header malformed"); fail clearly so the wallet refunds and
+        # ops can see the cause (also logged in _login as vtung_login_no_token).
+        log.warning("vtung_purchase_no_token service=%s", service_id)
+        return {"success": False,
+                "message": "Airtime provider sign-in failed — please try again shortly."}
     try:
         return _parse(_request("POST", endpoint, json_body=json_body))
     except requests.RequestException as exc:
@@ -244,10 +333,33 @@ def vt_requery(reference: str) -> dict:
     return parsed
 
 
+def _first_customer_field(payload, keys: tuple[str, ...]) -> str:
+    """Find a provider customer field across the wrapper shapes VTU.ng uses."""
+    if isinstance(payload, dict):
+        for key in keys:
+            value = payload.get(key)
+            if value is not None and not isinstance(value, (dict, list)):
+                text = str(value).strip()
+                if text:
+                    return text
+        for value in payload.values():
+            if isinstance(value, (dict, list)):
+                found = _first_customer_field(value, keys)
+                if found:
+                    return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = _first_customer_field(value, keys)
+            if found:
+                return found
+    return ""
+
+
 def vt_verify_customer(service_id: str, billers_code: str, variation: str = "") -> dict:
-    """Validate a meter / smartcard number, returning the customer name."""
+    """Validate a meter / smartcard number, returning customer identity data."""
     if not _live():
-        return {"success": True, "mock": True, "customer_name": "ADEYEMI WILLIAM"}
+        return {"success": True, "mock": True, "customer_name": "ADEYEMI WILLIAM",
+                "customer_address": "12 Marina Road, Lagos (demo)"}
     sid = service_id.lower()
     if sid.endswith("-electric"):
         svc = _VT_DISCO.get(sid[: -len("-electric")], sid)
@@ -260,7 +372,12 @@ def vt_verify_customer(service_id: str, billers_code: str, variation: str = "") 
         data = _request("POST", _EP_VERIFY, json_body=body)
     except (requests.RequestException, ValueError) as exc:
         return {"success": False, "message": f"VTU.ng unreachable: {exc}"}
-    d = data.get("data") or {}
-    name = (d.get("customer_name") or d.get("customerName") or d.get("name")
-            or data.get("customer_name") or "")
-    return {"success": bool(name), "customer_name": name, "raw": data}
+    name = _first_customer_field(data, (
+        "customer_name", "customerName", "customer", "name",
+    ))
+    address = _first_customer_field(data, (
+        "customer_address", "customerAddress", "meter_address", "meterAddress",
+        "service_address", "serviceAddress", "address",
+    ))
+    return {"success": bool(name), "customer_name": name,
+            "customer_address": address, "raw": data}

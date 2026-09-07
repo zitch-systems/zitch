@@ -1,0 +1,52 @@
+# Biometric sign-in must be an OFFER, never a wall.
+#
+# The failure this guards is specific and total: if the biometric affordance blocks
+# the password fields — a modal that cannot be dismissed, a prompt that reappears on
+# cancel — then every user whose fingerprint sensor is wet, whose face changed, or who
+# never enrolled is locked out of their money with no recourse. There is no support
+# path for that; the app has to be reinstalled.
+#
+# So this asserts the password route stays reachable and usable WITH the biometric
+# affordance present on screen.
+appId: com.zitch.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Skip"
+    timeout: 30000
+- tapOn: "Skip"
+
+- assertVisible: "Welcome back"
+
+# Both routes offered at once. (The biometric control is only rendered when the device
+# has enrolled biometrics AND a previous session cached the credential, so on a fresh
+# emulator its absence is correct — hence `optional`. The password route is not
+# optional and is asserted below unconditionally.)
+- assertVisible:
+    text: "Instant biometric sign in"
+    optional: true
+
+- assertVisible: "Email or phone number"
+- assertVisible: "Enter password"
+
+# The password path still works end to end with the biometric affordance on screen.
+- tapOn: "Email or phone number"
+- inputText: "${ZITCH_TEST_PHONE}"
+- tapOn: "Enter password"
+- inputText: "${ZITCH_TEST_PASSWORD}"
+- hideKeyboard
+- tapOn: "Sign in"
+- extendedWaitUntil:
+    visible: "Home"
+    timeout: 45000
+
+# And the recovery route out of a forgotten password is reachable from the same screen
+# — the other way a user gets permanently locked out.
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Skip"
+    timeout: 30000
+- tapOn: "Skip"
+- assertVisible: "Forgot password"

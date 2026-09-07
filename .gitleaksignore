@@ -1,0 +1,12 @@
+# gitleaks false positives — a real secret is never added here to silence a
+# scan; only fingerprints for fixture/test data gitleaks' generic-api-key
+# heuristic mistook for a credential are listed, each with why.
+#
+# zitch-meta-connector/test/auth.test.ts:38 — a `x-connector-api-key: <value>`
+# test header whose value was a plausible-looking (but hardcoded, low-entropy-
+# free) fixture string. Fixed going forward (see the commit that added this
+# file) to use a repeated-character placeholder that no longer matches the
+# entropy heuristic, but the original commits remain in history and are
+# rescanned on every CI run regardless.
+514d471978e8da4a072cae014bd813ac743f82b1:zitch-meta-connector/test/auth.test.ts:generic-api-key:38
+b2c1cfc23366175a7b05c2cf7004380a066d5ed1:zitch-meta-connector/test/auth.test.ts:generic-api-key:38

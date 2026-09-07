@@ -1,0 +1,54 @@
+# A transfer must challenge for the PIN. That is the assertion.
+#
+# This flow deliberately STOPS at the PIN sheet. Two reasons, and the first is the
+# important one:
+#
+#   1. "Every money path challenges for the PIN" is the security property worth
+#      automating. A regression that skipped it — a state bug, a re-render, a
+#      short-circuit on a saved beneficiary — would be critical and is exactly the kind
+#      of thing a unit test misses and a human tester stops noticing.
+#   2. Typing the PIN would move real value on any non-simulated backend. A suite that
+#      spends money every run gets switched off, and then covers nothing.
+#
+# For settlement end-to-end, use the simulation walk in docs/wema-go-live-runbook.md.
+appId: com.zitch.app
+---
+- runFlow: subflows/signin.yaml
+
+# "Transfer" is the home quick action; the same screen is also reachable as
+# "Send money" from the More sheet.
+- tapOn: "Transfer"
+- extendedWaitUntil:
+    visible: "Zitch tag or phone"
+    timeout: 30000
+
+- tapOn: "Zitch tag or phone"
+- inputText: "${ZITCH_TEST_RECIPIENT}"
+- hideKeyboard
+
+# The recipient must be confirmed by NAME before an amount can be entered. Paying the
+# right number at the wrong bank is the most common self-inflicted loss on this rail,
+# and the name is the only thing that catches it.
+- extendedWaitUntil:
+    visible: "Confirm recipient"
+    timeout: 45000
+- tapOn: "Confirm recipient"
+
+- extendedWaitUntil:
+    visible: "Amount"
+    timeout: 30000
+- tapOn: "Amount"
+- inputText: "100"
+- hideKeyboard
+- tapOn: "Continue"
+
+# The gate. Reached, and not passed.
+- extendedWaitUntil:
+    visible: "Enter your PIN"
+    timeout: 30000
+- assertVisible: "Enter your PIN"
+
+# Backing out must not leave a debit behind. The flow ends on the wallet, where a
+# balance unchanged from before is the visible proof.
+- back
+- tapOn: "Wallet"

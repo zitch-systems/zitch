@@ -5,11 +5,16 @@ can never log in, read_only can read but not mutate, every mutation lands in
 the audit log, and the FX corridor pause actually stops quotes.
 """
 import json
+from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
-from django.test import Client, TestCase
+from unittest.mock import patch
+
+from django.test import Client, SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 
 from accounts.models import AccessToken
 from wallet.forex import FxError, create_fx_quote
@@ -66,18 +71,20 @@ class LoginTests(PortalTestCase):
         self.assertTrue(AuditLog.objects.filter(action="ops.login_failed").exists())
 
     def test_customer_token_cannot_reach_ops(self):
+        # An app-scoped (mobile) token is refused at the scope gate before any
+        # role check — 401, not 403 — so it can never reach the operator surface.
         u = User.objects.create(username="cust2", phone="08011113333")
-        token = AccessToken.issue(u).key
+        token = AccessToken.issue(u).key  # default app scope
         res = self.post("summary", token=token)
-        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.status_code, 401)
 
 
 class RbacTests(PortalTestCase):
     def setUp(self):
         super().setUp()
-        self.read_only = AccessToken.issue(make_staff("ada")).key
-        self.support = AccessToken.issue(make_staff("funmi", role="support")).key
-        self.finance = AccessToken.issue(make_staff("dapo", role="finance")).key
+        self.read_only = AccessToken.issue(make_staff("ada"), scope=AccessToken.ADMIN).key
+        self.support = AccessToken.issue(make_staff("funmi", role="support"), scope=AccessToken.ADMIN).key
+        self.finance = AccessToken.issue(make_staff("dapo", role="finance"), scope=AccessToken.ADMIN).key
 
     def test_read_only_can_read_but_not_mutate(self):
         self.assertEqual(self.post("summary", token=self.read_only).status_code, 200)
@@ -98,10 +105,22 @@ class RbacTests(PortalTestCase):
 class MutationTests(PortalTestCase):
     def setUp(self):
         super().setUp()
-        self.admin = AccessToken.issue(make_staff("amara", superuser=True)).key
+        self.admin = AccessToken.issue(make_staff("amara", superuser=True), scope=AccessToken.ADMIN).key
         self.user = User.objects.create(username="08010000009", phone="08010000009",
-                                        first_name="Kemi", tier=1)
+                                        first_name="Kemi", tier=1,
+                                        email_verified=True, phone_verified=True)
         get_or_create_wallet(self.user)
+
+    def test_kyc_queue_lists_pending_item_without_crashing(self):
+        # Regression: the queue row-builder read non-existent u.bvn/u.nin and 500'd
+        # on exactly the rows the queue selects (a submitted-but-unverified ID).
+        self.user.bvn_hash = "deadbeefhash"
+        self.user.bvn_verified = False
+        self.user.save(update_fields=["bvn_hash", "bvn_verified"])
+        res = self.post("kyc-queue", token=self.admin)
+        self.assertEqual(res.status_code, 200, res.content[:200])
+        rows = res.json()["rows"]
+        self.assertTrue(any(r["id"] == self.user.id and r["type"] == "bvn" for r in rows))
 
     def test_freeze_revokes_sessions_and_audits(self):
         token = AccessToken.issue(self.user).key
@@ -112,14 +131,47 @@ class MutationTests(PortalTestCase):
         self.assertIsNone(AccessToken.resolve(token))
         self.assertTrue(AuditLog.objects.filter(action="user.freeze").exists())
 
-    def test_kyc_approve_bumps_tier_and_caps_at_3(self):
-        res = self.post("kyc-review", {"user_id": self.user.id, "approve": True}, token=self.admin)
-        self.assertEqual(res.json()["tier"], 2)
-        self.user.tier = 3
+    def test_unlock_pin_clears_the_lock_and_the_escalation_strikes(self):
+        """The PIN lockout escalates — one hour, then a day for a repeat. An
+        unlock that dropped only the deadline would leave the customer one
+        wrong-PIN run from the 24-hour tier, i.e. worse off than before support
+        touched it."""
+        self.user.pin_failed_attempts = 4
+        self.user.pin_lockout_strikes = 2
+        self.user.pin_locked_until = timezone.now() + timedelta(hours=20)
+        self.user.save()
+        res = self.post("user-action", {"user_id": self.user.id, "action": "unlock_pin"},
+                        token=self.admin)
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.pin_locked_until)
+        self.assertEqual((self.user.pin_failed_attempts, self.user.pin_lockout_strikes), (0, 0))
+        entry = AuditLog.objects.filter(action="user.pin_unlock").latest("id")
+        self.assertEqual((entry.before or {}).get("pin_lockout_strikes"), 2)
+
+    def test_kyc_approve_marks_flags_and_derives_tier(self):
+        # A user who submitted BVN + NIN (unverified): approval marks them verified
+        # and DERIVES the tier from the flags (BVN+NIN => Tier 1), never a blind
+        # +1. This is durable — the next recompute_tier keeps it.
+        self.user.bvn_hash, self.user.nin_hash, self.user.tier = "bvnhash", "ninhash", 0
         self.user.save()
         res = self.post("kyc-review", {"user_id": self.user.id, "approve": True}, token=self.admin)
-        self.assertEqual(res.json()["tier"], 3)
-        self.assertEqual(AuditLog.objects.filter(action="kyc.approve").count(), 2)
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified and self.user.nin_verified)
+        self.assertEqual(self.user.tier, 1)
+        self.assertEqual(res.json()["tier"], 1)
+        self.user.recompute_tier()          # the grant survives a recompute
+        self.assertEqual(self.user.tier, 1)
+        self.assertTrue(AuditLog.objects.filter(action="kyc.approve").exists())
+
+    def test_kyc_approve_without_submitted_identity_grants_no_tier(self):
+        # No identity on file: approval must NOT grant a tier the user hasn't
+        # earned (the old code blindly bumped tier — an AML/KYC control gap).
+        self.user.bvn_hash, self.user.nin_hash, self.user.tier = "", "", 0
+        self.user.save()
+        res = self.post("kyc-review", {"user_id": self.user.id, "approve": True}, token=self.admin)
+        self.assertEqual(res.json()["tier"], 0)
 
     def test_fx_margin_validates_and_audits(self):
         self.assertEqual(self.post("fx-margin", {"bps": 2000}, token=self.admin).status_code, 400)
@@ -129,6 +181,11 @@ class MutationTests(PortalTestCase):
         self.assertEqual(row.after, {"bps": 75})
 
     def test_corridor_pause_blocks_quotes(self):
+        # This class's user is deliberately left unverified for the KYC-review
+        # tests. Conversion is money-out, so it needs identity on file — and the
+        # subject here is the corridor switch, not the identity gate.
+        self.user.bvn_verified = self.user.nin_verified = True
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
         credit(self.user, Decimal("100000"), "Seed")
         self.post("fx-corridor", {"currency": "USD", "enabled": False}, token=self.admin)
         with self.assertRaises(FxError):
@@ -150,6 +207,83 @@ class MutationTests(PortalTestCase):
             res = self.post(path, token=self.admin)
             self.assertEqual(res.status_code, 200, f"{path}: {res.content[:120]}")
 
+    def test_logout_revokes_admin_token(self):
+        # Sign out must kill the token SERVER-side — clearing localStorage alone
+        # left it valid until TTL.
+        self.assertEqual(self.post("summary", token=self.admin).status_code, 200)
+        self.assertEqual(self.post("logout", token=self.admin).status_code, 200)
+        self.assertEqual(self.post("summary", token=self.admin).status_code, 401)
+        self.assertTrue(AuditLog.objects.filter(action="ops.logout").exists())
+
+    def test_kyc_reject_clears_submission_and_drains_queue(self):
+        self.user.bvn_hash, self.user.bvn_last4, self.user.tier = "deadbeefhash", "1234", 0
+        self.user.save()
+        rows = self.post("kyc-queue", token=self.admin).json()["rows"]
+        self.assertTrue(any(r["id"] == self.user.id for r in rows))
+        res = self.post("kyc-review", {"user_id": self.user.id, "approve": False}, token=self.admin)
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        # Submission cleared (user resubmits), verified state untouched.
+        self.assertEqual(self.user.bvn_hash, "")
+        self.assertEqual(self.user.bvn_last4, "")
+        self.assertFalse(self.user.bvn_verified)
+        rows = self.post("kyc-queue", token=self.admin).json()["rows"]
+        self.assertFalse(any(r["id"] == self.user.id for r in rows))
+        self.assertTrue(AuditLog.objects.filter(action="kyc.reject").exists())
+
+    def test_kyc_queue_skips_fresh_signup_lists_stale_tier(self):
+        # A tier-0 user with NOTHING submitted is not reviewable — approve
+        # provably no-ops on them — so they must not clog the queue…
+        fresh = User.objects.create(username="fresh", phone="08010000010", tier=0)
+        rows = self.post("kyc-queue", token=self.admin).json()["rows"]
+        self.assertFalse(any(r["id"] == fresh.id for r in rows))
+        # …but a tier-0 user whose checks already support Tier 1 IS actionable.
+        fresh.bvn_verified = fresh.nin_verified = True
+        fresh.save(update_fields=["bvn_verified", "nin_verified"])
+        rows = self.post("kyc-queue", token=self.admin).json()["rows"]
+        self.assertTrue(any(r["id"] == fresh.id for r in rows))
+
+    def test_users_total_reflects_search_filter(self):
+        User.objects.create(username="zuri", phone="08010000011", first_name="Zuri")
+        data = self.post("users", {"q": "Zuri"}, token=self.admin).json()
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(len(data["rows"]), 1)
+
+    def test_card_action_freezes_at_issuer_and_fails_closed(self):
+        from unittest.mock import patch
+
+        from cards.models import VirtualCard
+
+        card = VirtualCard.objects.create(user=self.user, card_token="ct_1", last4="4321")
+        # Issuer rejects -> 502 and the DB row must NOT flip (a card shown
+        # "frozen" in the portal while live at the issuer is a fraud gap).
+        with patch("utility.providers.card_set_status",
+                   return_value={"success": False, "message": "issuer down"}) as m:
+            res = self.post("card-action", {"card_id": card.id}, token=self.admin)
+        self.assertEqual(res.status_code, 502)
+        card.refresh_from_db()
+        self.assertEqual(card.status, VirtualCard.ACTIVE)
+        # Issuer accepts -> frozen, issuer called with active=False.
+        with patch("utility.providers.card_set_status", return_value={"success": True}) as m:
+            res = self.post("card-action", {"card_id": card.id}, token=self.admin)
+        self.assertEqual(res.status_code, 200)
+        m.assert_called_once_with("ct_1", active=False)
+        card.refresh_from_db()
+        self.assertEqual(card.status, VirtualCard.FROZEN)
+
+    def test_thread_returns_latest_messages(self):
+        from whatsapp.models import WaMessageLog
+
+        for i in range(205):
+            WaMessageLog.objects.create(msisdn="2348010000012", direction=WaMessageLog.IN,
+                                        wa_message_id=f"m{i}", text=f"msg {i}")
+        msgs = self.post("thread", {"msisdn": "2348010000012"}, token=self.admin).json()["msgs"]
+        self.assertEqual(len(msgs), 200)
+        # The newest message is present (the old ascending slice pinned the
+        # thread to its oldest 200 rows forever) and order is oldest-first.
+        self.assertEqual(msgs[-1]["text"], "msg 204")
+        self.assertEqual(msgs[0]["text"], "msg 5")
+
 
 class WebPagesTests(TestCase):
     def test_landing_prototype_portal_render(self):
@@ -159,7 +293,548 @@ class WebPagesTests(TestCase):
             self.assertEqual(res.status_code, 200, path)
             self.assertIn(marker, res.content)
 
+    def test_public_pages_never_link_to_the_operator_portal(self):
+        """The money-control surface is staff-only and must not be advertised to
+        the public. A footer link to it used to sit on both landing pages; this
+        pins it out of every page a visitor can reach without credentials."""
+        c = Client()
+        for path in ("/", "/console/", "/prototype/"):
+            res = c.get(path)
+            if res.status_code != 200:
+                continue
+            body = res.content.lower()
+            self.assertNotIn(b"admin portal", body, path)
+            self.assertNotIn(b'href="/portal/', body, path)
+            self.assertNotIn(b'href="/console/portal/', body, path)
+            self.assertNotIn(b'href="/admin/', body, path)
+
+    # The demo class names also appear in the stylesheet, which ships in both
+    # modes — so these assert on the rendered elements, never the bare string.
+    LIVE_BODY, DEMO_BODY = b'<body class="">', b'<body class="is-demo">'
+    LIVE_BAR, DEMO_BAR = b'class="mode-bar"', b'class="mode-bar mode-bar--demo"'
+
+    def test_live_portal_loads_the_live_bundle_and_no_fixtures(self):
+        """The default must never be the mock. /portal/ with no query string is
+        what an operator reaches from a bookmark, so it has to be the live one."""
+        body = Client().get("/portal/").content
+        self.assertIn(b"/static/portal/admin/api.js", body)
+        self.assertIn(b"/static/portal/admin/portal.jsx", body)
+        self.assertNotIn(b"/static/console/portal/", body)
+        self.assertIn(self.LIVE_BODY, body)
+        self.assertIn(self.LIVE_BAR, body)
+
+    def test_demo_mode_loads_the_fixture_bundle_and_not_the_live_one(self):
+        """Demo mode serves the console bundle and none of the live one.
+
+        This assertion is about which files the PAGE pulls in, and that is all
+        it was ever evidence of. It used to be documented as proof that demo
+        mode "is incapable of calling the API" — it was not, and it passed
+        happily while demo mode read and wrote live production data through a
+        client inlined in the console bundle's own data.js. DemoBundleTests
+        below is what actually holds that line; this one holds the wiring.
+        """
+        body = Client().get("/portal/?mode=demo").content
+        self.assertIn(b"/static/console/portal/portal.jsx", body)
+        self.assertNotIn(b"/static/portal/admin/api.js", body)
+        self.assertNotIn(b"/static/portal/admin/portal.jsx", body)
+
+    def test_demo_mode_is_flagged_in_the_markup(self):
+        """Two portals that looked identical was the whole problem. Pin the
+        marks that make demo unmistakable so a restyle can't quietly drop them."""
+        body = Client().get("/portal/?mode=demo").content
+        self.assertIn(self.DEMO_BODY, body)           # viewport frame
+        self.assertIn(self.DEMO_BAR, body)            # striped bar
+        self.assertIn(b"nothing here is real", body)  # plain-language warning
+
+    def test_unknown_mode_falls_back_to_live(self):
+        """Fail safe: any value that isn't exactly "demo" — a typo, a stale
+        link, ?mode=live — serves the real portal rather than fixtures."""
+        for qs in ("?mode=", "?mode=live", "?mode=DEMO", "?mode=demo2", "?other=demo"):
+            body = Client().get("/portal/" + qs).content
+            self.assertIn(b"/static/portal/admin/api.js", body, qs)
+            self.assertIn(self.LIVE_BODY, body, qs)
+
+    def test_no_template_syntax_leaks_into_either_page(self):
+        """Django's {# #} comment is SINGLE-LINE only — a multi-line one is not a
+        comment at all and renders verbatim across the top of the portal. Caught
+        in review by screenshotting the page; the bundle-and-class assertions all
+        passed straight through it, so pin the rendered text too."""
+        # `}}` is deliberately not checked: minified CSS closes a nested @media
+        # block with it, so it is not evidence of anything.
+        for qs in ("", "?mode=demo"):
+            body = Client().get("/portal/" + qs).content
+            for leak in (b"{#", b"#}", b"{%", b"%}", b"{{"):
+                self.assertNotIn(leak, body, f"{leak!r} leaked at /portal/{qs}")
+
+    def test_old_console_portal_url_redirects_to_live_portal(self):
+        """The legacy console shortcut must open the authenticated live portal."""
+        res = Client().get("/console/portal/")
+        self.assertEqual(res.status_code, 302)
+        self.assertEqual(res["Location"], "/portal/")
+
+    def test_console_landing_and_app_are_untouched(self):
+        """Only the duplicate portal was consolidated; the other two console
+        surfaces are still served verbatim."""
+        c = Client()
+        for path in ("/console/", "/console/app/"):
+            self.assertEqual(c.get(path).status_code, 200, path)
+
     def test_health_moved_to_healthz(self):
         res = Client().get("/healthz")
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.json()["status"])
+
+    @override_settings(PUBLIC_HEALTH_DETAILS=False)
+    def test_production_healthz_discloses_no_integration_topology(self):
+        res = Client().get("/healthz")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {"status": True, "service": "zitch-api"})
+        self.assertEqual(res["Cache-Control"], "no-store")
+
+    def test_healthz_answers_the_whatsapp_question(self):
+        """This is the only endpoint reachable without a login, and a silent
+        WhatsApp bot is indistinguishable from a healthy one everywhere else. The
+        two readings that matter are whether the channel is switched on at all,
+        and whether Meta has ever actually reached us."""
+        integrations = Client().get("/healthz").json()["integrations"]
+        self.assertIn(integrations["whatsapp_mode"], {"disabled", "sandbox", "live"})
+        self.assertIn("whatsapp_live", integrations)
+        self.assertIn("whatsapp_webhook_reached", integrations)
+        self.assertIn("whatsapp_outbound_failing", integrations)
+
+    def test_healthz_separates_not_receiving_from_cannot_reply(self):
+        """An expired token breaks only the outbound leg, so `reached` stays true
+        while the bot is mute. /whatsapp-diagnose reports that behind an admin
+        login — which an operator debugging from a phone does not have."""
+        from whatsapp.models import WaMessageLog
+
+        def reading():
+            return Client().get("/healthz").json()["integrations"]["whatsapp_outbound_failing"]
+
+        self.assertIsNone(reading())          # nothing sent: not evidence of health
+        WaMessageLog.objects.create(msisdn="2348010000000", direction=WaMessageLog.OUT,
+                                    text="a", processing_error="190")
+        self.assertTrue(reading())
+        WaMessageLog.objects.create(msisdn="2348010000000", direction=WaMessageLog.OUT,
+                                    text="b")
+        self.assertFalse(reading())
+
+    def test_healthz_carries_no_secret(self):
+        """It is public. Every value is a boolean or a provider name."""
+        body = Client().get("/healthz").content.decode()
+        for secret in ("TOKEN", "APP_SECRET", "api_key", "Bearer"):
+            self.assertNotIn(secret, body)
+
+    def test_healthz_still_answers_when_the_database_is_gone(self):
+        """/healthz is the platform's LIVENESS probe — `readyz` owns the database.
+        A diagnostic detail must never be the reason the platform decides the
+        service is down and cycles it."""
+        with patch("whatsapp.models.WebhookEvent.objects") as objects:
+            objects.filter.side_effect = RuntimeError("no database")
+            res = Client().get("/healthz")
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(res.json()["integrations"]["whatsapp_webhook_reached"])
+
+
+class DemoBundleTests(SimpleTestCase):
+    """The demo bundle must be incapable of reaching the network.
+
+    The page-level tests above check which script files each mode loads, and a
+    reviewer read that as isolation. It was not. The live client was never a
+    separate file to leave out — it was inlined in the demo bundle's own
+    data.js, pointed at the staff API rather than the portal API that the
+    comments and tests kept naming. So demo mode signed operators in for real,
+    rendered real customer rows, and fired real writes (wallet credits, KYC
+    decisions, the global AI kill switch) from behind a bar promising that
+    nothing there was real.
+
+    Filenames could not see that. These read the bytes.
+    """
+
+    DEMO = Path(__file__).resolve().parent.parent / "console" / "static" / "console" / "portal"
+    LIVE = Path(__file__).resolve().parent / "static" / "portal" / "admin"
+
+    # Ways to put a byte on the wire. Deliberately not a list of URLs or mounts:
+    # the original guarantee was written about one URL, which is exactly how a
+    # second one walked past it.
+    NETWORK = ("fetch(", "XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource", "new Image(")
+
+    def sources(self, folder):
+        return sorted(p for p in folder.iterdir() if p.suffix in (".js", ".jsx"))
+
+    def test_the_bundle_is_where_this_test_thinks_it_is(self):
+        """Without this, a rename makes every assertion below vacuously true."""
+        self.assertEqual(
+            [p.name for p in self.sources(self.DEMO)],
+            ["data.js", "portal.jsx", "ui.jsx", "views-a.jsx", "views-b.jsx", "views-c.jsx"],
+        )
+
+    def test_demo_bundle_has_no_network_primitive(self):
+        for path in self.sources(self.DEMO):
+            src = path.read_text(encoding="utf-8")
+            for token in self.NETWORK:
+                self.assertNotIn(token, src, f"{path.name} can reach the network via {token!r}")
+
+    def test_demo_bundle_neither_stores_nor_sends_a_credential(self):
+        """Signing into the old demo persisted a real staff bearer token. The
+        only reference left is the line that deletes the stale one."""
+        for path in self.sources(self.DEMO):
+            src = path.read_text(encoding="utf-8")
+            self.assertNotIn("localStorage.setItem", src, path.name)
+            self.assertNotIn("sessionStorage.setItem", src, path.name)
+            self.assertNotIn("Authorization", src, path.name)
+        data = (self.DEMO / "data.js").read_text(encoding="utf-8")
+        self.assertIn("removeItem('zadm_token')", data)
+
+    def test_demo_bundle_offers_no_password_field(self):
+        """A live-looking sign-in on a page stamped DEMO teaches operators to
+        type real credentials into a mock. There is nowhere to type them now."""
+        for path in self.sources(self.DEMO):
+            self.assertNotIn("type=\"password\"", path.read_text(encoding="utf-8"), path.name)
+
+    def test_the_live_bundle_still_has_its_client(self):
+        """Keeps the assertions above from passing for the wrong reason. What
+        they forbid has to exist next door, or they prove nothing about
+        isolation — an empty or renamed folder would satisfy them too."""
+        self.assertIn("fetch(", (self.LIVE / "api.js").read_text(encoding="utf-8"))
+
+
+class DiagnosticsPageTests(TestCase):
+    """Every *-diagnose endpoint needs an Authorization header — curl, therefore a
+    terminal. An operator working from a browser and the hosting dashboard could reach
+    only /healthz and was otherwise blind."""
+
+    def setUp(self):
+        self.client = Client()
+        self.staff = User.objects.create_user(username="ops-diag", password="pw-diag-1",
+                                              is_staff=True, is_superuser=True)
+
+    def test_requires_a_staff_session_not_a_bearer_token(self):
+        res = self.client.get("/admin/diagnostics/")
+        self.assertEqual(res.status_code, 302)                 # to the admin login
+        self.assertIn("/admin/login/", res["Location"])
+
+    def test_renders_every_rail_without_a_terminal(self):
+        self.client.force_login(self.staff)
+        res = self.client.get("/admin/diagnostics/")
+        self.assertEqual(res.status_code, 200)
+        body = res.content.decode()
+        for expected in ("Go-live preflight", "Wema / ALAT", "SMS (Termii)", "VTU.ng"):
+            self.assertIn(expected, body)
+
+    def test_a_failing_probe_does_not_take_the_page_down(self):
+        # The page exists precisely for when something is broken.
+        self.client.force_login(self.staff)
+        with patch("utility.wema.wema_diagnostics", side_effect=RuntimeError("rail down")):
+            res = self.client.get("/admin/diagnostics/")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("rail down", res.content.decode())
+
+    def test_a_page_load_never_sends_an_sms(self):
+        # It costs money and it is a real message to a real handset.
+        self.client.force_login(self.staff)
+        with patch("utility.providers.sms_probe") as probe:
+            self.client.get("/admin/diagnostics/")
+        probe.assert_not_called()
+
+    def test_the_button_sends_one_and_says_accepted_is_not_delivered(self):
+        self.client.force_login(self.staff)
+        with patch("utility.providers.sms_probe",
+                   return_value={"sent": {"ok": True}}) as probe:
+            res = self.client.post("/admin/diagnostics/", {"sms_to": "0803 000 0000"})
+        self.assertEqual(probe.call_args[0][0], "08030000000")   # digits only
+        self.assertIn("Accepted is not delivered", res.content.decode())
+
+    def test_no_secret_reaches_the_page(self):
+        self.client.force_login(self.staff)
+        with override_settings(TERMII={"API_KEY": "tk_supersecret", "SENDER_ID": "Zitch",
+                                       "CHANNEL": "dnd", "BASE_URL": "https://v3.api.termii.com"}):
+            res = self.client.get("/admin/diagnostics/")
+        self.assertNotIn("tk_supersecret", res.content.decode())
+
+    def test_the_whatsapp_verdict_reaches_the_page(self):
+        """The page exists so an operator with no shell can find out why something is
+        broken. WhatsApp's failure mode — a queue nobody is draining — is invisible
+        from every other surface, including the webhook's own 200s."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from whatsapp.models import WaMessageLog
+
+        row = WaMessageLog.objects.create(
+            msisdn="2348011112222", direction=WaMessageLog.IN,
+            wa_message_id="stuck-page-1", text="hello")
+        # `created` is auto_now_add, so age it with an UPDATE rather than on insert.
+        WaMessageLog.objects.filter(pk=row.pk).update(
+            created=timezone.now() - timedelta(minutes=9))
+        self.client.force_login(self.staff)
+        res = self.client.get("/admin/diagnostics/")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("WhatsApp", res.content.decode())
+        self.assertIn("worker_appears_stalled", res.content.decode())
+
+
+class AiProviderConfigTests(PortalTestCase):
+    """Operators pick the model provider from the console. The key is stored
+    encrypted, never echoed back, and a provider swap cannot change what the
+    platform will DO — the router still validates every intent."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = AccessToken.issue(make_staff("amara", superuser=True),
+                                       scope=AccessToken.ADMIN).key
+        self.viewer = AccessToken.issue(make_staff("kunle", role="support"),
+                                        scope=AccessToken.ADMIN).key
+
+    def test_catalogue_lists_every_supported_provider(self):
+        body = self.post("ai-config", token=self.admin).json()
+        ids = {p["id"] for p in body["providers"]}
+        self.assertTrue({"anthropic", "openai", "gemini", "xai", "groq",
+                         "deepseek", "moonshot", "qwen", "custom"} <= ids)
+
+    def test_saving_stores_the_key_encrypted_and_never_returns_it(self):
+        res = self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o-mini",
+                                           "api_key": "sk-secret-value-1234"}, token=self.admin)
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["api_key_masked"], "••••••••1234")
+        self.assertNotIn("sk-secret", json.dumps(body))
+        # At rest: ciphertext, not the key.
+        stored = SystemSetting.get("llm_api_key_enc", "")
+        self.assertTrue(stored)
+        self.assertNotIn("sk-secret", stored)
+        # ...and it round-trips for the caller that actually needs it.
+        from whatsapp import llm
+        self.assertEqual(llm.stored_api_key(), "sk-secret-value-1234")
+        self.assertTrue(llm.configured())
+
+    def test_reading_the_config_never_exposes_the_key(self):
+        self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o-mini",
+                                     "api_key": "sk-secret-value-1234"}, token=self.admin)
+        body = self.post("ai-config", token=self.admin).json()
+        self.assertNotIn("sk-secret", json.dumps(body))
+        self.assertEqual(body["api_key_masked"], "••••••••1234")
+
+    def test_changing_the_model_keeps_the_existing_key(self):
+        self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o-mini",
+                                     "api_key": "sk-secret-value-1234"}, token=self.admin)
+        self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o"}, token=self.admin)
+        from whatsapp import llm
+        self.assertEqual(llm.stored_api_key(), "sk-secret-value-1234")
+        self.assertEqual(llm.active_config()["model"], "gpt-4o")
+
+    def test_a_custom_provider_needs_an_https_base_url(self):
+        self.assertEqual(self.post("ai-config-save", {"provider": "custom", "model": "m"},
+                                   token=self.admin).status_code, 400)
+        # http:// would put the provider key on the wire in clear.
+        self.assertEqual(self.post("ai-config-save", {"provider": "custom", "model": "m",
+                                                      "base_url": "http://llm.example.com/v1"},
+                                   token=self.admin).status_code, 400)
+        with patch("socket.getaddrinfo",
+                   return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]):
+            self.assertEqual(self.post("ai-config-save", {"provider": "custom", "model": "m",
+                                                          "base_url": "https://llm.example.com/v1"},
+                                       token=self.admin).status_code, 200)
+
+    @override_settings(LLM={"API_KEY": "", "MODEL": "", "ALLOW_CUSTOM_ENDPOINT": False})
+    def test_production_refuses_custom_model_endpoints_even_when_public(self):
+        with patch("socket.getaddrinfo",
+                   return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]):
+            res = self.post("ai-config-save", {
+                "provider": "custom", "model": "m",
+                "base_url": "https://llm.example.com/v1",
+            }, token=self.admin)
+        self.assertEqual(res.status_code, 403)
+
+    def test_a_custom_endpoint_cannot_be_aimed_inside_the_deployment(self):
+        """A configurable base URL makes the backend an HTTP client pointed
+        wherever an operator says, carrying customer text and a bearer header.
+        Private and link-local targets — cloud metadata above all — are refused."""
+        for addr in ("169.254.169.254",   # cloud instance metadata
+                     "127.0.0.1",         # loopback
+                     "10.1.2.3",          # private
+                     "192.168.1.10"):
+            with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", (addr, 443))]):
+                res = self.post("ai-config-save", {"provider": "custom", "model": "m",
+                                                   "base_url": "https://sneaky.example.com/v1"},
+                                token=self.admin)
+                self.assertEqual(res.status_code, 400, addr)
+                self.assertIn("private or link-local", res.json()["message"])
+        # Unresolvable is refused too, rather than saved and failing later.
+        with patch("socket.getaddrinfo", side_effect=OSError("nxdomain")):
+            self.assertEqual(self.post("ai-config-save", {"provider": "custom", "model": "m",
+                                                          "base_url": "https://nope.example.com/v1"},
+                                       token=self.admin).status_code, 400)
+        # A built-in provider is never re-validated against DNS — its URL is ours,
+        # so a resolver outage cannot lock an operator out of switching provider.
+        with patch("socket.getaddrinfo", side_effect=AssertionError("must not resolve")):
+            self.assertEqual(self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o-mini"},
+                                       token=self.admin).status_code, 200)
+
+    def test_an_unknown_provider_is_refused(self):
+        self.assertEqual(self.post("ai-config-save", {"provider": "hal9000", "model": "m"},
+                                   token=self.admin).status_code, 400)
+
+    def test_only_the_settings_capability_can_read_or_change_it(self):
+        self.assertEqual(self.post("ai-config", token=self.viewer).status_code, 403)
+        self.assertEqual(self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o-mini"},
+                                   token=self.viewer).status_code, 403)
+        self.assertEqual(self.post("ai-config", token=None).status_code, 401)
+
+    def test_the_change_is_audited_without_the_key(self):
+        self.post("ai-config-save", {"provider": "deepseek", "model": "deepseek-chat",
+                                     "api_key": "sk-secret-value-1234"}, token=self.admin)
+        row = AuditLog.objects.filter(action="ai.config").first()
+        self.assertIsNotNone(row)
+        blob = json.dumps({"b": row.before, "a": row.after})
+        self.assertNotIn("sk-secret", blob)
+        self.assertIn("deepseek", blob)
+        self.assertTrue(row.after["key_changed"])
+
+    def test_an_openai_style_provider_is_called_in_its_own_wire_format(self):
+        from whatsapp import ai, llm
+
+        self.post("ai-config-save", {"provider": "groq", "model": "llama-3.3-70b-versatile",
+                                     "api_key": "gsk-1234"}, token=self.admin)
+
+        class Resp:
+            status_code = 200
+            @staticmethod
+            def json():
+                return {"choices": [{"message": {"tool_calls": [
+                    {"function": {"name": "check_balance", "arguments": '{"currency": null}'}}]}}]}
+
+        with patch("requests.post", return_value=Resp()) as post:
+            intent = ai.extract_intent("what is my balance")
+        self.assertEqual(intent["name"], "check_balance")
+        url = post.call_args[0][0]
+        self.assertEqual(url, "https://api.groq.com/openai/v1/chat/completions")
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(sent["tools"][0]["type"], "function")     # OpenAI shape...
+        self.assertIn("parameters", sent["tools"][0]["function"])  # ...not input_schema
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer gsk-1234")
+
+    def test_a_provider_failure_falls_back_to_the_deterministic_router(self):
+        from whatsapp import ai
+
+        self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o-mini",
+                                     "api_key": "sk-1234"}, token=self.admin)
+        with patch("requests.post", side_effect=OSError("provider down")):
+            self.assertIsNone(ai.extract_intent("send 5k to john"))
+
+    def test_a_half_configured_provider_reads_as_off(self):
+        from whatsapp import ai, llm
+
+        SystemSetting.set(llm.K_PROVIDER, "custom")
+        SystemSetting.set(llm.K_MODEL, "m")
+        llm.set_api_key("k")
+        SystemSetting.set(llm.K_BASE_URL, "")     # no endpoint to call
+        self.assertFalse(llm.configured())
+        self.assertIsNone(ai.extract_intent("balance"))
+
+    def test_django_admin_links_are_superuser_only(self):
+        body = self.post("django-admin", token=self.admin).json()
+        self.assertTrue(body["available"])
+        self.assertTrue(any(s["url"].startswith("/admin/") for s in body["sections"]))
+        # A super_admin GROUP member is not a Django superuser: they hold the
+        # settings capability but the admin itself would refuse them, so say so
+        # here rather than send them to a login they cannot pass.
+        grouped = AccessToken.issue(make_staff("bola", role="super_admin"),
+                                    scope=AccessToken.ADMIN).key
+        body = self.post("django-admin", token=grouped).json()
+        self.assertFalse(body["available"])
+        self.assertIn("superuser", body["message"])
+
+
+class AiStateHonestyTests(PortalTestCase):
+    """The console must report the AI state the ROUTER enforces. It read a
+    missing setting row as "on" while the router read it as "off", so the
+    console showed the AI live on a channel that had it switched off."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = AccessToken.issue(make_staff("amara", superuser=True),
+                                       scope=AccessToken.ADMIN).key
+
+    def test_absent_setting_reads_off_like_the_router(self):
+        from whatsapp.models import SystemSetting
+
+        SystemSetting.objects.filter(key="ai_enabled_global").delete()
+        self.assertFalse(self.post("ai", token=self.admin).json()["enabled"])
+        self.assertFalse(SystemSetting.get_bool("ai_enabled_global", False))
+
+    def test_toggling_on_is_reflected(self):
+        self.post("ai-global", {"enabled": True}, token=self.admin)
+        self.assertTrue(self.post("ai", token=self.admin).json()["enabled"])
+
+    def test_operator_can_grant_a_customer_ai_consent(self):
+        from whatsapp.models import WhatsAppLink
+
+        user = User.objects.create(username="08012340000", phone="08012340000")
+        link = WhatsAppLink.objects.create(user=user, wa_msisdn="2348012340000",
+                                           status=WhatsAppLink.ACTIVE)
+        res = self.post("user-action", {"user_id": user.id, "action": "ai_on"}, token=self.admin)
+        self.assertEqual(res.status_code, 200)
+        link.refresh_from_db()
+        self.assertTrue(link.ai_enabled)
+        self.assertTrue(AuditLog.objects.filter(action="user.wa_ai").exists())
+
+    def test_granting_consent_needs_a_linked_number(self):
+        user = User.objects.create(username="08012341111", phone="08012341111")
+        self.assertEqual(self.post("user-action", {"user_id": user.id, "action": "ai_on"},
+                                   token=self.admin).status_code, 404)
+
+
+class PerUserAiToggleTests(TestCase):
+    """The user panel showed "Linked · AI off" with no way to act on it, which
+    reads as a broken integration rather than a consent that is simply off."""
+
+    def setUp(self):
+        from accounts.models import User as U
+        from whatsapp.models import WhatsAppLink
+
+        self.staff = U.objects.create(username="ops@zitch.test", email="ops@zitch.test",
+                                      is_staff=True, is_superuser=True)
+        self.staff.set_password("Passw0rd123")
+        self.staff.save()
+        self.customer = U.objects.create(username="08012345678", phone="08012345678")
+        self.link = WhatsAppLink.objects.create(user=self.customer, wa_msisdn="2348012345678",
+                                                status=WhatsAppLink.ACTIVE)
+
+    def _token(self):
+        res = self.client.post("/api/ops/login/",
+                               data=json.dumps({"identifier": "ops@zitch.test",
+                                                "password": "Passw0rd123"}),
+                               content_type="application/json")
+        return res.json()["token"]
+
+    def _act(self, action):
+        return self.client.post("/api/ops/user-action/",
+                                data=json.dumps({"user_id": self.customer.id, "action": action}),
+                                content_type="application/json",
+                                HTTP_AUTHORIZATION="Bearer " + self._token())
+
+    def test_support_can_grant_and_revoke_it(self):
+        self.assertTrue(self.link.ai_enabled)           # on by default
+        self.assertEqual(self._act("ai_off").status_code, 200)
+        self.link.refresh_from_db()
+        self.assertFalse(self.link.ai_enabled)
+        self.assertEqual(self._act("ai_on").status_code, 200)
+        self.link.refresh_from_db()
+        self.assertTrue(self.link.ai_enabled)
+
+    def test_it_is_audited_both_ways(self):
+        from whatsapp.models import AuditLog
+
+        self._act("ai_on")
+        entry = AuditLog.objects.filter(action="user.wa_ai").order_by("-created").first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.after.get("ai_enabled"), True)
+        self._act("ai_off")
+        off = AuditLog.objects.filter(action="user.wa_ai").order_by("-created").first()
+        self.assertEqual(off.after.get("ai_enabled"), False)
+
+    def test_an_unlinked_customer_is_refused_rather_than_silently_ignored(self):
+        self.link.delete()
+        self.assertEqual(self._act("ai_on").status_code, 404)

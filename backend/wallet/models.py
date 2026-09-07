@@ -1,22 +1,36 @@
-from decimal import Decimal
+﻿from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
 
 
+# Money/ledger models bind to the user with PROTECT, not CASCADE: a customer is
+# frozen (is_active=False), never deleted, so a single (accidental or malicious)
+# User delete can't silently erase the append-only ledger / balances / liability
+# history a fintech must retain. There is no user-deletion flow; PROTECT makes
+# that a hard guarantee. (Ephemeral rows like FxQuote keep CASCADE.)
 class Wallet(models.Model):
-    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="wallet")
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="wallet")
     balance = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
-    # Dedicated (reserved) virtual account — a permanent NUBAN the user funds by
-    # bank transfer, minted via Kora once KYC supplies a BVN/NIN. `account_number`
+    # Dedicated (reserved) virtual account â€” a permanent NUBAN the user funds by
+    # bank transfer, minted via Wema once KYC supplies a BVN/NIN. `account_number`
     # / `bank_name` are the primary account shown in the app; `bank_accounts` holds
-    # the full list when Kora issues one per partner bank; `account_reference` is
-    # our stable key with Kora (used to match the funding webhook back to a user).
+    # the full list when the rail issues one per partner bank; `account_reference` is
+    # our stable key with Wema (used to match a reconciled deposit back to a user).
     account_number = models.CharField(max_length=20, blank=True, default="")
     account_name = models.CharField(max_length=120, blank=True, default="")
     bank_name = models.CharField(max_length=80, blank=True, default="")
     account_reference = models.CharField(max_length=64, blank=True, default="", db_index=True)
     bank_accounts = models.JSONField(default=list, blank=True)
+    # The tier the PARTNER BANK holds this NUBAN at (1/2/3), which is a different
+    # ladder from our own KYC tier and is enforced by the bank regardless of ours.
+    # 0 = not yet known: we have never read it back, so no bank cap is applied and
+    # behaviour is unchanged. Synced from partner-account-kyc-status.
+    bank_tier = models.PositiveSmallIntegerField(default=0)
+    # False means the bank has not yet confirmed removal of the Post-No-Debit
+    # restriction. The reconcile job retries these accounts until confirmation;
+    # without durable state, one transient provider failure strands outgoing funds.
+    pnd_lifted = models.BooleanField(default=False, db_index=True)
     created = models.DateTimeField(auto_now_add=True)
     updated = models.DateTimeField(auto_now=True)
 
@@ -27,7 +41,7 @@ class Wallet(models.Model):
             models.CheckConstraint(check=models.Q(balance__gte=0), name="wallet_balance_non_negative"),
             # A reserved (virtual) account belongs to exactly one wallet. The
             # funding webhook maps an inbound transfer to a wallet by these, so
-            # the DB must guarantee they're unique — otherwise a bug or bad data
+            # the DB must guarantee they're unique â€” otherwise a bug or bad data
             # could credit the wrong user, or two wallets could be provisioned
             # with the same account. Scoped to non-empty so un-provisioned
             # wallets (the default "") are unconstrained.
@@ -47,6 +61,56 @@ class Wallet(models.Model):
         return f"{self.user} · ₦{self.balance}"
 
 
+class WemaProvisioningAttempt(models.Model):
+    """Server-side binding for the two-step Wema identity/OTP flow.
+
+    Only the keyed identifier hash and last four digits are retained.  The raw
+    BVN/NIN is sent to Wema during initiation and then discarded.  OTP validation
+    derives the identity type from this row, so a client cannot initiate with one
+    identity and mark another one verified after receiving the code.
+    """
+
+    BVN = "bvn"
+    NIN = "nin"
+    IDENTITY_TYPES = [(BVN, "BVN"), (NIN, "NIN")]
+
+    PENDING = "pending"
+    VERIFIED = "verified"
+    FAILED = "failed"
+    STATUSES = [(PENDING, PENDING), (VERIFIED, VERIFIED), (FAILED, FAILED)]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="wema_provisioning_attempts",
+    )
+    tracking_id = models.CharField(max_length=160)
+    identity_type = models.CharField(max_length=3, choices=IDENTITY_TYPES)
+    identity_hash = models.CharField(max_length=64)
+    identity_last4 = models.CharField(max_length=4)
+    status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
+    expires_at = models.DateTimeField()
+    created = models.DateTimeField(auto_now_add=True)
+    updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "tracking_id"],
+                name="uniq_user_wema_tracking_id",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["user", "status", "expires_at"],
+                         name="wema_attempt_lookup_idx"),
+        ]
+
+    @property
+    def expired(self) -> bool:
+        from django.utils import timezone
+
+        return timezone.now() >= self.expires_at
+
+
 class Transaction(models.Model):
     """Append-only ledger row. One per money movement."""
 
@@ -59,7 +123,7 @@ class Transaction(models.Model):
     FAILED = "Failed"
     STATUSES = [(PENDING, PENDING), (SUCCESS, SUCCESS), (FAILED, FAILED)]
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="transactions")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="transactions")
     service = models.CharField(max_length=80)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     # Currency of `amount`: NGN for the primary wallet, other ISO codes for FX
@@ -68,7 +132,7 @@ class Transaction(models.Model):
     direction = models.CharField(max_length=3, choices=DIRECTIONS, default=OUT)
     transaction_status = models.CharField(max_length=12, choices=STATUSES, default=PENDING)
     reference = models.CharField(max_length=64, unique=True, db_index=True)
-    # Free-form details (meter token, recipient, plan, provider response…).
+    # Free-form details (meter token, recipient, plan, provider responseâ€¦).
     meta = models.JSONField(default=dict, blank=True)
     # Client-supplied key making a spend idempotent: a retried or duplicated
     # request with the same key won't debit the wallet or call the provider
@@ -87,7 +151,7 @@ class Transaction(models.Model):
             # Amounts are always positive; `direction` carries the sign. A DB
             # check keeps a zero/negative amount from ever entering the ledger.
             models.CheckConstraint(check=models.Q(amount__gt=0), name="txn_amount_positive"),
-            # One ledger row per (user, idempotency_key) when a key is supplied —
+            # One ledger row per (user, idempotency_key) when a key is supplied â€”
             # the DB backstop for the dedupe, even under a concurrent race.
             models.UniqueConstraint(
                 fields=["user", "idempotency_key"],
@@ -97,27 +161,25 @@ class Transaction(models.Model):
         ]
 
     def save(self, *args, **kwargs):
-        """Enforce ledger immutability for the money-defining fields.
+        """Enforce ledger immutability for identity and money fields.
 
-        A row's ``amount``, ``direction`` and ``currency`` are fixed at creation
-        and must never change — no legitimate flow rewrites them (settlement and
-        reversal only move ``transaction_status`` and annotate ``meta``). Blocking
-        them here turns a bug or a stray ``Transaction.objects.get(...).save()``
-        that would silently corrupt balances-vs-ledger into a loud error.
+        Only ``transaction_status`` and ``meta`` may evolve as a payment settles.
+        Ownership, reference and the original transaction description are part of
+        the audit record just as much as amount/direction/currency; allowing any of
+        them to change would let a row be reassigned or disguised after posting.
 
-        (ORM-level guard; a queryset ``.update()`` bypasses ``save()`` — back it
+        (ORM-level guard; a queryset ``.update()`` bypasses ``save()`` â€” back it
         with a Postgres BEFORE UPDATE trigger in production for defence in depth.)
         """
         if self.pk:
-            prior = type(self).objects.filter(pk=self.pk).values(
-                "amount", "direction", "currency").first()
-            if prior and (
-                self.amount != prior["amount"]
-                or self.direction != prior["direction"]
-                or self.currency != prior["currency"]
-            ):
+            immutable = (
+                "user_id", "service", "amount", "currency", "direction",
+                "reference", "idempotency_key", "created",
+            )
+            prior = type(self).objects.filter(pk=self.pk).values(*immutable).first()
+            if prior and any(getattr(self, field) != prior[field] for field in immutable):
                 raise ValueError(
-                    "Ledger rows are immutable: amount/direction/currency cannot change once written"
+                    "Ledger rows are immutable: only status and metadata may change once written"
                 )
         super().save(*args, **kwargs)
 
@@ -137,12 +199,12 @@ class FundingIntent(models.Model):
     FAILED = "failed"
     STATUSES = [(PENDING, PENDING), (PAID, PAID), (FAILED, FAILED)]
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="funding_intents")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="funding_intents")
     reference = models.CharField(max_length=64, unique=True, db_index=True)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
     credited = models.BooleanField(default=False)
-    # Free-form context, e.g. {"provider": "kora"} — records which rail started
+    # Free-form context, e.g. {"provider": "wema"} â€” records which rail started
     # the charge so verify confirms against the same one.
     meta = models.JSONField(default=dict, blank=True)
     created = models.DateTimeField(auto_now_add=True)
@@ -156,13 +218,13 @@ class FundingIntent(models.Model):
 
 
 class CurrencyWallet(models.Model):
-    """A non-NGN balance the user holds (USD / GBP / CAD …).
+    """A non-NGN balance the user holds (USD / GBP / CAD â€¦).
 
     NGN stays in `Wallet` (all existing money code uses it); this table covers FX
     holdings, one row per (user, currency). A DB check keeps balances non-negative.
     """
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="currency_wallets")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="currency_wallets")
     currency = models.CharField(max_length=3)
     balance = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     updated = models.DateTimeField(auto_now=True)
@@ -180,7 +242,7 @@ class CurrencyWallet(models.Model):
 
 class FxQuote(models.Model):
     """A time-boxed FX quote (Fincra). Execution is valid only until `expires_at`,
-    and a `used` quote can't run again — so a stale rate is never settled and a
+    and a `used` quote can't run again â€” so a stale rate is never settled and a
     quote is spent at most once (alongside the ledger idempotency key)."""
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="fx_quotes")
@@ -201,3 +263,64 @@ class FxQuote(models.Model):
 
     def __str__(self):
         return f"{self.sell_amount} {self.from_currency}->{self.to_currency} @ {self.rate}"
+
+
+class WemaFaceSession(models.Model):
+    """One run of Wema's face-biometric web app.
+
+    ALAT's Account Creation product does liveness in a WEB app, not an API: we send
+    the customer to it with their BVN/NIN, they present their face, and the bank
+    hands back a `correlationId` proving the check passed. That id — not any image
+    and not a client claim — is what verifies the matching BVN/NIN and authorizes
+    the without-OTP Tier-1 account-creation call. Tier-2 liveness is a separate
+    Prembly-backed flow and never uses this row.
+
+    The row exists to bind the three parties together. Without it the bank's callback
+    carries only an identity number, so anyone able to reach the callback URL could
+    name someone else's BVN and lift THEIR tier. Instead the app is sent to a
+    single-use `state` we minted for one user, and the callback is only honoured when
+    the identity it returns hashes to the one that session was opened with.
+
+    Nothing sensitive is retained: the raw BVN/NIN is used to build the URL and then
+    dropped, exactly as in WemaProvisioningAttempt, and only its keyed hash is kept.
+    """
+
+    BVN = "bvn"
+    NIN = "nin"
+    IDENTITY_TYPES = [(BVN, "BVN"), (NIN, "NIN")]
+
+    PENDING = "pending"
+    VERIFIED = "verified"
+    FAILED = "failed"
+    STATUSES = [(PENDING, PENDING), (VERIFIED, VERIFIED), (FAILED, FAILED)]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name="wema_face_sessions",
+    )
+    # The unguessable handle that appears in the callback/redirect URL. Unique and
+    # single-use: a completed session can never be replayed to re-verify.
+    state = models.CharField(max_length=64, unique=True)
+    identity_type = models.CharField(max_length=3, choices=IDENTITY_TYPES)
+    identity_hash = models.CharField(max_length=64)
+    # Wema's proof that the face check passed. Kept for audit and dispute handling —
+    # it is an opaque reference, not biometric data.
+    correlation_id = models.CharField(max_length=160, blank=True, default="")
+    status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
+    expires_at = models.DateTimeField()
+    created = models.DateTimeField(auto_now_add=True)
+    updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "status", "expires_at"],
+                         name="wema_face_lookup_idx"),
+        ]
+
+    @property
+    def expired(self) -> bool:
+        from django.utils import timezone
+        return timezone.now() >= self.expires_at
+
+    def __str__(self):
+        return f"face:{self.user_id}:{self.status}"

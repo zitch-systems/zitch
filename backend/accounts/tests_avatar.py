@@ -13,7 +13,8 @@ PNG_1PX = base64.b64decode(
 PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(PNG_1PX).decode()
 
 
-@override_settings(MEDIA_ROOT="/tmp/zitch-test-media")
+# Test-only isolated filesystem; no attacker-controlled path reaches this value.
+@override_settings(MEDIA_ROOT="/tmp/zitch-test-media")  # nosec B108
 class AvatarUploadTests(TestCase):
     def setUp(self):
         self.client = Client()
@@ -48,3 +49,14 @@ class AvatarUploadTests(TestCase):
     def test_rejects_invalid_base64(self):
         res, _ = self.post("/api/profile/avatar/", {"access_token": self.token, "image": "not!base64!!"})
         self.assertEqual(res.status_code, 400)
+
+    def test_rejects_base64_that_is_not_an_image(self):
+        import base64
+
+        disguised = base64.b64encode(b"<script>alert('not an image')</script>").decode()
+        res, body = self.post("/api/profile/avatar/", {
+            "access_token": self.token,
+            "image": f"data:image/png;base64,{disguised}",
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(body["message"], "Invalid image data")

@@ -30,5 +30,14 @@ urlpatterns = [
     path("wa/handover", views.wa_handover),
     path("wa/conv_ai", views.wa_conv_ai),
     path("wa/reply", views.wa_reply),
+    # Maker/checker queue (see common.approvals). Reachable by API and from Django
+    # admin today; the portal SPA has no screen for it yet.
+    path("approvals/list", views.approvals_list),
+    path("approvals/decide", views.approvals_decide),
+    # Operator second factor.
+    path("mfa/status", views.mfa_status),
+    path("mfa/enroll", views.mfa_enroll),
+    path("mfa/confirm", views.mfa_confirm),
+    path("mfa/disable", views.mfa_disable),
     path("wa/broadcast", views.wa_broadcast),
 ]

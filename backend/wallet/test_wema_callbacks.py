@@ -1,0 +1,706 @@
+"""Tests for the Wema/ALAT bank-called callbacks (wallet/wema_callbacks.py).
+
+The bank signs nothing, so these endpoints are authenticated by a URL path secret
+plus a source-IP allowlist, and neither money-moving handler trusts its payload:
+`authorize` decides from our own ledger, `transaction` re-queries the bank.
+"""
+import json
+import os
+from datetime import timedelta
+from decimal import Decimal
+from unittest.mock import patch
+
+from django.test import Client, TestCase, override_settings
+from django.utils import timezone
+
+from utility import wema
+from wallet.models import Transaction, Wallet
+from wallet.services import debit, get_or_create_wallet
+from wallet.tests import make_user
+
+TOKEN = "s3cr3t-callback-token"
+WEMA_CB = {"BASE_URL": "https://apiplayground.alat.ng", "CHANNEL_ID": "chan-1",
+           "KEYS": {"wallet": "subkey"}, "SECURITY_INFO": "", "SIMULATION": False,
+           "CALLBACK_TOKEN": TOKEN, "CALLBACK_TOKEN_PREV": "",
+           "CALLBACK_ENFORCE_IPS": False, "CALLBACK_IPS": ["135.236.18.76"],
+           "AUTH_MAX_AGE": 900, "AUTH_REQUIRE_SECURITY_INFO": False}
+
+
+@override_settings(WEMA=WEMA_CB)
+class WemaCallbackAuthTests(TestCase):
+    """Transport authentication — applied before the body is even parsed."""
+
+    def setUp(self):
+        self.client = Client()
+
+    def _post(self, path, payload=None, **extra):
+        return self.client.post(path, data=json.dumps(payload or {}),
+                                content_type="application/json", **extra)
+
+    # TESTING=False as well as DEBUG: _ip_ok short-circuits to "allowed" under either,
+    # so without this the assertions below would pass without exercising the allowlist.
+    @override_settings(DEBUG=False, TESTING=False,
+                       WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
+                       RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_bank_callback_is_accepted_through_the_platform_proxy_chain(self):
+        # THE regression that matters: with enforcement on, a real callback from a
+        # listed bank egress IP must be ACCEPTED even though the platform appends its
+        # own private hops after it. This previously 403'd every single callback —
+        # account creation, authorization, settlement — while preflight said GO.
+        r = self._post(f"/webhooks/wema/account/{TOKEN}", {"data": {}},
+                       HTTP_X_FORWARDED_FOR="135.236.18.76, 10.30.28.8",
+                       REMOTE_ADDR="10.30.1.250")
+        self.assertNotEqual(r.status_code, 403, "a listed bank IP must not be refused")
+
+    @override_settings(DEBUG=False, TESTING=False,
+                       WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
+                       RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_a_prepended_forgery_cannot_beat_the_allowlist(self):
+        # The other half of the contract. An attacker can only PREPEND to XFF; the
+        # trusted hops append after them. So a forged bank IP at the head is followed
+        # by the attacker's own real address, which is what the scan must land on.
+        r = self._post(f"/webhooks/wema/account/{TOKEN}", {"data": {}},
+                       HTTP_X_FORWARDED_FOR="135.236.18.76, 41.58.1.9, 10.30.28.8",
+                       REMOTE_ADDR="10.30.1.250")
+        self.assertEqual(r.status_code, 403, "right-most public must win, not left-most")
+
+    @override_settings(DEBUG=False, TESTING=False,
+                       WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True})
+    def test_cloudflare_client_ip_is_used_only_behind_a_cloudflare_edge(self):
+        r = self._post(f"/webhooks/wema/account/{TOKEN}", {"data": {}},
+                       HTTP_X_FORWARDED_FOR="135.236.18.76, 172.71.147.174",
+                       HTTP_CF_CONNECTING_IP="135.236.18.76",
+                       REMOTE_ADDR="10.30.1.250")
+        self.assertNotEqual(r.status_code, 403, "Cloudflare must preserve the bank IP")
+
+    @override_settings(DEBUG=False, TESTING=False,
+                       WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True})
+    def test_direct_caller_cannot_spoof_cloudflare_client_ip(self):
+        r = self._post(f"/webhooks/wema/account/{TOKEN}", {"data": {}},
+                       HTTP_X_FORWARDED_FOR="41.58.1.9",
+                       HTTP_CF_CONNECTING_IP="135.236.18.76",
+                       REMOTE_ADDR="10.30.1.250")
+        self.assertEqual(r.status_code, 403)
+
+    def test_wrong_token_is_forbidden(self):
+        r = self._post("/webhooks/wema/account/wrong-token", {"data": {"nuban": "0123456789"}})
+        self.assertEqual(r.status_code, 403)
+
+    def test_get_is_rejected(self):
+        r = self.client.get(f"/webhooks/wema/account/{TOKEN}")
+        self.assertEqual(r.status_code, 405)
+
+    def test_slashed_and_slashless_both_route(self):
+        # ALAT is profiled with the slashless form; APPEND_SLASH would otherwise turn a
+        # slashed POST into a 301 that clients re-issue as a bodyless GET.
+        for path in (f"/webhooks/wema/account/{TOKEN}", f"/webhooks/wema/account/{TOKEN}/"):
+            self.assertEqual(self._post(path, {"data": {}}).status_code, 200)
+
+    def test_malformed_json_does_not_500(self):
+        r = self.client.post(f"/webhooks/wema/account/{TOKEN}", data=b"not json",
+                             content_type="application/json")
+        self.assertEqual(r.status_code, 200)
+
+    @override_settings(WEMA={**WEMA_CB, "CALLBACK_TOKEN": "new-token",
+                             "CALLBACK_TOKEN_PREV": TOKEN})
+    def test_previous_token_still_accepted_during_rotation(self):
+        self.assertEqual(self._post(f"/webhooks/wema/account/{TOKEN}", {"data": {}}).status_code, 200)
+        self.assertEqual(self._post("/webhooks/wema/account/new-token", {"data": {}}).status_code, 200)
+
+    @override_settings(DEBUG=False, TESTING=False,
+                       WEMA={**WEMA_CB, "SIMULATION": True, "CALLBACK_TOKEN": "",
+                             "CALLBACK_TOKEN_PREV": ""})
+    def test_deployed_simulation_still_requires_callback_secret(self):
+        r = self._post("/webhooks/wema/account/anything", {"data": {}})
+        self.assertEqual(r.status_code, 403)
+
+
+@override_settings(WEMA=WEMA_CB, PAYMENT_PROVIDER="wema")
+class WemaAccountCallbackTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.user, _ = make_user("08030000777", "cb@zitch.app")
+
+    def _post(self, payload):
+        return self.client.post(f"/webhooks/wema/account/{TOKEN}",
+                                data=json.dumps(payload), content_type="application/json")
+
+    def _payload(self, nuban="0155500099", phone="08030000777", email="cb@zitch.app"):
+        return {"title": "t", "message": "m", "requestType": 2,
+                "data": {"email": email, "nuban": nuban, "nubanName": "ADA EZE",
+                         "type": 1, "nubanStatus": "Active", "phoneNumber": phone}}
+
+    @patch("utility.wema.lift_debit_restriction", return_value={"success": True})
+    def test_provisions_wallet_from_callback(self, _pnd):
+        r = self._post(self._payload())
+        self.assertEqual(r.status_code, 200)
+        w = Wallet.objects.get(user=self.user)
+        self.assertEqual(w.account_number, "0155500099")
+        self.assertEqual(w.account_name, "ADA EZE")
+        # account_reference is what makes the reconcile poller sweep it for deposits
+        self.assertTrue(w.account_reference)
+
+    @patch("utility.wema.lift_debit_restriction", return_value={"success": True})
+    def test_replay_is_idempotent(self, _pnd):
+        self._post(self._payload())
+        self._post(self._payload())
+        self.assertEqual(Wallet.objects.filter(account_number="0155500099").count(), 1)
+
+    @patch("utility.wema.lift_debit_restriction", return_value={"success": True})
+    def test_bank_local_phone_format_resolves_user(self, _pnd):
+        # The bank sends 07011223344-style local numbers; ours may be stored otherwise.
+        r = self._post(self._payload(phone="2348030000777"))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Wallet.objects.get(user=self.user).account_number, "0155500099")
+
+    def test_unknown_customer_is_recorded_not_guessed(self):
+        r = self._post(self._payload(nuban="0999999999", phone="08099999999",
+                                     email="nobody@example.com"))
+        self.assertEqual(r.status_code, 200)          # never 4xx — the bank would retry
+        self.assertFalse(Wallet.objects.filter(account_number="0999999999").exists())
+
+    def test_invalid_callback_schema_is_quarantined(self):
+        for mutate in (
+            lambda p: p.update(requestType=3),
+            lambda p: p["data"].update(nuban="123"),
+            lambda p: p["data"].update(type=2),
+            lambda p: p["data"].update(nubanStatus="Closed"),
+        ):
+            payload = self._payload()
+            mutate(payload)
+            response = self._post(payload)
+            self.assertEqual(response.status_code, 200)
+        self.assertFalse(Wallet.objects.filter(account_number="0155500099").exists())
+
+    def test_non_object_callback_data_is_quarantined_without_500(self):
+        payload = self._payload()
+        payload["data"] = ["not", "an", "object"]
+        response = self._post(payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Wallet.objects.filter(account_number="0155500099").exists())
+
+    @patch("utility.wema.lift_debit_restriction", return_value={"success": True})
+    def test_email_fallback_resolves_when_phone_is_unrecognised(self, _pnd):
+        # The bank's phone spelling may not match ours; a UNIQUE email still identifies
+        # the customer.
+        r = self._post(self._payload(phone="0000000000"))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Wallet.objects.get(user=self.user).account_number, "0155500099")
+
+    def test_ambiguous_email_never_provisions(self):
+        # email is NOT unique on the user model — two customers can share one. Attaching
+        # a bank account to a guess would be worse than not provisioning at all.
+        make_user("08055550001", "shared@zitch.app")
+        make_user("08055550002", "shared@zitch.app")
+        r = self._post(self._payload(nuban="0888888888", phone="08077777777",
+                                     email="shared@zitch.app"))
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(Wallet.objects.filter(account_number="0888888888").exists())
+
+    @patch("utility.wema.lift_debit_restriction", return_value={"success": True})
+    def test_never_overwrites_an_existing_different_nuban(self, _pnd):
+        self._post(self._payload(nuban="0155500099"))
+        self._post(self._payload(nuban="0155500011"))   # a second, different account
+        self.assertEqual(Wallet.objects.get(user=self.user).account_number, "0155500099")
+
+    @patch("utility.wema.lift_debit_restriction", side_effect=KeyError(0))
+    def test_pnd_lift_crash_still_acknowledges_the_provisioned_wallet(self, _pnd):
+        """Production 2026-07-29: a .NET validation body made _msg raise KeyError: 0
+        inside the lift, which escaped and 500'd the callback — AFTER the wallet was
+        already saved. The bank then sees a failed delivery for an account it created
+        and retries something that cannot succeed. The lift is documented best-effort,
+        so it must not be able to fail the acknowledgement."""
+        r = self._post(self._payload())
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(Wallet.objects.filter(account_number="0155500099").exists())
+
+
+@override_settings(WEMA=WEMA_CB)
+class WemaAuthenticateCallbackTests(TestCase):
+    """The payout authorisation gate. Answering true lets money leave, so every
+    condition is checked against our own ledger."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, _ = make_user("08030000888", "auth@zitch.app")
+        w = get_or_create_wallet(self.user)
+        w.balance = Decimal("50000.00")
+        w.save(update_fields=["balance"])
+
+    def _post(self, payload):
+        return self.client.post(f"/webhooks/wema/authorize/{TOKEN}",
+                                data=json.dumps(payload), content_type="application/json")
+
+    def _pending_payout(self, ref="ZTRF-abc123"):
+        return debit(self.user, Decimal("1000.00"), "transfer",
+                     meta={"reconcile": True, "bank": {"code": "035"}}, reference=ref)
+
+    def test_authorizes_a_fresh_pending_bank_payout(self):
+        txn = self._pending_payout()
+        r = self._post({"transactionReference": txn.reference, "securityInfo": "opaque"})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["authorized"])
+        self.assertEqual(body["transactionReference"], txn.reference)
+
+    def test_unknown_reference_is_denied(self):
+        r = self._post({"transactionReference": "ZTRF-doesnotexist", "securityInfo": "x"})
+        self.assertFalse(r.json()["authorized"])
+
+    def test_settled_payout_is_not_reauthorized(self):
+        txn = self._pending_payout()
+        txn.transaction_status = Transaction.SUCCESS
+        txn.save(update_fields=["transaction_status"])
+        self.assertFalse(self._post({"transactionReference": txn.reference}).json()["authorized"])
+
+    def test_non_bank_reference_cannot_authorize_a_payout(self):
+        # A VTU purchase row carries no meta["bank"] — it must never authorise a
+        # bank payout even though the reference exists.
+        txn = debit(self.user, Decimal("500.00"), "airtime", meta={"reconcile": True})
+        self.assertFalse(self._post({"transactionReference": txn.reference}).json()["authorized"])
+
+    def test_stale_payout_is_denied(self):
+        from wallet.tests import make_transaction_at
+
+        txn = make_transaction_at(
+            self.user,
+            created=timezone.now() - timedelta(hours=2),
+            amount="1000.00",
+            service="transfer",
+            meta={"reconcile": True, "bank": {"code": "035"}},
+            reference="ZTRF-stale123",
+        )
+        self.assertFalse(self._post({"transactionReference": txn.reference}).json()["authorized"])
+
+    def test_missing_reference_is_denied(self):
+        self.assertFalse(self._post({"securityInfo": "x"}).json()["authorized"])
+
+    def test_denials_are_indistinguishable(self):
+        # No message/detail: the endpoint must not be an oracle for "is a payout in
+        # flight right now".
+        a = self._post({"transactionReference": "ZTRF-nope1"}).json()
+        self.assertEqual(sorted(a), ["authorized", "transactionReference"])
+
+    @override_settings(WEMA={**WEMA_CB, "AUTH_REQUIRE_SECURITY_INFO": True,
+                             "SECURITY_INFO": "expected-value"})
+    def test_security_info_enforced_per_transaction(self):
+        txn = self._pending_payout()
+        expected = wema.security_info_for_reference(txn.reference)
+        self.assertNotEqual(expected, "expected-value")  # private seed never crosses the wire
+        self.assertNotEqual(expected, wema.security_info_for_reference("ZTRF-other"))
+        self.assertFalse(self._post({"transactionReference": txn.reference,
+                                     "securityInfo": "wrong"}).json()["authorized"])
+        self.assertTrue(self._post({"transactionReference": txn.reference,
+                                    "securityInfo": expected}).json()["authorized"])
+
+    @override_settings(WEMA={**WEMA_CB, "AUTH_REQUIRE_SECURITY_INFO": True,
+                             "SECURITY_INFO": ""})
+    def test_required_but_unconfigured_security_info_denies(self):
+        # Misconfiguration must fail closed, never open.
+        txn = self._pending_payout()
+        self.assertFalse(self._post({"transactionReference": txn.reference,
+                                     "securityInfo": "anything"}).json()["authorized"])
+
+    def test_authorizes_a_nested_data_envelope(self):
+        # ALAT nests the reference under `data` on some payloads (the transaction
+        # callback already had to tolerate this). Reading only the top level here
+        # would deny a valid payout as no_reference — which the bank shows the
+        # customer as "Authentication Failed".
+        txn = self._pending_payout(ref="ZTRF-nested-data")
+        r = self._post({"data": {"transactionReference": txn.reference,
+                                 "securityInfo": "opaque"}})
+        self.assertTrue(r.json()["authorized"])
+
+    def test_authorizes_a_nested_request_envelope(self):
+        txn = self._pending_payout(ref="ZTRF-nested-request")
+        r = self._post({"request": {"transactionReference": txn.reference}})
+        self.assertTrue(r.json()["authorized"])
+
+    def test_authorizes_a_json_string_data_envelope(self):
+        # `data` has arrived as a JSON STRING in production, not an object.
+        txn = self._pending_payout(ref="ZTRF-string-data")
+        r = self._post({"data": json.dumps({"transactionReference": txn.reference})})
+        self.assertTrue(r.json()["authorized"])
+
+    @override_settings(WEMA={**WEMA_CB, "AUTH_REQUIRE_SECURITY_INFO": True,
+                             "SECURITY_INFO": "expected-value"})
+    def test_security_info_read_from_a_nested_envelope(self):
+        # When securityInfo is enforced AND the payload is nested, the value has to
+        # be read from the same nested object, or every payout fails the HMAC check.
+        txn = self._pending_payout(ref="ZTRF-nested-si")
+        expected = wema.security_info_for_reference(txn.reference)
+        self.assertFalse(self._post(
+            {"data": {"transactionReference": txn.reference, "securityInfo": "wrong"}}
+        ).json()["authorized"])
+        self.assertTrue(self._post(
+            {"data": {"transactionReference": txn.reference, "securityInfo": expected}}
+        ).json()["authorized"])
+
+
+@override_settings(WEMA=WEMA_CB)
+class WemaTransactionCallbackTests(TestCase):
+    """The callback is a trigger, not an oracle — settlement comes from a re-query."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, _ = make_user("08030000999", "txn@zitch.app")
+        w = get_or_create_wallet(self.user)
+        w.balance = Decimal("50000.00")
+        w.save(update_fields=["balance"])
+
+    def _post(self, payload):
+        return self.client.post(f"/webhooks/wema/transaction/{TOKEN}",
+                                data=json.dumps(payload), content_type="application/json")
+
+    def _payload(self, ref, status="Successful"):
+        return {"title": "t", "message": "m", "request": 3, "requestType": 3,
+                "data": {"status": status, "message": "ok", "narration": "n",
+                         "transactionReference": ref,
+                         "platformTransactionReference": "WEMA-9",
+                         "transactionStan": "000123",
+                         "orinalTxnTransactionDate": "0001-01-01T00:00:00"}}
+
+    def _pending_payout(self):
+        return debit(self.user, Decimal("1000.00"), "transfer",
+                     meta={"reconcile": True, "bank": {"code": "035"}})
+
+    @patch("utility.wema.confirm_transfer_status")
+    def test_settles_from_the_requery_not_the_payload(self, mock_status):
+        # Payload claims success; the authenticated re-query says pending. The
+        # re-query must win — a forged callback cannot settle a payout.
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        self._post(self._payload(txn.reference, status="Successful"))
+        mock_status.assert_called_once_with(txn.reference, platform_reference="")
+        txn.refresh_from_db()
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)
+
+    @patch("utility.wema.confirm_transfer_status")
+    def test_transaction_callback_accepts_json_string_data_envelope(self, mock_status):
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        payload = self._payload(txn.reference)
+        payload["data"] = json.dumps(payload["data"])
+        self._post(payload)
+        mock_status.assert_called_once_with(txn.reference, platform_reference="")
+
+    @patch("utility.wema.confirm_transfer_status")
+    def test_transaction_callback_accepts_nested_request_envelope(self, mock_status):
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        payload = {"requestType": 3, "request": {"data": self._payload(txn.reference)["data"]}}
+        self._post(payload)
+        mock_status.assert_called_once_with(txn.reference, platform_reference="")
+
+    @patch("utility.wema.confirm_transfer_status")
+    def test_transaction_callback_accepts_live_request_payload_envelope(self, mock_status):
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        payload = {
+            "requestType": 3,
+            "isBulkTransfer": False,
+            "request": {
+                "payload": {
+                    "customTransactionReference": txn.reference,
+                    "status": "Pending",
+                },
+            },
+        }
+        self._post(payload)
+        mock_status.assert_called_once_with(txn.reference, platform_reference="")
+
+    @patch("utility.wema.confirm_transfer_status")
+    def test_transaction_callback_accepts_case_variant_reference(self, mock_status):
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        self._post({"requestType": 3, "data": {
+            "TransactionReference": txn.reference,
+            "status": "Pending",
+        }})
+        mock_status.assert_called_once_with(txn.reference, platform_reference="")
+
+    @patch("utility.wema.confirm_transfer_status")
+    def test_the_requery_uses_the_platform_reference_we_stored_ourselves(self, mock_status):
+        """The second reference ALAT indexes payouts under is forwarded — from OUR
+        record of the transfer, which is the only trustworthy source for it."""
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        meta = dict(txn.meta or {})
+        meta["wema_transfer"] = {"platform_reference": "WEMA-STORED-7"}
+        txn.meta = meta
+        txn.save(update_fields=["meta"])
+        self._post(self._payload(txn.reference))
+        mock_status.assert_called_once_with(txn.reference,
+                                            platform_reference="WEMA-STORED-7")
+
+    @patch("utility.wema.confirm_transfer_status")
+    def test_the_platform_reference_in_the_payload_is_never_trusted(self, mock_status):
+        """A caller-supplied platform reference must not steer the re-query.
+
+        This endpoint is reachable by anyone who can hit it from an allowlisted
+        IP, and the whole settlement design assumes the payload may be forged —
+        it settles from an authenticated re-query, never from what it was told.
+        Feeding the payload's platformTransactionReference into that re-query
+        would hand a forger the missing half: point it at somebody else's
+        SUCCESSFUL payout and this pending one settles on that answer. So the
+        payload's copy is stamped into meta for support, and goes no further.
+
+        The fixture payload carries platformTransactionReference "WEMA-9"; the
+        stored transfer meta has none, and empty is what must be forwarded.
+        """
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        self._post(self._payload(txn.reference))
+        _args, kwargs = mock_status.call_args
+        self.assertEqual(kwargs.get("platform_reference"), "")
+        self.assertNotIn("WEMA-9", str(mock_status.call_args))
+
+    @patch("utility.wema.confirm_transfer_status",
+           return_value={"success": True, "pending": False})
+    def test_stamps_bank_identifiers_under_a_namespaced_key(self, _s):
+        txn = self._pending_payout()
+        self._post(self._payload(txn.reference))
+        txn.refresh_from_db()
+        self.assertEqual(txn.meta["wema_callback"]["stan"], "000123")
+        self.assertEqual(txn.meta["wema_callback"]["platform_reference"], "WEMA-9")
+
+    @patch("utility.wema.confirm_transfer_status")
+    def test_already_settled_row_is_not_requeried(self, mock_status):
+        txn = self._pending_payout()
+        txn.transaction_status = Transaction.SUCCESS
+        txn.save(update_fields=["transaction_status"])
+        self._post(self._payload(txn.reference, status="Failed"))
+        mock_status.assert_not_called()          # never re-open a settled payout
+        txn.refresh_from_db()
+        self.assertEqual(txn.transaction_status, Transaction.SUCCESS)
+
+    def test_unknown_reference_is_accepted_and_ignored(self):
+        r = self._post(self._payload("ZTRF-unknown"))
+        self.assertEqual(r.status_code, 200)     # a 4xx would make the bank retry forever
+
+    def test_callback_never_credits_a_wallet(self):
+        # The requestType-3 payload has no amount and no account number; a credit path
+        # here would be a money-printing primitive under an IP-only trust model.
+        before = Wallet.objects.get(user=self.user).balance
+        self._post(self._payload("ZTRF-unknown"))
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, before)
+
+
+@override_settings(WEMA=WEMA_CB)
+class WemaCallbacksDiagnoseTests(TestCase):
+    """/wema-callbacks-diagnose — the remote check for a host with no shell.
+
+    The four URLs must be PROFILED with ALAT before any rail works, so the cost of
+    handing over a wrong one is a silent dead end at the bank. This view is what
+    makes them verifiable from an address bar.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self._env = patch.dict(os.environ, {"DIAG_TOKEN": "diag-secret"})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def _get(self, token="diag-secret", **headers):
+        return self.client.get(
+            "/wema-callbacks-diagnose",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+            **headers,
+        )
+
+    def _body(self, **kw):
+        return json.loads(self._get(**kw).content)["callbacks"]
+
+    def test_requires_the_diagnose_token(self):
+        self.assertEqual(self._get(token="wrong").status_code, 403)
+
+    def test_query_string_token_is_rejected(self):
+        r = self.client.get("/wema-callbacks-diagnose", {"token": "diag-secret"})
+        self.assertEqual(r.status_code, 403)
+
+    def test_lists_all_four_urls_and_they_all_resolve(self):
+        body = self._body()
+        self.assertEqual(len(body["routes"]), 4)
+        for route in body["routes"]:
+            self.assertTrue(route["resolves"], route)
+            self.assertIn("<WEMA_CALLBACK_TOKEN>", route["url_template"])
+        handlers = {r["handler"] for r in body["routes"]}
+        self.assertEqual(handlers, {"wema_account_callback", "wema_authenticate_callback",
+                                    "wema_transaction_callback", "wema_notification_callback"})
+
+    def test_reports_ready_when_configured(self):
+        body = self._body()
+        self.assertTrue(body["ready_to_send_to_the_bank"])
+        self.assertEqual(body["blockers"], [])
+        self.assertTrue(body["wrong_secret_is_refused"])
+
+    def test_never_returns_the_callback_secret_itself(self):
+        body = self._body()
+        self.assertNotIn(TOKEN, str(body))
+        self.assertIn("no-store", self._get()["Cache-Control"])
+
+    @override_settings(WEMA={**WEMA_CB, "CALLBACK_TOKEN": ""})
+    def test_unset_secret_blocks_the_handover(self):
+        body = self._body()
+        self.assertFalse(body["ready_to_send_to_the_bank"])
+        self.assertTrue(any("WEMA_CALLBACK_TOKEN is unset" in b for b in body["blockers"]))
+
+    @override_settings(WEMA={**WEMA_CB, "CALLBACK_TOKEN": ""})
+    def test_warns_when_the_endpoints_would_accept_any_secret(self):
+        # An open callback must never be profiled with the bank: from then on the
+        # URL is public and anyone can drive it.
+        body = self._body()
+        self.assertFalse(body["wrong_secret_is_refused"])
+        self.assertTrue(any("accept ANY secret" in b for b in body["blockers"]))
+
+    def test_trailing_slash_also_resolves(self):
+        # These get pasted into an address bar by hand. APPEND_SLASH only ever ADDS
+        # a slash, so a slashless-only route answers a bare HTML 404 for the slashed
+        # spelling — which reads as "not deployed", the exact question this endpoint
+        # exists to answer.
+        r = self.client.get("/wema-callbacks-diagnose/",
+                            HTTP_AUTHORIZATION="Bearer diag-secret")
+        self.assertEqual(r.status_code, 200)
+
+    @patch.dict(os.environ, {"DIAG_TOKEN": "", "WEMA_DIAG_TOKEN": "wema-only-secret"})
+    def test_wema_diag_token_also_opens_it(self):
+        r = self.client.get("/wema-callbacks-diagnose",
+                            HTTP_AUTHORIZATION="Bearer wema-only-secret")
+        self.assertEqual(r.status_code, 200)
+
+    def test_reports_the_proxy_hop_chain_for_ip_enforcement(self):
+        # On a platform that fronts the app with its own proxies, client_ip() can
+        # resolve to an INTERNAL hop. An allowlist compared against that refuses every
+        # bank callback while looking correctly configured, so the raw chain is shown.
+        r = self._get(HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
+        det = json.loads(r.content)["callbacks"]["source_ip_detection"]
+        self.assertEqual(det["x_forwarded_for"], ["41.58.1.9", "10.30.28.8"])
+        self.assertEqual(det["suggested_trusted_proxy_hops"], 2)   # 41.58.1.9 is 2nd from right
+
+    @override_settings(WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
+                       RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_readiness_no_longer_depends_on_the_hop_count(self):
+        # The hop count used to decide this, and at hops=1 it selected the platform's
+        # own private address — so the diagnose said "not ready" even though the bank's
+        # address was right there in the chain. Callback auth now reads right-most
+        # PUBLIC, so a wrong hop count cannot make a working deploy look broken.
+        r = self._get(HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
+        body = json.loads(r.content)["callbacks"]
+        self.assertEqual(body["this_request_came_from"], "41.58.1.9")
+        self.assertTrue(body["source_ip_detection"]["safe_to_enable_ip_enforcement"])
+        self.assertTrue(body["ready_to_send_to_the_bank"])
+        # ...but the hop count still governs rate-limit bucketing, so it stays visible.
+        self.assertEqual(body["source_ip_detection"]["rate_limit_bucket_ip"], "10.30.28.8")
+
+    @override_settings(WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
+                       RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_a_chain_with_no_public_address_at_all_is_still_a_blocker(self):
+        # If the platform genuinely hides the caller, enforcement would refuse every
+        # callback and there is nothing to fall back on — that must still block.
+        r = self._get(HTTP_X_FORWARDED_FOR="10.30.1.250, 10.30.28.8")
+        body = json.loads(r.content)["callbacks"]
+        self.assertFalse(body["ready_to_send_to_the_bank"])
+        self.assertFalse(body["source_ip_detection"]["safe_to_enable_ip_enforcement"])
+        self.assertTrue(any("not a public address" in b for b in body["blockers"]))
+
+    def test_head_is_refused_on_the_sms_probe(self):
+        # A prefetch must not spend provider credit or text a real person.
+        with patch.dict(os.environ, {"DIAG_TOKEN": "diag-secret"}):
+            r = self.client.head("/sms-diagnose",
+                                 HTTP_AUTHORIZATION="Bearer diag-secret")
+        self.assertEqual(r.status_code, 405)
+
+    @patch("utility.providers.sms_probe", return_value={"success": True})
+    def test_sms_probe_uses_post_json_and_bearer_auth(self, probe):
+        r = self.client.post(
+            "/sms-diagnose",
+            data=json.dumps({"phone": "+234 803 000 0000"}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer diag-secret",
+        )
+        self.assertEqual(r.status_code, 200)
+        probe.assert_called_once_with("2348030000000")
+        self.assertIn("no-store", r["Cache-Control"])
+
+    @patch("utility.vtung.vtu_probe", return_value={"success": True})
+    def test_vtu_probe_uses_bearer_auth_not_query_auth(self, probe):
+        denied = self.client.get("/vtu-diagnose", {"token": "diag-secret"})
+        self.assertEqual(denied.status_code, 403)
+        r = self.client.get("/vtu-diagnose",
+                            HTTP_AUTHORIZATION="Bearer diag-secret")
+        self.assertEqual(r.status_code, 200)
+        probe.assert_called_once_with()
+        self.assertIn("no-store", r["Cache-Control"])
+
+
+@override_settings(WEMA=WEMA_CB, PAYMENT_PROVIDER="wema")
+class WemaCallbackAbuseBoundsTests(TestCase):
+    """The endpoints are reachable by anyone holding the URL, so the COST of driving
+    them has to be bounded even when the caller is authenticated."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, _ = make_user("08033330001", "abuse@zitch.app")
+        get_or_create_wallet(self.user).balance = Decimal("50000")
+        Wallet.objects.filter(user=self.user).update(balance=Decimal("50000"))
+
+    def _pending_payout(self):
+        txn = debit(self.user, Decimal("1000"), "Transfer to X",
+                    meta={"bank": "Wema Bank", "account": "0155500011", "reconcile": True})
+        return txn
+
+    def _post_txn(self, ref, status="Successful"):
+        return self.client.post(
+            f"/webhooks/wema/transaction/{TOKEN}",
+            data=json.dumps({"requestType": 3, "data": {"transactionReference": ref,
+                                                        "status": status}}),
+            content_type="application/json")
+
+    @patch("utility.wema.confirm_transfer_status", return_value={"success": False, "pending": True})
+    def test_repeat_callbacks_do_not_re_query_the_bank(self, mock_status):
+        # Without a bound this endpoint is a 1:1 amplifier into ALAT's API: one inbound
+        # callback, one outbound confirm. Anyone holding the URL could drive unbounded
+        # traffic against the bank in our name.
+        txn = self._pending_payout()
+        for _ in range(5):
+            self.assertEqual(self._post_txn(txn.reference).status_code, 200)
+        self.assertEqual(mock_status.call_count, 1)
+
+    @patch("utility.wema.confirm_transfer_status", return_value={"success": False, "pending": True})
+    def test_the_callback_is_still_recorded_while_cooled(self, _s):
+        # Cooling suppresses the REQUERY, never the record — a suppressed callback must
+        # not become an invisible one.
+        txn = self._pending_payout()
+        self._post_txn(txn.reference, status="Successful")
+        self._post_txn(txn.reference, status="Failed")
+        txn.refresh_from_db()
+        self.assertEqual(txn.meta["wema_callback"]["status"], "Failed")
+
+    @patch("utility.wema.confirm_transfer_status", return_value={"success": False, "pending": True})
+    def test_cooldown_expires_so_a_real_update_is_not_lost_forever(self, mock_status):
+        txn = self._pending_payout()
+        self._post_txn(txn.reference)
+        meta = dict(txn.meta or {})
+        meta["wema_callback"] = {"received": (timezone.now() - timedelta(seconds=120)).isoformat()}
+        Transaction.objects.filter(pk=txn.pk).update(meta=meta)
+        self._post_txn(txn.reference)
+        self.assertEqual(mock_status.call_count, 2)
+
+    @patch("wallet.wema_callbacks.alert")
+    def test_a_retry_against_a_settled_payout_does_not_page_anyone(self, mock_alert):
+        # ALAT retries. Alerting when the protocol works correctly trains operators to
+        # ignore the alert that matters.
+        txn = self._pending_payout()
+        Transaction.objects.filter(pk=txn.pk).update(transaction_status=Transaction.SUCCESS)
+        r = self.client.post(f"/webhooks/wema/authorize/{TOKEN}",
+                             data=json.dumps({"transactionReference": txn.reference}),
+                             content_type="application/json")
+        self.assertFalse(json.loads(r.content)["authorized"])   # still refused
+        mock_alert.assert_not_called()                          # but not alerted
+
+    @patch("wallet.wema_callbacks.alert")
+    def test_an_unknown_reference_still_alerts(self, mock_alert):
+        self.client.post(f"/webhooks/wema/authorize/{TOKEN}",
+                         data=json.dumps({"transactionReference": "ZTRF-not-ours"}),
+                         content_type="application/json")
+        mock_alert.assert_called()

@@ -2,6 +2,7 @@
 the available-credit clamp."""
 import json
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import Client, TestCase
 
@@ -23,6 +24,19 @@ class LoanTests(TestCase):
 
     def balance(self):
         return get_or_create_wallet(self.user).balance
+
+    def test_bnpl_offers_returns_eligibility(self):
+        offers = [{"productId": 1, "productName": "BNPL 30d", "maximumTenor": 30}]
+        with patch("loans.views.provider_bnpl_offers", return_value={"success": True, "offers": offers}):
+            res, body = self.post("/api/loans/bnpl/offers/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["offers"][0]["productName"], "BNPL 30d")
+
+    def test_bnpl_offers_surfaces_unavailable(self):
+        with patch("loans.views.provider_bnpl_offers",
+                   return_value={"success": False, "message": "BNPL is not configured"}):
+            res, _ = self.post("/api/loans/bnpl/offers/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 502)
 
     def test_status_with_no_loan(self):
         res, body = self.post("/api/loans/status/", {"access_token": self.token})
@@ -47,6 +61,24 @@ class LoanTests(TestCase):
         self.assertTrue(body["success"])
         self.assertEqual(self.balance(), Decimal("120000"))  # 20k + 100k disbursed
         self.assertEqual(Loan.objects.filter(user=self.user, status=Loan.ACTIVE).count(), 1)
+
+    def test_request_idempotent_across_repay_does_not_double_disburse(self):
+        # The one-active-loan guard blocks a fast retry, but once the loan is
+        # repaid a replayed request (same idempotency_key) must NOT disburse again.
+        body = {"access_token": self.token, "amount": "100000", "tenure_days": 30,
+                "transaction_pin": "1234", "idempotency_key": "loan-key-1"}
+        r1, _ = self.post("/api/loans/request/", body)
+        self.assertEqual(r1.status_code, 200)
+        # Fully repay so the active-loan guard no longer blocks a retry.
+        self.post("/api/loans/repay/", {"access_token": self.token, "amount": "300000", "transaction_pin": "1234"})
+        self.assertFalse(Loan.objects.filter(user=self.user, status=Loan.ACTIVE).exists())
+        bal_after_repay = self.balance()
+        # Replay the ORIGINAL request: deduped, no second principal credited.
+        r2, b2 = self.post("/api/loans/request/", body)
+        self.assertEqual(r2.status_code, 200)
+        self.assertTrue(b2.get("duplicate"))
+        self.assertEqual(Loan.objects.filter(user=self.user).count(), 1)
+        self.assertEqual(self.balance(), bal_after_repay)  # no extra +100k
 
     def test_only_one_active_loan(self):
         self.post("/api/loans/request/", {"access_token": self.token, "amount": "100000", "tenure_days": 30, "transaction_pin": "1234"})

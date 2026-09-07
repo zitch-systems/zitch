@@ -4,7 +4,7 @@ Three browser surfaces share the Zitch brand and the same origin as the API:
 
   /         marketing landing page (self-contained HTML/CSS/JS)
   /app/     interactive app prototype (embedded by the landing hero iframe)
-  /portal/  operator / admin portal (React-in-browser; talks to /api/admin/)
+  /portal/  redirects to the canonical live /portal/ surface (see ``portal``)
 
 The pages are plain HTML files under ``pages/`` whose asset references were
 rewritten to ``/static/console/...`` at build time, so they are returned
@@ -15,6 +15,7 @@ must not be parsed as template syntax). Their JS/JSX and image assets live in
 from pathlib import Path
 
 from django.http import HttpResponse
+from django.shortcuts import redirect
 
 _PAGES = Path(__file__).resolve().parent / "pages"
 
@@ -37,4 +38,8 @@ def app_prototype(_request):
 
 
 def portal(_request):
-    return _page("portal.html")
+    # This compatibility route must open the canonical LIVE portal. Demo data
+    # is available only through the explicit /portal/?mode=demo URL; silently
+    # sending an operator here to fixture data makes the console appear broken
+    # and can make test balances look like production.
+    return redirect("/portal/")

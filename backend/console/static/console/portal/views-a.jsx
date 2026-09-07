@@ -1,6 +1,7 @@
-// Zitch Admin — views A: Overview, Users & KYC, Transactions, FX & Treasury
-// All collections come from /api/admin/bootstrap (applied into window.ZADM);
-// every action POSTs to its audited /api/admin/* endpoint before touching UI state.
+// Zitch Admin (demo bundle) — views A: Overview, Users & KYC, Transactions, FX
+// Collections come from the fixture in data.js; actions resolve locally through
+// doAct and touch UI state only. The live bundle under static/portal/admin/ is
+// the one that reads and writes real rows.
 const { useState } = React;
 const D = window.ZADM;
 
@@ -111,7 +112,7 @@ function Transactions({ toast }) {
     if (r) {
       setTxns((r.rows || []).map((t) => ({ ...t, time: new Date(t.time) })));
       setServerMode(true);
-      toast((r.rows || []).length + ' ledger rows matched server-side');
+      toast((r.rows || []).length + ' ledger rows matched in the demo fixture');
     }
   };
   const resetLocal = () => { setTxns(D.TXNS); setServerMode(false); };
@@ -136,7 +137,7 @@ function Transactions({ toast }) {
     setBusy(false);
     if (r) {
       patchTxn(sel.id, { status: r.status === 'success' ? 'success' : r.status === 'failed' ? 'failed' : 'pending', canRequery: r.status === 'pending' });
-      toast(sel.id + ' requeried — provider says ' + r.status + ' (audit logged)');
+      toast(sel.id + ' requeried — provider says ' + r.status + ' (no audit entry — demo)');
       setSel(null);
     }
   };
@@ -146,7 +147,7 @@ function Transactions({ toast }) {
     setBusy(false);
     if (r) {
       patchTxn(sel.id, { status: r.status, flagged });
-      toast(sel.id + (flagged ? ' flagged for review' : ' released') + ' — written to audit log');
+      toast(sel.id + (flagged ? ' flagged for review' : ' released') + ' (no audit entry — demo)');
       setSel(null);
     }
   };
@@ -261,7 +262,7 @@ function CreditForm({ user, onCredited, toast }) {
       keyRef.current = '';
       setAmt(''); setReason('');
       onCredited(r);
-      toast(D.fmtN(Number(r.amount), 'NGN') + ' credited to ' + user.name + ' — ref ' + r.reference + ' (audit logged)');
+      toast(D.fmtN(Number(r.amount), 'NGN') + ' credited to ' + user.name + ' — ref ' + r.reference + ' (no audit entry — demo)');
     }
   };
   return (
@@ -302,7 +303,7 @@ function Users({ toast }) {
     setSearching(true);
     const r = await doAct(toast, '/users/search', { q });
     setSearching(false);
-    if (r) { setUsers(r.rows || []); setServerMode(true); toast((r.rows || []).length + ' user(s) matched server-side'); }
+    if (r) { setUsers(r.rows || []); setServerMode(true); toast((r.rows || []).length + ' user(s) matched in the demo fixture'); }
   };
   const resetLocal = () => { setUsers(D.USERS); setServerMode(false); };
 
@@ -318,7 +319,7 @@ function Users({ toast }) {
     setBusy(false);
     if (r) {
       patchUser(sel.uid, { status });
-      toast(sel.name + (status === 'frozen' ? ' frozen' : ' unfrozen') + ' — written to audit log');
+      toast(sel.name + (status === 'frozen' ? ' frozen' : ' unfrozen') + ' (no audit entry — demo)');
       setSel(null);
     }
   };
@@ -326,7 +327,7 @@ function Users({ toast }) {
     setBusy(true);
     const r = await doAct(toast, '/users/pin_unlock', { uid: sel.uid });
     setBusy(false);
-    if (r) toast('PIN lockout cleared for ' + sel.name + ' (audit logged)');
+    if (r) toast('PIN lockout cleared for ' + sel.name + ' (no audit entry — demo)');
   };
 
   return (
@@ -413,7 +414,7 @@ function Fx({ toast }) {
     if (r) {
       setApplied(r.margin);
       D.RATES = D.RATES.map((x) => ({ ...x, margin: r.margin }));
-      toast('fx_margin_bps set to ' + r.margin + ' — applied to every new quote (audit logged)');
+      toast('fx_margin_bps set to ' + r.margin + ' — applied to every new quote (no audit entry — demo)');
     }
   };
   const toggleCorridor = async (pair, v) => {
@@ -422,7 +423,7 @@ function Fx({ toast }) {
     if (r) {
       setCorridors({ ...corridors, [pair]: v });
       D.RATES = D.RATES.map((x) => (x.pair === pair ? { ...x, settle: v } : x));
-      toast(pair + ' settlement ' + (v ? 'enabled' : 'paused') + ' — written to audit log');
+      toast(pair + ' settlement ' + (v ? 'enabled' : 'paused') + ' (no audit entry — demo)');
     }
   };
 

@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
+import { publicPost } from '@/lib/api';
 import { notify } from '@/components/design/Notify';
-import { saveToken } from '@/lib/secureStore';
+import { storeSession } from '@/lib/secureStore';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
@@ -20,7 +20,7 @@ const ResetPassword = () => {
   const [p2, setP2] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const strong = p1.length >= 8 && /[A-Za-z]/.test(p1) && /[0-9]/.test(p1);
+  const strong = p1.length >= 8 && /[A-Za-z]/.test(p1) && /[0-9]/.test(p1) && /[^A-Za-z0-9]/.test(p1);
   const match = p1 !== '' && p1 === p2;
   const canSubmit = otp.length === 6 && strong && match;
 
@@ -31,14 +31,10 @@ const ResetPassword = () => {
     }
     setBusy(true);
     try {
-      const response = await fetch(`${baseUrl}/api/password/reset/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email_or_phone: ident, otp, password: p1 }),
-      });
+      const response = await publicPost('/api/password/reset/', { email_or_phone: ident, otp, password: p1 });
       const result = await response.json();
       if (response.ok && result.access_token) {
-        await saveToken(result.access_token);
+        await storeSession(result);
         router.replace('/home');
       } else {
         notify('Error', result.message || 'Could not reset your password');
@@ -72,6 +68,8 @@ const ResetPassword = () => {
           keyboardType="number-pad"
           placeholder="6-digit code"
           maxLength={6}
+          autoComplete="sms-otp"
+          textContentType="oneTimeCode"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
         <Field
@@ -80,6 +78,8 @@ const ResetPassword = () => {
           onChangeText={setP1}
           secureTextEntry
           placeholder="Enter new password"
+          autoComplete="new-password"
+          textContentType="newPassword"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
         <Field
@@ -88,12 +88,14 @@ const ResetPassword = () => {
           onChangeText={setP2}
           secureTextEntry
           placeholder="Re-enter new password"
+          autoComplete="new-password"
+          textContentType="newPassword"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
       </View>
 
       <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 12, fontFamily: font.regular }}>
-        At least 8 characters, with a letter and a number.
+        At least 8 characters, with a letter, a number and a special character.
       </Text>
 
       <View style={{ marginTop: 22 }}>

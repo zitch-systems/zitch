@@ -154,10 +154,48 @@ const P: Record<string, (color: string) => React.ReactNode> = {
     <Path key="b" d="m7 11 5 4 5-4" />,
     <Path key="c" d="M5 21h14" />,
   ],
+  // The two receipt export formats — a picture and a document.
+  image: () => [
+    <Rect key="a" x={3} y={3} width={18} height={18} rx={3} />,
+    <Circle key="b" cx={8.5} cy={9} r={1.6} />,
+    <Path key="c" d="m20.5 15.5-4.5-4.5L7 20" />,
+  ],
+  file: () => [
+    <Path key="a" d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />,
+    <Path key="b" d="M14 3v5h5" />,
+  ],
   history: () => [
     <Path key="a" d="M3 12a9 9 0 1 0 3-6.7L3 8" />,
     <Path key="b" d="M3 4v4h4" />,
     <Path key="c" d="M12 8v4l3 2" />,
+  ],
+  // A ribboned medal — the tier badge on the account-limits card.
+  medal: () => [
+    <Path key="a" d="M8 3 6 8m10-5 2 5" />,
+    <Circle key="b" cx={12} cy={14} r={6} />,
+    <Path key="c" d="M12 11v6m-2.5-4.5h5" />,
+  ],
+  calendar: () => [
+    <Rect key="a" x={3} y={5} width={18} height={16} rx={2.5} />,
+    <Path key="b" d="M3 10h18M8 3v4M16 3v4" />,
+  ],
+  // Address-book silhouette — the contact picker beside a phone-number field.
+  contacts: () => [
+    <Rect key="a" x={4} y={3} width={16} height={18} rx={2.5} />,
+    <Circle key="b" cx={12} cy={10} r={2.6} />,
+    <Path key="c" d="M8 17a4 4 0 0 1 8 0M2 8h2M2 12h2M2 16h2" />,
+  ],
+  // Filter sliders — the category/status dropdowns on the transactions list.
+  sliders: () => [
+    <Path key="a" d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h10M18 18h2" />,
+    <Circle key="b" cx={16} cy={6} r={2} />,
+    <Circle key="c" cx={10} cy={12} r={2} />,
+    <Circle key="d" cx={16} cy={18} r={2} />,
+  ],
+  // Gridded page — the spreadsheet option in the statement file-type picker.
+  sheet: () => [
+    <Rect key="a" x={4} y={3} width={16} height={18} rx={2.5} />,
+    <Path key="b" d="M4 9h16M4 15h16M10 9v12" />,
   ],
   settings: () => [
     <Circle key="a" cx={12} cy={12} r={3} />,
@@ -222,11 +260,35 @@ const P: Record<string, (color: string) => React.ReactNode> = {
     <Path key="c" d="M9.3 15a3.6 3.6 0 0 0 5.4 0" />,
   ],
   x: () => [<Path key="a" d="M18 6 6 18M6 6l12 12" />],
+  link: () => [
+    <Path key="a" d="M9 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" />,
+    <Path key="b" d="M15 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" />,
+  ],
+  unlink: () => [
+    <Path key="a" d="M9 13a5 5 0 0 0 7 0l1-1M15 11a5 5 0 0 0-7 0l-1 1" />,
+    <Path key="b" d="m3 3 18 18" />,
+  ],
+  shield: () => [
+    <Path key="a" d="M12 3 4 6v6c0 5 3.5 7.5 8 9 4.5-1.5 8-4 8-9V6l-8-3Z" />,
+    <Path key="b" d="m9 12 2 2 4-4" />,
+  ],
+  refresh: () => [
+    <Path key="a" d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5" />,
+  ],
 };
 
 export type IconName = keyof typeof P;
 
-const ZIcon = ({ name, size = 22, color = '#000', stroke = 1.75 }: IconProps & { name: string }) => {
+/**
+ * Memoized because it is the single most-rendered component in the app: Home
+ * alone mounts around thirty of these (eight grid tiles, four quick actions,
+ * eleven in the More sheet, the header and hero buttons, one per activity row),
+ * and each one is a react-native-svg tree with its own native views. Every
+ * prop here is a primitive, so the default shallow compare is exactly the right
+ * test — an icon whose name, size, colour and stroke are unchanged has nothing
+ * to redraw when its parent re-renders because a balance arrived.
+ */
+const ZIcon = React.memo(({ name, size = 22, color = '#000', stroke = 1.75 }: IconProps & { name: string }) => {
   const render = P[name];
   if (!render) return null;
   return (
@@ -243,6 +305,7 @@ const ZIcon = ({ name, size = 22, color = '#000', stroke = 1.75 }: IconProps & {
       {render(color)}
     </Svg>
   );
-};
+});
+ZIcon.displayName = 'ZIcon';
 
 export default ZIcon;

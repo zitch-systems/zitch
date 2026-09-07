@@ -1,0 +1,28 @@
+# Money cannot come IN without this screen.
+#
+# The funding NUBAN is the one string a customer must be able to read and copy
+# correctly — a truncated or uncopyable account number sends their deposit to the wrong
+# place, and there is no undo on an interbank transfer.
+appId: com.zitch.app
+---
+- runFlow: subflows/signin.yaml
+
+- tapOn: "Wallet"
+- extendedWaitUntil:
+    visible: "Add money"
+    timeout: 30000
+- tapOn: "Add money"
+
+- extendedWaitUntil:
+    visible: "Fund by bank transfer"
+    timeout: 30000
+
+# For an account with a provisioned NUBAN, all three must be present: a number with no
+# name is unsafe to pay into, and a name with no number is useless.
+- assertVisible: "Account number"
+- assertVisible: "Account name"
+
+# The copy control is the realistic path — nobody retypes a 10-digit NUBAN correctly
+# under a bank transfer's time pressure.
+- assertVisible: "Copy account number"
+- tapOn: "Copy account number"

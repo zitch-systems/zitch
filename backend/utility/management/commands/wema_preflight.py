@@ -1,0 +1,465 @@
+"""Go-live preflight — the scriptable "are we go?" readiness check.
+
+Runs the checks a human would otherwise click through before flipping Zitch to
+live money, but as one command with a machine-readable exit code — so going live
+is a mechanical, repeatable step instead of a checklist someone might skip. It is
+read-only and moves no money: the same live self-tests as /wema-diagnose and
+/vtu-diagnose (no purchases, no transfers).
+
+HARD gates block real money and cause a nonzero exit:
+  * Wema live keys present (channel id + wallet + per-product keys)
+  * pointed at the LIVE host, not apiplayground (the sandbox)
+  * simulation off, test-OTP bypass off, simulated-deposit token unset
+  * callback secret + bank IP allowlist + securityInfo authorization enabled
+
+SOFT checks are features that degrade without putting money at risk:
+VTU wallet balance, email, SMS, card issuer). They print WARN and only fail the run
+under --strict.
+
+Wema clarified on 2026-07-27 that securityInfo is a private value Zitch chooses and
+the bank echoes to the authentication callback. It is therefore a hard, inexpensive
+defence-in-depth gate. See utility.wema._security_info.
+"""
+import os
+
+from django.conf import settings
+from django.core.management.base import BaseCommand
+
+from utility import wema
+from utility.providers import card_provider, kyc_provider, payment_provider, payout_provider, vas_provider
+from utility.vtung import vtu_probe
+
+
+def _face_host() -> str:
+    """Just the hostname of the configured face verifier, for the report line."""
+    from urllib.parse import urlparse
+
+    return urlparse(settings.WEMA.get("FACE_VERIFY_URL", "") or "").hostname or "unset"
+
+PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
+
+
+class Command(BaseCommand):
+    help = ("Go-live readiness preflight for the Wema money rails (+ VAS/email/SMS). "
+            "Exits 1 if any hard gate fails.")
+
+    def add_arguments(self, parser):
+        parser.add_argument("--strict", action="store_true",
+                            help="Treat soft-check WARNs as failures too (exit 1).")
+
+    def handle(self, *args, **options):
+        checks = []  # (is_hard_gate, name, status, detail)
+
+        d = wema.wema_diagnostics()
+        checks.append((
+            True, "Wema live keys",
+            PASS if d["wema_live"] else FAIL,
+            "channel + wallet + product keys present" if d["wema_live"]
+            else f"status={d['status']} — {d['hint']}"))
+        # HARD: the private seed derives a unique HMAC for each transactionReference.
+        # Require a real high-entropy seed; a short human phrase is not sufficient for
+        # an authorization value carried through a third party.
+        security_strong = d.get("security_info_strong", d["security_info_set"])
+        checks.append((
+            True, "securityInfo",
+            PASS if security_strong else FAIL,
+            "strong seed set; per-transaction HMAC enabled" if security_strong
+            else ("WEMA_SECURITY_INFO must be a random value of at least 32 characters; "
+                  "the SECRET_KEY fallback is for testing, not go-live")))
+        product_keys = d.get("product_keys_set") or {
+            name: bool(((settings.WEMA or {}).get("KEYS") or {}).get(name))
+            for name in ("wallet", "card", "airtime", "bills", "upgrade", "kyc", "remita", "bnpl")
+        }
+        if vas_provider() == "wema":
+            checks.append((
+                True, "ALAT Airtime/Data subscription",
+                PASS if product_keys.get("airtime") else FAIL,
+                "dedicated key set" if product_keys.get("airtime")
+                else ("VAS_PROVIDER=wema requires WEMA_AIRTIME_KEY. If your Wallet Services "
+                      "subscription includes the Airtime and Data API, set it to the wallet "
+                      "key; the fallback is deliberately not automatic, because a tenant "
+                      "where it is a separate product would fail at purchase time instead")))
+        if card_provider() == "wema":
+            card_ready = bool(product_keys.get("card") and settings.WEMA.get("CARD_PRODUCT_KEY"))
+            checks.append((
+                True, "ALAT Virtual Naira Card subscription",
+                PASS if card_ready else FAIL,
+                "subscription and card product id set" if card_ready
+                else "Wema cards require WEMA_CARD_KEY and WEMA_CARD_PRODUCT_KEY"))
+
+        callback = settings.WEMA or {}
+        callback_token = str(callback.get("CALLBACK_TOKEN") or "").strip()
+        checks.append((
+            True, "Callback URL secret",
+            PASS if len(callback_token) >= 32 else FAIL,
+            "strong token configured" if len(callback_token) >= 32
+            else "WEMA_CALLBACK_TOKEN must be a rotated random value of at least 32 characters"))
+        enforce_ips = bool(callback.get("CALLBACK_ENFORCE_IPS"))
+        callback_ips = [ip for ip in (callback.get("CALLBACK_IPS") or []) if ip]
+        checks.append((
+            True, "Callback source IP allowlist",
+            PASS if enforce_ips and callback_ips else FAIL,
+            f"enforced for {len(callback_ips)} bank IP(s)" if enforce_ips and callback_ips
+            else "set WEMA_CALLBACK_ENFORCE_IPS=true and configure WEMA_CALLBACK_IPS"))
+        # The check above only proves the list is non-empty — and WEMA_CALLBACK_IPS
+        # DEFAULTS to two hardcoded addresses, so it passes even when nobody has
+        # configured anything. That is precisely the shape of the failure it is meant
+        # to catch: a deploy where enforcement refuses every genuine callback (no
+        # NUBANs issued, no payouts authorised) while go-live prints GO. So ask the
+        # only source that can actually answer it — what has really arrived.
+        checks.append(self._observed_callback_sources(enforce_ips, set(callback_ips)))
+        require_security = bool(callback.get("AUTH_REQUIRE_SECURITY_INFO"))
+        checks.append((
+            True, "Payout callback securityInfo match",
+            PASS if require_security else FAIL,
+            "required" if require_security else "set WEMA_AUTH_REQUIRE_SECURITY_INFO=true"))
+        previous_token = str(callback.get("CALLBACK_TOKEN_PREV") or "").strip()
+        checks.append((
+            True, "Callback token rotation cleanup",
+            FAIL if previous_token else PASS,
+            "previous token cleared" if not previous_token
+            else "WEMA_CALLBACK_TOKEN_PREV is still accepted; clear it after profiling cutover"))
+        on_sandbox = "apiplayground" in (d["base_url"] or "").lower()
+        checks.append((
+            True, "Live host",
+            FAIL if on_sandbox else PASS,
+            f"sandbox: {d['base_url']}" if on_sandbox else f"live: {d['base_url']}"))
+        # Hard gate: simulation mode serves MOCK responses across the ENTIRE stack
+        # (Wema + VTU + cards + FX + Mono + KYC) — a customer would be told a purchase
+        # succeeded while nothing was delivered. It must be off for real money to move.
+        sim_flags = [name for name, cfg in (("WEMA_SIMULATION", settings.WEMA),
+                                            ("MONO_SIMULATION", getattr(settings, "MONO", {})))
+                     if (cfg or {}).get("SIMULATION")]
+        checks.append((
+            True, "Simulation mode",
+            FAIL if sim_flags else PASS,
+            f"ON via {', '.join(sim_flags)} — the whole stack is serving mocks; unset "
+            f"before go-live" if sim_flags else "off (live rails)"))
+        # Hard gate: the test-OTP bypass must NEVER be live at go-live — it lets one
+        # number sign in with a fixed code. Fail readiness while it is configured.
+        test_otp_on = bool(settings.TEST_OTP["PHONE"] and settings.TEST_OTP["CODE"])
+        checks.append((
+            True, "Test-OTP bypass",
+            FAIL if test_otp_on else PASS,
+            "TEST_OTP is SET — a fixed OTP is accepted for one number; unset "
+            "TEST_OTP_PHONE + TEST_OTP_CODE before go-live" if test_otp_on else "off"))
+        # Hard gate: the simulated-deposit endpoint must never be reachable at
+        # go-live. It is already inert once WEMA_SIMULATION is off, but fail while
+        # the token lingers so it gets cleaned up too.
+        sim_deposit_on = bool(settings.SIMULATE_DEPOSIT_TOKEN)
+        checks.append((
+            True, "Simulated-deposit token",
+            FAIL if sim_deposit_on else PASS,
+            "SIMULATE_DEPOSIT_TOKEN is SET — unset it before go-live"
+            if sim_deposit_on else "off"))
+
+        # SOFT — VTU.ng (airtime/data/bills). Lean on vtu_probe's own empty-wallet
+        # detection (it sets a balance hint) rather than re-parsing the amount.
+        v = vtu_probe()
+        if not v.get("config", {}).get("live"):
+            checks.append((False, "VTU.ng rail", WARN, "no VTU credentials — airtime/data/bills disabled"))
+        elif not v.get("auth", {}).get("ok"):
+            checks.append((False, "VTU.ng rail", WARN, "auth failed — check VTUNG_* credentials"))
+        else:
+            bal = v.get("balance", {})
+            if not bal.get("ok"):
+                checks.append((False, "VTU.ng rail", WARN, "balance unreadable"))
+            elif bal.get("hint"):  # vtu_probe sets a hint only when the wallet is empty
+                checks.append((False, "VTU.ng rail", WARN,
+                               "auth ok but VTU wallet empty — VAS buys fail until topped up"))
+            else:
+                checks.append((False, "VTU.ng rail", PASS, f"auth ok, balance {bal.get('balance')}"))
+
+        # Resend is still required for Zitch-owned email verification, account
+        # statements and notifications. It is not a delivery channel for Wema
+        # Wallet Service BVN/NIN OTPs, which are phone-only.
+        if not settings.RESEND["API_KEY"]:
+            checks.append((False, "Email (Resend)", WARN,
+                           "RESEND_API_KEY unset — no transactional email"))
+        else:
+            from utility.providers import email_probe
+            try:
+                probe = email_probe()
+            except Exception as exc:                          # noqa: BLE001
+                checks.append((False, "Email (Resend)", WARN,
+                               f"keyed, but the rail could not be checked: {exc}"))
+            else:
+                checks.append((False, "Email (Resend)",
+                               PASS if probe.get("ok") else WARN,
+                               f"sending as {probe.get('config', {}).get('sender_domain') or '?'} — verified"
+                               if probe.get("ok")
+                               else probe.get("hint", "sender domain not verified")))
+        from utility.providers import sms_live
+        checks.append((False, "SMS (termii)",
+                       PASS if sms_live() else WARN,
+                       "keyed" if sms_live()
+                       else "TERMII_API_KEY unset — no SMS/OTP-by-SMS"))
+        # Only ask about the generic issuer when it is the rail actually in use.
+        # On a Wema-card deploy the ALAT subscription gate above already decided
+        # this, and warning "virtual cards disabled" next to that PASS told the
+        # operator running the go-live check that a working feature was off.
+        if card_provider() != "wema":
+            checks.append((False, "Card issuer",
+                           PASS if settings.CARD_ISSUER["API_KEY"] else WARN,
+                           "keyed" if settings.CARD_ISSUER["API_KEY"]
+                           else "no issuer key — virtual cards disabled"))
+
+        # SOFT — an avatar upload can return 200 locally while producing a URL
+        # that is never served in production and a file that disappears on the
+        # next Render deploy. Surface that false-success configuration explicitly.
+        storage_backend = ((getattr(settings, "STORAGES", {}) or {}).get("default", {})
+                           .get("BACKEND", ""))
+        durable_media = (
+            "FileSystemStorage" not in storage_backend
+            and bool(getattr(settings, "AWS_STORAGE_BUCKET_NAME", ""))
+            and bool(os.environ.get("AWS_ACCESS_KEY_ID", "").strip())
+            and bool(os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip())
+        )
+        checks.append((False, "Profile-photo storage",
+                       PASS if durable_media else WARN,
+                       "durable object storage configured" if durable_media
+                       else "local filesystem only — production avatars return broken URLs and "
+                            "disappear on deploy; configure AWS_STORAGE_BUCKET_NAME and S3 credentials"))
+
+        # SOFT — Prembly. Wema verifies BVN/NIN through account creation, but it has
+        # no image checks, so selfie/liveness, address and ID-document all stay on
+        # Prembly. Unkeyed in production those fail CLOSED (providers.
+        # _kyc_mock_or_unavailable), which is safe but not harmless: Tier 2 and Tier 3
+        # become unreachable and the selfie step-up on transfers at or above the face
+        # threshold refuses every one of them. Nothing here checked that, so a deploy
+        # could pass preflight and still be unable to lift a single customer's tier.
+        # Hard gate: the face-biometric web app must not still be ALAT's DEV verifier.
+        # It answers happily and returns a correlationId, so nothing downstream can
+        # tell it apart from the real one — the check simply proves nothing about the
+        # person, while lifting a tier and clearing the large-transfer step-up.
+        from utility.wema import address_verify_live, face_verify_live, face_verify_on_nonprod_host
+        # HARD: the face callback carries no shared token — its URL is shown to the
+        # customer — so the source-IP allowlist is the whole of its authentication.
+        # Without it, anyone who reads that URL out of their own browser can assert
+        # their own face check, lifting a tier and clearing the large-transfer gate.
+        # Scoped to deploys that actually intend to run the rail. A deployment with
+        # no WEMA_FACE_VERIFY_URL is not using face verification at all, and blocking
+        # its go-live on the allowlist for a feature it does not have would be a gate
+        # nobody can satisfy or learn anything from.
+        face_ips = [ip for ip in (settings.WEMA.get("FACE_CALLBACK_IPS") or []) if ip]
+        if settings.WEMA.get("FACE_VERIFY_URL"):
+            checks.append((
+                True, "Face callback IP allowlist",
+                PASS if face_ips else FAIL,
+                f"enforced for {len(face_ips)} face-verifier IP(s)" if face_ips
+                else "WEMA_FACE_VERIFY_URL is set but WEMA_FACE_CALLBACK_IPS is not — the "
+                     "face callback carries no shared token, so without the allowlist it "
+                     "has no authentication at all; ask Wema for the face app's egress IPs"))
+        if face_verify_live():
+            # The registered shape gives up the per-verification state, leaving the IP
+            # allowlist as the only thing authenticating a callback that lifts a KYC
+            # tier. ALAT's exact-match whitelist forces it, but a forced trade is still
+            # a trade — say which mode is running and what it costs rather than let a
+            # go-live report imply the callback is as guarded as the other four.
+            checks.append((
+                True, "Face callback shape",
+                WARN if wema.face_cb_mode() == "registered" else PASS,
+                "registered — cb_uri is the exact whitelisted URL, so the callback "
+                "carries no per-verification state and the IP allowlist above is its "
+                "only authentication" if wema.face_cb_mode() == "registered"
+                else "session — each verification carries its own single-use state, "
+                     "which ALAT's exact-match whitelist will reject"))
+            checks.append((
+                True, "Face biometric host",
+                FAIL if face_verify_on_nonprod_host() else PASS,
+                # Name the host. "the DEV verifier" sent whoever read this looking for
+                # a -dev URL they no longer had, on a deploy pointed at -pilot.
+                f"WEMA_FACE_VERIFY_URL points at a non-production verifier "
+                f"({_face_host()}) — it answers happily and lifts real tiers on no "
+                f"evidence" if face_verify_on_nonprod_host() else "live verifier"))
+        else:
+            checks.append((False, "Face biometric (ALAT)", WARN,
+                           "no channel id or WEMA_FACE_VERIFY_URL — the face step falls "
+                           "back to the document rail"))
+        checks.append((False, "Address verification (ALAT)",
+                       PASS if address_verify_live() else WARN,
+                       "bank-verified (Tier 3 upgrade)" if address_verify_live()
+                       else "WEMA_UPGRADE_KEY unset — address falls back to the document rail"))
+
+        prembly_keyed = bool(settings.PREMBLY.get("API_KEY") and settings.PREMBLY.get("APP_ID"))
+        checks.append((False, "Prembly (selfie / address / ID document)",
+                       PASS if prembly_keyed else WARN,
+                       "keyed" if prembly_keyed
+                       else "PREMBLY_API_KEY + PREMBLY_APP_ID unset — ID-document (Tier 3) "
+                            "fails closed; face/address are on the bank rail"
+                            if (face_verify_live() and address_verify_live())
+                            else "PREMBLY_API_KEY + PREMBLY_APP_ID unset — Tier 2/3 upgrades and "
+                                 "the large-transfer selfie step-up fail closed"))
+
+        # SOFT — electricity/betting on the Wema rail need a mapped packageId. Without
+        # one they silently stay on VTU.ng, which is safe but is NOT what
+        # VAS_PROVIDER=wema was set to achieve, and nothing else would say so.
+        if vas_provider() == "wema":
+            from django.db import DatabaseError
+
+            from utility.models import WemaBiller
+            try:
+                mapped = WemaBiller.objects.filter(active=True).exclude(package_id="").count()
+            except DatabaseError:
+                # Unmigrated database. A readiness check that dies on one unreadable
+                # counter reports nothing at all about the eleven gates above it.
+                mapped = 0
+            checks.append((False, "Wema biller catalogue (electricity / betting)",
+                           PASS if mapped else WARN,
+                           f"{mapped} service(s) mapped" if mapped
+                           else "no packageIds mapped — electricity and betting stay on "
+                                "VTU.ng; run `manage.py seed_wema_plans --only billers`"))
+
+        # SOFT — the VAS status legends. Money-safe either way (an unknown code leaves
+        # the purchase PENDING), so this can never be a gate; but an unset legend means
+        # timed-out VAS buys accumulate as PENDING rows that only a human can clear,
+        # which ops should know before launch rather than discover from a queue. Wema
+        # owes us one map per product — see docs/wema-migration.md.
+        from utility.wema import _vas_legend, _vas_live
+        legend_products = [("airtime", "WEMA_VAS_STATUS_LEGEND"),
+                           ("bills", "WEMA_BILLS_STATUS_LEGEND"),
+                           ("remita", "WEMA_REMITA_STATUS_LEGEND")]
+        # Only ask about products this deploy can actually reach. Airtime and bills
+        # go through Wema only when the VAS rail is Wema; Remita is a standalone
+        # subscription and is live whenever its key is. Warning about a legend for a
+        # product we never call trains the operator to ignore the section that also
+        # carries the one that matters.
+        for product, env_var in legend_products:
+            if product in ("airtime", "bills") and vas_provider() != "wema":
+                continue
+            if product == "remita" and not _vas_live("remita"):
+                continue
+            legend = _vas_legend(product)
+            checks.append((
+                False, f"VAS status legend ({product})",
+                PASS if legend else WARN,
+                f"{len(legend)} code(s) mapped" if legend
+                else f"{env_var} unset — a timed-out {product} purchase stays PENDING "
+                     "until an operator resolves it (no auto settle/refund)"))
+
+        self.stdout.write("")
+        # Operator-portal insider controls. SOFT, deliberately: OPS_REQUIRE_MFA is
+        # off by default because switching it on before operators have enrolled locks
+        # every one of them out at once, including whoever would fix it (see
+        # admin_api.views._mfa_required_for). Hard-gating that would make go-live
+        # depend on an action that can only safely follow enrolment. They are still
+        # reported, because at go-live the portal can move real customer money and
+        # neither control is on by default — and --strict turns these into failures.
+        require_mfa = bool(getattr(settings, "OPS_REQUIRE_MFA", False))
+        checks.append((
+            False, "Operator MFA", PASS if require_mfa else WARN,
+            "required for money-capable roles" if require_mfa
+            else ("OPS_REQUIRE_MFA is off — a stolen operator password alone reaches "
+                  "manual credits and settings; enrol operators, then turn it on")))
+        # The same fallback the securityInfo check refuses at go-live, applied to
+        # operator TOTP seeds — and with a worse failure. Unset, every enrolled
+        # operator's MFA secret is encrypted under DJANGO_SECRET_KEY, so that key
+        # can never be rotated and a service rebuilt from the blueprint (which
+        # mints a fresh generateValue key) locks every operator out of the portal
+        # with no way back in. SOFT because the fix is to set a key BEFORE anyone
+        # enrols; hard-failing an existing deployment would not undo the binding.
+        totp_keys = [k for k in (getattr(settings, "TOTP_ENCRYPTION_KEYS", None) or []) if k]
+        checks.append((
+            False, "Operator TOTP key material",
+            PASS if totp_keys else WARN,
+            "dedicated key set; independent of DJANGO_SECRET_KEY" if totp_keys
+            else ("TOTP_ENCRYPTION_KEYS is unset — operator MFA secrets fall back to "
+                  "DJANGO_SECRET_KEY, so rotating or regenerating it locks out every "
+                  "enrolled operator; set a dedicated key before enrolment")))
+        dual = bool(getattr(settings, "OPS_REQUIRE_DUAL_APPROVAL", False))
+        checks.append((
+            False, "Operator dual approval", PASS if dual else WARN,
+            "maker/checker enforced on registered actions" if dual
+            else ("OPS_REQUIRE_DUAL_APPROVAL is off — no money action has a second "
+                  "approver, and a large manual credit is refused outright rather "
+                  "than routed for approval")))
+
+        self.stdout.write("Zitch go-live preflight")
+        self.stdout.write("=======================")
+        self.stdout.write(f"rails: funding={payment_provider()} payout={payout_provider()} "
+                          f"vas={vas_provider()} kyc={kyc_provider()}")
+        self.stdout.write("")
+        for is_hard, name, status, detail in checks:
+            tag = "GATE" if is_hard else "    "
+            self.stdout.write(f"  [{status}] {tag} {name}: {detail}")
+
+        hard_fail = [c for c in checks if c[0] and c[2] == FAIL]
+        soft_warn = [c for c in checks if not c[0] and c[2] in (WARN, FAIL)]
+        self.stdout.write("")
+        if hard_fail:
+            self.stdout.write(f"RESULT: NOT READY — {len(hard_fail)} hard gate(s) failing. "
+                              f"Real money is blocked.")
+        elif soft_warn and options["strict"]:
+            self.stdout.write(f"RESULT: NOT READY (strict) — {len(soft_warn)} soft check(s) warning.")
+        elif soft_warn:
+            self.stdout.write(f"RESULT: GO for money rails — {len(soft_warn)} soft warning(s) "
+                              f"(non-money features degraded).")
+        else:
+            self.stdout.write("RESULT: GO — all checks pass.")
+
+        if hard_fail or (soft_warn and options["strict"]):
+            raise SystemExit(1)
+
+    def _observed_callback_sources(self, enforce_ips: bool, allowed: set) -> tuple:
+        """Did real bank callbacks actually get through the allowlist?
+
+        Config alone cannot answer this: the address the allowlist compares is
+        produced by the platform's proxy chain at request time, so the only honest
+        evidence is what has already arrived. Every inbound callback records its
+        resolved source and outcome on WebhookEvent, including the ones we refused.
+
+        Returns a HARD gate, because the failure it guards is total and silent: with
+        enforcement on and a source that cannot match, every callback 403s — no NUBAN
+        is ever issued and no payout is ever authorised — and nothing else in this
+        preflight notices.
+        """
+        import ipaddress
+
+        from whatsapp.models import WebhookEvent
+
+        if not enforce_ips:
+            return (True, "Callback source IPs observed", PASS,
+                    "enforcement off — nothing to verify")
+
+        try:
+            rows = list(WebhookEvent.objects.filter(source__startswith="wema.")
+                        .values_list("remote_ip", "outcome")[:2000])
+        except Exception as exc:  # noqa: BLE001 — a diagnostic must not die on its own query
+            # Soft: every other check here is config-only and still worth printing.
+            # Never PASS on this path — "we could not look" is not "we verified".
+            return (False, "Callback source IPs observed", WARN,
+                    f"could not read callback history ({type(exc).__name__}) — "
+                    f"enforcement is ON and UNVERIFIED")
+        if not rows:
+            # Cannot be proven either way before the bank has ever called. Soft, so it
+            # does not block a first deploy — but it must not read as verified.
+            return (False, "Callback source IPs observed", WARN,
+                    "no bank callback has ever reached this deploy — enforcement is ON "
+                    "and UNVERIFIED; confirm one real callback is accepted before "
+                    "trusting the rail")
+
+        refused = sum(1 for _, outcome in rows if outcome == WebhookEvent.REJECTED_IP)
+        accepted_ips = {ip for ip, outcome in rows
+                        if outcome == WebhookEvent.ACCEPTED and ip}
+
+        def _public(value):
+            try:
+                return ipaddress.ip_address(value).is_global
+            except ValueError:
+                return False
+
+        if accepted_ips and any(_public(ip) for ip in accepted_ips):
+            detail = f"{len(rows)} recorded; accepted from {len(accepted_ips)} public source(s)"
+            if refused:
+                detail += f" ({refused} refused — check those are not the bank)"
+            return (True, "Callback source IPs observed", PASS, detail)
+
+        seen = sorted({ip for ip, _ in rows if ip})[:4]
+        if refused and not accepted_ips:
+            return (True, "Callback source IPs observed", FAIL,
+                    f"every recorded bank callback was REFUSED by the allowlist "
+                    f"({refused} of {len(rows)}); observed source(s) {seen} vs allowed "
+                    f"{sorted(allowed)} — the rail is dead, do not go live")
+        return (True, "Callback source IPs observed", FAIL,
+                f"no bank callback has ever been accepted from a public address; "
+                f"observed source(s) {seen} — the allowlist cannot match these")

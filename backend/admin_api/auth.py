@@ -6,17 +6,16 @@ additionally requires ``user.is_staff`` and gates writes behind a role matrix
 that is enforced HERE, on the server — the topbar "view as" switcher in the
 prototype is presentation only and must never be trusted for authorization.
 
-Role resolution:
-  super_admin — Django superuser.
+Role resolution (identical to portal.roles — one matrix, two mounts):
+  super_admin — Django superuser, or membership of the `super_admin` Group.
   finance / support / read_only — membership of the like-named Django Group.
   default — read_only (least privilege) for any other staff user.
 """
 import functools
-import json
 
 from django.views.decorators.csrf import csrf_exempt
 
-from common.http import fail, resolve_token
+from common.http import fail, parse_json_object, resolve_token
 
 ROLE_SUPER = "super_admin"
 ROLE_FINANCE = "finance"
@@ -37,8 +36,11 @@ CAN = {
 def staff_role(user) -> str:
     if getattr(user, "is_superuser", False):
         return ROLE_SUPER
+    # Same group→role mapping as portal.roles.role_of — the `super_admin` GROUP
+    # grants the role too (not just is_superuser), so a staff member never holds
+    # full caps on /api/ops/ while being read_only on /api/admin/.
     names = set(user.groups.values_list("name", flat=True))
-    for role in (ROLE_FINANCE, ROLE_SUPPORT, ROLE_READONLY):
+    for role in (ROLE_SUPER, ROLE_FINANCE, ROLE_SUPPORT, ROLE_READONLY):
         if role in names:
             return role
     return ROLE_READONLY
@@ -67,16 +69,17 @@ def staff_endpoint(*, methods=("GET", "POST"), perm=None):
             if request.method not in methods:
                 return fail("Method not allowed", status=405)
             if request.method == "POST":
-                try:
-                    request.data = json.loads(request.body or b"{}")
-                except (ValueError, TypeError):
-                    return fail("Invalid JSON body", status=400)
-                if not isinstance(request.data, dict):
-                    return fail("Invalid request body", status=400)
+                request.data, error = parse_json_object(request, limit=64 * 1024)
+                if error is not None:
+                    return error
             else:
                 request.data = {}
 
-            user = AccessToken.resolve(resolve_token(request))
+            # Admin-scoped only: an app session token (scope="app") is refused
+            # here even for a staff user, so a stolen mobile token can never
+            # reach the back-office. Staff sign in through the admin login,
+            # which mints a short-lived admin-scoped token.
+            user = AccessToken.resolve(resolve_token(request), required_scope=AccessToken.ADMIN)
             if user is None or not user.is_staff:
                 return fail("Staff authentication required", status=401)
             request.staff = user

@@ -1,46 +1,72 @@
+import base64
+import hashlib
+import hmac
 import logging
+import re
 import secrets
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
+from urllib.parse import urlencode
 
+from django.conf import settings
 from django.core.cache import cache
+from django.db import IntegrityError, transaction as db_transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from common.http import api, fail, ok, require_user, resolve_token
-from common.ratelimit import client_ip, ratelimit
+from common.http import (api, fail, mask_pii, ok, require_user, resolve_token,
+                         verify_transaction_pin)
+from common.ratelimit import (
+    clear_login_failures,
+    client_ip,
+    login_locked,
+    note_login_failure,
+    ratelimit,
+)
 
 log = logging.getLogger("zitch.security")
+from utility import wema
 from utility.providers import (
-    kyc_verify_face, kyc_verify_nin_document, send_email, send_sms, verify_bvn, verify_nin,
+    email_live, kyc_verify_address, kyc_verify_face, kyc_verify_id_document,
+    kyc_provider, kyc_verify_nin_document, mock_disabled_in_prod, send_email, send_sms,
+    sms_live,
+    verify_bvn, verify_nin,
 )
-from wallet.services import get_or_create_wallet
+from wallet.models import Wallet, WemaFaceSession, WemaProvisioningAttempt
+from wallet.services import (attach_existing_bank_account, get_or_create_wallet,
+                             wema_account_reference)
 
-from .models import OTP, AccessToken, User
+from .models import (
+    IdentityProof, OTP, AccessToken, PushDevice, RefreshToken, User, hash_identifier,
+    password_rejection, record_identity_proof, rehydrate_verified_identity_flags,
+)
 
-# Brand mark hosted on the marketing site (Cloudflare), so email clients can load it.
-_LOGO_URL = "https://zitch.ng/assets/brand/zitch-icon.png"
+# The shared design system in common.emails is the only place email HTML lives.
+# This alias keeps the name that accounts, whatsapp and admin already import.
+from common.emails import branded_message as _branded_email  # noqa: E402
 
 
-def _branded_email(title: str, intro: str, code: str, note: str) -> str:
-    """A simple, email-client-safe branded HTML body for one-time codes — the
-    Zitch logo, a heading, the code in a prominent box, and a footer. Inline
-    styles only (no <style>/external CSS) so it renders in Gmail/Outlook/Apple."""
-    return (
-        '<div style="background:#EFF7F5;padding:32px 16px;font-family:Arial,Helvetica,sans-serif;">'
-        '<div style="max-width:460px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #E2EEEB;">'
-        '<div style="background:#0C3A39;padding:26px 0;text-align:center;">'
-        f'<img src="{_LOGO_URL}" width="60" height="60" alt="Zitch" style="border-radius:15px;display:inline-block;" />'
-        '</div>'
-        '<div style="padding:32px 28px;text-align:center;">'
-        f'<h1 style="font-size:20px;color:#0A0A0B;margin:0 0 8px;">{title}</h1>'
-        f'<p style="font-size:14px;color:#737B83;line-height:1.55;margin:0 0 22px;">{intro}</p>'
-        f'<div style="font-size:32px;font-weight:bold;letter-spacing:10px;color:#0FA295;background:#EAF3F1;border-radius:12px;padding:18px 10px;margin:0 0 22px;">{code}</div>'
-        f'<p style="font-size:12.5px;color:#737B83;line-height:1.55;margin:0;">{note}</p>'
-        '</div>'
-        '<div style="background:#F4F9F8;border-top:1px solid #E2EEEB;padding:16px;text-align:center;font-size:11px;color:#9AAEB0;">'
-        'Zitch &middot; Licensed by the CBN &middot; Deposits insured by the NDIC'
-        '</div></div></div>'
-    )
+def _session_device_id(request) -> str:
+    """Per-install identifier to bind a newly issued customer session."""
+    return (request.headers.get("X-Zitch-Device") or "").strip()[:64]
+
+
+def _session_payload(user, request) -> dict:
+    """The fields every authenticating endpoint returns, so a session is issued
+    the same way whether it came from a sign-in, a signup OTP or a password reset.
+
+    `access_token` stays short-lived (TOKEN_TTL_HOURS) and `refresh_token` carries
+    the session past it. `expires_in` is advertised so a client CAN renew ahead of
+    the expiry; the app today does not, it refreshes on the 401 and retries the
+    request transparently, which the customer never sees. The field is here so
+    pre-emptive renewal doesn't need a second API change to become possible.
+    """
+    device_id = _session_device_id(request)
+    access = AccessToken.issue(user, device_id=device_id)
+    refresh = RefreshToken.issue(user, device_id=device_id)
+    return {"access_token": access.key,
+            "refresh_token": refresh.key,
+            "expires_in": int(settings.TOKEN_TTL_HOURS) * 3600}
 
 
 def _otp_on_cooldown(phone: str) -> bool:
@@ -58,20 +84,61 @@ def _otp_code() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
-def _weak_password(password: str, user=None) -> str | None:
-    """Run Django's configured password validators server-side; returns a
-    user-facing error string if the password is too weak (too short / too common
-    / all-numeric / too similar to the user's own details), else None. Enforced
-    here because the client strength hints are advisory — a direct API call could
-    otherwise set a trivially guessable password on a money account."""
-    from django.contrib.auth.password_validation import validate_password
-    from django.core.exceptions import ValidationError
+def _delivery_must_be_real() -> bool:
+    """True on any deploy where a mocked "sent" would be a lie told to a real person.
 
-    try:
-        validate_password(password, user)
-        return None
-    except ValidationError as e:
-        return " ".join(e.messages)
+    The provider wrappers return a MOCK SUCCESS when unconfigured (utility.providers):
+    useful in local dev and in tests, dishonest anywhere a customer is waiting on a
+    code. Deliberately NOT mock_disabled_in_prod(), which exempts simulation deploys —
+    a simulation deploy fakes MONEY, not people: its codes still have to reach a real
+    handset.
+    """
+    return not settings.DEBUG and not getattr(settings, "TESTING", False)
+
+
+def _test_otp_phone(phone: str) -> bool:
+    """True when `phone` is the configured TEST-ONLY bypass number (settings.TEST_OTP).
+
+    That pair exists precisely so signup can be walked end to end while a real sender
+    ID awaits carrier approval — i.e. exactly while the SMS rail cannot deliver — and
+    OTP.verify_code accepts its fixed code with no SMS involved. So the guard below
+    must not lock it out.
+    """
+    test = settings.TEST_OTP
+    return bool(test["PHONE"] and test["CODE"] and phone == test["PHONE"])
+
+
+def _otp_undeliverable(phone: str) -> bool:
+    """True when a signup OTP for `phone` cannot actually reach anyone.
+
+    The signup code is SMS-only (see phone_verification), and send_sms returns a mock
+    success when TERMII_API_KEY is unset — so an unkeyed production deploy answers
+    "a verification code has been sent" and sends nothing, with no error anywhere.
+    That silent failure is the whole reason this check exists; the KYC identity flow
+    below already refuses on the same grounds.
+
+    Safe against enumeration, which is what the rest of this endpoint is built to
+    resist: the answer is a property of the DEPLOY's configuration and is identical
+    for every number (bar the test pair), so it cannot tell a registered number apart
+    from an unregistered one.
+    """
+    if _test_otp_phone(phone):
+        return False
+    return _delivery_must_be_real() and not sms_live()
+
+
+def _weak_password(password: str, user=None) -> str | None:
+    """Returns a user-facing reason if the password is unacceptable, else None.
+
+    Delegates to accounts.models.password_rejection, which is also what the
+    WhatsApp signup Flow calls. The rule has to be one function: the strength
+    tick-boxes on the sign-up screen ("a letter, a number, a special character")
+    were CLIENT-side only, so a direct API call could set a password the app
+    would have refused to let anyone type — and once WhatsApp became a second
+    front door, two independent rules would have meant the weaker one is the one
+    that gets used.
+    """
+    return password_rejection(password, user) or None
 
 
 @ratelimit("signin", limit=10, window=300)
@@ -83,16 +150,28 @@ def signin(request):
     if not ident or not password:
         return fail("Email/phone and password are required")
 
+    if login_locked("user", ident, settings.USER_LOGIN_MAX_FAILS):
+        log.warning("signin_locked ident=%r ip=%s", mask_pii(ident), client_ip(request))
+        return fail("Too many failed attempts. Please wait before trying again.", status=429)
+
     user = User.objects.filter(Q(email__iexact=ident) | Q(phone=ident) | Q(username=ident)).first()
-    if user is None or not user.check_password(password):
+    if user is None or not user.is_active or not user.check_password(password):
         # Security event: surfaces credential-stuffing / targeted brute force in
         # the logs (the per-IP rate limiter caps it; this makes it observable).
-        log.warning("signin_failed ident=%r ip=%s", ident, client_ip(request))
+        note_login_failure("user", ident, settings.USER_LOGIN_LOCKOUT_SECONDS)
+        log.warning("signin_failed ident=%r ip=%s", mask_pii(ident), client_ip(request))
         return fail("Incorrect details", status=401)
 
+    clear_login_failures("user", ident)
     get_or_create_wallet(user)
-    token = AccessToken.issue(user)
-    return ok(access_token=token.key, message="Signed in")
+    # Score the device this sign-in came from and remember it. Deliberately does not
+    # gate the sign-in: the password was correct, and refusing on a heuristic would
+    # lock out customers who bought a new phone. What it buys is a durable trail from
+    # the first minute of a takeover instead of a reconstruction from rotated logs —
+    # and it is what makes the new-device step-up on a large spend meaningful.
+    from common.risk import evaluate_login
+    evaluate_login(request, user)
+    return ok(**_session_payload(user, request), message="Signed in")
 
 
 @ratelimit("otp_send", limit=5, window=60)
@@ -110,6 +189,9 @@ def phone_verification(request):
     email = (request.data.get("email") or "").strip()
     if not phone:
         return fail("Phone is required")
+    if _otp_undeliverable(phone):
+        return fail("SMS verification is temporarily unavailable. Please try again later.",
+                    status=503)
     if not _otp_on_cooldown(phone):
         existing = User.objects.filter(phone=phone).first()
         if existing is not None:
@@ -117,16 +199,19 @@ def phone_verification(request):
             # never the API caller.
             reminder = "You already have a Zitch account. Open the app to sign in, or use 'Forgot password' to reset."
             send_sms(phone, reminder)
-            send_email(existing.email or "", "Zitch sign-in reminder", reminder)
+            send_email(existing.email or "", "Zitch sign-in reminder", reminder,
+                       html=_branded_email("You already have a Zitch account", reminder,
+                                           note="If this wasn't you, you can safely ignore this email."))
         else:
             code = _otp_code()
-            OTP.objects.create(phone=phone, email=email, code=code)
-            message = f"Your Zitch verification code is {code}"
-            send_sms(phone, message)
-            send_email(email, "Your Zitch verification code", message,
-                       html=_branded_email("Verify your number",
-                                           "Use this code to finish creating your Zitch account.",
-                                           code, "This code expires shortly. If you didn't request it, ignore this email."))
+            OTP.issue(phone=phone, code=code, email=email)
+            # SMS ONLY: the signup OTP proves control of the PHONE (the identity
+            # being registered). Emailing it to the caller-supplied, unverified
+            # `email` would let an attacker receive the code for someone else's
+            # number and squat/deny that account (and misdirect P2P sends keyed on
+            # phone). The email is still stored for the account, just never sent the
+            # code. Account-recovery flows, by contrast, email the address on file.
+            send_sms(phone, f"Your Zitch verification code is {code}")
     return ok(message="If this number can be registered, a verification code has been sent.")
 
 
@@ -148,7 +233,7 @@ def verify_otp(request):
         # Cap reached: refuse further guesses on this code until a new one is
         # requested, bounding an attacker to MAX_ATTEMPTS tries per code.
         return fail("Too many incorrect attempts. Request a new code.", status=429)
-    if otp.code != code:
+    if not otp.verify_code(code):
         otp.attempts += 1
         otp.save(update_fields=["attempts"])
         return fail("Invalid OTP", status=400)
@@ -156,13 +241,38 @@ def verify_otp(request):
     otp.used = True
     otp.save(update_fields=["used"])
 
-    user, _ = User.objects.get_or_create(
+    # The customer's legal name is captured at register (before this OTP round-trip)
+    # and sent here so the account is created WITH a name. It matters beyond display:
+    # the dedicated funding account (Wema NUBAN) is later opened in this name, and an
+    # account with no holder name can't be safely funded by transfer — the payer has
+    # no name to confirm against. Trim + length-cap to the User field width.
+    first_name = (request.data.get("first_name") or "").strip()[:150]
+    last_name = (request.data.get("last_name") or "").strip()[:150]
+    user, created = User.objects.get_or_create(
         phone=phone,
-        defaults={"username": phone, "email": otp.email or ""},
+        defaults={"username": phone, "email": otp.email or "",
+                  "first_name": first_name, "last_name": last_name,
+                  # Reaching this line means the SMS code was correct, which is
+                  # precisely the proof phone_verified records.
+                  "phone_verified": True},
     )
+    # Defense in depth: a SIGNUP OTP must never sign anyone into an already
+    # established account. A genuine new signup has no usable password at this
+    # point (set-password runs AFTER verify), so an existing user that already has
+    # a password is a pre-existing account — refuse rather than issue its session.
+    if not created and user.has_usable_password():
+        log.warning("signup_otp_for_existing_account phone=%r ip=%s",
+                    mask_pii(phone), client_ip(request))
+        return fail("Invalid OTP", status=400)
+    # Backfill the name onto a mid-signup account (created on a prior attempt, or
+    # before name capture existed) that has no name yet — so re-verifying still
+    # lands a named account. Never overwrite a name already on file.
+    if not created and (first_name or last_name) and not (user.first_name or user.last_name):
+        user.first_name = first_name or user.first_name
+        user.last_name = last_name or user.last_name
+        user.save(update_fields=["first_name", "last_name"])
     get_or_create_wallet(user)
-    token = AccessToken.issue(user)
-    return ok(access_token=token.key, message="Verified")
+    return ok(**_session_payload(user, request), message="Verified")
 
 
 @ratelimit("otp_send", limit=5, window=60)
@@ -177,20 +287,35 @@ def resend_verify_otp(request):
     phone = (request.data.get("phone") or "").strip()
     if not phone:
         return fail("Phone is required")
+    if _otp_undeliverable(phone):
+        return fail("SMS verification is temporarily unavailable. Please try again later.",
+                    status=503)
     if _otp_on_cooldown(phone):
         return fail("Please wait a moment before requesting another code", status=429)
-    email = (request.data.get("email") or "").strip()
-    if not email:
-        prior = OTP.objects.filter(phone=phone).order_by("-created").first()
-        email = prior.email if prior else ""
+    # A SIGNUP OTP authenticates into the matching account (verify_otp resolves the
+    # phone to the existing user), so minting one here and DELIVERING it to a
+    # client-supplied email would be a full, password-less account takeover from
+    # just a phone number. Guard exactly like phone_verification:
+    #   * an established account (has a usable password) is never sent a fresh
+    #     signup OTP — reply with the same generic message, no enumeration;
+    #   * a mid-signup account (created but no password yet) may still resend, but
+    #     only to its OWN email on file — never a client-supplied address.
+    existing = User.objects.filter(phone=phone).first()
+    if existing is not None and existing.has_usable_password():
+        return ok(message="OTP resent")
+    if existing is not None:
+        email = existing.email or ""
+    else:
+        email = (request.data.get("email") or "").strip()
+        if not email:
+            prior = OTP.objects.filter(phone=phone).order_by("-created").first()
+            email = prior.email if prior else ""
     code = _otp_code()
-    OTP.objects.create(phone=phone, email=email, code=code)
-    message = f"Your Zitch verification code is {code}"
-    send_sms(phone, message)
-    send_email(email, "Your Zitch verification code", message,
-               html=_branded_email("Verify your number",
-                                   "Use this code to finish creating your Zitch account.",
-                                   code, "This code expires shortly. If you didn't request it, ignore this email."))
+    OTP.issue(phone=phone, code=code, email=email)
+    # SMS ONLY, same reason as phone_verification: a signup OTP authenticates into
+    # the matching account, so it must reach only the PHONE being registered —
+    # never a client-supplied email. The email is stored for the account record.
+    send_sms(phone, f"Your Zitch verification code is {code}")
     return ok(message="OTP resent")
 
 
@@ -210,13 +335,19 @@ def password_forgot(request):
     user = User.objects.filter(phone=ident).first() or User.objects.filter(email__iexact=ident).first()
     if user is not None and user.phone and not _otp_on_cooldown(user.phone):
         code = _otp_code()
-        OTP.objects.create(phone=user.phone, email=user.email or "", code=code, purpose=OTP.RESET)
+        OTP.issue(phone=user.phone, code=code, email=user.email or "", purpose=OTP.RESET)
         message = f"Your Zitch password reset code is {code}"
         send_sms(user.phone, message)
-        send_email(user.email or "", "Your Zitch password reset code", message,
+        # A chat-onboarded account's email was typed into WhatsApp and never
+        # proven — one typo from being someone else's inbox. Until the in-app
+        # round-trip verifies it, the reset code goes to the phone alone, which
+        # is the identity these accounts actually authenticated with.
+        reset_email = "" if _email_unproven_for_recovery(user) else (user.email or "")
+        send_email(reset_email, "Your Zitch password reset code", message,
                    html=_branded_email("Reset your password",
                                        "Use this code to reset your Zitch password.",
-                                       code, "If you didn't request a reset, ignore this email — your password is unchanged."))
+                                       code=code,
+                                       note="If you didn't request a reset, ignore this email — your password is unchanged."))
     return ok(message="If that account exists, a reset code has been sent.")
 
 
@@ -252,7 +383,7 @@ def password_reset(request):
         return fail("Reset code has expired", status=400)
     if otp.too_many_attempts:
         return fail("Too many incorrect attempts. Request a new code.", status=429)
-    if otp.code != code:
+    if not otp.verify_code(code):
         otp.attempts += 1
         otp.save(update_fields=["attempts"])
         return fail("Invalid reset code", status=400)
@@ -261,9 +392,12 @@ def password_reset(request):
     otp.save(update_fields=["used"])
     user.set_password(password)
     user.save(update_fields=["password"])
-    user.tokens.all().delete()  # a password reset invalidates every prior session
-    token = AccessToken.issue(user)
-    return ok(access_token=token.key, message="Password reset")
+    # A password reset invalidates every prior session — access tokens AND the
+    # refresh chains behind them, or a stolen refresh token would outlive the
+    # password change that was meant to end it.
+    user.tokens.all().delete()
+    user.refresh_tokens.all().update(revoked_at=timezone.now())
+    return ok(**_session_payload(user, request), message="Password reset")
 
 
 @api
@@ -274,11 +408,89 @@ def logout(request):
     Server-side revocation so a signed-out (or otherwise leaked-then-cleared)
     token can't be replayed for the remainder of its TTL.
     """
+    # A signed-out phone must stop receiving private account alerts. Scope the
+    # removal to this installation so tablets/other phones stay subscribed.
+    device_id = _session_device_id(request)
+    if device_id:
+        PushDevice.objects.filter(user=request.user_obj, device_id=device_id).delete()
     AccessToken.objects.filter(key=AccessToken._hash(resolve_token(request))).delete()
+    # Deleting only the access token would leave the refresh chain live, so
+    # "sign out" would mean "signed out for a few hours". Revoke the presented
+    # chain when the client sends it, and fall back to this install's chains
+    # when it doesn't — an older client that has no refresh token to send must
+    # still get a real sign-out.
+    presented = (request.data.get("refresh_token") or "").strip()
+    if presented:
+        row = RefreshToken.objects.filter(key=RefreshToken._hash(presented),
+                                          user=request.user_obj).first()
+        if row is not None:
+            RefreshToken.revoke_family(row.user_id, row.family)
+    elif device_id:
+        RefreshToken.objects.filter(user=request.user_obj, device_id=device_id,
+                                    revoked_at__isnull=True).update(
+            revoked_at=timezone.now())
     return ok(message="Logged out")
 
 
+@ratelimit("token_refresh", limit=60, window=300)
 @api
+def token_refresh(request):
+    """POST /api/token/refresh/ {refresh_token} -> a new access + refresh pair.
+
+    Deliberately NOT behind @require_user: the whole point is to be reachable
+    with an access token that has already expired. The refresh token is the only
+    credential, and RefreshToken.rotate does every check.
+
+    One 401 message for every refusal — unknown, expired, revoked, reused, wrong
+    device, deactivated account. Naming which one would tell a caller holding a
+    stolen token whether it was ever valid, whether the chain is still live, and
+    whether they guessed the device, so the distinction stays in the logs (where
+    a `refresh_token_reuse` line is a theft signal worth alerting on) and out of
+    the response.
+    """
+    presented = (request.data.get("refresh_token") or "").strip()
+    fresh, outcome = RefreshToken.rotate(presented, device_id=_session_device_id(request))
+    if fresh is None:
+        log.info("token_refresh_refused reason=%s ip=%s", outcome, client_ip(request))
+        return fail("Your session has expired. Please sign in again.", status=401)
+    user = outcome
+    access = AccessToken.issue(user, device_id=fresh.device_id)
+    return ok(access_token=access.key, refresh_token=fresh.key,
+              expires_in=int(settings.TOKEN_TTL_HOURS) * 3600,
+              message="Session renewed")
+
+
+@api
+@require_user
+def push_register(request):
+    """POST /api/push/register/ {token, platform}.
+
+    Expo tokens are opaque credentials for addressing a device, not proof of a
+    user. Ownership therefore comes exclusively from the authenticated session;
+    a client-supplied user id is never accepted.
+    """
+    token = (request.data.get("token") or "").strip()
+    if not re.fullmatch(r"(?:Exponent|Expo)PushToken\[[A-Za-z0-9_-]+\]", token):
+        return fail("Invalid push token")
+    platform = (request.data.get("platform") or "").strip().lower()
+    if platform not in ("android", "ios"):
+        return fail("Invalid device platform")
+    device_id = _session_device_id(request)
+    PushDevice.objects.update_or_create(
+        token=token,
+        defaults={"user": request.user_obj, "device_id": device_id,
+                  "platform": platform, "enabled": True},
+    )
+    return ok(message="Notifications enabled")
+
+
+@api
+# Rate-limited because this endpoint CHECKS the current password, which makes it
+# a password-guessing oracle for anyone holding a session token — and one that
+# completely bypasses the signin lockout, since that counts failures against the
+# login form. Unlimited silent guesses at the credential that gates email/phone
+# changes and the PIN-reset fallback is not something a session token should buy.
+@ratelimit("set_password", limit=10, window=300)
 @require_user
 def set_password(request):
     """POST /api/set-password/ {access_token, password}
@@ -289,6 +501,16 @@ def set_password(request):
     """
     user = request.user_obj
     password = request.data.get("password") or ""
+    # Changing an EXISTING password requires the current one, so a stolen session
+    # token alone can't overwrite it. First-time onboarding runs set-password
+    # before any real password exists — a freshly-created user's password hash is
+    # the empty string (has_usable_password() is True for ""), so gate on a
+    # NON-EMPTY usable hash to exempt the first set while covering every change.
+    if user.password and user.has_usable_password():
+        current = request.data.get("current_password") or ""
+        if not (current and user.check_password(current)):
+            return fail("Enter your current password to change it",
+                        status=403, code="current_password_required")
     weak = _weak_password(password, user)
     if weak:
         return fail(weak)
@@ -298,38 +520,118 @@ def set_password(request):
     # change is now invalid. Keep the caller's current token so the onboarding
     # flow (set-password -> set-pin) and a change-password screen don't 401.
     user.tokens.exclude(key=AccessToken._hash(resolve_token(request))).delete()
-    return ok(message="Password set")
+    # ...and the REFRESH chains behind them, exactly as password_reset does above
+    # and for the same reason. Deleting only access tokens left a stolen refresh
+    # family alive for up to REFRESH_ABSOLUTE_DAYS, so the victim performed the one
+    # remediation everybody knows — change your password — was told "Password set",
+    # and the attacker kept minting fresh access tokens the whole time. Device
+    # binding is no obstacle: the device id is a client-supplied header.
+    #
+    # Every chain goes, the caller's included, and the caller is handed a new one in
+    # the response: keeping theirs alive would mean deciding which chain is the
+    # victim's on the strength of that same spoofable header.
+    user.refresh_tokens.all().update(revoked_at=timezone.now())
+    fresh = RefreshToken.issue(user, device_id=_session_device_id(request))
+    return ok(message="Password set", refresh_token=fresh.key)
 
 
 @api
+@ratelimit("set_pin", limit=10, window=300)
 @require_user
 def set_transaction_pin(request):
-    """POST /api/set-transaction-pin/ {access_token, pin, password?}
+    """POST /api/set-transaction-pin/ {access_token, pin, old_pin?, password?}
 
     First-time set (onboarding) needs only the session token. CHANGING an
-    already-set PIN additionally requires the account password, so a stolen
-    session token alone can't overwrite the PIN that gates money movement.
+    already-set PIN additionally requires proof the caller knows the current PIN
+    — either the ``old_pin`` itself, or (as a fallback for a forgotten PIN) the
+    account ``password`` — so a stolen session token alone can't overwrite the
+    PIN that gates money movement.
     """
+    from accounts.models import transaction_pin_rejection
+    from common.http import evaluate_transaction_pin
+
     user = request.user_obj
     pin = (request.data.get("pin") or "").strip()
-    if len(pin) < 4:
-        return fail("PIN must be at least 4 digits")
-    if user.transaction_pin and not user.check_password(request.data.get("password") or ""):
-        return fail("Enter your account password to change your PIN",
-                    status=403, code="password_required")
+    rejected = transaction_pin_rejection(pin)
+    if rejected:
+        return fail(rejected, code="weak_pin")
+    if user.transaction_pin:
+        old_pin = (request.data.get("old_pin") or "").strip()
+        password = request.data.get("password") or ""
+        # old_pin MUST go through the brute-force-protected checker (lockout after
+        # PIN_MAX_ATTEMPTS) — a raw check_transaction_pin here let a stolen token
+        # guess the 4-digit PIN unlimited times and overwrite it. The password
+        # fallback keeps forgot-PIN recovery working.
+        ok_pwd = bool(password) and user.check_password(password)
+        ok_old = False
+        if not ok_pwd and old_pin:
+            ok_old, code, message = evaluate_transaction_pin(user, old_pin)
+            if code == "pin_locked":
+                return fail(message, status=403, code="pin_locked")
+        if not (ok_old or ok_pwd):
+            return fail("Enter your current PIN to change it",
+                        status=403, code="current_pin_required")
+    # set_transaction_pin also clears pin_reset_required and the whole
+    # brute-force lockout (counter, deadline and escalation strikes), so a
+    # legitimate password-authenticated PIN change isn't blocked by a stale lock
+    # against the PIN it just replaced. Saving the named set rather than a
+    # hand-written list is what keeps this in step when that method grows.
     user.set_transaction_pin(pin)
-    # Clear any brute-force lockout so a legitimate (password-authenticated) PIN
-    # change isn't blocked by a stale lock against the old PIN.
-    user.pin_failed_attempts = 0
-    user.pin_locked_until = None
-    user.save(update_fields=["transaction_pin", "pin_failed_attempts", "pin_locked_until"])
+    user.save(update_fields=list(User.PIN_UPDATE_FIELDS))
     return ok(message="Transaction PIN set")
 
 
 @api
+@ratelimit("verify_pin", limit=5, window=300)
+@require_user
+def verify_pin(request):
+    """POST /api/verify-transaction-pin/ {access_token, pin} -> {success}
+
+    Confirms the caller knows their own PIN without moving money. It exists for one
+    caller: turning on biometric payment approval, which caches the PIN on-device
+    behind the OS biometric ACL and replays it for every later payment. Caching an
+    UNVERIFIED PIN meant a single typo auto-submitted a wrong PIN on every payment
+    sheet from then on, escalating the lockout — 60 minutes, then 24 hours, across
+    the app AND WhatsApp — while nothing told the customer which credential was
+    wrong or that they had ever mistyped it.
+
+    Routed through verify_transaction_pin, the same brute-force-protected checker
+    every money endpoint already uses, so this is not a softer oracle than the
+    payment path: a wrong guess costs an attempt and locks out identically. The
+    extra ratelimit bounds it further, since unlike a payment there is no amount,
+    recipient or balance to make guessing expensive.
+    """
+    pin_err = verify_transaction_pin(request.user_obj, request.data.get("pin"))
+    if pin_err:
+        return pin_err
+    return ok(success=True)
+
+
+@api
+@ratelimit("update_info", limit=10, window=300)
 @require_user
 def update_info(request):
-    """POST /api/update_info/ {first_name, last_name, email, phone, access_token}"""
+    """POST /api/update_info/ {first_name, last_name, email, phone, access_token}
+
+    Changing the EMAIL or PHONE additionally requires the current password (or the
+    transaction PIN), and drops that channel's verified flag.
+
+    Both halves are load-bearing. password_forgot mails the reset code to whatever
+    `user.email` currently holds, so without re-authentication a stolen session token
+    alone bought a full takeover: swap the email, request a reset, set a new password
+    — and password_reset then deletes the real owner's tokens, locking them out of
+    the account they can no longer recover. That defeats the control set_password two
+    functions above exists to provide.
+
+    And an address the account has never proven must not stay marked verified: the
+    KYC ladder and the phone_verified first-spend gate both read those flags, so
+    keeping them would silently rest a tier on an unproven contact. Clearing them
+    re-runs the ordinary OTP round-trip, which is the only thing that can restore it.
+
+    A name-only update needs neither: it moves no trust and gates nothing.
+    """
+    from common.http import evaluate_transaction_pin
+
     user = request.user_obj
     data = request.data
     new_email = (data.get("email") or "").strip()
@@ -345,26 +647,55 @@ def update_info(request):
         return fail("That phone number is already in use")
     if changing_email and User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
         return fail("That email is already in use")
+    if changing_email or changing_phone:
+        password = data.get("password") or data.get("current_password") or ""
+        pin = (data.get("transaction_pin") or data.get("pin") or "").strip()
+        ok_pwd = bool(password) and user.check_password(password)
+        ok_pin = False
+        if not ok_pwd and pin:
+            # Through the brute-force-protected checker, never a raw compare — the
+            # same reasoning as set_transaction_pin: a stolen token must not get
+            # unlimited guesses at a short PIN.
+            ok_pin, code, message = evaluate_transaction_pin(user, pin)
+            if code == "pin_locked":
+                return fail(message, status=403, code="pin_locked")
+        if not (ok_pwd or ok_pin):
+            return fail("Enter your password to change your email or phone number",
+                        status=403, code="reauth_required")
+
     if data.get("first_name"):
         user.first_name = data["first_name"]
     if data.get("last_name"):
         user.last_name = data["last_name"]
     if new_email:
         user.email = new_email
+        if changing_email:
+            user.email_verified = False
     if new_phone:
         user.phone = new_phone
+        if changing_phone:
+            user.phone_verified = False
     user.save()
-    return ok(message="Account updated")
+    if changing_email or changing_phone:
+        # The tier is derived from the verified flags, so it has to be re-derived
+        # after one is dropped — otherwise a Tier 1+ account keeps limits it no
+        # longer qualifies for.
+        user.recompute_tier()
+    return ok(message="Account updated",
+              email_verified=user.email_verified, phone_verified=user.phone_verified)
 
 
 def avatar_url(request, user) -> str:
     """Absolute URL for a user's profile photo, or '' if none set."""
-    from django.conf import settings
+    from django.core.files.storage import default_storage
 
-    return request.build_absolute_uri(settings.MEDIA_URL + user.avatar) if user.avatar else ""
+    if not user.avatar:
+        return ""
+    return request.build_absolute_uri(default_storage.url(user.avatar))
 
 
 @api
+@ratelimit("avatar_upload", limit=10, window=600)
 @require_user
 def avatar_upload(request):
     """POST /api/profile/avatar/ {access_token, image}
@@ -374,23 +705,19 @@ def avatar_upload(request):
     import base64
     import binascii
     import secrets
+    from io import BytesIO
 
-    from django.conf import settings
     from django.core.files.base import ContentFile
     from django.core.files.storage import default_storage
+    from PIL import Image, ImageOps, UnidentifiedImageError
 
     user = request.user_obj
     raw = (request.data.get("image") or request.data.get("avatar") or "").strip()
     if not raw:
         return fail("No image provided")
 
-    ext = "png"
     if raw.startswith("data:"):
-        header, _, b64 = raw.partition(",")
-        if "jpeg" in header or "jpg" in header:
-            ext = "jpg"
-        elif "webp" in header:
-            ext = "webp"
+        _, _, b64 = raw.partition(",")
     else:
         b64 = raw
 
@@ -403,18 +730,60 @@ def avatar_upload(request):
     if len(blob) > 3 * 1024 * 1024:
         return fail("Image too large (max 3MB)")
 
-    # Drop the previous photo so we don't orphan files on re-upload.
-    if user.avatar and default_storage.exists(user.avatar):
-        default_storage.delete(user.avatar)
+    # Decode the image rather than trusting a caller-controlled data-URL MIME or
+    # filename. Re-encoding removes EXIF/GPS metadata, bounds decompression cost
+    # and ensures object storage never serves arbitrary bytes as an image.
+    try:
+        with Image.open(BytesIO(blob)) as source:
+            if source.width * source.height > 16_000_000:
+                return fail("Image dimensions are too large")
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail((1024, 1024))
+            if image.mode in ("RGBA", "LA"):
+                rgba = image.convert("RGBA")
+                flattened = Image.new("RGB", rgba.size, "white")
+                flattened.paste(rgba, mask=rgba.getchannel("A"))
+                image = flattened
+            elif image.mode != "RGB":
+                image = image.convert("RGB")
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=88, optimize=True)
+            blob = output.getvalue()
+    except (UnidentifiedImageError, OSError, ValueError):
+        return fail("Invalid image data")
 
-    path = default_storage.save(f"avatars/{user.id}-{secrets.token_hex(4)}.{ext}", ContentFile(blob))
-    user.avatar = path
-    user.save(update_fields=["avatar"])
+    # Store and persist the replacement before deleting the previous object. A
+    # transient object-storage failure must not erase the user's working photo.
+    previous = user.avatar
+    path = default_storage.save(
+        f"avatars/{user.id}-{secrets.token_hex(4)}.jpg", ContentFile(blob),
+    )
+    try:
+        user.avatar = path
+        user.save(update_fields=["avatar"])
+    except Exception:
+        # The database still points at the previous photo; avoid orphaning the
+        # newly uploaded object if that update fails.
+        default_storage.delete(path)
+        raise
+    if previous and previous != path:
+        try:
+            default_storage.delete(previous)
+        except Exception:
+            # The account now points at the valid replacement. Cleanup can be
+            # retried later; do not turn a successful upload into a client error.
+            pass
     return ok(success=True, message="Photo updated",
-              avatar=request.build_absolute_uri(settings.MEDIA_URL + path))
+              avatar=avatar_url(request, user))
 
 
 # --------------------------------- KYC ---------------------------------
+# Nigeria identity (BVN/NIN): ALAT has NO standalone lookup — verification happens in
+# the NUBAN account-creation OTP flow (/api/wallet/wema/*), which name-matches the
+# holder record ALAT returns before lifting the tier. So in PRODUCTION the verify_bvn/
+# verify_nin calls below return an "otp_required" redirect (route the user to account
+# setup); dev/tests keep the provider mock so these endpoints still exercise offline.
+# The image/biometric steps (face/address/ID) stay on Prembly and are unaffected.
 def _reserve_wallet_account(user, bvn: str = "", nin: str = "") -> None:
     """Best-effort: mint the user's dedicated funding account once KYC supplies a
     BVN/NIN. Never lets a provider hiccup fail the KYC response — it's retried on
@@ -427,15 +796,352 @@ def _reserve_wallet_account(user, bvn: str = "", nin: str = "") -> None:
         log.warning("reserve_account_failed user=%s", user.id, exc_info=True)
 
 
+def _sync_wema_tier3(user, address: dict) -> None:
+    """Best-effort: lift the user's Wema NUBAN to Tier 3 at the bank (address
+    verification) so its bank-side limits track the user's verified KYC. Needs only
+    the address + account number (NOT BVN/NIN, which we don't retain — so the Tier-2
+    face upgrade, which does require them, is intentionally not auto-synced). Never
+    breaks the KYC response; a hiccup is logged and can be re-synced later."""
+    acct = getattr(getattr(user, "wallet", None), "account_number", "") or ""
+    if not acct:
+        return
+    try:
+        from utility import wema
+        res = wema.upgrade_tier3(acct, address)
+        if not res.get("success"):
+            log.info("wema_tier3_sync_soft_fail user=%s msg=%s", user.id, res.get("message", ""))
+    except Exception:  # noqa: BLE001 — a provider hiccup must never break KYC
+        log.warning("wema_tier3_sync_error user=%s", user.id, exc_info=True)
+
+
+_TIER_NAMES = {0: "Unverified", 1: "Verified", 2: "Enhanced", 3: "Premium"}
+MAX_KYC_IMAGE_BASE64 = 2_800_000  # ~2 MiB decoded; bounds memory/PII exposure
+_IDENTITY_CONFLICT_MESSAGE = (
+    "This identity is already linked to another account. Contact support if this is unexpected."
+)
+
+
+def _identity_owned_by_another_user(user, identity_type: str, raw: str) -> bool:
+    field = "bvn_hash" if identity_type == "bvn" else "nin_hash"
+    return User.objects.exclude(pk=user.pk).filter(
+        **{field: hash_identifier(raw)}
+    ).exists()
+
+
+def _save_verified_identity(user, identity_type: str, raw: str,
+                            source: str = IdentityProof.IDENTITY_PROVIDER_OTP,
+                            provider_reference: str = "") -> bool:
+    """Atomically claim a verified BVN/NIN for exactly one Zitch user.
+
+    The pre-check gives a clean response in the common case; the database unique
+    constraint and inner savepoint close the concurrent-request race.
+    """
+    if _identity_owned_by_another_user(user, identity_type, raw):
+        return False
+    if identity_type == "bvn":
+        user.set_bvn(raw)
+        user.bvn_verified = True
+        fields = ["bvn_hash", "bvn_last4", "bvn_verified"]
+    else:
+        user.set_nin(raw)
+        user.nin_verified = True
+        fields = ["nin_hash", "nin_last4", "nin_verified"]
+    user.recompute_tier()
+    try:
+        with db_transaction.atomic():
+            user.save(update_fields=fields + ["tier"])
+            record_identity_proof(user, identity_type, raw, source=source,
+                                  provider_reference=provider_reference)
+    except IntegrityError:
+        return False
+    return True
+
+
+def _email_verification_required(user) -> bool:
+    """Chat-onboarded accounts must confirm their email in the app before any
+    KYC step. The email was typed during a WhatsApp signup — one typo from being
+    someone else's inbox — and an address nobody has proved control of must not
+    become the recovery channel for a money account.
+
+    It fires only when the address is still UNVERIFIED, so a signup whose email
+    code round-trip succeeded passes straight through. That is now the common
+    case rather than the exception: the signup Flow sends the code, and it also
+    sets an app password, so these customers sign in directly instead of
+    arriving through the OTP password reset this gate once leaned on."""
+    # KYC ownership is proved by the Wema-registered SMS OTP or Wema face
+    # biometric.  Email is an account-recovery control, not a Wema KYC factor;
+    # never block BVN/NIN/face/address verification on an email code.
+    #
+    # This answers ONE question — "may the KYC ladder open?" — and the answer is
+    # now always yes. It used to answer a second, unrelated one as well (see
+    # _email_unproven_for_recovery), and collapsing it to False silently took that
+    # protection with it. Keep the two apart: they are the same fact serving
+    # different purposes, and only one of them was meant to be retired.
+    return False
+
+
+def _email_unproven_for_recovery(user) -> bool:
+    """Whether this address is too unproven to be a PASSWORD-RECOVERY channel.
+
+    Deliberately NOT the same question as _email_verification_required. That one
+    asks whether to block KYC, and the answer is now always no. This one asks
+    whether to send a reset code to the inbox — and for a chat-onboarded account
+    it is still yes-it-is-unproven, for the reason that has not changed: the
+    address was typed into a WhatsApp conversation and nobody has ever proved
+    control of it. One typo and the reset code for a money account lands in a
+    stranger's inbox.
+
+    Both used to read the same predicate. When that predicate was hardcoded to
+    False to open the KYC ladder, this suppression went with it and reset codes
+    began going to unverified chat-typed addresses. Splitting them is what lets
+    the KYC decision stand without giving that away.
+
+    The phone still gets the code either way, and it is the identity these
+    accounts actually authenticated with — so nobody is locked out by this.
+    """
+    return bool(getattr(user, "onboarded_via_whatsapp", False) and not user.email_verified)
+
+
+def _email_gate(user):
+    if _email_verification_required(user):
+        return fail("Confirm your email address first — check Settings → Verify email.",
+                    status=403)
+    return None
+
+
+@ratelimit("otp_send", limit=5, window=60)
+@api
+@require_user
+def email_verify_start(request):
+    """POST /api/email/verify/start/ {access_token} — email a code to the address
+    on file. EMAIL ONLY, never SMS: this code proves control of the inbox, and
+    delivering it to the phone would verify nothing."""
+    user = request.user_obj
+    if user.email_verified:
+        return ok(success=True, message="Email already verified", **_kyc_state(user))
+    # While unverified, the address may be set or corrected — an account with a
+    # blank or mistyped email would otherwise be locked out of Tier 1 for good.
+    new_email = (request.data.get("email") or "").strip().lower()
+    if new_email:
+        if len(new_email) > 254 or "@" not in new_email:
+            return fail("Enter a valid email address")
+        if User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
+            return fail("That email is already on another account")
+        user.email = new_email
+        user.save(update_fields=["email"])
+    if not user.email:
+        return fail("No email address on this account — include one in the request")
+    if not _otp_on_cooldown(user.phone):
+        code = _otp_code()
+        OTP.issue(phone=user.phone, code=code, email=user.email, purpose=OTP.EMAIL)
+        send_email(user.email, "Confirm your email for Zitch",
+                   f"Your Zitch email confirmation code is {code}",
+                   html=_branded_email("Confirm your email",
+                                       "Enter this code in the Zitch app to confirm your email address.",
+                                       code=code,
+                                       note="If you didn't request this, you can ignore this email."))
+    # success=True is load-bearing, not decoration: the app advances to the code
+    # screen on this flag, and ok() deliberately does not default it (a queued
+    # transfer answers 200 with success LEFT OUT so it reads as "processing").
+    # Dropping it here strands the customer on the email step with a 200 that the
+    # app reads as a failure — and email is a Tier 1 requirement, so the whole
+    # ladder stops. It has been dropped once already; leave it explicit.
+    return ok(success=True, message=f"We sent a code to {user.email}")
+
+
+@ratelimit("otp_verify", limit=20, window=60)
+@api
+@require_user
+def email_verify_confirm(request):
+    """POST /api/email/verify/confirm/ {access_token, otp} — mark the email
+    verified. Filtered to purpose=EMAIL so a signup or reset code can never
+    stand in for inbox control."""
+    user = request.user_obj
+    code = (request.data.get("otp") or "").strip()
+    if not code:
+        return fail("Enter the code from the email")
+    otp = OTP.objects.filter(phone=user.phone, used=False, purpose=OTP.EMAIL).order_by("-created").first()
+    if otp is None or otp.is_expired:
+        return fail("Invalid or expired code", status=400)
+    if otp.too_many_attempts:
+        return fail("Too many incorrect attempts. Request a new code.", status=429)
+    if not otp.verify_code(code):
+        otp.attempts += 1
+        otp.save(update_fields=["attempts"])
+        return fail("Invalid code", status=400)
+    otp.used = True
+    otp.save(update_fields=["used"])
+    user.email_verified = True
+    user.recompute_tier()  # Tier 1 requires the verified email; it may be the last piece
+    user.save(update_fields=["email_verified", "tier"])
+    return ok(success=True, message="Email verified", **_kyc_state(user))
+
+
+def _repair_unbacked_wema_identity_flags(user) -> None:
+    """Rehydrate identity flags from local proof rows; never clear them on a read.
+
+    This intentionally does not depend on the live Wema switch. Rehydration reads
+    only our durable proof/provisioning records and must work during pilot, simulation,
+    or a temporary gateway outage; otherwise completed BVN verification is shown again.
+    """
+    fields = rehydrate_verified_identity_flags(user)
+    if fields:
+        log.info("rehydrated_wema_identity_flags user=%s fields=%s", user.id, fields)
+
+
 def _kyc_state(user) -> dict:
+    _repair_unbacked_wema_identity_flags(user)
+    wallet = Wallet.objects.filter(user=user).only("bank_tier").first()
+    bank_tier = wallet.bank_tier if wallet else 0
+    bank_limits = {
+        key: (str(value) if value is not None else None)
+        for key in ("single_inflow", "daily_spend", "max_balance")
+        for value in [wema.bank_tier_limit(bank_tier, key)]
+    }
     return {
         "tier": user.tier,
+        "tier_name": _TIER_NAMES.get(user.tier, "Unverified"),
         "transaction_limit": str(user.transaction_limit),
+        "daily_transfer_limit": str(user.daily_transfer_limit),
+        "daily_bill_limit": str(user.daily_bill_limit),
         "bvn_verified": user.bvn_verified,
         "nin_verified": user.nin_verified,
         "face_verified": user.face_verified,
+        "address_verified": user.address_verified,
+        "id_document_verified": user.id_document_verified,
+        "email": user.email or "",
+        "email_verified": user.email_verified,
+        "phone_verified": user.phone_verified,
+        # True only for chat-onboarded accounts that haven't confirmed their
+        # email in the app yet — the one state where the KYC ladder is closed.
+        "email_verification_required": _email_verification_required(user),
         "large_txn_threshold": str(User.LARGE_TXN_THRESHOLD),
+        # Separate from Zitch's verification/spend ladder: these are enforced by
+        # Wema on the dedicated NUBAN itself.
+        "bank_tier": bank_tier,
+        "has_wema_account": bool(wallet and wallet.account_number),
+        "bank_upgrade_required": bool(wallet and wallet.account_number and (
+            bank_tier < 2 or not (user.bvn_verified and user.nin_verified and user.face_verified)
+        )),
+        "bank_tier_limits": bank_limits,
+        # Which rail each step runs on, so the screen renders what will ACTUALLY
+        # happen rather than a fixed set of inputs. The face and address steps look
+        # completely different on the bank rail — one opens the bank's own verifier,
+        # the other stops asking for a document — and a screen that guesses wrong
+        # either asks for a file nobody will read or hides the only working button.
+        # Two different face products exist and must never share a flag:
+        # - Wema hosted face is an alternative to SMS OTP for proving one BVN/NIN.
+        # - Prembly live selfie is the Tier-2 biometric sent with BVN+NIN to upgrade.
+        # Older app builds understand face_rail=document, which safely keeps the
+        # generic Tier-2 face card on Prembly instead of mislabelling Wema identity
+        # proof as a Tier-2 face pass.
+        "identity_face_available": wema.face_verify_live(),
+        "identity_verification_methods": (["sms_otp", "wema_face"]
+                                          if wema.face_verify_live()
+                                          else ["sms_otp"]),
+        "face_rail": "document",
+        "tier2_face_rail": "prembly",
+        "address_rail": ("wema" if (kyc_provider() == "wema" and wema.address_verify_live())
+                         else "document"),
     }
+
+
+def _kyc_image_error(value) -> str | None:
+    if not isinstance(value, str) or not value:
+        return "Upload a clear image"
+    if len(value) > MAX_KYC_IMAGE_BASE64:
+        return "Image is too large. Choose a photo under 2 MB."
+    return None
+
+
+@api
+@require_user
+def set_transaction_limit(request):
+    """POST /api/limits/transaction/ {access_token, limit, pin}
+
+    Lets a customer tighten their own per-transaction limit. `limit` is a naira
+    amount, or the string "off"/"" to remove the self-limit and go back to the
+    tier ceiling.
+
+    THE LIMIT CAN ONLY GO DOWN. The tier ceiling is a KYC/compliance bound and is
+    not negotiable from settings: a higher limit is earned by verifying identity,
+    never by asking. So a value above the ceiling is refused rather than clamped —
+    silently storing something other than what the customer typed, on the screen
+    that tells them what their limit is, would be its own bug.
+
+    The PIN is required for the same reason it guards a payment. A self-imposed
+    limit is a control a thief holding a live session would want gone first, and
+    raising it back to the ceiling is worth exactly as much to them as a transfer.
+    It goes through the brute-force-protected checker, so this cannot be used as
+    an unlimited PIN oracle.
+    """
+    from common.http import evaluate_transaction_pin
+
+    user = request.user_obj
+    raw = str(request.data.get("limit") or "").strip().lower()
+    pin = (request.data.get("pin") or "").strip()
+
+    if not user.transaction_pin:
+        return fail("Set a transaction PIN first", status=403, code="no_pin")
+    ok_pin, code, message = evaluate_transaction_pin(user, pin)
+    if not ok_pin:
+        return fail(message, status=403, code=code)
+
+    ceiling = user.tier_transaction_limit
+    if raw in ("", "off", "none", "null"):
+        chosen = None
+    else:
+        try:
+            # Commas and a naira sign are how people write an amount; rejecting
+            # "50,000" as malformed would be pedantry, not validation.
+            chosen = Decimal(raw.replace(",", "").replace("\u20a6", "").strip())
+        except (InvalidOperation, ValueError):
+            return fail("Enter the limit as a number, e.g. 50000")
+        # Order matters. is_finite() first, because NaN compares False against
+        # everything and Infinity would sail past a naive upper bound. The ceiling
+        # next, because it is what bounds the magnitude \u2014 quantize() on something
+        # like 1e9999 RAISES rather than returning a value, so it can only run
+        # once the number is known to be sane. A test pins each of the three.
+        if not chosen.is_finite():
+            return fail("Enter the limit as a number, e.g. 50000")
+        if chosen < 0:
+            return fail("A limit cannot be negative")
+        if chosen > ceiling:
+            return fail(
+                f"Your Tier {user.tier} limit is \u20a6{ceiling:,.0f} per transaction. "
+                "Verify more of your identity to raise it.",
+                code="above_tier_ceiling")
+        if chosen != chosen.quantize(Decimal("0.01")):
+            return fail("Enter the limit to at most two decimal places")
+
+    user.self_txn_limit = chosen
+    user.save(update_fields=["self_txn_limit"])
+    return ok(success=True,
+              message=("Limit removed \u2014 your tier limit applies" if chosen is None
+                       else "Transaction limit updated"),
+              **_limit_state(user))
+
+
+def _limit_state(user) -> dict:
+    """What the limits screen renders. `self_txn_limit` is null when unset, which
+    the app shows as "tier default" rather than as zero — a customer who has
+    frozen their own spending at 0 is a different state from one who never set a
+    limit, and the two must not read the same."""
+    return {
+        "tier": user.tier,
+        "tier_transaction_limit": str(user.tier_transaction_limit),
+        "self_txn_limit": None if user.self_txn_limit is None else str(user.self_txn_limit),
+        "transaction_limit": str(user.transaction_limit),
+        "daily_transfer_limit": str(user.daily_transfer_limit),
+        "daily_bill_limit": str(user.daily_bill_limit),
+    }
+
+
+@api
+@require_user
+def transaction_limits(request):
+    """POST /api/limits/ {access_token} -> the customer's limits and their ceiling."""
+    return ok(success=True, **_limit_state(request.user_obj))
 
 
 @api
@@ -445,96 +1151,550 @@ def kyc_status(request):
     return ok(success=True, **_kyc_state(request.user_obj))
 
 
-_KYC_BVN_TTL = 600  # seconds an unconfirmed BVN code stays valid
+def _simulate_provision_account(user) -> str:
+    """Provision a mock NUBAN for a test user the way the OTP flow does in simulation:
+    get_account_details returns a demo account when WEMA_SIMULATION is on. Idempotent —
+    returns the existing number untouched, or the freshly minted one ('' on a
+    miss/conflict)."""
+    wallet = get_or_create_wallet(user)
+    if wallet.account_number:
+        return wallet.account_number
+    acct = wema.get_account_details(user.phone or "", bvn=True)
+    num = (acct.get("account_number") or "").strip()
+    if not num or Wallet.objects.filter(account_number=num).exclude(pk=wallet.pk).exists():
+        return wallet.account_number
+    wallet.account_number = num
+    wallet.account_name = acct.get("account_name") or (user.get_full_name() or "").strip() or "ZITCH USER"
+    wallet.bank_name = acct.get("bank_name") or "Wema Bank"
+    wallet.account_reference = wema_account_reference(user)
+    try:
+        wallet.save(update_fields=["account_number", "account_name", "bank_name",
+                                   "account_reference", "updated"])
+    except IntegrityError:
+        return wallet.account_number
+    wema.lift_debit_restriction(num, bvn=True)  # mock-lifts the PND hold in simulation
+    return num
+
+
+def apply_simulated_kyc(user, tier: int = 3) -> tuple[str, dict]:
+    """Apply test-only KYC to one already-authenticated user.
+
+    Shared by the token-protected HTTP endpoint and the WhatsApp simulation
+    command. The caller still owns its authentication gate; this helper owns
+    the simulation-only invariant and the single implementation of the state
+    change. No real BVN or NIN is stored.
+    """
+    if not wema.wema_simulation():
+        raise ValueError("Simulation is disabled")
+    if tier not in (1, 2, 3):
+        raise ValueError("tier must be 1, 2, or 3")
+
+    # Set the flags recompute_tier() derives the tier from (see User.recompute_tier):
+    # tier 1 = BVN+NIN, tier 2 += face+address, tier 3 += ID document. Deterministic,
+    # namespaced hashes populate audit/support fields without inventing real IDs.
+    # Namespace simulation hashes away from the real 11-digit identity domain, so
+    # a test customer can never collide with a legitimate BVN/NIN by chance.
+    user.bvn_hash = hash_identifier(f"simulation:bvn:{user.id}")
+    user.bvn_last4 = f"{user.id:04d}"[-4:]
+    user.nin_hash = hash_identifier(f"simulation:nin:{user.id}")
+    user.nin_last4 = f"{user.id:04d}"[-4:]
+    user.email_verified = True
+    user.phone_verified = True
+    user.bvn_verified = True
+    user.nin_verified = True
+    user.face_verified = tier >= 2
+    user.address_verified = tier >= 2
+    user.id_document_verified = tier >= 3
+    user.recompute_tier()
+    # Persist the contact flags too. The old endpoint assigned them in memory but
+    # omitted them from update_fields, so an unverified test account could appear
+    # verified in the response and revert on the next request.
+    user.save(update_fields=["bvn_hash", "bvn_last4", "nin_hash", "nin_last4",
+                             "email_verified", "phone_verified",
+                             "bvn_verified", "nin_verified", "face_verified",
+                             "address_verified", "id_document_verified", "tier"])
+
+    account_number = _simulate_provision_account(user)
+    log.warning("simulate_kyc_used phone=%s tier=%s account=%s — simulation is enabled; "
+                "disable WEMA_SIMULATION before go-live",
+                mask_pii(user.phone or ""), user.tier, mask_pii(account_number))
+    return account_number, _kyc_state(user)
 
 
 @api
+@ratelimit("simulate_kyc", limit=30, window=60)
+def simulate_kyc(request):
+    """POST /api/dev/simulate-kyc/ {token, phone, tier?} -> {success, ...kyc, account_number}
+
+    TEST-ONLY. Marks a test user KYC-verified to the requested tier (default 3) and
+    provisions a mock NUBAN, so the app's KYC-gated features — tiers, virtual account,
+    higher limits — can be walked without real identity data or deliverable ownership
+    OTPs. Same three-gate lockdown as /api/dev/simulate-deposit/ (and the SAME token),
+    ALL required:
+
+      1. WEMA_SIMULATION on (else 404 — cannot exist on a live-money deploy).
+      2. SIMULATE_DEPOSIT_TOKEN set and matching (constant-time compare).
+      3. tier in 1..3 for an existing user.
+
+    Every use is logged loudly; wema_preflight HARD-FAILS while the token is set.
+    Remove SIMULATE_DEPOSIT_TOKEN before go-live.
+    """
+    # Gate 1 — simulation only. 404 so a live deploy gives no hint the route exists.
+    if not wema.wema_simulation():
+        return fail("Not found", status=404)
+    # Gate 2 — shared-secret token (the same one that gates simulate-deposit).
+    configured = settings.SIMULATE_DEPOSIT_TOKEN
+    supplied = (request.data.get("token") or "").strip()
+    if not configured or not hmac.compare_digest(supplied, configured):
+        return fail("Forbidden", status=403)
+    # Gate 3 — target user + tier.
+    phone = (request.data.get("phone") or "").strip()
+    if not phone:
+        return fail("phone is required")
+    try:
+        tier = int(request.data.get("tier", 3))
+    except (TypeError, ValueError):
+        return fail("tier must be 1, 2, or 3")
+    if tier not in (1, 2, 3):
+        return fail("tier must be 1, 2, or 3")
+    user = User.objects.filter(phone=phone).first()
+    if user is None:
+        return fail("No user with that phone", status=404)
+
+    account_number, state = apply_simulated_kyc(user, tier)
+    return ok(success=True, account_number=account_number,
+              message="Simulated KYC applied", **state)
+
+
+_KYC_BVN_TTL = 600  # seconds an unconfirmed BVN code stays valid
+_KYC_BVN_MAX_ATTEMPTS = 5  # wrong OTP guesses before the pending code is burned
+
+
+def _pending_identity_fernet():
+    """Short-lived encryption for a BVN/NIN awaiting its ownership OTP.
+
+    The user model deliberately retains only keyed hashes and last-four digits.
+    A raw value is needed once, after the OTP, to atomically claim that hash and
+    provision the bank account. Keep it encrypted in the shared cache for ten
+    minutes instead of placing plaintext identity data in Redis.
+    """
+    from cryptography.fernet import Fernet
+
+    digest = hashlib.sha256(
+        b"zitch-pending-identity-v1\0" + settings.SECRET_KEY.encode()
+    ).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def _pending_identity_encrypt(kind: str, raw: str) -> str:
+    return _pending_identity_fernet().encrypt(f"{kind}:{raw}".encode()).decode()
+
+
+def _pending_identity_decrypt(kind: str, token: str) -> str:
+    from cryptography.fernet import InvalidToken
+
+    try:
+        clear = _pending_identity_fernet().decrypt((token or "").encode()).decode()
+    except (InvalidToken, UnicodeDecodeError):
+        return ""
+    prefix = f"{kind}:"
+    return clear[len(prefix):] if clear.startswith(prefix) else ""
+
+
+def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict):
+    """Send an ownership OTP without weakening live identity proof.
+
+    Wema Wallet Service does not support email delivery for BVN/NIN OTP. The
+    challenge is therefore sent only to the phone number returned on the
+    identity record (or the tester's phone in explicit simulation/dev mode).
+    Resend remains for Zitch-owned email verification, not bank identity OTP.
+    """
+    simulated = bool(result.get("mock") and not mock_disabled_in_prod())
+    destination = (user.phone or "").strip() if simulated else (result.get("phone") or "").strip()
+    if not destination:
+        return fail(
+            f"The identity provider did not return a phone for this {kind.upper()}. "
+            "Please contact support for review.",
+            status=503,
+            code="identity_phone_unavailable",
+        )
+
+    require_real_delivery = _delivery_must_be_real()
+    sms_possible = sms_live() or not require_real_delivery
+    if not sms_possible:
+        return fail("Identity verification is temporarily unavailable.", status=503)
+
+    code = _otp_code()
+    message = (f"Zitch: {code} is your {kind.upper()} verification code. "
+               "It expires in 10 minutes. Never share it.")
+    sms_result = send_sms(destination, message)
+    if not sms_result.get("success"):
+        return fail("We could not deliver the verification code. Please try again.", status=503)
+
+    cache.set(
+        f"kyc_identity:{kind}:{user.id}",
+        {
+            "code_hash": OTP.hash_code(code),
+            "identity": _pending_identity_encrypt(kind, raw),
+            "attempts": 0,
+        },
+        _KYC_BVN_TTL,
+    )
+    channel = f"registered phone •••••{destination[-4:]}"
+    return ok(success=True, otp_required=True, delivery=channel,
+              message=f"We sent a verification code to your {channel}.")
+
+def _confirm_identity_ownership_challenge(user, kind: str, otp: str):
+    cache_key = f"kyc_identity:{kind}:{user.id}"
+    pending = cache.get(cache_key)
+    if not pending:
+        return None, fail(f"Your code expired — start {kind.upper()} verification again", status=400)
+    if not hmac.compare_digest(pending.get("code_hash", ""), OTP.hash_code(otp)):
+        attempts = int(pending.get("attempts", 0)) + 1
+        if attempts >= _KYC_BVN_MAX_ATTEMPTS:
+            cache.delete(cache_key)
+            return None, fail("Too many incorrect attempts — start verification again",
+                              status=429, code="too_many_attempts")
+        pending["attempts"] = attempts
+        cache.set(cache_key, pending, _KYC_BVN_TTL)
+        return None, fail(
+            f"Incorrect code. {_KYC_BVN_MAX_ATTEMPTS - attempts} attempt(s) left.",
+            status=400,
+        )
+    raw = _pending_identity_decrypt(kind, pending.get("identity", ""))
+    cache.delete(cache_key)
+    if not raw:
+        return None, fail("This verification could not be recovered. Please start again.", status=400)
+    return raw, None
+
+
+@api
+@ratelimit("kyc_bvn_start", limit=5, window=300)
 @require_user
 def kyc_bvn_start(request):
     """POST /api/kyc/bvn/start {access_token, bvn}
 
-    Data-matches the BVN, then sends a one-time code (SMS + email) the user must
-    confirm to prove ownership before the BVN counts. When the Prembly plan
-    exposes native BVN-OTP to the BVN-registered phone, swap it in here
-    (verify-before-live).
+    Data-matches the BVN, then sends a phone OTP the user must confirm to prove
+    ownership before the BVN counts. Wema Wallet Service does not support email
+    delivery for this OTP.
     """
     user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
     bvn = (request.data.get("bvn") or "").strip()
+    if _identity_owned_by_another_user(user, "bvn", bvn):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     result = verify_bvn(bvn, name=user.get_full_name() or "", mobile=user.phone or "")
     if not result.get("success"):
         return fail(result.get("message", "BVN verification failed"), status=400)
-    code = _otp_code()
-    cache.set(f"kyc_bvn:{user.id}", {"code": code, "bvn": bvn}, _KYC_BVN_TTL)
-    msg = f"Your Zitch BVN verification code is {code}"
-    send_sms(user.phone or "", msg)
-    if user.email:
-        send_email(user.email, "Your Zitch BVN code", msg)
-    return ok(success=True, otp_required=True,
-              message="We sent a verification code to your phone and email.")
+    return _start_identity_ownership_challenge(user, "bvn", bvn, result)
 
 
 @api
+@ratelimit("kyc_bvn_confirm", limit=20, window=300)
 @require_user
 def kyc_bvn_confirm(request):
     """POST /api/kyc/bvn/confirm {access_token, otp} — confirm the BVN code and
     mark the BVN verified."""
     user = request.user_obj
-    otp = (request.data.get("otp") or "").strip()
-    pending = cache.get(f"kyc_bvn:{user.id}")
-    if not pending:
-        return fail("Your code expired — start BVN verification again", status=400)
-    if otp != pending["code"]:
-        return fail("Incorrect code", status=400)
-    cache.delete(f"kyc_bvn:{user.id}")
-    user.set_bvn(pending["bvn"])
-    user.bvn_verified = True
-    user.recompute_tier()
-    user.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified", "tier"])
-    _reserve_wallet_account(user, bvn=pending["bvn"])
-    return ok(success=True, message="BVN verified", **_kyc_state(user))
-
-
-@api
-@require_user
-def kyc_bvn(request):
-    """POST /api/kyc/bvn/ {access_token, bvn} -> verifies BVN, recomputes tier"""
-    user = request.user_obj
-    bvn = (request.data.get("bvn") or "").strip()
-    result = verify_bvn(bvn, name=user.get_full_name() or "", mobile=user.phone or "")
-    if not result.get("success"):
-        return fail(result.get("message", "BVN verification failed"), status=400)
-    user.set_bvn(bvn)
-    user.bvn_verified = True
-    user.recompute_tier()
-    user.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified", "tier"])
+    gate = _email_gate(user)
+    if gate:
+        return gate
+    bvn, error = _confirm_identity_ownership_challenge(
+        user, "bvn", (request.data.get("otp") or "").strip()
+    )
+    if error:
+        return error
+    if not _save_verified_identity(user, "bvn", bvn):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     _reserve_wallet_account(user, bvn=bvn)
     return ok(success=True, message="BVN verified", **_kyc_state(user))
 
 
 @api
+@ratelimit("kyc_bvn", limit=5, window=300)
+@require_user
+def kyc_bvn(request):
+    """POST /api/kyc/bvn/ {access_token, bvn} -> verifies BVN, recomputes tier"""
+    user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
+    if mock_disabled_in_prod():
+        return fail(
+            "BVN ownership requires a verification code. Update the app and use the BVN verification flow.",
+            status=409,
+            code="ownership_challenge_required",
+        )
+    bvn = (request.data.get("bvn") or "").strip()
+    if _identity_owned_by_another_user(user, "bvn", bvn):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
+    result = verify_bvn(bvn, name=user.get_full_name() or "", mobile=user.phone or "")
+    if not result.get("success"):
+        return fail(result.get("message", "BVN verification failed"), status=400)
+    if not _save_verified_identity(user, "bvn", bvn):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
+    _reserve_wallet_account(user, bvn=bvn)
+    return ok(success=True, message="BVN verified", **_kyc_state(user))
+
+
+@api
+@ratelimit("kyc_nin", limit=5, window=300)
 @require_user
 def kyc_nin(request):
     """POST /api/kyc/nin/ {access_token, nin} -> verifies NIN, recomputes tier"""
     user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
     nin = (request.data.get("nin") or "").strip()
-    result = verify_nin(nin)
+    if _identity_owned_by_another_user(user, "nin", nin):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
+    # Pass the account name so a NIN that demonstrably belongs to someone else is
+    # rejected (mirrors kyc_bvn) — otherwise any valid NIN would lift the tier.
+    result = verify_nin(nin, name=user.get_full_name() or "")
     if not result.get("success"):
         return fail(result.get("message", "NIN verification failed"), status=400)
     # The redesigned flow also uploads the NIN slip/ID image; verify it when sent.
     image = request.data.get("nin_image") or ""
     if image:
+        image_error = _kyc_image_error(image)
+        if image_error:
+            return fail(image_error)
         doc = kyc_verify_nin_document(image)
         if not doc.get("success"):
             return fail(doc.get("message", "Couldn't verify your NIN document"), status=400)
-    user.set_nin(nin)
-    user.nin_verified = True
-    user.recompute_tier()
-    user.save(update_fields=["nin_hash", "nin_last4", "nin_verified", "tier"])
+    # Keep the fast mock path only for local/test suites. A production deploy —
+    # including the explicit simulation environment — exercises the same OTP
+    # state machine as live KYC, with the destination policy above.
+    if not settings.DEBUG and not getattr(settings, "TESTING", False):
+        return _start_identity_ownership_challenge(user, "nin", nin, result)
+    if not _save_verified_identity(user, "nin", nin):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     _reserve_wallet_account(user, nin=nin)
     return ok(success=True, message="NIN verified", **_kyc_state(user))
 
 
 @api
+@ratelimit("kyc_nin_confirm", limit=20, window=300)
+@require_user
+def kyc_nin_confirm(request):
+    """Confirm control of the phone registered against the NIN."""
+    user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
+    nin, error = _confirm_identity_ownership_challenge(
+        user, "nin", (request.data.get("otp") or "").strip()
+    )
+    if error:
+        return error
+    if not _save_verified_identity(user, "nin", nin):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
+    _reserve_wallet_account(user, nin=nin)
+    return ok(success=True, message="NIN verified", **_kyc_state(user))
+
+
+FACE_SESSION_TTL_MINUTES = 20
+
+
+def face_identity_error(user, identity_type: str, raw: str) -> str:
+    """Why this identity may NOT open a face session for this user, or "".
+
+    Wema's hosted face flow is itself an ownership proof for a BVN/NIN, so an
+    unverified identity is allowed. What it may never do is replace a different
+    identity of the same type that this Zitch account has already proved. Global
+    uniqueness is checked separately before the session is created and again in the
+    callback transaction.
+    """
+    if not getattr(user, f"{identity_type}_verified", False):
+        return ""
+    stored = getattr(user, f"{identity_type}_hash", "") or ""
+    if not stored or not hmac.compare_digest(hash_identifier(raw), stored):
+        return (f"That {identity_type.upper()} isn't the one on this account. "
+                f"Enter the {identity_type.upper()} you verified.")
+    return ""
+
+
+def _face_callback_url(state: str) -> str:
+    """The absolute URL ALAT POSTs the face-check result to.
+
+    Carries the per-session state and NOTHING ELSE. It deliberately does not carry
+    WEMA_CALLBACK_TOKEN, even though every other bank callback does, because this URL
+    is not a server-to-server secret: it is handed to the customer, rendered in a
+    WebView address bar and WhatsApp's in-app browser, passed through Meta as a CTA
+    target, and logged by ALAT's own web app. The token guards the payout
+    AUTHORISATION endpoint, so putting it here published the secret that decides
+    whether a transfer may proceed — to every customer who verified their face.
+
+    The state is 32 bytes of CSPRNG, single-use and bound to one user, which is the
+    right shape for a value that must appear in a URL somebody can read.
+
+    The state rides in the QUERY STRING, not the path, so the part ALAT registers is
+    constant. They whitelist cb_uri values at their end, and an exact-match whitelist
+    cannot accept a URL whose last path segment changes every session — it would admit
+    one customer once and reject every one after. `/webhooks/wema/face` is the same
+    string forever; only `?s=` moves. The old path form is still routed for sessions
+    opened before this shipped.
+    """
+    base = (settings.ZITCH_LINKS.get("API_BASE", "") or "").rstrip("/")
+    callback = f"{base}/webhooks/wema/face"
+    if wema.face_cb_mode() == "registered":
+        return callback
+    return f"{callback}?{urlencode({'s': state})}"
+
+
+@api
+@ratelimit("kyc_face_start", limit=10, window=600)
+@require_user
+def kyc_face_start(request):
+    """POST /api/kyc/face/start/ {access_token, bvn|nin, prefer_face?} -> {url, session}
+
+    Opens ALAT's hosted face-biometric ownership check. This is an alternative to
+    Wallet Service SMS OTP for proving one BVN/NIN and creating Tier 1; it is not the
+    Prembly live-selfie requirement for a Tier-2 account upgrade.
+
+    The BVN/NIN is used to build the URL and then discarded — only its keyed hash is
+    kept on the session, which is what the bank's callback is later matched against.
+
+    `prefer_face` is the caller saying "I am asking for the face route ON PURPOSE",
+    and it exists because the answer below for an identity with a live OTP attempt
+    is "enter the code Wema already sent". That is the right DEFAULT — the code is
+    usually in the customer's hand and re-proving the same identity twice is waste
+    — but it is the wrong answer to the one person who needs this endpoint most:
+    someone whose code never arrived. The code goes to the line registered against
+    the BVN/NIN, which is very often not the phone they are holding, so "we already
+    sent it" is not help, it is the dead end restated. With this flag the pending
+    attempt is left alive (either proof creates the same account, whichever the
+    bank returns first) and a real face session is opened instead.
+    """
+    user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
+    bvn = (request.data.get("bvn") or "").strip()
+    nin = (request.data.get("nin") or "").strip()
+    prefer_face = str(request.data.get("prefer_face") or "").strip().lower() in ("1", "true", "yes", "on")
+    # NO blanket "BVN already verified -> 409" here, deliberately.
+    #
+    # A guard like that reads as obviously right and is not: it made every branch
+    # below unreachable for a BVN. Those branches are what answer the case that
+    # actually matters — an identity that IS verified but whose NUBAN never
+    # landed (a provisioning callback we missed, a cleared test account, a
+    # half-finished setup). They hand back the existing account, or the pending
+    # OTP attempt, or reconnect the account from the bank, and only open a fresh
+    # face session when there is genuinely nothing to recover. Short-circuiting
+    # to 409 put those customers back in the dead end that work was done to
+    # remove, and left the face route — the ONLY way such a user gets an account
+    # — permanently closed to them.
+    #
+    # Repeated face checks are still refused, just further down and with a useful
+    # answer: a verified identity with an account returns 200 `already=True`
+    # without opening a session, and a DIFFERENT identity is refused outright by
+    # face_identity_error.
+    identity_type, raw = ("bvn", bvn) if bvn else ("nin", nin)
+    if not raw.isdigit() or len(raw) != 11:
+        return fail("Enter your 11-digit BVN or NIN")
+    if _identity_owned_by_another_user(user, identity_type, raw):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
+    stored_hash = getattr(user, f"{identity_type}_hash", "") or ""
+    identity_hash = hash_identifier(raw)
+    if (getattr(user, f"{identity_type}_verified", False)
+            and hmac.compare_digest(identity_hash, stored_hash)):
+        # Verified identity, but the NUBAN it was supposed to mint never landed
+        # (a provisioning callback we missed, a cleared test account, a half-finished
+        # setup). Answering only "already verified" here dead-ends funding screens.
+        wallet = get_or_create_wallet(user)
+        if wallet.account_number:
+            return ok(success=True, status="verified", already=True,
+                      account_number=wallet.account_number,
+                      message=f"{identity_type.upper()} is already verified",
+                      **_kyc_state(user))
+        pending = WemaProvisioningAttempt.objects.filter(
+            user=user,
+            identity_type=identity_type,
+            identity_hash=identity_hash,
+            status=WemaProvisioningAttempt.PENDING,
+            expires_at__gt=timezone.now(),
+        ).order_by("-created").first()
+        # Not when the caller explicitly asked for the face route: see prefer_face
+        # above. Pointing someone at a code they have already told us never
+        # arrived is what made this screen a dead end in the first place.
+        if pending is not None and not prefer_face:
+            return ok(success=True, status="account_otp_pending", already=True,
+                      otp_required=True, tracking_id=pending.tracking_id,
+                      using_bvn=identity_type == "bvn",
+                      otp_destination=user.phone or "",
+                      account_setup_state="otp_pending",
+                      message=(f"{identity_type.upper()} is verified. Enter the Wema SMS code "
+                               "already sent to finish creating your account."),
+                      **_kyc_state(user))
+        try:
+            recovered, _detail = attach_existing_bank_account(
+                user, using_bvn=identity_type == "bvn")
+        except Exception:  # noqa: BLE001 — fall through to a fresh face check
+            recovered = None
+            log.warning("face_start_readback_failed user=%s", user.id, exc_info=True)
+        if recovered is not None and recovered.account_number:
+            return ok(success=True, status="verified", already=True,
+                      account_number=recovered.account_number,
+                      account_name=recovered.account_name,
+                      bank_name=recovered.bank_name,
+                      message="Your bank account was already set up — we've reconnected it.",
+                      **_kyc_state(user))
+        # Nothing to reconnect: open a real face session. The callback re-proves
+        # the SAME identity (a different one is still refused there) and creates
+        # the account, which is the only way this user gets one.
+    binding = face_identity_error(user, identity_type, raw)
+    if binding:
+        return fail(binding, status=400)
+    if not wema.face_verify_live():
+        # Never fabricate a passed biometric check. Off a configured deploy this is
+        # an outage, and in local development it stays an outage too: a mock that
+        # marked face_verified would lift a tier and clear the large-transfer
+        # step-up on nothing at all.
+        return fail("Face verification is temporarily unavailable. Please try again later.",
+                    status=503)
+    session = WemaFaceSession.objects.create(
+        user=user,
+        state=secrets.token_urlsafe(32)[:64],
+        identity_type=identity_type,
+        identity_hash=hash_identifier(raw),
+        expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
+    )
+    url = wema.face_verification_url(identity_type, raw, _face_callback_url(session.state))
+    log.info("wema_face_start user=%s type=%s session=%s", user.id, identity_type, session.state[:8])
+    return ok(success=True, url=url, session=session.state,
+              expires_in=FACE_SESSION_TTL_MINUTES * 60,
+              message="Complete the face check to continue.")
+
+
+@api
+@ratelimit("kyc_face_status", limit=120, window=600)
+@require_user
+def kyc_face_status(request):
+    """GET/POST /api/kyc/face/status/ {access_token, session} -> {status}
+
+    Polled by the app while the customer is inside the bank's web app, because the
+    result arrives on OUR server (cb_uri) rather than back through the WebView.
+
+    Scoped to the caller's own sessions, so the handle is not a lookup oracle for
+    somebody else's verification state.
+    """
+    user = request.user_obj
+    state = (request.data.get("session") or request.GET.get("session") or "").strip()
+    session = WemaFaceSession.objects.filter(user=user, state=state).first() if state else None
+    if session is None:
+        return fail("Unknown verification session", status=404)
+    status = session.status
+    if status == WemaFaceSession.PENDING and session.expired:
+        status = "expired"
+    return ok(success=True, status=status, **_kyc_state(user))
+
+
+@api
+@ratelimit("kyc_face_submit", limit=10, window=600)
 @require_user
 def kyc_face(request):
     """POST /api/kyc/face/ {access_token, selfie?}
@@ -544,10 +1704,114 @@ def kyc_face(request):
     server-side flag, so it must never be a bare client claim.
     """
     user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
     selfie = request.data.get("selfie") or request.data.get("image") or ""
+    # Empty remains valid only insofar as the configured provider accepts it (the
+    # offline test provider does; production providers fail closed). When a client
+    # does send an image, bound it before decoding/forwarding it.
+    if selfie:
+        image_error = _kyc_image_error(selfie)
+        if image_error:
+            return fail(image_error)
     result = kyc_verify_face(selfie)
     if not result.get("success"):
         return fail(result.get("message", "Face verification failed"), status=400)
     user.face_verified = True
-    user.save(update_fields=["face_verified"])
+    user.recompute_tier()  # face is a Tier 2 requirement
+    user.save(update_fields=["face_verified", "tier"])
     return ok(success=True, message="Face verification recorded", **_kyc_state(user))
+
+
+@api
+@ratelimit("kyc_address", limit=10, window=600)
+@require_user
+def kyc_address(request):
+    """POST /api/kyc/address/ {access_token, address, city, state?, document}
+
+    Verifies a residential address (Tier 2, together with face). Requires the
+    address AND a proof-of-address document; marks the address verified on
+    success and recomputes the tier.
+
+    The document is mandatory. Typed text is a claim, not evidence: without a
+    utility bill or bank statement behind it, "verified address" on a Tier 2
+    account means only that the user typed something over six characters long,
+    while the tier it unlocks raises the transaction limit to ₦200,000. Every
+    other document-bearing check here (NIN slip, government ID) already refuses
+    an empty image; the address check was the one that did not. Only the
+    verified flag survives — the image is never retained, as with the others.
+    """
+    user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
+    address = (request.data.get("address") or "").strip()
+    if len(address) < 6:
+        return fail("Enter your full residential address")
+    city = (request.data.get("city") or "").strip()
+    state = (request.data.get("state") or "").strip()
+    full = ", ".join(p for p in [address, city, state] if p)
+    document = request.data.get("document") or request.data.get("image") or ""
+    address_fields = {"fullAddress": full, "city": city, "state": state}
+    bank_rail = kyc_provider() == "wema" and wema.address_verify_live()
+    if bank_rail:
+        # The BANK verifies the address and lifts the NUBAN to its Tier 3 on the
+        # strength of it. That is a stronger control than a document we OCR, so the
+        # upload stops being mandatory here — but the result is now authoritative:
+        # a refusal from the bank is a refusal, not something to fall back from.
+        # Falling back to the document rail on a bank refusal would let anyone
+        # rejected by Wema retry with a utility bill and pass, which is worse than
+        # having no bank check at all.
+        acct = getattr(getattr(user, "wallet", None), "account_number", "") or ""
+        if not acct:
+            return fail("Set up your account number first — address verification is done by the bank.",
+                        status=409)
+        result = wema.upgrade_tier3(acct, address_fields)
+        if not result.get("success"):
+            return fail(result.get("message") or "Couldn't verify your address", status=400)
+    else:
+        image_error = _kyc_image_error(document)
+        if image_error:
+            return fail("Upload a proof of address (utility bill or bank statement)"
+                        if image_error == "Upload a clear image" else image_error)
+        result = kyc_verify_address(full, document=document)
+        if not result.get("success"):
+            return fail(result.get("message", "Couldn't verify your address"), status=400)
+    user.set_address(full)
+    user.address_verified = True
+    user.recompute_tier()
+    user.save(update_fields=["address", "address_verified", "tier"])
+    if not bank_rail:
+        # Document rail: still sync the bank-side tier, best-effort as before.
+        _sync_wema_tier3(user, address_fields)
+    return ok(success=True, message="Address verified", **_kyc_state(user))
+
+
+@api
+@ratelimit("kyc_id_document", limit=10, window=600)
+@require_user
+def kyc_id_document(request):
+    """POST /api/kyc/id/ {access_token, image, doc_type?}
+
+    Verifies a government-issued ID document (Tier 3): passport / driver's
+    licence / voter's card / NIN slip. Only the verified flag and the document
+    type are retained — never the raw image.
+    """
+    user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
+    image = request.data.get("image") or request.data.get("document") or ""
+    doc_type = (request.data.get("doc_type") or "").strip()[:32]
+    image_error = _kyc_image_error(image)
+    if image_error:
+        return fail(image_error)
+    result = kyc_verify_id_document(image, doc_type=doc_type)
+    if not result.get("success"):
+        return fail(result.get("message", "Couldn't verify your ID document"), status=400)
+    user.id_document_type = doc_type or "generic"
+    user.id_document_verified = True
+    user.recompute_tier()
+    user.save(update_fields=["id_document_type", "id_document_verified", "tier"])
+    return ok(success=True, message="ID document verified", **_kyc_state(user))

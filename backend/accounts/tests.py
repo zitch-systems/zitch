@@ -2,20 +2,55 @@
 import json
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
+
+from accounts import views
 from django.utils import timezone
 
 from betting.models import BettingPlatform
 from exams.models import ExamProduct
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
+from common.ratelimit import _lockout_key, client_ip
 
 from .models import OTP, AccessToken
 
 User = get_user_model()
+
+
+class DeviceBoundSessionTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create(username="bound", phone="08035550000")
+
+    def test_bound_token_resolves_only_for_the_authenticating_install(self):
+        raw = AccessToken.issue(self.user, device_id="install-a").key
+        self.assertEqual(AccessToken.resolve(raw, device_id="install-a"), self.user)
+        self.assertIsNone(AccessToken.resolve(raw, device_id="install-b"))
+        self.assertIsNone(AccessToken.resolve(raw, device_id=""))
+        # Internal non-HTTP callers retain the existing model API. The HTTP auth
+        # boundary never passes None, so a remote client cannot select this path.
+        self.assertEqual(AccessToken.resolve(raw), self.user)
+
+    def test_unbound_legacy_token_remains_valid_during_rollout(self):
+        raw = AccessToken.issue(self.user).key
+        self.assertEqual(AccessToken.resolve(raw, device_id="new-client"), self.user)
+
+    def test_authenticated_endpoint_enforces_the_binding(self):
+        raw = AccessToken.issue(self.user, device_id="install-a").key
+        payload = json.dumps({"access_token": raw})
+        allowed = self.client.post("/api/wallet_balance/", data=payload,
+                                   content_type="application/json",
+                                   HTTP_X_ZITCH_DEVICE="install-a")
+        refused = self.client.post("/api/wallet_balance/", data=payload,
+                                   content_type="application/json",
+                                   HTTP_X_ZITCH_DEVICE="install-b")
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(refused.status_code, 401)
 
 
 class OnboardingOtpTests(TestCase):
@@ -27,15 +62,64 @@ class OnboardingOtpTests(TestCase):
         return res, res.json()
 
     def test_onboarding_creates_user_and_token(self):
-        self.post("/api/phone_verification/", {"phone": "08011112222", "email": "new@zitch.test"})
-        otp = OTP.objects.filter(phone="08011112222").latest("created")
-        res, body = self.post("/api/verify_otp/", {"phone": "08011112222", "otp": otp.code})
+        # The raw code is never stored (only its hash), so pin it via _otp_code to
+        # learn what to submit — reading it back off the row is no longer possible.
+        with patch("accounts.views._otp_code", return_value="112233"):
+            self.post("/api/phone_verification/", {"phone": "08011112222", "email": "new@zitch.test"})
+        res, body = self.post("/api/verify_otp/", {"phone": "08011112222", "otp": "112233"})
         self.assertEqual(res.status_code, 200)
         self.assertIn("access_token", body)
         self.assertTrue(User.objects.filter(phone="08011112222").exists())
+        # The stored value is a hash, not the plaintext code.
+        self.assertNotEqual(OTP.objects.get(phone="08011112222").code_hash, "112233")
+
+    def test_verify_otp_stores_legal_name(self):
+        # The name captured at register is sent to verify_otp so the account — and
+        # its later dedicated funding NUBAN — is created with a holder name (an
+        # unnamed funding account can't be safely paid into by transfer).
+        with patch("accounts.views._otp_code", return_value="445566"):
+            self.post("/api/phone_verification/", {"phone": "08099001122", "email": "named@zitch.test"})
+        res, _ = self.post("/api/verify_otp/",
+                           {"phone": "08099001122", "otp": "445566",
+                            "first_name": "Ada", "last_name": "Okafor"})
+        self.assertEqual(res.status_code, 200)
+        u = User.objects.get(phone="08099001122")
+        self.assertEqual(u.first_name, "Ada")
+        self.assertEqual(u.last_name, "Okafor")
+        self.assertEqual(u.get_full_name(), "Ada Okafor")
+
+    def test_verify_otp_without_name_still_verifies(self):
+        # Name is optional at the endpoint (older app builds) — omitting it must
+        # never break verification.
+        with patch("accounts.views._otp_code", return_value="778811"):
+            self.post("/api/phone_verification/", {"phone": "08099002233", "email": ""})
+        res, body = self.post("/api/verify_otp/", {"phone": "08099002233", "otp": "778811"})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("access_token", body)
+
+    def test_signup_otp_is_sent_by_sms_only_not_email(self):
+        # The signup OTP proves control of the PHONE, so it must never be emailed
+        # to the caller-supplied (unverified) address — that would let an attacker
+        # receive the code for someone else's number and squat the account.
+        from unittest.mock import patch
+        with patch("accounts.views.send_sms") as sms, patch("accounts.views.send_email") as email:
+            self.post("/api/phone_verification/",
+                      {"phone": "08012223333", "email": "attacker@evil.test"})
+        sms.assert_called_once()                       # code goes to the phone
+        email.assert_not_called()                      # never to the body-supplied email
+        # The email is still captured on the OTP for the eventual account record.
+        self.assertEqual(OTP.objects.get(phone="08012223333").email, "attacker@evil.test")
+
+    def test_resend_signup_otp_is_sms_only(self):
+        from unittest.mock import patch
+        with patch("accounts.views.send_sms") as sms, patch("accounts.views.send_email") as email:
+            self.post("/api/resend_verify_otp/",
+                      {"phone": "08012224444", "email": "attacker@evil.test"})
+        sms.assert_called_once()
+        email.assert_not_called()
 
     def test_otp_attempts_are_capped(self):
-        OTP.objects.create(phone="08033334444", code="13579")
+        OTP.issue(phone="08033334444", code="13579")
         for _ in range(OTP.MAX_ATTEMPTS):
             res, _ = self.post("/api/verify_otp/", {"phone": "08033334444", "otp": "00000"})
             self.assertEqual(res.status_code, 400)
@@ -45,7 +129,7 @@ class OnboardingOtpTests(TestCase):
         self.assertFalse(User.objects.filter(phone="08033334444").exists())
 
     def test_correct_code_works_within_attempt_cap(self):
-        OTP.objects.create(phone="08055556666", code="24680")
+        OTP.issue(phone="08055556666", code="24680")
         for _ in range(OTP.MAX_ATTEMPTS - 1):
             self.post("/api/verify_otp/", {"phone": "08055556666", "otp": "00000"})
         res, body = self.post("/api/verify_otp/", {"phone": "08055556666", "otp": "24680"})
@@ -61,6 +145,126 @@ class OnboardingOtpTests(TestCase):
             created=timezone.now() - timedelta(seconds=OTP.RESEND_COOLDOWN_SECONDS + 5))
         res, _ = self.post("/api/resend_verify_otp/", {"phone": "08077778888"})
         self.assertEqual(res.status_code, 200)
+
+
+PROD = {"DEBUG": False, "TESTING": False}
+KEYED = {"BASE_URL": "https://v3.api.termii.com", "API_KEY": "tk_live",
+         "SENDER_ID": "Zitch", "CHANNEL": "dnd"}
+UNKEYED = {**KEYED, "API_KEY": ""}
+NO_TEST_OTP = {"PHONE": "", "CODE": ""}
+
+
+@override_settings(TEST_OTP=NO_TEST_OTP, **PROD)
+class OtpDeliveryGuardTests(TestCase):
+    """A signup OTP must never be promised over a rail that cannot deliver it.
+
+    send_sms returns a MOCK SUCCESS when TERMII_API_KEY is unset, and the signup
+    endpoints discard the send result on purpose (anti-enumeration). Together those
+    two correct decisions produced one wrong outcome: an unkeyed production deploy
+    answered "a verification code has been sent" and sent nothing at all, with no
+    error logged and nothing for the customer to act on. These tests pin the refusal.
+    """
+
+    def setUp(self):
+        self.client = Client()
+
+    def post(self, path, payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    @override_settings(TERMII=UNKEYED)
+    def test_signup_refuses_instead_of_promising_an_undeliverable_code(self):
+        res, body = self.post("/api/phone_verification/",
+                              {"phone": "08055550001", "email": "a@zitch.test"})
+        self.assertEqual(res.status_code, 503)
+        self.assertNotIn("has been sent", json.dumps(body))
+
+    @override_settings(TERMII=UNKEYED)
+    def test_refusing_issues_no_code_so_the_number_is_not_left_on_cooldown(self):
+        # Issuing a row here would be the worse bug: the customer is refused AND then
+        # rate-limited out of retrying once the rail is fixed.
+        self.post("/api/phone_verification/", {"phone": "08055550002", "email": "b@zitch.test"})
+        self.assertFalse(OTP.objects.filter(phone="08055550002").exists())
+
+    @override_settings(TERMII=UNKEYED)
+    def test_resend_is_guarded_on_the_same_terms(self):
+        res, _ = self.post("/api/resend_verify_otp/", {"phone": "08055550003"})
+        self.assertEqual(res.status_code, 503)
+
+    @override_settings(TERMII=KEYED)
+    def test_a_keyed_rail_sends_normally(self):
+        with patch("accounts.views.send_sms", return_value={"success": True}) as sms:
+            res, _ = self.post("/api/phone_verification/",
+                               {"phone": "08055550004", "email": "c@zitch.test"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(sms.called)
+        self.assertTrue(OTP.objects.filter(phone="08055550004").exists())
+
+    @override_settings(TERMII=UNKEYED, TEST_OTP={"PHONE": "08055550005", "CODE": "424242"})
+    def test_the_test_otp_number_is_exempt(self):
+        # TEST_OTP exists to walk signup while a sender ID awaits carrier approval —
+        # i.e. exactly while the rail is down. Locking it out would break the only
+        # stopgap the setting is there to provide.
+        res, _ = self.post("/api/phone_verification/",
+                           {"phone": "08055550005", "email": "d@zitch.test"})
+        self.assertEqual(res.status_code, 200)
+        res, body = self.post("/api/verify_otp/", {"phone": "08055550005", "otp": "424242"})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("access_token", body)
+
+    @override_settings(TERMII=UNKEYED, DEBUG=True)
+    def test_local_development_keeps_mock_mode(self):
+        # Mock mode is the point of a dev box: the guard must not make signup
+        # untestable without a live Termii key.
+        res, _ = self.post("/api/phone_verification/",
+                           {"phone": "08055550006", "email": "e@zitch.test"})
+        self.assertEqual(res.status_code, 200)
+
+
+class OtpTakeoverTests(TestCase):
+    """Regression for the password-less account-takeover chain: resend_verify_otp
+    must not mint a SIGNUP OTP for an established account (let alone deliver it to a
+    client-supplied email), and verify_otp must never sign a SIGNUP OTP into an
+    account that already has a password."""
+
+    def setUp(self):
+        self.client = Client()
+        cache.clear()  # fresh otp_send rate-limit budget
+
+    def post(self, path, payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def _established_victim(self, phone, email):
+        victim, _ = make_user(phone, email)
+        victim.set_password("Passw0rd123!")  # a real account has a usable password
+        victim.save(update_fields=["password"])
+        return victim
+
+    def test_resend_will_not_mint_signup_otp_for_established_account(self):
+        self._established_victim("08099990001", "victim@zitch.test")
+        # Attacker tries to have the victim's signup OTP delivered to their own inbox.
+        res, body = self.post("/api/resend_verify_otp/",
+                              {"phone": "08099990001", "email": "attacker@evil.test"})
+        self.assertEqual(res.status_code, 200)  # generic, non-enumerating reply
+        # Crucially, no SIGNUP OTP was created — so there is nothing to verify with.
+        self.assertFalse(OTP.objects.filter(phone="08099990001", purpose=OTP.SIGNUP).exists())
+
+    def test_verify_otp_cannot_authenticate_into_established_account(self):
+        self._established_victim("08099990002", "victim2@zitch.test")
+        # Even if a SIGNUP OTP somehow exists for the phone, it must not log in.
+        OTP.issue(phone="08099990002", email="attacker@evil.test", code="55555")
+        res, body = self.post("/api/verify_otp/", {"phone": "08099990002", "otp": "55555"})
+        self.assertEqual(res.status_code, 400)
+        self.assertNotIn("access_token", body)
+
+    def test_genuine_new_signup_still_works(self):
+        # The guards must not break a real first-time signup.
+        with patch("accounts.views._otp_code", return_value="778899"):
+            self.post("/api/phone_verification/", {"phone": "08099990003", "email": "new@zitch.test"})
+        res, body = self.post("/api/verify_otp/", {"phone": "08099990003", "otp": "778899"})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("access_token", body)
 
 
 class CredentialSecurityTests(TestCase):
@@ -84,11 +288,11 @@ class CredentialSecurityTests(TestCase):
         victim_hash = User.objects.get(pk=victim.pk).password
         # Even passing the victim's email, only the token owner's password changes.
         res, _ = self.post("/api/set-password/", {
-            "access_token": atk_token, "email": "victim@zitch.test", "password": "newpass12345",
+            "access_token": atk_token, "email": "victim@zitch.test", "password": "Newpass!12345",
         })
         self.assertEqual(res.status_code, 200)
         self.assertEqual(User.objects.get(pk=victim.pk).password, victim_hash)  # untouched
-        self.assertTrue(User.objects.get(pk=attacker.pk).check_password("newpass12345"))
+        self.assertTrue(User.objects.get(pk=attacker.pk).check_password("Newpass!12345"))
 
     def test_set_password_min_length(self):
         _, token = make_user("08030000003", "c@zitch.test")
@@ -103,50 +307,157 @@ class CredentialSecurityTests(TestCase):
             res, _ = self.post("/api/set-password/", {"access_token": token, "password": pw})
             self.assertEqual(res.status_code, 400)
 
+    def test_change_password_requires_current(self):
+        # Once an account HAS a password, changing it needs the current one, so a
+        # stolen session token alone can't overwrite it. (First-time onboarding,
+        # where no password exists yet, stays exempt.)
+        user, token = make_user("08070000007", "chg@zitch.test")
+        user.set_password("Oldpass123")
+        user.save(update_fields=["password"])
+
+        # No current password -> refused, password untouched.
+        res, body = self.post("/api/set-password/", {"access_token": token, "password": "Newpass456!"})
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(body.get("code"), "current_password_required")
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("Oldpass123"))
+
+        # Wrong current password -> refused.
+        res, _ = self.post("/api/set-password/", {
+            "access_token": token, "password": "Newpass456!", "current_password": "nope12345"})
+        self.assertEqual(res.status_code, 403)
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("Oldpass123"))
+
+        # Correct current password -> changed.
+        res, _ = self.post("/api/set-password/", {
+            "access_token": token, "password": "Newpass456!", "current_password": "Oldpass123"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("Newpass456!"))
+
     def test_set_pin_requires_auth_and_sets_owner(self):
-        res, _ = self.post("/api/set-transaction-pin/", {"email": "x@zitch.test", "pin": "1357"})
+        res, _ = self.post("/api/set-transaction-pin/", {"email": "x@zitch.test", "pin": "135790"})
         self.assertEqual(res.status_code, 401)
         # First-time PIN set (no existing PIN) needs only the session token.
         user = User.objects.create(username="08040000004", phone="08040000004", email="d@zitch.test")
         token = AccessToken.issue(user).key
-        res, _ = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "1357"})
+        res, _ = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "135790"})
         self.assertEqual(res.status_code, 200)
-        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1357"))
+        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("135790"))
 
-    def test_changing_existing_pin_requires_account_password(self):
+    def test_new_pin_policy_is_enforced_by_the_api(self):
+        user = User.objects.create(username="08040000006", phone="08040000006",
+                                   email="pin-policy@zitch.test")
+        token = AccessToken.issue(user).key
+        for weak_pin in ("123456", "654321", "789012", "000000", "121212", "123123"):
+            res, body = self.post("/api/set-transaction-pin/", {
+                "access_token": token, "pin": weak_pin})
+            self.assertEqual((res.status_code, body.get("code")), (400, "weak_pin"))
+        user.refresh_from_db()
+        self.assertFalse(user.transaction_pin)
+
+    def test_changing_existing_pin_requires_current_pin_or_password(self):
         # A token alone must not be enough to OVERWRITE an existing PIN (else the
         # brute-force lockout is moot — an attacker would just reset the PIN).
         user = User.objects.create(username="08050000005", phone="08050000005", email="e@zitch.test")
-        user.set_password("Passw0rd123")
+        user.set_password("Passw0rd123!")
         user.set_transaction_pin("1234")
         user.save()
         token = AccessToken.issue(user).key
-        res, body = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "9999"})
-        self.assertEqual((res.status_code, body.get("code")), (403, "password_required"))
+        # No proof at all -> rejected.
+        res, body = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "975310"})
+        self.assertEqual((res.status_code, body.get("code")), (403, "current_pin_required"))
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1234"))  # unchanged
-        # With the account password, the change goes through.
+        # A WRONG current PIN is rejected too.
+        res, body = self.post("/api/set-transaction-pin/", {
+            "access_token": token, "pin": "975310", "old_pin": "0000"})
+        self.assertEqual(res.status_code, 403)
+        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1234"))  # unchanged
+        # With the CURRENT PIN, the change goes through.
         res, _ = self.post("/api/set-transaction-pin/", {
-            "access_token": token, "pin": "9999", "password": "Passw0rd123"})
+            "access_token": token, "pin": "975310", "old_pin": "1234"})
         self.assertEqual(res.status_code, 200)
-        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("9999"))
+        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("975310"))
+        # The account password remains a valid fallback (forgot-PIN recovery).
+        res, _ = self.post("/api/set-transaction-pin/", {
+            "access_token": token, "pin": "432100", "password": "Passw0rd123!"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("432100"))
 
     def test_setting_new_pin_clears_brute_force_lockout(self):
         # A user who locked their PIN and then legitimately changes it (which
         # requires the password) must not stay locked out against the new PIN.
         user = User.objects.create(username="08060000006", phone="08060000006", email="f@zitch.test")
-        user.set_password("Passw0rd123")
+        user.set_password("Passw0rd123!")
         user.set_transaction_pin("1234")
         user.pin_failed_attempts = 5
         user.pin_locked_until = timezone.now() + timedelta(minutes=15)
         user.save()
         token = AccessToken.issue(user).key
         res, _ = self.post("/api/set-transaction-pin/", {
-            "access_token": token, "pin": "5678", "password": "Passw0rd123"})
+            "access_token": token, "pin": "567891", "password": "Passw0rd123!"})
         self.assertEqual(res.status_code, 200)
         u = User.objects.get(pk=user.pk)
         self.assertEqual(u.pin_failed_attempts, 0)
         self.assertIsNone(u.pin_locked_until)
-        self.assertTrue(u.check_transaction_pin("5678"))
+        self.assertTrue(u.check_transaction_pin("567891"))
+
+    def test_verify_pin_endpoint_accepts_the_right_pin_and_refuses_a_wrong_one(self):
+        """Biometric payment approval caches the PIN and replays it forever, so it
+        must be checked before it is stored — one typo otherwise auto-submits a
+        wrong PIN on every payment until the account locks."""
+        user, token = make_user("08030000007", "pin@zitch.test", pin="1234")
+        res, _ = self.post("/api/verify-transaction-pin/",
+                           {"access_token": token, "pin": "1234"})
+        self.assertEqual(res.status_code, 200)
+
+        res, body = self.post("/api/verify-transaction-pin/",
+                              {"access_token": token, "pin": "9999"})
+        self.assertNotEqual(res.status_code, 200)
+        self.assertNotIn("1234", json.dumps(body), "never echo the real PIN back")
+
+    def test_changing_email_requires_reauth(self):
+        """A stolen session token alone must not redirect account recovery.
+
+        password_forgot mails the reset code to whatever user.email holds, so
+        without this an attacker with only a bearer token could swap the email,
+        request a reset, and take the account permanently — password_reset then
+        deletes the real owner's tokens, so they cannot even get back in.
+        """
+        user, token = make_user("08030000003", "owner@zitch.test")
+        res, body = self.post("/api/update_info/", {
+            "access_token": token, "email": "attacker@evil.test"})
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(body.get("code"), "reauth_required")
+        self.assertEqual(User.objects.get(pk=user.pk).email, "owner@zitch.test")
+
+    def test_changing_phone_requires_reauth(self):
+        user, token = make_user("08030000004", "owner2@zitch.test")
+        res, body = self.post("/api/update_info/", {
+            "access_token": token, "phone": "08099999999"})
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(User.objects.get(pk=user.pk).phone, "08030000004")
+
+    def test_changing_email_with_the_password_clears_verification(self):
+        user, token = make_user("08030000005", "owner3@zitch.test")
+        user.set_password("Passw0rd123!")
+        user.save(update_fields=["password"])
+        res, _ = self.post("/api/update_info/", {
+            "access_token": token, "email": "new@zitch.test",
+            "password": "Passw0rd123!"})
+        self.assertEqual(res.status_code, 200)
+        u = User.objects.get(pk=user.pk)
+        self.assertEqual(u.email, "new@zitch.test")
+        # An address the account has never proven must not stay marked verified —
+        # the KYC ladder reads this flag.
+        self.assertFalse(u.email_verified)
+
+    def test_a_name_only_update_still_needs_no_reauth(self):
+        user, token = make_user("08030000006", "owner4@zitch.test")
+        res, _ = self.post("/api/update_info/", {
+            "access_token": token, "first_name": "Renamed"})
+        self.assertEqual(res.status_code, 200)
+        u = User.objects.get(pk=user.pk)
+        self.assertEqual(u.first_name, "Renamed")
+        self.assertTrue(u.email_verified, "a name change moves no trust")
 
     def test_update_info_rejects_phone_collision_cleanly(self):
         make_user("08010000001", "a@zitch.test")
@@ -169,17 +480,120 @@ class CredentialSecurityTests(TestCase):
 class KycTierTests(TestCase):
     def setUp(self):
         self.client = Client()
-        self.user, self.token = make_user("08010000001", "a@zitch.test")
+        # Starts where a real account does — the point of these tests is the
+        # ladder being climbed, so nothing may be pre-granted.
+        self.user, self.token = make_user("08010000001", "a@zitch.test",
+                                         identity_verified=False)
 
     def post(self, path, payload):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
-    def test_bvn_plus_nin_promote_to_tier_3(self):
-        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+    def test_bvn_plus_nin_promote_to_tier_1(self):
+        # Tier 1 requires one verified identity; both identities prepare the
+        # account for the higher ladder once face/address are done.
+        r, b0 = self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        self.assertEqual(b0["tier"], 1)
         res, body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(body["tier"], 3)
+        self.assertEqual(body["tier"], 1)
+
+    def test_an_unverified_phone_holds_the_tier_at_zero(self):
+        """Both contact channels are required. A WhatsApp signup does not earn
+        phone_verified from possession of the chat — a messenger session outlives
+        a SIM swap — so this can genuinely be the missing piece."""
+        self.user.phone_verified = False
+        self.user.save(update_fields=["phone_verified"])
+        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})[1]
+        self.assertEqual(body["tier"], 0)
+        self.assertFalse(body["phone_verified"])
+        # Re-read: BVN/NIN were set server-side, so the local copy is stale.
+        self.user.refresh_from_db()
+        self.user.phone_verified = True
+        self.user.recompute_tier()
+        self.assertEqual(self.user.tier, 1)
+
+    def test_unverified_email_holds_the_tier_at_zero(self):
+        # BVN + NIN complete, email not confirmed: the ladder must not move —
+        # Tier 1 requires all three, however the account signed up.
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified"])
+        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        res, body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
+        self.assertEqual(body["tier"], 0)
+        with patch("accounts.views._otp_code", return_value="909090"):
+            self.post("/api/email/verify/start/", {"access_token": self.token})
+        body = self.post("/api/email/verify/confirm/", {"access_token": self.token, "otp": "909090"})[1]
+        self.assertEqual(body["tier"], 1)
+
+    def test_email_can_be_set_while_unverified(self):
+        # A blank or mistyped address must not strand the account below Tier 1:
+        # start() accepts a replacement for as long as the email is unverified.
+        self.user.email, self.user.email_verified = "", False
+        self.user.save(update_fields=["email", "email_verified"])
+        res, body = self.post("/api/email/verify/start/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 400)  # nothing on file, none supplied
+        with patch("accounts.views._otp_code", return_value="909090"):
+            res, body = self.post("/api/email/verify/start/",
+                                  {"access_token": self.token, "email": "Ada.New@Zitch.test"})
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "ada.new@zitch.test")
+        self.post("/api/email/verify/confirm/", {"access_token": self.token, "otp": "909090"})
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_verified)
+
+    def test_full_kyc_ladder_to_tier_3(self):
+        # BVN+NIN -> Tier 1; + face + address -> Tier 2; + government ID -> Tier 3.
+        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        b1 = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})[1]
+        self.assertEqual(b1["tier"], 1)
+        self.post("/api/kyc/face/", {"access_token": self.token})
+        b2 = self.post("/api/kyc/address/", {"access_token": self.token, "address": "12 Allen Avenue", "city": "Ikeja", "state": "Lagos", "document": "ZmFrZQ=="})[1]
+        self.assertEqual(b2["tier"], 2)
+        self.assertTrue(b2["address_verified"] and b2["face_verified"])
+        b3 = self.post("/api/kyc/id/", {"access_token": self.token, "image": "ZmFrZQ==", "doc_type": "passport"})[1]
+        self.assertEqual(b3["tier"], 3)
+        self.assertTrue(b3["id_document_verified"])
+
+    def test_address_without_proof_document_is_refused(self):
+        """Typed text is a claim, not evidence. Tier 2 raises the limit to
+        ₦200,000, so "address verified" has to mean a document was seen — not
+        that the user typed seven characters."""
+        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
+        self.post("/api/kyc/face/", {"access_token": self.token})
+        res, body = self.post("/api/kyc/address/", {
+            "access_token": self.token, "address": "12 Allen Avenue",
+            "city": "Ikeja", "state": "Lagos"})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("proof of address", body["message"].lower())
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.address_verified)
+        self.assertLess(self.user.tier, 2)
+
+    def test_address_proof_too_large_is_refused_by_size_not_absence(self):
+        """A document IS present, so the message must name the real problem —
+        the size cap, not a missing upload. (The cap is patched down so the test
+        exercises our check rather than Django's request-body limit.)"""
+        with patch.object(views, "MAX_KYC_IMAGE_BASE64", 8):
+            res, body = self.post("/api/kyc/address/", {
+                "access_token": self.token, "address": "12 Allen Avenue",
+                "document": "A" * 64})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("too large", body["message"].lower())
+
+    def test_address_proof_is_not_retained(self):
+        """Same promise as the NIN slip and government ID: the flag survives,
+        the image does not."""
+        self.post("/api/kyc/address/", {"access_token": self.token,
+                                        "address": "12 Allen Avenue",
+                                        "document": "ZmFrZXByb29m"})
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.address_verified)
+        blob = " ".join(str(v) for v in vars(self.user).values())
+        self.assertNotIn("ZmFrZXByb29m", blob)
 
     def test_bvn_nin_stored_hashed_not_raw(self):
         # Defence in depth: the raw government IDs must not be recoverable at rest —
@@ -194,20 +608,67 @@ class KycTierTests(TestCase):
         self.assertNotIn("12345678901", u.bvn_hash)   # the plaintext isn't in the hash
         self.assertFalse(hasattr(u, "bvn"))            # the raw column no longer exists
 
+    def test_direct_kyc_rejects_identity_already_owned_by_another_user(self):
+        other, _ = make_user("08020000002", "other@zitch.test")
+        other.set_bvn("12345678901")
+        other.set_nin("10987654321")
+        other.bvn_verified = other.nin_verified = True
+        other.save(update_fields=["bvn_hash", "bvn_last4", "nin_hash", "nin_last4",
+                                  "bvn_verified", "nin_verified"])
+
+        bvn_response, _ = self.post(
+            "/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        nin_response, _ = self.post(
+            "/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
+        self.assertEqual(bvn_response.status_code, 409)
+        self.assertEqual(nin_response.status_code, 409)
+        current = User.objects.get(pk=self.user.pk)
+        self.assertFalse(current.bvn_verified)
+        self.assertFalse(current.nin_verified)
+
+    def test_bvn_otp_start_rejects_identity_owned_by_another_user(self):
+        other, _ = make_user("08020000003", "otp-other@zitch.test")
+        other.set_bvn("12345678901")
+        other.bvn_verified = True
+        other.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified"])
+        response, _ = self.post(
+            "/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
+        self.assertEqual(response.status_code, 409)
+
     def test_bvn_otp_flow(self):
         # Redesigned flow: enter BVN -> code sent -> confirm code -> verified.
-        from django.core.cache import cache
-        r1, _ = self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
+        # Like every OTP test, pin the CSPRNG output; the cache contains only a
+        # keyed code hash and encrypted identity, never either plaintext value.
+        with patch("accounts.views._otp_code", return_value="654321"):
+            r1, _ = self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
         self.assertEqual(r1.status_code, 200)
-        code = cache.get(f"kyc_bvn:{self.user.id}")["code"]
-        r2, body = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": code})
+        pending = cache.get(f"kyc_identity:bvn:{self.user.id}")
+        self.assertNotIn("654321", str(pending))
+        self.assertNotIn("12345678901", str(pending))
+        r2, body = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "654321"})
         self.assertEqual(r2.status_code, 200)
-        self.assertEqual(body["tier"], 2)  # BVN verified -> tier 2
+        self.assertEqual(body["tier"], 1)
         self.assertTrue(User.objects.get(pk=self.user.pk).bvn_verified)
 
     def test_bvn_otp_rejects_wrong_code(self):
         self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
         r, _ = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "000000"})
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(User.objects.get(pk=self.user.pk).bvn_verified)
+
+    def test_bvn_otp_burns_after_repeated_wrong_codes(self):
+        # The 6-digit code is brute-forceable inside its 10-min window without a
+        # cap: after 5 wrong guesses the pending code is burned (429) and the
+        # right code no longer works until the user restarts.
+        with patch("accounts.views._otp_code", return_value="654321"):
+            self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
+        for _ in range(4):
+            r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "000000"})
+            self.assertEqual(r.status_code, 400)
+        r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "000000"})
+        self.assertEqual(r.status_code, 429)  # 5th wrong guess burns the code
+        # Even the correct code is now rejected — the pending entry is gone.
+        r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "654321"})
         self.assertEqual(r.status_code, 400)
         self.assertFalse(User.objects.get(pk=self.user.pk).bvn_verified)
 
@@ -219,6 +680,67 @@ class KycTierTests(TestCase):
         res, body = self.post("/api/kyc/face/", {"access_token": self.token})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["face_verified"])
+
+
+class ClientIpTests(TestCase):
+    @override_settings(RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_uses_rightmost_forwarded_ip_to_reject_prepended_spoof(self):
+        request = SimpleNamespace(META={
+            "HTTP_X_FORWARDED_FOR": "203.0.113.200, 198.51.100.7",
+            "REMOTE_ADDR": "10.0.0.2",
+        })
+        self.assertEqual(client_ip(request), "198.51.100.7")
+
+    @override_settings(RATELIMIT_TRUSTED_PROXY_HOPS=0)
+    def test_ignores_forwarded_header_when_proxy_trust_is_disabled(self):
+        request = SimpleNamespace(META={
+            "HTTP_X_FORWARDED_FOR": "203.0.113.200",
+            "REMOTE_ADDR": "198.51.100.8",
+        })
+        self.assertEqual(client_ip(request), "198.51.100.8")
+
+
+@override_settings(
+    RATELIMIT_ENABLE=True,
+    USER_LOGIN_MAX_FAILS=3,
+    USER_LOGIN_LOCKOUT_SECONDS=900,
+)
+class UserLoginLockoutTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(
+            username="08012345678",
+            phone="08012345678",
+            email="ada@zitch.test",
+            password="Correct#pass1",
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def signin(self, password):
+        return self.client.post(
+            "/api/sigin/",
+            data=json.dumps({"email_or_phone": "ada@zitch.test", "password": password}),
+            content_type="application/json",
+        )
+
+    def test_distributed_guesses_lock_account_identifier(self):
+        for _ in range(3):
+            self.assertEqual(self.signin("wrong-password").status_code, 401)
+        self.assertEqual(self.signin("Correct#pass1").status_code, 429)
+
+    def test_failed_signin_log_masks_identifier(self):
+        with patch("accounts.views.log.warning") as warning:
+            self.signin("wrong-password")
+        self.assertEqual(warning.call_args.args[1], "a***@zitch.test")
+
+    def test_inactive_account_cannot_receive_new_session(self):
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+        response = self.signin("Correct#pass1")
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn("access_token", response.json())
 
 
 @override_settings(RATELIMIT_ENABLE=True)
@@ -251,10 +773,16 @@ class RateLimitTests(TestCase):
             for i in range(8):
                 self.assertEqual(self.send(f"070200000{i:02d}").status_code, 200)
 
+    def test_login_cache_keys_do_not_expose_customer_identifiers(self):
+        key = _lockout_key("user", "ada.customer@example.com")
+        self.assertNotIn("ada.customer", key)
+        self.assertNotIn("example.com", key)
+        self.assertEqual(key, _lockout_key("user", "ADA.CUSTOMER@example.com"))
+
 
 class FullJourneyE2ETests(TestCase):
     """One chained journey through the whole stack — onboarding -> sign in ->
-    fund -> spend -> history -> transfer -> KYC + large-transfer face gate ->
+    fund -> KYC -> spend -> history -> transfer -> tier + face gate ->
     loan -> savings -> card -> betting/exams -> auth-gated lookups. Guards the
     cross-app integration that per-app unit tests don't. (Rate limiting is off
     under tests, so creating users via the API isn't throttled.)"""
@@ -274,30 +802,44 @@ class FullJourneyE2ETests(TestCase):
         P, R = self.PHONE, self.RECIP
 
         # --- onboarding -> sign in (the auth refactor, end to end) ---
-        self.assertEqual(self.post("/api/phone_verification/", phone=P, email="e2e@zitch.test")[0], 200)
-        otp = OTP.objects.filter(phone=P).latest("created").code
-        self.assertEqual(len(otp), 6)
+        with patch("accounts.views._otp_code", return_value="135790"):
+            self.assertEqual(self.post("/api/phone_verification/", phone=P, email="e2e@zitch.test")[0], 200)
+        otp = "135790"
         s, b = self.post("/api/verify_otp/", phone=P, otp=otp)
         self.assertEqual(s, 200)
         tok = b["access_token"]
-        self.assertEqual(self.post("/api/set-password/", access_token=tok, password="Passw0rd123")[0], 200)
+        self.assertEqual(self.post("/api/set-password/", access_token=tok, password="Passw0rd123!")[0], 200)
         self.assertEqual(self.post("/api/set-password/", email=P, password="hacked12345")[0], 401)  # no token
-        self.assertEqual(self.post("/api/set-transaction-pin/", access_token=tok, pin="1234")[0], 200)
-        s, b = self.post("/api/sigin/", email_or_phone=P, password="Passw0rd123")
+        self.assertEqual(self.post("/api/set-transaction-pin/", access_token=tok, pin="246810")[0], 200)
+        s, b = self.post("/api/sigin/", email_or_phone=P, password="Passw0rd123!")
         self.assertEqual(s, 200)
         tok = b["access_token"]
 
-        # --- fund (credited exactly once across a duplicate verify) ---
-        ref = self.post("/api/fund/initialize/", access_token=tok, amount="50000")[1]["reference"]
-        self.post("/api/fund/verify/", access_token=tok, reference=ref)
-        self.post("/api/fund/verify/", access_token=tok, reference=ref)
+        # --- fund (Wema: a bank transfer into the user's NUBAN, credited by the
+        # reconcile_wema poller — simulated here with a settled credit) ---
+        from wallet.services import credit as _credit
+        user_obj = User.objects.get(phone=P)
+        _credit(user_obj, Decimal("50000"), "Wallet top-up")
         s, b = self.post("/api/wallet_balance/", access_token=tok)
         self.assertEqual(b["wallet"], "50000.00")
         self.assertIn("user_first_name", b)  # the app reads this
 
+        # --- verify before spending ---
+        # Email, phone, BVN and NIN are now a floor beneath the tier ceilings:
+        # money cannot leave an account that has not proved who owns it, so this
+        # step comes before the first spend rather than after it.
+        self.post("/api/kyc/bvn/", access_token=tok, bvn="12345678901")
+        # BVN+NIN alone no longer promote: Tier 1 also requires the verified email.
+        self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 0)
+        with patch("accounts.views._otp_code", return_value="909090"), \
+             patch("accounts.views._otp_on_cooldown", return_value=False):
+            self.post("/api/email/verify/start/", access_token=tok)
+        body = self.post("/api/email/verify/confirm/", access_token=tok, otp="909090")[1]
+        self.assertEqual(body["tier"], 1)  # email was the last piece; confirm recomputes
+
         # --- spend + history shape the app depends on ---
         self.assertEqual(self.post("/api/utility/buyairtime/", access_token=tok, amount="1000",
-                                   network="1", phone=P, transaction_pin="1234")[0], 200)
+                                   network="1", phone=P, transaction_pin="246810")[0], 200)
         self.assertEqual(self.post("/api/wallet_balance/", access_token=tok)[1]["wallet"], "49000.00")
         txns = self.post("/api/user-transaction-history/", access_token=tok)[1]["all_site_transactions"]
         self.assertTrue({"service", "amount", "transaction_status", "date"} <= set(txns[0]))
@@ -307,41 +849,121 @@ class FullJourneyE2ETests(TestCase):
         get_or_create_wallet(recip)
         self.assertEqual(self.post("/api/transfer/resolve/", access_token=tok, identifier=R)[0], 200)
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="5000", transaction_pin="1234")[0], 200)
+                                   amount="5000", transaction_pin="246810")[0], 200)
         self.assertEqual(get_or_create_wallet(recip).balance, Decimal("5000"))
 
-        # --- KYC tiers + large-transfer face gate ---
-        self.post("/api/kyc/bvn/", access_token=tok, bvn="12345678901")
-        self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 3)
-        ref2 = self.post("/api/fund/initialize/", access_token=tok, amount="200000")[1]["reference"]
-        self.post("/api/fund/verify/", access_token=tok, reference=ref2)
-        s, b = self.post("/api/transfer/send/", access_token=tok, identifier=R, amount="150000", transaction_pin="1234")
-        self.assertEqual((s, b.get("code")), (403, "face_required"))
-        self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
+        # --- tier limits ---
+        _credit(user_obj, Decimal("200000"), "Wallet top-up")
+        # Tier 1 caps at ₦50k/txn, so a ₦150k transfer is blocked...
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="150000", transaction_pin="1234")[0], 200)
+                                   amount="150000", transaction_pin="246810")[0], 403)
+        # ...face + address raise the user to Tier 2 (₦200k), which also satisfies
+        # the >=₦100k face step-up, so the same transfer now goes through.
+        self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
+        self.assertEqual(self.post("/api/kyc/address/", access_token=tok,
+                                   address="12 Allen Avenue", city="Ikeja", state="Lagos",
+                                   document="ZmFrZQ==")[1]["tier"], 2)
+        self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
+                                   amount="150000", transaction_pin="246810")[0], 200)
 
         # --- loan, savings, card, betting, exam ---
         self.assertEqual(self.post("/api/loans/request/", access_token=tok, amount="100000",
-                                   tenure_days=30, transaction_pin="1234")[0], 200)
+                                   tenure_days=30, transaction_pin="246810")[0], 200)
         self.assertEqual(self.post("/api/loans/repay/", access_token=tok, amount="200000",
-                                   transaction_pin="1234")[1]["loan"]["status"], "repaid")
+                                   transaction_pin="246810")[1]["loan"]["status"], "repaid")
         self.assertEqual(self.post("/api/savings/create/", access_token=tok, amount="10000",
-                                   days=90, transaction_pin="1234")[0], 200)
+                                   days=90, transaction_pin="246810")[0], 200)
         self.assertGreaterEqual(len(self.post("/api/savings/list/", access_token=tok)[1]["plans"]), 1)
         self.assertEqual(self.post("/api/cards/create/", access_token=tok)[0], 200)
         self.assertEqual(self.post("/api/cards/fund/", access_token=tok, amount="5000",
-                                   transaction_pin="1234")[1]["card"]["balance"], "5000.00")
-        self.assertEqual(self.post("/api/cards/details/", access_token=tok, transaction_pin="1234")[0], 200)
+                                   transaction_pin="246810")[1]["card"]["balance"], "5000.00")
+        self.assertEqual(self.post("/api/cards/details/", access_token=tok, transaction_pin="246810")[0], 200)
         self.assertEqual(self.post("/api/betting/fund/", access_token=tok, platform="bet9ja",
-                                   user_id="ZB99999", amount="1000", transaction_pin="1234")[0], 200)
+                                   user_id="ZB99999", amount="1000", transaction_pin="246810")[0], 200)
         self.assertEqual(self.post("/api/exams/buy/", access_token=tok, exam="waec",
-                                   quantity=1, phone=P, transaction_pin="1234")[0], 200)
+                                   quantity=1, phone=P, transaction_pin="246810")[0], 200)
 
         # --- name lookups require auth ---
         self.assertEqual(self.post("/api/utility/validate_meter/", disco="1", meter="1234567890")[0], 401)
         self.assertEqual(self.post("/api/utility/validate_meter/", access_token=tok,
                                    disco="1", meter="1234567890")[0], 200)
+
+
+class KycStatusRepairTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="08070000001",
+            phone="08070000001",
+            email="kyc-repair@zitch.test",
+            password="Passw0rd123!",
+        )
+        self.user.bvn_verified = True
+        self.user.nin_verified = True
+        self.user.recompute_tier()
+        self.user.save(update_fields=["bvn_verified", "nin_verified", "tier"])
+
+    @override_settings(WEMA={"BASE_URL": "https://alat.test", "CHANNEL_ID": "chan",
+                             "KEYS": {"wallet": "wallet-key"}, "SIMULATION": False})
+    def test_kyc_status_never_clears_existing_verified_flags(self):
+        """A status refresh must not turn a completed identity back into a prompt."""
+        from accounts.views import _kyc_state
+
+        state = _kyc_state(self.user)
+        self.user.refresh_from_db()
+
+        self.assertTrue(state["bvn_verified"])
+        self.assertTrue(state["nin_verified"])
+        self.assertTrue(self.user.bvn_verified)
+        self.assertTrue(self.user.nin_verified)
+
+    @override_settings(WEMA={"BASE_URL": "https://alat.test", "CHANNEL_ID": "chan",
+                             "KEYS": {"wallet": "wallet-key"}, "SIMULATION": False})
+    def test_kyc_status_rehydrates_flags_from_identity_proof(self):
+        from accounts.models import IdentityProof, record_identity_proof
+        from accounts.views import _kyc_state
+
+        self.user.bvn_verified = False
+        self.user.nin_verified = False
+        self.user.tier = 0
+        self.user.save(update_fields=["bvn_verified", "nin_verified", "tier"])
+        record_identity_proof(self.user, IdentityProof.BVN, "12345678901",
+                              source=IdentityProof.WEMA_WALLET_OTP)
+
+        state = _kyc_state(self.user)
+        self.user.refresh_from_db()
+
+        self.assertTrue(state["bvn_verified"])
+        self.assertTrue(self.user.bvn_verified)
+        self.assertFalse(state["nin_verified"])
+
+    @override_settings(WEMA={"BASE_URL": "https://alat.test", "CHANNEL_ID": "chan",
+                             "KEYS": {"wallet": "wallet-key"}, "SIMULATION": False})
+    def test_kyc_status_rehydrates_flags_from_verified_wema_attempt(self):
+        from accounts.views import _kyc_state
+        from wallet.models import WemaProvisioningAttempt
+
+        self.user.bvn_verified = False
+        self.user.bvn_hash = ""
+        self.user.bvn_last4 = ""
+        self.user.tier = 0
+        self.user.save(update_fields=["bvn_verified", "bvn_hash", "bvn_last4", "tier"])
+        WemaProvisioningAttempt.objects.create(
+            user=self.user,
+            tracking_id="TRK-REPAIR-BVN",
+            identity_type=WemaProvisioningAttempt.BVN,
+            identity_hash="a" * 64,
+            identity_last4="8901",
+            status=WemaProvisioningAttempt.VERIFIED,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        state = _kyc_state(self.user)
+        self.user.refresh_from_db()
+
+        self.assertTrue(state["bvn_verified"])
+        self.assertTrue(self.user.bvn_verified)
+        self.assertEqual(self.user.bvn_hash, "a" * 64)
+        self.assertEqual(self.user.bvn_last4, "8901")
 
 
 class TransactionPinLockoutTests(TestCase):
@@ -416,6 +1038,171 @@ class TransactionPinLockoutTests(TestCase):
         self.assertEqual(self.transfer("1234")[0].status_code, 200)
 
 
+class EscalatingPinLockoutTests(TestCase):
+    """Five wrong PINs cost an hour; five more, without a correct PIN in between,
+    cost a day and are told how to get out of it.
+
+    Driven through `evaluate_transaction_pin` rather than a money endpoint on
+    purpose: that function IS the gate — the app, the chat and the encrypted
+    Flow all reach the lockout through it, so pinning the ladder here pins it
+    for every surface at once.
+    """
+
+    def setUp(self):
+        self.user, _ = make_user("08010000001", "ada@zitch.test", pin="1234", balance="20000")
+
+    def _lock(self):
+        """Burn a full round of wrong PINs and return the final refusal."""
+        from common.http import evaluate_transaction_pin
+
+        for _ in range(User.PIN_MAX_ATTEMPTS - 1):
+            evaluate_transaction_pin(self.user, "0000")
+        return evaluate_transaction_pin(self.user, "0000")
+
+    def _expire_lock(self):
+        """Serve the lock out, without serving it out."""
+        User.objects.filter(pk=self.user.pk).update(
+            pin_locked_until=timezone.now() - timedelta(seconds=1))
+        self.user.refresh_from_db()
+
+    def _held_minutes(self):
+        u = User.objects.get(pk=self.user.pk)
+        return round((u.pin_locked_until - timezone.now()).total_seconds() / 60)
+
+    def test_the_first_lock_is_one_hour(self):
+        ok, code, message = self._lock()
+        self.assertEqual((ok, code), (False, "pin_locked"))
+        self.assertAlmostEqual(self._held_minutes(), User.PIN_LOCKOUT_MINUTES, delta=1)
+        self.assertEqual(User.objects.get(pk=self.user.pk).pin_lockout_strikes, 1)
+        # A reset clears any lock outright and is reachable regardless of tier
+        # (see set_transaction_pin), so it is offered from the FIRST lock —
+        # withholding it here only made an honest slip cost an hour of waiting
+        # before the customer learned they never had to.
+        self.assertIn("about an hour", message)
+        self.assertIn("reset your PIN", message)
+
+    def test_a_second_round_after_the_first_lock_expires_costs_a_day(self):
+        self._lock()
+        self._expire_lock()
+        ok, code, message = self._lock()
+        self.assertEqual((ok, code), (False, "pin_locked"))
+        self.assertAlmostEqual(self._held_minutes(),
+                               User.PIN_LOCKOUT_ESCALATED_MINUTES, delta=1)
+        self.assertEqual(User.objects.get(pk=self.user.pk).pin_lockout_strikes, 2)
+        # And a day IS sold as a reset — waiting it out is not a real instruction.
+        self.assertIn("about 24 hours", message)
+        self.assertIn("reset your PIN", message)
+
+    def test_the_ladder_stops_at_a_day_rather_than_growing_without_bound(self):
+        """A third and fourth round must not compound into a week. Past the
+        escalated tier the answer is the PIN reset, not a longer sentence."""
+        for _ in range(4):
+            self._lock()
+            self._expire_lock()
+        self._lock()
+        self.assertAlmostEqual(self._held_minutes(),
+                               User.PIN_LOCKOUT_ESCALATED_MINUTES, delta=1)
+
+    def test_a_correct_pin_between_rounds_puts_the_next_lock_back_at_an_hour(self):
+        """Knowing the PIN is exactly what separates a customer who forgot it
+        from someone working through the keyspace, so it resets the ladder."""
+        from common.http import evaluate_transaction_pin
+
+        self._lock()
+        self._expire_lock()
+        self.assertTrue(evaluate_transaction_pin(self.user, "1234")[0])
+        self.assertEqual(User.objects.get(pk=self.user.pk).pin_lockout_strikes, 0)
+
+        self._lock()
+        self.assertAlmostEqual(self._held_minutes(), User.PIN_LOCKOUT_MINUTES, delta=1)
+
+    def test_a_correct_pin_is_still_refused_while_the_lock_stands(self):
+        """The escalation must not have turned the lock into a warning: the
+        whole point is that no PIN — right or wrong — moves money until it ends."""
+        from common.http import evaluate_transaction_pin
+
+        self._lock()
+        ok, code, message = evaluate_transaction_pin(self.user, "1234")
+        self.assertEqual((ok, code), (False, "pin_locked"))
+        # Re-hitting the lock quotes the time LEFT, not the tier's nominal
+        # length, and says the same thing the lock itself said.
+        self.assertIn("about an hour", message)
+
+    def test_a_wrong_pin_while_locked_does_not_extend_the_lock(self):
+        """Hammering a locked account must not push the release further out —
+        that turns a day into an unbounded lockout held open by the attacker."""
+        from common.http import evaluate_transaction_pin
+
+        self._lock()
+        held = User.objects.get(pk=self.user.pk).pin_locked_until
+        for _ in range(10):
+            evaluate_transaction_pin(self.user, "0000")
+        u = User.objects.get(pk=self.user.pk)
+        self.assertEqual(u.pin_locked_until, held)
+        self.assertEqual(u.pin_lockout_strikes, 1)
+
+    def test_resetting_the_pin_is_the_advertised_way_out_and_actually_works(self):
+        """The escalated message promises a new PIN unlocks payments straight
+        away. Anything less makes the message a lie at the worst moment."""
+        from common.http import evaluate_transaction_pin
+
+        self._lock()
+        self._expire_lock()
+        self._lock()                                   # 24-hour tier, still standing
+        self.assertTrue(User.objects.get(pk=self.user.pk).pin_lock_is_escalated)
+
+        self.user.set_transaction_pin("975310")
+        self.user.save(update_fields=list(User.PIN_UPDATE_FIELDS))
+
+        u = User.objects.get(pk=self.user.pk)
+        self.assertIsNone(u.pin_locked_until)
+        self.assertEqual((u.pin_failed_attempts, u.pin_lockout_strikes), (0, 0))
+        self.assertTrue(evaluate_transaction_pin(u, "975310")[0])
+
+    def test_the_escalated_flag_is_about_the_lock_standing_now(self):
+        """Admin surfaces read this flag to show which tier is active, so it must
+        go quiet the moment the lock lapses — otherwise an unlocked customer's
+        record still reads as sitting out a 24-hour lock."""
+        self._lock()
+        self._expire_lock()
+        self._lock()
+        self.assertTrue(User.objects.get(pk=self.user.pk).pin_lock_is_escalated)
+        self._expire_lock()
+        self.assertFalse(User.objects.get(pk=self.user.pk).pin_lock_is_escalated)
+
+    def test_the_gate_reports_the_new_lock_state_on_the_instance_it_was_given(self):
+        """The counting happens on a `select_for_update()` copy, so the caller's
+        own object is a different one. Anything a caller reads off `user` after
+        the call — `pin_locked`, `pin_lockout_strikes`, `pin_lock_is_escalated` —
+        must reflect what the row-locked copy just wrote, or a caller acts on
+        state a moment out of date. A stale value here is invisible: nothing
+        errors, it just quietly disagrees with the database."""
+        from common.http import evaluate_transaction_pin
+
+        self._lock()
+        self.assertEqual(self.user.pin_lockout_strikes, 1)
+        self.assertTrue(self.user.pin_locked)
+        self.assertFalse(self.user.pin_lock_is_escalated)
+
+        self._expire_lock()
+        self._lock()
+        self.assertEqual(self.user.pin_lockout_strikes, 2)
+        self.assertTrue(self.user.pin_lock_is_escalated)
+
+        # And the clearing direction too, or a caller keeps showing a lock that
+        # the correct PIN it just accepted has already lifted.
+        self._expire_lock()
+        self.assertTrue(evaluate_transaction_pin(self.user, "1234")[0])
+        self.assertEqual((self.user.pin_lockout_strikes, self.user.pin_locked_until), (0, None))
+
+    def test_the_counter_still_names_the_attempts_left_before_the_lock(self):
+        from common.http import evaluate_transaction_pin
+
+        ok, code, message = evaluate_transaction_pin(self.user, "0000")
+        self.assertEqual((ok, code), (False, "pin_incorrect"))
+        self.assertIn(f"{User.PIN_MAX_ATTEMPTS - 1} attempt(s) left", message)
+
+
 class SessionRevocationTests(TestCase):
     """Tokens must be revocable server-side: logout invalidates the presented
     token, and a password change invalidates other (possibly stolen) sessions."""
@@ -437,26 +1224,49 @@ class SessionRevocationTests(TestCase):
     def test_password_change_revokes_other_sessions_but_keeps_current(self):
         user, old_token = make_user("08010000001", "a@zitch.test")
         new_token = AccessToken.issue(user).key  # a second device/session
-        self.assertEqual(self.post("/api/set-password/", new_token, password="Passw0rd123")[0].status_code, 200)
+        self.assertEqual(self.post("/api/set-password/", new_token, password="Passw0rd123!")[0].status_code, 200)
         # The other session is revoked...
         self.assertEqual(self.post("/api/wallet_balance/", old_token)[0].status_code, 401)
         # ...but the one that changed the password stays signed in.
         self.assertEqual(self.post("/api/wallet_balance/", new_token)[0].status_code, 200)
+
+    def test_the_endpoint_enforces_the_rule_the_signup_screen_draws(self):
+        """The "a letter, a number, a special character" tick-boxes were CLIENT
+        side only, so the API accepted passwords the app would not let anyone
+        type. Both doors now call one rule — WhatsApp signup is the second door,
+        and two rules would have meant the weaker one is the one that gets used.
+        """
+        user, _ = make_user("08010000002", "b@zitch.test")
+        token = AccessToken.issue(user).key
+        for weak in ("abcdefgh", "abcdefg1", "Passw0rd123"):
+            res, body = self.post("/api/set-password/", token, password=weak)
+            self.assertEqual(res.status_code, 400, weak)
+            self.assertFalse(User.objects.get(pk=user.pk).check_password(weak), weak)
+        self.assertEqual(
+            self.post("/api/set-password/", token, password="Zitch!2026pay")[0].status_code,
+            200)
 
 
 class PasswordRecoveryTests(TestCase):
     """OTP-based password reset for users who can't sign in. Reset codes are a
     distinct OTP purpose, so they can't be replayed on the signup verifier."""
 
+    RESET_CODE = "246813"
+
     def setUp(self):
         self.client = Client()
+        # Codes are stored hashed, so pin the generator to a known value for the
+        # whole class; _reset_code then returns that value instead of reading the row.
+        patcher = patch("accounts.views._otp_code", return_value=self.RESET_CODE)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def post(self, path, **payload):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
     def _reset_code(self, phone):
-        return OTP.objects.filter(phone=phone, purpose=OTP.RESET).latest("created").code
+        return self.RESET_CODE
 
     def test_forgot_sends_reset_code_for_a_registered_phone(self):
         make_user("08010000001", "a@zitch.test")
@@ -473,10 +1283,10 @@ class PasswordRecoveryTests(TestCase):
         user, old_token = make_user("08010000001", "a@zitch.test")
         self.post("/api/password/forgot/", phone="08010000001")
         res, body = self.post("/api/password/reset/", phone="08010000001",
-                              otp=self._reset_code("08010000001"), password="NewPassw0rd1")
+                              otp=self._reset_code("08010000001"), password="NewPassw0rd1!")
         self.assertEqual(res.status_code, 200)
         self.assertIn("access_token", body)
-        self.assertTrue(User.objects.get(pk=user.pk).check_password("NewPassw0rd1"))
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("NewPassw0rd1!"))
         # Old session is revoked; the freshly issued one works.
         self.assertEqual(self._auth(old_token), 401)
         self.assertEqual(self._auth(body["access_token"]), 200)
@@ -484,7 +1294,7 @@ class PasswordRecoveryTests(TestCase):
     def test_reset_rejects_a_wrong_code(self):
         make_user("08010000001", "a@zitch.test")
         self.post("/api/password/forgot/", phone="08010000001")
-        res, _ = self.post("/api/password/reset/", phone="08010000001", otp="000000", password="NewPassw0rd1")
+        res, _ = self.post("/api/password/reset/", phone="08010000001", otp="000000", password="NewPassw0rd1!")
         self.assertEqual(res.status_code, 400)
 
     def test_forgot_and_reset_work_with_an_email_identifier(self):
@@ -493,10 +1303,10 @@ class PasswordRecoveryTests(TestCase):
         self.post("/api/password/forgot/", email_or_phone="a@zitch.test")
         self.assertTrue(OTP.objects.filter(phone="08010000001", purpose=OTP.RESET).exists())
         res, body = self.post("/api/password/reset/", email_or_phone="a@zitch.test",
-                              otp=self._reset_code("08010000001"), password="NewPassw0rd1")
+                              otp=self._reset_code("08010000001"), password="NewPassw0rd1!")
         self.assertEqual(res.status_code, 200)
         self.assertIn("access_token", body)
-        self.assertTrue(User.objects.get(pk=user.pk).check_password("NewPassw0rd1"))
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("NewPassw0rd1!"))
 
     def test_signup_verifier_will_not_honour_a_reset_code(self):
         make_user("08010000001", "a@zitch.test")
@@ -507,3 +1317,167 @@ class PasswordRecoveryTests(TestCase):
     def _auth(self, token):
         return self.client.post("/api/wallet_balance/", data=json.dumps({"access_token": token}),
                                 content_type="application/json").status_code
+
+
+class ChatOnboardedUpgradeTests(TestCase):
+    """The app-side upgrade contract for WhatsApp-onboarded accounts: both contact
+    channels must be re-proven before the KYC ladder opens. The phone re-proves
+    itself on the way in (no usable password, so entering the app runs the OTP
+    password reset against the same number); the email was typed into a chat and
+    is one typo from being someone else's inbox, so it gets its own round-trip —
+    and until then it must never receive a password-reset code."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create(
+            username="08155550001", phone="08155550001", first_name="Chidi",
+            email="chidi@zitch.test", tier=0,
+            onboarded_via_whatsapp=True, email_verified=False,
+        )
+        self.user.set_unusable_password()
+        self.user.save()
+        self.token = AccessToken.issue(self.user).key
+
+    def post(self, path, payload):
+        payload = {"access_token": self.token, **payload}
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def test_kyc_is_not_gated_on_the_email_round_trip(self):
+        """The email gate on KYC was retired deliberately (cb4c5e3).
+
+        Identity ownership is proved by the Wema-registered SMS OTP or the Wema
+        face biometric; email is an account-recovery control, not a Wema KYC
+        factor, so it must never block BVN/NIN/face/address verification. This
+        test used to assert the opposite — it is kept, inverted, so the decision
+        is pinned rather than silently re-reversed by the next refactor.
+        """
+        res, _ = self.post("/api/kyc/bvn/start/", {"bvn": "12345678901"})
+        self.assertNotEqual(res.status_code, 403)
+
+    def test_kyc_status_no_longer_reports_an_email_gate(self):
+        """The flag stays in the payload (the app reads it) but reads False now."""
+        res, body = self.post("/api/kyc/status/", {})
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(body["email_verification_required"])
+
+    def test_email_round_trip_opens_the_ladder(self):
+        with patch("accounts.views._otp_code", return_value="424242"):
+            self.post("/api/email/verify/start/", {})
+        res, body = self.post("/api/email/verify/confirm/", {"otp": "424242"})
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_verified)
+        self.assertFalse(body["email_verification_required"])
+        res, _ = self.post("/api/kyc/bvn/start/", {"bvn": "12345678901"})
+        self.assertEqual(res.status_code, 200)   # the gate is open
+
+    def test_a_wrong_code_does_not_verify(self):
+        with patch("accounts.views._otp_code", return_value="424242"):
+            self.post("/api/email/verify/start/", {})
+        res, _ = self.post("/api/email/verify/confirm/", {"otp": "000000"})
+        self.assertEqual(res.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.email_verified)
+
+    def test_a_reset_code_cannot_stand_in_for_inbox_control(self):
+        """purpose=EMAIL is filtered: a code minted for password reset must not
+        mark the email verified."""
+        from accounts.models import OTP
+
+        with patch("accounts.views._otp_code", return_value="424242"):
+            self.client.post("/api/password/forgot/",
+                             data=json.dumps({"email_or_phone": "08155550001"}),
+                             content_type="application/json")
+        res, _ = self.post("/api/email/verify/confirm/", {"otp": "424242"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_unverified_chat_email_never_receives_a_reset_code(self):
+        with patch("accounts.views.send_email") as email, \
+             patch("accounts.views.send_sms") as sms, \
+             patch("accounts.views._otp_code", return_value="424242"):
+            self.client.post("/api/password/forgot/",
+                             data=json.dumps({"email_or_phone": "08155550001"}),
+                             content_type="application/json")
+        self.assertTrue(sms.called)                      # the phone is the channel
+        self.assertEqual(email.call_args[0][0], "")      # the inbox gets nothing
+
+    def test_a_verified_email_receives_reset_codes_again(self):
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        with patch("accounts.views.send_email") as email, \
+             patch("accounts.views._otp_code", return_value="424242"):
+            self.client.post("/api/password/forgot/",
+                             data=json.dumps({"email_or_phone": "08155550001"}),
+                             content_type="application/json")
+        self.assertEqual(email.call_args[0][0], "chidi@zitch.test")
+
+    def test_app_signup_accounts_are_untouched_by_the_gate(self):
+        """The gate is scoped to chat onboarding — an app-signup account keeps
+        today's behaviour on both KYC and recovery."""
+        plain = User.objects.create(username="08155550002", phone="08155550002",
+                                    email="plain@zitch.test")
+        tok = AccessToken.issue(plain).key
+        res = self.client.post("/api/kyc/bvn/start/",
+                               data=json.dumps({"access_token": tok, "bvn": "12345678901"}),
+                               content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        with patch("accounts.views.send_email") as email, \
+             patch("accounts.views._otp_code", return_value="424242"):
+            self.client.post("/api/password/forgot/",
+                             data=json.dumps({"email_or_phone": "08155550002"}),
+                             content_type="application/json")
+        self.assertEqual(email.call_args[0][0], "plain@zitch.test")
+
+
+class EmailVerificationReportsSuccessTests(TestCase):
+    """The email endpoints must set `success` — the app branches on it.
+
+    Every other KYC endpoint passes success=True; these two did not, and nothing
+    caught it because the existing tests assert status codes and side effects only.
+    The cost was total: the app advances to the code entry on `res.success`, so
+    start() mailed the code and then reported a failure — rendering its own success
+    message inside an error, since the screen falls back to res.message — and
+    confirm() was unreachable behind it. Email gates Tier 1, so no app customer
+    could climb the ladder at all.
+
+    Pinned as behaviour rather than fixed in ok(): a 200 there does NOT universally
+    mean success. A queued or ambiguously-timed-out payout answers 200 with
+    `pending` and no `success`, exactly so the app says "processing" instead of
+    "sent", and defaulting the flag would report money as delivered mid-flight.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000077", "e@zitch.test",
+                                          identity_verified=False)
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified"])
+
+    def post(self, path, payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def test_sending_the_code_reports_success(self):
+        with patch("accounts.views._otp_code", return_value="909090"):
+            res, body = self.post("/api/email/verify/start/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("success"))
+
+    def test_confirming_the_code_reports_success(self):
+        with patch("accounts.views._otp_code", return_value="909090"):
+            self.post("/api/email/verify/start/", {"access_token": self.token})
+        res, body = self.post("/api/email/verify/confirm/",
+                              {"access_token": self.token, "otp": "909090"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("success"))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_verified)
+
+    def test_an_already_verified_email_reports_success(self):
+        # Re-entering the step must not read as a failure either.
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        res, body = self.post("/api/email/verify/start/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("success"))

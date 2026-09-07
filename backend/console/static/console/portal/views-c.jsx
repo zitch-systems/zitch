@@ -1,6 +1,7 @@
-// Zitch Admin — views C: KYC queue, Products (Loans / Fixed Save / Cards), Providers & reconciliation
-// Reviews, card freezes, reminders and recon runs all POST to their audited
-// /api/admin/* endpoints (server-side RBAC) before updating local state.
+// Zitch Admin (demo bundle) — views C: KYC queue, Products (Loans / Fixed Save /
+// Cards), Providers & reconciliation. Reviews, card freezes, reminders and recon
+// runs resolve locally through doAct and update local state only. The live
+// bundle under static/portal/admin/ is the one that decides real KYC.
 const { useState: useStateC } = React;
 const DC = window.ZADM;
 
@@ -17,7 +18,7 @@ function KycQueue({ toast }) {
       const next = items.filter((x) => x !== it);
       setItems(next); DC.KYCQ = next;
       toast((ok ? 'Approved ' : 'Rejected ') + it.user + ' — ' + it.type.toUpperCase() +
-        (ok ? ' · now tier ' + r.tier : '') + ' (audit logged)');
+        (ok ? ' · now tier ' + r.tier : '') + ' (no audit entry — demo)');
     }
   };
   return (
@@ -68,13 +69,13 @@ function Products({ toast }) {
     setBusy(true);
     const r = await doAct(toast, '/loans/remind', { ref: l.ref || l.id });
     setBusy(false);
-    if (r) toast('Repayment reminder sent to ' + l.user + ' via WhatsApp (audit logged)');
+    if (r) toast('Repayment reminder sent to ' + l.user + ' via WhatsApp (no audit entry — demo)');
   };
   const sweep = async () => {
     setBusy(true);
     const r = await doAct(toast, '/ops/maturities', {});
     setBusy(false);
-    if (r) toast('Maturity sweep complete — ' + r.paid_out + ' plan(s) paid out (audit logged)');
+    if (r) toast('Maturity sweep complete — ' + r.paid_out + ' plan(s) paid out (no audit entry — demo)');
   };
   const freezeCard = async (c) => {
     const status = c.status === 'frozen' ? 'active' : 'frozen';
@@ -84,7 +85,7 @@ function Products({ toast }) {
     if (r) {
       const next = cards.map((x) => (x.id === c.id ? { ...x, status } : x));
       setCards(next); DC.CARDS = next;
-      toast('Card ····' + c.last4 + (status === 'frozen' ? ' frozen' : ' unfrozen') + ' (audit logged)');
+      toast('Card ····' + c.last4 + (status === 'frozen' ? ' frozen' : ' unfrozen') + ' (no audit entry — demo)');
     }
   };
 
@@ -195,7 +196,7 @@ function Recon({ toast }) {
     setBusy(true);
     const r = await doAct(toast, '/ops/recon', {});
     setBusy(false);
-    if (r) toast('VTU reconciliation: ' + r.checked + ' pending checked, ' + r.settled + ' settled (audit logged)');
+    if (r) toast('VTU reconciliation: ' + r.checked + ' pending checked, ' + r.settled + ' settled (no audit entry — demo)');
   };
   return (
     <div>

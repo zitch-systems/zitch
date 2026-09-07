@@ -5,7 +5,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import Group
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import AccessToken, User
@@ -27,7 +27,8 @@ def make_staff(username, role=None, superuser=False):
 
 
 def make_customer(username="ada", phone="08011112222", balance="0"):
-    u = User.objects.create(username=username, email=f"{username}@x.test", phone=phone)
+    u = User.objects.create(username=username, email=f"{username}@x.test", phone=phone,
+                            email_verified=True, phone_verified=True)
     Wallet.objects.create(user=u, balance=Decimal(balance))
     return u
 
@@ -36,13 +37,13 @@ class AdminApiTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.admin = make_staff("amara", superuser=True)
-        self.admin_token = AccessToken.issue(self.admin).key
+        self.admin_token = AccessToken.issue(self.admin, scope=AccessToken.ADMIN).key
         self.finance = make_staff("dapo", role="finance")
-        self.finance_token = AccessToken.issue(self.finance).key
+        self.finance_token = AccessToken.issue(self.finance, scope=AccessToken.ADMIN).key
         self.support = make_staff("funmi", role="support")
-        self.support_token = AccessToken.issue(self.support).key
+        self.support_token = AccessToken.issue(self.support, scope=AccessToken.ADMIN).key
         self.readonly = make_staff("ada_ro")  # staff, no group -> read_only
-        self.readonly_token = AccessToken.issue(self.readonly).key
+        self.readonly_token = AccessToken.issue(self.readonly, scope=AccessToken.ADMIN).key
         self.customer = make_customer()
 
     def post(self, path, token, body=None):
@@ -79,6 +80,23 @@ class AdminApiTests(TestCase):
         res = self.client.post("/api/admin/login", data=json.dumps(
             {"username": "ada", "password": "pw12345"}), content_type="application/json")
         self.assertEqual(res.status_code, 403)
+
+    def test_operator_json_boundary_rejects_wrong_type_and_oversize(self):
+        self.admin.set_password("pw12345"); self.admin.save()
+        wrong_type = self.client.post(
+            "/api/admin/login", data='{"username":"amara","password":"pw12345"}',
+            content_type="text/plain")
+        self.assertEqual(wrong_type.status_code, 415)
+
+        oversized = self.client.post(
+            "/api/admin/login", data=json.dumps({"padding": "x" * (64 * 1024)}),
+            content_type="application/json")
+        self.assertEqual(oversized.status_code, 413)
+
+        protected = self.client.post(
+            "/api/admin/logout", data='{}', content_type="text/plain",
+            HTTP_AUTHORIZATION=f"Bearer {self.admin_token}")
+        self.assertEqual(protected.status_code, 415)
 
     def test_me_and_bootstrap_require_token(self):
         res = self.client.get("/api/admin/me")
@@ -150,6 +168,22 @@ class AdminApiTests(TestCase):
         self.assertEqual(self.customer.pin_failed_attempts, 0)
         self.assertTrue(AuditLog.objects.filter(action="user.pin_unlock").exists())
 
+    def test_user_pin_unlock_clears_the_escalation_strikes(self):
+        """The lockout escalates (one hour, then a day). An unlock that clears
+        only the deadline leaves the customer one wrong-PIN run from the 24-hour
+        tier — the next lock harsher than the one support just forgave. The
+        strike count survives in the audit trail instead."""
+        self.customer.pin_lockout_strikes = 2
+        self.customer.pin_locked_until = timezone.now() + timedelta(hours=20)
+        self.customer.save()
+        res, _ = self.post("users/pin_unlock", self.finance_token, {"uid": self.customer.id})
+        self.assertEqual(res.status_code, 200)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.pin_lockout_strikes, 0)
+        self.assertFalse(self.customer.pin_lock_is_escalated)
+        entry = AuditLog.objects.filter(action="user.pin_unlock").latest("id")
+        self.assertEqual((entry.before or {}).get("strikes"), 2)
+
     def test_kyc_review_approve(self):
         res, body = self.post("kyc/review", self.finance_token,
                               {"uid": self.customer.id, "decision": "approve", "type": "bvn"})
@@ -207,6 +241,58 @@ class AdminApiTests(TestCase):
         card.refresh_from_db()
         self.assertEqual(card.status, VirtualCard.FROZEN)
 
+    def test_card_freeze_fails_closed_when_issuer_rejects(self):
+        # The freeze must reach the ISSUER; if it fails there, the DB row must
+        # not flip (a "frozen" row over a live card is a fraud gap).
+        from unittest.mock import patch
+
+        card = VirtualCard.objects.create(user=self.customer, card_token="ct_9",
+                                          last4="9035", expiry="11/27")
+        with patch("utility.providers.card_set_status",
+                   return_value={"success": False, "message": "issuer down"}):
+            res, _ = self.post("cards/freeze", self.finance_token,
+                               {"card_id": card.id, "status": "frozen"})
+        self.assertEqual(res.status_code, 502)
+        card.refresh_from_db()
+        self.assertEqual(card.status, VirtualCard.ACTIVE)
+        with patch("utility.providers.card_set_status", return_value={"success": True}) as m:
+            res, _ = self.post("cards/freeze", self.finance_token,
+                               {"card_id": card.id, "status": "frozen"})
+        self.assertEqual(res.status_code, 200)
+        m.assert_called_once_with("ct_9", active=False)
+
+    def test_kyc_reject_clears_unverified_submission(self):
+        self.customer.set_bvn("12345678901")
+        self.customer.save(update_fields=["bvn_hash", "bvn_last4"])
+        res, _ = self.post("kyc/review", self.finance_token,
+                           {"uid": self.customer.id, "decision": "reject", "type": "bvn"})
+        self.assertEqual(res.status_code, 200)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.bvn_hash, "")
+        self.assertEqual(self.customer.bvn_last4, "")
+        self.assertFalse(self.customer.bvn_verified)
+        self.assertTrue(AuditLog.objects.filter(action="kyc.reject").exists())
+        # Rejecting a VERIFIED identity never revokes it.
+        self.customer.set_nin("98765432109")
+        self.customer.nin_verified = True
+        self.customer.save()
+        self.post("kyc/review", self.finance_token,
+                  {"uid": self.customer.id, "decision": "reject", "type": "nin"})
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.nin_verified)
+        self.assertNotEqual(self.customer.nin_hash, "")
+
+    def test_super_admin_group_grants_full_role(self):
+        # The `super_admin` GROUP must resolve like a superuser here, exactly as
+        # it does on /api/ops/ (portal.roles) — one role matrix, two mounts.
+        boss = make_staff("bosede", role="super_admin")
+        token = AccessToken.issue(boss, scope=AccessToken.ADMIN).key
+        res, body = self.get("me", token)
+        self.assertEqual(body["role"], "super_admin")
+        res, _ = self.post("settings/update", token,
+                           {"key": "ai_enabled_global", "value": "false"})
+        self.assertEqual(res.status_code, 200)
+
     def test_loan_remind_requires_wa_link(self):
         loan = Loan.objects.create(user=self.customer, principal=Decimal("50000"),
                                    interest=Decimal("2250"), tenure_days=30,
@@ -256,10 +342,17 @@ class AdminApiTests(TestCase):
                                     status=WhatsAppLink.ACTIVE, marketing_opt_in=True)
         res, body = self.post("wa/broadcast", self.support_token,
                               {"template_name": "promo", "category": "marketing"})
-        self.assertEqual(res.status_code, 200)
-        row = body["broadcast"]
-        self.assertEqual(row["queued"], 1)  # only the opted-in user
-        self.assertEqual(row["template"], "promo")
+        self.assertEqual(res.status_code, 202)
+        decided, result = self.post(
+            "approvals/decide", self.admin_token,
+            {"id": body["approval_id"], "approve": True},
+        )
+        self.assertEqual(decided.status_code, 200)
+        from whatsapp.jobs import process_outbound_batch
+        process_outbound_batch()
+        row = Broadcast.objects.get(pk=result["result"]["broadcast_id"])
+        self.assertEqual(row.count_queued, 1)  # only the opted-in user
+        self.assertEqual(row.template_name, "promo")
         self.assertEqual(Broadcast.objects.count(), 1)
 
     def test_setting_update_super_admin_only(self):
@@ -279,11 +372,15 @@ class AdminApiFeatureTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.finance = make_staff("dapo2", role="finance")
-        self.finance_token = AccessToken.issue(self.finance).key
+        self.finance_token = AccessToken.issue(self.finance, scope=AccessToken.ADMIN).key
         self.support = make_staff("funmi2", role="support")
-        self.support_token = AccessToken.issue(self.support).key
+        self.support_token = AccessToken.issue(self.support, scope=AccessToken.ADMIN).key
+        self.support_checker = make_staff("funmi3", role="support")
+        self.support_checker_token = AccessToken.issue(
+            self.support_checker, scope=AccessToken.ADMIN,
+        ).key
         self.readonly = make_staff("ro2")
-        self.readonly_token = AccessToken.issue(self.readonly).key
+        self.readonly_token = AccessToken.issue(self.readonly, scope=AccessToken.ADMIN).key
         self.customer = make_customer("zara", phone="08055556666", balance="1000")
 
     def post(self, path, token, body=None):
@@ -351,9 +448,13 @@ class AdminApiFeatureTests(TestCase):
     def test_broadcast_detail(self):
         WhatsAppLink.objects.create(user=self.customer, wa_msisdn="2348055556666",
                                     status=WhatsAppLink.ACTIVE, marketing_opt_in=True)
-        _, sent = self.post("wa/broadcast", self.support_token,
-                            {"template_name": "detail_test", "category": "utility"})
-        bid = sent["broadcast"]["id"]  # bc_<pk> form on purpose
+        _, requested = self.post("wa/broadcast", self.support_token,
+                                 {"template_name": "detail_test", "category": "utility"})
+        _, decided = self.post("approvals/decide", self.support_checker_token,
+                               {"id": requested["approval_id"], "approve": True})
+        from whatsapp.jobs import process_outbound_batch
+        process_outbound_batch()
+        bid = f"bc_{decided['result']['broadcast_id']}"  # bc_<pk> form on purpose
         res, body = self.post("wa/broadcast_detail", self.readonly_token, {"id": bid})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(body["broadcast"]["template"], "detail_test")
@@ -366,11 +467,11 @@ class AdminApiFeatureTests(TestCase):
         from whatsapp.models import AuditLog
         from whatsapp.ops import record_audit
 
-        record_audit("webhook.kora", actor_type="system", target="KORA|X1",
-                     after={"event": "charge.success"})
+        record_audit("webhook.mono", actor_type="system", target="MONO|X1",
+                     after={"event": "mono.events"})
         self.post("ops/recon", self.finance_token, {})
         res, body = self.get("bootstrap", self.readonly_token)
-        self.assertTrue(any(w["ref"] == "KORA|X1" and w["src"] == "Kora" for w in body["webhooks"]))
+        self.assertTrue(any(w["ref"] == "MONO|X1" and w["src"] == "Mono" for w in body["webhooks"]))
         self.assertTrue(any(r["run"] == "zitch-reconcile-vtu" for r in body["recons"]))
 
     def test_wallet_credit_happy_path_and_audit(self):
@@ -398,6 +499,23 @@ class AdminApiFeatureTests(TestCase):
         self.assertTrue(body2.get("duplicate"))
         self.assertEqual(body2["reference"], body1["reference"])
         self.assertEqual(Wallet.objects.get(user=self.customer).balance, Decimal("1500"))  # once
+
+    def test_wallet_credit_without_key_dedups_double_submit(self):
+        # No client idempotency_key -> a server-side fallback key still dedups a
+        # double-submit (the unique constraint skips blank keys, so without the
+        # fallback an empty key would credit twice).
+        body = {"uid": self.customer.id, "amount": "500", "reason": "Goodwill no-key"}
+        self.post("wallet/credit", self.finance_token, body)
+        self.post("wallet/credit", self.finance_token, body)
+        self.assertEqual(Wallet.objects.get(user=self.customer).balance, Decimal("1500"))  # 1000 + 500 once
+
+    def test_wallet_credit_rejects_staff_target(self):
+        # Operators can't credit a staff account (incl. their own): _get_user is
+        # scoped to customers, so a staff uid is "not found".
+        res, _ = self.post("wallet/credit", self.finance_token,
+                           {"uid": self.finance.id, "amount": "500", "reason": "self credit attempt"})
+        self.assertEqual(res.status_code, 404)
+        self.assertEqual(Wallet.objects.filter(user=self.finance).count(), 0)  # nothing credited
 
     def test_wallet_credit_validation_and_rbac(self):
         res, _ = self.post("wallet/credit", self.finance_token,
@@ -431,7 +549,7 @@ class SeedOpsCommandTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json().get("role"), "finance")
 
-    def test_demo_seed_blocked_in_production_without_force(self):
+    def test_demo_seed_blocked_in_production(self):
         from django.core.management import call_command
         from django.core.management.base import CommandError
         from django.test import override_settings
@@ -439,3 +557,265 @@ class SeedOpsCommandTests(TestCase):
             with self.assertRaises(CommandError):
                 call_command("seed_ops")
         self.assertFalse(User.objects.filter(username="amara").exists())
+
+    def test_named_operator_requires_explicit_password(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("seed_ops", username="zoe", role="finance")
+        self.assertFalse(User.objects.filter(username="zoe").exists())
+
+    def test_role_update_removes_stale_superuser_and_group_privileges(self):
+        from django.core.management import call_command
+
+        call_command("seed_ops", username="zoe", role="super_admin", password="First#pass1")
+        call_command("seed_ops", username="zoe", role="support", password="Second#pass2")
+        user = User.objects.get(username="zoe")
+        self.assertFalse(user.is_superuser)
+        self.assertEqual(list(user.groups.values_list("name", flat=True)), ["support"])
+        self.assertTrue(user.check_password("Second#pass2"))
+
+    def test_bootstrap_can_preserve_an_existing_password(self):
+        from django.core.management import call_command
+
+        call_command("seed_ops", username="zoe", role="super_admin", password="First#pass1")
+        call_command("seed_ops", username="zoe", role="super_admin", password="Stale#bootstrap2",
+                     preserve_existing_password=True)
+        user = User.objects.get(username="zoe")
+        self.assertTrue(user.check_password("First#pass1"))
+        self.assertFalse(user.check_password("Stale#bootstrap2"))
+
+    def test_operator_gets_no_fabricated_phone(self):
+        """The operator's phone must stay NULL. It used to be derived from
+        hash(username), which invented a plausible 080… number — and `phone` is
+        unique, so colliding with a real customer raised IntegrityError inside
+        build.sh (set -o errexit), failing the deploy and leaving the previous
+        release live."""
+        from django.core.management import call_command
+
+        call_command("seed_ops", username="zoe", role="super_admin", password="S3cret#pass")
+        self.assertIsNone(User.objects.get(username="zoe").phone)
+
+    def test_seeding_survives_a_customer_owning_every_plausible_number(self):
+        """Two operators seeded back to back must not collide with each other or
+        with an existing customer, however their usernames hash."""
+        from django.core.management import call_command
+
+        existing = User.objects.create(username="cust", phone="08012345678")
+        call_command("seed_ops", username="zoe", role="finance", password="S3cret#pass")
+        call_command("seed_ops", username="ken", role="support", password="S3cret#pass")
+        self.assertEqual(User.objects.filter(phone__isnull=True).count(), 2)
+        self.assertEqual(User.objects.get(pk=existing.pk).phone, "08012345678")
+
+    def test_seeded_super_admin_can_sign_into_django_admin(self):
+        """The whole point of the build-time bootstrap: /admin/ must accept the
+        seeded account by username AND by the email it was seeded with."""
+        from django.core.management import call_command
+
+        call_command("seed_ops", username="admin", role="super_admin",
+                     password="S3cret#pass", email="owner@zitch.ng")
+        for identifier in ("admin", "owner@zitch.ng"):
+            res = Client().post("/admin/login/",
+                                {"username": identifier, "password": "S3cret#pass",
+                                 "next": "/admin/"})
+            self.assertEqual(res.status_code, 302, f"{identifier} should sign in")
+
+
+class TokenScopeTests(TestCase):
+    """The app/admin token split: a mobile (app-scoped) token can never reach a
+    staff endpoint, and admin login issues an admin-scoped token."""
+
+    def setUp(self):
+        self.client = Client()
+        self.staff = make_staff("scoped_admin", superuser=True)
+
+    def post(self, path, token, body=None):
+        return self.client.post(f"/api/admin/{path}", data=json.dumps(body or {}),
+                                content_type="application/json",
+                                HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    def test_app_scoped_token_rejected_on_staff_endpoint(self):
+        # A staff user's *app* token (e.g. from the mobile app) must not open the
+        # back office — the scope gate refuses it with 401 before any role check.
+        app_tok = AccessToken.issue(self.staff).key  # default app scope
+        res = self.client.get("/api/admin/bootstrap", HTTP_AUTHORIZATION=f"Bearer {app_tok}")
+        self.assertEqual(res.status_code, 401)
+
+    def test_admin_scoped_token_accepted(self):
+        admin_tok = AccessToken.issue(self.staff, scope=AccessToken.ADMIN).key
+        res = self.client.get("/api/admin/bootstrap", HTTP_AUTHORIZATION=f"Bearer {admin_tok}")
+        self.assertEqual(res.status_code, 200)
+
+    def test_admin_login_issues_admin_scoped_token(self):
+        self.staff.set_password("S3cret#pass"); self.staff.save()
+        res = self.client.post("/api/admin/login",
+                               data=json.dumps({"username": "scoped_admin", "password": "S3cret#pass"}),
+                               content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        tok = AccessToken.objects.get(key=AccessToken._hash(res.json()["token"]))
+        self.assertEqual(tok.scope, AccessToken.ADMIN)
+
+    def test_admin_token_expires_on_short_ttl(self):
+        from datetime import timedelta
+
+        from django.test import override_settings
+        from django.utils import timezone
+        tok = AccessToken.issue(self.staff, scope=AccessToken.ADMIN)
+        raw = tok.key
+        # Age the token past the 2h admin TTL but well within the 24h app TTL.
+        AccessToken.objects.filter(pk=tok.pk).update(created=timezone.now() - timedelta(hours=3))
+        with override_settings(ADMIN_TOKEN_TTL_HOURS=2, TOKEN_TTL_HOURS=24):
+            self.assertIsNone(AccessToken.resolve(raw, required_scope=AccessToken.ADMIN))
+
+    def test_resolve_rejects_inactive_user(self):
+        tok = AccessToken.issue(self.staff, scope=AccessToken.ADMIN).key
+        self.staff.is_active = False
+        self.staff.save(update_fields=["is_active"])
+        self.assertIsNone(AccessToken.resolve(tok, required_scope=AccessToken.ADMIN))
+
+
+@override_settings(RATELIMIT_ENABLE=True)
+class AdminLoginLockoutTests(TestCase):
+    """Per-account brute-force lockout + masked-PII audit on the admin login."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.client = Client()
+        self.staff = make_staff("lockme", superuser=True)
+        self.staff.set_password("S3cret#pass"); self.staff.save()
+
+    def tearDown(self):
+        from django.core.cache import cache
+        cache.clear()
+
+    def login(self, password):
+        return self.client.post("/api/admin/login",
+                                data=json.dumps({"username": "lockme", "password": password}),
+                                content_type="application/json")
+
+    def test_lockout_after_repeated_failures(self):
+        from django.test import override_settings
+        with override_settings(ADMIN_LOGIN_MAX_FAILS=5, ADMIN_LOGIN_LOCKOUT_SECONDS=900):
+            for _ in range(5):
+                self.assertEqual(self.login("wrong").status_code, 401)
+            # 6th attempt is locked out (429) even though the account isn't
+            # otherwise flagged — and even a NOW-correct password is refused.
+            self.assertEqual(self.login("S3cret#pass").status_code, 429)
+        self.assertTrue(AuditLog.objects.filter(action="admin.login_locked").exists())
+
+    def test_failed_login_masks_identifier_in_audit(self):
+        self.login("wrong")
+        row = AuditLog.objects.filter(action="admin.login_failed").first()
+        self.assertIsNotNone(row)
+        # The raw identifier is never stored verbatim.
+        self.assertNotEqual(row.target, "lockme")
+        self.assertIn("***", row.target)
+
+
+class SettingValidationTests(TestCase):
+    """setting_update coerces + range-checks values by key type."""
+
+    def setUp(self):
+        self.client = Client()
+        self.admin_token = AccessToken.issue(make_staff("cfg", superuser=True),
+                                             scope=AccessToken.ADMIN).key
+
+    def post(self, body):
+        return self.client.post("/api/admin/settings/update",
+                                data=json.dumps(body), content_type="application/json",
+                                HTTP_AUTHORIZATION=f"Bearer {self.admin_token}")
+
+    def test_bool_setting_normalised(self):
+        res = self.post({"key": "ai_enabled_global", "value": "yes"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["value"], "true")
+
+    def test_int_setting_out_of_range_rejected(self):
+        self.assertEqual(self.post({"key": "fx_margin_bps", "value": "5000"}).status_code, 400)
+        self.assertEqual(self.post({"key": "fx_margin_bps", "value": "notanumber"}).status_code, 400)
+
+    def test_int_setting_in_range_accepted(self):
+        res = self.post({"key": "fx_margin_bps", "value": "75"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["value"], "75")
+
+    def test_unknown_key_rejected(self):
+        self.assertEqual(self.post({"key": "arbitrary_key", "value": "x"}).status_code, 400)
+
+
+class ManualCreditCapTests(TestCase):
+    """The insider-risk guardrails on manual wallet credit."""
+
+    def setUp(self):
+        self.client = Client()
+        self.finance = make_staff("cap_fin", role="finance")
+        self.finance_token = AccessToken.issue(self.finance, scope=AccessToken.ADMIN).key
+        self.customer = make_customer("capcust", phone="08055550000", balance="0")
+
+    def credit(self, amount, reason="Goodwill manual credit", key=None):
+        body = {"uid": self.customer.id, "amount": str(amount), "reason": reason}
+        if key:
+            body["idempotency_key"] = key
+        return self.client.post("/api/admin/wallet/credit", data=json.dumps(body),
+                                content_type="application/json",
+                                HTTP_AUTHORIZATION=f"Bearer {self.finance_token}")
+
+    def test_single_credit_ceiling(self):
+        from django.test import override_settings
+        with override_settings(ADMIN_MAX_MANUAL_CREDIT=500000):
+            res = self.credit("600000", key="over-one")
+            self.assertEqual(res.status_code, 403)
+            self.assertEqual(res.json().get("code"), "credit_limit")
+
+    def test_the_maker_daily_cap_is_charged_on_the_approved_path(self):
+        """A credit routed through dual approval must consume the REQUESTER's cap.
+
+        It previously consumed only the approver's: `_perform_manual_credit` is
+        called with actor=approver there, and the cap reads audit rows by actor. So
+        a maker could stay permanently under their own cap no matter how much they
+        minted, as long as they could find approvers — exactly the unbounded
+        approved path the cap's own docstring says must not exist.
+        """
+        from django.test import override_settings
+
+        from common import approvals
+
+        checker = make_staff("cap_chk", role="finance")
+        checker_token = AccessToken.issue(checker, scope=AccessToken.ADMIN).key
+
+        with override_settings(ADMIN_MAX_MANUAL_CREDIT=100000,
+                               ADMIN_MANUAL_CREDIT_DAILY_CAP=450000,
+                               OPS_REQUIRE_DUAL_APPROVAL=True):
+            if not approvals.required_for("wallet.credit"):
+                self.skipTest("dual approval not enabled in this configuration")
+            # Maker requests 400k (over the 100k single ceiling -> held for approval).
+            res = self.credit("400000", key="mk1")
+            self.assertEqual(res.status_code, 200)
+            approval_id = res.json()["approval_id"]
+            decided = self.client.post(
+                "/api/admin/approvals/decide",
+                data=json.dumps({"id": approval_id, "approve": True}),
+                content_type="application/json",
+                HTTP_AUTHORIZATION=f"Bearer {checker_token}")
+            self.assertEqual(decided.status_code, 200)
+
+            # The maker has now moved 400k of their 450k cap, so a further 100k (under
+            # the single ceiling, so it goes direct) must be refused. Before the fix
+            # this succeeded: the 400k was charged to the checker and the maker's own
+            # tally still read zero.
+            res2 = self.credit("100000", key="mk2")
+            self.assertEqual(res2.status_code, 403)
+            self.assertEqual(res2.json().get("code"), "credit_daily_cap")
+
+    def test_daily_cap_across_credits(self):
+        from django.test import override_settings
+        with override_settings(ADMIN_MAX_MANUAL_CREDIT=500000,
+                               ADMIN_MANUAL_CREDIT_DAILY_CAP=800000):
+            self.assertEqual(self.credit("500000", key="d1").status_code, 200)
+            # A second credit that would push the operator's rolling 24h past the
+            # daily cap is refused, even though each is under the single ceiling.
+            res = self.credit("400000", key="d2")
+            self.assertEqual(res.status_code, 403)
+            self.assertEqual(res.json().get("code"), "credit_daily_cap")

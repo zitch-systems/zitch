@@ -1,9 +1,27 @@
 # Zitch landing page — static deploy
 
-Self-contained static copy of the marketing landing (`docs/design_handoff_zitch_revamp/Zitch Landing v3.html`)
-plus the interactive prototype it embeds as the "live demo" phone. No build step, no server code —
-deployable to any static host. This is the interim ship until the landing is rebuilt in Next.js
-(see `docs/design_handoff_zitch_revamp/CLAUDE.md`); keep it in sync with the handoff reference.
+Self-contained static site for Zitch's **VTU / bill-payment** offering — airtime, data,
+recharge PINs, cable TV, electricity, internet, exam PINs and betting-wallet funding. Ported
+from `design_handoff_zitch_vtu_landing/` (design handoff). No build step, no server code —
+deployable to any static host.
+
+Pages: `index.html` (landing) · `terms.html` · `privacy.html`. Shared: `_ds/` (base design-system
+tokens + local font fallbacks), `uploads/zitch-logo.png` (brand mark), `assets/logos/` (provider
+marks). Icons load from Lucide (unpkg) and type from Google Fonts.
+
+> The previous marketing landing (banking/transfers/FX positioning) is archived in
+> `../landing-legacy/` — preserved in git, not deployed.
+
+> **⚠️ Legal placeholders:** the Terms and Privacy pages carry `class="ph"` placeholders
+> (legal entity, RC number, registered address, support/phone). Grep for `class="ph"` and
+> replace every one with the real business details before shipping.
+
+`prototype.html` + `app/` + `shared.jsx` remain the interactive app prototype (served at
+`/prototype.html`), independent of the marketing pages.
+
+Why split it out of the backend: the Django app on Render's free plan serves this page at `/`,
+but free Render services sleep after idle — the first visitor waits ~50s for a cold start.
+A static edge host serves it instantly and free.
 
 Why split it out of the backend: the Django app on Render's free plan serves this page at `/`,
 but free Render services sleep after idle — the first visitor waits ~50s for a cold start.

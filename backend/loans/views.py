@@ -7,6 +7,7 @@ from common.http import (
     api, fail, idempotent_replay, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
+from utility.providers import bnpl_offers as provider_bnpl_offers
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, get_or_create_wallet
 
 from .models import Loan
@@ -104,8 +105,18 @@ def loan_request(request):
     if tenure is None:
         return fail("Tenure must be 15, 30 or 60 days")
 
+    # Dedupe the disbursement: a retried/replayed request (esp. after the prior
+    # loan was repaid, which clears the one-active-loan guard) must not disburse a
+    # second principal. Mirrors loan_repay.
+    key = spend_key(data.get("idempotency_key"), user, "loan-request", principal, tenure)
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+
     try:
-        loan = disburse(user, principal, tenure)
+        loan = disburse(user, principal, tenure, idempotency_key=key)
+    except DuplicateTransaction:
+        return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
     except LoanError as e:
         # Eligibility re-check inside the lock caught a race past the checks above.
         return fail(str(e), status=409)
@@ -151,3 +162,18 @@ def loan_repay(request):
 
     wallet = get_or_create_wallet(user)
     return ok(success=True, wallet=str(wallet.balance), loan=_loan_dict(loan), message="Repayment successful")
+
+
+@api
+@require_user
+def bnpl_offers(request):
+    """POST /api/loans/bnpl/offers/ {access_token} -> {success, offers}
+
+    The ALAT Buy-Now-Pay-Later product offers the user is eligible for (read-only). The
+    consent -> accept -> disburse commitment flow (real external credit) is built at the
+    client layer (utility.wema.bnpl_*) but intentionally NOT exposed as an end-user
+    endpoint yet — it creates real debt and needs product/compliance sign-off first."""
+    res = provider_bnpl_offers()
+    if not res.get("success"):
+        return fail(res.get("message", "BNPL is unavailable right now"), status=502)
+    return ok(success=True, offers=res.get("offers", []) or [], mock=bool(res.get("mock")))

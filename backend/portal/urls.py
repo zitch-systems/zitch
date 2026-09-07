@@ -1,9 +1,12 @@
 from django.urls import path
 
+from admin_api import views as admin_views
+
 from . import views
 
 urlpatterns = [
     path("login/", views.login),
+    path("logout/", views.logout),
     path("summary/", views.summary),
     path("users/", views.users),
     path("user-action/", views.user_action),
@@ -25,7 +28,21 @@ urlpatterns = [
     path("broadcasts/", views.broadcasts),
     path("ai/", views.ai_state),
     path("ai-global/", views.ai_global),
+    path("ai-config/", views.ai_config),
+    path("ai-config-save/", views.ai_config_save),
+    path("ai-test/", views.ai_test),
+    path("django-admin/", views.django_admin),
     path("audit/", views.audit),
     path("recon/", views.recon),
     path("settings/", views.settings_view),
+    path("setting-save/", views.setting_save),
+    # Same operator features as /api/admin/, so an operator using the live portal is
+    # not sent to a second surface to manage their own second factor or drain the
+    # approval queue.
+    path("approvals/", admin_views.approvals_list),
+    path("approvals-decide/", admin_views.approvals_decide),
+    path("mfa/", admin_views.mfa_status),
+    path("mfa-enroll/", admin_views.mfa_enroll),
+    path("mfa-confirm/", admin_views.mfa_confirm),
+    path("mfa-disable/", admin_views.mfa_disable),
 ]
