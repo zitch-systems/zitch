@@ -14,4 +14,4 @@ Pillow>=12.2,<13   # WhatsApp receipt image rendering. Floor: PYSEC-2026-165 + C
 zxing-cpp>=2.2,<4   # payment-QR decoding (manylinux wheels; no system libzbar needed)
 qrcode>=8.2,<9   # QR rendering, and building fixture codes in the QR tests
 django-storages[s3]>=1.14.6,<2   # durable profile-photo storage on Render (S3-compatible)
-boto3>=1.35,<2   # explicit pin for the django-storages S3 backend
+boto3>=1.43.88,<2   # explicit pin for the django-storages S3 backend
