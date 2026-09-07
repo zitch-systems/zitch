@@ -22,6 +22,7 @@ export const EP = {
   wallet: {
     balance: '/api/wallet_balance/',
     history: '/api/user-transaction-history/',
+    transactionStatus: '/api/transaction/status/',
     account: '/api/wallet/account/',
     createAccount: '/api/wallet/account/create/',
     wemaVerifyOtp: '/api/wallet/wema/verify-otp/',
