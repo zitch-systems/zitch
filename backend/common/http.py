@@ -259,6 +259,12 @@ def unverified_error(user) -> "str | None":
     try:
         from accounts.models import rehydrate_verified_identity_flags
 
+        # A callback or the app may have verified this identity after the worker
+        # loaded the user. Use the same current state as the KYC checklist.
+        user.refresh_from_db(fields=[
+            "phone_verified", "email_verified", "bvn_verified", "nin_verified",
+            "bvn_hash", "bvn_last4", "nin_hash", "nin_last4", "tier",
+        ])
         rehydrate_verified_identity_flags(user)
     except Exception:  # noqa: BLE001
         log.warning("identity_flag_rehydrate_failed user=%s", getattr(user, "id", None), exc_info=True)
