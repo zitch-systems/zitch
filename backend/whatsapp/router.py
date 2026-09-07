@@ -3670,13 +3670,13 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
               (f"{kind.upper()} verification could not start right now. Please try again later."))
         return "fail" if status >= 400 else "adopted"
 
+    # Wema's wallet-creation KYC is SMS OTP for both BVN and NIN. Do not
+    # route this account setup through Prembly or a face fallback.
     if pa.payload.get("verification_method") == "face":
-        if _send_identity_face_option(pa, user, msisdn, kind, digits, account_setup=True):
-            _touch(pa, state="face_pending", payload=pa.payload)
-            return "face"
-        _clear_actions(msisdn)
-        reply(msisdn, "⚠️ Face verification isn't available right now. Reply *6* to try again with SMS OTP.")
-        return "fail"
+        pa.payload.pop("verification_method", None)
+        pa.save(update_fields=["payload"])
+        reply(msisdn, f"⚠️ Wema requires the {kind.upper()} SMS OTP for this step. "
+                      "Please enter the identity again to request it.")
 
     res, identity_error = wallet_views._start_wema_attempt(
         user, digits if using_bvn else "", "" if using_bvn else digits)
