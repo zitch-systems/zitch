@@ -1405,9 +1405,9 @@ def _account_otp_screen(pa, error: str = "") -> dict:
         ACCOUNT_OTP,
         # Keep delivery guidance in the smaller body text. The summary is a
         # TextHeading in the published Flow, so paragraphs do not fit there.
-        error=error or ("Not arriving? It goes to the phone on your "
-                        f"{kind} record, so a resend can't reach another line - "
-                        "use the face verification button in the chat instead."),
+        error=error or ("Not arriving? Wema sends this code to the phone on your "
+                        f"{kind} record. The code must be entered here; "
+                        "face verification is not available for this Wema step."),
         label="SMS code",
         summary=f"Enter the 6-digit code Wema sent to the phone registered on your {kind}.",
         screen=screen,
