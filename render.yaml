@@ -432,7 +432,7 @@ services:
     runtime: python
     rootDir: backend
     plan: starter
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py whatsapp_worker --batch-size 50 --poll-seconds 0.5"
     maxShutdownDelaySeconds: 60
@@ -650,7 +650,7 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     schedule: "0 1 * * *"   # 01:00 UTC daily
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py run_maturities"
@@ -729,7 +729,7 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     schedule: "45 3 * * *"   # 03:45 UTC daily, off the hour the other jobs use
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py purge_expired_sessions"
@@ -767,7 +767,7 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     schedule: "*/10 * * * *"
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py reconcile_vtu"
@@ -871,7 +871,7 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     schedule: "*/10 * * * *"
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py reconcile_wema"
@@ -970,7 +970,7 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     schedule: "30 2 * * *"   # 02:30 UTC daily, after the maturity sweep
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py integrity_check --fail-nonzero"
@@ -1008,7 +1008,7 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     schedule: "0 */6 * * *"
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py reconcile_balances --fail-over"
@@ -1060,7 +1060,7 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     schedule: "0 6 * * *"   # 06:00 UTC = 07:00 Lagos, before the business day
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py settlement_report --fail-on-breach"
@@ -1119,7 +1119,7 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     schedule: "0 5 * * *"   # 05:00 UTC = 06:00 Lagos, before the settlement report
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py aml_scan --fail-on-overdue"
