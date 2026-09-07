@@ -3633,14 +3633,41 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
         return "adopted"
     wallet = get_or_create_wallet(user)
     if wallet.account_number:
+        identity_type = (WemaProvisioningAttempt.BVN if using_bvn
+                         else WemaProvisioningAttempt.NIN)
+        payload, status = wallet_views._verify_existing_wema_identity(
+            user, wallet, identity_type, digits)
+        if payload.get("success") and payload.get("otp_required"):
+            pa.payload.update({
+                "tracking_id": payload.get("tracking_id", ""),
+                "using_bvn": using_bvn,
+                "id_type": kind,
+            })
+            _touch(pa, state="otp", payload=pa.payload)
+            if in_flow:
+                pa.payload["id_kind"] = ACCOUNT_OTP
+                pa.payload["flow_screen"] = IDENTITY_CHAIN
+                _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
+                reply(msisdn, payload.get("message") or
+                      f"Wema is sending a code for your {kind.upper()}. Enter it on the next secure page.")
+                return "otp"
+            if _send_account_otp_flow(pa):
+                reply(msisdn, payload.get("message") or
+                      f"Wema is sending a code for your {kind.upper()}. Enter it on the secure form.")
+                return "otp"
+            reply(msisdn, payload.get("message") or
+                  f"Wema is sending a code for your {kind.upper()}. Enter it here to finish.")
+            return "otp"
         _clear_actions(msisdn)
         _send_account_details(msisdn, wallet,
                               intro="✅ *Your Zitch account number is already set up*")
-        reply(msisdn,
-              "To upgrade this existing Wema account, the bank requires BVN, NIN "
-              "and a live face check together. Please open *Verify identity* in "
-              "the Zitch app to complete the bank Tier 2 upgrade.")
-        return "adopted"
+        message = payload.get("message") if isinstance(payload, dict) else ""
+        if payload.get("success"):
+            reply(msisdn, message or f"✅ Your {kind.upper()} is already verified.")
+            return "adopted"
+        reply(msisdn, message or
+              (f"{kind.upper()} verification could not start right now. Please try again later."))
+        return "fail" if status >= 400 else "adopted"
 
     if pa.payload.get("verification_method") == "face":
         if _send_identity_face_option(pa, user, msisdn, kind, digits, account_setup=True):
