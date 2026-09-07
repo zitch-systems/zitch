@@ -3744,15 +3744,14 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
         _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
         reply(msisdn, f"📲 Wema checked your {kind.upper()} and sent a code by SMS to the phone "
                       f"registered on it - enter that code on the next page of the secure form. "
-                      "Finish this SMS step to create the account. A face check can be chosen "
-                      "before the SMS setup starts, but not after Wema has opened this request.")
+                      "Finish this SMS step to create the account.")
         return "otp"
     if _send_account_otp_flow(pa):
         return reply(msisdn, f"📲 Wema checked your {kind.upper()} and sent a code by SMS to the "
                              "phone registered on it. Enter that code on the secure form above "
-                             "to finish. Reply *resend* only if you need the same code sent again.)")
+                             "to finish. Reply *resend* only if you need the same code sent again."))
     reply(msisdn, f"📲 Wema checked your {kind.upper()} and sent a code by SMS to the phone "
-                  "registered on it. Enter that code here to finish, or reply *resend* to send it again.)")
+                  "registered on it. Enter that code here to finish, or reply *resend* to send it again.")
 
 
 def _send_account_otp_flow(pa: PendingAction) -> bool:
@@ -6575,7 +6574,8 @@ def _await_settlement(action_id: int, user, action_type: str = ""):
     """
     from wallet.models import Transaction
 
-    budget = float(getattr(settings, "WHATSAPP_FLOW_SETTLE_WAIT", 0) or 0)
+    budget = float(getattr(settings, "WHATSAPP_FLOW_SETTLE_WAIT", 3) or 3)
+    budget = max(0, min(budget, 6))
     if budget <= 0:
         return None
     # The key every executor stamps its ledger row with - except FX, which has
