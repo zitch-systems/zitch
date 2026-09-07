@@ -474,9 +474,10 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
             "success": False,
             "upgrade_required": True,
             "message": (
-                f"{kind.upper()} could not start as a separate OTP because Wema "
-                "says this customer already exists in Wallet Service. Support must "
-                "review the bank profile; Zitch will not ask for the verified BVN again."
+                f"This Wema account already exists, so Wema will not open a second "
+                f"Wallet Service OTP for {kind.upper()}. Your verified BVN remains "
+                "saved and will not be requested again. The remaining identity must "
+                "be submitted through Wema's existing-account upgrade request."
             ),
         }, 409
 
@@ -484,9 +485,9 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
         "success": False,
         "upgrade_required": True,
         "message": (
-            f"{kind.upper()} needs Wema verification, but Wema did not open an OTP "
-            "request for this existing account. Try Wema face verification from "
-            "Verify identity, or contact support if this repeats."
+            f"Wema did not open an OTP request for {kind.upper()} because this "
+            "NUBAN is already provisioned. Your verified BVN is retained; use "
+            "Wema's existing-account upgrade request for the remaining identity."
         ),
     }, 409
 
