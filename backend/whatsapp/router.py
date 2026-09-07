@@ -3749,7 +3749,7 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
     if _send_account_otp_flow(pa):
         return reply(msisdn, f"📲 Wema checked your {kind.upper()} and sent a code by SMS to the "
                              "phone registered on it. Enter that code on the secure form above "
-                             "to finish. Reply *resend* only if you need the same code sent again."))
+                             "to finish. Reply *resend* only if you need the same code sent again.")
     reply(msisdn, f"📲 Wema checked your {kind.upper()} and sent a code by SMS to the phone "
                   "registered on it. Enter that code here to finish, or reply *resend* to send it again.")
 
