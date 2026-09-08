@@ -279,7 +279,10 @@ def unverified_error(user) -> "str | None":
         listed = ", ".join(missing[:-1]) + " and " + missing[-1]
     else:
         listed = missing[0]
-    return (f"Before you can send money we need to verify your {listed}. "\n            "On WhatsApp reply *8* to complete verification securely in this chat.")
+    return (
+        f"Before you can send money we need to verify your {listed}. "
+        "On WhatsApp reply *8* to complete verification securely in this chat."
+    )
 
 
 def spend_limit_error(user, amount, service: str) -> "str | None":
