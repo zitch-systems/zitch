@@ -1,19 +1,11 @@
 """Third-party integration layer.
 
-Providers: Wema / ALAT (money movement — funding via OTP-provisioned NUBANs,
-payouts + name enquiry + balance, and BVN/NIN identity via the name-matched
-account-creation flow; client in utility/wema.py),
-VTU.ng (airtime/data/cable/electricity/betting), Termii (SMS/OTP), Resend
-(email/OTP), Prembly/IdentityPass (selfie / liveness + address + ID-document KYC —
-the image/biometric checks the account-creation flow doesn't cover), Fincra (FX). Each
-function returns {"success": bool, ...}. When the relevant key is blank it runs in
-MOCK mode and simulates success so the whole app flow is testable without an external
-account — EXCEPT in production (DEBUG off), where money/identity mocks fail closed
-(see mock_disabled_in_prod) so a misconfigured deploy never fakes a money movement.
-
-The funding_* / payout_* / card_* / verify_* wrappers are the stable, provider-
-agnostic contract the views and services call; they delegate to the Wema client
-(utility.wema), the sole money-movement + Nigeria-KYC rail.
+The partner-bank client in utility.wema is the sole money-movement, Nigeria-KYC
+and VAS rail. Termii handles SMS/OTP, Resend handles email, Prembly/IdentityPass
+handles selfie/liveness + address + ID-document KYC where needed, and Fincra
+handles FX. Each function returns {"success": bool, ...}. In production,
+money/identity mocks fail closed so a misconfigured deploy never fakes money
+movement.
 """
 import hashlib
 import logging
@@ -26,16 +18,11 @@ REQUEST_TIMEOUT = 30
 log = logging.getLogger("zitch")
 
 # ---------------------------------------------------------------------------
-# VTU (airtime / data / cable / electricity / betting) — VTU.ng
-#
-# VTU.ng is the sole VTU provider; its client lives in utility/vtung.py. The
-# vtu_purchase / vtu_requery / vtu_verify_customer wrappers below are the stable
-# contract the views and the reconcile job call, so callers never import the
-# provider module directly.
+# VAS (airtime / data / cable / electricity / betting) - partner bank only.
 # ---------------------------------------------------------------------------
 def simulation_mode() -> bool:
     """WEMA_SIMULATION doubles as the DEPLOY-WIDE simulation switch: when on, the whole
-    payment/identity stack (Wema, VTU.ng airtime/data/bills, cards, FX, Mono, KYC)
+    payment/identity stack (Wema, partner-bank airtime/data/bills, cards, FX, Mono, KYC)
     serves its MOCK paths, so the app can be walked end-to-end with no real money or
     identity. It is a HARD go-live blocker — wema_preflight fails while it is set — so
     it can only ever be on in a test deploy, never in production."""
@@ -62,7 +49,7 @@ def mock_disabled_in_prod() -> bool:
 
 
 def vtu_live() -> bool:
-    """Whether the VTU provider (VTU.ng) has credentials configured."""
+    """Whether the VAS provider (the retired VAS provider) has credentials configured."""
     from . import wema
     return bool(wema._vas_live("airtime") or wema._vas_live("bills"))
 
@@ -71,12 +58,12 @@ def vas_provider() -> str:
     """VAS (airtime/data/bills) rail — 'wema' or 'vtung'.
 
     Explicit VAS_PROVIDER wins. Blank => AUTO: use Wema once its VAS keys are
-    configured AND it can SETTLE a purchase (or simulation is on), else VTU.ng — so
+    configured AND it can SETTLE a purchase (or simulation is on), else the retired VAS provider — so
     airtime/data/bills never break on a deploy that has no Wema VAS keys yet. When
     Wema is selected the routing is still per-service: AIRTIME (network + amount, no
     catalogue) always goes to Wema; DATA and CABLE go to Wema once the plan's
-    `wema_code` is synced (`manage.py seed_wema_plans`), else VTU.ng; ELECTRICITY and
-    BETTING stay on VTU.ng until their Wema billers are mapped.
+    `wema_code` is synced (`manage.py seed_wema_plans`), else the retired VAS provider; ELECTRICITY and
+    BETTING stay on the retired VAS provider until their Wema billers are mapped.
 
     "Can settle" is the load-bearing half. A Wema VAS purchase usually comes back
     PROCESSING and is resolved by requerying its INTEGER transactionStatus, whose
@@ -84,12 +71,12 @@ def vas_provider() -> str:
     requery can never decode, and the top-up sits PENDING forever: the customer is
     DEBITED and the airtime neither arrives nor refunds. Auto-selecting Wema in that
     state is exactly how "debited but not delivered" happens, so AUTO refuses it and
-    stays on the proven VTU.ng rail until the legend is set. An operator who knows
+    stays on the proven the retired VAS provider rail until the legend is set. An operator who knows
     their Wema VAS settles synchronously can still force it with VAS_PROVIDER=wema."""
     choice = (getattr(settings, "VAS_PROVIDER", "") or "").strip().lower()
     if choice == "wema":
         return "wema"
-    # VTU.ng is retired. Ignore legacy VAS_PROVIDER=vtung values rather than
+    # the retired VAS provider is retired. Ignore legacy VAS_PROVIDER=vtung values rather than
     # routing customer money to the removed provider.
     if choice == "vtung":
         log.warning("legacy VAS_PROVIDER=vtung ignored; using partner bank")
@@ -102,12 +89,12 @@ def vas_provider() -> str:
 
 
 def _wema_vas_route(service_id: str, payload: dict):
-    """Resolve how Wema would fulfil this purchase, or None to stay on VTU.ng.
+    """Resolve how Wema would fulfil this purchase, or None to stay on the retired VAS provider.
 
     Returns {"type": "airtime"|"data"|"bill", "code": <wema code>, "amount": <naira>}.
     Airtime always resolves; data/cable resolve once the plan's `wema_code` has been
     synced; electricity/betting resolve once a WemaBiller row maps their service_id.
-    A missing code returns None and keeps that ONE service on VTU.ng — never an
+    A missing code returns None and keeps that ONE service on the retired VAS provider — never an
     error, so a partly-synced catalogue degrades per service instead of failing.
 
     Electricity and betting take their amount from the request rather than a plan
@@ -123,7 +110,7 @@ def _wema_vas_route(service_id: str, payload: dict):
         amount = payload.get("amount")
         if amount in (None, ""):
             # A variable-amount bill with no amount cannot be paid on either rail;
-            # returning None hands it to VTU.ng, which reports the error properly.
+            # returning None hands it to the retired VAS provider, which reports the error properly.
             return None
         return {"type": "bill", "code": b.package_id, "amount": amount}
     var = str(payload.get("variation_code", "") or "")
@@ -163,7 +150,7 @@ def _vas_source_account(payload: dict, reference: str | None) -> str:
 def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
     """Submit every VAS purchase through the partner-bank biller.
 
-    VTU.ng is retired. A missing partner-bank catalogue mapping is a safe
+    the retired VAS provider is retired. A missing partner-bank catalogue mapping is a safe
     configuration failure, never a fallback to another money rail.
     """
     from . import wema
