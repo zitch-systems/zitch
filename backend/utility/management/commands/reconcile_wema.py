@@ -21,6 +21,7 @@ is the relevant rail, so it's harmless otherwise.
 from datetime import timedelta
 
 from django.conf import settings
+from django.core.cache import cache
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
@@ -105,13 +106,29 @@ class Command(BaseCommand):
                 add_candidate(attempt)
 
         recovery_checked = 0
+        recovery_skipped = 0
         recovered_accounts = 0
         recovery_failures = 0
         for user, identity_type, source in candidates:
+            # A successful face callback can precede the bank making its account
+            # number available.  The old behaviour queried the account-details
+            # endpoint on *every* reconciliation tick for the same customer.  That
+            # both hammers the bank and makes an unrecoverable/failed provisioning
+            # attempt look permanently pending.  One bounded retry window is enough;
+            # a new customer-led verification creates a new session and is never
+            # blocked by this guard.
+            recovery_key = (
+                f"partner-bank-account-recovery:{source}:{user.pk}:"
+                f"{identity_type}"
+            )
+            if not cache.add(recovery_key, True, timeout=15 * 60):
+                recovery_skipped += 1
+                continue
             recovery_checked += 1
             recovered, detail = attach_existing_bank_account(
                 user, using_bvn=identity_type == WemaProvisioningAttempt.BVN)
             if recovered is not None and recovered.account_number:
+                cache.delete(recovery_key)
                 recovered_accounts += 1
                 # This is operational completion of the account-creation request,
                 # not a new KYC assertion. User BVN/NIN flags are untouched.
@@ -242,6 +259,7 @@ class Command(BaseCommand):
         record_audit("recon.wema_run", actor_type="system",
                      after={"wallets": scanned, "credited": credited,
                             "accounts_recovery_checked": recovery_checked,
+                            "accounts_recovery_skipped": recovery_skipped,
                             "accounts_recovered": recovered_accounts,
                             "account_recovery_pending": recovery_failures,
                             "payouts_settled": settled, "payouts_reversed": reversed_,
@@ -298,7 +316,8 @@ class Command(BaseCommand):
 
         self.stdout.write(
             f"Wema reconcile: accounts recovered {recovered_accounts}/"
-            f"{recovery_checked} checked ({recovery_failures} still pending); "
+            f"{recovery_checked} checked ({recovery_failures} still pending, "
+            f"{recovery_skipped} rate-limited); "
             f"{credited} credit(s) / {scanned} wallet(s); "
             f"PND lifted {pnd_lifted}, retry failures {pnd_failures}; "
             f"payouts checked {payouts_seen}, settled {settled}, reversed {reversed_}; "
