@@ -197,7 +197,7 @@ class CardDispatchTests(SimpleTestCase):
         mr.assert_called_once_with("wema_1")
 
 
-class partner bankVasRoutingTests(TestCase):
+class WemaVasRoutingTests(TestCase):
     """DB-backed VAS routing: data/cable go to partner bank only once wema_code is synced,
     and a PENDING purchase requeries against the rail stamped on the ledger row."""
 
