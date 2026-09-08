@@ -82,6 +82,7 @@ EXECUTING_STATE = "executing"
 PIN_FLOW_ATTEMPTS = 2                   # 1 retry then cancel (spec §7)
 #: Chat state for choosing the BVN ownership proof before collecting the BVN.
 BVN_METHOD_STATE = "bvn_method"
+KYC_UPGRADE_STATE = "kyc_upgrade"
 
 def _links() -> dict:
     return getattr(settings, "ZITCH_LINKS", {}) or {}
@@ -2833,8 +2834,7 @@ def _signup_nudge(ob, message: str) -> str:
 def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
     outstanding = _kyc_outstanding(user)
     if not outstanding:
-        return reply(msisdn, "✅ *Tier 1 verification is complete.*\n\n" + _kyc_status_lines(user)
-                     + f"\n\nTier {user.tier} · up to ₦{user.transaction_limit:,.0f} per transaction.")
+        return _offer_tier_upgrade(user, msisdn)
     # "Let's do the rest now" is a promise, so it must not be made when every
     # outstanding step is one the bank will no longer accept over chat. Send the
     # checklist with the real next step instead of an invitation to a form that
@@ -2876,6 +2876,42 @@ def _bank_upgrade_blocks(user, step: str) -> bool:
     return bool(wallet.account_number and not (user.bvn_verified and user.nin_verified))
 
 
+def _offer_tier_upgrade(user, msisdn: str) -> None:
+    """After Tier 1, option 8 becomes an upgrade entry point, not a dead end."""
+    _clear_actions(msisdn)
+    user.refresh_from_db(fields=[
+        "tier", "phone_verified", "email_verified", "bvn_verified", "nin_verified",
+        "face_verified", "address_verified", "id_document_verified",
+    ])
+    status = (
+        "✅ *Tier 1 verification is complete.*\n\n"
+        + _kyc_status_lines(user)
+        + f"\n\nTier {user.tier} · up to ₦{user.transaction_limit:,.0f} per transaction."
+    )
+    if user.tier >= 3:
+        return reply(msisdn, status + "\n\nYou are already on the highest verification tier.")
+    pa = PendingAction.objects.create(
+        user=user, msisdn=msisdn, action_type="kyc", state=KYC_UPGRADE_STATE,
+        payload={}, expires_at=_flow_deadline("idle"),
+    )
+    _touch(pa, state=KYC_UPGRADE_STATE, payload=pa.payload)
+    if user.tier < 2:
+        return reply_buttons(
+            msisdn,
+            status + "\n\n*Upgrade to Tier 2*\n"
+            "Tier 2 needs NIN, live face check and address verification. "
+            "You can start it here on WhatsApp.",
+            [("tier2", "Upgrade to Tier 2"), ("later", "Later")],
+        )
+    return reply_buttons(
+        msisdn,
+        status + "\n\n*Upgrade to Tier 3*\n"
+        "Tier 3 adds a government ID document after Tier 2. "
+        "You can start it here on WhatsApp.",
+        [("tier3", "Upgrade to Tier 3"), ("later", "Later")],
+    )
+
+
 def _kyc_bank_upgrade_notice(user, msisdn: str) -> None:
     """What is left, and the one place it can actually be done.
 
@@ -2892,7 +2928,7 @@ def _kyc_bank_upgrade_notice(user, msisdn: str) -> None:
         "with a live selfie; it is not a new BVN verification. WhatsApp cannot "
         "capture the required live selfie inside this secure form, so I will not "
         "collect your NIN here and then leave you stuck.\n\n"
-        "Open *Verify identity* in Zitch to complete the remaining bank upgrade. "
+        "Use the secure WhatsApp form above to continue. "
         "Your verified BVN remains saved and will not be restarted."
     )
     if app_url:
@@ -3186,6 +3222,26 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
     val = text.strip()
     low = val.lower()
     state = pa.state
+
+    if state == KYC_UPGRADE_STATE:
+        if low in ("later", "cancel", "no"):
+            _clear_actions(msisdn)
+            return reply(msisdn, "No problem. Reply *8* whenever you want to continue upgrading.")
+        if low in ("tier2", "2", "upgrade", "upgrade to tier 2"):
+            pa.payload["id_kind"] = "nin"
+            pa.payload["id_purpose"] = "face"
+            pa.payload["upgrade_target"] = "tier2"
+            pa.payload["attempted"] = ["nin"]
+            if _send_identity_flow(pa, "nin", fallback_state=FACE_ID_STATE):
+                return reply(msisdn, "🪪 Enter your NIN on the secure form above. After that, I'll open the live face check.")
+            _clear_actions(msisdn)
+            return reply(msisdn, "⚠️ The secure NIN screen did not open. Reply *8* to try again.")
+        if low in ("tier3", "3", "upgrade to tier 3"):
+            if user.tier < 2:
+                return reply(msisdn, "Tier 3 starts after Tier 2. Reply *tier2* to complete NIN, face and address first.")
+            _clear_actions(msisdn)
+            return reply(msisdn, "🪪 Tier 3 document capture on WhatsApp is next. For now your Tier 2 status stays saved; support has been notified to complete the document step.")
+        return reply_buttons(msisdn, "Choose the upgrade you want:", [("tier2", "Upgrade to Tier 2"), ("later", "Later")])
 
     if state == BVN_METHOD_STATE:
         if low in ("bvn_sms", "sms", "sms otp", "1"):
