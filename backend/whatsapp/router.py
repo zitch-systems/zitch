@@ -2770,7 +2770,7 @@ def _signup_nudge(ob, message: str) -> str:
 def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
     outstanding = _kyc_outstanding(user)
     if not outstanding:
-        return reply(msisdn, "✅ *You're fully verified.*\n\n" + _kyc_status_lines(user)
+        return reply(msisdn, "✅ *Tier 1 verification is complete.*\n\n" + _kyc_status_lines(user)
                      + f"\n\nTier {user.tier} · up to ₦{user.transaction_limit:,.0f} per transaction.")
     # "Let's do the rest now" is a promise, so it must not be made when every
     # outstanding step is one the bank will no longer accept over chat. Send the
