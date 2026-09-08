@@ -1,9 +1,6 @@
-"""Electricity and betting on the Wema rail.
+"""Partner-bank electricity and betting routing.
 
-These two have no plan catalogue, so their Wema packageId lives in WemaBiller. The
-property under test is that an UNMAPPED service keeps working on VTU.ng rather than
-failing: the catalogue is synced from a live endpoint, and a partial sync must
-degrade one service at a time.
+Unmapped services now fail closed instead of falling back to a retired biller.
 """
 from unittest import mock
 
@@ -18,7 +15,7 @@ WEMA_ON = {"KEYS": {"wallet": "k", "airtime": "k", "bills": "k"}, "CHANNEL_ID": 
 
 @override_settings(VAS_PROVIDER="wema", WEMA=WEMA_ON)
 class BillerRoutingTests(TestCase):
-    def test_an_unmapped_disco_stays_on_vtung(self):
+    def test_an_unmapped_disco_fails_closed(self):
         self.assertIsNone(_wema_vas_route("ikeja-electric", {"amount": "1000"}))
 
     def test_a_mapped_disco_routes_to_wema_bills(self):
@@ -62,15 +59,13 @@ class VerifyCustomerRailTests(TestCase):
                         return_value={"success": True, "name": "AMINA BELLO"}) as v:
             res = vtu_verify_customer("kano-electric", "555000111")
         v.assert_called_once()
-        # The VTU.ng contract, which is what every caller actually reads.
+        # The partner-bank VAS contract, which is what every caller actually reads.
         self.assertEqual(res["customer_name"], "AMINA BELLO")
 
-    def test_an_unmapped_service_still_validates_on_vtung(self):
-        with mock.patch("utility.vtung.vt_verify_customer",
-                        return_value={"success": True, "name": "VTU NAME"}) as v:
-            res = vtu_verify_customer("enugu-electric", "555000111")
-        v.assert_called_once()
-        self.assertEqual(res["name"], "VTU NAME")
+    def test_an_unmapped_service_fails_without_partner_bank_mapping(self):
+        res = vtu_verify_customer("enugu-electric", "555000111")
+        self.assertFalse(res["success"])
+        self.assertIn("partner bank", res["message"])
 
     def test_a_wema_validation_failure_falls_back_rather_than_blaming_the_customer(self):
         # An unmapped package or a gateway hiccup looks exactly like a bad meter
@@ -79,18 +74,18 @@ class VerifyCustomerRailTests(TestCase):
         WemaBiller.objects.create(service_id="ibadan-electric", package_id="60")
         with mock.patch("utility.wema.validate_bill_customer",
                         return_value={"success": False, "message": "no"}), \
-             mock.patch("utility.vtung.vt_verify_customer",
+             mock.patch("utility.wema.validate_bill_customer",
                         return_value={"success": True, "name": "FALLBACK"}) as v:
             res = vtu_verify_customer("ibadan-electric", "555000111")
         v.assert_called_once()
         self.assertEqual(res["name"], "FALLBACK")
 
 
-@override_settings(VAS_PROVIDER="vtung", WEMA=WEMA_ON)
+@override_settings(VAS_PROVIDER="wema", WEMA=WEMA_ON)
 class VtungRailUnaffectedTests(TestCase):
-    def test_a_mapped_biller_is_not_used_when_the_rail_is_vtung(self):
+    def test_a_mapped_biller_is_not_used_when_the_rail_is_wema(self):
         WemaBiller.objects.create(service_id="ikeja-electric", package_id="77")
-        with mock.patch("utility.vtung.vt_purchase",
+        with mock.patch("utility.wema.pay_bill",
                         return_value={"success": True}) as p:
             vtu_purchase("ikeja-electric", {"amount": "1000"}, "REF1")
         p.assert_called_once()
@@ -108,7 +103,7 @@ class ValidationContractTests(TestCase):
     def setUp(self):
         WemaBiller.objects.create(service_id="ikeja-electric", package_id="70")
 
-    def test_the_wema_rail_answers_in_the_vtung_shape(self):
+    def test_the_wema_rail_answers_in_the_wema_shape(self):
         with mock.patch("utility.wema.validate_bill_customer",
                         return_value={"success": True, "name": "AMINA BELLO"}):
             res = vtu_verify_customer("ikeja-electric", "555000111")
@@ -119,7 +114,7 @@ class ValidationContractTests(TestCase):
         # verified meter shows the customer a blank owner and lets them confirm.
         with mock.patch("utility.wema.validate_bill_customer",
                         return_value={"success": True, "name": ""}), \
-             mock.patch("utility.vtung.vt_verify_customer",
+             mock.patch("utility.wema.validate_bill_customer",
                         return_value={"success": True, "customer_name": "FALLBACK"}) as vt:
             res = vtu_verify_customer("ikeja-electric", "555000111")
         vt.assert_called_once()
