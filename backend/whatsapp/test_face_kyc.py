@@ -65,11 +65,11 @@ class FaceStepLadderTests(TestCase):
         self.assertNotIn("face", router._kyc_outstanding(u))
         self.assertNotIn("Face check", router._kyc_status_lines(u))
 
-    def test_unverified_identities_remain_the_only_identity_rungs(self):
+    def test_unverified_tier1_identity_rungs_are_bvn_only(self):
         u = _user()
         u.bvn_verified = u.nin_verified = False
         u.save(update_fields=["bvn_verified", "nin_verified"])
-        self.assertEqual(router._kyc_outstanding(u), ["bvn", "nin"])
+        self.assertEqual(router._kyc_outstanding(u), ["bvn"])
 
 
 @override_settings(WEMA=FACE_ON)
