@@ -27,7 +27,6 @@ from django.core.management.base import BaseCommand
 
 from utility import wema
 from utility.providers import card_provider, kyc_provider, payment_provider, payout_provider, vas_provider
-from utility.vtung import vtu_probe
 
 
 def _face_host() -> str:
