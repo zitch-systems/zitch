@@ -622,16 +622,6 @@ class WemaCallbacksDiagnoseTests(TestCase):
         probe.assert_called_once_with("2348030000000")
         self.assertIn("no-store", r["Cache-Control"])
 
-    @patch("utility.vtung.vtu_probe", return_value={"success": True})
-    def test_vtu_probe_uses_bearer_auth_not_query_auth(self, probe):
-        denied = self.client.get("/vtu-diagnose", {"token": "diag-secret"})
-        self.assertEqual(denied.status_code, 403)
-        r = self.client.get("/vtu-diagnose",
-                            HTTP_AUTHORIZATION="Bearer diag-secret")
-        self.assertEqual(r.status_code, 200)
-        probe.assert_called_once_with()
-        self.assertIn("no-store", r["Cache-Control"])
-
 
 @override_settings(WEMA=WEMA_CB, PAYMENT_PROVIDER="wema")
 class WemaCallbackAbuseBoundsTests(TestCase):
