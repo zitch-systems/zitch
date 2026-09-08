@@ -778,7 +778,12 @@ def _open_pin_screen(pa) -> dict:
     which on a card tapped an hour later was simply a stale number on the screen
     the customer checks before spending.
     """
-    from .router import _flow_fields
+    from .router import _flow_fields, _has_live_funds
+
+    if not _has_live_funds(pa, pa.user, notify=False):
+        return _success_screen(
+            "Insufficient balance for this payment now. You were not charged. Check your balance in the chat, then start again.",
+            status="failed")
 
     fields = _flow_fields(pa)
     pa.payload["flow_fields"] = fields
@@ -1572,7 +1577,8 @@ def _hold_open(pa, summary, message: str, status: str = "failed") -> dict:
 def _submit_pin(token: str, data: dict) -> dict:
     from common.http import evaluate_transaction_pin
 
-    from .router import PIN_FLOW_ATTEMPTS, _clear_actions, authorise_flow_execution
+    from .router import (PIN_FLOW_ATTEMPTS, _clear_actions, _has_live_funds,
+                         authorise_flow_execution)
 
     pa = resolve_flow_token(token)
     if pa is None:
@@ -1588,6 +1594,10 @@ def _submit_pin(token: str, data: dict) -> dict:
                                "in the chat.", status="failed")
 
     user = pa.user
+    if not _has_live_funds(pa, user, notify=False):
+        return _success_screen(
+            "Insufficient balance for this payment now. You were not charged. Check your balance in the chat, then start again.",
+            status="failed")
     pin = str(data.get("pin", "")).strip()
     summary = _pa_screen_fields(pa)
 
