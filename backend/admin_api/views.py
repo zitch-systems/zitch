@@ -273,7 +273,7 @@ def _webhook_rows(limit=40) -> list:
     return rows
 
 
-_RECON_RUNS = {"recon.vtu_run": "zitch-reconcile-vtu", "recon.maturities_run": "zitch-maturities",
+_RECON_RUNS = {"recon.vas_run": "zitch-reconcile-wema", "recon.maturities_run": "zitch-maturities",
                "recon.wema_run": "zitch-reconcile-wema"}
 
 
@@ -748,9 +748,9 @@ def txn_requery(request):
     if not (txn.transaction_status == Transaction.PENDING and (txn.meta or {}).get("reconcile")):
         return fail("Only provider-pending purchases can be requeried", status=409)
     if is_bank_payout(txn):
-        # A bank transfer settles via the reconcile_wema poller, not a VTU
+        # A bank transfer settles via the reconcile_wema poller, not a partner-bank VAS
         # requery — don't query the wrong provider for a reference it never saw.
-        return fail("Bank transfers reconcile via the disbursement webhook, not VTU requery", status=409)
+        return fail("Bank transfers reconcile via the disbursement webhook, not partner-bank VAS requery", status=409)
     status = settle_or_refund(txn, vtu_requery(txn.reference))
     audit(request, "txn.requery", target=ref, before={"status": "pending"}, after={"status": status})
     return ok(success=True, ref=ref, status=status)
@@ -824,20 +824,20 @@ def run_maturities(request):
 
 @staff_endpoint(methods=("POST",), perm="money")
 def run_recon(request):
-    """POST {} — requery + settle every provider-pending purchase (the VTU
-    reconcile cron's loop, on demand)."""
+    """POST {} — requery + settle every provider-pending purchase (the partner-bank VAS
+    reconcile loop's loop, on demand)."""
     from utility.providers import vtu_requery
-    from wallet.services import pending_vtu_purchases, settle_or_refund
+    from wallet.services import pending_vas_purchases, settle_or_refund
 
     cutoff = timezone.now() - timedelta(minutes=5)
-    # VTU.ng purchases only; bank-transfer payouts settle via the disbursement
-    # webhook, not a VTU requery (see wallet.services.pending_vtu_purchases).
-    pending = list(pending_vtu_purchases(cutoff))
+    # partner-bank VAS purchases only; bank-transfer payouts settle via the disbursement
+    # webhook, not a partner-bank VAS requery (see wallet.services.pending_vas_purchases).
+    pending = list(pending_vas_purchases(cutoff))
     settled = 0
     for txn in pending:
         if settle_or_refund(txn, vtu_requery(txn.reference)) != "pending":
             settled += 1
-    audit(request, "recon.vtu_run", after={"checked": len(pending), "settled": settled})
+    audit(request, "recon.vas_run", after={"checked": len(pending), "settled": settled})
     return ok(success=True, checked=len(pending), settled=settled)
 
 
