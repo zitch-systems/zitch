@@ -14,7 +14,7 @@ services:
     # an explicit --bind, gunicorn listens on 127.0.0.1:8000 (loopback only), which
     # Render can't see -> "no open ports detected" and the deploy times out. Render
     # injects PORT (default 10000, which the health check targets).
-    # ONE worker x 8 threads. Threads still absorb slow provider calls (Wema/VTU do
+    # ONE worker x 8 threads. Threads still absorb slow provider calls (partner-bank do
     # network I/O in-request) so one can't stall every other request; --timeout
     # bounds a hung worker.
     #
@@ -123,7 +123,7 @@ services:
       # cards on CARD_ISSUER (Wema card issuing not wired yet).
       # Optional diagnostics. WEMA_DIAG_TOKEN enables POST /wema-diagnose with a
       # Bearer token and JSON test input (never put BVN/NIN/OTP in a URL).
-      # DIAG_TOKEN protects the VTU, SMS and callback diagnostics. All use bearer
+      # DIAG_TOKEN protects the VAS, SMS and callback diagnostics. All use bearer
       # headers; SMS and Wema identity inputs are POST JSON, never URL parameters.
       - key: DIAG_TOKEN
         sync: false
@@ -361,7 +361,7 @@ services:
         sync: false
       - key: RESEND_FROM_EMAIL
         sync: false
-      # The worker settles funding and reconciles VTU, so ledger rows reach
+      # The worker settles funding and reconciles VAS, so ledger rows reach
       # Successful in this process too — it has to alert on the same terms.
       - key: TXN_ALERTS_SMS
         sync: false
@@ -545,104 +545,6 @@ services:
   # refund (definitively failed). Also requires a paid plan (cron has no free
   # tier). Runs every 2 minutes so stuck purchases clear quickly.
   - type: cron
-    name: zitch-reconcile-vtu
-    runtime: python
-    rootDir: backend
-    plan: starter
-    # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: commit
-    schedule: "*/2 * * * *"
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python manage.py reconcile_wema"
-    envVars:
-      # Match GitHub CI exactly; never let Render's moving default change prod.
-      - key: PYTHON_VERSION
-        value: "3.11.16"
-      - key: DJANGO_SECRET_KEY
-        generateValue: true
-      - key: DJANGO_DEBUG
-        value: "false"
-      - key: DJANGO_REQUIRE_SHARED_CACHE
-        value: "false"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: zitch-db
-          property: connectionString
-      # Both possible fulfillment rails are needed to requery the same provider
-      # stamped on each PENDING row. Missing status credentials must never cause a
-      # refund; code also fails safe to PENDING.
-      - key: WEMA_CHANNEL_ID
-        sync: false
-      - key: WEMA_WALLET_KEY
-        sync: false
-      - key: WEMA_ACCOUNT_CREATION_KEY
-        sync: false
-      - key: WEMA_AIRTIME_KEY
-        sync: false
-      - key: WEMA_BILLS_KEY
-        sync: false
-      - key: WEMA_BASE_URL
-        sync: false
-      # Rail safety mode is sourced from the web service so a cron cannot call
-      # ALAT while customer-facing requests are deliberately simulated.
-      - key: WEMA_SIMULATION
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SIMULATION}
-      - key: ALLOW_PRODUCTION_SIMULATION
-        fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
-      - key: WEMA_VAS_STATUS_LEGEND
-        sync: false
-      - key: WEMA_BILLS_STATUS_LEGEND
-        sync: false
-      - key: WEMA_REMITA_STATUS_LEGEND
-        sync: false
-      # ALAT's face-biometric web app. There is deliberately NO default: unset, the
-      # face rail reports itself unavailable and the flow falls back to SMS OTP or
-      # the document rail. wema_preflight FAILS go-live while this points at any
-      # non-production verifier (-dev, -pilot, -uat, ...), which answer happily and
-      # prove nothing about a real person.
-      - key: WEMA_FACE_VERIFY_URL
-        sync: false
-      # Customer alerts. wallet.alerts sends on a post_save SIGNAL, so this cron
-      # alerts whenever it settles or REFUNDS a stuck purchase — and send_email /
-      # send_sms return a silent MOCK SUCCESS when unkeyed, so the refund notice
-      # never reached the customer by email or SMS.
-      - key: RESEND_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
-      - key: RESEND_FROM_EMAIL
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_FROM_EMAIL}
-      - key: TERMII_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_API_KEY}
-      - key: TERMII_SENDER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_SENDER_ID}
-      - key: TERMII_CHANNEL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
-      - key: TERMII_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
-      - key: TXN_ALERTS_WHATSAPP
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_WHATSAPP}
-      - key: WHATSAPP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_MODE}
-      - key: WHATSAPP_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BASE_URL}
-      - key: WHATSAPP_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TOKEN}
-      - key: WHATSAPP_PHONE_NUMBER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
-      - key: WHATSAPP_BUSINESS_NUMBER
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BUSINESS_NUMBER}
-      - key: WHATSAPP_TXN_ALERT_TEMPLATE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE}
-      - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE_LANG}
-
-  # Wema reconciliation — Wema exposes NO webhooks, so this poller does two jobs:
-  # (1) FUNDING: sweep each Wema NUBAN's transaction history and credit inbound
-  # deposits (idempotent on Wema's referenceId); (2) PAYOUTS: poll
-  # ConfirmClientTransferStatus for any bank payout left PENDING and settle (success)
-  # or reverse (failed) it. Without this, deposits never credit and a PENDING payout
-  # sits debited forever. Requires a paid plan (cron has no free tier). Runs every 10
-  # 2 minutes. NOTE: crons are separate from the web service, so set the WEMA_* keys here.
-  - type: cron
     name: zitch-reconcile-wema
     runtime: python
     rootDir: backend
@@ -823,11 +725,11 @@ services:
   # DAILY SETTLEMENT STATEMENT — the whole float position, not per-wallet drift.
   # integrity_check and reconcile_balances both compare ONE wallet against ONE
   # counterpart. Neither can see the two pots that hold customer money but belong
-  # to no user: the pool account (WEMA_SOURCE_ACCOUNT) and our VTU.ng provider
-  # wallet. A VAS purchase debits the customer's ledger and OUR VTU wallet while
+  # to no user: the pool account (WEMA_SOURCE_ACCOUNT) and our partner-bank VAS provider
+  # wallet. A VAS purchase debits the customer's ledger and OUR VAS wallet while
   # their NUBAN keeps the cash — per-wallet checks stay green while the VAS rail
   # drains. This command sums everything owed against everything held on every
-  # rail and pages on a shortfall. Needs the VTU credentials as well as the WEMA
+  # rail and pages on a shortfall. Needs the VAS credentials as well as the WEMA
   # balance-read keys, or it reports an unreadable rail (which is itself an alert,
   # never a silent zero). Read-only. See docs/settlement-operating-model.md for
   # the thresholds and who owns the response.
