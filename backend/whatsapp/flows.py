@@ -1196,9 +1196,17 @@ def _submit_identity(pa, data: dict) -> dict:
                                 screen=IDENTITY_RETRY)
 
     try:
-        # NIN/BVN account verification is Wema-owned. A face-purpose action
-        # is stale data from the removed Prembly fallback and must never open a
-        # second provider or claim that Wema supports a face route here.
+        # A verified BVN whose account callback was missed cannot be recreated by
+        # SMS: the provider sees a duplicate customer. Its documented face route
+        # completes the original account creation. The raw BVN remains inside the
+        # encrypted Flow and is passed only to the bank-hosted one-time session.
+        if pa.payload.get("id_purpose") == "account_face":
+            from .router import _send_identity_face_option
+
+            if _send_identity_face_option(pa, pa.user, pa.msisdn, kind, number,
+                                          account_setup=True):
+                return _success_screen("Face verification is ready. Complete it in the secure page; your account number will arrive in this chat.")
+            return _success_screen("Face verification is temporarily unavailable. Return to the chat and reply 6 to try again.")
         if pa.payload.get("id_purpose") == "face":
             pa.payload.pop("id_purpose", None)
             pa.save(update_fields=["payload"])
