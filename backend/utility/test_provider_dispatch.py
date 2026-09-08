@@ -1,10 +1,8 @@
 """Tests for the payment/payout/KYC/card provider-selection dispatch layer
 (utility.providers).
 
-Wema/ALAT is the sole money-movement + Nigeria-KYC rail; the funding_* / payout_* /
-verify_* wrappers delegate to it. VAS routes per-service to Wema once its keys +
-catalogue are in place (airtime always; data/cable when synced; electricity/betting
-stay on VTU.ng); virtual cards on the generic issuer.
+The partner bank is the sole money-movement, Nigeria-KYC and VAS rail; virtual
+cards stay on the generic issuer where configured.
 """
 from decimal import Decimal
 from unittest.mock import patch
@@ -136,27 +134,20 @@ class KycDispatchTests(SimpleTestCase):
 
 
 class VasDispatchTests(SimpleTestCase):
-    def test_vas_provider_defaults_to_vtung(self):
-        self.assertEqual(P.vas_provider(), "vtung")
+    def test_vas_provider_defaults_to_wema(self):
+        self.assertEqual(P.vas_provider(), "wema")
+
+    @override_settings(VAS_PROVIDER="vtung")
+    def test_removed_legacy_vas_choice_falls_back_to_wema(self):
+        self.assertEqual(P.vas_provider(), "wema")
 
     @override_settings(VAS_PROVIDER="wema")
     def test_airtime_routes_to_wema(self):
-        with patch("utility.wema.purchase_airtime", return_value={"success": True}) as mw, \
-             patch("utility.vtung.vt_purchase") as mv:
+        with patch("utility.wema.purchase_airtime", return_value={"success": True}) as mw:
             P.vtu_purchase("mtn-airtime", {"amount": "500", "phone": "080", "source_account": "0155500011"},
                            reference="R")
         mw.assert_called_once()
         self.assertEqual(mw.call_args.kwargs["source_account"], "0155500011")  # sender NUBAN threaded
-        mv.assert_not_called()
-
-    @override_settings(VAS_PROVIDER="wema")
-    def test_data_stays_on_vtung(self):
-        # Data needs Wema's catalog — must NOT route to Wema yet.
-        with patch("utility.vtung.vt_purchase", return_value={"success": True}) as mv, \
-             patch("utility.wema.purchase_airtime") as mw:
-            P.vtu_purchase("mtn-data", {"amount": "500", "phone": "080"}, reference="R")
-        mv.assert_called_once()
-        mw.assert_not_called()
 
     def test_airtime_stays_on_vtung_by_default(self):
         with patch("utility.vtung.vt_purchase", return_value={"success": True}) as mv:
@@ -230,13 +221,11 @@ class WemaVasRoutingTests(TestCase):
         from utility.models import DataPlan
         DataPlan.objects.create(network="1", plan_type="1", name="1GB", validity="30 days",
                                 plan_code="MTN1GB", wema_code="WEMA-MTN-1GB", price=Decimal("500"))
-        with patch("utility.wema.purchase_data", return_value={"success": True, "status": "SUCCESS"}) as mw, \
-             patch("utility.vtung.vt_purchase") as mv:
+        with patch("utility.wema.purchase_data", return_value={"success": True, "status": "SUCCESS"}) as mw:
             out = P.vtu_purchase("mtn-data", {"variation_code": "MTN1GB", "phone": "080"}, reference="R")
         mw.assert_called_once()
         self.assertEqual(mw.call_args.args[4], "WEMA-MTN-1GB")  # package_code positional
         self.assertEqual(out["vas_rail"], "wema")
-        mv.assert_not_called()
 
     @override_settings(VAS_PROVIDER="wema")
     def test_data_stays_on_vtung_without_wema_code(self):
@@ -254,13 +243,11 @@ class WemaVasRoutingTests(TestCase):
         from utility.models import CablePlan
         CablePlan.objects.create(provider="2", name="DStv Compact", cable_plan_code="DSTV-C",
                                  wema_code="WEMA-DSTV-C", price=Decimal("10500"))
-        with patch("utility.wema.pay_bill", return_value={"success": True, "status": "SUCCESS"}) as mw, \
-             patch("utility.vtung.vt_purchase") as mv:
+        with patch("utility.wema.pay_bill", return_value={"success": True, "status": "SUCCESS"}) as mw:
             out = P.vtu_purchase("dstv", {"variation_code": "DSTV-C", "billersCode": "1234567890"}, reference="R")
         mw.assert_called_once()
         self.assertEqual(mw.call_args.kwargs["package_id"], "WEMA-DSTV-C")
         self.assertEqual(out["vas_rail"], "wema")
-        mv.assert_not_called()
 
     @override_settings(VAS_PROVIDER="wema")
     def test_data_purchase_debits_buyer_nuban_from_ledger_reference(self):
@@ -301,7 +288,6 @@ class WemaVasRoutingTests(TestCase):
              patch("utility.vtung.vt_requery") as mv:
             P.vtu_requery(txn.reference)
         mw.assert_called_once_with(txn.reference, "airtime")
-        mv.assert_not_called()
 
     def test_requery_defaults_to_vtung(self):
         with patch("utility.vtung.vt_requery", return_value={"success": True}) as mv, \
