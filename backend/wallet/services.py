@@ -482,7 +482,7 @@ def is_bank_payout(txn) -> bool:
     Payout rows used to be identified only by ``meta.bank``. That stranded real
     pending transfers whenever another caller or older deploy persisted the bank
     details under a different durable key, and it also let those rows fall into
-    the VTU requery sweep. Treat the Wema transfer marker and recipient account
+    the VAS requery sweep. Treat the Wema transfer marker and recipient account
     fields as bank-payout evidence too; terminal state changes remain idempotent.
     """
     meta = txn.meta or {}
@@ -496,9 +496,9 @@ def is_bank_payout(txn) -> bool:
 
 
 def pending_vtu_purchases(cutoff):
-    """PENDING outbound VTU.ng purchases due for requery, EXCLUDING bank-transfer
+    """PENDING outbound partner-bank VAS purchases due for requery, EXCLUDING bank-transfer
     payouts. The reconcile sweep (cron + on-demand) requeries each row via
-    vtu_requery, which is only correct for VTU.ng purchases; bank payouts are
+    partner-bank VAS requery, which is only correct for partner-bank VAS purchases; bank payouts are
     settled by the reconcile_wema poller, so they must not be swept here."""
     return Transaction.objects.filter(
         transaction_status=Transaction.PENDING,
