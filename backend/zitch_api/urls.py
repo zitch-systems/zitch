@@ -580,27 +580,7 @@ def whatsapp_diagnose(request):
 
 
 @never_cache
-@require_http_methods(["GET"])
-def vtu_diagnose(request):
-    """GET /vtu-diagnose with an Authorization bearer token.
 
-    Browser self-test for the VTU.ng rail: proves the credentials authenticate
-    and shows the VTU.ng wallet balance (purchases fail on an empty provider
-    wallet no matter how correct the code is). Read-only; buys nothing.
-    """
-    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
-    if denied:
-        return denied
-    from utility import wema
-
-    response = JsonResponse({"wema": wema.vas_diagnose()})
-    response["Cache-Control"] = "no-store"
-    return response
-
-
-# POST only: this can spend provider credit and text a real person. Keeping both the
-# bearer credential and phone number out of the URL prevents proxy/history leakage,
-# while refusing GET/HEAD prevents prefetchers and link unfurls from triggering it.
 @csrf_exempt
 @never_cache
 @require_http_methods(["POST"])
