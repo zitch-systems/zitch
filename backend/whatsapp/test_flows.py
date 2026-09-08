@@ -689,7 +689,7 @@ class IdentityFlowTests(TestCase):
         self._action()
         self.assertTrue(router.is_awaiting_bvn(MSISDN))
 
-    def test_the_router_sends_the_flow_instead_of_asking_in_the_chat(self):
+    def test_the_router_sends_the_bvn_flow_instead_of_asking_in_the_chat(self):
         from . import router
 
         pa = self._action()
@@ -697,11 +697,11 @@ class IdentityFlowTests(TestCase):
         pa.save(update_fields=["state"])
         with patch.object(router, "flows_live", return_value=True), \
              patch.object(router, "send_flow", return_value={"success": True}) as sent:
-            self.assertTrue(router._send_identity_flow(pa, "nin"))  # noqa: SLF001
+            self.assertTrue(router._send_identity_flow(pa, "bvn"))  # noqa: SLF001
         sent.assert_called_once()
         pa.refresh_from_db()
         self.assertEqual(pa.state, FLOW_ID_STATE)
-        self.assertEqual(pa.payload["id_kind"], "nin")
+        self.assertEqual(pa.payload["id_kind"], "bvn")
 
     def test_a_failed_flow_send_leaves_the_action_where_the_chat_expects_it(self):
         """Otherwise the action sits in a Flow state with no Flow open, and the
@@ -715,6 +715,31 @@ class IdentityFlowTests(TestCase):
             self.assertFalse(router._send_identity_flow(pa, "bvn"))  # noqa: SLF001
         pa.refresh_from_db()
         self.assertEqual(pa.state, "bvn")
+
+    def test_legacy_nin_state_is_stopped_before_collecting(self):
+        """Old secure forms may still be parked on the removed NIN rung.
+
+        The live router must stop those sessions before it asks for, stores, or
+        submits NIN as a standalone Tier 1 step.
+        """
+        from whatsapp import router
+
+        pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc", state="nin",
+            payload={"attempted": ["phone", "email", "bvn", "nin"]},
+            expires_at=router._flow_deadline("idle"),
+        )
+        sent = []
+        with patch.object(router, "send_cta_url", return_value={"success": False}), \
+             patch.object(router, "reply", side_effect=lambda m, t, **k: sent.append(t)), \
+             patch.object(router, "_kyc_submit_identity") as submit:
+            router._advance_kyc(pa, self.user, MSISDN, "12345678901")
+
+        submit.assert_not_called()
+        self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
+        body = "\\n".join(sent).lower()
+        self.assertNotIn("enter your nin", body)
+        self.assertIn("account upgrade", body)
 
 
 class EmailFlowTests(TestCase):
