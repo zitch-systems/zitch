@@ -1,7 +1,7 @@
 ﻿"""Reconcile Wema/ALAT money movement that has no webhook â€” inbound funding AND
-outbound payout settlement.
+outbound payout and VAS settlement.
 
-ALAT exposes NO webhooks, so two things must be polled:
+The partner bank exposes NO webhooks for these paths, so three things must be polled:
 
 1. FUNDING (credits): a bank transfer into a user's Wema NUBAN is invisible until
    we poll. This sweeps each Wema-provisioned wallet's transaction history over a
@@ -15,7 +15,7 @@ ALAT exposes NO webhooks, so two things must be polled:
    reverses (FAILED) it â€” the settlement safety net behind the payout flow. Only runs when
    Wema is the payout rail.
 
-Schedule every few minutes (see render.yaml); each phase only does work when Wema
+Schedule frequently (see render.yaml); each phase only does work when Wema
 is the relevant rail, so it's harmless otherwise.
 """
 from datetime import timedelta
@@ -29,8 +29,8 @@ from utility.providers import payout_provider
 from wallet.models import Wallet, WemaFaceSession, WemaProvisioningAttempt
 from wallet.services import (
     apply_wema_credit, attach_existing_bank_account, pending_bank_payouts,
-    reverse_transfer, self_payout_references, settle_payout,
-    wema_provisioned_wallets,
+    pending_vas_purchases, reverse_transfer, self_payout_references,
+    settle_or_refund, settle_payout, wema_provisioned_wallets,
 )
 
 class Command(BaseCommand):
@@ -186,6 +186,31 @@ class Command(BaseCommand):
                 if apply_wema_credit(wallet, tx, self_refs=self_refs) is not None:
                     credited += 1
 
+        # Phase 2 - settle PENDING partner-bank VAS purchases. These are customer
+        # debits whose provider response timed out or returned "processing"; the
+        # same fast reconciler must resolve them so airtime/data/bill purchases do
+        # not sit as Pending while the wallet has already been debited.
+        vas_seen = 0
+        vas_settled = 0
+        vas_refunded = 0
+        vas_still_pending = 0
+        vas_status_failures = 0
+        vas_cutoff = timezone.now() - timedelta(seconds=max(10, int(getattr(settings, "WEMA_VAS_REQUERY_AFTER_SECONDS", 10) or 10)))
+        for txn in pending_vas_purchases(vas_cutoff):
+            vas_seen += 1
+            meta = txn.meta or {}
+            res = wema.vas_status(txn.reference, meta.get("vas_type", "airtime"))
+            if not res.get("success") and not res.get("pending") and not res.get("status"):
+                vas_status_failures += 1
+                continue
+            outcome = settle_or_refund(txn, res)
+            if outcome == "success":
+                vas_settled += 1
+            elif outcome == "failed":
+                vas_refunded += 1
+            else:
+                vas_still_pending += 1
+
         # Phase 2 â€” settle PENDING payouts (only when Wema is the payout rail, so we
         # payout_provider() is wema, the sole rail).
         settled = 0
@@ -220,6 +245,9 @@ class Command(BaseCommand):
                             "accounts_recovered": recovered_accounts,
                             "account_recovery_pending": recovery_failures,
                             "payouts_settled": settled, "payouts_reversed": reversed_,
+                            "vas_checked": vas_seen, "vas_settled": vas_settled,
+                            "vas_refunded": vas_refunded,
+                            "vas_pending": vas_still_pending,
                             "fetch_failures": fetch_failures, "status_failures": status_failures,
                             "pnd_lifted": pnd_lifted, "pnd_failures": pnd_failures})
 
@@ -274,4 +302,6 @@ class Command(BaseCommand):
             f"{credited} credit(s) / {scanned} wallet(s); "
             f"PND lifted {pnd_lifted}, retry failures {pnd_failures}; "
             f"payouts checked {payouts_seen}, settled {settled}, reversed {reversed_}; "
+            f"VAS checked {vas_seen}, settled {vas_settled}, refunded {vas_refunded}, "
+            f"still pending {vas_still_pending}; "
             f"WhatsApp alerts retried {whatsapp_alerts}")
