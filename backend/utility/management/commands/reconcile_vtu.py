@@ -58,7 +58,37 @@ class Command(BaseCommand):
                   level="error", purchases=len(stuck),
                   references=[t.reference for t in stuck[:10]])
 
+        # A provider that cannot answer after many retries must not hold a
+        # customer's money forever. This is deliberately later than the alert
+        # threshold above, and each row is re-queried immediately before reversal.
+        # The transaction lock in settle_or_refund makes the refund idempotent.
+        auto_reverse_hours = int(
+            getattr(settings, "VTU_PURCHASE_AUTO_REVERSE_HOURS", 6) or 6)
+        auto_reversed = 0
+        if auto_reverse_hours > 0:
+            stale = list(pending_vtu_purchases(
+                timezone.now() - timedelta(hours=auto_reverse_hours))[:50])
+            for txn in stale:
+                check = vtu_requery(txn.reference)
+                if check.get("pending"):
+                    check = {
+                        "success": False,
+                        "message": "The service provider could not confirm this purchase in time.",
+                        "status": "unconfirmed_timeout",
+                    }
+                if settle_or_refund(txn, check) == "failed":
+                    auto_reversed += 1
+            if auto_reversed:
+                from utility.alerts import alert
+                alert(
+                    f"reconcile_vtu: automatically refunded {auto_reversed} unresolved purchase(s) "
+                    f"after {auto_reverse_hours}h",
+                    level="warning", purchases=auto_reversed,
+                    references=[txn.reference for txn in stale[:10]],
+                )
+
         from whatsapp.ops import record_audit
         record_audit("recon.vtu_run", actor_type="system",
-                     after={"checked": total, "settled": settled})
+                     after={"checked": total, "settled": settled,
+                            "auto_reversed": auto_reversed})
         self.stdout.write(f"Reconciled {settled} of {total} pending VTU transaction(s)")
