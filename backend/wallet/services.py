@@ -466,6 +466,46 @@ def attach_existing_bank_account(user, *, using_bvn: bool | None = None) -> tupl
     return wallet, "Reconnected the account the bank already held."
 
 
+def repair_missing_funding_accounts(*, email: str = "", limit: int = 20) -> dict:
+    """Recover funding accounts for verified customers without creating new KYC.
+
+    A provider can accept a BVN verification yet fail to return the resulting
+    NUBAN to us.  Retrying account *creation* in that state is wrong: it asks for
+    an identity the customer has already proved and the provider rejects the
+    duplicate customer.  This recovery reads the provider's existing account and
+    attaches it when present.  It is therefore safe to run repeatedly from the
+    worker and is intentionally limited to a small batch.
+    """
+    from django.contrib.auth import get_user_model
+    from django.db.models import Q
+
+    User = get_user_model()
+    requested = (email or "").strip().lower()
+    users = User.objects.filter(is_active=True, bvn_verified=True).filter(
+        Q(wallet__isnull=True) | Q(wallet__account_number="")
+    ).order_by("id")
+    if requested:
+        users = users.filter(email__iexact=requested)
+
+    checked = repaired = failed = 0
+    for user in users[:max(1, min(int(limit or 20), 100))]:
+        checked += 1
+        try:
+            wallet, detail = attach_existing_bank_account(user, using_bvn=True)
+        except Exception:  # noqa: BLE001 - one bank timeout must not stop the sweep
+            failed += 1
+            log.exception("partner_bank_account_repair_failed user=%s", user.pk)
+            continue
+        if wallet is not None and wallet.account_number:
+            repaired += 1
+            log.info("partner_bank_account_repaired user=%s", user.pk)
+        else:
+            log.info("partner_bank_account_not_ready user=%s detail=%s",
+                     user.pk, str(detail or "")[:160])
+
+    return {"checked": checked, "repaired": repaired, "failed": failed}
+
+
 BANK_PAYOUT_META_FILTER = (
     Q(meta__has_key="bank")
     | Q(meta__has_key="wema_transfer")
