@@ -71,6 +71,25 @@ class ConfirmScreenTests(TestCase):
         self.assertEqual(fields["balance"], "")
         self.assertIn("JOHN DOE", fields["recipient"])
 
+    def test_confirm_refuses_when_live_balance_has_changed(self):
+        """The confirmation boundary must use the live wallet balance, not a stale
+        balance shown earlier in the chat."""
+        wallet = get_or_create_wallet(self.user)
+        wallet.balance = Decimal("12.25")
+        wallet.save(update_fields=["balance"])
+        pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="airtime", state="pin",
+            payload={"amount": "120", "net": "1", "phone": "09037980992", "pin_attempts": 0},
+            expires_at=timezone.now() + timedelta(minutes=5))
+
+        with patch("whatsapp.router.reply") as sent:
+            self.assertFalse(router._arm_confirm(pa, self.user))
+
+        self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
+        self.assertIn("Insufficient balance", sent.call_args.args[1])
+        self.assertIn("₦12.25", sent.call_args.args[1])
+        self.assertIn("₦120.00", sent.call_args.args[1])
+
     def test_narration_reaches_the_screen_and_is_marked_as_a_note(self):
         fields = router._flow_fields(_transfer(self.user, narration="Rent"))
         self.assertEqual(fields["narration"], "Note: Rent")
