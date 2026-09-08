@@ -279,9 +279,9 @@ class Command(BaseCommand):
         if vas_provider() == "wema":
             from django.db import DatabaseError
 
-            from utility.models import partner bankBiller
+            from utility.models import WemaBiller
             try:
-                mapped = partner bankBiller.objects.filter(active=True).exclude(package_id="").count()
+                mapped = WemaBiller.objects.filter(active=True).exclude(package_id="").count()
             except DatabaseError:
                 # Unmigrated database. A readiness check that dies on one unreadable
                 # counter reports nothing at all about the eleven gates above it.
