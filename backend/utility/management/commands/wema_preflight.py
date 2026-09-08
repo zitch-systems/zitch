@@ -4,10 +4,10 @@ Runs the checks a human would otherwise click through before flipping Zitch to
 live money, but as one command with a machine-readable exit code — so going live
 is a mechanical, repeatable step instead of a checklist someone might skip. It is
 read-only and moves no money: the same live self-tests as /wema-diagnose and
-/vtu-diagnose (no purchases, no transfers).
+/vas-diagnose (no purchases, no transfers).
 
 HARD gates block real money and cause a nonzero exit:
-  * Wema live keys present (channel id + wallet + per-product keys)
+  * partner bank live keys present (channel id + wallet + per-product keys)
   * pointed at the LIVE host, not apiplayground (the sandbox)
   * simulation off, test-OTP bypass off, simulated-deposit token unset
   * callback secret + bank IP allowlist + securityInfo authorization enabled
@@ -16,7 +16,7 @@ SOFT checks are features that degrade without putting money at risk:
 VTU wallet balance, email, SMS, card issuer). They print WARN and only fail the run
 under --strict.
 
-Wema clarified on 2026-07-27 that securityInfo is a private value Zitch chooses and
+partner bank clarified on 2026-07-27 that securityInfo is a private value Zitch chooses and
 the bank echoes to the authentication callback. It is therefore a hard, inexpensive
 defence-in-depth gate. See utility.wema._security_info.
 """
@@ -39,7 +39,7 @@ PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 
 
 class Command(BaseCommand):
-    help = ("Go-live readiness preflight for the Wema money rails (+ VAS/email/SMS). "
+    help = ("Go-live readiness preflight for the partner bank money rails (+ VAS/email/SMS). "
             "Exits 1 if any hard gate fails.")
 
     def add_arguments(self, parser):
@@ -51,7 +51,7 @@ class Command(BaseCommand):
 
         d = wema.wema_diagnostics()
         checks.append((
-            True, "Wema live keys",
+            True, "partner bank live keys",
             PASS if d["wema_live"] else FAIL,
             "channel + wallet + product keys present" if d["wema_live"]
             else f"status={d['status']} — {d['hint']}"))
@@ -71,7 +71,7 @@ class Command(BaseCommand):
         }
         if vas_provider() == "wema":
             checks.append((
-                True, "ALAT Airtime/Data subscription",
+                True, "Partner-bank Airtime/Data subscription",
                 PASS if product_keys.get("airtime") else FAIL,
                 "dedicated key set" if product_keys.get("airtime")
                 else ("VAS_PROVIDER=wema requires WEMA_AIRTIME_KEY. If your Wallet Services "
@@ -81,10 +81,10 @@ class Command(BaseCommand):
         if card_provider() == "wema":
             card_ready = bool(product_keys.get("card") and settings.WEMA.get("CARD_PRODUCT_KEY"))
             checks.append((
-                True, "ALAT Virtual Naira Card subscription",
+                True, "Partner-bank Virtual Naira Card subscription",
                 PASS if card_ready else FAIL,
                 "subscription and card product id set" if card_ready
-                else "Wema cards require WEMA_CARD_KEY and WEMA_CARD_PRODUCT_KEY"))
+                else "partner bank cards require WEMA_CARD_KEY and WEMA_CARD_PRODUCT_KEY"))
 
         callback = settings.WEMA or {}
         callback_token = str(callback.get("CALLBACK_TOKEN") or "").strip()
@@ -124,7 +124,7 @@ class Command(BaseCommand):
             FAIL if on_sandbox else PASS,
             f"sandbox: {d['base_url']}" if on_sandbox else f"live: {d['base_url']}"))
         # Hard gate: simulation mode serves MOCK responses across the ENTIRE stack
-        # (Wema + VTU + cards + FX + Mono + KYC) — a customer would be told a purchase
+        # (partner bank + VTU + cards + FX + Mono + KYC) — a customer would be told a purchase
         # succeeded while nothing was delivered. It must be off for real money to move.
         sim_flags = [name for name, cfg in (("WEMA_SIMULATION", settings.WEMA),
                                             ("MONO_SIMULATION", getattr(settings, "MONO", {})))
@@ -153,7 +153,7 @@ class Command(BaseCommand):
             if sim_deposit_on else "off"))
 
         # Resend is still required for Zitch-owned email verification, account
-        # statements and notifications. It is not a delivery channel for Wema
+        # statements and notifications. It is not a delivery channel for partner bank
         # Wallet Service BVN/NIN OTPs, which are phone-only.
         if not settings.RESEND["API_KEY"]:
             checks.append((False, "Email (Resend)", WARN,
@@ -177,7 +177,7 @@ class Command(BaseCommand):
                        "keyed" if sms_live()
                        else "TERMII_API_KEY unset — no SMS/OTP-by-SMS"))
         # Only ask about the generic issuer when it is the rail actually in use.
-        # On a Wema-card deploy the ALAT subscription gate above already decided
+        # On a partner bank-card deploy the Partner-bank subscription gate above already decided
         # this, and warning "virtual cards disabled" next to that PASS told the
         # operator running the go-live check that a working feature was off.
         if card_provider() != "wema":
@@ -203,14 +203,14 @@ class Command(BaseCommand):
                        else "local filesystem only — production avatars return broken URLs and "
                             "disappear on deploy; configure AWS_STORAGE_BUCKET_NAME and S3 credentials"))
 
-        # SOFT — Prembly. Wema verifies BVN/NIN through account creation, but it has
+        # SOFT — Prembly. partner bank verifies BVN/NIN through account creation, but it has
         # no image checks, so selfie/liveness, address and ID-document all stay on
         # Prembly. Unkeyed in production those fail CLOSED (providers.
         # _kyc_mock_or_unavailable), which is safe but not harmless: Tier 2 and Tier 3
         # become unreachable and the selfie step-up on transfers at or above the face
         # threshold refuses every one of them. Nothing here checked that, so a deploy
         # could pass preflight and still be unable to lift a single customer's tier.
-        # Hard gate: the face-biometric web app must not still be ALAT's DEV verifier.
+        # Hard gate: the face-biometric web app must not still be Partner-bank's DEV verifier.
         # It answers happily and returns a correlationId, so nothing downstream can
         # tell it apart from the real one — the check simply proves nothing about the
         # person, while lifting a tier and clearing the large-transfer step-up.
@@ -231,11 +231,11 @@ class Command(BaseCommand):
                 f"enforced for {len(face_ips)} face-verifier IP(s)" if face_ips
                 else "WEMA_FACE_VERIFY_URL is set but WEMA_FACE_CALLBACK_IPS is not — the "
                      "face callback carries no shared token, so without the allowlist it "
-                     "has no authentication at all; ask Wema for the face app's egress IPs"))
+                     "has no authentication at all; ask partner bank for the face app's egress IPs"))
         if face_verify_live():
             # The registered shape gives up the per-verification state, leaving the IP
             # allowlist as the only thing authenticating a callback that lifts a KYC
-            # tier. ALAT's exact-match whitelist forces it, but a forced trade is still
+            # tier. Partner-bank's exact-match whitelist forces it, but a forced trade is still
             # a trade — say which mode is running and what it costs rather than let a
             # go-live report imply the callback is as guarded as the other four.
             checks.append((
@@ -245,7 +245,7 @@ class Command(BaseCommand):
                 "carries no per-verification state and the IP allowlist above is its "
                 "only authentication" if wema.face_cb_mode() == "registered"
                 else "session — each verification carries its own single-use state, "
-                     "which ALAT's exact-match whitelist will reject"))
+                     "which Partner-bank's exact-match whitelist will reject"))
             checks.append((
                 True, "Face biometric host",
                 FAIL if face_verify_on_nonprod_host() else PASS,
@@ -255,10 +255,10 @@ class Command(BaseCommand):
                 f"({_face_host()}) — it answers happily and lifts real tiers on no "
                 f"evidence" if face_verify_on_nonprod_host() else "live verifier"))
         else:
-            checks.append((False, "Face biometric (ALAT)", WARN,
+            checks.append((False, "Face biometric (Partner-bank)", WARN,
                            "no channel id or WEMA_FACE_VERIFY_URL — the face step falls "
                            "back to the document rail"))
-        checks.append((False, "Address verification (ALAT)",
+        checks.append((False, "Address verification (Partner-bank)",
                        PASS if address_verify_live() else WARN,
                        "bank-verified (Tier 3 upgrade)" if address_verify_live()
                        else "WEMA_UPGRADE_KEY unset — address falls back to the document rail"))
@@ -273,20 +273,20 @@ class Command(BaseCommand):
                             else "PREMBLY_API_KEY + PREMBLY_APP_ID unset — Tier 2/3 upgrades and "
                                  "the large-transfer selfie step-up fail closed"))
 
-        # SOFT — electricity/betting on the Wema rail need a mapped packageId. Without
+        # SOFT — electricity/betting on the partner bank rail need a mapped packageId. Without
         # one they silently stay on Partner-bank VAS, which is safe but is NOT what
         # VAS_PROVIDER=wema was set to achieve, and nothing else would say so.
         if vas_provider() == "wema":
             from django.db import DatabaseError
 
-            from utility.models import WemaBiller
+            from utility.models import partner bankBiller
             try:
-                mapped = WemaBiller.objects.filter(active=True).exclude(package_id="").count()
+                mapped = partner bankBiller.objects.filter(active=True).exclude(package_id="").count()
             except DatabaseError:
                 # Unmigrated database. A readiness check that dies on one unreadable
                 # counter reports nothing at all about the eleven gates above it.
                 mapped = 0
-            checks.append((False, "Wema biller catalogue (electricity / betting)",
+            checks.append((False, "partner bank biller catalogue (electricity / betting)",
                            PASS if mapped else WARN,
                            f"{mapped} service(s) mapped" if mapped
                            else "no packageIds mapped — electricity and betting stay on "
@@ -295,14 +295,14 @@ class Command(BaseCommand):
         # SOFT — the VAS status legends. Money-safe either way (an unknown code leaves
         # the purchase PENDING), so this can never be a gate; but an unset legend means
         # timed-out VAS buys accumulate as PENDING rows that only a human can clear,
-        # which ops should know before launch rather than discover from a queue. Wema
+        # which ops should know before launch rather than discover from a queue. partner bank
         # owes us one map per product — see docs/wema-migration.md.
         from utility.wema import _vas_legend, _vas_live
         legend_products = [("airtime", "WEMA_VAS_STATUS_LEGEND"),
                            ("bills", "WEMA_BILLS_STATUS_LEGEND"),
                            ("remita", "WEMA_REMITA_STATUS_LEGEND")]
         # Only ask about products this deploy can actually reach. Airtime and bills
-        # go through Wema only when the VAS rail is Wema; Remita is a standalone
+        # go through partner bank only when the VAS rail is partner bank; Remita is a standalone
         # subscription and is live whenever its key is. Warning about a legend for a
         # product we never call trains the operator to ignore the section that also
         # carries the one that matters.
