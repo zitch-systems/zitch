@@ -22,7 +22,7 @@ log = logging.getLogger("zitch")
 # ---------------------------------------------------------------------------
 def simulation_mode() -> bool:
     """WEMA_SIMULATION doubles as the DEPLOY-WIDE simulation switch: when on, the whole
-    payment/identity stack (Wema, partner-bank airtime/data/bills, cards, FX, Mono, KYC)
+    payment/identity stack (partner bank, partner-bank airtime/data/bills, cards, FX, Mono, KYC)
     serves its MOCK paths, so the app can be walked end-to-end with no real money or
     identity. It is a HARD go-live blocker — wema_preflight fails while it is set — so
     it can only ever be on in a test deploy, never in production."""
@@ -55,31 +55,14 @@ def vtu_live() -> bool:
 
 
 def vas_provider() -> str:
-    """VAS (airtime/data/bills) rail — 'wema' or 'vtung'.
-
-    Explicit VAS_PROVIDER wins. Blank => AUTO: use Wema once its VAS keys are
-    configured AND it can SETTLE a purchase (or simulation is on), else the retired VAS provider — so
-    airtime/data/bills never break on a deploy that has no Wema VAS keys yet. When
-    Wema is selected the routing is still per-service: AIRTIME (network + amount, no
-    catalogue) always goes to Wema; DATA and CABLE go to Wema once the plan's
-    `wema_code` is synced (`manage.py seed_wema_plans`), else the retired VAS provider; ELECTRICITY and
-    BETTING stay on the retired VAS provider until their Wema billers are mapped.
-
-    "Can settle" is the load-bearing half. A Wema VAS purchase usually comes back
-    PROCESSING and is resolved by requerying its INTEGER transactionStatus, whose
-    meaning ALAT does not publish — so without WEMA_VAS_STATUS_LEGEND configured the
-    requery can never decode, and the top-up sits PENDING forever: the customer is
-    DEBITED and the airtime neither arrives nor refunds. Auto-selecting Wema in that
-    state is exactly how "debited but not delivered" happens, so AUTO refuses it and
-    stays on the proven the retired VAS provider rail until the legend is set. An operator who knows
-    their Wema VAS settles synchronously can still force it with VAS_PROVIDER=wema."""
+    """VAS (airtime/data/bills) rail - partner bank only."""
     choice = (getattr(settings, "VAS_PROVIDER", "") or "").strip().lower()
     if choice == "wema":
         return "wema"
-    # the retired VAS provider is retired. Ignore legacy VAS_PROVIDER=vtung values rather than
+    # the retired VAS provider is retired. Ignore legacy VAS_PROVIDER=legacy provider values rather than
     # routing customer money to the removed provider.
-    if choice == "vtung":
-        log.warning("legacy VAS_PROVIDER=vtung ignored; using partner bank")
+    if choice and choice != "wema":
+        log.warning("legacy legacy VAS_PROVIDER ignored; using partner bank")
     from . import wema
     if wema.wema_simulation():
         return "wema"
@@ -89,11 +72,11 @@ def vas_provider() -> str:
 
 
 def _wema_vas_route(service_id: str, payload: dict):
-    """Resolve how Wema would fulfil this purchase, or None to stay on the retired VAS provider.
+    """Resolve how the partner bank would fulfil this purchase, or None to fail closed.
 
     Returns {"type": "airtime"|"data"|"bill", "code": <wema code>, "amount": <naira>}.
     Airtime always resolves; data/cable resolve once the plan's `wema_code` has been
-    synced; electricity/betting resolve once a WemaBiller row maps their service_id.
+    synced; electricity/betting resolve once a partner bankBiller row maps their service_id.
     A missing code returns None and keeps that ONE service on the retired VAS provider — never an
     error, so a partly-synced catalogue degrades per service instead of failing.
 
@@ -102,8 +85,8 @@ def _wema_vas_route(service_id: str, payload: dict):
     if service_id.endswith("-airtime"):
         return {"type": "airtime", "code": "", "amount": payload.get("amount")}
     if service_id.endswith("-electric") or service_id.endswith("-betting"):
-        from .models import WemaBiller
-        b = (WemaBiller.objects.filter(service_id=service_id, active=True)
+        from .models import partner bankBiller
+        b = (partner bankBiller.objects.filter(service_id=service_id, active=True)
              .only("package_id").first())
         if not (b and b.package_id):
             return None
@@ -128,7 +111,7 @@ def _wema_vas_route(service_id: str, payload: dict):
 
 
 def _vas_source_account(payload: dict, reference: str | None) -> str:
-    """The NUBAN a Wema VAS purchase debits (per-user-balance money-flow model).
+    """The NUBAN a partner bank VAS purchase debits (per-user-balance money-flow model).
 
     An explicit ``payload["source_account"]`` wins; otherwise the buyer's own
     wallet NUBAN is resolved from the ledger row the purchase is keyed on (the
@@ -136,7 +119,7 @@ def _vas_source_account(payload: dict, reference: str | None) -> str:
     and the WhatsApp router alike — debits the buyer's account rather than
     silently falling back to the shared WEMA_SOURCE_ACCOUNT pool, which would
     leak pool float while the buyer's NUBAN keeps its money. Blank only when the
-    buyer has no Wema NUBAN yet (the Wema client then uses the pool)."""
+    buyer has no partner bank NUBAN yet (the partner bank client then uses the pool)."""
     src = str(payload.get("source_account", "") or "")
     if src or not reference:
         return src
@@ -481,7 +464,7 @@ def email_probe() -> dict:
 # ---------------------------------------------------------------------------
 # KYC — selfie/liveness + address + ID-document — Prembly (IdentityPass)
 #
-# Prembly is retained ONLY for the image/biometric checks the Wema account-creation
+# Prembly is retained ONLY for the image/biometric checks the partner bank account-creation
 # flow can't do: selfie/liveness (kyc_verify_face — the ≥₦100k transfer gate + Tier 2),
 # address (kyc_verify_address — Tier 2), and document-image OCR (kyc_verify_nin_document /
 # kyc_verify_id_document — Tier 1 NIN slip / Tier 3 government ID). BVN/NIN identity is
@@ -602,7 +585,7 @@ def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# KYC — BVN / NIN / vNIN (Wema)
+# KYC — BVN / NIN / vNIN (partner bank)
 #
 # verify_bvn / verify_nin / verify_vnin are the provider-agnostic entry points the
 # rest of the app calls. ALAT has NO standalone identity lookup, so BVN/NIN are
@@ -628,7 +611,7 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
     credentials are staged in the environment; the dedicated simulated-KYC path
     supplies namespaced fake hashes without accepting or storing a real BVN.
 
-    Falls back to the Wema behaviour when Prembly is unconfigured or the
+    Falls back to the partner bank behaviour when Prembly is unconfigured or the
     deploy-wide simulation switch is on.
     """
     if _prembly_live():
@@ -785,7 +768,7 @@ def verify_nin(nin: str, name: str = "") -> dict:
     second rail every NIN falls to the operator review queue, and nobody can
     spend until a human clears them.
 
-    Falls back to the Wema behaviour when Prembly is unconfigured, so a deploy
+    Falls back to the partner bank behaviour when Prembly is unconfigured, so a deploy
     without those keys behaves exactly as it did before.
     """
     if _prembly_live():
@@ -994,11 +977,11 @@ def fx_execute(quote_ref: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Money-movement rail — Wema / ALAT (funding / virtual accounts / payouts)
+# Money-movement rail — partner bank / ALAT (funding / virtual accounts / payouts)
 #
 # The funding_* / payout_* wrappers are the provider-agnostic contract the views
-# and services call; they delegate to the Wema client (utility.wema), the sole
-# money-movement rail. Wema funds by bank transfer to an OTP-provisioned NUBAN (no
+# and services call; they delegate to the partner bank client (utility.wema), the sole
+# money-movement rail. partner bank funds by bank transfer to an OTP-provisioned NUBAN (no
 # hosted checkout, no webhook — inbound deposits AND payout settlement are handled
 # by the reconcile_wema poller). The *_provider() selectors are retained (returning
 # "wema") so any remaining callers/diagnostics keep working.
@@ -1009,7 +992,7 @@ def _wema_live() -> bool:
 
 
 def payment_provider() -> str:
-    """The wallet FUND-IN rail — 'wema' (the sole rail). Wema funds by bank transfer
+    """The wallet FUND-IN rail — 'wema' (the sole rail). partner bank funds by bank transfer
     to an OTP-provisioned NUBAN (no hosted checkout, no webhook — deposits are
     reconciled by the reconcile_wema poller). Retained as a selector so callers keep
     working."""
@@ -1025,14 +1008,14 @@ def payout_provider() -> str:
 
 
 def payout_live() -> bool:
-    """Whether the Wema payout rail has live keys (else MOCK)."""
+    """Whether the partner bank payout rail has live keys (else MOCK)."""
     return _wema_live()
 
 
 def card_provider() -> str:
     """Virtual-card backend — 'wema' or 'issuer'. Explicit CARD_PROVIDER wins; blank
-    => AUTO: use Wema only when its separate Virtual Naira Card subscription key is
-    set, else use the generic CARD_ISSUER. The Wema rail supports neither reversible
+    => AUTO: use partner bank only when its separate Virtual Naira Card subscription key is
+    set, else use the generic CARD_ISSUER. The partner bank rail supports neither reversible
     freeze nor top-up."""
     choice = (getattr(settings, "CARD_PROVIDER", "") or "").strip().lower()
     if choice in ("wema", "issuer"):
@@ -1041,10 +1024,10 @@ def card_provider() -> str:
     return "wema" if wema.card_opted_in() else "issuer"
 
 
-# --- Funding (wallet top-up) dispatch — Wema (OTP-provisioned NUBAN) ---
+# --- Funding (wallet top-up) dispatch — partner bank (OTP-provisioned NUBAN) ---
 def funding_initialize(email: str, amount_naira, reference: str, *,
                        name: str = "", redirect_url: str = "") -> dict:
-    """Wema/ALAT has no hosted checkout — funding is by bank transfer to the user's
+    """partner bank/ALAT has no hosted checkout — funding is by bank transfer to the user's
     dedicated NUBAN (credited by the reconcile_wema poller), so there is no charge to
     start. Returns a graceful message the app shows instead of a checkout URL."""
     return {"success": False,
@@ -1052,7 +1035,7 @@ def funding_initialize(email: str, amount_naira, reference: str, *,
 
 
 def funding_verify(reference: str, provider: str = "") -> dict:
-    """Wema deposits are credited by the reconcile poller, not a synchronous verify
+    """partner bank deposits are credited by the reconcile poller, not a synchronous verify
     call, so there is nothing to confirm here."""
     # White-label: no provider name in customer-facing copy.
     return {"success": False, "message": "Deposits are credited automatically on receipt."}
@@ -1062,7 +1045,7 @@ def funding_account_reserve(account_reference: str, account_name: str, customer_
                             customer_name: str, bvn: str = "", nin: str = "") -> dict:
     """Provision a dedicated funding (virtual) account.
 
-    Wema can't mint an account synchronously — it needs a BVN/NIN + OTP round-trip
+    partner bank can't mint an account synchronously — it needs a BVN/NIN + OTP round-trip
     driven by the /api/wallet/wema/* endpoints. Signal that so ensure_reserved_account
     leaves the wallet numberless (the OTP flow fills it) rather than surfacing a hard
     error.
@@ -1074,17 +1057,17 @@ def funding_account_reserve(account_reference: str, account_name: str, customer_
 def funding_account_get(account_reference: str) -> dict:
     """Fetch an existing dedicated account (duplicate recovery).
 
-    Wema accounts are provisioned by the OTP endpoints, not a synchronous lookup, so
+    partner bank accounts are provisioned by the OTP endpoints, not a synchronous lookup, so
     this signals otp_required rather than performing a wrong-rail lookup."""
     return {"success": False, "otp_required": True,
             "message": "Verify the OTP to finish setting up your account."}
 
 
-# --- Payout (bank transfer) dispatch — Wema ---
+# --- Payout (bank transfer) dispatch — partner bank ---
 def payout_resolve_account(account_number: str, bank_code: str) -> dict:
-    """Recipient name enquiry via Wema.
+    """Recipient name enquiry via partner bank.
 
-    Returns {success, name, ...}. Wema resolves by (account_number, bank_code); no
+    Returns {success, name, ...}. partner bank resolves by (account_number, bank_code); no
     securityInfo is needed for enquiry."""
     from . import wema
     return wema.resolve_account(account_number, bank_code)
@@ -1093,17 +1076,17 @@ def payout_resolve_account(account_number: str, bank_code: str) -> dict:
 def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
                 account_number: str, account_name: str, bank_name: str = "",
                 source_account: str = "") -> dict:
-    """Single bank payout via Wema. Returns {success, status, ...}; Wema yields
+    """Single bank payout via partner bank. Returns {success, status, ...}; partner bank yields
     success/processing/pending — execute_payout treats PROCESSING/PENDING as
     not-yet-confirmed.
 
-    `bank_name` is sent to Wema's ProcessClientTransfer (destinationBankName)
+    `bank_name` is sent to partner bank's ProcessClientTransfer (destinationBankName)
     alongside the code.
 
-    MONEY-FLOW: Wema uses a per-user-balance model, so this debits the SENDER's own
+    MONEY-FLOW: partner bank uses a per-user-balance model, so this debits the SENDER's own
     NUBAN — `source_account`, which execute_payout passes as the sender's
     wallet.account_number — falling back to the shared WEMA_SOURCE_ACCOUNT pool only
-    for a sender who has no Wema NUBAN yet, and failing closed (refundable) on a live
+    for a sender who has no partner bank NUBAN yet, and failing closed (refundable) on a live
     call with neither."""
     from . import wema
     src = source_account or settings.WEMA.get("SOURCE_ACCOUNT", "")
@@ -1127,7 +1110,7 @@ def card_issue(holder: str, customer_ref: str, email: str = "", *, account_numbe
                phone: str = "") -> dict:
     if card_provider() == "wema":
         from . import wema
-        # Wema keys the virtual card by the user's NUBAN — thread it through.
+        # partner bank keys the virtual card by the user's NUBAN — thread it through.
         return wema.card_issue(holder, customer_ref, account_number=account_number,
                                email=email, phone=phone)
     return issue_card(holder, customer_ref)
@@ -1155,7 +1138,7 @@ def card_reveal(card_token: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# NIP transfer charges / Remita / BNPL — Wema-only rails (no alternative provider).
+# NIP transfer charges / Remita / BNPL — partner bank-only rails (no alternative provider).
 # The wrappers keep the views off the wema client directly and give tests one seam.
 # ---------------------------------------------------------------------------
 def payout_charge(amount_naira):
