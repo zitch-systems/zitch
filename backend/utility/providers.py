@@ -87,8 +87,12 @@ def vas_provider() -> str:
     stays on the proven VTU.ng rail until the legend is set. An operator who knows
     their Wema VAS settles synchronously can still force it with VAS_PROVIDER=wema."""
     choice = (getattr(settings, "VAS_PROVIDER", "") or "").strip().lower()
-    if choice in ("wema", "vtung"):
-        return choice
+    if choice == "wema":
+        return "wema"
+    # VTU.ng is retired. Ignore legacy VAS_PROVIDER=vtung values rather than
+    # routing customer money to the removed provider.
+    if choice == "vtung":
+        log.warning("legacy VAS_PROVIDER=vtung ignored; using partner bank")
     from . import wema
     if wema.wema_simulation():
         return "wema"
@@ -157,100 +161,67 @@ def _vas_source_account(payload: dict, reference: str | None) -> str:
 
 
 def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
-    """Submit a VAS purchase via the selected rail.
+    """Submit every VAS purchase through the partner-bank biller.
 
-    Pass the wallet ledger `reference` so it becomes the provider's request_id
-    (idempotency key + requery handle). On a network error returns ``pending=True``:
-    the purchase may have landed, so the caller must NOT refund — reconciliation
-    requeries it by reference instead.
+    VTU.ng is retired. A missing partner-bank catalogue mapping is a safe
+    configuration failure, never a fallback to another money rail.
+    """
+    from . import wema
 
-    With VAS_PROVIDER=wema (the default) each service routes to Wema only where a
-    Wema catalogue code resolves (see `_wema_vas_route`); anything else falls through
-    to VTU.ng. The chosen rail is stamped on the result (`vas_rail`/`vas_type`) so a
-    PENDING purchase is requeried against the SAME rail that fulfilled it."""
-    if vas_provider() == "wema":
-        route = _wema_vas_route(service_id, payload)
-        if route is not None:
-            from . import wema
-            src = _vas_source_account(payload, reference)
-            phone = payload.get("phone", "")
-            if route["type"] == "airtime":
-                network = service_id.rsplit("-airtime", 1)[0]
-                res = wema.purchase_airtime(route["amount"], reference or "", phone, network,
-                                            source_account=src)
-            elif route["type"] == "data":
-                network = service_id.rsplit("-data", 1)[0]
-                res = wema.purchase_data(route["amount"], reference or "", phone, network,
-                                         route["code"], source_account=src)
-            else:  # bill (cable)
-                res = wema.pay_bill(route["amount"], reference or "", package_id=route["code"],
-                                    identifier=payload.get("billersCode", ""), source_account=src,
-                                    phone=phone)
-            res.setdefault("vas_rail", "wema")
-            res.setdefault("vas_type", route["type"])
-            return res
-    from .vtung import vt_purchase
-    return vt_purchase(service_id, payload, reference)
-
+    route = _wema_vas_route(service_id, payload)
+    if route is None:
+        return {
+            "success": False,
+            "message": "This service is not configured with our partner bank yet.",
+            "vas_rail": "wema",
+        }
+    src = _vas_source_account(payload, reference)
+    phone = payload.get("phone", "")
+    if route["type"] == "airtime":
+        network = service_id.rsplit("-airtime", 1)[0]
+        res = wema.purchase_airtime(route["amount"], reference or "", phone, network,
+                                    source_account=src)
+    elif route["type"] == "data":
+        network = service_id.rsplit("-data", 1)[0]
+        res = wema.purchase_data(route["amount"], reference or "", phone, network,
+                                 route["code"], source_account=src)
+    else:
+        res = wema.pay_bill(route["amount"], reference or "", package_id=route["code"],
+                            identifier=payload.get("billersCode", ""), source_account=src,
+                            phone=phone)
+    res.setdefault("vas_rail", "wema")
+    res.setdefault("vas_type", route["type"])
+    return res
 
 def vtu_requery(reference: str) -> dict:
-    """Requery a submitted purchase by our request_id to settle a PENDING
-    transaction (e.g. one whose original send timed out).
-
-    Returns the {"success", "pending", ...} shape settle_or_refund expects:
-    success => delivered; pending => still unknown (retry later); neither =>
-    a definitive failure the caller refunds. The rail is read from the ledger row's
-    stamped `vas_rail`/`vas_type` (set at purchase), so a Wema purchase requeries via
-    wema.vas_status and a VTU.ng one via vt_requery — even in the mixed state."""
+    """Requery a partner-bank VAS purchase by its request reference."""
     from wallet.models import Transaction
+    from . import wema
+
     txn = Transaction.objects.filter(reference=reference).only("meta").first()
     meta = (txn.meta if txn else None) or {}
-    if meta.get("vas_rail") == "wema":
-        from . import wema
-        return wema.vas_status(reference, meta.get("vas_type", "airtime"))
-    from .vtung import vt_requery
-    return vt_requery(reference)
-
+    return wema.vas_status(reference, meta.get("vas_type", "airtime"))
 
 def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "") -> dict:
-    """Validate a meter / smartcard number, returning the customer name.
+    """Validate a bill customer exclusively through the partner-bank biller."""
+    from . import wema
 
-    Validation follows the PURCHASE rail rather than always asking VTU.ng. It used
-    not to, which was harmless while the two rails agreed and is not once a service
-    routes to Wema: the customer would be shown a name VTU.ng resolved, then have the
-    payment executed against a Wema packageId that may reject the same identifier —
-    confirming a name against one biller and paying another. Falls back to VTU.ng
-    whenever Wema has no code for this service, which is the same rail the purchase
-    will take."""
-    if vas_provider() == "wema":
-        route = _wema_vas_route(service_id, {"variation_code": variation,
-                                             "billersCode": billers_code,
-                                             # Validation carries no amount; supply a
-                                             # placeholder so a variable-amount biller
-                                             # still resolves its package id.
-                                             "amount": "0"})
-        if route is not None and route["type"] == "bill" and route["code"]:
-            from . import wema
-            res = wema.validate_bill_customer(package_id=route["code"], identifier=billers_code)
-            # Translated to the VTU.ng contract every caller reads. Wema answers
-            # `name`; the app, the chat and utility.views all read `customer_name`,
-            # so returning Wema's dict verbatim rendered the meter owner as blank —
-            # silently disabling the ONE control that catches a mistyped meter
-            # number before ₦20,000 goes to a stranger's meter.
-            #
-            # Success also requires a resolved NAME, not just a clean envelope.
-            # vt_verify_customer returns success=bool(name); Wema's returns the
-            # envelope's own flag, so a `hasError: false` reply with no customerName
-            # counted as a confirmed owner.
-            name = str(res.get("name") or "").strip()
-            if res.get("success") and name:
-                return {**res, "success": True, "customer_name": name,
-                        "customer_address": res.get("address", "")}
-            # A Wema validation failure is not proof the identifier is bad (an
-            # unmapped package or a gateway hiccup looks the same), so fall through
-            # rather than telling the customer their own meter number is wrong.
-    from .vtung import vt_verify_customer
-    return vt_verify_customer(service_id, billers_code, variation)
+    route = _wema_vas_route(service_id, {
+        "variation_code": variation,
+        "billersCode": billers_code,
+        "amount": "1",
+    })
+    if route is None or route["type"] != "bill" or not route["code"]:
+        return {
+            "success": False,
+            "message": "This biller is not configured with our partner bank yet.",
+        }
+    res = wema.validate_bill_customer(package_id=route["code"], identifier=billers_code)
+    name = str(res.get("name") or "").strip()
+    if res.get("success") and name:
+        return {**res, "success": True, "customer_name": name,
+                "customer_address": res.get("address", "")}
+    return {**res, "success": False, "message": res.get("message") or "Customer validation failed."}
 
 
 # ---------------------------------------------------------------------------
