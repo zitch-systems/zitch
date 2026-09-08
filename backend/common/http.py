@@ -520,7 +520,13 @@ def provider_purchase_response(status, txn, result, *, success_message, **succes
                   message="Your purchase is processing and will be confirmed shortly.",
                   **success_extra)
     if status != "success":
-        return fail(result.get("message", "Transaction failed"), status=502)
+        # Same reason as the WhatsApp path: a provider's "insufficient balance"
+        # is about our float, and reads to the customer as their own money having
+        # gone. See wallet.services.customer_safe_failure.
+        from wallet.services import customer_safe_failure
+
+        return fail(customer_safe_failure(result, fallback="Transaction failed"),
+                    status=502)
     return ok(success=True, message=success_message, reference=txn.reference, **success_extra)
 
 

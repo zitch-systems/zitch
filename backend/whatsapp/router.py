@@ -45,6 +45,7 @@ from wallet.services import (
     InsufficientFunds,
     LimitExceeded,
     attach_existing_bank_account,
+    customer_safe_failure,
     get_or_create_wallet,
     run_provider_purchase,
 )
@@ -5510,7 +5511,11 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
                 f"Ref {txn.reference}.")
         reply(msisdn, line)
         return Outcome(line, OUTCOME_PENDING)
-    line = (f"❌ {label} ({detail}) failed: {result.get('message', 'please try again')}. "
+    # Not result["message"]: an empty provider float comes back phrased as the
+    # CUSTOMER's balance being too low, and this line is also what the Flow's
+    # "Not completed" page renders. See wallet.services.customer_safe_failure.
+    line = (f"❌ {label} ({detail}) failed: "
+            f"{customer_safe_failure(result, service=pa.action_type)}. "
             f"You were not charged.")
     reply(msisdn, line)
     return Outcome(line, OUTCOME_FAILED)
