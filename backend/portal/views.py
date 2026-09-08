@@ -22,7 +22,7 @@ from savings.models import FixedSave
 from savings.services import run_maturities as run_maturities_service
 from utility.providers import fx_quote, vtu_requery
 from wallet.models import CurrencyWallet, Transaction, Wallet
-from wallet.services import is_bank_payout, pending_vtu_purchases, settle_or_refund
+from wallet.services import is_bank_payout, pending_vas_purchases, settle_or_refund
 from whatsapp.models import (
     AuditLog,
     Broadcast,
@@ -430,7 +430,7 @@ def txn_requery(request):
     if is_bank_payout(txn):
         # A bank transfer settles via the reconcile_wema poller, not a VTU
         # requery — don't query the wrong provider for a reference it never saw.
-        return fail("Bank transfers reconcile via the disbursement webhook, not VTU requery", status=409)
+        return fail("Bank transfers reconcile via the disbursement webhook, not partner-bank VAS requery", status=409)
     result = vtu_requery(txn.reference)
     status = settle_or_refund(txn, result)
     record_audit("txn.requery", actor=request.user_obj, target=ref,
@@ -610,14 +610,14 @@ def maturities_run(request):
 def recon_run(request):
     """Requery + settle every provider-pending purchase — the cron's loop, on demand."""
     cutoff = timezone.now() - timedelta(minutes=5)
-    # VTU.ng purchases only; bank-transfer payouts settle via the disbursement
-    # webhook, not a VTU requery (see wallet.services.pending_vtu_purchases).
-    pending = list(pending_vtu_purchases(cutoff))
+    # partner-bank VAS purchases only; bank-transfer payouts settle via the disbursement
+    # webhook, not a partner-bank VAS requery (see wallet.services.pending_vas_purchases).
+    pending = list(pending_vas_purchases(cutoff))
     settled = 0
     for txn in pending:
         if settle_or_refund(txn, vtu_requery(txn.reference)) != "pending":
             settled += 1
-    record_audit("recon.vtu_run", actor=request.user_obj,
+    record_audit("recon.vas_run", actor=request.user_obj,
                  after={"checked": len(pending), "settled": settled})
     return ok(success=True, settled=settled)
 
