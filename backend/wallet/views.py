@@ -819,15 +819,9 @@ def wema_wallet_upgrade_tier2(request):
     if _identity_owned_by_another_user(user, WemaProvisioningAttempt.NIN, nin):
         return fail("This NIN is already linked to another Zitch account", status=409)
 
-    # Prembly is the liveness authority for Tier 2. A camera frame is only input;
-    # accepting it directly would let any still photo become ``face_verified`` and
-    # would send unverified biometric data to the bank. Only forward the same image
-    # after Prembly has returned a positive liveness/face verdict.
-    biometric = kyc_verify_face(live_image)
-    if not biometric.get("success"):
-        return fail(biometric.get("message", "Live face verification failed"),
-                    status=400)
-
+    # Tier 2 is Wema's combined account-upgrade contract. The live image is
+    # submitted only to Wema with the BVN and NIN; this route must not require a
+    # separate verifier or turn a completed Wema upgrade into a local failure.
     res = wema_provider.upgrade_tier2(wallet.account_number, bvn=bvn, nin=nin,
                                      live_image=live_image)
     if not res.get("success"):
