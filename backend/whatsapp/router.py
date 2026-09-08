@@ -2720,11 +2720,12 @@ def _kyc_status_lines(user) -> str:
 
     rehydrate_verified_identity_flags(user)
     mark = lambda ok: "✅" if ok else "⬜"  # noqa: E731
+    # This card is the Tier 1 checklist. NIN is never a Tier 1 requirement;
+    # it belongs only to the separate Tier 2 bank upgrade with liveness.
     return "\n".join([
         f"{mark(user.phone_verified)} Phone number",
         f"{mark(user.email_verified)} Email address",
         f"{mark(user.bvn_verified)} BVN",
-        f"{mark(user.nin_verified)} NIN",
     ])
 
 
