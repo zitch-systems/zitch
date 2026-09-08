@@ -225,7 +225,7 @@ def _providers() -> list:
 
     rows = [
         ("Wema", "Funding · payouts · KYC", payout_live()),
-        ("VTU.ng", "Airtime · data · bills", vtu_live()),
+        ("partner-bank VAS", "Airtime · data · bills", vtu_live()),
         ("Fincra", "FX rates & settlement", bool(getattr(st, "FINCRA", {}).get("SECRET_KEY"))),
         ("Meta WhatsApp", "Chat channel", bool(st.WHATSAPP.get("TOKEN"))),
         ("Termii", "SMS / OTP", sms_live()),
