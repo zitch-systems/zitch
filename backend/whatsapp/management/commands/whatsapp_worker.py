@@ -48,10 +48,8 @@ class Command(BaseCommand):
             if not reconcile_lock.acquire(blocking=False):
                 return
             try:
-                from utility.management.commands.reconcile_vtu import Command as VtuCommand
                 from utility.management.commands.reconcile_wema import Command as WemaCommand
 
-                VtuCommand().handle(older_than_minutes=0)
                 WemaCommand()._run(
                     lookback_days=2,
                     payout_older_than_minutes=2,
