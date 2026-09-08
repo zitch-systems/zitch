@@ -170,7 +170,7 @@ def wallet_account_create(request):
     dedicated account for a number that fails its own KYC) and issues the NUBAN. On
     success the user is marked KYC-verified for that identifier and their tier
     recomputed, so a single BVN both provisions the virtual wallet account AND lifts
-    their limit. Only a BVN is required (NIN accepted as an alternative). Idempotent:
+    their limit. Only a BVN is accepted for Tier 1. NIN is reserved for the combined Tier 2 upgrade. Idempotent:
     returns the existing account on a repeat call.
 
     Note: we deliberately do NOT gate on a separate BVN details-match product here —
@@ -207,16 +207,22 @@ def wallet_account_create(request):
                 return ok(**payload)
             return fail(payload.get("message", "Couldn't verify identity with Wema"), status=status)
         if len(nin) == 11:
-            payload, status = _verify_existing_wema_identity(
-                user, wallet, WemaProvisioningAttempt.NIN, nin)
-            if payload.get("success"):
-                return ok(**payload)
-            return fail(payload.get("message", "Couldn't verify identity with Wema"), status=status)
+            return fail(
+                "NIN is a Tier 2 requirement. Submit it together with your BVN and live selfie "
+                "through the account upgrade.",
+                status=409, upgrade_required=True,
+            )
         # already provisioned — return it (idempotent)
         return ok(**_account_payload(
             wallet, tier=user.tier, bvn_verified=user.bvn_verified, nin_verified=user.nin_verified))
 
-    if len(bvn) != 11 and len(nin) != 11:
+    if len(bvn) != 11 and len(nin) == 11:
+        return fail(
+            "NIN is a Tier 2 requirement. Verify your BVN for Tier 1 first, then complete "
+            "the combined account upgrade with your NIN and live selfie.",
+            status=409, upgrade_required=True,
+        )
+    if len(bvn) != 11:
         if user.bvn_verified:
             recovered, _detail = attach_existing_bank_account(user, using_bvn=True)
             if recovered is not None and recovered.account_number:
@@ -252,13 +258,13 @@ def wallet_account_create(request):
                 message=message,
             )
         return fail("Enter your 11-digit BVN or NIN")
-    using_bvn = len(bvn) == 11
+    using_bvn = True
 
     # Wema mints the NUBAN via a BVN/NIN + OTP round-trip (the sole funding rail),
     # not a one-step reserve — start it here so the existing "Get my account" call
     # drives the flow: the client shows the OTP step and finishes on
     # /api/wallet/wema/verify-otp/ (which persists the account + lifts KYC).
-    res, identity_error = _start_wema_attempt(user, bvn, nin)
+    res, identity_error = _start_wema_attempt(user, bvn, "")
     if identity_error:
         return fail(identity_error, status=409)
     if not res.get("success"):
