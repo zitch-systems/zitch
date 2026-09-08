@@ -253,45 +253,10 @@ class Command(BaseCommand):
                   level="error", payouts=len(stuck),
                   references=[t.reference for t in stuck[:10]])
 
-        # Auto-reverse payouts stuck beyond a longer safety threshold. After
-        # this many hours the poller has tried dozens of times and the bank
-        # has had ample time to settle; leaving the customer's money locked
-        # indefinitely is worse than a refund for a transfer that may have
-        # arrived (the recipient can always re-request). The threshold is
-        # deliberately longer than the alert window so operators see the
-        # alert first and can manually settle if they know the transfer
-        # succeeded.
-        auto_reverse_hours = int(
-            getattr(settings, "WEMA_PAYOUT_AUTO_REVERSE_HOURS", 6) or 6)
-        if auto_reverse_hours > 0:
-            auto_reverse_after = timedelta(hours=auto_reverse_hours)
-            stale = list(pending_bank_payouts(
-                timezone.now() - auto_reverse_after)[:50])
-            auto_reversed = 0
-            for txn in stale:
-                st = wema.confirm_transfer_status(
-                    txn.reference,
-                    platform_reference=str(
-                        (txn.meta or {}).get("wema_transfer", {})
-                        .get("platform_reference", "")),
-                )
-                outcome = wema.classify_transfer_status(
-                    (st.get("status") or "").upper(), envelope_ok=True)
-                if st.get("success") and outcome == "success":
-                    if settle_payout(txn.reference) is not None:
-                        settled += 1
-                elif outcome == "failed":
-                    if reverse_transfer(txn.reference) is not None:
-                        auto_reversed += 1
-                else:
-                    if reverse_transfer(txn.reference) is not None:
-                        auto_reversed += 1
-            if auto_reversed:
-                alert(
-                    f"reconcile_wema: auto-reversed {auto_reversed} payout(s) "
-                    f"stuck PENDING for >{auto_reverse_hours}h",
-                    level="warning", auto_reversed=auto_reversed,
-                    references=[t.reference for t in stale[:10]])
+        # Never infer failure from age. Wema may have completed a payout even
+        # when its status endpoint is unavailable or returns an unfamiliar value.
+        # Such rows remain PENDING, are repeatedly queried, and stay covered by
+        # the stuck-payout alert above until a terminal bank status is received.
 
         if payouts_seen and status_failures == payouts_seen:
             alert(f"reconcile_wema: all {payouts_seen} pending-payout status queries failed â€” "
