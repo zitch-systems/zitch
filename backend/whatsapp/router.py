@@ -681,6 +681,11 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     """Send the secure PIN Flow for this action and move it to the flow_pin state.
     Returns True if the Flow was dispatched; False to fall back to SMS/PIN. The
     signed flow_token maps Meta's later data-exchange call back to THIS action."""
+    # Recheck immediately before rendering the card. The balance can change after
+    # the action was first armed (for example, another app or WhatsApp payment).
+    # Never dispatch a card whose numeric balance is already stale.
+    if not _has_live_funds(pa, user):
+        return False
     summary = _flow_summary(pa)
     pa.payload["flow_summary"] = summary
     # Persisted so the Flow endpoint can re-render the same screen on a wrong
@@ -728,7 +733,12 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
         # and the pad never appears.
         on_open="data_exchange",
     )
-    return bool(res.get("success"))
+    if not res.get("success"):
+        return False
+    # The provider may spend time opening the Flow. Re-read before accepting
+    # the dispatch as usable, so a card that became unaffordable while opening
+    # cannot proceed to PIN submission.
+    return _has_live_funds(pa, user, notify=True)
 
 
 def _send_identity_flow(pa: PendingAction, kind: str, fallback_state: str = "") -> bool:
