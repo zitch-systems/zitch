@@ -487,8 +487,18 @@ def repair_missing_funding_accounts(*, email: str = "", limit: int = 20) -> dict
     if requested:
         users = users.filter(email__iexact=requested)
 
-    checked = repaired = failed = 0
+    from django.core.cache import cache
+
+    checked = repaired = failed = skipped = 0
     for user in users[:max(1, min(int(limit or 20), 100))]:
+        # A read-back is useful when a provider callback was missed; repeatedly
+        # calling the same endpoint for an account the provider has not minted is
+        # not. The customer-facing face recovery route clears this cache by using
+        # a new, explicit bank creation path.
+        key = f"partner-bank-account-repair:{user.pk}"
+        if not cache.add(key, True, timeout=15 * 60):
+            skipped += 1
+            continue
         checked += 1
         try:
             wallet, detail = attach_existing_bank_account(user, using_bvn=True)
@@ -498,12 +508,13 @@ def repair_missing_funding_accounts(*, email: str = "", limit: int = 20) -> dict
             continue
         if wallet is not None and wallet.account_number:
             repaired += 1
+            cache.delete(key)
             log.info("partner_bank_account_repaired user=%s", user.pk)
         else:
             log.info("partner_bank_account_not_ready user=%s detail=%s",
                      user.pk, str(detail or "")[:160])
 
-    return {"checked": checked, "repaired": repaired, "failed": failed}
+    return {"checked": checked, "repaired": repaired, "failed": failed, "skipped": skipped}
 
 
 BANK_PAYOUT_META_FILTER = (
