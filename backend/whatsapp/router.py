@@ -2665,7 +2665,7 @@ def _offer_bvn_verification_method(pa: PendingAction, msisdn: str) -> None:
     reply_buttons(
         msisdn,
         "🪪 *How would you like to verify your BVN?*\n\n"
-        "Choose SMS OTP or complete a live face check on Wema\'s secure page.",
+        "Choose SMS OTP or complete a live face check on our partner bank's secure page.",
         [("bvn_sms", "SMS OTP"), ("bvn_face", "Face verification")],
     )
 
