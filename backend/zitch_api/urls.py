@@ -51,7 +51,7 @@ def health(_request):
         "wema_sandbox": "apiplayground" in (settings.WEMA.get("BASE_URL", "") or "").lower(),
         "payout_provider": payout_provider(),     # which rail sends payouts + name enquiry (wema)
         "payout_live": payout_live(),             # payout rail has live keys
-        "vas_provider": vas_provider(),           # airtime/data/bills rail (vtung default)
+        "vas_provider": vas_provider(),           # airtime/data/bills rail (vas default)
         "biller_wema": vtu_live(),
         # Termii is the only SMS rail, so the name is a constant and sms_live is the
         # whole story: keyed or in mock mode. The old per-rail sms_sendchamp boolean
@@ -439,7 +439,7 @@ def wema_diagnose(request):
     # unexplainable "forbidden".
     #
     # Accepts EITHER token, like the other three probes. This one used to read
-    # WEMA_DIAG_TOKEN alone, so setting only DIAG_TOKEN opened /vtu-diagnose,
+    # WEMA_DIAG_TOKEN alone, so setting only DIAG_TOKEN opened /vas-diagnose,
     # /sms-diagnose and /wema-callbacks-diagnose while this one kept 404ing —
     # indistinguishable from "the route isn't deployed", which is the exact
     # question these endpoints exist to answer.
@@ -750,7 +750,6 @@ urlpatterns = [
     # probes should not fail merely because a caller included a trailing slash.
     *[p for frag, view in (("wema-diagnose", wema_diagnose),
                            ("wema-callbacks-diagnose", wema_callbacks_diagnose),
-                           ("vtu-diagnose", vtu_diagnose),
                            ("whatsapp-diagnose", whatsapp_diagnose),
                            ("sms-diagnose", sms_diagnose),
                            ("preflight", preflight_diagnose))
