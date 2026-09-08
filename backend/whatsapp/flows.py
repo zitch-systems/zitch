@@ -1198,8 +1198,8 @@ def _submit_identity(pa, data: dict) -> dict:
             pa.payload.pop("id_purpose", None)
             pa.save(update_fields=["payload"])
             return _success_screen(
-                f"Wema requires the {kind.upper()} SMS verification code. "
-                "Enter the number again to request it from Wema.")
+                f"Our partner bank requires the {kind.upper()} SMS verification code. "
+                "Enter the number again to request it from our partner bank.")
         # Both entry points collect the same number on the same screen; what
         # happens next is the action's business, not this module's.
         if pa.action_type == "add_account":
