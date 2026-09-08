@@ -2028,7 +2028,7 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
         else:
             return _transfer_form_screen(
                 error=f'We could not find "{bank_value}". Type the bank name, '
-                      "e.g. Wema, Kuda or GTBank.")
+                      "e.g. Kuda, GTBank or OPay.")
 
     if bank is None:
         candidates = nuban_bank_candidates(account)
@@ -2047,7 +2047,7 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
             return _transfer_form_screen(error=message, candidates=candidates)
         else:
             message = ("Pick the bank from the list." if legacy_picker
-                       else "Enter the bank name, e.g. Wema, Kuda or GTBank.")
+                       else "Enter the bank name, e.g. Kuda, GTBank or OPay.")
             return _transfer_form_screen(error=message)
 
     res = payout_resolve_account(account, bank.bank_code)
