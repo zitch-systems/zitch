@@ -314,12 +314,8 @@ PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "").strip().lower()
 # WEMA_SIMULATION=true to test the flow without live keys). See
 # utility.providers.payout_provider.
 PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
-# The VAS (airtime/data/bills) rail — "wema" or "vtung". Explicit value wins; blank
-# => AUTO (Wema once its VAS keys are set, else VTU.ng, so nothing breaks without
-# keys). When Wema is used: airtime always routes to Wema; data/cable route to Wema
-# once `manage.py seed_wema_plans` has synced each plan's wema_code; electricity/
-# betting stay on VTU.ng until their Wema billers are mapped. See
-# utility.providers.vas_provider and docs/wema-migration.md.
+# The VAS (airtime/data/bills) rail is the partner bank only. Legacy
+# VAS_PROVIDER values are ignored by utility.providers.vas_provider.
 VAS_PROVIDER = "wema"
 # The BVN/NIN KYC rail — "wema"; blank => wema. ALAT has no standalone identity lookup,
 # so BVN/NIN are verified by the NUBAN account-creation flow (name-matched before the
