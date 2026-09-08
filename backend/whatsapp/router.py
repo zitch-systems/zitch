@@ -2803,7 +2803,11 @@ def _bank_upgrade_blocks(user, step: str) -> bool:
     if step not in _UPGRADE_STEPS:
         return False
     wallet = get_or_create_wallet(user)
-    return bool(wallet.account_number and wallet.identity_upgrade_required)
+    # The existing-account product does not accept a second identity OTP. Treat
+    # the account itself as authoritative, not only a flag written after one
+    # failed submission, so a restored/adopted account can never prompt for NIN
+    # and then refuse it.
+    return bool(wallet.account_number and not (user.bvn_verified and user.nin_verified))
 
 
 def _kyc_bank_upgrade_notice(user, msisdn: str) -> None:
@@ -3769,11 +3773,11 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
                     expires_at=_flow_deadline("id_number"),
                 )
                 reply(msisdn,
-                      "✅ Your BVN is verified and will not be requested again. "
-                      "Only NIN is left for Tier 2. Tap *Enter securely* above or "
-                      "reply *8* again to enter your NIN on WhatsApp.")
-                _send_identity_number_flow(msisdn, "nin")
-                return "adopted"
+                      "✅ Your BVN remains verified. Your account is already open, "
+                      "so Wema requires the remaining Tier 2 details together in "
+                      "one upgrade rather than a second OTP. Reply *8* to continue.")
+                _kyc_bank_upgrade_notice(user, msisdn)
+                return "upgrade"
             if not using_bvn and not user.nin_verified:
                 PendingAction.objects.create(
                     user=user, msisdn=msisdn, action_type="add_account",
