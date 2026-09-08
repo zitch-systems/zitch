@@ -59,7 +59,7 @@ jobs:
           echo "Changed files since $base:"
           echo "$files"
 
-          matches() { printf '%s\n' "$files" | grep -qE "$1"; }
+          matches() { grep -Eq "$1" <<< "$files"; }
 
           backend=false
           app=false
