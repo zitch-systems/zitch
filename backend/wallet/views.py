@@ -577,7 +577,7 @@ def wema_wallet_create(request):
         # account can only be finished by the combined upgrade" - and it kept
         # offering the retry that can never succeed.
         extra = {"upgrade_required": True} if payload.get("upgrade_required") else {}
-        return fail(payload.get("message", "Couldn't verify identity with Wema"),
+        return fail(payload.get("message", "Couldn't verify identity with our partner bank"),
                     status=status, **extra)
     res, identity_error = _start_wema_attempt(user, bvn, nin)
     if identity_error:
@@ -599,8 +599,8 @@ def wema_wallet_create(request):
                 already=True,
                 upgrade_required=True,
                 message=(
-                    "Your Wema account was reconnected. To verify another identity "
-                    "on an existing Wema account, complete BVN, NIN and a live "
+                    "Your partner-bank account was reconnected. To verify another identity "
+                    "on an existing partner-bank account, complete BVN, NIN and a live "
                     "selfie together."
                 ),
             ))
