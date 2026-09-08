@@ -63,8 +63,8 @@ def mock_disabled_in_prod() -> bool:
 
 def vtu_live() -> bool:
     """Whether the VTU provider (VTU.ng) has credentials configured."""
-    from .vtung import _live
-    return _live()
+    from . import wema
+    return bool(wema._vas_live("airtime") or wema._vas_live("bills"))
 
 
 def vas_provider() -> str:
@@ -98,7 +98,7 @@ def vas_provider() -> str:
         return "wema"
     if wema._vas_live("airtime") and wema._vas_legend("airtime"):
         return "wema"
-    return "vtung"
+    return "wema"
 
 
 def _wema_vas_route(service_id: str, payload: dict):
@@ -128,7 +128,7 @@ def _wema_vas_route(service_id: str, payload: dict):
         return {"type": "bill", "code": b.package_id, "amount": amount}
     var = str(payload.get("variation_code", "") or "")
     if not var:
-        return None  # no plan code -> nothing to map to a Wema catalogue code
+        return None  # no plan code -> safe partner-bank configuration error
     if service_id.endswith("-data"):
         from .models import DataPlan
         p = DataPlan.objects.filter(plan_code=var).only("wema_code", "price").first()
