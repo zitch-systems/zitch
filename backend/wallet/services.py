@@ -288,6 +288,76 @@ def settle_or_refund(txn: Transaction, result: dict) -> str:
     return "failed"
 
 
+#: A provider saying "insufficient balance" is ALWAYS talking about our float.
+#:
+#: run_provider_purchase debits the customer BEFORE it calls the provider, and
+#: debit() raises InsufficientFunds when their wallet cannot cover the amount. So
+#: by the time a provider answers at all, the customer's money has already moved.
+#: A balance complaint coming back from that call is therefore, by construction,
+#: about the balance WE hold with them — it cannot be the customer's.
+_PROVIDER_FLOAT_RE = re.compile(
+    r"""(
+        insufficient                    # "insufficient balance" / "...funds"
+      | \blow\s+balance\b
+      | \bbalance\s+is\s+(too\s+)?low\b
+      | \bwallet\s+is\s+empty\b
+      | \btop[\s-]?up\s+your\b
+    )""",
+    re.I | re.X,
+)
+
+#: What the customer is told instead. It does three things the raw text did not:
+#: names it as ours, does not assert any balance, and does not imply they did
+#: anything wrong. The caller appends "You were not charged."
+PROVIDER_FLOAT_MESSAGE = (
+    "this is temporarily unavailable on our side, not a problem with your account"
+)
+
+
+def customer_safe_failure(result: dict, *, service: str = "",
+                          fallback: str = "please try again") -> str:
+    """The reason a purchase failed, in terms that are TRUE FOR THE CUSTOMER.
+
+    Relaying the provider's own sentence verbatim was actively harmful here.
+    VTU.ng phrases an empty float in the second person — "Your wallet balance
+    (NGN12.25) is insufficient to make this airtime purchase of NGN100" — so a
+    customer who had just been shown "Available balance ₦1,000.00" on the confirm
+    card was told, seconds later and by their bank, that they had ₦12.25. Both
+    numbers were real; only one was theirs. On a money product there is very
+    little worse to say by accident, and it was said on every attempt while our
+    VTU float sat empty.
+
+    The raw text is not lost: settle_or_refund keeps it on the row as
+    meta["failure"], the operator console renders that, and an exhausted float
+    pages from here, because it is an outage someone has to act on — a top-up,
+    not a code change. It is only the CUSTOMER who must never be handed it.
+
+    Every other provider message still passes through unchanged. "Invalid phone
+    number for MTN" or "meter not found" is the customer's to act on, and
+    replacing those with something vague would trade one bad failure for another.
+    """
+    message = str((result or {}).get("message") or "").strip()
+    if message and _PROVIDER_FLOAT_RE.search(message):
+        rail = service or (result or {}).get("vas_rail") or "?"
+        # Paged, not just logged. An exhausted float fails EVERY airtime, data and
+        # bill purchase on the platform, and it fails them quietly: each customer
+        # is refunded and sees one message, so nothing accumulates into a signal
+        # and the first real report is a customer complaining. It is also the one
+        # class of failure no code change can clear — somebody has to top the
+        # account up. Same helper the WhatsApp dead-letter path pages through, and
+        # the same rule: alerting must never break the purchase that found it.
+        try:
+            from utility.alerts import alert
+
+            alert("VAS provider float is exhausted - every airtime/data/bill "
+                  "purchase is failing until the provider account is topped up",
+                  level="error", rail=rail, provider_said=message[:200])
+        except Exception:  # noqa: BLE001
+            log.exception("vas_float_alert_failed rail=%s", rail)
+        return PROVIDER_FLOAT_MESSAGE
+    return message or fallback
+
+
 def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
                           idempotency_key: str = ""):
     """Debit the wallet (PENDING) → call the provider → settle the row.
