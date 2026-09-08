@@ -264,7 +264,7 @@ def settle_or_refund(txn: Transaction, result: dict) -> str:
             meta["reconcile"] = True
             changed = True
         # Persist the fulfilling rail so reconcile requeries against the SAME rail
-        # (a Wema VAS purchase must not be requeried on VTU.ng, or vice versa).
+        # against the partner-bank VAS status endpoint.
         for k in ("vas_rail", "vas_type"):
             if k in result and meta.get(k) != result[k]:
                 meta[k] = result[k]
@@ -319,7 +319,7 @@ def customer_safe_failure(result: dict, *, service: str = "",
     """The reason a purchase failed, in terms that are TRUE FOR THE CUSTOMER.
 
     Relaying the provider's own sentence verbatim was actively harmful here.
-    VTU.ng phrases an empty float in the second person — "Your wallet balance
+    partner-bank VAS phrases an empty float in the second person — "Your wallet balance
     (NGN12.25) is insufficient to make this airtime purchase of NGN100" — so a
     customer who had just been shown "Available balance ₦1,000.00" on the confirm
     card was told, seconds later and by their bank, that they had ₦12.25. Both
@@ -476,8 +476,7 @@ BANK_PAYOUT_META_FILTER = (
 
 
 def is_bank_payout(txn) -> bool:
-    """True for a bank-transfer (Wema payout) payout, as opposed to a VTU.ng
-    purchase.
+    """True for a bank-transfer (Wema payout) payout, as opposed to a VAS purchase.
 
     Payout rows used to be identified only by ``meta.bank``. That stranded real
     pending transfers whenever another caller or older deploy persisted the bank
@@ -495,7 +494,7 @@ def is_bank_payout(txn) -> bool:
     )
 
 
-def pending_vtu_purchases(cutoff):
+def pending_vas_purchases(cutoff):
     """PENDING outbound partner-bank VAS purchases due for requery, EXCLUDING bank-transfer
     payouts. The reconcile sweep (cron + on-demand) requeries each row via
     partner-bank VAS requery, which is only correct for partner-bank VAS purchases; bank payouts are
