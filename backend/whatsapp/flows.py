@@ -1216,8 +1216,8 @@ def _submit_identity(pa, data: dict) -> dict:
                 return _account_otp_screen(pa)
             if outcome == "face":
                 return _success_screen(
-                    f"Wema does not use face verification for {kind.upper()} here. "
-                    "The Wema SMS code is required.")
+                    f"Our partner bank does not use face verification for {kind.upper()} here. "
+                    "The partner-bank SMS code is required.")
             if outcome == "adopted":
                 return _success_screen("Account found ✅ — see the chat for the bank-upgrade step.")
             if outcome == "upgrade":
@@ -1292,13 +1292,13 @@ def _submit_identity(pa, data: dict) -> dict:
                     f"{kind.upper()} verification did not complete. See the chat for details.")
             if outcome == "face":
                 return _success_screen(
-                    f"Wema does not use face verification for {kind.upper()} here. "
-                    "The Wema SMS code is required.")
+                    f"Our partner bank does not use face verification for {kind.upper()} here. "
+                    "The partner-bank SMS code is required.")
     except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("identity flow submission failed for pa=%s", pa.id)
         return _success_screen(
-            "Wema could not complete that verification request. "
-            "No identity was marked verified. Reply 8 to retry the Wema SMS step.")
+            "Our partner bank could not complete that verification request. "
+            "No identity was marked verified. Reply 8 to retry the partner-bank SMS step.")
     # The chat carries the detailed outcome (verified, or queued for review), so
     # this screen only has to close cleanly.
     return _success_screen(f"{kind.upper()} received ✅ — see the chat for what's next.")
@@ -1412,11 +1412,11 @@ def _account_otp_screen(pa, error: str = "") -> dict:
         ACCOUNT_OTP,
         # Keep delivery guidance in the smaller body text. The summary is a
         # TextHeading in the published Flow, so paragraphs do not fit there.
-        error=error or ("Not arriving? Wema sends this code to the phone on your "
+        error=error or ("Not arriving? Our partner bank sends this code to the phone on your "
                         f"{kind} record. The code must be entered here; "
-                        "face verification is not available for this Wema step."),
+                        "face verification is not available for this partner-bank step."),
         label="SMS code",
-        summary=f"Enter the 6-digit code Wema sent to the phone registered on your {kind}.",
+        summary=f"Enter the 6-digit code our partner bank sent to the phone registered on your {kind}.",
         screen=screen,
     )
 
