@@ -17,7 +17,7 @@ WEMA_LIVE = {"BASE_URL": "https://apiplayground.alat.ng", "CHANNEL_ID": "chan-1"
 
 
 class ProviderSelectionTests(SimpleTestCase):
-    """Wema is the sole money-movement rail."""
+    """partner bank is the sole money-movement rail."""
 
     def test_money_rail_is_wema(self):
         self.assertEqual(P.payment_provider(), "wema")
@@ -34,7 +34,7 @@ class ProviderSelectionTests(SimpleTestCase):
 
     @override_settings(CARD_PROVIDER="wema")
     def test_card_provider_explicit_wema(self):
-        # Wema Virtual Naira Card is wired — an explicit choice is honoured.
+        # partner bank Virtual Naira Card is wired — an explicit choice is honoured.
         self.assertEqual(P.card_provider(), "wema")
 
     @override_settings(WEMA=WEMA_LIVE)
@@ -46,7 +46,7 @@ class ProviderSelectionTests(SimpleTestCase):
 
 
 class FundingDispatchTests(SimpleTestCase):
-    """Wema funds by an OTP-provisioned NUBAN — no hosted checkout, no sync reserve."""
+    """partner bank funds by an OTP-provisioned NUBAN — no hosted checkout, no sync reserve."""
 
     def test_funding_initialize_returns_transfer_message(self):
         out = P.funding_initialize("a@b.com", 1000, "ZPAY1", name="Ada")
@@ -73,13 +73,13 @@ class PayoutDispatchTests(SimpleTestCase):
     def test_payout_send_routes_to_wema_with_source_and_bank_name(self):
         with patch("utility.wema.transfer",
                    return_value={"success": True, "status": "SUCCESS"}) as m:
-            P.payout_send(1000, "ZTRF1", "note", "035", "0123456789", "ADA EZE", bank_name="Wema Bank")
+            P.payout_send(1000, "ZTRF1", "note", "035", "0123456789", "ADA EZE", bank_name="partner bank Bank")
         m.assert_called_once()
         kw = m.call_args.kwargs
         self.assertEqual(kw["source_account"], "0100000001")       # from WEMA_SOURCE_ACCOUNT
         self.assertEqual(kw["destination_account"], "0123456789")
         self.assertEqual(kw["destination_bank_code"], "035")
-        self.assertEqual(kw["destination_bank_name"], "Wema Bank")
+        self.assertEqual(kw["destination_bank_name"], "partner bank Bank")
         self.assertEqual(kw["destination_name"], "ADA EZE")
 
     def test_payout_resolve_routes_to_wema(self):
@@ -90,10 +90,10 @@ class PayoutDispatchTests(SimpleTestCase):
 
     @override_settings(WEMA={**WEMA_LIVE, "SOURCE_ACCOUNT": ""})
     def test_payout_send_fails_closed_without_source_account(self):
-        # Live Wema payout with no sender NUBAN and no pool must refuse (refundable)
+        # Live partner bank payout with no sender NUBAN and no pool must refuse (refundable)
         # rather than send an empty sourceAccountNumber. wema.transfer must NOT be called.
         with patch("utility.wema.transfer") as m:
-            out = P.payout_send(1000, "ZTRF1", "note", "035", "0123456789", "ADA EZE", bank_name="Wema Bank")
+            out = P.payout_send(1000, "ZTRF1", "note", "035", "0123456789", "ADA EZE", bank_name="partner bank Bank")
         self.assertFalse(out["success"])
         m.assert_not_called()
 
@@ -102,12 +102,12 @@ class PayoutDispatchTests(SimpleTestCase):
         # Per-user-balance model: debit the SENDER's own NUBAN, not the pool.
         with patch("utility.wema.transfer", return_value={"success": True, "status": "SUCCESS"}) as m:
             P.payout_send(1000, "ZTRF1", "note", "035", "0123456789", "ADA EZE",
-                          bank_name="Wema Bank", source_account="0199999999")
+                          bank_name="partner bank Bank", source_account="0199999999")
         self.assertEqual(m.call_args.kwargs["source_account"], "0199999999")  # sender NUBAN wins over pool
 
 
 class KycDispatchTests(SimpleTestCase):
-    """BVN/NIN/vNIN all on Wema Full KYC (the sole identity-lookup rail)."""
+    """BVN/NIN/vNIN all on partner bank Full KYC (the sole identity-lookup rail)."""
 
     def test_kyc_provider_is_wema(self):
         self.assertEqual(P.kyc_provider(), "wema")
@@ -137,7 +137,7 @@ class VasDispatchTests(SimpleTestCase):
     def test_vas_provider_defaults_to_wema(self):
         self.assertEqual(P.vas_provider(), "wema")
 
-    @override_settings(VAS_PROVIDER="wema")
+    @override_settings(VAS_PROVIDER="vtung")
     def test_removed_legacy_vas_choice_falls_back_to_wema(self):
         self.assertEqual(P.vas_provider(), "wema")
 
@@ -160,13 +160,13 @@ class VasDispatchTests(SimpleTestCase):
 
     @override_settings(VAS_PROVIDER="wema", WEMA=_WEMA_VAS_KEYED)
     def test_explicit_wema_is_honoured_without_a_legend(self):
-        # An operator whose Wema VAS settles synchronously can still force it.
+        # An operator whose partner-bank VAS settles synchronously can still force it.
         self.assertEqual(P.vas_provider(), "wema")
 
 
 class CardDispatchTests(SimpleTestCase):
     def test_card_issue_routes_to_generic_issuer_by_default(self):
-        # No Wema card key configured -> card_provider() is 'issuer'.
+        # No partner bank card key configured -> card_provider() is 'issuer'.
         with patch("utility.providers.issue_card",
                    return_value={"success": True, "card_token": "card_1"}) as m:
             out = P.card_issue("ADA EZE", "42", email="ada@b.com")
@@ -175,7 +175,7 @@ class CardDispatchTests(SimpleTestCase):
 
     @override_settings(CARD_PROVIDER="wema")
     def test_card_issue_routes_to_wema_when_selected(self):
-        # Wema keys the card by the user's NUBAN — the account number is threaded through.
+        # partner bank keys the card by the user's NUBAN — the account number is threaded through.
         with patch("utility.wema.card_issue",
                    return_value={"success": True, "card_token": "0155500011", "last4": "1234"}) as m:
             out = P.card_issue("ADA EZE", "42", email="ada@b.com", account_number="0155500011")
@@ -197,8 +197,8 @@ class CardDispatchTests(SimpleTestCase):
         mr.assert_called_once_with("wema_1")
 
 
-class WemaVasRoutingTests(TestCase):
-    """DB-backed VAS routing: data/cable go to Wema only once wema_code is synced,
+class partner bankVasRoutingTests(TestCase):
+    """DB-backed VAS routing: data/cable go to partner bank only once wema_code is synced,
     and a PENDING purchase requeries against the rail stamped on the ledger row."""
 
     @override_settings(VAS_PROVIDER="wema")
