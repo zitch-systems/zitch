@@ -768,7 +768,7 @@ services:
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: commit
-    schedule: "*/10 * * * *"
+    schedule: "*/2 * * * *"
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py reconcile_vtu"
     envVars:
@@ -872,7 +872,7 @@ services:
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: commit
-    schedule: "*/10 * * * *"
+    schedule: "*/2 * * * *"
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py reconcile_wema"
     envVars:
