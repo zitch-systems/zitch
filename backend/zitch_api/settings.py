@@ -330,7 +330,7 @@ PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
 # once `manage.py seed_wema_plans` has synced each plan's wema_code; electricity/
 # betting stay on VTU.ng until their Wema billers are mapped. See
 # utility.providers.vas_provider and docs/wema-migration.md.
-VAS_PROVIDER = os.environ.get("VAS_PROVIDER", "").strip().lower()
+VAS_PROVIDER = "wema"
 # The BVN/NIN KYC rail — "wema"; blank => wema. ALAT has no standalone identity lookup,
 # so BVN/NIN are verified by the NUBAN account-creation flow (name-matched before the
 # tier lifts). The image / biometric steps (selfie/liveness, address, ID-document) stay
