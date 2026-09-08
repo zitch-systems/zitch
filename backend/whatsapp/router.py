@@ -1191,7 +1191,7 @@ def _handle_simulation_command(user, msisdn: str, low: str) -> None:
                 f"✅ Identity: Tier {state['tier']} (BVN/NIN simulated)\n"
                 f"✅ Funding account: {account_line}\n"
                 f"✅ Mock balance: {_money(wallet.balance)}\n\n"
-                "No real BVN, Wema deposit or bank transfer was used. "
+                "No real BVN, partner-bank deposit or bank transfer was used. "
                 "Reply *reset pin* next, then test balance and a small payment.",
             )
 
@@ -3980,9 +3980,9 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
         pa.expires_at = _flow_deadline(pa.state)
         pa.save(update_fields=["payload", "state", "expires_at"])
         return reply(msisdn,
-                     f"How should Wema verify your {kind.upper()} for the account?\n"
+                     f"How should our partner bank verify your {kind.upper()} for the account?\n"
                      "*1* SMS OTP\n*2* Face verification\n\n"
-                     "Choose before entering the ID number, because Wema treats these as separate setup routes.")
+                     "Choose before entering the ID number, because our partner bank treats these as separate setup routes.")
     if pa.state == "verification_method":
         low = val.lower()
         if low in ("1", "sms", "otp", "sms otp"):
