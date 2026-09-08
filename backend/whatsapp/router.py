@@ -2821,13 +2821,13 @@ def _kyc_bank_upgrade_notice(user, msisdn: str) -> None:
     app_url = (_links().get("APP") or "https://zitch.ng/app").strip()
     body = (
         "🪪 *Complete your account upgrade*\n\n"
-        "Your account number is already open, so the bank needs BVN, NIN and a "
-        "live selfie together. WhatsApp cannot capture the required live selfie "
-        "inside this secure form, so I will not collect either ID here and then "
-        "leave you stuck.\n\n"
-        "Open *Verify identity* in Zitch to complete the combined check. Anything "
-        "already verified remains saved and will not be requested as a separate "
-        "verification again."
+        "Your phone, email and BVN are already verified. Only your NIN remains. "
+        "Wema's existing-account upgrade must submit the remaining NIN together "
+        "with a live selfie; it is not a new BVN verification. WhatsApp cannot "
+        "capture the required live selfie inside this secure form, so I will not "
+        "collect your NIN here and then leave you stuck.\n\n"
+        "Open *Verify identity* in Zitch to complete the remaining bank upgrade. "
+        "Your verified BVN remains saved and will not be restarted."
     )
     if app_url:
         result = send_cta_url(
