@@ -49,7 +49,7 @@ def mock_disabled_in_prod() -> bool:
 
 
 def vtu_live() -> bool:
-    """Whether the VAS provider (the retired VAS provider) has credentials configured."""
+    """Whether the VAS provider (retired provider) has credentials configured."""
     from . import wema
     return bool(wema._vas_live("airtime") or wema._vas_live("bills"))
 
@@ -59,10 +59,10 @@ def vas_provider() -> str:
     choice = (getattr(settings, "VAS_PROVIDER", "") or "").strip().lower()
     if choice == "wema":
         return "wema"
-    # the retired VAS provider is retired. Ignore legacy VAS_PROVIDER=legacy provider values rather than
+    # retired provider is retired. Ignore legacy VAS_PROVIDER values rather than
     # routing customer money to the removed provider.
     if choice and choice != "wema":
-        log.warning("legacy legacy VAS_PROVIDER ignored; using partner bank")
+        log.warning("legacy VAS_PROVIDER ignored; using partner bank")
     from . import wema
     if wema.wema_simulation():
         return "wema"
@@ -76,24 +76,23 @@ def _wema_vas_route(service_id: str, payload: dict):
 
     Returns {"type": "airtime"|"data"|"bill", "code": <wema code>, "amount": <naira>}.
     Airtime always resolves; data/cable resolve once the plan's `wema_code` has been
-    synced; electricity/betting resolve once a partner bankBiller row maps their service_id.
-    A missing code returns None and keeps that ONE service on the retired VAS provider — never an
-    error, so a partly-synced catalogue degrades per service instead of failing.
+    synced; electricity/betting resolve once a WemaBiller row maps their service_id.
+    A missing code returns None so callers fail closed without routing to a retired provider.
 
     Electricity and betting take their amount from the request rather than a plan
     row: the customer types it, there is no bundle with a price to read."""
     if service_id.endswith("-airtime"):
         return {"type": "airtime", "code": "", "amount": payload.get("amount")}
     if service_id.endswith("-electric") or service_id.endswith("-betting"):
-        from .models import partner bankBiller
-        b = (partner bankBiller.objects.filter(service_id=service_id, active=True)
+        from .models import WemaBiller
+        b = (WemaBiller.objects.filter(service_id=service_id, active=True)
              .only("package_id").first())
         if not (b and b.package_id):
             return None
         amount = payload.get("amount")
         if amount in (None, ""):
             # A variable-amount bill with no amount cannot be paid on either rail;
-            # returning None hands it to the retired VAS provider, which reports the error properly.
+            # returning None makes the caller fail closed.
             return None
         return {"type": "bill", "code": b.package_id, "amount": amount}
     var = str(payload.get("variation_code", "") or "")
@@ -133,7 +132,7 @@ def _vas_source_account(payload: dict, reference: str | None) -> str:
 def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
     """Submit every VAS purchase through the partner-bank biller.
 
-    the retired VAS provider is retired. A missing partner-bank catalogue mapping is a safe
+    retired provider is retired. A missing partner-bank catalogue mapping is a safe
     configuration failure, never a fallback to another money rail.
     """
     from . import wema
