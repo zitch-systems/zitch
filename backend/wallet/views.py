@@ -824,8 +824,7 @@ def wema_wallet_upgrade_tier2(request):
     # providers accept the request.
     biometric = kyc_verify_face(live_image)
     if not biometric.get("success"):
-        return fail(biometric.get("message", "We could not verify your live selfie"),
-                    status=422)
+        return fail(biometric.get("message", "We could not verify your live selfie"))
 
     res = wema_provider.upgrade_tier2(wallet.account_number, bvn=bvn, nin=nin,
                                      live_image=live_image)
