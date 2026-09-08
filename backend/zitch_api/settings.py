@@ -862,17 +862,17 @@ WHATSAPP_WEB_DRAIN = env_bool("WHATSAPP_WEB_DRAIN", True)
 # whether the Flow's closing screen can say "Successful" or has to say "Pending",
 # and the chat receipt carries the real outcome regardless.
 #
-# Deliberately small. Meta allows the data-exchange roughly 10 seconds and shows
+# Deliberately bounded. Meta allows the data-exchange roughly 10 seconds and shows
 # the customer "Couldn't load content. Try again later." past that — the failure
 # that moving execution off this thread was introduced to fix — so this must stay
-# far from that ceiling. It also holds a gunicorn thread (--threads 8), and the
-# web dyno serves /healthz on the same pool. Set to 0 to answer instantly again.
+# below that ceiling. It also holds a gunicorn thread (--threads 8), and the web
+# dyno serves /healthz on the same pool. Set to 0 to answer instantly again.
 #
 # Zero under the test runner: the suite drives the queue itself, so there is
 # never anything to wait FOR, and a default budget would add its full length to
 # every queued-execution test. The tests that exercise the wait set it back.
 WHATSAPP_FLOW_SETTLE_WAIT = 0.0 if TESTING else max(0.0, min(
-    float(os.environ.get("WHATSAPP_FLOW_SETTLE_WAIT", "3") or 0), 6.0))
+    float(os.environ.get("WHATSAPP_FLOW_SETTLE_WAIT", "6") or 0), 6.0))
 WHATSAPP_QUEUE_KEY = os.environ.get("WHATSAPP_QUEUE_KEY", "").strip()
 WHATSAPP_QUEUE_KEY_PREV = os.environ.get("WHATSAPP_QUEUE_KEY_PREV", "").strip()
 if not WHATSAPP_QUEUE_KEY and not _PROD:
