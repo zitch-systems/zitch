@@ -592,7 +592,7 @@ def _flow_balance_line(pa: PendingAction) -> str:
         # whether they can afford what they are about to send, and the number that
         # matters for that is what is spendable right now - not a headline figure
         # that might include money already committed elsewhere.
-        return f"Available balance {_money(get_or_create_wallet(pa.user).balance)}"
+        return f"Available balance {_money(_fresh_wallet_balance(pa.user))}"
     except Exception:  # noqa: BLE001 - never block a payment to print a number
         log.exception("could not read balance for the confirm screen pa=%s", pa.id)
         return ""
@@ -859,6 +859,54 @@ def _approve_link_line(pa: PendingAction, *, primary: bool) -> str:
     return f"\n\n📲 Have the Zitch app? Approve with your fingerprint or Face ID: {url}"
 
 
+def _pending_spend_amount(pa: PendingAction) -> Decimal | None:
+    """The live amount this pending action will debit from the NGN wallet.
+
+    Used at the confirmation boundary, not only at execution time. The customer
+    must never see a PIN card saying "available balance X" when the actual
+    spendable wallet balance can no longer cover the action.
+    """
+    if pa.action_type == "unlock":
+        return None
+    p = pa.payload or {}
+    raw = p.get("amount")
+    if pa.action_type in ("data", "cable") and p.get("price") is not None:
+        raw = p.get("price")
+    try:
+        amount = Decimal(str(raw))
+    except (InvalidOperation, TypeError):
+        return None
+    return amount if amount > 0 else None
+
+
+def _fresh_wallet_balance(user) -> Decimal:
+    """Read the spendable NGN wallet balance from the database."""
+    wallet = get_or_create_wallet(user)
+    try:
+        wallet.refresh_from_db(fields=["balance"])
+    except Exception:  # noqa: BLE001 - a newly created unsaved test double may not refresh
+        pass
+    return wallet.balance
+
+
+def _has_live_funds(pa: PendingAction, user, *, notify: bool = True) -> bool:
+    """Re-check funds immediately before a PIN/OTP/biometric confirmation opens."""
+    amount = _pending_spend_amount(pa)
+    if amount is None:
+        return True
+    try:
+        balance = _fresh_wallet_balance(user)
+    except Exception:  # noqa: BLE001
+        log.exception("could not refresh wallet before confirm pa=%s", pa.id)
+        return True
+    if balance >= amount:
+        return True
+    _clear_actions(pa.msisdn)
+    if notify:
+        reply(pa.msisdn, f"Insufficient balance. You have {_money(balance)}, but this payment needs {_money(amount)}. You were not charged.")
+    return False
+
+
 def _arm_confirm(pa: PendingAction, user) -> bool:
     """Move a money flow to its confirm step. Preference, most-secure first:
 
@@ -872,6 +920,9 @@ def _arm_confirm(pa: PendingAction, user) -> bool:
 
     Whichever rung is armed, the deep-link approval (biometric in the app) is
     offered alongside it - see _approve_link_line."""
+    if not _has_live_funds(pa, user):
+        return False
+
     # No PIN on the account: arming a confirm produces a screen the customer can
     # never satisfy - which is what "No transaction PIN set on this account"
     # was. Send them to set one instead of into a dead end.
