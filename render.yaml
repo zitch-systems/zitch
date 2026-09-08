@@ -322,7 +322,7 @@ services:
       # per-message rates one alert per transaction is a real recurring cost, so
       # turning it on is a deliberate decision.
       - key: TXN_ALERTS_SMS
-        value: "false"
+        value: "true"
       - key: TXN_ALERTS_WHATSAPP
         value: "true"
       # KYC — Prembly (IdentityPass); also gates the large-transfer face check.
