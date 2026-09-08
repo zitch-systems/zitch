@@ -39,11 +39,9 @@ class SettlementReportTests(TestCase):
     def _run(self, *args, bank=None, provider="0", live=True):
         out, err = StringIO(), StringIO()
         code = 0
-        prov = None if provider is None else Decimal(provider)
         with mock.patch("utility.wema.wema_live", return_value=live), \
              mock.patch("utility.wema.get_balance",
                         side_effect=_balances(bank if bank is not None else {})), \
-             mock.patch("utility.vtung.provider_wallet_balance", return_value=prov), \
              mock.patch("utility.alerts.alert") as alert_mock:
             try:
                 call_command("settlement_report", *args, stdout=out, stderr=err)
@@ -71,7 +69,7 @@ class SettlementReportTests(TestCase):
         self.assertEqual(alert_mock.call_args[1]["level"], "error")
 
     def test_provider_wallet_counts_toward_what_we_hold(self):
-        # 3,000 at the bank + 2,000 sitting in the VTU.ng wallet covers 5,000 owed.
+        # 3,000 at the bank + 2,000 sitting in the partner-bank VAS wallet covers 5,000 owed.
         # Without the provider rail this would read as a 2,000 shortfall and page.
         out, alert_mock, code = self._run(bank={NUBAN: "3000"}, provider="2000")
         self.assertIn("POSITION +₦0.00 (surplus)", out)
@@ -131,13 +129,13 @@ class SettlementReportTests(TestCase):
     # --- rail attribution -------------------------------------------------
 
     def test_vas_spend_is_a_sweep_obligation_not_a_bank_outflow(self):
-        # Airtime leaves the VTU.ng wallet; the customer's NUBAN is untouched. The
+        # Airtime leaves the partner-bank VAS wallet; the customer's NUBAN is untouched. The
         # report must say so, or nobody ever tops the provider wallet back up.
         debit(self.user, Decimal("1200"), "Airtime MTN 1200")
         out, _alert, _code = self._run(bank={NUBAN: "5000"})
         self.assertIn("VAS out ₦1,200.00", out)
         self.assertIn("bank out ₦0.00", out)
-        self.assertIn("sweep owed to VTU.ng today ₦1,200.00", out)
+        self.assertIn("sweep owed to partner-bank VAS today ₦1,200.00", out)
 
     def test_bank_payout_is_a_bank_outflow(self):
         debit(self.user, Decimal("800"), "Transfer to ADEYEMI",
@@ -145,7 +143,7 @@ class SettlementReportTests(TestCase):
         out, _alert, _code = self._run(bank={NUBAN: "4200"})
         self.assertIn("bank out ₦800.00", out)
         self.assertIn("VAS out ₦0.00", out)
-        self.assertIn("sweep owed to VTU.ng today ₦0.00", out)
+        self.assertIn("sweep owed to partner-bank VAS today ₦0.00", out)
 
     def test_internal_transfer_leaves_no_bank(self):
         # No meta.bank -> not a payout; "Transfer to" -> internal. It moves liability
