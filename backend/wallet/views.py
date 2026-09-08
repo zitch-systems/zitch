@@ -322,7 +322,7 @@ def _otp_prompt(using_bvn: bool) -> str:
     # with Wema). Someone who then waits for a message that never comes reasonably
     # concludes the app is broken, so the sentence also names the route that does
     # work rather than leaving them to find it under "No code arriving?".
-    return (f"Wema checked your {kind} and is sending a code by SMS to the phone number "
+    return (f"Our partner bank checked your {kind} and is sending a code by SMS to the phone number "
             "registered on it. Enter that code to finish.")
 
 
@@ -835,7 +835,7 @@ def wema_wallet_upgrade_tier2(request):
     res = wema_provider.upgrade_tier2(wallet.account_number, bvn=bvn, nin=nin,
                                      live_image=live_image)
     if not res.get("success"):
-        return fail(res.get("message", "Wema could not upgrade this account right now"),
+        return fail(res.get("message", "Our partner bank could not upgrade this account right now"),
                     status=502)
 
     user.set_bvn(bvn)
