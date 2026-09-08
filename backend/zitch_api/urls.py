@@ -52,7 +52,7 @@ def health(_request):
         "payout_provider": payout_provider(),     # which rail sends payouts + name enquiry (wema)
         "payout_live": payout_live(),             # payout rail has live keys
         "vas_provider": vas_provider(),           # airtime/data/bills rail (vtung default)
-        "vtu_vtung": vtu_live(),
+        "biller_wema": vtu_live(),
         # Termii is the only SMS rail, so the name is a constant and sms_live is the
         # whole story: keyed or in mock mode. The old per-rail sms_sendchamp boolean
         # went with the rail — anything alerting on it should watch sms_live instead.
@@ -591,9 +591,9 @@ def vtu_diagnose(request):
     denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
     if denied:
         return denied
-    from utility.vtung import vtu_probe
+    from utility import wema
 
-    response = JsonResponse({"vtu": vtu_probe()})
+    response = JsonResponse({"wema": wema.vas_diagnose()})
     response["Cache-Control"] = "no-store"
     return response
 
