@@ -291,218 +291,7 @@ services:
         sync: false
       - key: SIMULATE_DEPOSIT_TOKEN
         sync: false
-      # VTU / bills — VTU.ng (v2). JWT Bearer auth, no IP whitelisting. Set
-      # VTUNG_API_KEY (a long-lived token) OR VTUNG_USERNAME + VTUNG_PASSWORD
-      # (auto-refreshed JWT).
-      - key: VTUNG_API_KEY
-        sync: false
-      - key: VTUNG_USERNAME
-        sync: false
-      - key: VTUNG_PASSWORD
-        sync: false
-      # SMS / OTP — Termii, the only SMS rail. Blank TERMII_API_KEY => mock mode:
-      # nothing is sent. Sending is one call, but DELIVERY also needs the sender ID
-      # approved and DND-whitelisted — a carrier decision, not something a deploy fixes.
-      - key: TERMII_BASE_URL
-        sync: false
-      - key: TERMII_API_KEY
-        sync: false
-      - key: TERMII_SENDER_ID
-        sync: false
-      - key: TERMII_CHANNEL
-        sync: false
-      # Email / OTP fallback — Resend. Sends the same OTP alongside SMS so an
-      # SMS routing issue (DND / sender ID block) never strands signup.
-      - key: RESEND_API_KEY
-        sync: false
-      - key: RESEND_FROM_EMAIL
-        value: "Zitch <no-reply@send.zitch.ng>"
-      # Credit/debit alerts. Email is on by default (effectively free, and
-      # expected on every movement). SMS is off by default: at Nigerian
-      # per-message rates one alert per transaction is a real recurring cost, so
-      # turning it on is a deliberate decision.
-      - key: TXN_ALERTS_SMS
-        value: "true"
-      - key: TXN_ALERTS_WHATSAPP
-        value: "true"
-      # KYC — Prembly (IdentityPass); also gates the large-transfer face check.
-      - key: PREMBLY_API_KEY
-        sync: false
-      - key: PREMBLY_APP_ID
-        sync: false
-      # Virtual card issuer. The integration is generic (configurable base URL +
-      # Bearer key, standard /cards endpoints) — set these for your provider
-      # (e.g. Sudo, Maplerad, Bani). Until API_KEY is set the card feature fails
-      # closed in production (no fake cards). BRAND defaults to Verve in code.
-      - key: CARD_ISSUER_API_KEY
-        sync: false
-      - key: CARD_ISSUER_BASE_URL
-        sync: false
-      - key: CARD_ISSUER_BRAND
-        sync: false
-      # FX rail — Fincra (multi-currency Convert). Without these the Convert
-      # screen fails closed in production. NGN/USD/GBP/CAD settle; CNY is
-      # quote-only. BASE_URL defaults to https://api.fincra.com in code.
-      - key: FINCRA_SECRET_KEY
-        sync: false
-      - key: FINCRA_BUSINESS_ID
-        sync: false
-      # WhatsApp channel — Meta Cloud API. Explicitly disabled until every live
-      # credential is configured; production never falls back to an unsigned mock.
-      # Set the same VERIFY_TOKEN in Meta and keep APP_SECRET enabled for HMAC.
-      - key: WHATSAPP_TOKEN
-        sync: false
-      - key: WHATSAPP_MODE
-        sync: false
-      - key: WHATSAPP_BASE_URL
-        sync: false
-      - key: WHATSAPP_PHONE_NUMBER_ID
-        sync: false
-      - key: WHATSAPP_VERIFY_TOKEN
-        sync: false
-      - key: WHATSAPP_APP_SECRET
-        sync: false
-      - key: WHATSAPP_BUSINESS_NUMBER
-        sync: false
-      # Utility-template fallback for transaction alerts outside WhatsApp's
-      # 24-hour service window. The template must be approved in Meta.
-      - key: WHATSAPP_TXN_ALERT_TEMPLATE
-        value: "txn_alert"
-      - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
-        value: "en_US"
-      # Same 32+ byte value must be configured on the API and WhatsApp worker.
-      # It encrypts queued inbound command text at rest.
-      - key: WHATSAPP_QUEUE_KEY
-        sync: false
-      - key: WHATSAPP_QUEUE_KEY_PREV
-        sync: false
-      # New numbers open their account in the chat. The PIN still never appears
-      # there: live deploys take it through the encrypted Flow, or create the
-      # account without one for the app to set.
-      - key: WHATSAPP_ALLOW_CHAT_SIGNUP
-        value: "true"
-      # Optional encrypted WhatsApp Flow used for transaction confirmation.
-      - key: WHATSAPP_FLOW_ID
-        sync: false
-      - key: WHATSAPP_FLOW_PRIVATE_KEY
-        sync: false
-      - key: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE
-        sync: false
-      - key: WHATSAPP_FLOW_CTA
-        sync: false
-      # SIGNUP_PASSWORD is published in Flow 1781880196163772. Keep this
-      # explicit so WhatsApp-created accounts always receive the app password
-      # required for sign-in; an absent flag previously skipped the page.
-      - key: WHATSAPP_FLOW_PASSWORD_SCREEN
-        value: "true"
-      # WhatsApp AI intent layer (optional). Blank => the deterministic router
-      # handles everything; the model only proposes intents, never moves money.
-      - key: LLM_API_KEY
-        sync: false
-      - key: LLM_MODEL
-        sync: false
-      # Error reporting — blank keeps Sentry off (the SDK never initializes).
-      # Set the project DSN here to activate it (PII is never sent).
-      - key: SENTRY_DSN
-        sync: false
-      # Shared cache — REQUIRED because the API and WhatsApp worker are separate
-      # processes and must see the same rate-limit/idempotency state.
-      - key: REDIS_URL
-        fromService:
-          type: keyvalue
-          name: zitch-cache
-          property: connectionString
 
-  # Shared ephemeral coordination for rate limits, short-lived verification state
-  # and idempotency fallbacks. The durable WhatsApp queue itself is in Postgres, so
-  # a cache eviction/restart cannot lose an inbound message or broadcast recipient.
-  - type: keyvalue
-    name: zitch-cache
-    plan: starter
-    ipAllowList: []
-    maxmemoryPolicy: allkeys-lru
-    persistenceMode: off
-
-  # Durable WhatsApp queue consumer. A background worker has no free tier on
-  # Render; syncing this Blueprint therefore requires an explicit paid-plan review.
-  # Every secret is referenced from zitch-api, so key rotation stays atomic and a
-  # worker can never accidentally use a different Flow-signing or queue key.
-  - type: worker
-    name: zitch-whatsapp-worker
-    runtime: python
-    rootDir: backend
-    plan: starter
-    autoDeployTrigger: commit
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python manage.py whatsapp_worker --batch-size 50 --poll-seconds 0.5"
-    maxShutdownDelaySeconds: 60
-    envVars:
-      # Match GitHub CI exactly; never let Render's moving default change prod.
-      - key: PYTHON_VERSION
-        value: "3.11.16"
-      - key: DJANGO_DEBUG
-        value: "false"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: zitch-db
-          property: connectionString
-      - key: DJANGO_SECRET_KEY
-        fromService:
-          type: web
-          name: zitch-api
-          envVarKey: DJANGO_SECRET_KEY
-      - key: DJANGO_KYC_HASH_KEY
-        fromService:
-          type: web
-          name: zitch-api
-          envVarKey: DJANGO_KYC_HASH_KEY
-      - key: DJANGO_OTP_HASH_KEY
-        fromService:
-          type: web
-          name: zitch-api
-          envVarKey: DJANGO_OTP_HASH_KEY
-      - key: REDIS_URL
-        fromService:
-          type: keyvalue
-          name: zitch-cache
-          property: connectionString
-      # The rail credentials and provider selectors below are set on THIS service
-      # rather than inherited from zitch-api.
-      #
-      # They used to be `fromService: {..., envVarKey: X}`, which reads well and
-      # cannot be synced: a fromService reference requires the key to already
-      # EXIST on the source service, and all of these are `sync: false` there —
-      # meaning they exist only once somebody has typed them into the dashboard.
-      # Any one of them still blank failed the whole Blueprint with
-      #
-      #   environment variable not found: "PAYMENT_PROVIDER" for zitch-api
-      #
-      # so the worker could not be created at all, and every one that got set
-      # only moved the error to the next blank key. A background worker that does
-      # not exist is a worse outcome than two places to paste a credential.
-      #
-      # The values that MUST be byte-identical are still inherited above and
-      # below — the Django secret and hash keys (a worker with a different
-      # DJANGO_KYC_HASH_KEY would compute identity hashes nobody else can match)
-      # and the simulation flags (a worker running in simulation while the API is
-      # live would answer real customers with invented money). Those are also the
-      # ones known to be set, so they resolve.
-      #
-      # If the duplication becomes a drift problem, the fix is a Render
-      # environment group shared by both services. That is a migration rather
-      # than an edit: values currently held on zitch-api would have to be
-      # re-entered in the group, so it is not something to do while the rails are
-      # carrying traffic.
-      - key: CARD_PROVIDER
-        sync: false
-      - key: PAYMENT_PROVIDER
-        sync: false
-      - key: PAYOUT_PROVIDER
-        sync: false
-      - key: VAS_PROVIDER
-        sync: false
-      - key: KYC_PROVIDER
-        sync: false
       - key: WEMA_CHANNEL_ID
         sync: false
       - key: WEMA_WALLET_KEY
@@ -560,12 +349,6 @@ services:
         sync: false
       - key: ALLOW_PRODUCTION_SIMULATION
         fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
-      - key: VTUNG_API_KEY
-        sync: false
-      - key: VTUNG_USERNAME
-        sync: false
-      - key: VTUNG_PASSWORD
-        sync: false
       - key: TERMII_BASE_URL
         sync: false
       - key: TERMII_API_KEY
@@ -757,7 +540,7 @@ services:
       - key: REFRESH_ABSOLUTE_DAYS
         fromService: {type: web, name: zitch-api, envVarKey: REFRESH_ABSOLUTE_DAYS}
 
-  # VTU reconciliation — settle purchases left PENDING by a provider timeout:
+  # Partner-bank biller reconciliation — settle purchases left PENDING by a provider timeout:
   # requery the aggregator by reference, then mark Successful (delivered) or
   # refund (definitively failed). Also requires a paid plan (cron has no free
   # tier). Runs every 2 minutes so stuck purchases clear quickly.
@@ -770,7 +553,7 @@ services:
     autoDeployTrigger: commit
     schedule: "*/2 * * * *"
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "python manage.py reconcile_vtu"
+    startCommand: "python manage.py reconcile_wema"
     envVars:
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
@@ -788,12 +571,6 @@ services:
       # Both possible fulfillment rails are needed to requery the same provider
       # stamped on each PENDING row. Missing status credentials must never cause a
       # refund; code also fails safe to PENDING.
-      - key: VTUNG_API_KEY
-        sync: false
-      - key: VTUNG_USERNAME
-        sync: false
-      - key: VTUNG_PASSWORD
-        sync: false
       - key: WEMA_CHANNEL_ID
         sync: false
       - key: WEMA_WALLET_KEY
@@ -1096,12 +873,6 @@ services:
         sync: false
       # The VAS asset rail. Without these the provider wallet reads as UNREADABLE
       # and the position is reported advisory rather than authoritative.
-      - key: VTUNG_API_KEY
-        sync: false
-      - key: VTUNG_USERNAME
-        sync: false
-      - key: VTUNG_PASSWORD
-        sync: false
       - key: SENTRY_DSN
         sync: false
 
