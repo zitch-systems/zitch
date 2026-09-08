@@ -171,20 +171,12 @@
             "text": "Please review the full Privacy Policy and Terms & Conditions before continuing."
           },
           {
-            "type": "EmbeddedLink",
-            "text": "View Privacy Policy",
-            "on-click-action": {
-              "name": "open_url",
-              "url": "${data.privacy_url}"
-            }
+            "type": "TextBody",
+            "text": "Privacy Policy: https://zitch.ng/privacy.html"
           },
           {
-            "type": "EmbeddedLink",
-            "text": "View Terms & Conditions",
-            "on-click-action": {
-              "name": "open_url",
-              "url": "${data.terms_url}"
-            }
+            "type": "TextBody",
+            "text": "Terms & Conditions: https://zitch.ng/terms.html"
           },
           {
             "type": "Footer",
