@@ -301,16 +301,6 @@ RATELIMIT_TRUSTED_PROXY_HOPS = max(
 
 # Third-party credentials. Blank key => that integration runs in MOCK mode so
 # the full flow is testable without external accounts.
-# VTU / bills — VTU.ng (the sole VTU provider). Modern v2 REST/JSON API, JWT
-# Bearer auth (no IP whitelisting). Either set a long-lived API token
-# (VTUNG_API_KEY) or username+password (a JWT is fetched and refreshed
-# automatically). Blank => MOCK mode, so the whole flow stays testable.
-VTUNG = {
-    "BASE_URL": os.environ.get("VTUNG_BASE_URL", "https://vtu.ng"),
-    "API_KEY": os.environ.get("VTUNG_API_KEY", ""),
-    "USERNAME": os.environ.get("VTUNG_USERNAME", ""),
-    "PASSWORD": os.environ.get("VTUNG_PASSWORD", ""),
-}
 # Virtual-card backend: "wema" or "issuer". Explicit value wins; blank => AUTO (Wema's
 # Virtual Naira Card once WEMA_CARD_KEY is set, else the generic CARD_ISSUER — so cards
 # never break on a deploy without a Wema card key). See utility.providers.card_provider.
