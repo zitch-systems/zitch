@@ -258,6 +258,23 @@ class PaymentFlowE2ETests(FlowContractMixin, TestCase):
         fields = _flow_fields(self._armed())
         self.assertIn("Available balance", fields["balance"])
 
+    def test_stale_card_with_insufficient_live_balance_refuses_before_pin(self):
+        """A previously sent Flow card must not reopen a PIN pad after the
+        spendable wallet balance has dropped below the payment amount."""
+        wallet = get_or_create_wallet(self.user)
+        wallet.balance = Decimal("12.25")
+        wallet.save(update_fields=["balance"])
+        pa = self._armed("airtime", {"amount": "120", "net": "1",
+                                     "phone": "09037980992", "pin_attempts": 0,
+                                     "flow_screen": flows.PIN_SCREEN})
+        resp = self._init(pa)
+
+        self.assertScreen(resp, note="stale insufficient balance")
+        self.assertEqual(resp["screen"], flows.RESULT_SCREEN)
+        self.assertEqual(resp["data"]["status"], "❌ Not completed")
+        self.assertIn("Insufficient balance", resp["data"]["message"])
+
+
 
 @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "v", "TOKEN": "",
                              "APP_SECRET": "", "PHONE_NUMBER_ID": "1",
