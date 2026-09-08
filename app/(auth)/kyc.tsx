@@ -290,7 +290,9 @@ const Kyc = () => {
           ) : (
             <>
               <MethodCard id="bvn" icon="insurance" color={C_BVN} title="BVN verification" sub="Fastest · Bank Verification Number" badge="Recommended" done={!!status?.bvn_verified} />
-              <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="National ID number + photo of your slip" done={!!status?.nin_verified} />
+              {/* NIN is not a Tier 1 step. It is collected only inside the
+                  combined existing-account Tier 2 upgrade above, together with
+                  the live selfie required by Wema. */}
             </>
           )}
           <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Quick liveness check with your camera" done={!!status?.face_verified} />
