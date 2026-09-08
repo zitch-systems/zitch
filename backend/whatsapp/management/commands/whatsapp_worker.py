@@ -22,6 +22,12 @@ class Command(BaseCommand):
             default=10.0,
             help="Run money reconciliation in the background at this interval.",
         )
+        parser.add_argument(
+            "--account-repair-interval-seconds",
+            type=float,
+            default=30.0,
+            help="Read back missing partner-bank funding accounts at this interval.",
+        )
 
     def handle(self, *args, **options):
         # A misconfigured production worker must never consume commands, execute
@@ -35,6 +41,7 @@ class Command(BaseCommand):
 
         stopped = False
         reconcile_lock = threading.Lock()
+        account_repair_lock = threading.Lock()
 
         def stop(*_args):
             nonlocal stopped
@@ -60,6 +67,22 @@ class Command(BaseCommand):
             finally:
                 reconcile_lock.release()
 
+        def repair_accounts():
+            # A verified BVN with no returned NUBAN is a provider-side partial
+            # completion, not a reason to ask the customer for their BVN again.
+            # This only performs the safe read-back/attach operation and is
+            # serialized so a slow provider cannot make overlapping requests.
+            if not account_repair_lock.acquire(blocking=False):
+                return
+            try:
+                from wallet.services import repair_missing_funding_accounts
+
+                repair_missing_funding_accounts(limit=20)
+            except Exception:  # noqa: BLE001 - retry on the next scheduled pass
+                self.stderr.write("background partner-bank account repair failed; retrying")
+            finally:
+                account_repair_lock.release()
+
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         batch = max(1, min(int(options["batch_size"]), 200))
@@ -68,7 +91,12 @@ class Command(BaseCommand):
             5.0,
             min(float(options["settlement_interval_seconds"]), 60.0),
         )
+        account_repair_interval = max(
+            30.0,
+            min(float(options["account_repair_interval_seconds"]), 3600.0),
+        )
         next_reconcile = time.monotonic()
+        next_account_repair = time.monotonic()
 
         while not stopped:
             now = time.monotonic()
@@ -79,6 +107,14 @@ class Command(BaseCommand):
                     daemon=True,
                 ).start()
                 next_reconcile = now + interval
+
+            if not options["once"] and now >= next_account_repair:
+                threading.Thread(
+                    target=repair_accounts,
+                    name="partner-bank-account-repair",
+                    daemon=True,
+                ).start()
+                next_account_repair = now + account_repair_interval
 
             inbound, outbound = process_once(batch)
             if options["once"]:
