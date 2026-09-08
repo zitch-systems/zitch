@@ -2633,7 +2633,10 @@ def _do_support(msisdn: str) -> None:
 # the chat. Each step drives the same server-side checks the app uses, and the
 # tier is DERIVED at the end (recompute_tier), never granted by this flow.
 # --------------------------------------------------------------------------- #
-_KYC_STEPS = ("phone", "email", "bvn", "nin")
+# Tier 1 requires phone, email and BVN only. NIN belongs exclusively to the
+# existing-account Tier 2 upgrade, where it is submitted together with Prembly
+# liveness; it must never appear in the Tier 1 WhatsApp identity ladder.
+_KYC_STEPS = ("phone", "email", "bvn")
 
 
 #: PendingAction.state while the face step is waiting for an identity number that
