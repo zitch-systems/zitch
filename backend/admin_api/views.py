@@ -251,7 +251,7 @@ def _audit_row(a) -> dict:
     }
 
 
-_WEBHOOK_SOURCES = {"whatsapp": "Meta WA", "vtung": "VTU.ng", "mono": "Mono"}
+_WEBHOOK_SOURCES = {"whatsapp": "Meta WA", "mono": "Mono"}
 
 
 def _webhook_rows(limit=40) -> list:
@@ -505,7 +505,6 @@ def bootstrap(request):
     fincra_live = bool(dj_settings.FINCRA.get("SECRET_KEY"))
     providers = [
         {"name": "Wema", "role": "Funding · payouts · KYC", "status": _st(payout_live()), "uptime": "—"},
-        {"name": "VTU.ng", "role": "Airtime · data · bills", "status": _st(vtu_live()), "uptime": "—"},
         {"name": "Fincra", "role": "FX rates & settlement", "status": _st(fincra_live), "uptime": "—"},
         {"name": "Meta WhatsApp", "role": "Chat channel", "status": _st(wa_live()), "uptime": "—"},
         {"name": "Prembly", "role": "KYC (face · address · ID)", "status": _st(_prembly_live()), "uptime": "—"},
