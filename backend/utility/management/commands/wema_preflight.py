@@ -152,23 +152,6 @@ class Command(BaseCommand):
             "SIMULATE_DEPOSIT_TOKEN is SET — unset it before go-live"
             if sim_deposit_on else "off"))
 
-        # SOFT — VTU.ng (airtime/data/bills). Lean on vtu_probe's own empty-wallet
-        # detection (it sets a balance hint) rather than re-parsing the amount.
-        v = vtu_probe()
-        if not v.get("config", {}).get("live"):
-            checks.append((False, "VTU.ng rail", WARN, "no VTU credentials — airtime/data/bills disabled"))
-        elif not v.get("auth", {}).get("ok"):
-            checks.append((False, "VTU.ng rail", WARN, "auth failed — check VTUNG_* credentials"))
-        else:
-            bal = v.get("balance", {})
-            if not bal.get("ok"):
-                checks.append((False, "VTU.ng rail", WARN, "balance unreadable"))
-            elif bal.get("hint"):  # vtu_probe sets a hint only when the wallet is empty
-                checks.append((False, "VTU.ng rail", WARN,
-                               "auth ok but VTU wallet empty — VAS buys fail until topped up"))
-            else:
-                checks.append((False, "VTU.ng rail", PASS, f"auth ok, balance {bal.get('balance')}"))
-
         # Resend is still required for Zitch-owned email verification, account
         # statements and notifications. It is not a delivery channel for Wema
         # Wallet Service BVN/NIN OTPs, which are phone-only.
@@ -291,7 +274,7 @@ class Command(BaseCommand):
                                  "the large-transfer selfie step-up fail closed"))
 
         # SOFT — electricity/betting on the Wema rail need a mapped packageId. Without
-        # one they silently stay on VTU.ng, which is safe but is NOT what
+        # one they silently stay on Partner-bank VAS, which is safe but is NOT what
         # VAS_PROVIDER=wema was set to achieve, and nothing else would say so.
         if vas_provider() == "wema":
             from django.db import DatabaseError
@@ -307,7 +290,7 @@ class Command(BaseCommand):
                            PASS if mapped else WARN,
                            f"{mapped} service(s) mapped" if mapped
                            else "no packageIds mapped — electricity and betting stay on "
-                                "VTU.ng; run `manage.py seed_wema_plans --only billers`"))
+                                "Partner-bank VAS; run `manage.py seed_wema_plans --only billers`"))
 
         # SOFT — the VAS status legends. Money-safe either way (an unknown code leaves
         # the purchase PENDING), so this can never be a gate; but an unset legend means
