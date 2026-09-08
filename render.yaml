@@ -760,7 +760,7 @@ services:
   # VTU reconciliation — settle purchases left PENDING by a provider timeout:
   # requery the aggregator by reference, then mark Successful (delivered) or
   # refund (definitively failed). Also requires a paid plan (cron has no free
-  # tier). Runs every 10 minutes so stuck purchases clear quickly.
+  # tier). Runs every 2 minutes so stuck purchases clear quickly.
   - type: cron
     name: zitch-reconcile-vtu
     runtime: python
@@ -864,7 +864,7 @@ services:
   # ConfirmClientTransferStatus for any bank payout left PENDING and settle (success)
   # or reverse (failed) it. Without this, deposits never credit and a PENDING payout
   # sits debited forever. Requires a paid plan (cron has no free tier). Runs every 10
-  # minutes. NOTE: crons are separate from the web service, so set the WEMA_* keys here.
+  # 2 minutes. NOTE: crons are separate from the web service, so set the WEMA_* keys here.
   - type: cron
     name: zitch-reconcile-wema
     runtime: python
