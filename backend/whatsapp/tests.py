@@ -4495,10 +4495,16 @@ class FailedAccountSetupDoesNotCloseTheFlowGreenTests(TestCase):
     @patch("whatsapp.router.wallet_views._start_wema_attempt")
     def test_an_adopted_account_is_still_a_success(self, start, adopt):
         """The one path that returns a dict AND means success — which is why the
-        failure signal had to become an explicit sentinel rather than a type check."""
+        failure signal had to become an explicit sentinel rather than a type check.
+
+        No give_account here on purpose. Adoption is the recovery for a customer
+        who has NO account number yet; handing them one first routes the submit
+        down the existing-account branch, which never reaches _adopt_existing_
+        wema_account at all - so the test could not exercise the sentinel it
+        names. (That mis-setup is why this assertion had been failing.)
+        """
         start.return_value = ({"success": False, "message": "already exists"}, None)
         adopt.return_value = {"success": True}
-        give_account(self.user, "9912345678")
         body = json.dumps(self._submit(), ensure_ascii=False)
         self.assertIn("Account found ✅", body)
 

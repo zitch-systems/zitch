@@ -325,7 +325,21 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertEqual(r.status_code, 409)
         self.user.refresh_from_db()
         self.assertFalse(self.user.bvn_verified)
-        self.assertIn("BVN, NIN, and a live face check", r.json()["message"])
+        body = r.json()
+        self.assertTrue(body["upgrade_required"])
+        # Refused WITHOUT asking the bank for an OTP it cannot issue. Requesting
+        # one and refusing afterwards is the production defect: the customer has
+        # already handed over the number by the time they are told it is no good.
+        self.assertNotIn("tracking_id", body)
+        # Durable, so no surface re-asks for an identity that cannot be submitted.
+        wallet.refresh_from_db()
+        self.assertTrue(wallet.identity_upgrade_required)
+        # Customer-facing copy: it must name a step the customer can take, and
+        # must not leak the provider's own request vocabulary.
+        message = body["message"]
+        self.assertIn("Verify identity", message)
+        for jargon in ("Wallet Service OTP", "NUBAN", "Tier 2", "existing-account upgrade"):
+            self.assertNotIn(jargon, message)
 
     def test_existing_account_recovery_rejects_bank_name_mismatch(self):
         wallet = Wallet.objects.get(user=self.user)
@@ -814,9 +828,15 @@ class AdoptExistingWemaAccountTests(TestCase):
                    return_value={"success": False, "message": "not found"}):
             res = self._create(bvn="22222222222")
         self.assertEqual(res.status_code, 409)
-        self.assertIn("wallet service", res.json()["message"].lower())
-        self.assertIn("support", res.json()["message"].lower())
-        self.assertNotIn("customer records", res.json()["message"].lower())
+        message = res.json()["message"].lower()
+        # Route to support, and do not echo the provider's raw refusal.
+        self.assertIn("support", message)
+        self.assertNotIn("customer records", message)
+        # The customer's bank is named as "your bank", not by the provider's
+        # internal product names - "Wallet Service" told them nothing they could
+        # act on and matched nothing they could see in the app.
+        self.assertIn("your bank", message)
+        self.assertNotIn("wallet service", message)
         self.assertEqual(Wallet.objects.get(user=self.user).account_number, "")
 
 

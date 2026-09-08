@@ -991,8 +991,15 @@ def _repair_unbacked_wema_identity_flags(user) -> None:
 
 def _kyc_state(user) -> dict:
     _repair_unbacked_wema_identity_flags(user)
-    wallet = Wallet.objects.filter(user=user).only("bank_tier").first()
+    wallet = Wallet.objects.filter(user=user).only(
+        "bank_tier", "account_number", "identity_upgrade_required").first()
     bank_tier = wallet.bank_tier if wallet else 0
+    # Surfaced so the app can offer the combined upgrade BEFORE the customer
+    # types an identity that the bank will refuse. Learning this only from a
+    # failed submission is what made both the app and WhatsApp ask for a number
+    # they could not use.
+    identity_upgrade_required = bool(
+        wallet and wallet.account_number and wallet.identity_upgrade_required)
     bank_limits = {
         key: (str(value) if value is not None else None)
         for key in ("single_inflow", "daily_spend", "max_balance")
@@ -1008,6 +1015,7 @@ def _kyc_state(user) -> dict:
         "nin_verified": user.nin_verified,
         "face_verified": user.face_verified,
         "address_verified": user.address_verified,
+        "identity_upgrade_required": identity_upgrade_required,
         "id_document_verified": user.id_document_verified,
         "email": user.email or "",
         "email_verified": user.email_verified,

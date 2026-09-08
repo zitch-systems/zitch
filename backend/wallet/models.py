@@ -31,6 +31,16 @@ class Wallet(models.Model):
     # restriction. The reconcile job retries these accounts until confirmation;
     # without durable state, one transient provider failure strands outgoing funds.
     pnd_lifted = models.BooleanField(default=False, db_index=True)
+    # True once the bank has refused to open a second identity OTP on this NUBAN
+    # because the account already exists. Wema only accepts the remaining
+    # identity through the combined existing-account upgrade (BVN + NIN + live
+    # selfie in one request), so the per-identity OTP path is closed for good.
+    #
+    # Durable because the refusal is only discoverable by asking the provider:
+    # without it every "verify my identity" round re-prompts for a NIN that
+    # cannot be submitted, and the customer is told so only AFTER handing it
+    # over. Cleared when the combined upgrade succeeds.
+    identity_upgrade_required = models.BooleanField(default=False)
     created = models.DateTimeField(auto_now_add=True)
     updated = models.DateTimeField(auto_now=True)
 
