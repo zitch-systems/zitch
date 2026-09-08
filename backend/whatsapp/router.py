@@ -2849,7 +2849,13 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
     Steps already attempted in this session are skipped. An identity queued for
     review is still "outstanding" (it is not verified), so without this the flow
     would ask for the same number forever."""
-    attempted = set(pa.payload.get("attempted") or [])
+    attempted = set(pa.payload.get("attempted") or []) & set(_KYC_STEPS)
+    # Drop legacy KYC states from before Tier 1 was narrowed to BVN-only.
+    # Otherwise an already-open WhatsApp session can keep advancing to NIN even
+    # though new sessions no longer list it.
+    if set(pa.payload.get("attempted") or []) != attempted:
+        pa.payload["attempted"] = sorted(attempted)
+        _touch(pa, payload=pa.payload)
     outstanding = [s for s in _kyc_outstanding(user) if s not in attempted]
     if not outstanding:
         return _kyc_finish(pa, user, msisdn)
@@ -3181,12 +3187,17 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
         reply(msisdn, "✅ Email address verified.")
         return _kyc_next(pa, user, msisdn)
 
-    if state in ("bvn", "nin"):
+    if state == "nin":
+        # Legacy actions from older deploys may still be parked here. NIN is not
+        # a Tier 1 WhatsApp step and must never be collected on its own.
+        return _kyc_bank_upgrade_notice(user, msisdn)
+
+    if state == "bvn":
         digits = "".join(ch for ch in val if ch.isdigit())
         if len(digits) != 11:
-            return reply(msisdn, f"That should be exactly 11 digits. Enter your {state.upper()} again, "
+            return reply(msisdn, f"That should be exactly 11 digits. Enter your BVN again, "
                                  'or reply "cancel".')
-        return _kyc_submit_identity(pa, user, msisdn, state, digits)
+        return _kyc_submit_identity(pa, user, msisdn, "bvn", digits)
 
     if state == FACE_ID_STATE:
         # The face step asks for the identity in the Flow, but a customer can always
