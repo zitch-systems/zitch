@@ -205,7 +205,7 @@ def wallet_account_create(request):
                 user, wallet, WemaProvisioningAttempt.BVN, bvn)
             if payload.get("success"):
                 return ok(**payload)
-            return fail(payload.get("message", "Couldn't verify identity with Wema"), status=status)
+            return fail(payload.get("message", "Couldn't verify identity with our partner bank"), status=status)
         if len(nin) == 11:
             return fail(
                 "NIN is a Tier 2 requirement. Submit it together with your BVN and live selfie "
@@ -239,15 +239,15 @@ def wallet_account_create(request):
                 )
                 state["otp_resent"] = bool(resend.get("success"))
                 message = (
-                    "Your BVN is already verified. Wema sent the existing account "
+                    "Your BVN is already verified. Our partner bank sent the existing account "
                     "setup code again; enter it to finish issuing your account number."
                     if resend.get("success") else
-                    "Your BVN is already verified. Enter the existing Wema account "
+                    "Your BVN is already verified. Enter the existing partner-bank account "
                     "setup code to finish issuing your account number."
                 )
             else:
                 message = (
-                    "Your BVN is already verified. We are syncing your Wema account "
+                    "Your BVN is already verified. We are syncing your partner-bank account "
                     "number; you will not be asked to enter the BVN again."
                 )
             return ok(
@@ -421,7 +421,7 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
     if len(raw_identity) != 11:
         return {"success": False, "message": f"Enter your 11-digit {kind.upper()}"}, 400
     if not wallet.account_number:
-        return {"success": False, "message": "Set up your Wema account first"}, 400
+        return {"success": False, "message": "Set up your partner-bank account first"}, 400
 
     identity_hash = hash_identifier(raw_identity)
     if getattr(user, f"{kind}_verified", False) and getattr(user, f"{kind}_hash", "") == identity_hash:
@@ -432,7 +432,7 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
             tier=user.tier,
             bvn_verified=user.bvn_verified,
             nin_verified=user.nin_verified,
-            message=f"{kind.upper()} already verified with your existing Wema account",
+            message=f"{kind.upper()} already verified with your existing partner-bank account",
         ), 200
 
     if _identity_owned_by_another_user(user, kind, raw_identity):
@@ -798,7 +798,7 @@ def wema_wallet_upgrade_tier2(request):
     user = request.user_obj
     wallet = get_or_create_wallet(user)
     if not wallet.account_number:
-        return fail("Set up your Wema account first", status=400)
+        return fail("Set up your partner-bank account first", status=400)
     bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
     live_image = (request.data.get("live_image") or request.data.get("selfie") or "").strip()
