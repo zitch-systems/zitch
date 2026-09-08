@@ -17,5 +17,6 @@ class Command(BaseCommand):
         result = repair_missing_funding_accounts(email=email, limit=options.get("limit") or 20)
         self.stdout.write(
             "partner-bank account repair: "
-            f"checked={result['checked']} repaired={result['repaired']} failed={result['failed']}"
+            f"checked={result['checked']} repaired={result['repaired']} "
+            f"failed={result['failed']} skipped={result['skipped']}"
         )
