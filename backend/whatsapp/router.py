@@ -2818,17 +2818,25 @@ def _kyc_bank_upgrade_notice(user, msisdn: str) -> None:
     as a contradiction.
     """
     _clear_actions(msisdn)
-    reply(
-        msisdn,
-        "🪪 *One step left - and it has to happen in the app*\n\n"
-        "Your Zitch account number is already open, so your bank now needs your "
-        "remaining details together in one go: BVN, NIN and a quick selfie. It "
-        "cannot take them one at a time any more, which is why I am not asking "
-        "for your NIN here.\n\n"
-        "Open the Zitch app and tap *Verify identity* to finish it in about a "
-        "minute. Everything you have already verified stays verified - you will "
-        "not be asked for it again.",
+    app_url = (_links().get("APP") or "https://zitch.ng/app").strip()
+    body = (
+        "🪪 *Complete your account upgrade*\n\n"
+        "Your account number is already open, so the bank needs BVN, NIN and a "
+        "live selfie together. WhatsApp cannot capture the required live selfie "
+        "inside this secure form, so I will not collect either ID here and then "
+        "leave you stuck.\n\n"
+        "Open *Verify identity* in Zitch to complete the combined check. Anything "
+        "already verified remains saved and will not be requested as a separate "
+        "verification again."
     )
+    if app_url:
+        result = send_cta_url(
+            msisdn, body, app_url, cta="Open Verify identity",
+            footer="Return to this chat after completion",
+        )
+        if result.get("success"):
+            return None
+    reply(msisdn, body + (f"\n\nOpen Zitch: {app_url}" if app_url else ""))
 
 
 def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
