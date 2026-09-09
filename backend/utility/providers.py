@@ -20,6 +20,21 @@ log = logging.getLogger("zitch")
 # ---------------------------------------------------------------------------
 # VAS (airtime / data / cable / electricity / betting) - partner bank only.
 # ---------------------------------------------------------------------------
+# Service ids are intentionally lowercase (for example, "mtn-airtime"), while
+# ALAT's Airtime/Data contract expects the operator name values in uppercase.
+# Normalise at the provider boundary so every caller sends the same wire value.
+_WEMA_NETWORKS = {
+    "mtn": "MTN",
+    "glo": "GLO",
+    "airtel": "AIRTEL",
+    "9mobile": "9MOBILE",
+}
+
+
+def _wema_network(service_network: str) -> str:
+    value = str(service_network or "").strip()
+    return _WEMA_NETWORKS.get(value.casefold(), value.upper())
+
 def simulation_mode() -> bool:
     """WEMA_SIMULATION doubles as the DEPLOY-WIDE simulation switch: when on, the whole
     payment/identity stack (partner bank, partner-bank airtime/data/bills, cards, FX, Mono, KYC)
@@ -147,11 +162,11 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
     src = _vas_source_account(payload, reference)
     phone = payload.get("phone", "")
     if route["type"] == "airtime":
-        network = service_id.rsplit("-airtime", 1)[0]
+        network = _wema_network(service_id.rsplit("-airtime", 1)[0])
         res = wema.purchase_airtime(route["amount"], reference or "", phone, network,
                                     source_account=src)
     elif route["type"] == "data":
-        network = service_id.rsplit("-data", 1)[0]
+        network = _wema_network(service_id.rsplit("-data", 1)[0])
         res = wema.purchase_data(route["amount"], reference or "", phone, network,
                                  route["code"], source_account=src)
     else:
