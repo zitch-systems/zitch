@@ -147,6 +147,7 @@ class VasDispatchTests(SimpleTestCase):
             P.vtu_purchase("mtn-airtime", {"amount": "500", "phone": "080", "source_account": "0155500011"},
                            reference="R")
         mw.assert_called_once()
+        self.assertEqual(mw.call_args.args[3], "MTN")  # canonical ALAT operator value
         self.assertEqual(mw.call_args.kwargs["source_account"], "0155500011")  # sender NUBAN threaded
 
     # VAS is partner-bank only; a missing status legend no longer activates a fallback.
