@@ -3689,30 +3689,35 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
         if recovered is not None and recovered.account_number:
             return _send_account_details(
                 msisdn, recovered, intro="✅ *Your verified bank account has been reconnected*")
-        attempt = wallet_views._active_wema_attempt(
-            user, identity_type="bvn")
+        # Resume whichever bank setup challenge is actually live.  A customer
+        # may have verified BVN and then started account issuance with NIN; only
+        # looking for a BVN attempt discarded that valid NIN tracking id and sent
+        # them into a new face/re-entry loop.
+        attempt = (wallet_views._active_wema_attempt(user, identity_type="bvn")
+                   or wallet_views._active_wema_attempt(user, identity_type="nin"))
         if attempt is not None:
+            attempt_uses_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
             resend = wema_provider.resend_wallet_otp(
-                user.phone or "", attempt.tracking_id, bvn=True)
+                user.phone or "", attempt.tracking_id, bvn=attempt_uses_bvn)
             pa = PendingAction.objects.create(
                 user=user, msisdn=msisdn, action_type="add_account", state="otp",
                 payload={
                     "tracking_id": attempt.tracking_id,
-                    "using_bvn": True,
-                    "id_type": "bvn",
+                    "using_bvn": attempt_uses_bvn,
+                    "id_type": attempt.identity_type,
                 },
                 expires_at=_flow_deadline("otp"),
             )
             if _send_account_otp_flow(pa):
                 return reply(
                     msisdn,
-                    "📲 Your BVN is already verified. "
+                    f"📲 Your {attempt.identity_type.upper()} account setup is still active. "
                     + ("Our partner bank sent the existing setup code again. " if resend.get("success")
                        else "Use the existing partner-bank setup code. ")
                     + "Enter it on the secure form to finish issuing your account number.")
             return reply(
                 msisdn,
-                "📲 Your BVN is already verified. "
+                f"📲 Your {attempt.identity_type.upper()} account setup is still active. "
                 + ("Our partner bank sent the existing setup code again. " if resend.get("success")
                    else "Use the existing partner-bank setup code. ")
                 + "Enter it to finish issuing your account number.")
@@ -3794,13 +3799,44 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
     """
     kind = "bvn" if pa.payload.get("id_type") == "bvn" else "nin"
     using_bvn = kind == "bvn"
-    if using_bvn and user.bvn_verified:
+    wallet = get_or_create_wallet(user)
+    identity_already_verified = bool(getattr(user, f"{kind}_verified", False))
+    if identity_already_verified and not wallet.account_number:
+        # A stale WhatsApp action can survive the callback which verifies the
+        # identity.  The old guard returned "already verified" here and discarded
+        # the only remaining route to a NUBAN, so every subsequent reply 6 landed
+        # in the same loop.  Recovery must be account-aware: first read back any
+        # account Wema already minted, then offer the authenticated face creation
+        # route when the callback completed identity verification without a NUBAN.
+        recovered, _detail = attach_existing_bank_account(user, using_bvn=using_bvn)
+        if recovered is not None and recovered.account_number:
+            _clear_actions(msisdn)
+            _send_account_details(
+                msisdn, recovered,
+                intro="✅ *Your verified bank account has been reconnected*")
+            return "adopted"
+        if _send_identity_face_option(
+                pa, user, msisdn, kind, digits, account_setup=True):
+            _clear_actions(msisdn)
+            reply(
+                msisdn,
+                f"✅ Your {kind.upper()} remains verified. Use the secure face link "
+                "above to finish issuing your account number; you do not need to "
+                f"verify the {kind.upper()} again.")
+            return "adopted"
         _clear_actions(msisdn)
         reply(
             msisdn,
-            "✅ Your BVN is already verified. You do not need to enter or verify it again.")
+            f"✅ Your {kind.upper()} remains verified, but account issuance is "
+            "temporarily unavailable. Support has been notified; please do not "
+            f"submit your {kind.upper()} repeatedly.")
+        return "fail"
+    if identity_already_verified and wallet.account_number:
+        _clear_actions(msisdn)
+        _send_account_details(
+            msisdn, wallet,
+            intro="✅ *Your Zitch account number is already set up*")
         return "adopted"
-    wallet = get_or_create_wallet(user)
     if wallet.account_number:
         identity_type = (WemaProvisioningAttempt.BVN if using_bvn
                          else WemaProvisioningAttempt.NIN)
@@ -4095,12 +4131,6 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
     if pa.state == "id_type":
         low = val.lower()
         if low in ("1", "bvn"):
-            if user.bvn_verified:
-                _clear_actions(msisdn)
-                return reply(
-                    msisdn,
-                    "✅ Your BVN is already verified. You do not need to enter it again; "
-                    "reply *6* to check your funding-account status.")
             pa.payload["id_type"] = "bvn"
         elif low in ("2", "nin"):
             pa.payload["id_type"] = "nin"
@@ -4141,11 +4171,6 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
                              "account.\n\n_Delete your message afterwards (press and hold -> Delete -> "
                              "Delete for everyone) - WhatsApp only lets the sender do this._")
     if pa.state == "bvn":
-        if pa.payload.get("id_type") == "bvn" and user.bvn_verified:
-            _clear_actions(msisdn)
-            return reply(
-                msisdn,
-                "✅ Your BVN is already verified. You do not need to enter it again.")
         digits = "".join(ch for ch in val if ch.isdigit())
         if len(digits) != 11:
             return reply(msisdn, f"That should be exactly 11 digits. Enter your {pa.payload.get('id_type', 'BVN').upper()} again, or reply \"cancel\".")

@@ -257,6 +257,35 @@ class TypedInChatTests(TestCase):
 
 
 @override_settings(WEMA=FACE_ON)
+class VerifiedIdentityMissingAccountRecoveryTests(TestCase):
+    """A verified identity without a NUBAN must never collapse to a dead end."""
+
+    def setUp(self):
+        self.user = _user()
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="add_account", state="bvn",
+            payload={"id_type": "bvn", "verification_method": "face"},
+            expires_at=router._flow_deadline("bvn"))
+
+    def test_stale_bvn_action_opens_account_recovery_instead_of_stopping(self):
+        with patch.object(router, "attach_existing_bank_account",
+                          return_value=(None, "not found")), \
+             patch.object(router, "_send_identity_face_option",
+                          return_value=True) as face, \
+             patch.object(router, "reply") as send:
+            outcome = router._account_submit_identity(
+                self.pa, self.user, MSISDN, VERIFIED_BVN)
+
+        self.assertEqual(outcome, "adopted")
+        face.assert_called_once_with(
+            self.pa, self.user, MSISDN, "bvn", VERIFIED_BVN,
+            account_setup=True)
+        self.assertIn("finish issuing your account number",
+                      str(send.call_args.args[1]).lower())
+        self.assertFalse(PendingAction.objects.filter(pk=self.pa.pk).exists())
+
+
+@override_settings(WEMA=FACE_ON)
 class TheKycRailAlsoOffersFaceBesideItsCodeTests(TestCase):
     """Account creation already sent the face option beside its OTP; the KYC ladder
     did not, and that is the rail where it matters most.
@@ -372,4 +401,3 @@ class BvnMethodChoiceTests(TestCase):
         offered = buttons.call_args.args[2]
         self.assertEqual(offered, [
             ("bvn_sms", "SMS OTP"), ("bvn_face", "Face verification")])
-
