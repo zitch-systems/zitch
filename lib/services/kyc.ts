@@ -10,6 +10,7 @@ export type KycStatus = ApiResult<{
   bvn_verified: boolean;
   nin_verified: boolean;
   face_verified: boolean;
+  identity_face_available?: boolean;
 }>;
 
 export const kycService = {
@@ -30,6 +31,13 @@ export const kycService = {
     walletService.verifyWemaOtp(trackingId, otp, { nin }) as Promise<KycStatus>,
   verifyNin: (nin: string, ninImage: string) => apiJson<KycStatus>(EP.kyc.nin, { nin, nin_image: ninImage }),
   verifyFace: (selfie: string) => apiJson<KycStatus>(EP.kyc.face, { selfie }),
+  startIdentityFace: (identity: { bvn?: string; nin?: string }) =>
+    apiJson<KycStatus & { url?: string; session?: string; expires_in?: number }>(
+      EP.kyc.identityFaceStart,
+      { ...identity, prefer_face: true },
+    ),
+  getIdentityFaceStatus: (session: string) =>
+    apiJson<KycStatus & { status?: string }>(EP.kyc.identityFaceStatus, { session }),
   // The route out of `upgrade_required`. startNin/startBvn cannot finish an
   // account the bank has already opened — they come back with that flag and
   // nothing else will move the customer forward.

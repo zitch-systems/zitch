@@ -1,7 +1,7 @@
 """Tests for the go-live preflight command.
 
 Hard gates (Wema keys, securityInfo, live host) fail the run with exit 1; a
-fully-configured environment reports GO. Soft checks (VTU balance, email, SMS,
+fully-configured environment reports GO. Soft checks (email, SMS,
 cards) only fail the run under --strict.
 """
 import os
@@ -13,18 +13,21 @@ from django.test import Client, TestCase, override_settings
 
 _LIVE_DIAG = {"base_url": "https://api.alat.ng", "channel_id_set": True,
               "wallet_key_set": True, "security_info_set": True, "wema_live": True,
-              "simulation": False, "status": "configured", "hint": ""}
-_VTU_OK = {"config": {"live": True, "api_key_set": True},
-           "auth": {"ok": True}, "balance": {"ok": True, "balance": "15000.00"}}
-_VTU_EMPTY = {"config": {"live": True, "api_key_set": True}, "auth": {"ok": True},
-              "balance": {"ok": True, "balance": "0.00", "hint": "empty"}}
+              "simulation": False, "status": "configured", "hint": "",
+              "product_keys_set": {"wallet": True, "airtime": True}}
+_EMAIL_OK = {"ok": True, "config": {"sender_domain": "zitch.ng"}}
+_EMAIL_WARN = {"ok": False, "hint": "sender domain not verified"}
+# Legacy local names retained so the individual test contexts below stay compact;
+# they now represent the email soft-check, not the retired VTU provider.
+_VTU_OK = _EMAIL_OK
+_VTU_EMPTY = _EMAIL_WARN
 _SAFE_CALLBACKS = {
     "CALLBACK_TOKEN": "x" * 40, "CALLBACK_TOKEN_PREV": "",
     "CALLBACK_ENFORCE_IPS": True, "CALLBACK_IPS": ["135.236.18.76"],
     "AUTH_REQUIRE_SECURITY_INFO": True,
 }
 
-_PROBE = "utility.management.commands.wema_preflight.vtu_probe"
+_PROBE = "utility.providers.email_probe"
 _DIAG = "utility.wema.wema_diagnostics"
 
 

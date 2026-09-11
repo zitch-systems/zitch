@@ -716,22 +716,6 @@ def face_verify_on_nonprod_host() -> bool:
 
 
 
-def face_verify_on_nonprod_host() -> bool:
-    """True while the face app points at any of ALAT's non-production verifiers.
-
-    Superset of face_verify_on_dev_host: the check looked for "-dev." alone until
-    Wema moved us to face-verification-pilot, a different hostname with the identical
-    problem — it answers happily and proves nothing about a real person. Matched on
-    the host label so a path or query cannot make a production host look non-prod.
-    """
-    from urllib.parse import urlparse
-
-    host = (urlparse(settings.WEMA.get("FACE_VERIFY_URL", "") or "").hostname or "").lower()
-    label = host.split(".")[0] if host else ""
-    return any(label.endswith(f"-{name}") or label == name
-               for name in ("dev", "pilot", "uat", "test", "sandbox", "staging", "sit", "qa"))
-
-
 def face_cb_mode() -> str:
     """Return registered, session, or none for the hosted verifier callback."""
     mode = str(settings.WEMA.get("FACE_CB_MODE") or "").strip().lower()

@@ -2,6 +2,7 @@ import React, { useCallback, useRef, useState } from 'react';
 import { View, Text, Animated, Easing } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import * as WebBrowser from 'expo-web-browser';
 import Svg, { Circle } from 'react-native-svg';
 import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
@@ -14,6 +15,7 @@ import { useTheme, font } from '@/lib/theme';
 type Status = {
   tier: number; transaction_limit: string;
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean;
+  identity_face_available?: boolean;
   // Set once the bank has opened the account number: from then on it will not
   // accept a lone BVN or NIN, only all of it at once. Read here so the menu can
   // send the customer straight to the step that works.
@@ -114,6 +116,39 @@ const Kyc = () => {
     finally { setBusy(false); }
   };
   const confirmBvn = () => submit(() => kycService.confirmBvn(bvnOtp), 'BVN verified — tier upgraded');
+
+  const useIdentityFace = async (identity: { bvn?: string; nin?: string }) => {
+    setBusy(true);
+    try {
+      const started = await kycService.startIdentityFace(identity);
+      if (!started.success || !started.url || !started.session) {
+        notify('Face verification unavailable', started.message || 'Please use the SMS code for now.');
+        return;
+      }
+      beginExternalActivity();
+      try { await WebBrowser.openBrowserAsync(started.url); }
+      finally { endExternalActivity(); }
+      for (let attempt = 0; attempt < 15; attempt += 1) {
+        const result = await kycService.getIdentityFaceStatus(started.session);
+        if (result.status === 'verified') {
+          setStatus(result);
+          setBvn(''); setBvnOtp(''); setBvnSent(false);
+          setNin(''); setNinOtp(''); setNinTrackingId(''); setNinSent(false);
+          setMethod('menu');
+          notify('Identity verified', result.message || 'Your bank confirmed the face check.', 'success');
+          return;
+        }
+        if (result.status === 'failed' || result.status === 'expired') {
+          notify('Face verification incomplete', 'The bank did not confirm the check. You can retry or use SMS.');
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      notify('Still processing', 'Your bank is still confirming the check. This page will refresh when you return.');
+      await load();
+    } catch { notify('Error', 'Could not complete face verification. Please use the SMS code or try again.'); }
+    finally { setBusy(false); }
+  };
 
   // --- NIN: enter number -> Wema sends a one-time code -> confirm it ---
   const startNin = async () => {
@@ -324,6 +359,11 @@ const Kyc = () => {
             <Text onPress={() => { setBvnSent(false); setBvnOtp(''); }} style={{ fontSize: 12.5, color: c.brand, marginTop: 10, fontFamily: font.semibold }}>Change BVN</Text>
             <View style={{ height: 22 }} />
             <Btn label={busy ? 'Confirming…' : 'Confirm BVN'} disabled={busy || bvnOtp.length !== 6} onPress={confirmBvn} />
+            {status?.identity_face_available && (
+              <View style={{ marginTop: 12 }}>
+                <Btn label={busy ? 'Opening face verification…' : 'Use face verification instead'} variant="ghost" disabled={busy || bvn.length !== 11} onPress={() => useIdentityFace({ bvn })} />
+              </View>
+            )}
           </View>
           <Footer />
         </View>
@@ -361,6 +401,11 @@ const Kyc = () => {
             <Text onPress={() => { setNinSent(false); setNinOtp(''); setNinTrackingId(''); }} style={{ fontSize: 12.5, color: c.brand, marginTop: 10, fontFamily: font.semibold }}>Change NIN</Text>
             <View style={{ height: 22 }} />
             <Btn label={busy ? 'Confirming…' : 'Confirm NIN'} disabled={busy || ninOtp.length !== 6 || !ninTrackingId} onPress={confirmNin} />
+            {status?.identity_face_available && (
+              <View style={{ marginTop: 12 }}>
+                <Btn label={busy ? 'Opening face verification…' : 'Use face verification instead'} variant="ghost" disabled={busy || nin.length !== 11} onPress={() => useIdentityFace({ nin })} />
+              </View>
+            )}
           </View>
           <Footer />
         </View>

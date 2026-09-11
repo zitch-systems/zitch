@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import { walletService } from '@/lib/services/wallet';
+import { kycService } from '@/lib/services/kyc';
+import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Btn, Field } from '@/components/design/ui';
 import { Label } from '@/components/design/flowkit';
@@ -12,17 +15,16 @@ import { useTheme, font } from '@/lib/theme';
 
 type DediAccount = { account_number: string; account_name: string; bank_name: string };
 
-// Funding is bank-transfer only: the user transfers to their dedicated Zitch
-// (Monnify reserved) account and the wallet is credited automatically by the
-// webhook — no card checkout. The account is minted through Monnify's own
-// onboarding: the user enters their BVN here and Monnify verifies it and issues
-// the NUBAN (no separate in-app KYC step needed first).
+// Funding is bank-transfer only. Wema creates the dedicated NUBAN asynchronously
+// after BVN consent by SMS OTP or its hosted face-verification alternative.
 const AddMoney = () => {
   const { c } = useTheme();
   const [loading, setLoading] = useState(true);
   const [account, setAccount] = useState<DediAccount | null>(null);
   const [bvn, setBvn] = useState('');
   const [creating, setCreating] = useState(false);
+  const [trackingId, setTrackingId] = useState('');
+  const [otp, setOtp] = useState('');
 
   useEffect(() => {
     let alive = true;
@@ -53,6 +55,11 @@ const AddMoney = () => {
       const r = await walletService.createAccount(bvn);
       if (r?.success && r.account_number) {
         setAccount(r as DediAccount);
+      } else if (r?.success && r.otp_required && r.tracking_id) {
+        setTrackingId(String(r.tracking_id));
+        notify('Verification code sent', r.message || 'Enter the SMS code sent to the phone registered on your BVN.', 'success');
+      } else if (r?.success) {
+        notify('Account creation in progress', r.message || 'Wema is creating your account number. We will update this page when it is ready.', 'success');
       } else {
         notify('Error', r?.message || "We couldn't create your account. Please try again.");
       }
@@ -61,6 +68,62 @@ const AddMoney = () => {
     } finally {
       setCreating(false);
     }
+  };
+
+  const confirmOtp = async () => {
+    if (!trackingId || otp.length !== 6) return;
+    setCreating(true);
+    try {
+      const r = await walletService.verifyWemaOtp(trackingId, otp, { bvn });
+      if (r.success && r.account_number) setAccount(r as DediAccount);
+      else if (r.success || r.pending) {
+        setTrackingId(''); setOtp('');
+        notify('Identity accepted', r.message || 'Your account number is being created.', 'success');
+      } else notify('Verification failed', r.message || 'Check the code and try again.');
+    } catch { notify('Error', 'Could not confirm the code. Please try again.'); }
+    finally { setCreating(false); }
+  };
+
+  const resendOtp = async () => {
+    if (!trackingId) return;
+    setCreating(true);
+    try {
+      const r = await walletService.resendWemaOtp(trackingId);
+      notify(r.success ? 'Code resent' : 'Could not resend code', r.message, r.success ? 'success' : undefined);
+    } catch { notify('Error', 'Could not resend the code.'); }
+    finally { setCreating(false); }
+  };
+
+  const useFaceVerification = async () => {
+    if (bvn.length !== 11) return;
+    setCreating(true);
+    try {
+      const started = await kycService.startIdentityFace({ bvn });
+      if (!started.success || !started.url || !started.session) {
+        notify('Face verification unavailable', started.message || 'Please use the SMS code.');
+        return;
+      }
+      beginExternalActivity();
+      try { await WebBrowser.openBrowserAsync(started.url); }
+      finally { endExternalActivity(); }
+      for (let attempt = 0; attempt < 15; attempt += 1) {
+        const state = await kycService.getIdentityFaceStatus(started.session);
+        if (state.status === 'verified') {
+          const refreshed = await walletService.getAccount();
+          if (refreshed.success && refreshed.account_number) setAccount(refreshed as DediAccount);
+          else notify('Identity verified', 'Wema is creating your account number. We will update it automatically.', 'success');
+          setTrackingId(''); setOtp('');
+          return;
+        }
+        if (state.status === 'failed' || state.status === 'expired') {
+          notify('Face verification incomplete', 'Please retry or use the SMS code.');
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      notify('Still processing', 'Wema is still confirming your face check. Please return shortly.');
+    } catch { notify('Error', 'Could not complete face verification.'); }
+    finally { setCreating(false); }
   };
 
   if (loading) {
@@ -145,13 +208,11 @@ const AddMoney = () => {
           </View>
 
           <View style={{ height: 22 }} />
-          <Field
-            label="Bank Verification Number (BVN)"
-            value={bvn}
-            onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))}
-            keyboardType="number-pad"
-            placeholder="Enter your 11-digit BVN"
-          />
+          {trackingId ? (
+            <Field label="Verification code" value={otp} onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="Enter 6-digit SMS code" />
+          ) : (
+            <Field label="Bank Verification Number (BVN)" value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter your 11-digit BVN" />
+          )}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 8, paddingHorizontal: 2 }}>
             <ZIcon name="lock" size={13} color={c.ink3} />
             <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular }}>
@@ -160,12 +221,16 @@ const AddMoney = () => {
           </View>
 
           <View style={{ height: 22 }} />
-          <Btn
-            label={creating ? 'Creating your account…' : 'Get my account'}
-            icon="bank"
-            disabled={creating || bvn.length !== 11}
-            onPress={createAccount}
-          />
+          <Btn label={creating ? 'Please wait…' : trackingId ? 'Confirm code' : 'Get my account'} icon="bank" disabled={creating || (trackingId ? otp.length !== 6 : bvn.length !== 11)} onPress={trackingId ? confirmOtp : createAccount} />
+          {trackingId && (
+            <>
+              <View style={{ height: 10 }} />
+              <Btn label="Use face verification instead" variant="ghost" disabled={creating} onPress={useFaceVerification} />
+              <Pressable disabled={creating} onPress={resendOtp} style={{ marginTop: 14 }}>
+                <Text style={{ textAlign: 'center', color: c.brand, fontFamily: font.semibold }}>Resend SMS code</Text>
+              </Pressable>
+            </>
+          )}
         </View>
       )}
     </Screen>

@@ -25,6 +25,7 @@ export type VirtualAccount = ApiResult<{
   using_bvn?: boolean;
   otp_destination?: string;
   otp_destination_kind?: string;
+  pending?: boolean;
   bvn_verified?: boolean;
   nin_verified?: boolean;
   tier?: number;

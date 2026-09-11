@@ -90,7 +90,10 @@ class Command(BaseCommand):
             if wallet is not None and wallet.account_number:
                 return
             candidate_users.add(row.user_id)
-            candidates.append((row.user, row.identity_type, type(row).__name__))
+            candidates.append((
+                row.user, row.identity_type, type(row).__name__, row.pk,
+                row.updated.isoformat(),
+            ))
 
         for session in (WemaFaceSession.objects
                         .filter(status=WemaFaceSession.VERIFIED,
@@ -109,7 +112,7 @@ class Command(BaseCommand):
         recovery_skipped = 0
         recovered_accounts = 0
         recovery_failures = 0
-        for user, identity_type, source in candidates:
+        for user, identity_type, source, attempt_id, attempt_version in candidates:
             # A successful face callback can precede the bank making its account
             # number available.  The old behaviour queried the account-details
             # endpoint on *every* reconciliation tick for the same customer.  That
@@ -119,7 +122,7 @@ class Command(BaseCommand):
             # blocked by this guard.
             recovery_key = (
                 f"partner-bank-account-recovery:{source}:{user.pk}:"
-                f"{identity_type}"
+                f"{identity_type}:{attempt_id}:{attempt_version}"
             )
             if not cache.add(recovery_key, True, timeout=15 * 60):
                 recovery_skipped += 1

@@ -40,6 +40,8 @@ export const EP = {
     bvnConfirm: '/api/kyc/bvn/confirm/',
     nin: '/api/kyc/nin/',
     face: '/api/kyc/face/',
+    identityFaceStart: '/api/kyc/face/start/',
+    identityFaceStatus: '/api/kyc/face/status/',
   },
   transfers: {
     // Canonical (plural) paths.

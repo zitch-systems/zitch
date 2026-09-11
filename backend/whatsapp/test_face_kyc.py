@@ -105,6 +105,24 @@ class FaceLinkTests(TestCase):
         self.assertNotIn(VERIFIED_BVN, body)
         self.assertIn("face.example", url)
 
+    def test_account_sms_otp_can_switch_to_face_without_exposing_identity(self):
+        self.pa.action_type = "add_account"
+        self.pa.state = "otp"
+        self.pa.payload = {"tracking_id": "TRACK", "using_bvn": False}
+        self.pa.save(update_fields=["action_type", "state", "payload"])
+
+        with patch.object(router, "_send_identity_flow", return_value=True) as flow, \
+             patch.object(router, "reply") as rep:
+            router._advance_add_account(self.pa, self.user, MSISDN, "face")
+
+        self.pa.refresh_from_db()
+        self.assertEqual(self.pa.state, router.FACE_ID_STATE)
+        self.assertEqual(self.pa.payload["id_type"], "nin")
+        self.assertEqual(self.pa.payload["id_purpose"], "account_face")
+        self.assertNotIn("identity", self.pa.payload)
+        flow.assert_called_once_with(self.pa, "nin", fallback_state=router.FACE_ID_STATE)
+        self.assertIn("secure form", str(rep.call_args.args[1]))
+
     def test_the_session_binds_the_identity_that_was_entered(self):
         from accounts.models import hash_identifier
         with patch.object(router, "send_cta_url"), patch.object(router, "reply"):
