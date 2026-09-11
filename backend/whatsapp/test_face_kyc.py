@@ -123,6 +123,19 @@ class FaceLinkTests(TestCase):
         flow.assert_called_once_with(self.pa, "nin", fallback_state=router.FACE_ID_STATE)
         self.assertIn("secure form", str(rep.call_args.args[1]))
 
+    def test_tier2_uses_prembly_app_handoff_not_tier1_wema_face(self):
+        self.pa.state = router.KYC_UPGRADE_STATE
+        self.pa.save(update_fields=["state"])
+
+        with patch.object(router, "send_cta_url", return_value={"success": True}) as cta, \
+             patch.object(router, "_send_identity_flow") as identity_flow:
+            router._advance_kyc(self.pa, self.user, MSISDN, "tier2")
+
+        identity_flow.assert_not_called()
+        body = str(cta.call_args.args[1])
+        self.assertIn("BVN, NIN and a live selfie", body)
+        self.assertIn("Open Verify identity", str(cta.call_args.kwargs.get("cta")))
+
     def test_the_session_binds_the_identity_that_was_entered(self):
         from accounts.models import hash_identifier
         with patch.object(router, "send_cta_url"), patch.object(router, "reply"):
