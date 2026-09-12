@@ -384,6 +384,14 @@ def _response_meta(resp: requests.Response, data) -> dict:
     }
 
 
+def _is_empty_history_response(resp: requests.Response, data: dict) -> bool:
+    """ALAT returns HTTP 400 + "No record found" for an empty statement window."""
+    if resp.status_code != 400 or not isinstance(data, dict):
+        return False
+    message = str(_first_text(data.get("message")) or "").strip().casefold()
+    return "no record found" in message
+
+
 def _fingerprint(value: str) -> str:
     """A short, non-reversible stand-in for a value too sensitive to log raw.
 
@@ -1030,6 +1038,10 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
         data = resp.json()
         if not isinstance(data, dict):
             return {"success": False, "transactions": [], "message": "Request failed",
+                    "diagnostic": _response_meta(resp, data), "raw": data}
+        if _is_empty_history_response(resp, data):
+            return {"success": True, "transactions": [], "empty": True,
+                    "message": "No transactions found",
                     "diagnostic": _response_meta(resp, data), "raw": data}
         # This envelope uses {successful, result[], message} rather than status/hasError.
         ok = bool(data.get("successful")) or _ok(data)
