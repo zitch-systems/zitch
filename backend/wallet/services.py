@@ -325,7 +325,7 @@ def customer_safe_failure(result: dict, *, service: str = "",
     card was told, seconds later and by their bank, that they had ₦12.25. Both
     numbers were real; only one was theirs. On a money product there is very
     little worse to say by accident, and it was said on every attempt while our
-    VTU float sat empty.
+    provider float sat empty.
 
     The raw text is not lost: settle_or_refund keeps it on the row as
     meta["failure"], the operator console renders that, and an exhausted float

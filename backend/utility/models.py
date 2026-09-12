@@ -12,9 +12,12 @@ class DataPlan(models.Model):
     name = models.CharField(max_length=60)          # e.g. "1.5GB"
     validity = models.CharField(max_length=40)       # e.g. "30 days"
     plan_code = models.CharField(max_length=40, unique=True)
-    # Wema's own packageCode for this plan (differs from the VTU.ng plan_code).
-    # Blank until synced by `manage.py seed_wema_plans`; a blank code keeps the
-    # plan on VTU.ng, so data only moves to Wema once the catalogue is mapped.
+    # Wema's own packageCode for this plan (it differs from our own plan_code).
+    # Blank until synced by `manage.py seed_wema_plans`. Wema is now the ONLY VAS
+    # rail, so a blank code no longer routes the plan elsewhere — it makes the plan
+    # unbuyable, and providers.vtu_purchase refuses it as a configuration error
+    # rather than debiting a customer for something it cannot fulfil. Run the sync
+    # before offering data.
     wema_code = models.CharField(max_length=60, blank=True, default="")
     price = models.DecimalField(max_digits=10, decimal_places=2)
     active = models.BooleanField(default=True)
@@ -28,9 +31,10 @@ class CablePlan(models.Model):
     name = models.CharField(max_length=80)
     validity = models.CharField(max_length=40, blank=True, default="30 days")
     cable_plan_code = models.CharField(max_length=40, unique=True)
-    # Wema's own packageId/packageCode for this bouquet (differs from the VTU.ng
-    # cable_plan_code). Blank until synced by `manage.py seed_wema_plans`; a blank
-    # code keeps the bouquet on VTU.ng.
+    # Wema's own packageId/packageCode for this bouquet (it differs from our own
+    # cable_plan_code). Blank until synced by `manage.py seed_wema_plans`; as with
+    # DataPlan.wema_code, a blank code now makes the bouquet unbuyable rather than
+    # routing it to a second rail — there is no second rail.
     wema_code = models.CharField(max_length=60, blank=True, default="")
     price = models.DecimalField(max_digits=10, decimal_places=2)
     active = models.BooleanField(default=True)
@@ -45,17 +49,18 @@ class WemaBiller(models.Model):
     Data and cable carry their Wema code on the plan row itself (DataPlan.wema_code /
     CablePlan.wema_code) because the customer picks a bundle. Electricity and betting
     have no bundle to pick — the customer types a meter number or a betting ID and an
-    amount — so their Wema `packageId` has nowhere to live. Without it those two
-    services could not route to Wema at all, which is why they stayed on VTU.ng.
+    amount — so their Wema `packageId` has nowhere to live. This table is where it
+    lives, and without a row the service cannot route at all.
 
     Keyed by the same `service_id` the app and the WhatsApp router already send
     ("ikeja-electric", "bet9ja-betting"), so routing is a lookup rather than another
     naming scheme to keep in sync.
 
-    A missing row is not an error: it keeps that one service on VTU.ng, exactly as
-    before. That matters because the codes are synced from a live catalogue
-    (`manage.py seed_wema_plans --only billers`) and a partial sync must degrade
-    service-by-service rather than break the ones it did map.
+    A missing row takes that ONE service off sale and leaves every mapped service
+    working: providers._wema_vas_route returns None for it and the purchase is refused
+    before any debit. That per-service granularity is the point, because the codes are
+    synced from a live catalogue (`manage.py seed_wema_plans --only billers`) and a
+    partial sync must degrade service-by-service rather than break what it did map.
     """
     service_id = models.CharField(max_length=60, unique=True)
     # ALAT's integer packageId — what ValidateCustomer and PayBill actually take.

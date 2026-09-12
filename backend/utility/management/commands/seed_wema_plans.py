@@ -1,10 +1,10 @@
 """Sync Wema/ALAT's VAS catalogue codes onto our seeded plans.
 
 Wema fulfils a data or cable purchase against its OWN packageCode/packageId, which
-differs from the VTU.ng plan_code we seed. Until a plan carries a `wema_code`,
-utility.providers.vtu_purchase keeps that service on VTU.ng — so data/cable move to
-Wema only after this command has mapped the catalogue. Airtime needs no catalogue and
-routes to Wema regardless.
+differs from the plan_code we seed. Until a plan carries a `wema_code`,
+utility.providers.vtu_purchase has nothing to send and REFUSES the purchase (before
+any debit) — so running this command is what puts data/cable on sale at all, not an
+optional optimisation. Airtime needs no catalogue and works regardless.
 
 Matching is best-effort: data plans are matched within a network by exact price, then
 by a normalised size/name; cable bouquets by exact price, then by a normalised name.
@@ -157,7 +157,7 @@ class Command(BaseCommand):
         rows = res.get("bills", []) or [] if res.get("success") else []
         if not rows:
             self.stdout.write(self.style.WARNING(
-                "billers: catalogue empty — electricity/betting stay on VTU.ng"))
+                "billers: catalogue empty — electricity/betting cannot be sold"))
             return
         wanted = {f"{DISCO_NAMES[k].lower()}-electric": self._DISCO_WORDS.get(DISCO_NAMES[k].lower(), ())
                   for k in DISCO_NAMES}
@@ -183,7 +183,7 @@ class Command(BaseCommand):
             if len(hits) != 1:
                 unmatched += 1
                 self.stdout.write(self.style.WARNING(
-                    f"  biller {service_id:26} {len(hits)} candidate(s) — left on VTU.ng"))
+                    f"  biller {service_id:26} {len(hits)} candidate(s) — not on sale"))
                 continue
             code = _code(hits[0])
             if not code:
@@ -205,5 +205,6 @@ class Command(BaseCommand):
             f"billers: {mapped} mapped, {unmatched} unresolved{' (dry-run)' if dry else ''}"))
         if unmatched:
             self.stdout.write(
-                "  Unresolved services keep working on VTU.ng. Map them by hand in the "
-                "admin (utility > Wema billers) once you can see the ALAT catalogue.")
+                "  Unresolved services are NOT on sale — a purchase is refused before "
+                "any debit. Map them by hand in the admin (utility > Wema billers) "
+                "once you can see the ALAT catalogue.")

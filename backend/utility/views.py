@@ -79,8 +79,9 @@ def buyairtime(request):
         return fail("Enter a valid amount")
     net = str(data.get("network", ""))
     phone = data.get("phone", "")
-    # Sender's own NUBAN — the source for a Wema airtime buy (per-user model);
-    # ignored by VTU.ng, so harmless when Wema VAS is off.
+    # Sender's own NUBAN — the source account a Wema airtime buy debits (per-user
+    # money-flow model). Blank only when the buyer has no NUBAN yet, in which case
+    # the rail falls back to the pool account.
     source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
     outcome = _run_purchase(
         user, amount, f"Airtime — {NETWORK_NAMES.get(net, net)}",

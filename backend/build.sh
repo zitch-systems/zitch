@@ -21,7 +21,8 @@ python manage.py seed_plans
 #
 # Never fatal. errexit is on, so an unreachable catalogue or a rail hiccup would
 # otherwise fail the build and take the API down with it — a VAS mapping is not
-# worth an outage, and leaving a service unmapped simply keeps it on VTU.ng.
+# worth an outage. An unmapped service is simply not on sale (the purchase is
+# refused before any debit) rather than silently fulfilled on another rail.
 case "${SEED_WEMA_CATALOGUE:-}" in
   "") ;;
   dry) python manage.py seed_wema_plans --dry-run || echo "==> catalogue dry-run failed (ignored)" ;;

@@ -9,37 +9,40 @@ accounting system"). The other two answer narrower questions:
   * ``reconcile_balances``   a wallet's ledger vs that wallet's NUBAN at the bank
                              (internal vs external, per wallet)
   * ``settlement_report``    everything we OWE vs everything we HOLD, in total,
-                             across every asset rail — including the two places
-                             per-wallet checks cannot look: the pool account and
-                             the VTU provider wallet.
+                             across every asset rail — including the one place
+                             per-wallet checks cannot look: the pool account.
 
 Why per-wallet checks cannot see the position
 ---------------------------------------------
 Every per-wallet comparison can pass while the business is short, because not all
-customer money sits in customer NUBANs:
-
-  1. A customer funds ₦1,000 -> their NUBAN holds ₦1,000, we owe ₦1,000. Balanced.
-  2. They buy ₦1,000 of airtime -> we owe ₦0, and VTU.ng debits OUR provider
-     wallet by ₦1,000. Their NUBAN still holds ₦1,000.
-
-After step 2 that wallet reconciles perfectly against its NUBAN (0 vs ... no: the
-NUBAN holds 1,000 while the ledger says 0, which ``reconcile_balances`` classifies
-as the benign "bank > ledger" direction and does not page). Meanwhile the provider
-wallet is ₦1,000 down and nothing anywhere says that ₦1,000 must be swept from the
-NUBAN to VTU.ng. Repeat a few thousand times and the VAS rail runs dry mid-day with
-a bank account full of money — an outage with the funds sitting right there.
+customer money sits in customer NUBANs. It also sits in the pool account, which no
+per-wallet check has any reason to read: the pool funds customers who have no NUBAN
+yet, absorbs VAS purchases for them, and is where an operator tops the business up.
+A pool that has quietly drained is invisible to both narrower checks and is exactly
+the kind of thing that turns into an outage with money apparently on hand.
 
 So the identity this command reports is:
 
-    held (bank NUBANs + pool + VTU provider wallet)  -  owed (ledger liability)
-    = position
+    held (bank NUBANs + pool)  -  owed (ledger liability)  =  position
 
   * position < 0  SHORTFALL. We owe customers more than we hold anywhere. This is
     a solvency signal and it pages, always.
-  * position > 0  surplus. Expected, and it GROWS with VAS volume: it is the sweep
-    backlog plus margin. Reported every run so the number is watched, and paged
-    only when it crosses ``--max-surplus`` (an unexplained surplus is also a bug —
-    e.g. debits that never reached a provider).
+  * position > 0  surplus. Expected — it is unswept margin and float. Reported
+    every run so the number is watched, and paged only when it crosses
+    ``--max-surplus`` (an unexplained surplus is also a bug — e.g. debits that
+    never reached a provider).
+
+There used to be a THIRD rail here, and removing it is why the identity above is
+now this short. VAS ran on an external provider that we pre-funded, so a ₦1,000
+airtime purchase dropped the ledger liability by ₦1,000 while the customer's NUBAN
+kept its ₦1,000 and the provider's float — a pot at another company — fell instead.
+That created a standing sweep obligation from the bank to the provider, invisible to
+every per-wallet check, and it had to be read and held here. The partner-bank VAS
+rail debits the BUYER'S OWN NUBAN (see utility.providers._vas_source_account), so the
+money now leaves the same bank the ledger is measured against: held and owed fall
+together, the position is unchanged by VAS volume, and there is no third pot to read
+and no sweep to size. One fewer rail that can be unreadable, and one fewer way for
+this report to be wrong.
 
 Read-only: it takes no money decisions and writes nothing but an AuditLog row.
 Runs from a cron daily; see docs/settlement-operating-model.md for thresholds and
@@ -52,7 +55,7 @@ from django.core.management.base import BaseCommand
 from django.db.models import Sum
 from django.utils import timezone
 
-from utility import vtung, wema
+from utility import wema
 from wallet.models import Transaction, Wallet
 from wallet.services import is_bank_payout, wema_provisioned_wallets
 
@@ -68,7 +71,7 @@ def _sum(qs) -> Decimal:
 
 class Command(BaseCommand):
     help = ("Daily settlement statement: total customer liability against total funds "
-            "held across the bank NUBANs, the pool account and the VTU provider wallet.")
+            "held across the bank NUBANs and the pool account.")
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -78,8 +81,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "--max-surplus", default="",
             help="Naira of surplus above which to page. Blank (default) never pages on "
-                 "surplus. Set this once the normal sweep backlog is known, so an "
-                 "abnormal surplus — debits that never reached a provider — surfaces.")
+                 "surplus. Set it once the normal float and margin are known, so an "
+                 "abnormal surplus — debits that never reached a biller — surfaces.")
         parser.add_argument(
             "--fail-on-breach", action="store_true",
             help="Exit 1 when a threshold is breached, so the cron itself goes red.")
@@ -126,17 +129,13 @@ class Command(BaseCommand):
             res = wema.get_balance(pool_account)
             pool = res.get("balance_naira") if res.get("success") else None
 
-        provider = vtung.provider_wallet_balance()
-
         return {"nuban_total": nuban_total, "nuban_wallets": wallets,
                 "nuban_unreachable": unreachable,
-                "pool_account_set": bool(pool_account), "pool_balance": pool,
-                "provider_wallet": provider}
+                "pool_account_set": bool(pool_account), "pool_balance": pool}
 
     def _day_movement(self) -> dict:
-        """Today's outflow split by the asset rail it actually left from — the
-        explanation for a change in the position, and the number a sweep is sized
-        against."""
+        """Today's outflow split by what it was spent ON — the explanation for a
+        change in the position, and the line an unexplained surplus is read against."""
         start = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
         today = Transaction.objects.filter(created__gte=start, currency="NGN").exclude(
             transaction_status=Transaction.FAILED)
@@ -144,9 +143,12 @@ class Command(BaseCommand):
         funded_in = _sum(today.filter(direction=Transaction.IN,
                                       transaction_status=Transaction.SUCCESS))
         out_rows = today.filter(direction=Transaction.OUT).only("amount", "meta", "service")
-        # A bank payout leaves the NUBAN/pool; VAS spend leaves the provider wallet;
-        # an internal transfer leaves neither (it moves liability between two of our
-        # own users and nets to zero at every bank).
+        # A bank payout and a VAS purchase both leave the NUBAN/pool (partner-bank VAS
+        # debits the buyer's own account); an internal transfer leaves neither — it
+        # moves liability between two of our own users and nets to zero at every bank.
+        # VAS is still split out because it is the line that explains a day's outflow,
+        # and because a VAS total that keeps climbing while the position does not move
+        # is the signature of debits that never reached the biller.
         bank_out = Decimal("0")
         vas_out = Decimal("0")
         internal_out = Decimal("0")
@@ -162,9 +164,7 @@ class Command(BaseCommand):
                 other_out += r.amount
         return {"funded_in": funded_in, "bank_payouts_out": bank_out,
                 "vas_out": vas_out, "internal_transfers_out": internal_out,
-                "other_out": other_out,
-                # What must move from the bank to VTU.ng to keep the VAS rail funded.
-                "sweep_owed_to_provider": vas_out}
+                "other_out": other_out}
 
     # --- run ---------------------------------------------------------------
 
@@ -195,11 +195,10 @@ class Command(BaseCommand):
             return
 
         held = self._held()
-        rails = [held["nuban_total"], held["pool_balance"], held["provider_wallet"]]
+        rails = [held["nuban_total"], held["pool_balance"]]
         # A rail we could not read makes the position unsound, not merely imprecise.
         incomplete = (held["nuban_unreachable"] > 0
-                      or (held["pool_account_set"] and held["pool_balance"] is None)
-                      or held["provider_wallet"] is None)
+                      or (held["pool_account_set"] and held["pool_balance"] is None))
         held_total = sum((r for r in rails if r is not None), Decimal("0"))
         position = held_total - owed["ledger_liability"]
 
@@ -221,9 +220,6 @@ class Command(BaseCommand):
             "        pool        " + (f"₦{held['pool_balance']:,.2f}" if held["pool_balance"] is not None
                                       else ("UNREADABLE" if held["pool_account_set"]
                                             else "not configured (WEMA_SOURCE_ACCOUNT)")))
-        self.stdout.write(
-            "        VTU wallet  " + (f"₦{held['provider_wallet']:,.2f}"
-                                      if held["provider_wallet"] is not None else "UNREADABLE"))
         self.stdout.write(f"        total       ₦{held_total:,.2f}")
         self.stdout.write(
             f"POSITION {'+' if position >= 0 else '-'}₦{abs(position):,.2f} "
@@ -235,8 +231,7 @@ class Command(BaseCommand):
             alert("settlement_report: position computed with an unreadable rail — treat it as "
                   "advisory until every rail reads", level="warning",
                   nuban_unreachable=held["nuban_unreachable"],
-                  pool_readable=held["pool_balance"] is not None,
-                  provider_readable=held["provider_wallet"] is not None)
+                  pool_readable=held["pool_balance"] is not None)
             breached = True
 
         if position < 0 and -position > max_shortfall:
@@ -246,10 +241,10 @@ class Command(BaseCommand):
                   held=str(held_total), incomplete=incomplete)
             breached = True
         elif max_surplus is not None and position > max_surplus:
-            alert("settlement_report: surplus above the configured ceiling — check for debits "
-                  "that never reached a provider, or an overdue sweep", level="warning",
+            alert("settlement_report: surplus above the configured ceiling — check for "
+                  "debits that never reached a biller", level="warning",
                   surplus=str(position), ceiling=str(max_surplus),
-                  sweep_owed_to_provider=str(movement["sweep_owed_to_provider"]))
+                  vas_out_today=str(movement["vas_out"]))
             breached = True
 
         if breached and options["fail_on_breach"]:
@@ -262,4 +257,3 @@ class Command(BaseCommand):
             f"TODAY   in ₦{movement['funded_in']:,.2f} | bank out ₦{movement['bank_payouts_out']:,.2f} "
             f"| VAS out ₦{movement['vas_out']:,.2f} | internal ₦{movement['internal_transfers_out']:,.2f} "
             f"| other ₦{movement['other_out']:,.2f}")
-        self.stdout.write(f"        sweep owed to VTU.ng today ₦{movement['sweep_owed_to_provider']:,.2f}")

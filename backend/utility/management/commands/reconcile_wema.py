@@ -15,6 +15,14 @@ The partner bank exposes NO webhooks for these paths, so three things must be po
    reverses (FAILED) it â€” the settlement safety net behind the payout flow. Only runs when
    Wema is the payout rail.
 
+3. VAS (settlement): an airtime/data/bill purchase that answered PROCESSING has no
+   delivery webhook either. This requeries each PENDING VAS debit through
+   providers.vas_requery and settles or refunds it. It is the ONLY automated
+   settlement path for VAS -- this cron absorbed it when the retired rail's own
+   sweep was deleted -- which is why the retired-rail guard lives inside
+   vas_requery rather than at a call site, and why a purchase that could never be
+   settled is refused at the point of sale instead (providers.vas_can_settle).
+
 Schedule frequently (see render.yaml); each phase only does work when Wema
 is the relevant rail, so it's harmless otherwise.
 """
@@ -26,7 +34,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from utility import wema
-from utility.providers import payout_provider
+from utility.providers import payout_provider, vas_requery
 from wallet.models import Wallet, WemaFaceSession, WemaProvisioningAttempt
 from wallet.services import (
     apply_wema_credit, attach_existing_bank_account, pending_bank_payouts,
@@ -206,7 +214,7 @@ class Command(BaseCommand):
                 if apply_wema_credit(wallet, tx, self_refs=self_refs) is not None:
                     credited += 1
 
-        # Phase 2 - settle PENDING partner-bank VAS purchases. These are customer
+        # Phase 3 - settle PENDING partner-bank VAS purchases. These are customer
         # debits whose provider response timed out or returned "processing"; the
         # same fast reconciler must resolve them so airtime/data/bill purchases do
         # not sit as Pending while the wallet has already been debited.
@@ -219,7 +227,11 @@ class Command(BaseCommand):
         for txn in pending_vas_purchases(vas_cutoff):
             vas_seen += 1
             meta = txn.meta or {}
-            res = wema.vas_status(txn.reference, meta.get("vas_type", "airtime"))
+            # Through providers.vas_requery, NOT wema.vas_status directly: this cron is
+            # the only automated settlement path, so the retired-rail guard has to sit
+            # on the route it actually takes. The row's meta is passed in because we
+            # already hold it — no second query per row.
+            res = vas_requery(txn.reference, meta)
             if not res.get("success") and not res.get("pending") and not res.get("status"):
                 vas_status_failures += 1
                 continue
@@ -301,6 +313,29 @@ class Command(BaseCommand):
                   f"settled or reversed; no other control reports this",
                   level="error", payouts=len(stuck),
                   references=[t.reference for t in stuck[:10]])
+
+        # The same net under VAS, for the same reason and with the same blind spot:
+        # a stuck airtime/data/bill purchase is a pending DEBIT, so every other
+        # control reads it as benign (owed by integrity_check, bank-over-ledger by
+        # reconcile_balances, surplus by settlement_report) and nobody is told the
+        # customer paid for something that never arrived.
+        #
+        # It has a specific trigger now. ALAT answers a purchase with PROCESSING and
+        # settles it only through a status check whose integer legend it does not
+        # publish; on a deploy with no legend that row can never resolve, which is
+        # why providers.vas_can_settle refuses such purchases up front. This alert is
+        # the net under everything that got in before the refusal — the rows from the
+        # retired rail included.
+        # Reuses VTU_PURCHASE_STUCK_HOURS — the env var deploys already carry for this
+        # exact threshold. It was left orphaned when the old VAS sweep was deleted.
+        vas_stuck_after = timedelta(hours=int(getattr(settings, "VTU_PURCHASE_STUCK_HOURS", 2) or 2))
+        vas_stuck = list(pending_vas_purchases(timezone.now() - vas_stuck_after)[:50])
+        if vas_stuck:
+            alert(f"reconcile_wema: {len(vas_stuck)} VAS purchase(s) still PENDING after "
+                  f"{vas_stuck_after} - the customer is debited and nothing was "
+                  f"delivered, settled or refunded; no other control reports this",
+                  level="error", purchases=len(vas_stuck),
+                  references=[t.reference for t in vas_stuck[:10]])
 
         # Never infer failure from age. Wema may have completed a payout even
         # when its status endpoint is unavailable or returns an unfamiliar value.

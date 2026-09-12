@@ -13,6 +13,7 @@ from wallet.models import Transaction
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
+from .catalogue_fixtures import map_billers, map_cable
 from .models import DataPlan
 
 
@@ -20,6 +21,8 @@ class UtilityTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="20000")
+        map_billers()
+        map_cable()
 
     def post(self, path, payload):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
@@ -104,8 +107,11 @@ class UtilityTests(TestCase):
 
     # --- data ---
     def test_data_plan_listing_and_purchase(self):
+        # wema_code is what makes the plan buyable at all — the rail fulfils a bundle
+        # against its own packageCode and a blank one is refused before any debit.
         DataPlan.objects.create(network="1", plan_type="1", name="1.5GB", validity="30 days",
-                                plan_code="mtn-1500", price=Decimal("1200"))
+                                plan_code="mtn-1500", price=Decimal("1200"),
+                                wema_code="7001")
         _, plans = self.post("/api/utility/get_data_plans/", {"datanetwork": "1", "selectedPlanType": "1"})
         self.assertEqual(plans["data_plans"][0]["plan_code"], "mtn-1500")
 
@@ -185,13 +191,47 @@ class UtilityTests(TestCase):
         self.assertTrue(body["customer_name"])
 
 
+#: A DEFINITIVE provider failure, in the shape the partner-bank status check actually
+#: returns one. The terminal ``status`` matters: reconcile_wema deliberately refuses to
+#: refund on a result carrying neither ``pending`` nor a ``status``, because that shape
+#: means the status QUERY failed rather than the purchase — and age is never evidence of
+#: failure. These fixtures were previously written to the retired provider's looser
+#: contract, so they described a refund the current rail would (correctly) not perform.
+_DEFINITE_FAILURE = {"success": False, "pending": False, "status": "FAILED",
+                     "provider_reference": "BX1", "message": "not found"}
+
+
 class VtuReconciliationTests(TestCase):
     """A provider timeout must hold the purchase PENDING — never refund a
-    possibly-delivered service. The reconcile job later requeries and settles."""
+    possibly-delivered service. The reconcile job later requeries and settles.
+
+    VAS settlement lives in ``reconcile_wema`` (it used to be its own
+    ``reconcile_vtu`` command). That sweep only picks up rows older than
+    ``WEMA_VAS_REQUERY_AFTER_SECONDS`` — a floor of 10s — so every test here ages its
+    row past the cutoff before running the cron; otherwise the sweep skips it and the
+    assertion passes without the settlement path ever executing.
+    """
 
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="20000")
+
+    def _reconcile(self, requery_result, *, age=timedelta(minutes=1), reference=None):
+        """Age the pending purchase past the sweep's cutoff and run the VAS sweep.
+
+        ``age`` stays well under VTU_PURCHASE_STUCK_HOURS by default, so the
+        stuck-purchase alert does not fire for the ordinary settlement cases.
+        """
+        qs = Transaction.objects.filter(direction=Transaction.OUT,
+                                        transaction_status=Transaction.PENDING)
+        if reference:
+            qs = qs.filter(reference=reference)
+        qs.update(created=timezone.now() - age)
+        with patch("utility.management.commands.reconcile_wema.vas_requery",
+                   return_value=requery_result), \
+             patch("utility.management.commands.reconcile_wema.wema_provisioned_wallets",
+                   return_value=[]):
+            call_command("reconcile_wema", "--lookback-days=1")
 
     def post(self, path, payload):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
@@ -221,54 +261,42 @@ class VtuReconciliationTests(TestCase):
 
     def test_reconcile_marks_delivered_purchase_successful(self):
         _, body = self._buy_airtime_timed_out()
-        with patch("utility.management.commands.reconcile_vtu.vtu_requery", return_value={"success": True}):
-            call_command("reconcile_vtu", older_than_minutes=0)
+        self._reconcile({"success": True})
         self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.SUCCESS)
         self.assertEqual(self.balance(), Decimal("19000"))  # correctly spent
 
     def test_reconcile_refunds_definitively_failed_purchase(self):
         _, body = self._buy_airtime_timed_out()
-        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
-                   return_value={"success": False, "provider_reference": "BX1", "message": "not found"}):
-            call_command("reconcile_vtu", older_than_minutes=0)
+        self._reconcile(_DEFINITE_FAILURE)
         self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.FAILED)
         self.assertEqual(self.balance(), Decimal("20000"))  # refunded
 
     def test_reconcile_leaves_still_unknown_pending(self):
         _, body = self._buy_airtime_timed_out()
-        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
-                   return_value={"success": False, "pending": True}):
-            call_command("reconcile_vtu", older_than_minutes=0)
+        self._reconcile({"success": False, "pending": True})
         self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.PENDING)
         self.assertEqual(self.balance(), Decimal("19000"))
 
     def test_reconcile_settle_is_idempotent(self):
         _, body = self._buy_airtime_timed_out()
-        with patch("utility.management.commands.reconcile_vtu.vtu_requery", return_value={"success": False, "provider_reference": "BX1"}):
-            call_command("reconcile_vtu", older_than_minutes=0)
-            call_command("reconcile_vtu", older_than_minutes=0)  # second run must not double-refund
+        self._reconcile(_DEFINITE_FAILURE)
+        self._reconcile(_DEFINITE_FAILURE)   # a second run must not double-refund
         self.assertEqual(self.balance(), Decimal("20000"))
 
     def test_a_freshly_pending_purchase_does_not_page(self):
         """Minutes after a timeout, holding PENDING is the correct behaviour."""
         _, body = self._buy_airtime_timed_out()
-        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
-                   return_value={"success": False, "pending": True}), \
-             patch("utility.alerts.alert") as alerted:
-            call_command("reconcile_vtu", older_than_minutes=0)
+        with patch("utility.alerts.alert") as alerted:
+            self._reconcile({"success": False, "pending": True})
         self.assertFalse([c for c in alerted.call_args_list if "still PENDING" in str(c)])
 
     def test_a_purchase_stuck_for_hours_pages(self):
         """After hours the sweep will not resolve it on its own, and nothing else
         reports that the customer paid for a service never delivered."""
         _, body = self._buy_airtime_timed_out()
-        old = timezone.now() - timedelta(hours=6)
         # created is auto_now_add, so it has to be back-dated after the fact.
-        Transaction.objects.filter(reference=body["reference"]).update(created=old)
-        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
-                   return_value={"success": False, "pending": True}), \
-             patch("utility.alerts.alert") as alerted:
-            call_command("reconcile_vtu", older_than_minutes=0)
+        with patch("utility.alerts.alert") as alerted:
+            self._reconcile({"success": False, "pending": True}, age=timedelta(hours=6))
         stuck = [c for c in alerted.call_args_list if "still PENDING" in str(c)]
         self.assertTrue(stuck, "a purchase stuck for hours must page")
         self.assertIn(body["reference"], str(stuck[0]))
@@ -296,9 +324,7 @@ class VtuReconciliationTests(TestCase):
         self.assertEqual(self.balance(), Decimal("19000"))  # debited, awaiting recovery
 
         # The sweep now finds the orphan and refunds the definitively-failed purchase.
-        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
-                   return_value={"success": False, "provider_reference": "BX1", "message": "not found"}):
-            call_command("reconcile_vtu", older_than_minutes=0)
+        self._reconcile(_DEFINITE_FAILURE)
         txn.refresh_from_db()
         self.assertEqual(txn.transaction_status, Transaction.FAILED)
         self.assertEqual(self.balance(), Decimal("20000"))  # money returned

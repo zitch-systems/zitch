@@ -4,10 +4,11 @@
 the only money-movement rail** (wallet funding via OTP-provisioned NUBANs, bank payout +
 recipient name enquiry + balance), **the Nigeria-KYC rail** (BVN/NIN identity is verified
 by the name-matched NUBAN account-creation flow — ALAT has no standalone lookup, see KYC
-below), a **VAS rail** (airtime always; data/cable once their catalogue is synced), and a
-**virtual-card backend** (ALAT Card-Management). Monnify and Korapay/Baxi were deleted
-entirely. **VTU.ng** remains the fallback VAS rail (electricity/betting/exams, and
-data/cable until mapped); **Mono** is a secondary open-banking link/fund path;
+below), the **only VAS rail** (airtime always; data/cable/electricity/betting once their
+catalogue is synced), and a **virtual-card backend** (ALAT Card-Management). Monnify,
+Korapay/Baxi and VTU.ng were all deleted entirely — **there is no fallback VAS rail**,
+so an unmapped service is refused rather than fulfilled elsewhere; **Mono** is a
+secondary open-banking link/fund path;
 face/liveness + address + ID-document OCR stay on **Prembly**.
 
 The `*_PROVIDER` selectors default to `wema` when blank (kept only so a caller/diagnostic
@@ -109,9 +110,10 @@ The ALAT OpenAPI bundle let us fix code that had been built on guessed shapes:
 | Inbound deposit crediting (no webhook) | polled by `reconcile_wema` (Phase 1); **only settled (Successfull) credit rows** |
 | New-NUBAN PND lift | **wired** — `lift_debit_restriction` after provisioning (so the account can be debited) |
 | KYC — BVN / NIN | **wired via provisioning** — the account-creation OTP flow verifies + name-matches; no standalone lookup |
-| VAS — **airtime** | **wired** (auto-selects Wema once VAS keys are set; debits user NUBAN) |
-| VAS — **data / cable** | **wired, gated per-plan** on a synced `wema_code` (else VTU.ng) |
-| VAS — electricity / betting / exams | stays on VTU.ng (billers not mapped) |
+| VAS — **airtime** | **wired** (live once VAS keys are set; debits user NUBAN) |
+| VAS — **data / cable** | **wired, gated per-plan** on a synced `wema_code` (else refused) |
+| VAS — electricity / betting | **wired, gated per-service** on a `WemaBiller` row (else refused) |
+| VAS — settlement of a `PROCESSING` buy | **blocked on `WEMA_VAS_STATUS_LEGEND` / `WEMA_BILLS_STATUS_LEGEND`** — until set, purchases of that product are REFUSED up front (see below) |
 | VAS — **Remita RRR** | **wired** — `validate_rrr` + `payremita` debit the user NUBAN (pending stays for manual recon) |
 | Virtual cards | **wired to real card-management** (NUBAN-keyed issue/reveal/block); no reversible freeze/top-up |
 | NIP transfer charges | **wired** — `payout_charge` + `/api/transfers/charge/` (informational; debit unchanged) |
@@ -122,20 +124,38 @@ The ALAT OpenAPI bundle let us fix code that had been built on guessed shapes:
 
 ## VAS (airtime / data / cable) — #189
 
-`vas_provider()` auto-selects Wema once its VAS keys are configured (else VTU.ng), so a
-deploy without Wema VAS keys never breaks airtime/data/bills. When Wema is selected, routing
-is **per-service** (`utility.providers._wema_vas_route`):
+Wema/ALAT is the only VAS rail. `vas_provider()` returns `wema` unconditionally and only
+logs a warning for a stale `VAS_PROVIDER` env var. Routing is **per-service**
+(`utility.providers._wema_vas_route`), and an unresolved service is a **safe refusal**, not
+a fallback:
 
-- **Airtime** → Wema immediately (network + amount, no catalogue), debiting the sender's own
+- **Airtime** → works immediately (network + amount, no catalogue), debiting the sender's own
   NUBAN (`accountNumber`) — per-user model.
-- **Data / cable** → Wema only once the plan's `wema_code` (new on `DataPlan`/`CablePlan`,
-  migration `utility/0002`) is populated; a blank code keeps that plan on VTU.ng, so the
-  cutover is incremental and can't break a purchase whose Wema code isn't mapped.
-- **Electricity / betting / exams** → VTU.ng until their Wema billers are mapped.
+- **Data / cable** → needs the plan's `wema_code` (on `DataPlan`/`CablePlan`, migration
+  `utility/0002`). Blank ⇒ the purchase is refused before any debit.
+- **Electricity / betting** → need a `WemaBiller` row mapping the `service_id` to a
+  `packageId`. Missing ⇒ refused before any debit.
 
-The fulfilling rail is stamped on the ledger row (`vas_rail`/`vas_type`) so a PENDING purchase
-is requeried against the SAME rail (`reconcile_vtu` / `vtu_requery` won't mis-route a Wema
-purchase to VTU.ng or vice versa).
+Per-service granularity is the point: a partial catalogue sync takes only the unmapped
+services off sale and leaves the rest working.
+
+**A purchase is refused when this deploy could not settle it.** ALAT's purchase endpoints
+may answer `PROCESSING`; `settle_or_refund` then HOLDS the money (never refund a
+maybe-delivered top-up) and leaves the row for the reconcile cron. The cron's only tool is
+`wema.vas_status`, which answers with a bare integer `transactionStatus` that ALAT publishes
+no legend for — and the bank's own transaction callback routes through the same requery. So
+with no `WEMA_VAS_STATUS_LEGEND` / `WEMA_BILLS_STATUS_LEGEND`, a `PROCESSING` purchase would
+be debited, undelivered and unrefundable forever, with no job able to clear it.
+`providers.vas_can_settle()` therefore refuses the purchase up front — before the provider
+call, so the ordinary failure path refunds the debit in full — and pages. The two legends
+decode DIFFERENT enums (1..11 airtime/data vs 1..9 bills) and are gated separately.
+Getting the enum from Wema is the single action that turns VAS on; it needs no deploy.
+
+The fulfilling rail is stamped on the ledger row (`vas_rail`/`vas_type`). A PENDING row from
+the retired rail is therefore identifiable, and `vtu_requery` refuses to requery it against
+the partner bank (its reference means nothing there): the row is left pending — never
+auto-refunded, since it may have been delivered before the cutover — and paged for manual
+settlement.
 
 **Sync the catalogue:** `manage.py seed_wema_plans` maps Wema's live `GetDataPlans` /
 `GetAllBills` onto `wema_code`. The client now flattens ALAT's nested catalogues
@@ -169,8 +189,8 @@ Set these in the host (never in source). Boolean-only status is visible at `/hea
 - `WEMA_CARD_KEY` — **Virtual Naira Card** subscription. Required for all card calls;
   Wallet Services is not a fallback. `WEMA_CARD_PRODUCT_KEY` is the separate `cardKey`
   product id required for issuance.
-- `WEMA_AIRTIME_KEY` — **Airtime and Data API** subscription. Without it, AUTO routing
-  stays on VTU.ng and an explicit `VAS_PROVIDER=wema` fails preflight.
+- `WEMA_AIRTIME_KEY` — **Airtime and Data API** subscription. Without it, airtime and
+  data fail closed in production (there is no other rail).
 - `WEMA_BILLS_KEY` — optional override; Bills Payment is covered by Wallet Services.
 - `WEMA_UPGRADE_KEY` — **Account Upgrade API** subscription used for tier/status sync.
 - `WEMA_REMITA_KEY` — **Remita Payment** subscription; no wallet-key fallback.

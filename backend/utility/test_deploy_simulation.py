@@ -57,7 +57,9 @@ class DeployWideSimulationTests(SimpleTestCase):
             quote = providers.fx_quote("NGN", "USD", "1000")
             airtime = providers.vtu_purchase(
                 "mtn-airtime",
-                {"amount": "100", "phone": "08012345678"},
+                # source_account is supplied so this stays a SimpleTestCase: without it
+                # the buyer's NUBAN is resolved from the ledger row, which is a query.
+                {"amount": "100", "phone": "08012345678", "source_account": "0100000001"},
                 "SIM-AIRTIME-1",
             )
             linked = mono.exchange_token("simulation-code")
@@ -69,6 +71,37 @@ class DeployWideSimulationTests(SimpleTestCase):
         mono_post.assert_not_called()
 
 
+@override_settings(DEBUG=False, TESTING=False, WEMA={"SIMULATION": False})
+class MonoOwnSimulationSwitchTests(SimpleTestCase):
+    """MONO_SIMULATION must beat a staged MONO_SECRET_KEY on its own.
+
+    mono_live() used to read only the key, so a deploy with the key present and
+    MONO_SIMULATION on made LIVE calls — DirectPay among them, which PULLS REAL MONEY
+    out of a customer's own bank — while production_checks was told the deploy was
+    simulated and the operator was reading, from the variable's name, that nothing
+    could move money.
+    """
+
+    _KEYED = {"SECRET_KEY": "mono-live-key", "BASE_URL": "https://mono.invalid"}
+
+    @override_settings(MONO={**_KEYED, "SIMULATION": True})
+    def test_a_staged_key_does_not_go_live_while_simulating(self):
+        self.assertTrue(mono.mono_simulation())
+        self.assertFalse(mono.mono_live())
+
+    @override_settings(MONO={**_KEYED, "SIMULATION": False})
+    def test_the_same_key_is_live_with_simulation_off(self):
+        self.assertFalse(mono.mono_simulation())
+        self.assertTrue(mono.mono_live())
+
+    @override_settings(MONO={**_KEYED, "SIMULATION": True})
+    def test_directpay_reaches_no_network_while_simulating(self):
+        # The one that matters: a real DirectPay debits the customer's own bank.
+        with patch("utility.mono.requests.post") as post:
+            mono.initiate_directpay(5000, "ZMONO-SIM-1", email="a@b.com")
+        post.assert_not_called()
+
+
 @override_settings(
     WEMA={"SIMULATION": False},
     **_STAGED,
@@ -78,6 +111,5 @@ class LiveSelectorRegressionTests(SimpleTestCase):
         self.assertTrue(providers._prembly_live())
         self.assertTrue(providers._card_issuer_live())
         self.assertTrue(providers.fincra_live())
-        self.assertTrue(vtung._live())
         self.assertFalse(mono.mono_simulation())
         self.assertTrue(mono.mono_live())

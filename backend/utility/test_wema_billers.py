@@ -9,8 +9,15 @@ from django.test import TestCase, override_settings
 from utility.models import WemaBiller
 from utility.providers import _wema_vas_route, vtu_purchase, vtu_verify_customer
 
+# A deploy that can actually SELL bills: keyed, not simulating, AND carrying the
+# status legends. The legends are not decoration here — providers.vas_can_settle
+# refuses a purchase on a keyed-but-legend-less deploy, because a PROCESSING result
+# could then never be settled or refunded. Without them the tests below would assert
+# routing against a purchase that is (correctly) never submitted.
 WEMA_ON = {"KEYS": {"wallet": "k", "airtime": "k", "bills": "k"}, "CHANNEL_ID": "c",
-           "SIMULATION": False, "SOURCE_ACCOUNT": "0123456789"}
+           "SIMULATION": False, "SOURCE_ACCOUNT": "0123456789",
+           "VAS_STATUS_LEGEND": "1=success 2=pending 3=failed",
+           "BILLS_STATUS_LEGEND": "1=success 2=pending 3=failed"}
 
 
 @override_settings(VAS_PROVIDER="wema", WEMA=WEMA_ON)
@@ -82,13 +89,24 @@ class VerifyCustomerRailTests(TestCase):
 
 
 @override_settings(VAS_PROVIDER="wema", WEMA=WEMA_ON)
-class VtungRailUnaffectedTests(TestCase):
-    def test_a_mapped_biller_is_not_used_when_the_rail_is_wema(self):
+class LegacyVasProviderSettingTests(TestCase):
+    """A stale VAS_PROVIDER value cannot divert a purchase off the partner bank.
+
+    Deployed environments still carry VAS_PROVIDER pointed at the retired provider.
+    vas_provider() ignores anything that is not the partner bank, so the value can be
+    left in place until someone tidies it — what it must never do is select a rail
+    that no longer exists, or stop a mapped biller from being paid.
+    """
+
+    @override_settings(VAS_PROVIDER="vtung")
+    def test_a_mapped_biller_is_still_paid_through_the_partner_bank(self):
         WemaBiller.objects.create(service_id="ikeja-electric", package_id="77")
         with mock.patch("utility.wema.pay_bill",
-                        return_value={"success": True}) as p:
-            vtu_purchase("ikeja-electric", {"amount": "1000"}, "REF1")
+                        return_value={"success": True, "status": "SUCCESS"}) as p:
+            res = vtu_purchase("ikeja-electric", {"amount": "1000"}, "REF1")
         p.assert_called_once()
+        self.assertEqual(p.call_args.kwargs["package_id"], "77")
+        self.assertEqual(res["vas_rail"], "wema")
 
 
 @override_settings(VAS_PROVIDER="wema", WEMA=WEMA_ON)

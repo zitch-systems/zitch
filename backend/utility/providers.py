@@ -64,26 +64,76 @@ def mock_disabled_in_prod() -> bool:
 
 
 def vtu_live() -> bool:
-    """Whether the VAS provider (retired provider) has credentials configured."""
+    """Whether the VAS rail (airtime/data/bills at the partner bank) has credentials."""
     from . import wema
     return bool(wema._vas_live("airtime") or wema._vas_live("bills"))
 
 
 def vas_provider() -> str:
-    """VAS (airtime/data/bills) rail - partner bank only."""
+    """The VAS (airtime/data/bills) rail. There is exactly one: the partner bank.
+
+    Kept as a function rather than a constant because ``VAS_PROVIDER`` is still set on
+    deployed environments and pointed at the retired provider. Reading it here — and
+    ignoring anything that is not the partner bank — means a stale env var logs a
+    warning instead of selecting a rail that no longer exists.
+    """
     choice = (getattr(settings, "VAS_PROVIDER", "") or "").strip().lower()
-    if choice == "wema":
-        return "wema"
-    # retired provider is retired. Ignore legacy VAS_PROVIDER values rather than
-    # routing customer money to the removed provider.
     if choice and choice != "wema":
-        log.warning("legacy VAS_PROVIDER ignored; using partner bank")
-    from . import wema
-    if wema.wema_simulation():
-        return "wema"
-    if wema._vas_live("airtime") and wema._vas_legend("airtime"):
-        return "wema"
+        log.warning("legacy VAS_PROVIDER=%r ignored; the partner bank is the only VAS rail",
+                    choice)
     return "wema"
+
+
+# The product whose status legend decides a purchase of this route type. The
+# airtime/data status check and the bills status check answer with DIFFERENT integer
+# enums, so they are configured (and gated) separately — see wema._vas_legend.
+_SETTLE_PRODUCT = {"airtime": "airtime", "data": "airtime", "bill": "bills"}
+
+#: Shown to the customer when a purchase is refused because this deploy could not
+#: settle it. It must say plainly that no money was taken: the refusal happens
+#: before the provider call, so run_provider_purchase's normal failure path refunds
+#: the debit in full.
+_VAS_UNAVAILABLE = ("This is temporarily unavailable on our side. You have not been "
+                    "charged — please try again later.")
+
+
+def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
+    """Whether a purchase that comes back PROCESSING could EVER be resolved here.
+
+    The hazard this closes is specific and total. ALAT's airtime/data and bills
+    purchase endpoints may answer ``PROCESSING``, which settle_or_refund correctly
+    treats as "hold the money, requery later" — it must never refund a purchase that
+    may have been delivered. Settlement then depends on ``wema.vas_status``, whose
+    only answer is a bare integer ``transactionStatus`` that ALAT does not publish a
+    legend for; with no ``WEMA_VAS_STATUS_LEGEND`` / ``WEMA_BILLS_STATUS_LEGEND``,
+    ``_parse_vas`` reports ``pending`` for every code, forever. There is no second
+    settlement path: the bank's own transaction callback also routes through
+    ``vtu_requery``. So on a legend-less deploy a PROCESSING purchase leaves the
+    customer debited with nothing delivered and nothing refunded, permanently, and
+    no cron can ever clear it.
+
+    Selling what cannot be reconciled is not an option, so ``vtu_purchase`` refuses
+    up front instead — before the debit reaches a provider, where the ordinary
+    failure path refunds it cleanly.
+
+    Scope is deliberately narrow: this gates only the case where REAL calls will be
+    made. When ``_vas_live`` is false the rail already resolves itself safely — it
+    fails closed in production, and in dev/tests/simulation it mocks a synchronous
+    SUCCESS that needs no requery — so there is nothing to strand.
+
+    Returns ``(True, "")`` when a purchase is safe to accept, else
+    ``(False, <operator-facing reason>)``.
+    """
+    from . import wema
+
+    product = _SETTLE_PRODUCT.get(product, product)
+    if not wema._vas_live(product):
+        return True, ""
+    if not wema._vas_legend(product):
+        env = "WEMA_" + wema._LEGEND_SETTING.get(product, "VAS_STATUS_LEGEND")
+        return False, (f"{env} is not configured, so a PROCESSING purchase could never "
+                       f"be settled or refunded")
+    return True, ""
 
 
 def _wema_vas_route(service_id: str, payload: dict):
@@ -159,6 +209,22 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
             "message": "This service is not configured with our partner bank yet.",
             "vas_rail": "wema",
         }
+    can_settle, why = vas_can_settle(route["type"])
+    if not can_settle:
+        # Refuse BEFORE the provider call, so the customer's debit is refunded by the
+        # ordinary failure path rather than stranded on a PROCESSING purchase that
+        # nothing on this deploy could ever resolve. See vas_can_settle.
+        from .alerts import alert
+        alert("vas_purchase_refused_unsettleable: a VAS purchase was refused because "
+              "this deploy cannot settle it", level="error", service=service_id,
+              vas_type=route["type"], reason=why)
+        return {
+            "success": False,
+            "message": _VAS_UNAVAILABLE,
+            "vas_rail": "wema",
+            "vas_type": route["type"],
+            "unsettleable": why,
+        }
     src = _vas_source_account(payload, reference)
     phone = payload.get("phone", "")
     if route["type"] == "airtime":
@@ -177,24 +243,109 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
     res.setdefault("vas_type", route["type"])
     return res
 
-def vtu_requery(reference: str) -> dict:
-    """Requery a partner-bank VAS purchase by its request reference."""
-    from wallet.models import Transaction
+def vas_retired_rail(meta: dict | None) -> str:
+    """The retired rail this ledger row was fulfilled on, or "" for a partner-bank row.
+
+    ``vas_rail`` is stamped on every VAS row at purchase and re-persisted by
+    settle_or_refund, so a PENDING row that names anything other than the partner
+    bank was submitted before the cutover. A row with NO recorded rail is NOT treated
+    as retired: absent metadata is not evidence, and the partner-bank status check is
+    money-safe on a reference it does not recognise either way.
+    """
+    rail = str((meta or {}).get("vas_rail") or "").strip().lower()
+    return "" if rail in ("", "wema") else rail
+
+
+# One alert per reference per day. The reconcile cron runs every two minutes, so an
+# un-cooled page here would be ~720 identical events a day per stranded row; a daily
+# reminder is the right cadence for a row a human has to clear by hand.
+_RETIRED_RAIL_ALERT_COOLDOWN = 24 * 60 * 60
+
+
+def vas_requery(reference: str, meta: dict | None = None) -> dict:
+    """Requery one VAS purchase, given the ledger row's ``meta`` if the caller has it.
+
+    A row still PENDING from the RETIRED rail is never requeried. Its reference means
+    nothing to the partner bank, so the status check answers "no status" — which
+    _parse_vas money-safely reports as pending — and the row is re-asked every two
+    minutes, forever, looking like a live settlement attempt while nobody is ever told
+    it needs clearing by hand. Such rows are left pending (never auto-refunded: the
+    purchase may well have been delivered before the cutover) and paged instead.
+
+    Every requery path goes through here — the reconcile cron, the operator portal and
+    the admin action — so the guard cannot be bypassed by the caller that matters.
+    """
     from . import wema
+
+    rail = vas_retired_rail(meta)
+    if rail:
+        from django.core.cache import cache
+
+        from .alerts import alert
+        if cache.add(f"vas:retired-rail:{reference}", 1, _RETIRED_RAIL_ALERT_COOLDOWN):
+            alert("vas_requery_retired_rail: a pending purchase from the retired VAS "
+                  "rail cannot be requeried against the partner bank — settle it by hand",
+                  level="warning", reference=reference, vas_rail=rail)
+        # The rail goes back under "retired_rail", NOT "vas_rail": settle_or_refund
+        # persists vas_rail from a pending result, which would rewrite the row's meta
+        # on every one of the cron's two-minute passes for no gain.
+        return {"success": False, "pending": True, "status": "RETIRED_RAIL",
+                "reference": reference, "retired_rail": rail,
+                "message": "Made on a retired provider; needs manual settlement."}
+    return wema.vas_status(reference, (meta or {}).get("vas_type", "airtime"))
+
+
+def vtu_requery(reference: str) -> dict:
+    """Requery a VAS purchase by reference alone, loading the row's meta to do it."""
+    from wallet.models import Transaction
 
     txn = Transaction.objects.filter(reference=reference).only("meta").first()
-    meta = (txn.meta if txn else None) or {}
-    return wema.vas_status(reference, meta.get("vas_type", "airtime"))
+    return vas_requery(reference, (txn.meta if txn else None) or {})
+
+#: Our cable service_ids, and the CablePlan.provider choice each maps to.
+_CABLE_PROVIDER_CHOICE = {"gotv": "1", "dstv": "2", "startimes": "3"}
+
+
+def _cable_validation_code(service_id: str) -> str:
+    """Any mapped ``packageId`` for this cable provider, for validating a smartcard.
+
+    ALAT's ValidateCustomer takes a packageId, but a smartcard is validated BEFORE the
+    customer picks a bouquet — that is the whole point of the step, and it is the order
+    the app and the WhatsApp flow both use. Routing validation through the normal
+    per-plan lookup therefore asked for a bouquet code that does not exist yet and
+    failed every cable IUC check with "biller not configured", whatever was mapped.
+
+    Any mapped bouquet of the same provider identifies the same biller to ALAT, which
+    is all validation needs, so the cheapest mapped one is used. Still returns "" when
+    NOTHING for that provider is mapped, which is a real configuration gap.
+    """
+    from .models import CablePlan
+
+    choice = _CABLE_PROVIDER_CHOICE.get(service_id, "")
+    if not choice:
+        return ""
+    row = (CablePlan.objects.filter(provider=choice, active=True)
+           .exclude(wema_code="").order_by("price").only("wema_code").first())
+    return row.wema_code if row else ""
+
 
 def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "") -> dict:
-    """Validate a bill customer exclusively through the partner-bank biller."""
+    """Validate a bill customer exclusively through the partner-bank biller.
+
+    A cable smartcard with no bouquet chosen yet resolves through
+    _cable_validation_code rather than the per-plan lookup — see there for why.
+    """
     from . import wema
 
-    route = _wema_vas_route(service_id, {
-        "variation_code": variation,
-        "billersCode": billers_code,
-        "amount": "1",
-    })
+    if not variation and service_id in _CABLE_PROVIDER_CHOICE:
+        code = _cable_validation_code(service_id)
+        route = {"type": "bill", "code": code, "amount": "1"} if code else None
+    else:
+        route = _wema_vas_route(service_id, {
+            "variation_code": variation,
+            "billersCode": billers_code,
+            "amount": "1",
+        })
     if route is None or route["type"] != "bill" or not route["code"]:
         return {
             "success": False,
