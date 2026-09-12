@@ -388,7 +388,7 @@ def _is_empty_history_response(resp: requests.Response, data: dict) -> bool:
     """ALAT returns HTTP 400 + "No record found" for an empty statement window."""
     if resp.status_code != 400 or not isinstance(data, dict):
         return False
-    message = str(_first_text(data.get("message")) or "").strip().casefold()
+    message = str(_msg(data) or "").strip().casefold()
     return "no record found" in message
 
 
