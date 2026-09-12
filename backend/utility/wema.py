@@ -1437,7 +1437,7 @@ def confirm_credit_status(reference: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# VAS — airtime / data / bills (opt-in; VTU.ng stays the default)
+# VAS — airtime / data / bills (the only VAS rail)
 #
 # The Client (single-account) variants debit the user's own NUBAN
 # (accountNumber / customerAccount) — matching the per-user-balance model — so
@@ -1445,8 +1445,11 @@ def confirm_credit_status(reference: str) -> dict:
 # WEMA_SOURCE_ACCOUNT). Money-movement calls carry securityInfo (nullable in
 # sandbox). Purchases mirror the VTU contract: success => delivered; a network
 # error returns pending=True so the caller never refunds a maybe-delivered buy.
-# Data/bills need Wema's own packageCode/packageId catalog (differs from our
-# stored VTU.ng codes) — see docs/wema-migration.md.
+# Data/bills need Wema's own packageCode/packageId catalog, which differs from our
+# own stored plan codes — run `manage.py seed_wema_plans` to map them, and see
+# docs/wema-migration.md. A purchase that answers PROCESSING can only be settled by
+# requerying against a configured status legend; see _vas_legend and
+# providers.vas_can_settle, which refuses a purchase this deploy could not settle.
 # ---------------------------------------------------------------------------
 def _vas_live(product: str) -> bool:
     """Whether a VAS product may make real calls with its documented key."""
@@ -1594,29 +1597,76 @@ def get_bills() -> dict:
 
 
 def validate_bill_customer(identifier: str, package_id: str) -> dict:
-    """Validate a bill customer identifier (meter/smartcard) -> customer name."""
+    """Validate a bill customer identifier (meter/smartcard) -> customer name + address.
+
+    The ADDRESS is read as well as the name. providers.vtu_verify_customer has always
+    returned a ``customer_address`` and the electricity flow shows it on the confirm
+    card and persists it on the ledger row — it is how a customer catches a mistyped
+    meter number before paying. This parser did not read the field at all, so on this
+    rail the address was silently always empty: the confirm card showed a name and a
+    blank address, and the receipt had nothing to check against.
+
+    VERIFY-BEFORE-LIVE, like the rest of this client: ALAT's exact field spelling is
+    not confirmed from CI, so all the plausible ones are read defensively and a miss
+    degrades to "" (the pre-existing behaviour) rather than an error.
+    """
     if not _vas_live("bills"):
         if _mock_blocked():
             return {"success": False, "message": "Bills are not configured"}
-        return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM"}
+        return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM",
+                "address": "12 Marina Road, Lagos"}
     try:
         body = {"channelId": settings.WEMA.get("CHANNEL_ID", ""), "identifier": identifier,
                 "packageId": _as_int(package_id)}
         data = _post("bills", "/api/BillsPayment/ValidateCustomer", body).json()
         r = data.get("result", {}) or {}
         return {"success": _ok(data) or bool(data.get("successful")),
-                "name": r.get("customerName") or r.get("name", ""), "raw": data}
+                "name": r.get("customerName") or r.get("name", ""),
+                # customerAddress is the spelling ALAT uses elsewhere in its contract
+                # (the card-issue body), so it is tried first.
+                "address": r.get("customerAddress") or r.get("address") or "",
+                "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
 
+#: Field names a prepaid-meter token could arrive under. A PREPAID electricity
+#: purchase is worthless without it — the customer types the token into the meter to
+#: get the units, and a receipt that omits it is money spent on nothing they can use,
+#: recoverable only by calling support. _parse_vas returns only the settle/refund
+#: shape, so the token was being dropped on the floor and every prepaid receipt went
+#: out tokenless. VERIFY-BEFORE-LIVE, like the rest of this client: ALAT's exact
+#: spelling is not confirmable from CI, so the plausible ones are all read and a miss
+#: degrades to no token rather than an error.
+_TOKEN_FIELDS = ("token", "meterToken", "rechargePin", "rechargeToken",
+                 "purchaseToken", "creditToken", "stdToken", "pin")
+
+
+def _vas_token(data: dict) -> str:
+    """The prepaid-meter token in a bills response, or "" when there isn't one."""
+    r = data.get("result") if isinstance(data, dict) else None
+    for source in (r if isinstance(r, dict) else {}, data if isinstance(data, dict) else {}):
+        for field in _TOKEN_FIELDS:
+            value = str(source.get(field) or "").strip()
+            if value:
+                return value
+    return ""
+
+
 def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, source_account: str = "",
              email: str = "", phone: str = "", name: str = "", charge=0) -> dict:
-    """Pay a bill debiting the user's NUBAN (Client PayBill variant)."""
+    """Pay a bill debiting the user's NUBAN (Client PayBill variant).
+
+    Carries the prepaid-meter ``token`` through when the response has one — see
+    _TOKEN_FIELDS for why that matters and how loosely it is read.
+    """
     if not _vas_live("bills"):
         if _mock_blocked():
             return {"success": False, "message": "Bills are not configured"}
-        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
+        # Marked MOCK in the value itself: it reaches a receipt, and a plausible-looking
+        # string there would be indistinguishable from a real meter token.
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference,
+                "token": "MOCK-0000-0000-0000-0000"}
     src = source_account or _vas_source()
     if not src:
         return {"success": False, "message": "Bill payment is temporarily unavailable"}
@@ -1628,7 +1678,9 @@ def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, 
                 "customerPhoneNumber": phone, "customerName": name,
                 "securityInfo": _security_info(op="bill", reference=reference, amount=amount_naira)}
         data = _post("bills", "/api/Shared/PayBill", body).json()
-        return _parse_vas(data, reference, product="bills")
+        res = _parse_vas(data, reference, product="bills")
+        token = _vas_token(data)
+        return {**res, "token": token} if token else res
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
@@ -1666,7 +1718,13 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
         # The two status endpoints answer with DIFFERENT integer enums (1..11 vs 1..9),
         # so the legend must be picked per product or a code would be decoded against
         # the wrong ladder.
-        return _parse_vas(data, reference, product=product)
+        res = _parse_vas(data, reference, product=product)
+        # A bill that settles on REQUERY rather than synchronously must still carry
+        # its prepaid token, or a late-settled purchase delivers units the customer is
+        # never told how to claim. settle_or_refund copies result keys onto the row's
+        # meta on success, so the token survives there for the receipt.
+        token = _vas_token(data) if product == "bills" else ""
+        return {**res, "token": token} if token else res
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 

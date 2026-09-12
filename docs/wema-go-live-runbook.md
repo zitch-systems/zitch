@@ -68,9 +68,8 @@ crons too (`render.yaml` already declares the slots on each).
 |---|---|
 | `SENTRY_DSN` | So the reconcile crons can page on drift/outage (they call `utility.alerts.alert`). Set it on the **web service and every cron**. |
 | `WEMA_DIAG_TOKEN` | Enables the `/wema-diagnose` remote self-test using an `Authorization: Bearer …` header. |
-| `DIAG_TOKEN` | Enables `/preflight`, `/vtu-diagnose`, `/sms-diagnose`, and `/wema-callbacks-diagnose` using bearer auth (either diagnostic token opens the callback probe). Never put either token in a URL. |
+| `DIAG_TOKEN` | Enables `/preflight`, `/sms-diagnose`, and `/wema-callbacks-diagnose` using bearer auth (either diagnostic token opens the callback probe). Never put either token in a URL. |
 | `COMPLIANCE_EXPORT_EMAIL` | Where an NDPR data-subject export is delivered (Django admin → Users). Unset means that action **refuses** — the export is never shown in a browser, so with no destination there is nowhere safe for it to go. Set it before you need it: the NDPR clock is 30 days and it is not a good day to discover the setting. |
-| `VTUNG_API_KEY` **or** `VTUNG_USERNAME`+`VTUNG_PASSWORD` | Airtime/data/bills rail (VTU.ng). |
 | `RESEND_API_KEY` | Transactional email (`RESEND_FROM_EMAIL` is already `no-reply@send.zitch.ng`). |
 | `TERMII_API_KEY` | The SMS / OTP-by-SMS rail — the only one. **Blank = mock mode: nothing is sent**, so no user receives a code. |
 | `TERMII_SENDER_ID` | Sender ID (default `Zitch`) — **must be approved AND whitelisted for DND**, or messages are accepted by the API and never reach the handset. |
@@ -176,8 +175,13 @@ deploy is ready.
   are reported for a human, never auto-applied). **No shell:** the read-only half is
   the `bank_codes` block of `POST /wema-diagnose`, and the fix is Django admin →
   Banks → *"Sync bank codes from the payout rail"*.
-- `GET /vtu-diagnose` with `Authorization: Bearer <DIAG_TOKEN>` — proves the VTU.ng wallet authenticates
-  and shows its balance (VAS buys fail on an empty provider wallet).
+- VAS (airtime/data/bills) has no probe of its own — it runs on the partner bank, so
+  `/wema-diagnose` and `/preflight` cover it. `/preflight` is the one to read: it
+  reports whether each VAS product is keyed AND whether its status legend
+  (`WEMA_VAS_STATUS_LEGEND` / `WEMA_BILLS_STATUS_LEGEND`) is set. Without the legend a
+  `PROCESSING` purchase could never be settled or refunded, so purchases of that
+  product are **refused up front** (the customer is not charged) — see
+  `docs/wema-migration.md`. Getting the enum from Wema is what turns VAS on.
 - `GET /wema-callbacks-diagnose` with a diagnostic bearer token — prints the
   four callback URL **templates** and confirms each
   resolves and that a wrong secret is refused. Read

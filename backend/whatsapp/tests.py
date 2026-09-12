@@ -18,6 +18,7 @@ from django.utils import timezone
 
 from accounts.models import AccessToken
 from transfers.models import Bank, Beneficiary
+from utility.catalogue_fixtures import map_billers, map_existing_plans
 from utility.models import CablePlan, DataPlan
 from wallet.models import Transaction
 from wallet.services import credit, get_or_create_wallet
@@ -660,6 +661,12 @@ class VtuTests(TestCase):
                                 plan_code="mtn-1gb", price=Decimal("500"), active=True)
         CablePlan.objects.create(provider="2", name="DStv Compact", cable_plan_code="dstv-compact",
                                  price=Decimal("9000"), active=True)
+        # The partner bank is the only VAS rail and fulfils against its own codes, so
+        # an unmapped plan or biller is refused before any debit. These rows are what
+        # `manage.py seed_wema_plans` writes on a real deploy; without them this
+        # fixture would be exercising the refusal path, not the purchase flows.
+        map_existing_plans()
+        map_billers()
 
     def inbound(self, text, mid):
         event = {"entry": [{"changes": [{"value": {"messages": [

@@ -254,8 +254,9 @@ def main():
         r = post("/api/betting/fund/", {"platform": platforms[0]["code"], "user_id": "E2E-9001",
                                         "amount": "500", "transaction_pin": "1234",
                                         "idempotency_key": f"e2e-{uuid.uuid4().hex[:12]}"}, token=tok)
-        # Betting funds via VTU.ng in live mode (fail-safe fail+refund on any
-        # provider error); mock mode succeeds. Accept either documented outcome.
+        # Betting funds through the partner bank in live mode (fail-safe fail+refund
+        # on any provider error, and refused outright when the biller is unmapped or
+        # the deploy has no status legend); mock mode succeeds. Accept either outcome.
         check("betting fund (mock or fail-safe refund)",
               j(r).get("success") is True or r.status_code == 502, f"{r.status_code} {j(r)}")
 

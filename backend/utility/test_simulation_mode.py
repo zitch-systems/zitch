@@ -1,6 +1,6 @@
 """The deploy-wide simulation switch.
 
-WEMA_SIMULATION un-blocks provider MOCK paths across the WHOLE stack (VTU.ng
+WEMA_SIMULATION un-blocks provider MOCK paths across the WHOLE stack (partner-bank
 airtime/data/bills, cards, FX, Mono, Wema, KYC) so the app can be walked end-to-end
 with no real money — and wema_preflight HARD-FAILS while it is on, so it can never
 reach a real-money deploy.
@@ -88,8 +88,6 @@ class KycProviderFailClosedTests(SimpleTestCase):
 _LIVE_DIAG = {"base_url": "https://api.alat.ng", "channel_id_set": True,
               "wallet_key_set": True, "security_info_set": True, "wema_live": True,
               "simulation": True, "status": "configured", "hint": ""}
-_VTU_OK = {"config": {"live": True, "api_key_set": True},
-           "auth": {"ok": True}, "balance": {"ok": True, "balance": "15000.00"}}
 
 
 class PreflightSimulationGateTests(TestCase):
@@ -101,8 +99,7 @@ class PreflightSimulationGateTests(TestCase):
     def test_preflight_hard_fails_while_simulation_on(self):
         out = StringIO()
         code = 0
-        with mock.patch("utility.wema.wema_diagnostics", return_value=_LIVE_DIAG), \
-             mock.patch("utility.management.commands.wema_preflight.vtu_probe", return_value=_VTU_OK):
+        with mock.patch("utility.wema.wema_diagnostics", return_value=_LIVE_DIAG):
             try:
                 call_command("wema_preflight", stdout=out)
             except SystemExit as exc:

@@ -9,9 +9,9 @@ from .models import CablePlan, DataPlan, WemaBiller
 class _WemaCatalogueSyncMixin:
     """Run `seed_wema_plans` from the browser.
 
-    Data and cable purchases stay on VTU.ng until a plan carries the rail's own
-    packageCode, and that mapping only existed as a management command — unreachable on
-    a deploy with no shell, which is exactly where it is needed. This runs the same
+    Data and cable purchases cannot be fulfilled at all until a plan carries the
+    rail's own packageCode, and that mapping only existed as a management command —
+    unreachable on a deploy with no shell, which is exactly where it is needed. This runs the same
     command rather than reimplementing the matching, which is best-effort (price, then a
     normalised name) and deliberately reviewed rather than trusted.
 
@@ -72,8 +72,8 @@ class WemaBillerAdmin(_WemaCatalogueSyncMixin, admin.ModelAdmin):
     The sync resolves discos by name; betting companies it cannot, because their
     slugs come from whatever the app offers rather than a list we control. Those are
     added here by hand, which is also the escape hatch when a disco's catalogue name
-    changes and the sync reports it unresolved. A service with no row here simply
-    stays on VTU.ng.
+    changes and the sync reports it unresolved. A service with no row here is simply
+    not on sale — providers.vtu_purchase refuses it before any debit.
     """
     list_display = ("service_id", "package_id", "biller_id", "name", "active", "updated")
     list_filter = ("active",)

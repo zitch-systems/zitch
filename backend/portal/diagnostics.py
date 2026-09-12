@@ -57,7 +57,7 @@ def diagnostics_view(request):
     from django.core.management import call_command
 
     from utility import wema
-    from utility.providers import sms_live, sms_probe, vtu_live
+    from utility.providers import sms_live, sms_probe, vas_can_settle, vtu_live
 
     parts = []
     sent = ""
@@ -99,9 +99,18 @@ def diagnostics_view(request):
                "base_url": settings.TERMII.get("BASE_URL", "")}),
         note="<code>sms_live: false</code> means mock mode — nothing is sent and the code is "
              "not logged anywhere, so nobody receives an OTP."))
-    parts.append(_section("VTU.ng", _json({"vtu_live": _safe("vtu", vtu_live)}),
-                          note="Airtime/data/bills. A purchase fails on an empty provider "
-                               "wallet however correct the code is."))
+    parts.append(_section(
+        "VAS (airtime / data / bills)",
+        _json({"vas_live": _safe("vas", vtu_live),
+               "airtime_settleable": _safe("airtime_settleable",
+                                           lambda: vas_can_settle("airtime")),
+               "bills_settleable": _safe("bills_settleable",
+                                         lambda: vas_can_settle("bill"))}),
+        note="The partner bank is the only VAS rail. A <code>settleable</code> that reads "
+             "<code>false</code> means purchases of that product are REFUSED before any "
+             "debit (the customer is not charged): ALAT's status check answers with a bare "
+             "integer this deploy has no legend for, so a <code>PROCESSING</code> purchase "
+             "could never be settled or refunded. The reason names the env var to set."))
 
     # The channel most likely to be "just not responding" with nothing in any log:
     # the webhook acks 200 and queues, and a SEPARATE service does the replying.

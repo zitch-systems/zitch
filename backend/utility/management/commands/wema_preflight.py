@@ -292,32 +292,39 @@ class Command(BaseCommand):
                            else "no packageIds mapped — electricity and betting stay on "
                                 "Partner-bank VAS; run `manage.py seed_wema_plans --only billers`"))
 
-        # SOFT — the VAS status legends. Money-safe either way (an unknown code leaves
-        # the purchase PENDING), so this can never be a gate; but an unset legend means
-        # timed-out VAS buys accumulate as PENDING rows that only a human can clear,
-        # which ops should know before launch rather than discover from a queue. partner bank
-        # owes us one map per product — see docs/wema-migration.md.
+        # SOFT — the VAS status legends. This USED to be described here as money-safe
+        # either way, on the grounds that an undecodable code leaves the purchase
+        # PENDING. Safe for the ledger; not for the customer. A PROCESSING purchase is
+        # settled ONLY by requerying an integer transactionStatus against one of these
+        # legends (the bank's own callback routes through the same requery), so with no
+        # legend the row is debited, undelivered and unrefundable, forever, and no cron
+        # can clear it. providers.vas_can_settle therefore REFUSES such a purchase up
+        # front, which keeps the money safe but takes the product off sale.
+        #
+        # So this is reported as what it now is: airtime/data/bills do not sell at all
+        # until the legend is set. It stays SOFT rather than a hard gate because a
+        # deploy that sells no VAS is perfectly launchable, and because the refusal is
+        # already safe — `--strict` is the escalation for a launch that needs VAS.
+        # Wema owes us one map per product; see docs/wema-migration.md.
         from utility.wema import _vas_legend, _vas_live
         legend_products = [("airtime", "WEMA_VAS_STATUS_LEGEND"),
                            ("bills", "WEMA_BILLS_STATUS_LEGEND"),
                            ("remita", "WEMA_REMITA_STATUS_LEGEND")]
-        # Only ask about products this deploy can actually reach. Airtime and bills
-        # go through partner bank only when the VAS rail is partner bank; Remita is a standalone
-        # subscription and is live whenever its key is. Warning about a legend for a
-        # product we never call trains the operator to ignore the section that also
-        # carries the one that matters.
+        # Only ask about products this deploy can actually reach — warning about a
+        # legend for a product we never call trains the operator to ignore the section
+        # that also carries the one that matters.
         for product, env_var in legend_products:
-            if product in ("airtime", "bills") and vas_provider() != "wema":
-                continue
-            if product == "remita" and not _vas_live("remita"):
+            if not _vas_live(product):
                 continue
             legend = _vas_legend(product)
+            sells = "Remita bill payments" if product == "remita" else (
+                "airtime and data" if product == "airtime" else "bill payments")
             checks.append((
                 False, f"VAS status legend ({product})",
                 PASS if legend else WARN,
                 f"{len(legend)} code(s) mapped" if legend
-                else f"{env_var} unset — a timed-out {product} purchase stays PENDING "
-                     "until an operator resolves it (no auto settle/refund)"))
+                else f"{env_var} unset — {sells} cannot be settled, so purchases are "
+                     "REFUSED up front (customer not charged). Ask Wema for the enum"))
 
         self.stdout.write("")
         # Operator-portal insider controls. SOFT, deliberately: OPS_REQUIRE_MFA is

@@ -1,9 +1,12 @@
 """Tests for settlement_report — the whole-float position across every asset rail.
 
-The distinction these tests exist to pin: VAS spend and a bank payout both leave
-the customer's ledger, but they leave DIFFERENT pots. Counting them together is the
-mistake that makes a per-wallet reconciliation look healthy while the VAS rail runs
-dry with a bank account full of money.
+Since VAS moved to the partner bank there are exactly two pots: the customer NUBANs
+and the pool account. The invariants pinned here are (a) the pool counts toward what
+we hold even though no per-wallet check ever reads it, (b) a rail we could not read
+makes the position advisory rather than inventing a shortfall out of an outage, and
+(c) VAS spend now debits the buyer's OWN NUBAN, so it drops what we hold and what we
+owe together and leaves the position untouched — which is precisely why the old
+third rail, an externally-held VAS float with a standing sweep obligation, is gone.
 """
 from decimal import Decimal
 from io import StringIO
@@ -36,7 +39,7 @@ class SettlementReportTests(TestCase):
         Wallet.objects.filter(user=self.user).update(
             account_reference=wema_account_reference(self.user), account_number=NUBAN)
 
-    def _run(self, *args, bank=None, provider="0", live=True):
+    def _run(self, *args, bank=None, live=True):
         out, err = StringIO(), StringIO()
         code = 0
         with mock.patch("utility.wema.wema_live", return_value=live), \
@@ -68,10 +71,16 @@ class SettlementReportTests(TestCase):
         self.assertIn("SHORTFALL", message)
         self.assertEqual(alert_mock.call_args[1]["level"], "error")
 
-    def test_provider_wallet_counts_toward_what_we_hold(self):
-        # 3,000 at the bank + 2,000 sitting in the partner-bank VAS wallet covers 5,000 owed.
-        # Without the provider rail this would read as a 2,000 shortfall and page.
-        out, alert_mock, code = self._run(bank={NUBAN: "3000"}, provider="2000")
+    def test_vas_spend_leaves_the_position_flat_with_no_third_rail(self):
+        # The reason the externally-held VAS float is gone. Partner-bank VAS debits the
+        # buyer's own NUBAN, so a 1,200 airtime buy drops the ledger liability to 3,800
+        # AND the NUBAN to 3,800: held and owed fall together and the position does not
+        # move. On the retired rail the NUBAN would still have held 5,000 against 3,800
+        # owed, and the missing 1,200 sat in a pot at another company that this report
+        # had to read — and page about when it could not.
+        debit(self.user, Decimal("1200"), "Airtime MTN 1200")
+        out, alert_mock, code = self._run(bank={NUBAN: "3800"})
+        self.assertIn("ledger liability ₦3,800.00", out)
         self.assertIn("POSITION +₦0.00 (surplus)", out)
         alert_mock.assert_not_called()
         self.assertEqual(code, 0)
@@ -108,11 +117,13 @@ class SettlementReportTests(TestCase):
 
     # --- an unreadable rail makes the position advisory, not authoritative --
 
-    def test_unreadable_provider_rail_is_flagged_not_silently_zeroed(self):
-        # provider=None means "could not read". Counting it as 0 would invent a
-        # 5,000 shortfall out of an outage.
-        out, alert_mock, code = self._run("--fail-on-breach",
-                                         bank={NUBAN: "5000"}, provider=None)
+    def test_unreadable_pool_rail_is_flagged_not_silently_zeroed(self):
+        # The pool is configured but its balance would not read. Counting an unreadable
+        # rail as 0 would invent a shortfall out of an outage and page for solvency.
+        from django.conf import settings as dj_settings
+        with mock.patch.dict(dj_settings.WEMA, {"SOURCE_ACCOUNT": POOL}):
+            out, alert_mock, code = self._run("--fail-on-breach", bank={NUBAN: "5000"})
+        self.assertIn("pool        UNREADABLE", out)
         self.assertEqual(code, 1)
         levels = [c[1].get("level") for c in alert_mock.call_args_list]
         messages = [c[0][0] for c in alert_mock.call_args_list]
@@ -128,14 +139,15 @@ class SettlementReportTests(TestCase):
 
     # --- rail attribution -------------------------------------------------
 
-    def test_vas_spend_is_a_sweep_obligation_not_a_bank_outflow(self):
-        # Airtime leaves the partner-bank VAS wallet; the customer's NUBAN is untouched. The
-        # report must say so, or nobody ever tops the provider wallet back up.
+    def test_vas_spend_is_reported_separately_from_a_bank_payout(self):
+        # Both leave the same bank now, but they are still split out: VAS out is the
+        # line that explains a day's outflow, and a VAS total climbing while the
+        # position does not move is the signature of debits that never reached a biller.
         debit(self.user, Decimal("1200"), "Airtime MTN 1200")
-        out, _alert, _code = self._run(bank={NUBAN: "5000"})
+        out, _alert, _code = self._run(bank={NUBAN: "3800"})
         self.assertIn("VAS out ₦1,200.00", out)
         self.assertIn("bank out ₦0.00", out)
-        self.assertIn("sweep owed to partner-bank VAS today ₦1,200.00", out)
+        self.assertNotIn("sweep", out)   # no externally-held float to sweep to
 
     def test_bank_payout_is_a_bank_outflow(self):
         debit(self.user, Decimal("800"), "Transfer to ADEYEMI",
@@ -143,7 +155,6 @@ class SettlementReportTests(TestCase):
         out, _alert, _code = self._run(bank={NUBAN: "4200"})
         self.assertIn("bank out ₦800.00", out)
         self.assertIn("VAS out ₦0.00", out)
-        self.assertIn("sweep owed to partner-bank VAS today ₦0.00", out)
 
     def test_internal_transfer_leaves_no_bank(self):
         # No meta.bank -> not a payout; "Transfer to" -> internal. It moves liability

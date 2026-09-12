@@ -519,7 +519,8 @@ class DiagnosticsPageTests(TestCase):
         res = self.client.get("/admin/diagnostics/")
         self.assertEqual(res.status_code, 200)
         body = res.content.decode()
-        for expected in ("Go-live preflight", "Wema / ALAT", "SMS (Termii)", "VTU.ng"):
+        for expected in ("Go-live preflight", "Wema / ALAT", "SMS (Termii)",
+                         "VAS (airtime / data / bills)"):
             self.assertIn(expected, body)
 
     def test_a_failing_probe_does_not_take_the_page_down(self):

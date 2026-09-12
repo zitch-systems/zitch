@@ -13,10 +13,12 @@ URL is ``https://api.withmono.com``. Every function returns ``{"success": bool, 
 
 Amounts: Mono works in KOBO; helpers convert to/from naira at the boundary.
 
-MOCK mode: when ``MONO_SECRET_KEY`` is blank the calls simulate success so the
-flow is testable offline — EXCEPT in production (DEBUG off), where money /
-account-linking calls fail closed via ``providers.mock_disabled_in_prod`` so a
-misconfigured deploy never fakes a link or a funding.
+MOCK mode: when ``MONO_SECRET_KEY`` is blank — or either simulation switch
+(``MONO_SIMULATION``, deploy-wide ``WEMA_SIMULATION``) is on — the calls simulate
+success so the flow is testable offline. EXCEPT in production (DEBUG off) with no
+simulation declared, where money / account-linking calls fail closed via
+``providers.mock_disabled_in_prod`` so a misconfigured deploy never fakes a link or
+a funding.
 
 VERIFY-BEFORE-LIVE: endpoint paths and field names follow Mono's published API
 (https://docs.mono.co) but can't be exercised from CI — confirm each against the
@@ -37,8 +39,30 @@ REQUEST_TIMEOUT = 30
 log = logging.getLogger("zitch")
 
 
+def mono_simulation() -> bool:
+    """Whether bank-linking must serve its MOCK paths rather than call Mono.
+
+    Two switches, either of which is enough: ``MONO_SIMULATION`` (this rail only) and
+    the deploy-wide ``WEMA_SIMULATION`` (see providers.simulation_mode), which marks
+    the WHOLE payment/identity stack as fake-money end-to-end.
+    """
+    from .providers import simulation_mode
+    return bool(settings.MONO.get("SIMULATION")) or simulation_mode()
+
+
 def mono_live() -> bool:
-    """Whether Mono has a secret key configured (live, non-mock)."""
+    """Whether a real Mono call will be attempted (keyed AND not simulating).
+
+    Simulation has to beat a staged key, not the other way round. Reading only
+    ``MONO_SECRET_KEY`` meant a deploy with the key present but simulation ON — the
+    exact shape of a staging environment loaded with real credentials — still made
+    live calls, including DirectPay, which PULLS REAL MONEY out of a customer's own
+    bank account. Meanwhile production_checks was told ``mono_simulation=True`` and
+    the operator was reading, from the variable's name and the runbook, that nothing
+    on the deploy could move money. Same trap wema_live() closes for the partner bank.
+    """
+    if mono_simulation():
+        return False
     return bool(settings.MONO.get("SECRET_KEY"))
 
 

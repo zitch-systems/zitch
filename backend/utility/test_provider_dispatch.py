@@ -15,6 +15,12 @@ WEMA_LIVE = {"BASE_URL": "https://apiplayground.alat.ng", "CHANNEL_ID": "chan-1"
              "KEYS": {"wallet": "subkey"}, "SOURCE_ACCOUNT": "0100000001",
              "SECURITY_INFO": "sec", "SIMULATION": False}
 
+# The partner bank keyed for VAS specifically, i.e. the one shape where real
+# airtime/data/bills calls are made and the status legend therefore decides whether a
+# PROCESSING purchase could ever be settled (see providers.vas_can_settle).
+_WEMA_VAS_KEYED = {**WEMA_LIVE,
+                   "KEYS": {"wallet": "subkey", "airtime": "airkey", "bills": "billkey"}}
+
 
 class ProviderSelectionTests(SimpleTestCase):
     """partner bank is the sole money-movement rail."""

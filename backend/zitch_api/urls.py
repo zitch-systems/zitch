@@ -439,7 +439,7 @@ def wema_diagnose(request):
     # unexplainable "forbidden".
     #
     # Accepts EITHER token, like the other three probes. This one used to read
-    # WEMA_DIAG_TOKEN alone, so setting only DIAG_TOKEN opened /vas-diagnose,
+    # WEMA_DIAG_TOKEN alone, so setting only DIAG_TOKEN opened /preflight,
     # /sms-diagnose and /wema-callbacks-diagnose while this one kept 404ing —
     # indistinguishable from "the route isn't deployed", which is the exact
     # question these endpoints exist to answer.

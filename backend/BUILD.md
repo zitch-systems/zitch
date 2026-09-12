@@ -43,7 +43,7 @@ curl -X POST localhost:8000/api/verify_otp/ -H 'Content-Type: application/json' 
 1. Push this repo to GitHub (already done).
 2. Render dashboard -> **New + -> Blueprint** -> select this repo.
    `render.yaml` creates the web service (rootDir `backend`) + Postgres.
-3. After first deploy, set the service env vars (Wema/ALAT / VTU.ng / Termii / Prembly keys).
+3. After first deploy, set the service env vars (Wema/ALAT / Termii / Prembly keys).
 4. Create an admin: Render shell -> `python manage.py createsuperuser`.
 5. Set the app's `baseUrl` to the Render URL.
 
@@ -136,7 +136,7 @@ from chat. Built deterministic-first so money never depends on the AI being up.
   - **Airtime / data** (network → plan → phone → confirm → PIN) and **bills —
     electricity / cable** (meter/smartcard **validation** → confirm with the
     validated customer name → PIN), all via the shared `run_provider_purchase`
-    (VTU.ng). Prepaid electricity returns the token in the receipt.
+    (partner bank). Prepaid electricity returns the token in the receipt.
   - PINs are masked in the message log; every flow cancels after one wrong PIN.
 - **AI intent layer (`whatsapp/ai.py`):** when `LLM_API_KEY` is set and the AI
   is enabled (global `SystemSetting.ai_enabled_global` AND per-user
@@ -204,18 +204,21 @@ following `../docs/whatsapp-production-operations.md`.
   always-on web service, WhatsApp worker, shared cache and paid Postgres. Review cost
   and confirm it adopts the existing Render resources rather than creating duplicates;
   then remove the live database's current public `0.0.0.0/0` allow-list entry.
-- VTU.ng (v2) is the fallback VTU provider, in `utility/vtung.py` (called via the
-  `utility/providers.py` `vtu_*` wrappers). Confirm the tv/electricity/betting
-  request field names, the customer-verify endpoint, the 9mobile `service_id`,
-  and that the seeded data/cable `variation_id` codes match VTU.ng's catalogue —
-  these couldn't be fetched from CI.
-- **VAS on Wema:** `vas_provider()` auto-selects Wema once its VAS keys
-  (`WEMA_AIRTIME_KEY` / `WEMA_BILLS_KEY`) are set, else VTU.ng. Routing is
-  per-service: **airtime** goes to Wema immediately; **data/cable** only after
-  `python manage.py seed_wema_plans` maps each plan's `wema_code` from Wema's live
-  catalogue (run it with live keys, review with `--dry-run` first); **electricity/
-  betting** stay on VTU.ng until their Wema billers are mapped. A blank `wema_code`
-  keeps that plan on VTU.ng, so the cutover is safe and incremental.
+- **VAS is partner-bank only.** There is one VAS rail — Wema/ALAT, via the
+  `utility/providers.py` `vtu_*` wrappers (the name is historical). There is no
+  fallback provider, so an unmapped service is NOT quietly fulfilled elsewhere: it is
+  refused before any debit. **Airtime** works as soon as `WEMA_AIRTIME_KEY` is set.
+  **Data/cable** need `python manage.py seed_wema_plans` to map each plan's
+  `wema_code` from Wema's live catalogue (run with live keys; review with
+  `--dry-run` first). **Electricity/betting** need `--only billers` to map a
+  `WemaBiller` row each. Until a service is mapped it is off sale.
+- **`WEMA_VAS_STATUS_LEGEND` / `WEMA_BILLS_STATUS_LEGEND` gate VAS sales.** ALAT's
+  status endpoints answer with a bare integer `transactionStatus` and publish no
+  legend, so without one a purchase that comes back `PROCESSING` could never be
+  settled OR refunded — the customer would be debited for nothing, permanently.
+  `providers.vas_can_settle()` therefore refuses such a purchase up front (the debit
+  is refunded by the normal failure path) and pages. Ask Wema for the enum, set it as
+  `<int>=success|pending|failed` pairs, and VAS turns on with no deploy.
 - Wema / ALAT request/response shapes are VERIFY-BEFORE-LIVE: set `WEMA_CHANNEL_ID`,
   `WEMA_WALLET_KEY` (+ `WEMA_CARD_KEY` / `WEMA_AIRTIME_KEY` / `WEMA_BILLS_KEY` /
   `WEMA_KYC_KEY`), `WEMA_SOURCE_ACCOUNT`, the live `WEMA_BASE_URL`, and a random
