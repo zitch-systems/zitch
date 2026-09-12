@@ -1638,8 +1638,10 @@ def validate_bill_customer(identifier: str, package_id: str) -> dict:
 #: out tokenless. VERIFY-BEFORE-LIVE, like the rest of this client: ALAT's exact
 #: spelling is not confirmable from CI, so the plausible ones are all read and a miss
 #: degrades to no token rather than an error.
+#: A bare "pin" is deliberately NOT read: it is generic enough to be something else
+#: entirely, and this value is printed on a customer receipt.
 _TOKEN_FIELDS = ("token", "meterToken", "rechargePin", "rechargeToken",
-                 "purchaseToken", "creditToken", "stdToken", "pin")
+                 "purchaseToken", "creditToken", "stdToken")
 
 
 def _vas_token(data: dict) -> str:

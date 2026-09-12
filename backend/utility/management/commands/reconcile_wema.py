@@ -15,6 +15,14 @@ The partner bank exposes NO webhooks for these paths, so three things must be po
    reverses (FAILED) it â€” the settlement safety net behind the payout flow. Only runs when
    Wema is the payout rail.
 
+3. VAS (settlement): an airtime/data/bill purchase that answered PROCESSING has no
+   delivery webhook either. This requeries each PENDING VAS debit through
+   providers.vas_requery and settles or refunds it. It is the ONLY automated
+   settlement path for VAS -- this cron absorbed it when the retired rail's own
+   sweep was deleted -- which is why the retired-rail guard lives inside
+   vas_requery rather than at a call site, and why a purchase that could never be
+   settled is refused at the point of sale instead (providers.vas_can_settle).
+
 Schedule frequently (see render.yaml); each phase only does work when Wema
 is the relevant rail, so it's harmless otherwise.
 """
@@ -206,7 +214,7 @@ class Command(BaseCommand):
                 if apply_wema_credit(wallet, tx, self_refs=self_refs) is not None:
                     credited += 1
 
-        # Phase 2 - settle PENDING partner-bank VAS purchases. These are customer
+        # Phase 3 - settle PENDING partner-bank VAS purchases. These are customer
         # debits whose provider response timed out or returned "processing"; the
         # same fast reconciler must resolve them so airtime/data/bill purchases do
         # not sit as Pending while the wallet has already been debited.
