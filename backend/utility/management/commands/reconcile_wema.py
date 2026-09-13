@@ -232,6 +232,14 @@ class Command(BaseCommand):
             # on the route it actually takes. The row's meta is passed in because we
             # already hold it — no second query per row.
             res = vas_requery(txn.reference, meta)
+            if res.get("pending"):
+                self.stdout.write(
+                    "wema_vas_requery_pending "
+                    f"ref={txn.reference} "
+                    f"vas_type={meta.get('vas_type', '')} "
+                    f"status={res.get('status', '')} "
+                    f"message={res.get('message', '')}"
+                )
             if not res.get("success") and not res.get("pending") and not res.get("status"):
                 vas_status_failures += 1
                 continue
