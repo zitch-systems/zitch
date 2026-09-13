@@ -569,21 +569,29 @@ services:
           name: zitch-db
           property: connectionString
       - key: WEMA_CHANNEL_ID
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CHANNEL_ID}
       - key: WEMA_WALLET_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_WALLET_KEY}
       - key: WEMA_ACCOUNT_CREATION_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCOUNT_CREATION_KEY}
       - key: WEMA_ACCT_MGT_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCT_MGT_KEY}
       - key: WEMA_ACCT_MGT_BASE_URL
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCT_MGT_BASE_URL}
       - key: WEMA_SOURCE_ACCOUNT
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SOURCE_ACCOUNT}
       - key: WEMA_SECURITY_INFO
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SECURITY_INFO}
       - key: WEMA_BASE_URL
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BASE_URL}
+      - key: WEMA_AIRTIME_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_AIRTIME_KEY}
+      - key: WEMA_BILLS_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_KEY}
+      - key: WEMA_VAS_STATUS_LEGEND
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_STATUS_LEGEND}
+      - key: WEMA_BILLS_STATUS_LEGEND
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_STATUS_LEGEND}
       # Rail safety mode is sourced from the web service so a cron cannot call
       # ALAT while customer-facing requests are deliberately simulated.
       - key: WEMA_SIMULATION
