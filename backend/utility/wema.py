@@ -1745,6 +1745,15 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
 
 
 _VAS_OUTCOMES = ("success", "pending", "failed")
+_VAS_OUTCOME_ALIASES = {
+    # Wema's current VAS legend says 200 means either successful or pending. On a
+    # status requery that ambiguity cannot settle safely, so keep it pending until a
+    # purchase response carries an explicit SUCCESS status.
+    "success_or_pending": "pending",
+    "pending_or_success": "pending",
+    "failed_insufficient_funds_or_network_timeout": "failed",
+    "unauthorized_authentication_failed_or_invalid_api": "pending",
+}
 
 # Which env-backed legend decodes each product's integer transactionStatus. Remita
 # has its own: it is a DIFFERENT ALAT product with its own status enum, and it used
@@ -1768,7 +1777,7 @@ def _vas_legend(product: str) -> dict[str, str]:
     configuration instead of hardcoding a guess — the day Wema supplies it, it is a
     Render env var rather than a deploy.
 
-    Parsing is strict on purpose. An entry that isn't ``<int>=success|pending|failed``
+    Parsing is strict on purpose. An entry that isn't a known ``<int>=outcome`` pair
     is DROPPED with an error, not defaulted, because the fallback for an unknown code
     (leave the purchase PENDING) is the only money-safe outcome: a typo that silently
     resolved to ``success`` would settle undelivered top-ups.
@@ -1780,6 +1789,7 @@ def _vas_legend(product: str) -> dict[str, str]:
     for entry in raw.replace(",", " ").split():
         code, sep, outcome = entry.partition("=")
         outcome = outcome.strip().lower()
+        outcome = _VAS_OUTCOME_ALIASES.get(outcome, outcome)
         code = code.strip()
         if not sep or not code.isdigit() or outcome not in _VAS_OUTCOMES:
             log.error("wema_vas_legend_bad_entry product=%s entry=%r (ignored — codes it "
