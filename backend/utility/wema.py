@@ -669,14 +669,15 @@ def face_verify_live() -> bool:
         return False
     if not (_face_key() and settings.WEMA.get("FACE_VERIFY_URL")):
         return False
-    # The callback that grants the tier is authenticated by source IP alone (its URL
-    # is shown to the customer, so it can carry no secret). With no allowlist there
-    # is nothing to authenticate it WITH, and offering the rail would mean granting
-    # face_verified to anyone who read the URL out of their own browser. Local
-    # development and tests are exempt because _ip_ok already short-circuits there.
+    # Server-to-server callbacks require the verifier IP allowlist. Browser-delivered
+    # callbacks are admitted only from the exact configured HTTPS origin and are not
+    # trusted on origin alone: wema_face_callback proves the returned correlation by
+    # submitting it to Wema's authenticated without-OTP endpoint before changing KYC.
     if getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False):
         return True
-    return bool(settings.WEMA.get("FACE_CALLBACK_IPS"))
+    origins = settings.WEMA.get("FACE_CALLBACK_ORIGINS") or ()
+    has_https_origin = any(str(origin).startswith("https://") for origin in origins)
+    return bool(settings.WEMA.get("FACE_CALLBACK_IPS") or has_https_origin)
 
 
 #: Hostname labels that mark a verifier as non-production. Matched as WHOLE
