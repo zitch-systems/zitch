@@ -186,6 +186,16 @@ class RefusalLogCannotBeForgedTests(SimpleTestCase):
     def test_an_ordinary_reference_is_untouched(self):
         self.assertEqual(wema._log_safe("ZTCH12083E287CEE"), "ZTCH12083E287CEE")
 
+    def test_both_line_breaks_go(self):
+        """Carriage return as well as newline — a lone \\r is enough to overwrite a
+        rendered line in plenty of log viewers."""
+        self.assertEqual(wema._log_safe("a\rb\nc"), "a b c")
+
+    def test_a_gateway_status_code_is_sanitised_too(self):
+        """transactionStatus is whatever JSON arrived, not the small integer the
+        enum documents, and it is interpolated into the same log line."""
+        self.assertNotIn("\n", wema._log_safe("1\nERROR forged"))
+
 
 class RefusedRequeryTests(SimpleTestCase):
     """The requery path refuses more narrowly: the refusal is of the QUERY, and only

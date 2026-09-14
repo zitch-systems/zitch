@@ -307,13 +307,21 @@ _LOG_UNSAFE = re.compile(r"[\x00-\x1f\x7f]")
 def _log_safe(value, limit: int = 160) -> str:
     """One field of a log line, with anything that could forge a second line removed.
 
-    Transaction references and gateway messages reach our logs from outside this
-    process, and a newline or carriage return inside one writes what reads as its own
-    entry — a forged "settled" line under a real reference is exactly the sort of
-    thing nobody would think to disbelieve while reading a settlement incident. The
-    result is bounded too, so an oversized value cannot drown the surrounding lines.
+    Transaction references, gateway messages and gateway status codes reach our logs
+    from outside this process, and a newline or carriage return inside one writes what
+    reads as its own entry — a forged "settled" line under a real reference is exactly
+    the sort of thing nobody would think to disbelieve while reading a settlement
+    incident. The result is bounded too, so an oversized value cannot drown the
+    surrounding lines.
+
+    The two line breaks are stripped by name before the general control-character
+    pass. That is redundant for a reader — the regex below covers both — but it is the
+    form static analysis recognises as sanitising, and a security alert that keeps
+    reopening on a line that is already safe costs more attention than the duplication
+    does.
     """
-    return _LOG_UNSAFE.sub(" ", str(value))[:limit]
+    text = str(value).replace("\r", " ").replace("\n", " ")
+    return _LOG_UNSAFE.sub(" ", text)[:limit]
 
 
 def _as_int(v):
@@ -1458,7 +1466,8 @@ def confirm_credit_status(reference: str) -> dict:
         result = _transfer_result(data, reference, _transfer_payload(data), lookup=True)
         if not result["status"]:
             log.warning("wema_credit_status_unresolved ref=%s meta=%s raw=%s",
-                        reference, _response_meta(resp, data), _trim(data))
+                        _log_safe(reference), _response_meta(resp, data),
+                        _log_safe(_trim(data), limit=400))
         return result
     except (requests.RequestException, ValueError) as exc:
         # A failed status lookup cannot disprove the credit; retain PENDING and
@@ -1909,13 +1918,16 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
     if not status and "transactionStatus" in r:
         code = r.get("transactionStatus")
         outcome = _vas_legend(product).get(str(code).strip())
+        # `code` is the gateway's, not ours: it is whatever JSON arrived in
+        # transactionStatus, so it is sanitised alongside the reference rather than
+        # trusted to be the small integer the enum documents.
         if outcome is None:
-            log.warning("wema_vas_status_code ref=%s product=%s transactionStatus=%r "
+            log.warning("wema_vas_status_code ref=%s product=%s transactionStatus=%s "
                         "(no legend entry — left pending)",
-                        _log_safe(reference), product, code)
+                        _log_safe(reference), product, _log_safe(code))
         else:
-            log.info("wema_vas_status_decoded ref=%s product=%s transactionStatus=%r -> %s",
-                     _log_safe(reference), product, code, outcome)
+            log.info("wema_vas_status_decoded ref=%s product=%s transactionStatus=%s -> %s",
+                     _log_safe(reference), product, _log_safe(code), outcome)
         return {"success": outcome == "success", "pending": outcome in (None, "pending"),
                 "status": f"CODE_{code}",
                 "reference": r.get("transactionReference", reference),
