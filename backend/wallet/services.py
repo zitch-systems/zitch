@@ -324,6 +324,12 @@ _PROVIDER_REFUSED_RE = re.compile(
       | \bnot\s+subscribed\b
       | \bsubscription\s+(key\s+)?(is\s+)?(invalid|not\s+found)\b
       | \b(access\s+denied|unauthori[sz]ed|not\s+authori[sz]ed|forbidden)\b
+      # "Authentication Failed" reached a customer verbatim on a ₦55 top-up. It is
+      # OUR credentials the bank is rejecting, but it reads as the customer's own
+      # sign-in having failed on a screen they reached by passing their PIN — so it
+      # is the most alarming of the lot and the least actionable.
+      | \bauthentication\s+fail(ed|ure)\b
+      | \binvalid\s+credentials?\b
     )""",
     re.I | re.X,
 )

@@ -1846,6 +1846,12 @@ _VAS_NOT_ENTITLED_RE = re.compile(
       | \bnot\s+subscribed\b
       | \bsubscription\s+(?:key\s+)?(?:is\s+)?(?:invalid|not\s+found)\b
       | \b(?:access\s+denied|unauthori[sz]ed|not\s+authori[sz]ed|forbidden)\b
+      # ALAT's generic rejection, and the one a customer actually reported seeing on
+      # a ₦55 top-up. It belongs here for the same reason as the rest: authentication
+      # is decided BEFORE the request is processed, so a purchase refused at that gate
+      # was never fulfilled and its debit must go back rather than hang.
+      | \bauthentication\s+fail(?:ed|ure)\b
+      | \binvalid\s+credentials?\b
     )""",
     re.I | re.X,
 )

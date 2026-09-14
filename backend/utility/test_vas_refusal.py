@@ -122,9 +122,30 @@ class RefusedInTheBodyUnderHttp200Tests(SimpleTestCase):
         self.assertFalse(res["success"])
 
     @override_settings(WEMA=WEMA_LIVE)
+    def test_authentication_failed_refunds_and_is_not_shown_to_the_customer(self):
+        """Reported from production on a ₦55 top-up: the closing screen read
+        "failed: Authentication Failed". Authentication is decided before the request
+        is processed, so nothing was delivered and the debit must go back — and the
+        customer must not be told their authentication failed, because it was ours."""
+        from wallet.services import PROVIDER_REFUSED_MESSAGE, customer_safe_failure
+
+        with mock.patch.object(wema, "_post", return_value=_response(
+                200, {"hasError": True, "message": "Authentication Failed"})):
+            res = wema.purchase_airtime(55, "ZTCH-AUTH-1", "07066737466", "MTN",
+                                        source_account="0100000001")
+        self.assertFalse(res["pending"], "an auth refusal must not be left pending")
+        self.assertFalse(res["success"])
+
+        with mock.patch("utility.alerts.alert"):
+            shown = customer_safe_failure(res, service="airtime")
+        self.assertEqual(shown, PROVIDER_REFUSED_MESSAGE)
+        self.assertNotIn("Authentication", shown)
+
+    @override_settings(WEMA=WEMA_LIVE)
     def test_the_other_refusal_wordings(self):
         for text in ("You are not subscribed to this service", "Access denied",
-                     "Unauthorized", "Subscription key is invalid"):
+                     "Unauthorized", "Subscription key is invalid",
+                     "Authentication Failed", "Invalid credentials"):
             with self.subTest(message=text):
                 with mock.patch.object(wema, "_post", return_value=_response(
                         200, {"hasError": True, "message": text})):
