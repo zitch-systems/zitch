@@ -39,6 +39,7 @@ export const EP = {
     bvnStart: '/api/kyc/bvn/start/',
     bvnConfirm: '/api/kyc/bvn/confirm/',
     nin: '/api/kyc/nin/',
+    address: '/api/kyc/address/',
     face: '/api/kyc/face/',
     identityFaceStart: '/api/kyc/face/start/',
     identityFaceStatus: '/api/kyc/face/status/',
