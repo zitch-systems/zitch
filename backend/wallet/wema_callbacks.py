@@ -10,7 +10,7 @@ Three are profiled for dev, four for production:
   authorize     — the bank ASKS US whether a payout may proceed; we answer
                   {transactionReference, authorized}
   transaction   — debit/credit status updates (requestType 3)
-  notification  — production-only real-time notifications (payload undocumented)
+  notification  — production-only real-time debit/credit notifications
 
 SECURITY MODEL. ALAT signs nothing, so these endpoints stack what is available:
 a secret in the URL path and a source-IP allowlist against the bank's published
@@ -35,9 +35,9 @@ that, neither money-moving handler trusts its payload:
   * `transaction` treats the callback as a TRIGGER, not an oracle: it re-queries the
     status over the authenticated APIM channel and lets the existing reconcile logic
     decide. A forged callback is therefore at worst an unauthorised requery.
-  * NOTHING here credits a wallet. The requestType-3 payload carries no amount and no
-    account number; a credit path under a no-signature trust model would be a
-    money-printing primitive.
+  * Notification amounts are never trusted. A credit notification only identifies a
+    wallet; its authenticated Wema transaction history is fetched before any ledger
+    credit is applied.
 
 Failure is always closed: any error answers "not authorized" / changes no state.
 """
@@ -47,6 +47,7 @@ import ipaddress
 import json
 import logging
 import re
+from datetime import timedelta
 from functools import wraps
 
 from django.db import IntegrityError, transaction as db_transaction
@@ -728,11 +729,59 @@ def wema_transaction_callback(request):
 # ---------------------------------------------------------------------------
 @wema_callback("notify")
 def wema_notification_callback(request):
-    """Real-time transaction notifications. ALAT does not document this payload, so
-    this records it and changes no state — inventing semantics for an undocumented
-    money message would be worse than dropping it."""
+    """Use ALAT's documented notification as a prompt to reconcile one wallet.
+
+    The callback itself is not a source of truth: its amount, narration and type are
+    deliberately ignored for accounting. The account number selects an existing Wema
+    wallet, then the normal idempotent credit path consumes rows fetched through the
+    authenticated Account Management API. Returning 200 on every valid callback keeps
+    transient provider/read failures eligible for the scheduled reconciler.
+    """
     body = request.wema_body
-    log.info("wema_notify_cb keys=%s ip=%s", sorted(body), request.wema_ip)
+    keys = {str(key).casefold(): key for key in body}
+    account = str(body.get(keys.get("accountnumber"), "") or "").strip()[:20]
+    transaction_type = str(
+        body.get(keys.get("transactiontype"), "") or ""
+    ).strip().casefold()
+    log.info("wema_notify_cb keys=%s ip=%s account_present=%s type=%s",
+             sorted(body), request.wema_ip, bool(account), transaction_type)
+
+    # Debit notifications cannot create a funding credit, and outgoing settlements
+    # are handled by the transaction callback/status requery path.
+    if not account or transaction_type != "credit":
+        request.wema_action = "ignored:not_credit_or_missing_account"
+        return JsonResponse({"status": True}, status=200)
+
+    from .models import Wallet
+    from .services import apply_wema_credit, self_payout_references
+
+    wallet = Wallet.objects.filter(account_number=account).select_related("user").first()
+    if wallet is None:
+        log.warning("wema_notify_unknown_account account_suffix=%s ip=%s",
+                    account[-4:], request.wema_ip)
+        request.wema_action = "ignored:unknown_account"
+        return JsonResponse({"status": True}, status=200)
+
+    today = timezone.localdate()
+    result = wema_provider.get_transactions(
+        account,
+        (today - timedelta(days=2)).strftime("%Y-%m-%d"),
+        (today + timedelta(days=1)).strftime("%Y-%m-%d"),
+    )
+    if not result.get("success"):
+        log.warning("wema_notify_reconcile_failed account_suffix=%s message=%s",
+                    account[-4:], str(result.get("message") or "")[:160])
+        request.wema_action = "pending:history_unavailable"
+        return JsonResponse({"status": True}, status=200)
+
+    applied = 0
+    self_refs = self_payout_references(wallet.user)
+    for row in result.get("transactions", []) or []:
+        if apply_wema_credit(wallet, row, self_refs=self_refs) is not None:
+            applied += 1
+    request.wema_action = f"reconciled:{applied}"
+    log.info("wema_notify_reconciled account_suffix=%s applied=%s",
+             account[-4:], applied)
     return JsonResponse({"status": True}, status=200)
 
 
@@ -787,10 +836,12 @@ def wema_face_callback(request, state=""):
         state = str(request.GET.get("s") or "")[:64]
 
     body = request.wema_body
-    correlation = str(body.get("c_id") or "")[:160]
-    identity = str(body.get("id") or "")
-    returned_kind = str(body.get("id_type") or "").strip().lower()
-    claimed = bool(body.get("success"))
+    correlation = str(body.get("c_id") or body.get("correlationId") or "")[:160]
+    identity = str(body.get("id") or body.get("identity") or "")
+    returned_kind = str(body.get("id_type") or body.get("idType") or "").strip().lower()
+    claimed = str(body.get("success") or "").strip().casefold() in {
+        "1", "true", "yes", "successful", "success"
+    }
     # ALAT names the identity number "id", and the decorator records this body into
     # WebhookEvent — the one table we keep deliberately immutable — after we return.
     # Replace it in place with a non-reversible marker so a raw BVN is never written
@@ -798,7 +849,10 @@ def wema_face_callback(request, state=""):
     # also every WhatsApp message's correlation handle, where redacting it would
     # blind the forensic trail instead of protecting anything.
     if identity:
-        body["id"] = _fingerprint(identity)
+        if "id" in body:
+            body["id"] = _fingerprint(identity)
+        if "identity" in body:
+            body["identity"] = _fingerprint(identity)
     # Log key names and outcomes only — never the identity number itself. `mode` says
     # which shape the bank used, because "no state" is a legitimate registered callback
     # on one deployment and a call from nowhere on another, and the two look identical
