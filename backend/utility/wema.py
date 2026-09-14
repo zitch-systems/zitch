@@ -300,6 +300,22 @@ def _msg(data: dict) -> str:
     return text
 
 
+#: Control characters, the newline and carriage return among them.
+_LOG_UNSAFE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _log_safe(value, limit: int = 160) -> str:
+    """One field of a log line, with anything that could forge a second line removed.
+
+    Transaction references and gateway messages reach our logs from outside this
+    process, and a newline or carriage return inside one writes what reads as its own
+    entry — a forged "settled" line under a real reference is exactly the sort of
+    thing nobody would think to disbelieve while reading a settlement incident. The
+    result is bounded too, so an oversized value cannot drown the surrounding lines.
+    """
+    return _LOG_UNSAFE.sub(" ", str(value))[:limit]
+
+
 def _as_int(v):
     """ALAT types bills/cable ``packageId`` as int32, but our catalogue stores the
     code as a string (``CablePlan.wema_code``). Coerce to int for the wire so the
@@ -1860,7 +1876,8 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
         message = r.get("message") or _msg(data)
         log.error("wema_vas_refused ref=%s product=%s http_status=%s requery=%s "
                   "message=%r (definitive failure — refunding, not left pending)",
-                  reference, product, http_status, requery, message)
+                  _log_safe(reference), product, http_status, requery,
+                  _log_safe(message))
         return {"success": False, "pending": False, "status": f"REFUSED_{http_status}",
                 "reference": r.get("transactionReference", reference),
                 "message": message, "raw": data}
@@ -1869,10 +1886,11 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
         outcome = _vas_legend(product).get(str(code).strip())
         if outcome is None:
             log.warning("wema_vas_status_code ref=%s product=%s transactionStatus=%r "
-                        "(no legend entry — left pending)", reference, product, code)
+                        "(no legend entry — left pending)",
+                        _log_safe(reference), product, code)
         else:
             log.info("wema_vas_status_decoded ref=%s product=%s transactionStatus=%r -> %s",
-                     reference, product, code, outcome)
+                     _log_safe(reference), product, code, outcome)
         return {"success": outcome == "success", "pending": outcome in (None, "pending"),
                 "status": f"CODE_{code}",
                 "reference": r.get("transactionReference", reference),
