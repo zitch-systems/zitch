@@ -10,6 +10,7 @@ export type KycStatus = ApiResult<{
   bvn_verified: boolean;
   nin_verified: boolean;
   face_verified: boolean;
+  address_verified?: boolean;
   identity_face_available?: boolean;
 }>;
 
@@ -31,6 +32,8 @@ export const kycService = {
     walletService.verifyWemaOtp(trackingId, otp, { nin }) as Promise<KycStatus>,
   verifyNin: (nin: string, ninImage: string) => apiJson<KycStatus>(EP.kyc.nin, { nin, nin_image: ninImage }),
   verifyFace: (selfie: string) => apiJson<KycStatus>(EP.kyc.face, { selfie }),
+  verifyAddress: (address: string, city: string, state: string) =>
+    apiJson<KycStatus>(EP.kyc.address, { address, city, state }),
   startIdentityFace: (identity: { bvn?: string; nin?: string }) =>
     apiJson<KycStatus & { url?: string; session?: string; expires_in?: number }>(
       EP.kyc.identityFaceStart,
