@@ -81,6 +81,19 @@ class VasLegendParsingTests(TestCase):
 
 
 class VasStatusDecodeTests(TestCase):
+    def test_unknown_purchase_status_never_settles(self):
+        for status in ("UNKNOWN", "200", "401", True, 200):
+            with self.subTest(status=status):
+                result = _parse_vas({"hasError": False, "result": {"status": status}}, "REF1")
+                self.assertFalse(result["success"])
+                self.assertTrue(result["pending"])
+
+    def test_envelope_boolean_cannot_override_transaction_status(self):
+        with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": "200=success_or_pending"}):
+            result = _parse_vas({"status": True, "result": {"transactionStatus": 200}}, "REF1")
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+
     @override_settings(DEBUG=False, TESTING=False,
                        WEMA={"CHANNEL_ID": "", "KEYS": {}, "SIMULATION": False})
     def test_unconfigured_production_requery_never_refunds_ambiguous_purchase(self):
