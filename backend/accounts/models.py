@@ -321,25 +321,24 @@ class User(AbstractUser):
 
     def recompute_tier(self) -> None:
         """Derive the KYC tier from the verifications completed (ascending):
-        Tier 1 needs a verified EMAIL and PHONE plus BVN OR NIN; Tier 2 adds
-        the second identity plus face AND address; Tier 3 adds a verified
-        government ID document. Anything less is Tier 0 (unverified).
+        Tier 1 needs verified contact details and BVN; Tier 2 adds verified
+        NIN and liveness; Tier 3 adds address verification.
 
         Both contact requirements apply to every account, however it signed up.
         The app earns `phone_verified` at signup (that IS the signup OTP); a
         WhatsApp signup earns it in the chat KYC flow, because a messenger
         session outlives a SIM swap and so is not by itself proof of the
         number."""
-        has_identity = self.bvn_verified or self.nin_verified
+        has_identity = self.bvn_verified
         has_both_identities = self.bvn_verified and self.nin_verified
 
         # Both contact channels must be proven before any tier above the floor.
         if not (self.email_verified and self.phone_verified):
             self.tier = 0
         elif (has_both_identities and self.face_verified
-                and self.address_verified and self.id_document_verified):
+                and self.address_verified):
             self.tier = 3
-        elif has_both_identities and self.face_verified and self.address_verified:
+        elif has_both_identities and self.face_verified:
             self.tier = 2
         elif has_identity:
             self.tier = 1
