@@ -27,9 +27,10 @@ class VasLegendParsingTests(TestCase):
 
     def test_parses_comma_and_space_separated(self):
         with mock.patch.dict(settings.WEMA,
-                             {"VAS_STATUS_LEGEND": "1=success, 2=pending  3=failed"}):
+                             {"VAS_STATUS_LEGEND": "200=success_or_pending, "
+                                                   "400=failed 401=unauthorized_authentication_failed_or_invalid_api"}):
             self.assertEqual(_vas_legend("airtime"),
-                             {"1": "success", "2": "pending", "3": "failed"})
+                             {"200": "pending", "400": "failed", "401": "pending"})
 
     def test_airtime_and_bills_legends_are_separate_ladders(self):
         # The two endpoints publish different enums; decoding a bills code against the
@@ -69,6 +70,15 @@ class VasLegendParsingTests(TestCase):
         with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": "7=FAILED"}):
             self.assertEqual(_vas_legend("airtime"), {"7": "failed"})
 
+    def test_wema_ambiguous_200_alias_stays_pending(self):
+        with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": "200=success_or_pending"}):
+            self.assertEqual(_vas_legend("airtime"), {"200": "pending"})
+
+    def test_wema_401_auth_alias_stays_pending(self):
+        with mock.patch.dict(settings.WEMA, {
+                "VAS_STATUS_LEGEND": "401=unauthorized_authentication_failed_or_invalid_api"}):
+            self.assertEqual(_vas_legend("airtime"), {"401": "pending"})
+
 
 class VasStatusDecodeTests(TestCase):
     @override_settings(DEBUG=False, TESTING=False,
@@ -93,21 +103,28 @@ class VasStatusDecodeTests(TestCase):
         self.assertTrue(res["pending"])
 
     def test_mapped_success_settles(self):
-        with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": "1=success"}):
-            res = _parse_vas(_int_shape(1), "REF1", product="airtime")
+        with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": "200=success"}):
+            res = _parse_vas(_int_shape(200), "REF1", product="airtime")
         self.assertTrue(res["success"])
         self.assertFalse(res["pending"])
 
     def test_mapped_failed_refunds(self):
         # success False + pending False is what settle_or_refund reads as "refund".
-        with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": "3=failed"}):
-            res = _parse_vas(_int_shape(3), "REF1", product="airtime")
+        with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": "400=failed"}):
+            res = _parse_vas(_int_shape(400), "REF1", product="airtime")
         self.assertFalse(res["success"])
         self.assertFalse(res["pending"])
 
     def test_mapped_pending_stays_pending(self):
-        with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": "2=pending"}):
-            res = _parse_vas(_int_shape(2), "REF1", product="airtime")
+        with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": "200=success_or_pending"}):
+            res = _parse_vas(_int_shape(200), "REF1", product="airtime")
+        self.assertFalse(res["success"])
+        self.assertTrue(res["pending"])
+
+    def test_mapped_401_auth_problem_stays_pending(self):
+        with mock.patch.dict(settings.WEMA, {
+                "VAS_STATUS_LEGEND": "401=unauthorized_authentication_failed_or_invalid_api"}):
+            res = _parse_vas(_int_shape(401), "REF1", product="airtime")
         self.assertFalse(res["success"])
         self.assertTrue(res["pending"])
 
