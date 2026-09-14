@@ -487,6 +487,63 @@ class WemaTransactionCallbackTests(TestCase):
 
 
 @override_settings(WEMA=WEMA_CB)
+class WemaNotificationCallbackTests(TestCase):
+    def setUp(self):
+        self.user = make_user("+2348011112299")
+        self.wallet = get_or_create_wallet(self.user)
+        self.wallet.account_number = "0451112299"
+        self.wallet.account_reference = "WEMA-WALLET-notify"
+        self.wallet.bank_name = "Wema Bank"
+        self.wallet.save(update_fields=["account_number", "account_reference", "bank_name"])
+
+    def _post(self, payload):
+        return self.client.post(
+            f"/webhooks/wema/notification/{TOKEN}",
+            data=json.dumps(payload), content_type="application/json",
+        )
+
+    @patch("utility.wema.get_transactions")
+    def test_credit_notification_reconciles_authenticated_history(self, history):
+        history.return_value = {"success": True, "transactions": [{
+            "referenceId": "338135484403", "amount": 100,
+            "creditType": "Credit", "status": "Successful",
+        }]}
+
+        response = self._post({
+            "accountNumber": self.wallet.account_number,
+            "transactionType": "Credit",
+            # Deliberately false: the callback amount must never be credited.
+            "amount": 999999,
+            "narration": "Custom narration",
+            "transactionDate": "2026-09-14T08:34:37.504Z",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("100.00"))
+        history.assert_called_once()
+
+    @patch("utility.wema.get_transactions")
+    def test_debit_notification_does_not_fetch_or_change_the_ledger(self, history):
+        response = self._post({
+            "accountNumber": self.wallet.account_number,
+            "transactionType": "Debit", "amount": 5000,
+        })
+        self.assertEqual(response.status_code, 200)
+        history.assert_not_called()
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("0.00"))
+
+    @patch("utility.wema.get_transactions")
+    def test_unknown_account_is_accepted_without_querying_history(self, history):
+        response = self._post({
+            "accountNumber": "0450000000", "transactionType": "Credit",
+        })
+        self.assertEqual(response.status_code, 200)
+        history.assert_not_called()
+
+
+@override_settings(WEMA=WEMA_CB)
 class WemaCallbacksDiagnoseTests(TestCase):
     """/wema-callbacks-diagnose — the remote check for a host with no shell.
 
