@@ -215,23 +215,29 @@ class Command(BaseCommand):
         # tell it apart from the real one — the check simply proves nothing about the
         # person, while lifting a tier and clearing the large-transfer step-up.
         from utility.wema import address_verify_live, face_verify_live, face_verify_on_nonprod_host
-        # HARD: the face callback carries no shared token — its URL is shown to the
-        # customer — so the source-IP allowlist is the whole of its authentication.
-        # Without it, anyone who reads that URL out of their own browser can assert
-        # their own face check, lifting a tier and clearing the large-transfer gate.
+        # Server callbacks need the source-IP allowlist. Browser callbacks use an
+        # exact HTTPS origin only as a transport gate, then prove the correlation
+        # through Wema's authenticated without-OTP endpoint before changing KYC.
         # Scoped to deploys that actually intend to run the rail. A deployment with
         # no WEMA_FACE_VERIFY_URL is not using face verification at all, and blocking
         # its go-live on the allowlist for a feature it does not have would be a gate
         # nobody can satisfy or learn anything from.
         face_ips = [ip for ip in (settings.WEMA.get("FACE_CALLBACK_IPS") or []) if ip]
+        face_origins = [origin for origin in
+                        (settings.WEMA.get("FACE_CALLBACK_ORIGINS") or [])
+                        if str(origin).startswith("https://")]
         if settings.WEMA.get("FACE_VERIFY_URL"):
             checks.append((
                 True, "Face callback IP allowlist",
-                PASS if face_ips else FAIL,
+                PASS if face_ips else WARN,
                 f"enforced for {len(face_ips)} face-verifier IP(s)" if face_ips
-                else "WEMA_FACE_VERIFY_URL is set but WEMA_FACE_CALLBACK_IPS is not — the "
-                     "face callback carries no shared token, so without the allowlist it "
-                     "has no authentication at all; ask partner bank for the face app's egress IPs"))
+                else "no server egress IPs configured; server callbacks are refused and "
+                     "the exact-origin browser callback must pass authenticated correlation validation"))
+            checks.append((
+                True, "Face callback browser origin",
+                PASS if face_origins else FAIL,
+                f"restricted to {len(face_origins)} exact HTTPS origin(s)" if face_origins
+                else "no exact HTTPS verifier origin is configured"))
         if face_verify_live():
             # The registered shape gives up the per-verification state, leaving the IP
             # allowlist as the only thing authenticating a callback that lifts a KYC
@@ -242,8 +248,8 @@ class Command(BaseCommand):
                 True, "Face callback shape",
                 WARN if wema.face_cb_mode() == "registered" else PASS,
                 "registered — cb_uri is the exact whitelisted URL, so the callback "
-                "carries no per-verification state and the IP allowlist above is its "
-                "only authentication" if wema.face_cb_mode() == "registered"
+                "carries no per-verification state; browser delivery is accepted only "
+                "after authenticated correlation validation" if wema.face_cb_mode() == "registered"
                 else "session — each verification carries its own single-use state, "
                      "which Partner-bank's exact-match whitelist will reject"))
             checks.append((
