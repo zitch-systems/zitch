@@ -15,6 +15,7 @@ import { useTheme, font } from '@/lib/theme';
 type Status = {
   tier: number; transaction_limit: string;
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean;
+  address_verified?: boolean;
   identity_face_available?: boolean;
   // Set once the bank has opened the account number: from then on it will not
   // accept a lone BVN or NIN, only all of it at once. Read here so the menu can
@@ -22,7 +23,7 @@ type Status = {
   identity_upgrade_required?: boolean;
 };
 
-type Method = 'menu' | 'bvn' | 'nin' | 'selfie' | 'upgrade';
+type Method = 'menu' | 'bvn' | 'nin' | 'selfie' | 'upgrade' | 'address';
 
 // Method accent colours — EXACT per the design handoff.
 const C_BVN = '#0FA295';
@@ -57,6 +58,9 @@ const Kyc = () => {
   const [upNin, setUpNin] = useState('');
   const [upSelfie, setUpSelfie] = useState('');
   const [busy, setBusy] = useState(false);
+  const [address, setAddress] = useState('');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('');
   const [scanning, setScanning] = useState(false); // selfie liveness ring running
   const spin = useRef(new Animated.Value(0)).current;
 
@@ -265,7 +269,7 @@ const Kyc = () => {
   );
 
   const MethodCard = ({ id, icon, color, title, sub, badge, done }: { id: Method; icon: string; color: string; title: string; sub: string; badge?: string; done?: boolean }) => (
-    <Tap onPress={() => setMethod(id)} style={{ marginTop: 12 }}>
+    <Tap onPress={() => { if (!done) setMethod(id); }} style={{ marginTop: 12 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13, padding: 15, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, ...cardShadow }}>
         <View style={{ width: 46, height: 46, borderRadius: 13, backgroundColor: color + '22', alignItems: 'center', justifyContent: 'center' }}>
           <ZIcon name={icon} size={22} color={color} stroke={1.9} />
@@ -330,7 +334,15 @@ const Kyc = () => {
                   the live selfie required by Wema. */}
             </>
           )}
-          <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Quick liveness check with your camera" done={!!status?.face_verified} />
+          {status?.bvn_verified && (
+            <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="Tier 2: SMS OTP or face verification" done={!!status?.nin_verified} />
+          )}
+          {status?.bvn_verified && status?.nin_verified && (
+            <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Prembly liveness" sub="Tier 2: live face check" done={!!status?.face_verified} />
+          )}
+          {status?.tier !== undefined && status.tier >= 2 && (
+            <MethodCard id="address" icon="home" color={C_BVN} title="Address verification" sub="Tier 3" done={!!status?.address_verified} />
+          )}
           <Footer />
         </View>
       )}
@@ -447,6 +459,17 @@ const Kyc = () => {
                  onPress={submitUpgrade} />
           </View>
           <Footer />
+        </View>
+      )}
+
+      {method === 'address' && (
+        <View>
+          <Hero icon="home" color={C_BVN} title="Address verification" sub="Tier 3" />
+          <Field label="Residential address" value={address} onChangeText={setAddress} />
+          <Field label="City" value={city} onChangeText={setCity} />
+          <Field label="State" value={state} onChangeText={setState} />
+          <Btn label={busy ? 'Verifying...' : 'Verify address'} disabled={busy || address.trim().length < 6 || !city.trim() || !state.trim()}
+            onPress={() => submit(() => kycService.verifyAddress(address, city, state), 'Address verified')} />
         </View>
       )}
 
