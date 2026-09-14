@@ -522,6 +522,24 @@ class WemaNotificationCallbackTests(TestCase):
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.balance, Decimal("100.00"))
         history.assert_called_once()
+        self.assertEqual(history.call_args.args[:3], (
+            self.wallet.account_number, "2026-09-12", "2026-09-15",
+        ))
+
+    @patch("utility.wema.get_transactions")
+    def test_credit_notification_uses_business_date_for_history_window(self, history):
+        history.return_value = {"success": True, "transactions": []}
+
+        response = self._post({
+            "accountNumber": self.wallet.account_number,
+            "transactionType": "Credit",
+            "transactionDate": "27 Aug 2026",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(history.call_args.args[:3], (
+            self.wallet.account_number, "2026-08-25", "2026-08-28",
+        ))
 
     @patch("utility.wema.get_transactions")
     def test_debit_notification_does_not_fetch_or_change_the_ledger(self, history):
