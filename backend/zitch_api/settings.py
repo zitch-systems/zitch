@@ -425,9 +425,11 @@ WEMA = {
     #
     # These exist so that the moment Wema supplies the legend it is a Render env var,
     # not a code change and a deploy. Format is `code=outcome` pairs, comma or space
-    # separated, where outcome is exactly one of success | pending | failed:
+    # separated, where outcome is exactly one of success | pending | failed, plus
+    # explicit Wema aliases like success_or_pending where the bank's code is
+    # ambiguous:
     #
-    #   WEMA_VAS_STATUS_LEGEND="1=success,2=pending,3=failed,4=failed"
+    #   WEMA_VAS_STATUS_LEGEND="200=success_or_pending,400=failed,401=unauthorized_authentication_failed_or_invalid_api"
     #
     # Codes absent from the legend keep today's behaviour (PENDING, logged), and an
     # unparseable entry is dropped with an error rather than defaulting — so a typo
@@ -1000,4 +1002,3 @@ if SENTRY_DSN and not TESTING:
         )
     except Exception:  # noqa: BLE001 — observability must never break boot
         pass
-
