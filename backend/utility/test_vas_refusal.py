@@ -94,6 +94,40 @@ class RefusedPurchaseRefundsTests(SimpleTestCase):
         self.assertFalse(res["pending"])
 
 
+class RefusalLogCannotBeForgedTests(SimpleTestCase):
+    """A reference reaches this log from outside the process. A newline inside one
+    writes what reads as its own entry — and a forged "settled" line under a real
+    reference is exactly what nobody would think to disbelieve while reading a
+    settlement incident."""
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_a_newline_in_the_reference_cannot_open_a_second_log_line(self):
+        forged = "ZTCH-1\nERROR zitch wema_vas_settled ref=ZTCH-1 (delivered)"
+        with mock.patch.object(wema, "_post", return_value=_response(403, NOT_PROFILED)):
+            with self.assertLogs("zitch", level="ERROR") as logs:
+                wema.purchase_airtime(55, forged, "07066737466", "MTN",
+                                      source_account="0100000001")
+        for line in logs.output:
+            self.assertNotIn("\n", line, "the reference forged a second log line")
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_a_newline_in_the_gateway_message_cannot_either(self):
+        payload = {"hasError": True,
+                   "message": "refused\nERROR zitch everything is fine actually"}
+        with mock.patch.object(wema, "_post", return_value=_response(403, payload)):
+            with self.assertLogs("zitch", level="ERROR") as logs:
+                wema.purchase_airtime(55, "ZTCH-REF-9", "07066737466", "MTN",
+                                      source_account="0100000001")
+        for line in logs.output:
+            self.assertNotIn("\n", line)
+
+    def test_an_oversized_value_cannot_drown_the_lines_around_it(self):
+        self.assertLessEqual(len(wema._log_safe("Z" * 10_000)), 160)
+
+    def test_an_ordinary_reference_is_untouched(self):
+        self.assertEqual(wema._log_safe("ZTCH12083E287CEE"), "ZTCH12083E287CEE")
+
+
 class RefusedRequeryTests(SimpleTestCase):
     """The requery path refuses more narrowly: the refusal is of the QUERY, and only
     a refusal of the whole product also proves the purchase could not have run."""

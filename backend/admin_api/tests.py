@@ -312,7 +312,10 @@ class AdminApiTests(TestCase):
         res, body = self.post("ops/recon", self.finance_token)
         self.assertEqual(res.status_code, 200)
         self.assertIn("settled", body)
-        self.assertTrue(AuditLog.objects.filter(action="recon.vtu_run").exists())
+        # recon.vas_run, not recon.vtu_run: run_recon was renamed with the rail when
+        # the retired provider came out, and this assertion was left behind naming an
+        # audit action nothing writes any more — so it could only ever be false.
+        self.assertTrue(AuditLog.objects.filter(action="recon.vas_run").exists())
 
     def test_wa_conversation_actions(self):
         msisdn = "2348011112222"
@@ -472,7 +475,10 @@ class AdminApiFeatureTests(TestCase):
         self.post("ops/recon", self.finance_token, {})
         res, body = self.get("bootstrap", self.readonly_token)
         self.assertTrue(any(w["ref"] == "MONO|X1" and w["src"] == "Mono" for w in body["webhooks"]))
-        self.assertTrue(any(r["run"] == "zitch-reconcile-vtu" for r in body["recons"]))
+        # The console labels a recon row by its cron, and _RECON_RUNS points every
+        # surviving VAS action at zitch-reconcile-wema. zitch-reconcile-vtu ran a
+        # command that no longer exists.
+        self.assertTrue(any(r["run"] == "zitch-reconcile-wema" for r in body["recons"]))
 
     def test_wallet_credit_happy_path_and_audit(self):
         res, body = self.post("wallet/credit", self.finance_token,

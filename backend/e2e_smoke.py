@@ -434,7 +434,7 @@ def main():
 
     boot3 = j(get("/api/admin/bootstrap", token=aro))
     check("admin bootstrap recons populated after runs",
-          any(rr["run"] in ("zitch-reconcile-vtu", "zitch-maturities") for rr in boot3.get("recons", [])),
+          any(rr["run"] in ("zitch-reconcile-wema", "zitch-maturities") for rr in boot3.get("recons", [])),
           str(boot3.get("recons"))[:160])
 
     bal_before = float(j(post("/api/wallet_balance/", token=tok_b))["wallet"])
