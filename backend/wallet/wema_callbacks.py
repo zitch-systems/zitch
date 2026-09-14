@@ -51,7 +51,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 from django.db import IntegrityError, transaction as db_transaction
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from django.views.decorators.csrf import csrf_exempt
@@ -136,6 +136,11 @@ def _notification_business_date(body: dict):
         except ValueError:
             continue
     return timezone.localdate()
+
+
+def _notification_ok():
+    """ALAT's notification contract documents a plain `OK()` 200 response."""
+    return HttpResponse("OK()", status=200, content_type="text/plain")
 
 
 def _token_ok(supplied: str) -> bool:
@@ -774,7 +779,7 @@ def wema_notification_callback(request):
     # are handled by the transaction callback/status requery path.
     if not account or transaction_type != "credit":
         request.wema_action = "ignored:not_credit_or_missing_account"
-        return JsonResponse({"status": True}, status=200)
+        return _notification_ok()
 
     from .models import Wallet
     from .services import apply_wema_credit, self_payout_references
@@ -784,7 +789,7 @@ def wema_notification_callback(request):
         log.warning("wema_notify_unknown_account account_suffix=%s ip=%s",
                     account[-4:], request.wema_ip)
         request.wema_action = "ignored:unknown_account"
-        return JsonResponse({"status": True}, status=200)
+        return _notification_ok()
 
     business_date = _notification_business_date(body)
     result = wema_provider.get_transactions(
@@ -796,7 +801,7 @@ def wema_notification_callback(request):
         log.warning("wema_notify_reconcile_failed account_suffix=%s message=%s",
                     account[-4:], str(result.get("message") or "")[:160])
         request.wema_action = "pending:history_unavailable"
-        return JsonResponse({"status": True}, status=200)
+        return _notification_ok()
 
     applied = 0
     self_refs = self_payout_references(wallet.user)
@@ -806,7 +811,7 @@ def wema_notification_callback(request):
     request.wema_action = f"reconciled:{applied}"
     log.info("wema_notify_reconciled account_suffix=%s applied=%s",
              account[-4:], applied)
-    return JsonResponse({"status": True}, status=200)
+    return _notification_ok()
 
 
 # No shared token on this one. Its URL is given to the CUSTOMER — it is the cb_uri
