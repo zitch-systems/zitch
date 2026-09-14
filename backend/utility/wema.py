@@ -751,7 +751,8 @@ def face_verification_url(identity_type: str, identity_value: str, callback_url:
     """
     from urllib.parse import quote, urlencode
 
-    base = (settings.WEMA.get("FACE_VERIFY_URL", "") or "").rstrip("/")
+    base = (settings.WEMA.get("FACE_VERIFY_URL", "") or
+            "https://face-verification-pilot.azurewebsites.net").rstrip("/")
     kind = "bvn" if str(identity_type).lower() == "bvn" else "nin"
     params = {kind: identity_value, "x_tk": _face_key()}
     if face_cb_mode() != "none":
