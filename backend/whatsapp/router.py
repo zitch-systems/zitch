@@ -2899,14 +2899,14 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
         return reply_buttons(
             msisdn,
             status + "\n\n*Upgrade to Tier 2*\n"
-            "Tier 2 needs NIN, live face check and address verification. "
+            "Tier 2 adds NIN verification and a Prembly liveness check. "
             "You can start it here on WhatsApp.",
             [("tier2", "Upgrade to Tier 2"), ("later", "Later")],
         )
     return reply_buttons(
         msisdn,
         status + "\n\n*Upgrade to Tier 3*\n"
-        "Tier 3 adds a government ID document after Tier 2. "
+        "Tier 3 adds address verification after Tier 2. "
         "You can start it here on WhatsApp.",
         [("tier3", "Upgrade to Tier 3"), ("later", "Later")],
     )
@@ -3224,10 +3224,23 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
     state = pa.state
 
     if state == KYC_UPGRADE_STATE:
+        if low == "nin_face" and user.bvn_verified and not user.nin_verified:
+            if not _face_step_available():
+                return reply(msisdn, "Face verification is temporarily unavailable. Please try again later.")
+            pa.payload["id_kind"] = "nin"
+            pa.payload["id_purpose"] = "face"
+            if _send_identity_flow(pa, "nin", fallback_state=FACE_ID_STATE):
+                return None
+            return reply(msisdn, "The secure NIN form could not open. Please use NIN verification in the Zitch app.")
         if low in ("later", "cancel", "no"):
             _clear_actions(msisdn)
             return reply(msisdn, "No problem. Reply *8* whenever you want to continue upgrading.")
         if low in ("tier2", "2", "upgrade", "upgrade to tier 2"):
+            if user.bvn_verified and not user.nin_verified and _face_step_available():
+                return reply_buttons(msisdn,
+                    "Tier 2 adds NIN verification, then Prembly liveness. Your verified BVN stays saved.",
+                    [("nin_face", "Verify NIN with face"), ("tier2_app", "Continue in app")])
+        if low in ("tier2", "2", "upgrade", "upgrade to tier 2", "tier2_app"):
             _clear_actions(msisdn)
             # ALAT Tier 2 is NOT the hosted Wema face page used as an SMS-OTP
             # alternative for Tier 1. It requires BVN + NIN + a Prembly-verified
@@ -3251,9 +3264,9 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return reply(msisdn, body + "\n\nOpen the Zitch app and choose *Verify identity*.")
         if low in ("tier3", "3", "upgrade to tier 3"):
             if user.tier < 2:
-                return reply(msisdn, "Tier 3 starts after Tier 2. Reply *tier2* to complete NIN, face and address first.")
+                return reply(msisdn, "Tier 3 starts after Tier 2. Reply *tier2* to complete NIN and liveness first.")
             _clear_actions(msisdn)
-            return reply(msisdn, "🪪 Tier 3 document capture on WhatsApp is next. For now your Tier 2 status stays saved; support has been notified to complete the document step.")
+            return reply(msisdn, "Tier 3 requires address verification only. Open the Zitch app to complete address verification. Your Tier 2 checks remain saved.")
         return reply_buttons(msisdn, "Choose the upgrade you want:", [("tier2", "Upgrade to Tier 2"), ("later", "Later")])
 
     if state == BVN_METHOD_STATE:
