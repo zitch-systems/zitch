@@ -156,6 +156,15 @@ NO_TEST_OTP = {"PHONE": "", "CODE": ""}
 
 @override_settings(TEST_OTP=NO_TEST_OTP, **PROD)
 class OtpDeliveryGuardTests(TestCase):
+    @override_settings(TERMII=KEYED)
+    def test_provider_rejection_is_not_reported_as_sent(self):
+        for path, phone in (("/api/phone_verification/", "08055550101"),
+                            ("/api/resend_verify_otp/", "08055550102")):
+            with self.subTest(path=path), patch("accounts.views.send_sms", return_value={"success": False}):
+                response = self.client.post(path, data=json.dumps({"phone": phone}),
+                                            content_type="application/json")
+                self.assertEqual(response.status_code, 503)
+
     """A signup OTP must never be promised over a rail that cannot deliver it.
 
     send_sms returns a MOCK SUCCESS when TERMII_API_KEY is unset, and the signup
@@ -545,13 +554,15 @@ class KycTierTests(TestCase):
         self.assertTrue(self.user.email_verified)
 
     def test_full_kyc_ladder_to_tier_3(self):
-        # BVN+NIN -> Tier 1; + face + address -> Tier 2; + government ID -> Tier 3.
+        # BVN -> Tier 1; NIN + liveness -> Tier 2; address -> Tier 3.
         self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
         b1 = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})[1]
         self.assertEqual(b1["tier"], 1)
-        self.post("/api/kyc/face/", {"access_token": self.token})
+        face = self.post("/api/kyc/face/", {"access_token": self.token})[1]
+        self.assertEqual(face["tier"], 2)
         b2 = self.post("/api/kyc/address/", {"access_token": self.token, "address": "12 Allen Avenue", "city": "Ikeja", "state": "Lagos", "document": "ZmFrZQ=="})[1]
-        self.assertEqual(b2["tier"], 2)
+        self.assertEqual(b2["tier"], 3)
+        self.assertFalse(b2["id_document_verified"])
         self.assertTrue(b2["address_verified"] and b2["face_verified"])
         b3 = self.post("/api/kyc/id/", {"access_token": self.token, "image": "ZmFrZQ==", "doc_type": "passport"})[1]
         self.assertEqual(b3["tier"], 3)
@@ -571,7 +582,7 @@ class KycTierTests(TestCase):
         self.assertIn("proof of address", body["message"].lower())
         self.user.refresh_from_db()
         self.assertFalse(self.user.address_verified)
-        self.assertLess(self.user.tier, 2)
+        self.assertEqual(self.user.tier, 2)
 
     def test_address_proof_too_large_is_refused_by_size_not_absence(self):
         """A document IS present, so the message must name the real problem —
@@ -857,12 +868,12 @@ class FullJourneyE2ETests(TestCase):
         # Tier 1 caps at ₦50k/txn, so a ₦150k transfer is blocked...
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
                                    amount="150000", transaction_pin="246810")[0], 403)
-        # ...face + address raise the user to Tier 2 (₦200k), which also satisfies
+        # ...face raises the user to Tier 2 and address to Tier 3, satisfying
         # the >=₦100k face step-up, so the same transfer now goes through.
         self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
         self.assertEqual(self.post("/api/kyc/address/", access_token=tok,
                                    address="12 Allen Avenue", city="Ikeja", state="Lagos",
-                                   document="ZmFrZQ==")[1]["tier"], 2)
+                                   document="ZmFrZQ==")[1]["tier"], 3)
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
                                    amount="150000", transaction_pin="246810")[0], 200)
 
