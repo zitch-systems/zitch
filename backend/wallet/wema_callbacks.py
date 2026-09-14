@@ -47,13 +47,13 @@ import ipaddress
 import json
 import logging
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import wraps
 
 from django.db import IntegrityError, transaction as db_transaction
 from django.http import JsonResponse
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
+from django.utils.dateparse import parse_date, parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 
 from common.http import mask_pii
@@ -112,6 +112,30 @@ def _fingerprint(value: str) -> str:
     if not value:
         return ""
     return f"sha256:{hashlib.sha256(value.encode()).hexdigest()[:12]}/{len(value)}"
+
+
+def _notification_business_date(body: dict):
+    """Best-effort transaction date from Wema's notification envelope."""
+    keys = {str(key).casefold(): key for key in body}
+    raw = str(
+        body.get(keys.get("transactiondate"))
+        or body.get(keys.get("date"))
+        or ""
+    ).strip()
+    if not raw:
+        return timezone.localdate()
+    parsed_dt = parse_datetime(raw)
+    if parsed_dt is not None:
+        return timezone.localtime(parsed_dt).date() if timezone.is_aware(parsed_dt) else parsed_dt.date()
+    parsed_date = parse_date(raw)
+    if parsed_date is not None:
+        return parsed_date
+    for fmt in ("%d %b %Y", "%d %B %Y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return timezone.localdate()
 
 
 def _token_ok(supplied: str) -> bool:
@@ -762,11 +786,11 @@ def wema_notification_callback(request):
         request.wema_action = "ignored:unknown_account"
         return JsonResponse({"status": True}, status=200)
 
-    today = timezone.localdate()
+    business_date = _notification_business_date(body)
     result = wema_provider.get_transactions(
         account,
-        (today - timedelta(days=2)).strftime("%Y-%m-%d"),
-        (today + timedelta(days=1)).strftime("%Y-%m-%d"),
+        (business_date - timedelta(days=2)).strftime("%Y-%m-%d"),
+        (business_date + timedelta(days=1)).strftime("%Y-%m-%d"),
     )
     if not result.get("success"):
         log.warning("wema_notify_reconcile_failed account_suffix=%s message=%s",
