@@ -408,12 +408,7 @@ class FaceSessionIdentityBindingTests(TestCase):
 
 
 class TheFaceRailRefusesWhatItCannotAuthenticateTests(TestCase):
-    """With no source-IP allowlist the callback has no authentication at all.
-
-    It carries no shared token by design, so the allowlist is the whole control. An
-    unset list must mean "do not offer the rail", not "accept anything" — otherwise
-    reading the URL out of your own browser is enough to grant yourself a tier.
-    """
+    """The rail needs an authenticated server path or a validated browser path."""
 
     def test_without_face_callback_ips_the_rail_is_unavailable(self):
         from utility import wema
@@ -421,8 +416,18 @@ class TheFaceRailRefusesWhatItCannotAuthenticateTests(TestCase):
                 DEBUG=False, TESTING=False,
                 WEMA={"CHANNEL_ID": "c", "SIMULATION": False,
                       "FACE_VERIFY_URL": "https://face.example/",
-                      "FACE_CALLBACK_IPS": []}):
+                      "FACE_CALLBACK_IPS": [], "FACE_CALLBACK_ORIGINS": []}):
             self.assertFalse(wema.face_verify_live())
+
+    def test_exact_https_browser_origin_enables_the_validated_callback_path(self):
+        from utility import wema
+        with override_settings(
+                DEBUG=False, TESTING=False,
+                WEMA={"CHANNEL_ID": "c", "SIMULATION": False,
+                      "FACE_VERIFY_URL": "https://face.example/",
+                      "FACE_CALLBACK_IPS": [],
+                      "FACE_CALLBACK_ORIGINS": ["https://face.example"]}):
+            self.assertTrue(wema.face_verify_live())
 
     def test_with_the_allowlist_configured_the_rail_is_available(self):
         from utility import wema
