@@ -1815,7 +1815,11 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime") -> dict:
     r = data.get("result", {}) or {}
     if not isinstance(r, dict):
         r = {}
-    status = str(r.get("status") or data.get("status") or "").upper()
+    raw_status = r.get("status")
+    if raw_status is None:
+        raw_status = data.get("status")
+    # Envelope booleans describe the API call, never the purchase outcome.
+    status = raw_status.strip().upper() if isinstance(raw_status, str) else ""
     if not status and "transactionStatus" in r:
         code = r.get("transactionStatus")
         outcome = _vas_legend(product).get(str(code).strip())
@@ -1846,8 +1850,8 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime") -> dict:
     if status in ("FAILED", "FAILURE", "DECLINED", "REJECTED", "REVERSED", "NOT_PROCESSED"):
         return {"success": False, "pending": False, "status": status,
                 "reference": ref, "message": msg, "raw": data}
-    pending = status in ("PENDING", "PROCESSING", "IN_PROGRESS", "INPROGRESS")
-    return {"success": ok and not pending, "pending": pending, "status": status,
+    success = ok and status in ("SUCCESS", "SUCCESSFUL", "SUCCESSFULL", "COMPLETED")
+    return {"success": success, "pending": not success, "status": status,
             "reference": ref, "message": msg, "raw": data}
 
 
