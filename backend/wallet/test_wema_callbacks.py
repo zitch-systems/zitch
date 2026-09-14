@@ -489,7 +489,7 @@ class WemaTransactionCallbackTests(TestCase):
 @override_settings(WEMA=WEMA_CB)
 class WemaNotificationCallbackTests(TestCase):
     def setUp(self):
-        self.user = make_user("+2348011112299")
+        self.user, _ = make_user("+2348011112299", "notify@zitch.test")
         self.wallet = get_or_create_wallet(self.user)
         self.wallet.account_number = "0451112299"
         self.wallet.account_reference = "WEMA-WALLET-notify"
