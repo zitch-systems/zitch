@@ -1514,6 +1514,16 @@ def handle_inbound(msisdn: str, text: str) -> None:
     # underneath.
     if _REPORT_KEYWORD.fullmatch(low.strip()):
         return _do_report_problem(user, msisdn, detail=text[:500])
+
+    # "2k airtime" - the menu's own worked example - read without the model, and
+    # deliberately the LAST thing tried. Placed here it can only ever replace the
+    # dead end below, never a route that already works nor a model that is up: the
+    # AI, when active, has already had the sentence and done better with it. See
+    # vas_text_intent for why the menu was promising this and then refusing it.
+    vas_intent = vas_text_intent(text)
+    if vas_intent and dispatch_intent(user, msisdn, vas_intent, text):
+        _record_intent(msisdn, vas_intent)
+        return
     return reply(msisdn, "Sorry, I didn't get that.\n\n" + menu_text())
 
 
