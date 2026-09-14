@@ -198,7 +198,7 @@ def phone_verification(request):
             # Owner-only channels: tell the real number / their email on file,
             # never the API caller.
             reminder = "You already have a Zitch account. Open the app to sign in, or use 'Forgot password' to reset."
-            send_sms(phone, reminder)
+            delivery = send_sms(phone, reminder)
             send_email(existing.email or "", "Zitch sign-in reminder", reminder,
                        html=_branded_email("You already have a Zitch account", reminder,
                                            note="If this wasn't you, you can safely ignore this email."))
@@ -211,7 +211,9 @@ def phone_verification(request):
             # number and squat/deny that account (and misdirect P2P sends keyed on
             # phone). The email is still stored for the account, just never sent the
             # code. Account-recovery flows, by contrast, email the address on file.
-            send_sms(phone, f"Your Zitch verification code is {code}")
+            delivery = send_sms(phone, f"Your Zitch verification code is {code}")
+        if not delivery.get("success"):
+            return fail("SMS verification is temporarily unavailable. Please try again later.", status=503)
     return ok(message="If this number can be registered, a verification code has been sent.")
 
 
@@ -315,7 +317,9 @@ def resend_verify_otp(request):
     # SMS ONLY, same reason as phone_verification: a signup OTP authenticates into
     # the matching account, so it must reach only the PHONE being registered —
     # never a client-supplied email. The email is stored for the account record.
-    send_sms(phone, f"Your Zitch verification code is {code}")
+    delivery = send_sms(phone, f"Your Zitch verification code is {code}")
+    if not delivery.get("success"):
+        return fail("SMS verification is temporarily unavailable. Please try again later.", status=503)
     return ok(message="OTP resent")
 
 
@@ -1738,7 +1742,7 @@ def kyc_face(request):
 def kyc_address(request):
     """POST /api/kyc/address/ {access_token, address, city, state?, document}
 
-    Verifies a residential address (Tier 2, together with face). Requires the
+    Verifies a residential address for Tier 3. Requires the
     address AND a proof-of-address document; marks the address verified on
     success and recomputes the tier.
 
