@@ -443,13 +443,12 @@ WEMA = {
     # WEB flow, not an API call: the customer is sent here with their BVN/NIN and the
     # bank returns a correlationId proving the check passed.
     #
-    # NO DEFAULT. It used to default to ALAT's DEV verifier, which fails OPEN: a dev
-    # check answers happily and proves nothing about a real person, and the only
-    # thing standing between that and a lifted tier was a preflight command somebody
-    # had to remember to run. Unset now means the face rail reports itself
-    # unavailable — the app falls back to the document rail, the chat hides the step
-    # — which is the correct behaviour for a control we cannot perform.
-    "FACE_VERIFY_URL": os.environ.get("WEMA_FACE_VERIFY_URL", ""),
+    # Pilot is the approved Wema environment for this rollout. Keep this non-secret
+    # fallback so a worker/API env-var drift cannot resurrect the old DEV host.
+    "FACE_VERIFY_URL": os.environ.get(
+        "WEMA_FACE_VERIFY_URL",
+        "https://face-verification-pilot.azurewebsites.net",
+    ),
     # Pilot diagnostic only: Wema's pilot page currently fails when cb_uri is
     # supplied. Keep enabled for the real flow; disable only to isolate the
     # hosted verifier before Wema confirms its callback contract.
