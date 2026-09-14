@@ -519,6 +519,8 @@ class WemaNotificationCallbackTests(TestCase):
         })
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"OK()")
+        self.assertEqual(response["Content-Type"], "text/plain")
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.balance, Decimal("100.00"))
         history.assert_called_once()
@@ -537,6 +539,7 @@ class WemaNotificationCallbackTests(TestCase):
         })
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"OK()")
         self.assertEqual(history.call_args.args[:3], (
             self.wallet.account_number, "2026-08-25", "2026-08-28",
         ))
@@ -548,6 +551,7 @@ class WemaNotificationCallbackTests(TestCase):
             "transactionType": "Debit", "amount": 5000,
         })
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"OK()")
         history.assert_not_called()
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.balance, Decimal("0.00"))
@@ -558,6 +562,7 @@ class WemaNotificationCallbackTests(TestCase):
             "accountNumber": "0450000000", "transactionType": "Credit",
         })
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"OK()")
         history.assert_not_called()
 
 
