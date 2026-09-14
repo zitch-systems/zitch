@@ -49,6 +49,21 @@ def _user(**flags):
 
 @override_settings(WEMA=FACE_ON)
 class FaceStepLadderTests(TestCase):
+    def test_tier2_nin_face_uses_nin_without_restarting_bvn(self):
+        u = _user()
+        u.nin_verified = False
+        u.save(update_fields=["nin_verified"])
+        pa = PendingAction.objects.create(
+            user=u, msisdn=MSISDN, action_type="kyc", state=router.KYC_UPGRADE_STATE,
+            payload={}, expires_at=router._flow_deadline("idle"))
+        with patch.object(router, "_face_step_available", return_value=True), \
+                patch.object(router, "_send_identity_flow", return_value=True) as flow:
+            router._advance_kyc(pa, u, MSISDN, "nin_face")
+        flow.assert_called_once_with(pa, "nin", fallback_state=router.FACE_ID_STATE)
+        u.refresh_from_db()
+        self.assertTrue(u.bvn_verified)
+        self.assertFalse(u.nin_verified)
+
     def test_hosted_face_is_not_a_separate_kyc_rung(self):
         u = _user()
         self.assertNotIn("face", router._kyc_outstanding(u))
