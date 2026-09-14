@@ -94,6 +94,65 @@ class RefusedPurchaseRefundsTests(SimpleTestCase):
         self.assertFalse(res["pending"])
 
 
+class RefusedInTheBodyUnderHttp200Tests(SimpleTestCase):
+    """The shape that actually reaches us, and that the HTTP-status check missed.
+
+    The first version of this guard read only the status line, shipped, deployed —
+    and all six stuck rows stayed exactly where they were, because ALAT answers an
+    un-entitled product with HTTP *200* and the refusal in the body. Nine minutes
+    after the deploy production was still logging wema_vas_requery_pending with no
+    wema_vas_refused line anywhere.
+    """
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_a_purchase_refused_in_the_body_is_a_definitive_failure(self):
+        with mock.patch.object(wema, "_post", return_value=_response(200, NOT_PROFILED)):
+            res = wema.purchase_airtime(55, "ZTCH-BODY-1", "07066737466", "MTN",
+                                        source_account="0100000001")
+        self.assertFalse(res["pending"], "a body-borne refusal must not be left pending")
+        self.assertFalse(res["success"])
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_the_requery_that_clears_the_six_stuck_rows(self):
+        """Exactly what production returns for ZTCH12083E287CEE: HTTP 200, hasError,
+        no status string, "You've not been profiled to use this service"."""
+        with mock.patch.object(wema, "_post", return_value=_response(200, NOT_PROFILED)):
+            res = wema.vas_status("ZTCH12083E287CEE", "airtime")
+        self.assertFalse(res["pending"])
+        self.assertFalse(res["success"])
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_the_other_refusal_wordings(self):
+        for text in ("You are not subscribed to this service", "Access denied",
+                     "Unauthorized", "Subscription key is invalid"):
+            with self.subTest(message=text):
+                with mock.patch.object(wema, "_post", return_value=_response(
+                        200, {"hasError": True, "message": text})):
+                    res = wema.vas_status("ZTCH-W", "airtime")
+                self.assertFalse(res["pending"])
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_a_SUCCESSFUL_envelope_is_never_refunded_on_wording_alone(self):
+        """The error envelope is required as well as the wording. A delivered
+        purchase whose message merely mentions authorisation must still settle."""
+        with mock.patch.object(wema, "_post", return_value=_response(200, {
+                "hasError": False,
+                "result": {"status": "SUCCESS", "message": "authorized"}})):
+            res = wema.purchase_airtime(55, "ZTCH-BODY-2", "07066737466", "MTN",
+                                        source_account="0100000001")
+        self.assertTrue(res["success"])
+        self.assertFalse(res["pending"])
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_an_ordinary_error_still_stays_pending(self):
+        """Only wording that closes the PRODUCT refunds. A generic failure is still
+        ambiguous about delivery, and refunding it could double-spend."""
+        with mock.patch.object(wema, "_post", return_value=_response(
+                200, {"hasError": True, "message": "Something went wrong"})):
+            res = wema.vas_status("ZTCH-ORD", "airtime")
+        self.assertTrue(res["pending"])
+
+
 class RefusalLogCannotBeForgedTests(SimpleTestCase):
     """A reference reaches this log from outside the process. A newline inside one
     writes what reads as its own entry — and a forged "settled" line under a real

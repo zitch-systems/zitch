@@ -1828,6 +1828,18 @@ _VAS_REFUSED_HTTP = (400, 401, 403, 404, 422)
 #: all ("You've not been profiled to use this service"). They are the only refusals a
 #: REQUERY may act on — see _parse_vas.
 _VAS_NOT_ENTITLED_HTTP = (401, 403)
+#: The same refusal as it actually arrives: in the BODY, under HTTP 200. Narrow on
+#: purpose — only wording that says the PRODUCT is closed to us, never a per-request
+#: complaint, because this decides whether a customer's debit is refunded.
+_VAS_NOT_ENTITLED_RE = re.compile(
+    r"""(
+        \bnot\s+(?:been\s+)?profiled\b
+      | \bnot\s+subscribed\b
+      | \bsubscription\s+(?:key\s+)?(?:is\s+)?(?:invalid|not\s+found)\b
+      | \b(?:access\s+denied|unauthori[sz]ed|not\s+authori[sz]ed|forbidden)\b
+    )""",
+    re.I | re.X,
+)
 
 
 def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
@@ -1872,12 +1884,25 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
     # path any 4xx means nothing ran; on a requery only a refusal of the whole product
     # does (see the docstring). Logged at error — a refusal is a configuration or
     # entitlement fault that no amount of retrying will clear.
-    if http_status in (_VAS_NOT_ENTITLED_HTTP if requery else _VAS_REFUSED_HTTP):
-        message = r.get("message") or _msg(data)
+    refused_message = r.get("message") or _msg(data)
+    refused_http = http_status in (_VAS_NOT_ENTITLED_HTTP if requery else _VAS_REFUSED_HTTP)
+    # ALAT does not always put the refusal in the status line. Production answers an
+    # un-entitled product with HTTP *200*, hasError true and the refusal in the body
+    # ("You've not been profiled to use this service"), which the status check above
+    # cannot see — so the first version of this guard shipped, deployed, and left all
+    # six stuck rows exactly where they were. An envelope that reports an error AND
+    # names an entitlement refusal says we may not use this product at all, on either
+    # path: the purchase it describes cannot have been fulfilled, so it is the same
+    # definitive failure a 401/403 is. Requires the error envelope as well as the
+    # wording, so a delivered purchase that merely mentions authorisation is untouched.
+    refused_body = (not (_ok(data) or bool(data.get("successful")))
+                    and bool(_VAS_NOT_ENTITLED_RE.search(refused_message)))
+    if refused_http or refused_body:
+        message = refused_message
         log.error("wema_vas_refused ref=%s product=%s http_status=%s requery=%s "
-                  "message=%r (definitive failure — refunding, not left pending)",
+                  "by=%s message=%r (definitive failure — refunding, not left pending)",
                   _log_safe(reference), product, http_status, requery,
-                  _log_safe(message))
+                  "http" if refused_http else "envelope", _log_safe(message))
         return {"success": False, "pending": False, "status": f"REFUSED_{http_status}",
                 "reference": r.get("transactionReference", reference),
                 "message": message, "raw": data}
