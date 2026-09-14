@@ -313,6 +313,25 @@ PROVIDER_FLOAT_MESSAGE = (
     "this is temporarily unavailable on our side, not a problem with your account"
 )
 
+#: The gateway refusing us the PRODUCT, in the second person again. ALAT answers an
+#: un-entitled product with "You've not been profiled to use this service" — "you"
+#: being Zitch, not the customer, who reads it as their own account being ineligible
+#: and has no way to act on it. Same harm as the float sentence above and the same
+#: remedy: it is an entitlement fault only we can clear, so say so plainly.
+_PROVIDER_REFUSED_RE = re.compile(
+    r"""(
+        \bnot\s+(been\s+)?profiled\b
+      | \bnot\s+subscribed\b
+      | \bsubscription\s+(key\s+)?(is\s+)?(invalid|not\s+found)\b
+      | \b(access\s+denied|unauthori[sz]ed|not\s+authori[sz]ed|forbidden)\b
+    )""",
+    re.I | re.X,
+)
+PROVIDER_REFUSED_MESSAGE = (
+    "this service is temporarily unavailable on our side, not a problem with your "
+    "account"
+)
+
 
 def customer_safe_failure(result: dict, *, service: str = "",
                           fallback: str = "please try again") -> str:
@@ -355,6 +374,19 @@ def customer_safe_failure(result: dict, *, service: str = "",
         except Exception:  # noqa: BLE001
             log.exception("vas_float_alert_failed rail=%s", rail)
         return PROVIDER_FLOAT_MESSAGE
+    if message and _PROVIDER_REFUSED_RE.search(message):
+        # Paged for the same reason the float is: it fails EVERY purchase of the
+        # product, silently, one refunded customer at a time — and no code change
+        # clears it, someone has to get the tenant entitled for the product.
+        try:
+            from utility.alerts import alert
+
+            alert("VAS product is not entitled for this tenant - the gateway is "
+                  "refusing every purchase until the subscription is provisioned",
+                  level="error", service=service or "?", provider_said=message[:200])
+        except Exception:  # noqa: BLE001
+            log.exception("vas_refused_alert_failed service=%s", service)
+        return PROVIDER_REFUSED_MESSAGE
     return message or fallback
 
 

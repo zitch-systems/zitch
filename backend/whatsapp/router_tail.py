@@ -1704,6 +1704,78 @@ def lookup_hints(text: str) -> dict:
     return out
 
 
+#: A Nigerian line as customers write it. Matched and REMOVED before the amount is
+#: read, so "recharge 08012345678 with 500" cannot price the top-up at 8 billion.
+_VAS_PHONE_RE = re.compile(r"(?:\+?234|0)\d{10}\b")
+#: A data SIZE, not a price ("1gb", "500 mb") — removed before the amount too.
+_VAS_SIZE_RE = re.compile(r"\b\d[\d.,]*\s*(?:gb|mb)\b", re.I)
+#: "₦55", "N55", "55 naira", "55naira" (no space — as it was actually typed), "2k",
+#: "1,500", "500". The currency word is part of the match rather than left to the
+#: trailing boundary, which a digit running straight into a letter cannot satisfy.
+_VAS_AMOUNT_RE = re.compile(
+    r"(?:₦|\bngn\b|\bn(?=\d))?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|m)?(?:\s*(?:naira|ngn))?\b",
+    re.I)
+_VAS_DATA_RE = re.compile(r"\b(?:data|bundle)\b|\d\s*(?:gb|mb)\b", re.I)
+_VAS_AIRTIME_RE = re.compile(r"\b(?:airtime|recharge|top\s?-?\s?up|topup)\b", re.I)
+#: Asking ABOUT a top-up is not asking to buy one, and opening a money flow off a
+#: question is worse than the menu. "How much is 2k airtime?" stays a question.
+_VAS_QUESTION_RE = re.compile(
+    r"^\s*(?:how|what|why|when|where|which|can|could|does|do|is|are|did)\b|\?\s*$", re.I)
+#: Above any real top-up, and far below a balance worth guessing at.
+_VAS_MAX_AMOUNT = Decimal("100000")
+
+
+def vas_text_intent(text: str):
+    """A "2k airtime" / "recharge me 55 naira airtime" message, read without the LLM.
+
+    Every menu promises 'just type what you want - "send 5k to Ada", "2k airtime"',
+    and that promise was only ever kept while the AI layer was up. ai_active() also
+    requires the ``ai_enabled_global`` SystemSetting, which reads with a default of
+    False, so on a deploy where nobody had flipped it EVERY natural-language top-up
+    answered "Sorry, I didn't get that" — including the menu's own worked example,
+    printed one line above the customer's attempt. The screenshots that prompted this
+    are exactly that: "Recharge me 55 naira airtime", twice, both times the menu back.
+
+    Returns an intent in the same shape the model produces, so it leaves through
+    dispatch_intent and there is still only one route into the money flows.
+
+    Both a product word AND an amount are required. Anything less falls through to
+    the menu on purpose: a parser that opened a money flow off half a sentence would
+    be a worse failure than the one it replaces. Inferring the amount is safe here
+    for the same reason it is safe in _begin_airtime — it lands on the confirm
+    screen, which shows what was inferred and still needs biometrics or the PIN
+    before a naira moves.
+    """
+    raw = str(text or "").strip()
+    # A long message is prose, not a command, and is the model's to read.
+    if not raw or len(raw) > 160 or _VAS_QUESTION_RE.search(raw):
+        return None
+    is_data = bool(_VAS_DATA_RE.search(raw))
+    if not is_data and not _VAS_AIRTIME_RE.search(raw):
+        return None
+
+    phone_match = _VAS_PHONE_RE.search(raw)
+    hunting = _VAS_SIZE_RE.sub(" ", _VAS_PHONE_RE.sub(" ", raw))
+
+    amount = None
+    for digits, suffix in _VAS_AMOUNT_RE.findall(hunting):
+        try:
+            value = Decimal(digits.replace(",", ""))
+        except InvalidOperation:
+            continue
+        if suffix:
+            value *= 1000 if suffix.lower() == "k" else 1_000_000
+        if MIN_AIRTIME <= value <= _VAS_MAX_AMOUNT:
+            amount = value
+            break
+    if amount is None:
+        return None
+
+    return {"name": "buy_data" if is_data else "buy_airtime",
+            "input": {"amount": str(amount),
+                      "phone": phone_match.group(0) if phone_match else None}}
+
+
 def dispatch_intent(user, msisdn: str, intent: dict, text: str = "") -> bool:
     """Map one LLM tool call to a deterministic flow. Returns False for
     clarify/unknown so the caller shows the menu. Money still requires the

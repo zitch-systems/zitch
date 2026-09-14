@@ -34,7 +34,12 @@ PERMS_MATRIX = [
 
 # Known runtime settings + human descriptions (merged with live SystemSetting rows).
 SETTING_DEFS = [
-    ("ai_enabled_global", "true", "Master switch for the WhatsApp AI intent layer. Off ⇒ channel is fully menu-driven."),
+    # "false" because that is what the runtime actually reads: every consumer calls
+    # SystemSetting.get_bool("ai_enabled_global", False). Advertising "true" here
+    # showed operators an AI layer that was switched off, which is how the channel
+    # spent so long answering natural language with "Sorry, I didn't get that" while
+    # this console reported it as live.
+    ("ai_enabled_global", "false", "Master switch for the WhatsApp AI intent layer. Off ⇒ channel is fully menu-driven."),
     ("wa_reauth_idle_minutes", "15", "Minutes of silence before WhatsApp re-confirms identity (biometric in the app, or PIN) before revealing balance or account details. 0 disables."),
     ("fx_margin_bps", "60", "Margin (basis points) added over the provider rate on every conversion quote."),
     ("fx_quote_ttl_seconds", "60", "How long a conversion quote stays valid. Expired quotes are never settled."),

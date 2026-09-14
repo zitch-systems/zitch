@@ -1489,8 +1489,8 @@ def purchase_airtime(amount_naira, reference: str, phone: str, network: str, *,
                 "phoneNumber": phone, "amount": float(amount_naira),
                 "securityInfo": _security_info(op="airtime", reference=reference, amount=amount_naira),
                 "clientId": settings.WEMA.get("CHANNEL_ID", "")}
-        data = _post("airtime", "/api/Airtime/Client/PurchaseAirtime", body).json()
-        return _parse_vas(data, reference)
+        resp = _post("airtime", "/api/Airtime/Client/PurchaseAirtime", body)
+        return _parse_vas(resp.json(), reference, http_status=resp.status_code)
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
@@ -1557,8 +1557,8 @@ def purchase_data(amount_naira, reference: str, phone: str, network: str, packag
                 "packageCode": package_code, "amount": float(amount_naira), "network": network,
                 "securityInfo": _security_info(op="data", reference=reference, amount=amount_naira),
                 "clientId": settings.WEMA.get("CHANNEL_ID", "")}
-        data = _post("airtime", "/api/Data/Client/PurchaseData", body).json()
-        return _parse_vas(data, reference)
+        resp = _post("airtime", "/api/Data/Client/PurchaseData", body)
+        return _parse_vas(resp.json(), reference, http_status=resp.status_code)
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
@@ -1693,8 +1693,9 @@ def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, 
                 "customerIdentifier": identifier, "customerEmail": email,
                 "customerPhoneNumber": phone, "customerName": name,
                 "securityInfo": _security_info(op="bill", reference=reference, amount=amount_naira)}
-        data = _post("bills", "/api/Shared/PayBill", body).json()
-        res = _parse_vas(data, reference, product="bills")
+        resp = _post("bills", "/api/Shared/PayBill", body)
+        data = resp.json()
+        res = _parse_vas(data, reference, product="bills", http_status=resp.status_code)
         token = _vas_token(data)
         return {**res, "token": token} if token else res
     except requests.RequestException as exc:
@@ -1725,16 +1726,18 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
         return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
     try:
         if product == "bills":
-            data = _post("bills", "/api/PartnerPayment/checktransactionstatus",
-                         {"transactionReference": reference}).json()
+            resp = _post("bills", "/api/PartnerPayment/checktransactionstatus",
+                         {"transactionReference": reference})
         else:
-            data = _post("airtime", "/api/PartnerPayment/CheckTransactionStatus",
+            resp = _post("airtime", "/api/PartnerPayment/CheckTransactionStatus",
                          {"transactionReference": reference,
-                          "transactionType": 2 if txn_type == "data" else 1}).json()
+                          "transactionType": 2 if txn_type == "data" else 1})
+        data = resp.json()
         # The two status endpoints answer with DIFFERENT integer enums (1..11 vs 1..9),
         # so the legend must be picked per product or a code would be decoded against
         # the wrong ladder.
-        res = _parse_vas(data, reference, product=product)
+        res = _parse_vas(data, reference, product=product,
+                         http_status=resp.status_code, requery=True)
         # A bill that settles on REQUERY rather than synchronously must still carry
         # its prepaid token, or a late-settled purchase delivers units the customer is
         # never told how to claim. settle_or_refund copies result keys onto the row's
@@ -1800,7 +1803,19 @@ def _vas_legend(product: str) -> dict[str, str]:
     return legend
 
 
-def _parse_vas(data: dict, reference: str, product: str = "airtime") -> dict:
+#: 4xx codes that mean the gateway understood the request and REFUSED it, so nothing
+#: was executed — the same set, and the same reasoning, as the deliberate exclusions
+#: documented above _raise_if_ambiguous. A refusal is a definitive failure.
+_VAS_REFUSED_HTTP = (400, 401, 403, 404, 422)
+#: The subset that refuses us the PRODUCT rather than the individual request: APIM
+#: answers these when the tenant is not subscribed/profiled for the ALAT product at
+#: all ("You've not been profiled to use this service"). They are the only refusals a
+#: REQUERY may act on — see _parse_vas.
+_VAS_NOT_ENTITLED_HTTP = (401, 403)
+
+
+def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
+               http_status: int | None = None, requery: bool = False) -> dict:
     """Normalise a VAS response to the {success, pending, status, reference} shape
     settle_or_refund expects.
 
@@ -1812,7 +1827,21 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime") -> dict:
     legend, or for a code the legend doesn't cover, we report ``pending`` — never
     auto-settle (which would strand a failed purchase debited) or auto-refund (which
     would double-spend a delivered one) on an un-decodable code — and surface the raw
-    code for review."""
+    code for review.
+
+    ``http_status`` is what stops a REFUSED call from being read as an in-flight one.
+    A refusal carries no status string, so without it the "no status ⇒ pending" default
+    below swallowed the refusal and the debit hung forever: production sat on six
+    airtime rows the gateway was answering "You've not been profiled to use this
+    service" — requeried every ten minutes, never settling, never refunding, the
+    customer debited the whole time. A 4xx is the gateway saying it understood and
+    refused, so nothing was executed and a definitive failure is the truthful answer.
+
+    ``requery`` narrows that on the status-check path, where the refusal is of the
+    QUERY and not of the purchase. Only a refusal of the whole product (401/403 — we
+    hold no entitlement, so the purchase it is asking about could not have been
+    fulfilled either) settles as failed there; a 400/404/422 says nothing reliable
+    about an already-submitted purchase and stays pending."""
     r = data.get("result", {}) or {}
     if not isinstance(r, dict):
         r = {}
@@ -1821,6 +1850,20 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime") -> dict:
         raw_status = data.get("status")
     # Envelope booleans describe the API call, never the purchase outcome.
     status = raw_status.strip().upper() if isinstance(raw_status, str) else ""
+    # A refusal is settled FIRST, ahead of every branch below, because a request the
+    # gateway declined to execute has no outcome for them to read: no status string to
+    # trust, and no transactionStatus worth decoding against a legend. On the purchase
+    # path any 4xx means nothing ran; on a requery only a refusal of the whole product
+    # does (see the docstring). Logged at error — a refusal is a configuration or
+    # entitlement fault that no amount of retrying will clear.
+    if http_status in (_VAS_NOT_ENTITLED_HTTP if requery else _VAS_REFUSED_HTTP):
+        message = r.get("message") or _msg(data)
+        log.error("wema_vas_refused ref=%s product=%s http_status=%s requery=%s "
+                  "message=%r (definitive failure — refunding, not left pending)",
+                  reference, product, http_status, requery, message)
+        return {"success": False, "pending": False, "status": f"REFUSED_{http_status}",
+                "reference": r.get("transactionReference", reference),
+                "message": message, "raw": data}
     if not status and "transactionStatus" in r:
         code = r.get("transactionStatus")
         outcome = _vas_legend(product).get(str(code).strip())
@@ -1902,8 +1945,9 @@ def pay_remita(amount_naira, reference: str, *, rrr: str, source_account: str = 
                 "payerName": payer_name or name, "payerNumber": payer_number or phone,
                 "description": description or f"Remita {rrr}",
                 "securityInfo": _security_info(op="remita", reference=reference, amount=amount_naira)}
-        data = _post("remita", "/api/RemitaPayment/ProcessRemitaPayment", body).json()
-        return _parse_vas(data, reference, product="remita")
+        resp = _post("remita", "/api/RemitaPayment/ProcessRemitaPayment", body)
+        return _parse_vas(resp.json(), reference, product="remita",
+                          http_status=resp.status_code)
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
