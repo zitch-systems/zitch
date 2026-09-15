@@ -378,11 +378,14 @@ def wema_account_callback(request):
     # a bad bank payload into a 500 and retry storm instead of quarantining it.
     raw_data = body.get("data")
     data = raw_data if isinstance(raw_data, dict) else {}
-    nuban = str(data.get("nuban") or "").strip()
-    phone = str(data.get("phoneNumber") or "").strip()
-    email = str(data.get("email") or "").strip()
-    name = str(data.get("nubanName") or "").strip()
-    status = str(data.get("nubanStatus") or "").strip()
+    nuban = str(data.get("nuban") or data.get("accountNumber") or
+                data.get("account_number") or data.get("walletNumber") or "").strip()
+    phone = str(data.get("phoneNumber") or data.get("phone") or "").strip()
+    email = str(data.get("email") or data.get("emailAddress") or "").strip()
+    name = str(data.get("nubanName") or data.get("accountName") or
+               data.get("account_name") or "").strip()
+    status = str(data.get("nubanStatus") or data.get("status") or
+                 data.get("walletStatus") or "").strip()
 
     valid_schema = (
         str(body.get("requestType") or "").strip() == "2"
