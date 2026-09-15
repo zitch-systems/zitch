@@ -11,6 +11,8 @@ from unittest import mock
 from django.core.management import call_command
 from django.test import Client, TestCase, override_settings
 
+from utility import wema
+
 _LIVE_DIAG = {"base_url": "https://api.alat.ng", "channel_id_set": True,
               "wallet_key_set": True, "security_info_set": True, "wema_live": True,
               "simulation": False, "status": "configured", "hint": "",
@@ -138,12 +140,33 @@ class PreflightGateTests(TestCase):
         self.assertEqual(code, 1)
 
     @override_settings(VAS_PROVIDER="wema")
-    def test_explicit_wema_vas_requires_airtime_product_key(self):
-        diag = dict(_LIVE_DIAG, product_keys_set={"wallet": True, "airtime": False})
+    def test_explicit_wema_vas_requires_an_airtime_capable_key(self):
+        """With neither a dedicated airtime key nor a wallet key, go-live is blocked.
+
+        Selling airtime with no key that can authenticate the product debits
+        customers for calls APIM will reject, so this stays a hard gate.
+        """
+        diag = dict(_LIVE_DIAG,
+                    product_keys_set={"wallet": False, "airtime": False})
         with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
             out, code = _run()
         self.assertIn("WEMA_AIRTIME_KEY", out)
         self.assertEqual(code, 1)
+
+    @override_settings(VAS_PROVIDER="wema")
+    def test_wallet_key_alone_satisfies_airtime_when_the_subscription_covers_it(self):
+        """The gate mirrors wema._sub_key instead of demanding an unnecessary env var.
+
+        Airtime and Data sit under this tenant's Wallet Services subscription, so a
+        deployment with only WEMA_WALLET_KEY set is correctly configured — failing it
+        would block a go-live that works.
+        """
+        self.assertIn("airtime", wema._WALLET_COVERED)
+        diag = dict(_LIVE_DIAG,
+                    product_keys_set={"wallet": True, "airtime": False})
+        with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("covered by the Wallet Services key", out)
 
     @override_settings(CARD_PROVIDER="wema", WEMA={**_SAFE_CALLBACKS, "CARD_PRODUCT_KEY": ""})
     def test_wema_cards_require_subscription_and_product_id(self):
