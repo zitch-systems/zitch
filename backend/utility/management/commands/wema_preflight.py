@@ -76,8 +76,8 @@ class Command(BaseCommand):
             # key was set, this gate went green, and APIM refused every airtime call
             # with "You've not been profiled to use this service" — six customer
             # debits later. A key being SET says nothing about being ENTITLED, so
-            # the gateway is now asked directly. See wema.vas_entitlement; the probe
-            # is a status check on a reference that cannot exist, so it moves no money.
+            # settlement reachability is now probed separately below, scoped to the
+            # endpoint it actually calls. See wema.vas_status_entitlement.
             if not product_keys.get("airtime"):
                 checks.append((
                     True, "Partner-bank Airtime/Data subscription", FAIL,
@@ -85,15 +85,24 @@ class Command(BaseCommand):
                     "an Airtime/Data subscription the tenant actually holds — pointing it "
                     "at another product's key passes nothing but this line"))
             else:
-                entitled, why = wema.vas_entitlement("airtime")
                 checks.append((
-                    True, "Partner-bank Airtime/Data subscription",
-                    PASS if entitled else FAIL,
-                    "key set and the gateway accepts it" if entitled
-                    else (f"WEMA_AIRTIME_KEY is set but the gateway refuses the product: "
-                          f"{why}. Airtime and data cannot be sold until the tenant is "
-                          f"subscribed to the ALAT Airtime/Data product — this is a bank-side "
-                          f"entitlement, not a deploy setting")))
+                    True, "Partner-bank Airtime/Data subscription", PASS, "key set"))
+                # SOFT, and scoped to what it actually probes. Selling airtime and
+                # settling it live behind different ALAT products, so this cannot
+                # speak for the purchase endpoint — it asks only whether the
+                # PartnerPayment status endpoint answers us. It is reported because
+                # settlement runs entirely through that endpoint: without it a
+                # PROCESSING purchase can never resolve, which is what
+                # providers.vas_can_settle refuses a sale over.
+                reachable, why = wema.vas_status_entitlement("airtime")
+                checks.append((
+                    False, "Partner-bank VAS status/requery",
+                    PASS if reachable else WARN,
+                    "the status endpoint answers" if reachable
+                    else (f"the gateway refuses the PartnerPayment status endpoint: {why}. "
+                          f"Purchases may still complete, but any that come back PROCESSING "
+                          f"cannot be settled or refunded automatically — ask the bank to "
+                          f"profile the tenant for PartnerPayment status")))
         if card_provider() == "wema":
             card_ready = bool(product_keys.get("card") and settings.WEMA.get("CARD_PRODUCT_KEY"))
             checks.append((

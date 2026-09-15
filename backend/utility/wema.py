@@ -1779,22 +1779,29 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
 
-def vas_entitlement(product: str = "airtime") -> tuple[bool, str]:
-    """Whether the tenant may actually CALL this VAS product, asked of the gateway.
+def vas_status_entitlement(product: str = "airtime") -> tuple[bool, str]:
+    """Whether the tenant may call the PartnerPayment STATUS endpoint for this product.
 
-    A configured key is not an entitled key, and that gap is what put six airtime
-    debits in front of customers. ``WEMA_AIRTIME_KEY`` was pointed at the Wallet
-    Services key on the belief that its API list covered Airtime and Data; APIM
-    disagreed, answering every call "You've not been profiled to use this service".
-    Nothing checked the difference, so the preflight went green and the first report
-    was a customer's ₦55.
+    Deliberately narrow, because the two halves of a VAS purchase live behind
+    DIFFERENT ALAT products and fail differently. Selling is
+    ``/api/Airtime/Client/PurchaseAirtime``; settling is
+    ``/api/PartnerPayment/CheckTransactionStatus``. Production answers them with two
+    different errors — "Authentication Failed" on the purchase, "You've not been
+    profiled to use this service" on the status check — and reading either as a verdict
+    on the other is how this outage kept being misdiagnosed. This function answers only
+    for the status endpoint it actually calls.
+
+    That answer still matters on its own: settlement runs entirely through this
+    endpoint, so a tenant that cannot call it cannot resolve a purchase that comes back
+    PROCESSING — the exact hazard ``providers.vas_can_settle`` refuses a sale over.
 
     The probe is a status check on a reference that cannot exist. It is read-only and
     moves no money — the same class of call ``/vas-diagnose`` already makes — and the
     two answers are easy to tell apart: an entitled tenant says it has no such
     transaction, an un-entitled one refuses the product outright.
 
-    Returns ``(True, "")`` when the product is callable, else ``(False, <reason>)``.
+    Returns ``(True, "")`` when the status endpoint is callable, else
+    ``(False, <reason>)``.
     """
     if not _vas_live(product):
         return True, ""

@@ -184,9 +184,9 @@ class EntitlementIsAskedOfTheGatewayTests(SimpleTestCase):
     """
 
     @override_settings(WEMA=WEMA_LIVE)
-    def test_a_refused_product_is_reported_as_not_entitled(self):
+    def test_a_refused_status_endpoint_is_reported(self):
         with mock.patch.object(wema, "_post", return_value=_response(200, NOT_PROFILED)):
-            entitled, why = wema.vas_entitlement("airtime")
+            entitled, why = wema.vas_status_entitlement("airtime")
         self.assertFalse(entitled)
         self.assertIn("profiled", why)
 
@@ -196,7 +196,7 @@ class EntitlementIsAskedOfTheGatewayTests(SimpleTestCase):
         transaction" is the ENTITLED answer and must not read as a refusal."""
         with mock.patch.object(wema, "_post", return_value=_response(
                 200, {"hasError": True, "message": "Record not found"})):
-            entitled, _ = wema.vas_entitlement("airtime")
+            entitled, _ = wema.vas_status_entitlement("airtime")
         self.assertTrue(entitled)
 
     @override_settings(WEMA=WEMA_LIVE)
@@ -205,7 +205,7 @@ class EntitlementIsAskedOfTheGatewayTests(SimpleTestCase):
         buy airtime would be a worse cure than the disease."""
         with mock.patch.object(wema, "_post", return_value=_response(
                 200, {"hasError": True, "message": "Record not found"})) as post:
-            wema.vas_entitlement("airtime")
+            wema.vas_status_entitlement("airtime")
         for call in post.call_args_list:
             path = call.args[1] if len(call.args) > 1 else ""
             self.assertNotIn("Purchase", path)
@@ -215,7 +215,7 @@ class EntitlementIsAskedOfTheGatewayTests(SimpleTestCase):
         """Nothing to check when the rail is not live — that is a different state,
         already handled, and flagging it here would just be noise."""
         with override_settings(WEMA={"BASE_URL": "https://gw.example", "KEYS": {}}):
-            entitled, _ = wema.vas_entitlement("airtime")
+            entitled, _ = wema.vas_status_entitlement("airtime")
         self.assertTrue(entitled)
 
 

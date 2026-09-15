@@ -253,10 +253,34 @@ class WemaAuthenticateCallbackTests(TestCase):
         txn.save(update_fields=["transaction_status"])
         self.assertFalse(self._post({"transactionReference": txn.reference}).json()["authorized"])
 
-    def test_non_bank_reference_cannot_authorize_a_payout(self):
-        # A VTU purchase row carries no meta["bank"] — it must never authorise a
-        # bank payout even though the reference exists.
-        txn = debit(self.user, Decimal("500.00"), "airtime", meta={"reconcile": True})
+    def test_a_pending_airtime_purchase_is_authorized(self):
+        """This gate used to deny every VAS purchase, and the bank reported that to
+        the customer as "Authentication Failed" on a top-up already debited.
+
+        It was right while VAS ran on a separate provider this bank never asked
+        about. Once VAS moved onto this bank, the bank began asking about airtime
+        the same way it asks about payouts — and the answer has to be yes, because
+        the purchase is ours and we debited for it moments earlier.
+        """
+        txn = debit(self.user, Decimal("55.00"), "airtime", meta={"reconcile": True})
+        r = self._post({"transactionReference": txn.reference, "securityInfo": "opaque"})
+        self.assertTrue(r.json()["authorized"])
+
+    def test_a_reference_we_never_put_in_flight_is_denied(self):
+        """What the old rule was really protecting, kept. Authorising is
+        per-reference, so a VAS row cannot release a payout — but a row we never
+        sent outbound to a provider has no business being authorised at all.
+        meta.reconcile is the marker run_provider_purchase sets with the debit;
+        an internal transfer never carries it."""
+        txn = debit(self.user, Decimal("500.00"), "transfer", meta={"note": "internal"})
+        self.assertFalse(self._post({"transactionReference": txn.reference}).json()["authorized"])
+
+    def test_a_settled_airtime_purchase_is_not_reauthorized(self):
+        """The PENDING guard has to cover the VAS path too, or a delivered top-up
+        could be authorised a second time."""
+        txn = debit(self.user, Decimal("55.00"), "airtime", meta={"reconcile": True})
+        txn.transaction_status = Transaction.SUCCESS
+        txn.save(update_fields=["transaction_status"])
         self.assertFalse(self._post({"transactionReference": txn.reference}).json()["authorized"])
 
     def test_stale_payout_is_denied(self):
