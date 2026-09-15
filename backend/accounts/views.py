@@ -1655,6 +1655,12 @@ def kyc_face_start(request):
                       bank_name=recovered.bank_name,
                       message="Your bank account was already set up — we've reconnected it.",
                       **_kyc_state(user))
+        if WemaFaceSession.objects.filter(
+                user=user, identity_type=identity_type, identity_hash=identity_hash,
+                status=WemaFaceSession.VERIFIED).exists():
+            return fail(
+                "Your identity is already verified, but your funding account needs "
+                "review. Please do not repeat verification.", status=409)
         # Nothing to reconnect: open a real face session. The callback re-proves
         # the SAME identity (a different one is still refused there) and creates
         # the account, which is the only way this user gets one.

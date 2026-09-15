@@ -1043,6 +1043,7 @@ def wema_face_callback(request, state=""):
                     provider_validated_account = {
                         "success": True,
                         "existing": True,
+                        "account_started": bool(recovered is not None and recovered.account_number),
                         "message": "Authenticated existing channel identity confirmed",
                     }
                     request.wema_action = (
@@ -1114,7 +1115,7 @@ def wema_face_callback(request, state=""):
             identity_type=kind, identity_value=identity,
             correlation_id=correlation,
         )
-        account_started = bool(account.get("success"))
+        account_started = bool(account.get("success") and account.get("account_started", True))
         account_failed = not account_started
         # Read back on BOTH outcomes. "Customer already exists" is a failed create
         # response but often means the NUBAN was created by an earlier request whose
@@ -1175,8 +1176,13 @@ def _tell_whatsapp_face_passed(user, identity_type: str,
             return
         from whatsapp.router import reply
         if account_failed:
-            account_note = ("\n\n⚠️ The bank did not start account creation. You can "
-                            "still enter the SMS code already sent to finish setup.")
+            account_note = ("\n\n⚠️ Your identity is verified, but we could not confirm "
+                            "account creation. Account setup needs review. Please do not "
+                            "repeat BVN or face verification; no funding account is ready yet.")
+            if PendingAction.objects.filter(
+                    user=user, action_type="add_account", state="otp",
+                    expires_at__gt=timezone.now()).exists():
+                account_note += " If you received the existing setup code, you can still enter the SMS code."
         elif account_pending:
             account_note = ("\n\n🏦 Your account is being created; we'll confirm the "
                             "account number when the bank sends it.")

@@ -3725,6 +3725,17 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
         if recovered is not None and recovered.account_number:
             return _send_account_details(
                 msisdn, recovered, intro="✅ *Your verified bank account has been reconnected*")
+        # A completed face attempt must not send a verified customer through
+        # the same creation/re-verification loop. Read-back above remains safe;
+        # a missing NUBAN after that needs account recovery, not fresh identity.
+        from wallet.models import WemaFaceSession
+        if WemaFaceSession.objects.filter(
+                user=user, identity_type="bvn", status=WemaFaceSession.VERIFIED).exists():
+            return reply(
+                msisdn,
+                "Your BVN is already verified. Your funding account number is not "
+                "available yet and account setup needs review. Please do not repeat "
+                "BVN or face verification. We will confirm when your account is ready.")
         # Resume whichever bank setup challenge is actually live.  A customer
         # may have verified BVN and then started account issuance with NIN; only
         # looking for a BVN attempt discarded that valid NIN tracking id and sent
