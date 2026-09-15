@@ -174,6 +174,51 @@ class RefusedInTheBodyUnderHttp200Tests(SimpleTestCase):
         self.assertTrue(res["pending"])
 
 
+class EntitlementIsAskedOfTheGatewayTests(SimpleTestCase):
+    """A configured key is not an entitled key, and nothing used to tell them apart.
+
+    WEMA_AIRTIME_KEY was set to the Wallet Services key on the belief that its API
+    list covered Airtime and Data. The preflight checked only that the variable was
+    non-empty, so it passed; APIM refused every real call. Six customers were debited
+    before anyone knew. The probe below is what closes that gap.
+    """
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_a_refused_product_is_reported_as_not_entitled(self):
+        with mock.patch.object(wema, "_post", return_value=_response(200, NOT_PROFILED)):
+            entitled, why = wema.vas_entitlement("airtime")
+        self.assertFalse(entitled)
+        self.assertIn("profiled", why)
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_an_unknown_reference_is_entitlement_not_refusal(self):
+        """The probe asks about a reference that cannot exist, so "no such
+        transaction" is the ENTITLED answer and must not read as a refusal."""
+        with mock.patch.object(wema, "_post", return_value=_response(
+                200, {"hasError": True, "message": "Record not found"})):
+            entitled, _ = wema.vas_entitlement("airtime")
+        self.assertTrue(entitled)
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_the_probe_never_touches_a_purchase_endpoint(self):
+        """It must stay read-only: a preflight that bought airtime to prove it could
+        buy airtime would be a worse cure than the disease."""
+        with mock.patch.object(wema, "_post", return_value=_response(
+                200, {"hasError": True, "message": "Record not found"})) as post:
+            wema.vas_entitlement("airtime")
+        for call in post.call_args_list:
+            path = call.args[1] if len(call.args) > 1 else ""
+            self.assertNotIn("Purchase", path)
+            self.assertIn("CheckTransactionStatus", path)
+
+    def test_an_unkeyed_deploy_is_not_reported_as_unentitled(self):
+        """Nothing to check when the rail is not live — that is a different state,
+        already handled, and flagging it here would just be noise."""
+        with override_settings(WEMA={"BASE_URL": "https://gw.example", "KEYS": {}}):
+            entitled, _ = wema.vas_entitlement("airtime")
+        self.assertTrue(entitled)
+
+
 class RefusalLogCannotBeForgedTests(SimpleTestCase):
     """A reference reaches this log from outside the process. A newline inside one
     writes what reads as its own entry — and a forged "settled" line under a real

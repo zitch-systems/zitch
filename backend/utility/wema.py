@@ -150,14 +150,20 @@ def _mock_blocked() -> bool:
 
 # Products this module will let the Wallet Services key authenticate BY DEFAULT.
 #
-# Deliberately narrower than what a given Wema tenant may actually allow. Ours, for
-# instance, has one Wallet Services subscription whose API list also covers Airtime
-# and Data, Bills, Card Management, Account Upgrade, Remita, KYC and Face Biometric —
-# but that is a fact about our tenant, not about ALAT, and widening the default here
-# would send the wallet key to those products on EVERY deploy, including ones where
-# APIM rejects it. Point a product's own env var at the wallet key when the tenant
-# permits it (WEMA_AIRTIME_KEY=<wallet key>, and so on); explicit beats inferred, and
-# it stays visible when the products are later split onto their own subscriptions.
+# Deliberately narrower than what a Wema tenant's subscription may APPEAR to allow.
+# This comment used to assert that our own Wallet Services subscription covered
+# Airtime and Data among others, and to advise setting WEMA_AIRTIME_KEY to the wallet
+# key on that basis. Production disproved it: the key was set that way, every airtime
+# call came back "You've not been profiled to use this service", and six customers
+# were debited for top-ups that could never be delivered. The subscription list shows
+# no Airtime product at all — an API appearing in a product's documented list is not
+# the same as the tenant being subscribed to it.
+#
+# So the rule stands and the reasoning is now the observed one: point a product's own
+# env var at the wallet key ONLY where the gateway has been seen to accept it, and let
+# `manage.py wema_preflight` ask the gateway rather than trusting a list. Explicit
+# beats inferred, and it stays visible when products are split onto their own
+# subscriptions.
 #
 # One product is excluded from any fallback on purpose: the key the face-biometric
 # WEB app receives travels in a URL the customer's browser loads. See _face_key.
@@ -1771,6 +1777,32 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
         return {**res, "token": token} if token else res
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def vas_entitlement(product: str = "airtime") -> tuple[bool, str]:
+    """Whether the tenant may actually CALL this VAS product, asked of the gateway.
+
+    A configured key is not an entitled key, and that gap is what put six airtime
+    debits in front of customers. ``WEMA_AIRTIME_KEY`` was pointed at the Wallet
+    Services key on the belief that its API list covered Airtime and Data; APIM
+    disagreed, answering every call "You've not been profiled to use this service".
+    Nothing checked the difference, so the preflight went green and the first report
+    was a customer's ₦55.
+
+    The probe is a status check on a reference that cannot exist. It is read-only and
+    moves no money — the same class of call ``/vas-diagnose`` already makes — and the
+    two answers are easy to tell apart: an entitled tenant says it has no such
+    transaction, an un-entitled one refuses the product outright.
+
+    Returns ``(True, "")`` when the product is callable, else ``(False, <reason>)``.
+    """
+    if not _vas_live(product):
+        return True, ""
+    res = vas_status(f"ZITCH-PREFLIGHT-{secrets.token_hex(6).upper()}",
+                     "bill" if product == "bills" else "airtime")
+    if str(res.get("status") or "").startswith("REFUSED_"):
+        return False, str(res.get("message") or "the gateway refused the product")
+    return True, ""
 
 
 _VAS_OUTCOMES = ("success", "pending", "failed")
