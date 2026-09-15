@@ -70,23 +70,31 @@ class Command(BaseCommand):
             for name in ("wallet", "card", "airtime", "bills", "upgrade", "kyc", "remita", "bnpl")
         }
         if vas_provider() == "wema":
-            # Presence USED to be the whole check, and the advice here used to be
-            # "if your Wallet Services subscription includes the Airtime and Data
-            # API, set it to the wallet key". Both were wrong for this tenant: the
-            # key was set, this gate went green, and APIM refused every airtime call
-            # with "You've not been profiled to use this service" — six customer
-            # debits later. A key being SET says nothing about being ENTITLED, so
-            # settlement reachability is now probed separately below, scoped to the
-            # endpoint it actually calls. See wema.vas_status_entitlement.
-            if not product_keys.get("airtime"):
+            # Airtime/Data authenticate with a dedicated WEMA_AIRTIME_KEY or, where
+            # the tenant's Wallet Services subscription covers them, with the wallet
+            # key — so this gate mirrors wema._sub_key rather than demanding an env
+            # var that a correctly configured tenant may not need.
+            #
+            # A key being SET still says nothing about being ENTITLED, which is why
+            # nothing below infers one from the other: settlement reachability is
+            # probed separately, scoped to the endpoint it actually calls, and the
+            # "Authentication Failed" that customers saw in September was our own
+            # callback denying the purchase, not a key problem at all. See
+            # wema.vas_status_entitlement and wallet/wema_callbacks.py.
+            airtime_key = bool(product_keys.get("airtime")) or (
+                "airtime" in wema._WALLET_COVERED and bool(product_keys.get("wallet")))
+            if not airtime_key:
                 checks.append((
                     True, "Partner-bank Airtime/Data subscription", FAIL,
-                    "VAS_PROVIDER=wema requires WEMA_AIRTIME_KEY. It must be the key of "
-                    "an Airtime/Data subscription the tenant actually holds — pointing it "
-                    "at another product's key passes nothing but this line"))
+                    "VAS_PROVIDER=wema requires WEMA_AIRTIME_KEY, or a WEMA_WALLET_KEY "
+                    "whose subscription covers Airtime/Data. It must belong to a "
+                    "subscription the tenant actually holds — pointing it at another "
+                    "product's key passes nothing but this line"))
             else:
                 checks.append((
-                    True, "Partner-bank Airtime/Data subscription", PASS, "key set"))
+                    True, "Partner-bank Airtime/Data subscription", PASS,
+                    "key set" if product_keys.get("airtime")
+                    else "covered by the Wallet Services key"))
                 # SOFT, and scoped to what it actually probes. Selling airtime and
                 # settling it live behind different ALAT products, so this cannot
                 # speak for the purchase endpoint — it asks only whether the
