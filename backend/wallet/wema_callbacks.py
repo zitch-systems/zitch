@@ -569,10 +569,28 @@ def _authorize_payout(ref: str, security_info: str, ip: str) -> tuple:
                .filter(reference=ref, direction=Transaction.OUT).first())
         if txn is None:
             return False, "unknown_reference"
-        if not is_bank_payout(txn):
-            # A VTU purchase or internal transfer reference must never authorise a
-            # bank payout.
-            return False, "not_a_bank_payout"
+        # Two kinds of outbound money reach this gate, and BOTH are ours to answer
+        # for. A bank payout, and — since every VAS purchase moved onto this bank —
+        # an airtime/data/bill purchase, which the bank now asks about the same way.
+        #
+        # This used to admit only the payout, on the reasoning that "a VTU purchase
+        # or internal transfer reference must never authorise a bank payout". That
+        # held while VAS ran on a separate provider this bank never asked about. It
+        # stopped holding when VAS moved here, and the effect was total: the bank
+        # asked whether our own airtime purchase could proceed, we answered no, and
+        # it told the customer "Authentication Failed" on a top-up we had already
+        # debited them for.
+        #
+        # The fear behind the old rule is still respected, because authorising IS
+        # per-reference: saying yes to an airtime reference authorises that airtime
+        # purchase and nothing else — it cannot release a payout. What must stay out
+        # is anything we did not put in flight as outbound provider money, and
+        # meta.reconcile is exactly that marker: run_provider_purchase sets it
+        # atomically with the debit, BEFORE the provider call, which is the very
+        # window this callback arrives in. An internal transfer never carries it.
+        vas_purchase = bool((txn.meta or {}).get("reconcile"))
+        if not is_bank_payout(txn) and not vas_purchase:
+            return False, "not_a_bank_payout_or_vas_purchase"
         if txn.transaction_status != Transaction.PENDING:
             # SUCCESS => already treated as sent; FAILED => already refunded.
             return False, f"state_{txn.transaction_status}"

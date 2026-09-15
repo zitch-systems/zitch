@@ -150,14 +150,20 @@ def _mock_blocked() -> bool:
 
 # Products this module will let the Wallet Services key authenticate BY DEFAULT.
 #
-# Deliberately narrower than what a given Wema tenant may actually allow. Ours, for
-# instance, has one Wallet Services subscription whose API list also covers Airtime
-# and Data, Bills, Card Management, Account Upgrade, Remita, KYC and Face Biometric —
-# but that is a fact about our tenant, not about ALAT, and widening the default here
-# would send the wallet key to those products on EVERY deploy, including ones where
-# APIM rejects it. Point a product's own env var at the wallet key when the tenant
-# permits it (WEMA_AIRTIME_KEY=<wallet key>, and so on); explicit beats inferred, and
-# it stays visible when the products are later split onto their own subscriptions.
+# Deliberately narrower than what a Wema tenant's subscription may APPEAR to allow.
+# This comment used to assert that our own Wallet Services subscription covered
+# Airtime and Data among others, and to advise setting WEMA_AIRTIME_KEY to the wallet
+# key on that basis. Production disproved it: the key was set that way, every airtime
+# call came back "You've not been profiled to use this service", and six customers
+# were debited for top-ups that could never be delivered. The subscription list shows
+# no Airtime product at all — an API appearing in a product's documented list is not
+# the same as the tenant being subscribed to it.
+#
+# So the rule stands and the reasoning is now the observed one: point a product's own
+# env var at the wallet key ONLY where the gateway has been seen to accept it, and let
+# `manage.py wema_preflight` ask the gateway rather than trusting a list. Explicit
+# beats inferred, and it stays visible when products are split onto their own
+# subscriptions.
 #
 # One product is excluded from any fallback on purpose: the key the face-biometric
 # WEB app receives travels in a URL the customer's browser loads. See _face_key.
@@ -307,13 +313,21 @@ _LOG_UNSAFE = re.compile(r"[\x00-\x1f\x7f]")
 def _log_safe(value, limit: int = 160) -> str:
     """One field of a log line, with anything that could forge a second line removed.
 
-    Transaction references and gateway messages reach our logs from outside this
-    process, and a newline or carriage return inside one writes what reads as its own
-    entry — a forged "settled" line under a real reference is exactly the sort of
-    thing nobody would think to disbelieve while reading a settlement incident. The
-    result is bounded too, so an oversized value cannot drown the surrounding lines.
+    Transaction references, gateway messages and gateway status codes reach our logs
+    from outside this process, and a newline or carriage return inside one writes what
+    reads as its own entry — a forged "settled" line under a real reference is exactly
+    the sort of thing nobody would think to disbelieve while reading a settlement
+    incident. The result is bounded too, so an oversized value cannot drown the
+    surrounding lines.
+
+    The two line breaks are stripped by name before the general control-character
+    pass. That is redundant for a reader — the regex below covers both — but it is the
+    form static analysis recognises as sanitising, and a security alert that keeps
+    reopening on a line that is already safe costs more attention than the duplication
+    does.
     """
-    return _LOG_UNSAFE.sub(" ", str(value))[:limit]
+    text = str(value).replace("\r", " ").replace("\n", " ")
+    return _LOG_UNSAFE.sub(" ", text)[:limit]
 
 
 def _as_int(v):
@@ -1458,7 +1472,8 @@ def confirm_credit_status(reference: str) -> dict:
         result = _transfer_result(data, reference, _transfer_payload(data), lookup=True)
         if not result["status"]:
             log.warning("wema_credit_status_unresolved ref=%s meta=%s raw=%s",
-                        reference, _response_meta(resp, data), _trim(data))
+                        _log_safe(reference), _response_meta(resp, data),
+                        _log_safe(_trim(data), limit=400))
         return result
     except (requests.RequestException, ValueError) as exc:
         # A failed status lookup cannot disprove the credit; retain PENDING and
@@ -1764,6 +1779,39 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
 
+def vas_status_entitlement(product: str = "airtime") -> tuple[bool, str]:
+    """Whether the tenant may call the PartnerPayment STATUS endpoint for this product.
+
+    Deliberately narrow, because the two halves of a VAS purchase live behind
+    DIFFERENT ALAT products and fail differently. Selling is
+    ``/api/Airtime/Client/PurchaseAirtime``; settling is
+    ``/api/PartnerPayment/CheckTransactionStatus``. Production answers them with two
+    different errors — "Authentication Failed" on the purchase, "You've not been
+    profiled to use this service" on the status check — and reading either as a verdict
+    on the other is how this outage kept being misdiagnosed. This function answers only
+    for the status endpoint it actually calls.
+
+    That answer still matters on its own: settlement runs entirely through this
+    endpoint, so a tenant that cannot call it cannot resolve a purchase that comes back
+    PROCESSING — the exact hazard ``providers.vas_can_settle`` refuses a sale over.
+
+    The probe is a status check on a reference that cannot exist. It is read-only and
+    moves no money — the same class of call ``/vas-diagnose`` already makes — and the
+    two answers are easy to tell apart: an entitled tenant says it has no such
+    transaction, an un-entitled one refuses the product outright.
+
+    Returns ``(True, "")`` when the status endpoint is callable, else
+    ``(False, <reason>)``.
+    """
+    if not _vas_live(product):
+        return True, ""
+    res = vas_status(f"ZITCH-PREFLIGHT-{secrets.token_hex(6).upper()}",
+                     "bill" if product == "bills" else "airtime")
+    if str(res.get("status") or "").startswith("REFUSED_"):
+        return False, str(res.get("message") or "the gateway refused the product")
+    return True, ""
+
+
 _VAS_OUTCOMES = ("success", "pending", "failed")
 _VAS_OUTCOME_ALIASES = {
     # Wema's current VAS legend says 200 means either successful or pending. On a
@@ -1828,6 +1876,24 @@ _VAS_REFUSED_HTTP = (400, 401, 403, 404, 422)
 #: all ("You've not been profiled to use this service"). They are the only refusals a
 #: REQUERY may act on — see _parse_vas.
 _VAS_NOT_ENTITLED_HTTP = (401, 403)
+#: The same refusal as it actually arrives: in the BODY, under HTTP 200. Narrow on
+#: purpose — only wording that says the PRODUCT is closed to us, never a per-request
+#: complaint, because this decides whether a customer's debit is refunded.
+_VAS_NOT_ENTITLED_RE = re.compile(
+    r"""(
+        \bnot\s+(?:been\s+)?profiled\b
+      | \bnot\s+subscribed\b
+      | \bsubscription\s+(?:key\s+)?(?:is\s+)?(?:invalid|not\s+found)\b
+      | \b(?:access\s+denied|unauthori[sz]ed|not\s+authori[sz]ed|forbidden)\b
+      # ALAT's generic rejection, and the one a customer actually reported seeing on
+      # a ₦55 top-up. It belongs here for the same reason as the rest: authentication
+      # is decided BEFORE the request is processed, so a purchase refused at that gate
+      # was never fulfilled and its debit must go back rather than hang.
+      | \bauthentication\s+fail(?:ed|ure)\b
+      | \binvalid\s+credentials?\b
+    )""",
+    re.I | re.X,
+)
 
 
 def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
@@ -1872,25 +1938,41 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
     # path any 4xx means nothing ran; on a requery only a refusal of the whole product
     # does (see the docstring). Logged at error — a refusal is a configuration or
     # entitlement fault that no amount of retrying will clear.
-    if http_status in (_VAS_NOT_ENTITLED_HTTP if requery else _VAS_REFUSED_HTTP):
-        message = r.get("message") or _msg(data)
+    refused_message = r.get("message") or _msg(data)
+    refused_http = http_status in (_VAS_NOT_ENTITLED_HTTP if requery else _VAS_REFUSED_HTTP)
+    # ALAT does not always put the refusal in the status line. Production answers an
+    # un-entitled product with HTTP *200*, hasError true and the refusal in the body
+    # ("You've not been profiled to use this service"), which the status check above
+    # cannot see — so the first version of this guard shipped, deployed, and left all
+    # six stuck rows exactly where they were. An envelope that reports an error AND
+    # names an entitlement refusal says we may not use this product at all, on either
+    # path: the purchase it describes cannot have been fulfilled, so it is the same
+    # definitive failure a 401/403 is. Requires the error envelope as well as the
+    # wording, so a delivered purchase that merely mentions authorisation is untouched.
+    refused_body = (not (_ok(data) or bool(data.get("successful")))
+                    and bool(_VAS_NOT_ENTITLED_RE.search(refused_message)))
+    if refused_http or refused_body:
+        message = refused_message
         log.error("wema_vas_refused ref=%s product=%s http_status=%s requery=%s "
-                  "message=%r (definitive failure — refunding, not left pending)",
+                  "by=%s message=%r (definitive failure — refunding, not left pending)",
                   _log_safe(reference), product, http_status, requery,
-                  _log_safe(message))
+                  "http" if refused_http else "envelope", _log_safe(message))
         return {"success": False, "pending": False, "status": f"REFUSED_{http_status}",
                 "reference": r.get("transactionReference", reference),
                 "message": message, "raw": data}
     if not status and "transactionStatus" in r:
         code = r.get("transactionStatus")
         outcome = _vas_legend(product).get(str(code).strip())
+        # `code` is the gateway's, not ours: it is whatever JSON arrived in
+        # transactionStatus, so it is sanitised alongside the reference rather than
+        # trusted to be the small integer the enum documents.
         if outcome is None:
-            log.warning("wema_vas_status_code ref=%s product=%s transactionStatus=%r "
+            log.warning("wema_vas_status_code ref=%s product=%s transactionStatus=%s "
                         "(no legend entry — left pending)",
-                        _log_safe(reference), product, code)
+                        _log_safe(reference), product, _log_safe(code))
         else:
-            log.info("wema_vas_status_decoded ref=%s product=%s transactionStatus=%r -> %s",
-                     _log_safe(reference), product, code, outcome)
+            log.info("wema_vas_status_decoded ref=%s product=%s transactionStatus=%s -> %s",
+                     _log_safe(reference), product, _log_safe(code), outcome)
         return {"success": outcome == "success", "pending": outcome in (None, "pending"),
                 "status": f"CODE_{code}",
                 "reference": r.get("transactionReference", reference),

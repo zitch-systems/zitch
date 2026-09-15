@@ -94,6 +94,131 @@ class RefusedPurchaseRefundsTests(SimpleTestCase):
         self.assertFalse(res["pending"])
 
 
+class RefusedInTheBodyUnderHttp200Tests(SimpleTestCase):
+    """The shape that actually reaches us, and that the HTTP-status check missed.
+
+    The first version of this guard read only the status line, shipped, deployed —
+    and all six stuck rows stayed exactly where they were, because ALAT answers an
+    un-entitled product with HTTP *200* and the refusal in the body. Nine minutes
+    after the deploy production was still logging wema_vas_requery_pending with no
+    wema_vas_refused line anywhere.
+    """
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_a_purchase_refused_in_the_body_is_a_definitive_failure(self):
+        with mock.patch.object(wema, "_post", return_value=_response(200, NOT_PROFILED)):
+            res = wema.purchase_airtime(55, "ZTCH-BODY-1", "07066737466", "MTN",
+                                        source_account="0100000001")
+        self.assertFalse(res["pending"], "a body-borne refusal must not be left pending")
+        self.assertFalse(res["success"])
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_the_requery_that_clears_the_six_stuck_rows(self):
+        """Exactly what production returns for ZTCH12083E287CEE: HTTP 200, hasError,
+        no status string, "You've not been profiled to use this service"."""
+        with mock.patch.object(wema, "_post", return_value=_response(200, NOT_PROFILED)):
+            res = wema.vas_status("ZTCH12083E287CEE", "airtime")
+        self.assertFalse(res["pending"])
+        self.assertFalse(res["success"])
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_authentication_failed_refunds_and_is_not_shown_to_the_customer(self):
+        """Reported from production on a ₦55 top-up: the closing screen read
+        "failed: Authentication Failed". Authentication is decided before the request
+        is processed, so nothing was delivered and the debit must go back — and the
+        customer must not be told their authentication failed, because it was ours."""
+        from wallet.services import PROVIDER_REFUSED_MESSAGE, customer_safe_failure
+
+        with mock.patch.object(wema, "_post", return_value=_response(
+                200, {"hasError": True, "message": "Authentication Failed"})):
+            res = wema.purchase_airtime(55, "ZTCH-AUTH-1", "07066737466", "MTN",
+                                        source_account="0100000001")
+        self.assertFalse(res["pending"], "an auth refusal must not be left pending")
+        self.assertFalse(res["success"])
+
+        with mock.patch("utility.alerts.alert"):
+            shown = customer_safe_failure(res, service="airtime")
+        self.assertEqual(shown, PROVIDER_REFUSED_MESSAGE)
+        self.assertNotIn("Authentication", shown)
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_the_other_refusal_wordings(self):
+        for text in ("You are not subscribed to this service", "Access denied",
+                     "Unauthorized", "Subscription key is invalid",
+                     "Authentication Failed", "Invalid credentials"):
+            with self.subTest(message=text):
+                with mock.patch.object(wema, "_post", return_value=_response(
+                        200, {"hasError": True, "message": text})):
+                    res = wema.vas_status("ZTCH-W", "airtime")
+                self.assertFalse(res["pending"])
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_a_SUCCESSFUL_envelope_is_never_refunded_on_wording_alone(self):
+        """The error envelope is required as well as the wording. A delivered
+        purchase whose message merely mentions authorisation must still settle."""
+        with mock.patch.object(wema, "_post", return_value=_response(200, {
+                "hasError": False,
+                "result": {"status": "SUCCESS", "message": "authorized"}})):
+            res = wema.purchase_airtime(55, "ZTCH-BODY-2", "07066737466", "MTN",
+                                        source_account="0100000001")
+        self.assertTrue(res["success"])
+        self.assertFalse(res["pending"])
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_an_ordinary_error_still_stays_pending(self):
+        """Only wording that closes the PRODUCT refunds. A generic failure is still
+        ambiguous about delivery, and refunding it could double-spend."""
+        with mock.patch.object(wema, "_post", return_value=_response(
+                200, {"hasError": True, "message": "Something went wrong"})):
+            res = wema.vas_status("ZTCH-ORD", "airtime")
+        self.assertTrue(res["pending"])
+
+
+class EntitlementIsAskedOfTheGatewayTests(SimpleTestCase):
+    """A configured key is not an entitled key, and nothing used to tell them apart.
+
+    WEMA_AIRTIME_KEY was set to the Wallet Services key on the belief that its API
+    list covered Airtime and Data. The preflight checked only that the variable was
+    non-empty, so it passed; APIM refused every real call. Six customers were debited
+    before anyone knew. The probe below is what closes that gap.
+    """
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_a_refused_status_endpoint_is_reported(self):
+        with mock.patch.object(wema, "_post", return_value=_response(200, NOT_PROFILED)):
+            entitled, why = wema.vas_status_entitlement("airtime")
+        self.assertFalse(entitled)
+        self.assertIn("profiled", why)
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_an_unknown_reference_is_entitlement_not_refusal(self):
+        """The probe asks about a reference that cannot exist, so "no such
+        transaction" is the ENTITLED answer and must not read as a refusal."""
+        with mock.patch.object(wema, "_post", return_value=_response(
+                200, {"hasError": True, "message": "Record not found"})):
+            entitled, _ = wema.vas_status_entitlement("airtime")
+        self.assertTrue(entitled)
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_the_probe_never_touches_a_purchase_endpoint(self):
+        """It must stay read-only: a preflight that bought airtime to prove it could
+        buy airtime would be a worse cure than the disease."""
+        with mock.patch.object(wema, "_post", return_value=_response(
+                200, {"hasError": True, "message": "Record not found"})) as post:
+            wema.vas_status_entitlement("airtime")
+        for call in post.call_args_list:
+            path = call.args[1] if len(call.args) > 1 else ""
+            self.assertNotIn("Purchase", path)
+            self.assertIn("CheckTransactionStatus", path)
+
+    def test_an_unkeyed_deploy_is_not_reported_as_unentitled(self):
+        """Nothing to check when the rail is not live — that is a different state,
+        already handled, and flagging it here would just be noise."""
+        with override_settings(WEMA={"BASE_URL": "https://gw.example", "KEYS": {}}):
+            entitled, _ = wema.vas_status_entitlement("airtime")
+        self.assertTrue(entitled)
+
+
 class RefusalLogCannotBeForgedTests(SimpleTestCase):
     """A reference reaches this log from outside the process. A newline inside one
     writes what reads as its own entry — and a forged "settled" line under a real
@@ -126,6 +251,16 @@ class RefusalLogCannotBeForgedTests(SimpleTestCase):
 
     def test_an_ordinary_reference_is_untouched(self):
         self.assertEqual(wema._log_safe("ZTCH12083E287CEE"), "ZTCH12083E287CEE")
+
+    def test_both_line_breaks_go(self):
+        """Carriage return as well as newline — a lone \\r is enough to overwrite a
+        rendered line in plenty of log viewers."""
+        self.assertEqual(wema._log_safe("a\rb\nc"), "a b c")
+
+    def test_a_gateway_status_code_is_sanitised_too(self):
+        """transactionStatus is whatever JSON arrived, not the small integer the
+        enum documents, and it is interpolated into the same log line."""
+        self.assertNotIn("\n", wema._log_safe("1\nERROR forged"))
 
 
 class RefusedRequeryTests(SimpleTestCase):

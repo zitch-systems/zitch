@@ -70,14 +70,39 @@ class Command(BaseCommand):
             for name in ("wallet", "card", "airtime", "bills", "upgrade", "kyc", "remita", "bnpl")
         }
         if vas_provider() == "wema":
-            checks.append((
-                True, "Partner-bank Airtime/Data subscription",
-                PASS if product_keys.get("airtime") else FAIL,
-                "dedicated key set" if product_keys.get("airtime")
-                else ("VAS_PROVIDER=wema requires WEMA_AIRTIME_KEY. If your Wallet Services "
-                      "subscription includes the Airtime and Data API, set it to the wallet "
-                      "key; the fallback is deliberately not automatic, because a tenant "
-                      "where it is a separate product would fail at purchase time instead")))
+            # Presence USED to be the whole check, and the advice here used to be
+            # "if your Wallet Services subscription includes the Airtime and Data
+            # API, set it to the wallet key". Both were wrong for this tenant: the
+            # key was set, this gate went green, and APIM refused every airtime call
+            # with "You've not been profiled to use this service" — six customer
+            # debits later. A key being SET says nothing about being ENTITLED, so
+            # settlement reachability is now probed separately below, scoped to the
+            # endpoint it actually calls. See wema.vas_status_entitlement.
+            if not product_keys.get("airtime"):
+                checks.append((
+                    True, "Partner-bank Airtime/Data subscription", FAIL,
+                    "VAS_PROVIDER=wema requires WEMA_AIRTIME_KEY. It must be the key of "
+                    "an Airtime/Data subscription the tenant actually holds — pointing it "
+                    "at another product's key passes nothing but this line"))
+            else:
+                checks.append((
+                    True, "Partner-bank Airtime/Data subscription", PASS, "key set"))
+                # SOFT, and scoped to what it actually probes. Selling airtime and
+                # settling it live behind different ALAT products, so this cannot
+                # speak for the purchase endpoint — it asks only whether the
+                # PartnerPayment status endpoint answers us. It is reported because
+                # settlement runs entirely through that endpoint: without it a
+                # PROCESSING purchase can never resolve, which is what
+                # providers.vas_can_settle refuses a sale over.
+                reachable, why = wema.vas_status_entitlement("airtime")
+                checks.append((
+                    False, "Partner-bank VAS status/requery",
+                    PASS if reachable else WARN,
+                    "the status endpoint answers" if reachable
+                    else (f"the gateway refuses the PartnerPayment status endpoint: {why}. "
+                          f"Purchases may still complete, but any that come back PROCESSING "
+                          f"cannot be settled or refunded automatically — ask the bank to "
+                          f"profile the tenant for PartnerPayment status")))
         if card_provider() == "wema":
             card_ready = bool(product_keys.get("card") and settings.WEMA.get("CARD_PRODUCT_KEY"))
             checks.append((
