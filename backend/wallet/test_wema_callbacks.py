@@ -727,6 +727,65 @@ class WemaCallbacksDiagnoseTests(TestCase):
         self.assertIn("no-store", r["Cache-Control"])
 
 
+@override_settings(WEMA=WEMA_CB)
+class WemaVasTerminalCallbackTests(TestCase):
+    def setUp(self):
+        self.user, _ = make_user("08033330009", "vas-callback@zitch.app")
+        wallet = get_or_create_wallet(self.user)
+        wallet.balance = Decimal("50000")
+        wallet.save(update_fields=["balance"])
+        self.txn = debit(self.user, Decimal("55"), "airtime",
+                         meta={"reconcile": True, "vas_type": "airtime"})
+
+    def post_status(self, status, ip="135.236.18.76"):
+        return self.client.post(
+            f"/webhooks/wema/transaction/{TOKEN}",
+            data=json.dumps({"data": {"TransactionReference": self.txn.reference,
+                                      "Status": status}}),
+            content_type="application/json", REMOTE_ADDR=ip)
+
+    @patch("utility.providers.vtu_requery", return_value={"pending": True})
+    def test_success_after_pending_bypasses_cooldown(self, query):
+        self.post_status("Pending")
+        self.post_status("Successful")
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.transaction_status, Transaction.SUCCESS)
+        self.assertEqual(query.call_count, 1)
+
+    @patch("utility.providers.vtu_requery", return_value={"pending": True})
+    def test_failure_after_pending_refunds_once(self, query):
+        self.post_status("Pending")
+        self.post_status("Failed")
+        self.post_status("Failed")
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.transaction_status, Transaction.FAILED)
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("50000"))
+        self.assertEqual(query.call_count, 1)
+
+    @patch("utility.providers.vtu_requery", return_value={"pending": True})
+    def test_numeric_200_does_not_prove_success(self, query):
+        self.post_status(200)
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.transaction_status, Transaction.PENDING)
+        query.assert_called_once()
+
+    @patch("utility.providers.vtu_requery", return_value={"pending": True})
+    def test_untrusted_source_cannot_settle_even_with_ip_enforcement_disabled(self, query):
+        self.post_status("Successful", ip="8.8.8.8")
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.transaction_status, Transaction.PENDING)
+        query.assert_called_once()
+
+    @patch("utility.providers.vtu_requery")
+    def test_late_failure_cannot_reverse_success(self, query):
+        self.post_status("Successful")
+        self.post_status("Failed")
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.transaction_status, Transaction.SUCCESS)
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("49945"))
+        query.assert_not_called()
+
+
 @override_settings(WEMA=WEMA_CB, PAYMENT_PROVIDER="wema")
 class WemaCallbackAbuseBoundsTests(TestCase):
     """The endpoints are reachable by anyone holding the URL, so the COST of driving

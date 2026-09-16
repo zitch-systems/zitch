@@ -28,13 +28,13 @@ There is deliberately NO per-IP rate limit. The shared rate limiter still bucket
 bank traffic — so a per-IP bucket would be shared by every callback rather than
 isolating an attacker, throttling real callbacks while bounding nobody. The cost of
 abuse is bounded per-reference instead (see the requery cooldown below). On top of
-that, neither money-moving handler trusts its payload:
+that, money-moving handlers bound what a callback can do:
 
   * `authorize` answers true only when OUR OWN ledger already holds a fresh PENDING
     bank payout under that exact reference. Possessing the URL is not sufficient.
-  * `transaction` treats the callback as a TRIGGER, not an oracle: it re-queries the
-    status over the authenticated APIM channel and lets the existing reconcile logic
-    decide. A forged callback is therefore at worst an unauthorised requery.
+  * `transaction` re-queries bank transfers over authenticated APIM. Explicit VAS
+    outcomes require both the URL secret and a bank-allowlisted source IP, even
+    when general callback IP enforcement is disabled. Ambiguous outcomes requery.
   * Notification amounts are never trusted. A credit notification only identifies a
     wallet; its authenticated Wema transaction history is fetched before any ledger
     credit is applied.
@@ -667,8 +667,8 @@ def _transaction_callback_data(body: dict) -> dict:
     spellings used by ALAT's other endpoints. This is deliberately not a generic
     recursive walk of attacker-controlled JSON.
 
-    The endpoint still treats the callback as a trigger: the extracted reference
-    only identifies an existing outgoing transaction to requery over APIM.
+    The extracted reference identifies an existing outgoing transaction; the
+    handler separately validates whether its outcome can be trusted.
     """
     queue = [(body, 0)]
     seen = set()
@@ -688,6 +688,11 @@ def _transaction_callback_data(body: dict) -> dict:
             if actual is not None and str(data.get(actual) or "").strip():
                 normalized = dict(data)
                 normalized["transactionReference"] = str(data[actual]).strip()
+                for field in ("status", "transactionStan", "platformTransactionReference",
+                              "originalTxnTransactionDate", "orinalTxnTransactionDate"):
+                    source_key = keys.get(field.casefold())
+                    if source_key is not None:
+                        normalized[field] = data[source_key]
                 return normalized
 
         if depth >= 4:
@@ -700,17 +705,16 @@ def _transaction_callback_data(body: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 3. Transaction callback (requestType 3) — a trigger, never an oracle
+# 3. Transaction callback (requestType 3)
 # ---------------------------------------------------------------------------
 @wema_callback("txn")
 def wema_transaction_callback(request):
     """Status update for a debit/credit.
 
-    The payload's ``status`` is NEVER acted on directly: ALAT publishes no legend for
-    it, callbacks arrive out of order and duplicated, and the endpoint carries no
-    signature. Instead this re-queries the transfer over the authenticated APIM
-    channel and settles from that — so a forged or stale callback can at worst cause
-    an unnecessary requery.
+    Bank transfers are verified over APIM. Explicit VAS outcomes may settle only
+    from a configured bank source IP, after the decorator validates the URL token.
+    Terminal callbacks bypass the requery cooldown; numeric 200 remains ambiguous.
+    Settlement is idempotent, including duplicated and out-of-order callbacks.
 
     Never credits a wallet: the payload has no amount and no account number.
     """
@@ -737,7 +741,20 @@ def wema_transaction_callback(request):
 
     outcome = "noop"
     if txn.transaction_status == Transaction.PENDING:
-        if _requery_cooled(txn):
+        callback_outcome = payload_status.casefold().strip()
+        trusted_vas = (
+            not is_bank_payout(txn)
+            and request.wema_ip in set(_conf("CALLBACK_IPS") or DEFAULT_CALLBACK_IPS)
+        )
+        terminal_success = callback_outcome in {"successful", "success", "completed", "complete"}
+        terminal_failure = callback_outcome in {"failed", "failure", "declined", "rejected", "reversed"}
+        if trusted_vas and (terminal_success or terminal_failure):
+            outcome = settle_or_refund(txn, {
+                "success": terminal_success, "pending": False,
+                "status": "CALLBACK_SUCCESS" if terminal_success else "CALLBACK_FAILED",
+                "reference": ref, "message": payload_status,
+            })
+        elif _requery_cooled(txn):
             # Recorded below, just not re-asked. Duplicated and out-of-order callbacks
             # are normal here, and the poller still sweeps anything left pending.
             outcome = "requery_cooled"
