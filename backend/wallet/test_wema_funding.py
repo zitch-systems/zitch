@@ -451,7 +451,9 @@ class WemaAsyncAccountRecoveryTests(TestCase):
             expires_at=timezone.now() + timedelta(minutes=10))
         self._run({"success": True, "account_number": "0123456701",
                    "account_name": "ADA EZE", "bank_name": "Wema Bank"})
-        self.assertEqual(Wallet.objects.get(user=user).account_number, "0123456701")
+        # The sweep no longer recovers by lookup even when the rail would answer:
+        # the verified session waits on Wema's wallet-details callback instead.
+        self.assertEqual(Wallet.objects.get(user=user).account_number, "")
 
     def test_recovers_account_after_accepted_otp_returned_pending(self):
         user, _ = make_user("08030000882", "otp-recover@zitch.app",
@@ -463,9 +465,11 @@ class WemaAsyncAccountRecoveryTests(TestCase):
             expires_at=timezone.now() + timedelta(minutes=10))
         self._run({"success": True, "account_number": "0123456702",
                    "account_name": "ADA EZE", "bank_name": "Wema Bank"})
-        self.assertEqual(Wallet.objects.get(user=user).account_number, "0123456702")
+        # Same as above. The attempt stays open rather than being closed off a
+        # lookup the sweep no longer performs.
+        self.assertEqual(Wallet.objects.get(user=user).account_number, "")
         attempt.refresh_from_db()
-        self.assertEqual(attempt.status, WemaProvisioningAttempt.VERIFIED)
+        self.assertNotEqual(attempt.status, WemaProvisioningAttempt.VERIFIED)
 
     def test_keeps_recovery_retryable_while_wema_is_still_pending(self):
         user, _ = make_user("08030000883", "still-pending@zitch.app",
@@ -764,9 +768,22 @@ class WemaPayoutSettlementTests(TestCase):
 @override_settings(PAYMENT_PROVIDER="wema")
 class AdoptExistingWemaAccountTests(TestCase):
     """The bank refuses to create a customer it already holds ("customer records
-    already exist"). Retrying asks for the same creation and is refused the same
-    way, so without a fetch-and-adopt path a user in that state can never finish
-    setup — which is exactly where a cleared test-mode NUBAN leaves them."""
+    already exist"). Retrying asks for the same creation and is refused the same way.
+
+    There used to be a fetch-and-adopt path for exactly this: ask the rail for the
+    NUBAN it already holds and attach it. That path was removed on the grounds that
+    ALAT's account-details endpoint needs an account number and cannot be searched by
+    phone, and recovery now waits on Wema's wallet-details callback.
+
+    OPEN QUESTION, recorded here because these tests are where it shows: the endpoint
+    the removed path called is `GetPartnershipAccountDetails`, which does take a
+    `phoneNumber` and is documented in wema.get_account_details as "Step 3 — poll
+    until accountNumber is populated". Production reconcile logs read
+    "accounts recovered 0/1 checked", which is consistent with the lookup returning
+    nothing for this tenant rather than with the endpoint not existing. Either way a
+    customer in this state now has no in-app and no operator route to a NUBAN, and a
+    wallet without one cannot be paid out from. The tests below pin the behaviour as
+    it now is; they do not endorse it."""
 
     def setUp(self):
         self.client = Client()
@@ -779,24 +796,28 @@ class AdoptExistingWemaAccountTests(TestCase):
             data=json.dumps({**payload, "access_token": self.token}),
             content_type="application/json")
 
-    def test_an_already_onboarded_customer_gets_the_existing_account(self):
+    def test_an_already_onboarded_customer_is_no_longer_adopted_from_the_rail(self):
+        """Recovery by phone lookup was removed; this pins what replaced it.
+
+        This test used to assert the adopt: the rail was asked for the account it
+        already held and the customer left with a NUBAN. attach_existing_bank_account
+        now returns "pending Wema's wallet-details callback" without calling the rail
+        at all, so the customer is routed to support instead.
+
+        The assertion that matters here is `fetch.assert_not_called()` — the rail is
+        deliberately not consulted, rather than consulted and disbelieved. Whether
+        that trade is right is a product question and is called out in this class's
+        docstring; the code's contract is what this test is for.
+        """
         refusal = {"success": False, "message": "Customer records already exist"}
-        existing = {"success": True, "account_number": "0123456789",
-                    "account_name": "ADA EZE", "bank_name": "Wema Bank"}
         with patch("utility.wema.create_wallet_request", return_value=refusal), \
-             patch("utility.wema.get_account_details", return_value=existing) as fetch, \
-             patch("utility.wema.lift_debit_restriction",
-                   return_value={"success": True}) as pnd:
+             patch("utility.wema.get_account_details") as fetch, \
+             patch("utility.wema.lift_debit_restriction") as pnd:
             res = self._create(bvn="22222222222")
-        self.assertEqual(res.status_code, 200)
-        body = res.json()
-        self.assertTrue(body["success"])
-        self.assertEqual(body["account_number"], "0123456789")
-        # Looked up by the user's OWN phone — this adopts that customer's account.
-        self.assertEqual(fetch.call_args[0][0], self.user.phone)
-        # An adopted NUBAN may still carry the Post-No-Debit hold, and payouts debit it.
-        pnd.assert_called_once()
-        self.assertEqual(Wallet.objects.get(user=self.user).account_number, "0123456789")
+        self.assertEqual(res.status_code, 409)
+        fetch.assert_not_called()
+        pnd.assert_not_called()
+        self.assertEqual(Wallet.objects.get(user=self.user).account_number, "")
 
     def test_adopting_does_not_lift_the_kyc_tier(self):
         # No OTP was answered here, so nothing attests the identity. The user gets a
@@ -842,10 +863,13 @@ class AdoptExistingWemaAccountTests(TestCase):
 
 @override_settings(PAYMENT_PROVIDER="wema")
 class AccountCreateAdoptsExistingWemaAccountTests(TestCase):
-    """/api/wallet/account/create/ is the endpoint the funding screen calls, so it
-    needs the same fetch-and-adopt recovery as /api/wallet/wema/create/. Without it
-    a customer whose NUBAN exists only at the bank sees "couldn't start account
-    creation" on every attempt and can never leave the BVN form."""
+    """/api/wallet/account/create/ is the endpoint the funding screen calls.
+
+    It used to carry the same fetch-and-adopt recovery as /api/wallet/wema/create/,
+    for the reason that without it a customer whose NUBAN exists only at the bank
+    sees "couldn't start account creation" on every attempt and can never leave the
+    BVN form. That is once again the customer's experience — see the open question on
+    AdoptExistingWemaAccountTests."""
 
     def setUp(self):
         self.client = Client()
@@ -858,17 +882,21 @@ class AccountCreateAdoptsExistingWemaAccountTests(TestCase):
             data=json.dumps({**payload, "access_token": self.token}),
             content_type="application/json")
 
-    def test_an_already_onboarded_customer_gets_the_existing_account(self):
-        existing = {"success": True, "account_number": "0123456789",
-                    "account_name": "ADA EZE", "bank_name": "Wema Bank"}
+    def test_an_already_onboarded_customer_is_no_longer_adopted_from_the_rail(self):
+        """As above, for the funding screen's endpoint.
+
+        Worth noting the two endpoints do NOT answer alike for the same situation:
+        /api/wallet/wema/create/ returns 409 and this one returns 502. 502 reads as
+        "the bank is broken" when the bank in fact answered clearly, so this is
+        pinned as observed rather than endorsed.
+        """
         with patch("utility.wema.create_wallet_request",
                    return_value={"success": False, "message": "Customer records already exist"}), \
-             patch("utility.wema.get_account_details", return_value=existing), \
-             patch("utility.wema.lift_debit_restriction", return_value={"success": True}):
+             patch("utility.wema.get_account_details") as fetch:
             res = self._create(bvn="22222222222")
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json()["account_number"], "0123456789")
-        self.assertEqual(Wallet.objects.get(user=self.user).account_number, "0123456789")
+        self.assertEqual(res.status_code, 502)
+        fetch.assert_not_called()
+        self.assertEqual(Wallet.objects.get(user=self.user).account_number, "")
 
     def test_other_failures_are_still_reported(self):
         with patch("utility.wema.create_wallet_request",
@@ -881,9 +909,12 @@ class AccountCreateAdoptsExistingWemaAccountTests(TestCase):
 
 @override_settings(PAYMENT_PROVIDER="wema")
 class ReconnectBankAccountAdminTests(TestCase):
-    """The in-app recovery needs the customer to get through the setup screen. An
-    operator needs the same recovery for a wallet left with no account number —
-    every payout from it is refused for having no source to debit."""
+    """The operator's route for a wallet left with no account number.
+
+    Every payout from such a wallet is refused for having no source to debit, so this
+    action existed to attach the NUBAN the rail already held. It no longer reaches the
+    rail and only reports that recovery is waiting on Wema's wallet-details callback —
+    see the open question on AdoptExistingWemaAccountTests."""
 
     def setUp(self):
         from django.contrib.admin.sites import AdminSite
@@ -901,42 +932,45 @@ class ReconnectBankAccountAdminTests(TestCase):
         wallet.refresh_from_db()
         return wallet
 
-    def test_attaches_the_account_the_rail_holds(self):
+    def test_the_operator_action_no_longer_reaches_the_rail(self):
+        """The admin action can no longer attach anything; it reports and stops.
+
+        This used to be the operator's way out for a wallet with no account number —
+        every payout from such a wallet is refused for having no source to debit, so
+        the capability mattered. It now returns the pending-callback message whatever
+        the rail holds.
+        """
         found = {"success": True, "account_number": "0123456789",
                  "account_name": "ADA EZE", "bank_name": "Wema Bank"}
-        with patch("utility.wema.get_account_details", return_value=found), \
-             patch("utility.wema.lift_debit_restriction",
-                   return_value={"success": True}) as pnd:
+        with patch("utility.wema.get_account_details", return_value=found) as fetch, \
+             patch("utility.wema.lift_debit_restriction") as pnd:
             wallet = self._run()
-        self.assertEqual(wallet.account_number, "0123456789")
-        self.assertTrue(wallet.account_reference)   # else reconcile can't sweep it
-        pnd.assert_called_once()                    # payouts debit this account
+        self.assertEqual(wallet.account_number, "")
+        fetch.assert_not_called()
+        pnd.assert_not_called()
+        self.assertIn("pending", " ".join(self.messages).lower())
 
-    def test_falls_back_to_the_nin_product_when_bvn_holds_nothing(self):
-        # Either product could have created the account and an operator cannot know
-        # which, so both are tried — BVN first, then NIN.
+    def test_no_wallet_product_is_consulted_at_all(self):
+        """Neither the BVN nor the NIN wallet product is asked any more.
+
+        This test previously pinned the search ORDER across both products and every
+        phone normalisation the bank might hold the customer under. That whole search
+        is gone, so the surviving assertion is the deliberate absence: nothing reaches
+        the rail. Kept rather than deleted, because a silent return of the phone
+        lookup should fail a test, not slip back in unnoticed.
+        """
         calls = []
 
         def by_product(phone, *, bvn=False):
             calls.append(bvn)
-            if bvn:
-                return {"success": False, "message": "not found"}
             return {"success": True, "account_number": "0123456789",
                     "account_name": "ADA EZE", "bank_name": "Wema Bank"}
 
         with patch("utility.wema.get_account_details", side_effect=by_product), \
              patch("utility.wema.lift_debit_restriction", return_value={"success": True}):
             wallet = self._run()
-        # Asserted as an ORDERING, not an exact call list. The reconnect also tries
-        # each phone normalisation the bank might hold the customer under, so the
-        # BVN product is legitimately asked more than once before NIN is reached —
-        # pinning the exact sequence made this test fail on a change that only
-        # widened the search.
-        self.assertIn(True, calls)                    # the BVN product was tried
-        self.assertIn(False, calls)                   # and NIN was reached
-        self.assertLess(calls.index(True), calls.index(False))   # BVN first
-        self.assertIs(calls[-1], False)               # stopped on the NIN success
-        self.assertEqual(wallet.account_number, "0123456789")
+        self.assertEqual(calls, [])
+        self.assertEqual(wallet.account_number, "")
 
     def test_never_replaces_an_account_it_already_has(self):
         wallet = Wallet.objects.get(user=self.user)
@@ -953,7 +987,9 @@ class ReconnectBankAccountAdminTests(TestCase):
                    return_value={"success": False, "message": "no record"}):
             wallet = self._run()
         self.assertEqual(wallet.account_number, "")
-        self.assertIn("no record", " ".join(self.messages))
+        # The operator is told what it is waiting on, not what the rail said —
+        # nothing asks the rail any more.
+        self.assertIn("pending", " ".join(self.messages).lower())
 
 
 class WemaPartialReversalTests(TestCase):

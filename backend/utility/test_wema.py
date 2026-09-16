@@ -950,21 +950,29 @@ class WemaBnplTests(SimpleTestCase):
 
 
 class WemaSubscriptionKeyTests(SimpleTestCase):
-    """Wallet Services covers only its documented wallet APIs.
+    """Wallet Services covers only what this tenant's subscription actually includes.
 
-    Products sold separately in the ALAT portal must never borrow the wallet key.
+    Airtime and Data are in it, so they may borrow the wallet key. Products sold as
+    separate ALAT subscriptions must not: borrowing there would send a key APIM
+    rejects and debit customers for calls that were never going to run.
     """
 
     @override_settings(WEMA=WEMA_LIVE)
-    def test_wallet_services_coverage_is_narrow(self):
-        for product in ("wallet_nin", "wallet_bvn", "acct_mgt", "credit", "debit", "bills"):
+    def test_wallet_services_coverage_includes_airtime_and_bills(self):
+        for product in ("wallet_nin", "wallet_bvn", "acct_mgt", "credit", "debit",
+                        "airtime", "bills"):
             self.assertEqual(wema._sub_key(product), "subkey", product)
 
     @override_settings(WEMA=WEMA_LIVE)
     def test_separate_products_never_borrow_wallet_key(self):
+        """Airtime is deliberately absent here — it IS wallet-covered for this tenant.
+
+        The rest are sold as their own subscriptions, so a missing key must stay
+        missing rather than silently falling back to one APIM will refuse.
+        """
         keys = {**WEMA_LIVE["KEYS"], "upgrade": ""}
         with override_settings(WEMA={**WEMA_LIVE, "KEYS": keys}):
-            for product in ("airtime", "upgrade", "remita", "kyc", "card", "bnpl"):
+            for product in ("upgrade", "remita", "kyc", "card", "bnpl"):
                 self.assertEqual(wema._sub_key(product), "", product)
 
     @override_settings(WEMA=WEMA_VAS)
@@ -973,9 +981,10 @@ class WemaSubscriptionKeyTests(SimpleTestCase):
         self.assertEqual(wema._sub_key("bills"), "billkey")
 
     @override_settings(WEMA=WEMA_LIVE)
-    def test_wallet_key_alone_enables_bills_not_airtime_or_remita(self):
+    def test_wallet_key_alone_enables_airtime_and_bills_not_remita(self):
+        """Data rides the same product key as airtime, so this covers both."""
         self.assertTrue(wema._vas_live("bills"))
-        self.assertFalse(wema._vas_live("airtime"))
+        self.assertTrue(wema._vas_live("airtime"))
         self.assertFalse(wema._vas_live("remita"))
 
     @override_settings(WEMA=WEMA_LIVE)

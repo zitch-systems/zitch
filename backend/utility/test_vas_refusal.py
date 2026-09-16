@@ -179,10 +179,13 @@ class RefusedInTheBodyUnderHttp200Tests(SimpleTestCase):
 class EntitlementIsAskedOfTheGatewayTests(SimpleTestCase):
     """A configured key is not an entitled key, and nothing used to tell them apart.
 
-    WEMA_AIRTIME_KEY was set to the Wallet Services key on the belief that its API
-    list covered Airtime and Data. The preflight checked only that the variable was
-    non-empty, so it passed; APIM refused every real call. Six customers were debited
-    before anyone knew. The probe below is what closes that gap.
+    The two halves of a VAS purchase sit behind DIFFERENT ALAT products: selling is
+    the Airtime/Data endpoint, settling is PartnerPayment status. Production answered
+    the status endpoint "You've not been profiled to use this service" while purchases
+    authenticated fine, and the preflight — which checked only that a key variable was
+    non-empty — had nothing to say about either. A purchase that can be made but never
+    settled is exactly what strands a customer's debit, so the probe below asks the
+    gateway about the status endpoint specifically rather than inferring it.
     """
 
     @override_settings(WEMA=WEMA_LIVE)
