@@ -173,8 +173,14 @@ class SimulatedIdentityFlowTests(TestCase):
              patch("whatsapp.router.send_sms") as identity_sms, \
              patch("whatsapp.router.reply"):
             first = self._submit(bvn)
-            self.pa.refresh_from_db()
-            self.assertEqual(self.pa.payload["id_kind"], "nin")
+            # Tier 1 completes with BVN. NIN starts a separate Tier 2 action;
+            # customers must not be trapped in a mandatory second-ID loop.
+            self.assertFalse(PendingAction.objects.filter(pk=self.pa.pk).exists())
+            self.pa = PendingAction.objects.create(
+                user=self.user, msisdn=MSISDN, action_type="kyc",
+                state=FLOW_ID_STATE, payload={"id_kind": "nin", "target_tier": 2},
+                expires_at=timezone.now() + timedelta(minutes=10),
+            )
             second = self._submit(nin)
 
         self.assertEqual(first["screen"], RESULT_SCREEN)

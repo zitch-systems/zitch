@@ -113,12 +113,13 @@ class RefusedInTheBodyUnderHttp200Tests(SimpleTestCase):
         self.assertFalse(res["success"])
 
     @override_settings(WEMA=WEMA_LIVE)
-    def test_the_requery_that_clears_the_six_stuck_rows(self):
+    def test_refused_requery_preserves_unknown_purchase_outcome(self):
         """Exactly what production returns for ZTCH12083E287CEE: HTTP 200, hasError,
         no status string, "You've not been profiled to use this service"."""
         with mock.patch.object(wema, "_post", return_value=_response(200, NOT_PROFILED)):
             res = wema.vas_status("ZTCH12083E287CEE", "airtime")
-        self.assertFalse(res["pending"])
+        self.assertTrue(res["pending"])
+        self.assertTrue(res["lookup_refused"])
         self.assertFalse(res["success"])
 
     @override_settings(WEMA=WEMA_LIVE)
@@ -150,7 +151,8 @@ class RefusedInTheBodyUnderHttp200Tests(SimpleTestCase):
                 with mock.patch.object(wema, "_post", return_value=_response(
                         200, {"hasError": True, "message": text})):
                     res = wema.vas_status("ZTCH-W", "airtime")
-                self.assertFalse(res["pending"])
+                self.assertTrue(res["pending"])
+                self.assertTrue(res["lookup_refused"])
 
     @override_settings(WEMA=WEMA_LIVE)
     def test_a_SUCCESSFUL_envelope_is_never_refunded_on_wording_alone(self):
@@ -264,19 +266,17 @@ class RefusalLogCannotBeForgedTests(SimpleTestCase):
 
 
 class RefusedRequeryTests(SimpleTestCase):
-    """The requery path refuses more narrowly: the refusal is of the QUERY, and only
-    a refusal of the whole product also proves the purchase could not have run."""
+    """Refusing a status lookup cannot prove that the earlier purchase failed."""
 
     @override_settings(WEMA=WEMA_LIVE)
-    def test_an_unentitled_product_settles_the_stuck_row_as_failed(self):
-        """This is what clears the six stuck production rows: we hold no entitlement
-        for the product, so the purchase the row is asking about never ran either."""
+    def test_unentitled_status_lookup_preserves_pending_purchase(self):
         for code in (401, 403):
             with self.subTest(http_status=code):
                 with mock.patch.object(wema, "_post",
                                        return_value=_response(code, NOT_PROFILED)):
                     res = wema.vas_status("ZTCH12083E287CEE", "airtime")
-                self.assertFalse(res["pending"], "an un-entitled product cannot stay pending")
+                self.assertTrue(res["pending"])
+                self.assertTrue(res["lookup_refused"])
                 self.assertFalse(res["success"])
 
     @override_settings(WEMA=WEMA_LIVE)
@@ -332,9 +332,8 @@ class RefusedMessageIsNotBlamedOnTheCustomerTests(TestCase):
         self.assertEqual(msg, "Invalid phone number for MTN")
 
 
-class AStuckRowActuallyClearsTests(TestCase):
-    """End to end over the path the cron takes, because the whole point is the six
-    rows sitting in production: requery → classify → settle_or_refund → money back."""
+class RefusedLookupDoesNotRefundTests(TestCase):
+    """An unavailable query must never refund a potentially delivered purchase."""
 
     def _stuck_airtime_row(self):
         from decimal import Decimal
@@ -352,7 +351,7 @@ class AStuckRowActuallyClearsTests(TestCase):
         return user, txn, get_or_create_wallet(user)
 
     @override_settings(WEMA=WEMA_LIVE)
-    def test_the_customer_gets_their_money_back(self):
+    def test_customer_balance_is_unchanged_until_outcome_is_known(self):
         from wallet.models import Transaction
         from wallet.services import settle_or_refund
         from utility.providers import vas_requery
@@ -364,15 +363,14 @@ class AStuckRowActuallyClearsTests(TestCase):
             result = vas_requery(txn.reference, txn.meta)
         outcome = settle_or_refund(txn, result)
 
-        self.assertEqual(outcome, "failed")
+        self.assertEqual(outcome, "pending")
         txn.refresh_from_db()
         wallet.refresh_from_db()
-        self.assertEqual(txn.transaction_status, Transaction.FAILED)
-        self.assertEqual(wallet.balance, before + txn.amount)
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)
+        self.assertEqual(wallet.balance, before)
 
     @override_settings(WEMA=WEMA_LIVE)
-    def test_a_second_pass_cannot_refund_twice(self):
-        """The cron runs every ten minutes; the row must settle exactly once."""
+    def test_repeated_lookup_refusals_never_create_a_refund(self):
         from wallet.services import settle_or_refund
         from utility.providers import vas_requery
 
@@ -384,4 +382,4 @@ class AStuckRowActuallyClearsTests(TestCase):
                 settle_or_refund(txn, vas_requery(txn.reference, txn.meta))
 
         wallet.refresh_from_db()
-        self.assertEqual(wallet.balance, before + txn.amount)
+        self.assertEqual(wallet.balance, before)

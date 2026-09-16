@@ -35,6 +35,7 @@ from django.utils import timezone
 
 from utility import wema
 from utility.providers import payout_provider, vas_requery
+from utility.reconciliation import alert_due, claim_status_lookup, recorded_vas_outcome
 from wallet.models import Wallet, WemaFaceSession, WemaProvisioningAttempt
 from wallet.services import (
     apply_wema_credit, attach_existing_bank_account, pending_bank_payouts,
@@ -225,13 +226,16 @@ class Command(BaseCommand):
         vas_status_failures = 0
         vas_cutoff = timezone.now() - timedelta(seconds=max(10, int(getattr(settings, "WEMA_VAS_REQUERY_AFTER_SECONDS", 10) or 10)))
         for txn in pending_vas_purchases(vas_cutoff):
+            recorded = recorded_vas_outcome(txn)
+            if recorded is None and not claim_status_lookup(txn):
+                continue
             vas_seen += 1
             meta = txn.meta or {}
             # Through providers.vas_requery, NOT wema.vas_status directly: this cron is
             # the only automated settlement path, so the retired-rail guard has to sit
             # on the route it actually takes. The row's meta is passed in because we
             # already hold it — no second query per row.
-            res = vas_requery(txn.reference, meta)
+            res = recorded if recorded is not None else vas_requery(txn.reference, meta)
             if res.get("pending"):
                 self.stdout.write(
                     "wema_vas_requery_pending "
@@ -260,6 +264,8 @@ class Command(BaseCommand):
         if payout_provider() == "wema":
             cutoff = timezone.now() - timedelta(minutes=max(0, options["payout_older_than_minutes"]))
             for txn in pending_bank_payouts(cutoff):
+                if not claim_status_lookup(txn):
+                    continue
                 payouts_seen += 1
                 transfer_meta = (txn.meta or {}).get("wema_transfer") or {}
                 platform_reference = str(
@@ -315,7 +321,7 @@ class Command(BaseCommand):
         # it is worth more than its frequency suggests.
         stuck_after = timedelta(hours=int(getattr(settings, "WEMA_PAYOUT_STUCK_HOURS", 2) or 2))
         stuck = list(pending_bank_payouts(timezone.now() - stuck_after)[:50])
-        if stuck:
+        if stuck and alert_due("payout", [t.reference for t in stuck]):
             alert(f"reconcile_wema: {len(stuck)} bank payout(s) still PENDING after "
                   f"{stuck_after} - the customer is debited and the money has not "
                   f"settled or reversed; no other control reports this",
@@ -338,10 +344,10 @@ class Command(BaseCommand):
         # exact threshold. It was left orphaned when the old VAS sweep was deleted.
         vas_stuck_after = timedelta(hours=int(getattr(settings, "VTU_PURCHASE_STUCK_HOURS", 2) or 2))
         vas_stuck = list(pending_vas_purchases(timezone.now() - vas_stuck_after)[:50])
-        if vas_stuck:
+        if vas_stuck and alert_due("vas", [t.reference for t in vas_stuck]):
             alert(f"reconcile_wema: {len(vas_stuck)} VAS purchase(s) still PENDING after "
-                  f"{vas_stuck_after} - the customer is debited and nothing was "
-                  f"delivered, settled or refunded; no other control reports this",
+                  f"{vas_stuck_after} - final delivery/payment outcome remains "
+                  f"unconfirmed; reconciliation needs review",
                   level="error", purchases=len(vas_stuck),
                   references=[t.reference for t in vas_stuck[:10]])
 

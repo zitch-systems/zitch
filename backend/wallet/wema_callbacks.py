@@ -346,6 +346,9 @@ def _callback_reference(body: dict) -> str:
     tries the known spellings in order rather than assuming one shape. Empty when
     none is present — a missing reference is not worth failing a callback over.
     """
+    transaction_data = _transaction_callback_data(body)
+    if transaction_data:
+        return str(transaction_data["transactionReference"])[:_REF_MAX]
     data = body.get("data") if isinstance(body.get("data"), dict) else {}
     for key in ("transactionReference", "transactionRef", "reference",
                 "customTransactionReference", "nuban", "accountNumber"):
