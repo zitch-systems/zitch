@@ -192,6 +192,33 @@ class FaceLinkTests(TestCase):
 
 @override_settings(WEMA=FACE_ON)
 class FaceCallbackNotifiesChatTests(TestCase):
+    def test_failed_creation_does_not_claim_pending_or_promise_an_sms(self):
+        from wallet.wema_callbacks import _tell_whatsapp_face_passed
+        user = _user()
+        with patch("whatsapp.router.reply") as reply:
+            _tell_whatsapp_face_passed(user, "bvn", account_failed=True)
+        message = reply.call_args.args[1]
+        self.assertIn("needs review", message)
+        self.assertNotIn("account is being created", message)
+        self.assertNotIn("SMS code already sent", message)
+
+    def test_verified_face_without_account_does_not_restart_identity_flow(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        user = _user()
+        WemaFaceSession.objects.create(
+            user=user, state="v" * 40, identity_type="bvn",
+            identity_hash=user.bvn_hash, status=WemaFaceSession.VERIFIED,
+            expires_at=timezone.now() + timedelta(minutes=20))
+        with patch.object(router.wallet_views, "_wema_funding_enabled", return_value=True), \
+                patch.object(router, "attach_existing_bank_account", return_value=(None, "not found")), \
+                patch.object(router, "reply") as reply, \
+                patch.object(router, "_send_identity_flow") as flow:
+            router._start_add_account(user, MSISDN)
+        flow.assert_not_called()
+        self.assertIn("needs review", reply.call_args.args[1])
+        self.assertFalse(PendingAction.objects.filter(user=user).exists())
+
     def test_the_customer_is_told_when_the_bank_confirms(self):
         from datetime import timedelta
 

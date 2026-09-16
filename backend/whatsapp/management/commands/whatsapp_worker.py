@@ -4,6 +4,7 @@ import time
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.db import close_old_connections, connections
 
 from whatsapp.jobs import process_once
 from whatsapp.providers import wa_live
@@ -48,23 +49,25 @@ class Command(BaseCommand):
             stopped = True
 
         def reconcile_money():
-            # The bank has no webhook for these state changes. Keep this pass out
+            # This is the safety net for missed bank callbacks. Keep this pass out
             # of the message-processing loop so a slow provider request cannot
             # delay customer replies. The lock prevents a slow pass and the next
             # tick from running concurrently and double-applying a credit.
             if not reconcile_lock.acquire(blocking=False):
                 return
             try:
+                close_old_connections()
                 from utility.management.commands.reconcile_wema import Command as WemaCommand
 
                 WemaCommand()._run(
                     lookback_days=2,
                     payout_older_than_minutes=2,
-                    account_recovery_limit=20,
+                    account_recovery_limit=0,
                 )
             except Exception:  # noqa: BLE001 - reconciliation retries on next tick
                 self.stderr.write("background money reconciliation failed; retrying")
             finally:
+                connections.close_all()
                 reconcile_lock.release()
 
         def repair_accounts():
@@ -75,12 +78,14 @@ class Command(BaseCommand):
             if not account_repair_lock.acquire(blocking=False):
                 return
             try:
+                close_old_connections()
                 from wallet.services import repair_missing_funding_accounts
 
                 repair_missing_funding_accounts(limit=20)
             except Exception:  # noqa: BLE001 - retry on the next scheduled pass
                 self.stderr.write("background partner-bank account repair failed; retrying")
             finally:
+                connections.close_all()
                 account_repair_lock.release()
 
         signal.signal(signal.SIGTERM, stop)

@@ -449,9 +449,9 @@ def attach_existing_bank_account(user, *, using_bvn: bool | None = None) -> tupl
     for an operator or an API caller to relay.
 
     The rail refuses to create a customer it already has, so an account that exists
-    on their side but not on ours can only be recovered by reading it back. Looked
-    up by the user's OWN phone number — the same key creation would have used — so
-    it can only ever adopt that customer's account.
+    on their side but not on ours can only be recovered from the wallet-details
+    callback. ALAT's documented account-details endpoint requires an account number;
+    it does not support looking up a wallet by phone number.
 
     `using_bvn` picks the wallet product to ask; None tries BVN and falls back to
     NIN, since either could have created the account and the operator running this
@@ -465,43 +465,7 @@ def attach_existing_bank_account(user, *, using_bvn: bool | None = None) -> tupl
     wallet = get_or_create_wallet(user)
     if wallet.account_number:
         return wallet, "This wallet already has an account number."
-    products = (True, False) if using_bvn is None else (using_bvn,)
-    raw_phone = str(user.phone or "").strip()
-    digits = "".join(ch for ch in raw_phone if ch.isdigit())
-    last10 = digits[-10:] if len(digits) >= 10 else ""
-    phones = []
-    for candidate in (raw_phone, digits, f"0{last10}" if last10 else "",
-                      f"234{last10}" if last10 else "", f"+234{last10}" if last10 else ""):
-        candidate = str(candidate or "").strip()
-        if candidate and candidate not in phones:
-            phones.append(candidate)
-    acct, product = {}, True
-    for product in products:
-        for phone in phones:
-            acct = wema_provider.get_account_details(phone, bvn=product)
-            if acct.get("success") and str(acct.get("account_number") or "").strip():
-                break
-        if acct.get("success") and str(acct.get("account_number") or "").strip():
-            break
-    number = str(acct.get("account_number") or "").strip()
-    if not number:
-        return None, (acct.get("message") or "").strip() or "The rail holds no account for this phone number."
-
-    wallet, outcome = provision_wema_account(
-        user, account_number=number, account_name=acct.get("account_name", ""),
-        bank_name=acct.get("bank_name", ""), source="adopt-existing")
-    if outcome.startswith("conflict"):
-        log.warning("wema_adopt_conflict user=%s outcome=%s", user.id, outcome)
-        return None, f"Could not attach it ({outcome})."
-    # A partnership NUBAN is created under a Post-No-Debit hold, and a payout debits
-    # this very account, so an adopted one has to have the hold lifted too.
-    # Best-effort, exactly as the OTP path treats it.
-    pnd = wema_provider.lift_debit_restriction(number, bvn=product)
-    if not pnd.get("success"):
-        log.warning("wema_pnd_lift_failed user=%s account=%s msg=%s",
-                    user.id, number, pnd.get("message", ""))
-    log.info("wema_adopted_existing_account user=%s outcome=%s", user.id, outcome)
-    return wallet, "Reconnected the account the bank already held."
+    return None, "Account generation is pending Wema's wallet-details callback."
 
 
 def repair_missing_funding_accounts(*, email: str = "", limit: int = 20) -> dict:

@@ -572,6 +572,23 @@ class TheRegisteredCallbackShapeTests(TestCase):
         self.assertTrue(self.user.bvn_verified)
         self.assertEqual(self.session.status, WemaFaceSession.VERIFIED)
 
+    def test_browser_duplicate_without_nuban_is_not_account_creation_success(self):
+        duplicate = ("22222222222 || 08070000001@zitch.app || 08070000001 "
+                     "provided already exist for this channel.")
+        with mock.patch("utility.wema.create_wallet_with_face",
+                        return_value={"success": False, "message": duplicate}) as create, \
+                mock.patch("wallet.wema_callbacks._tell_whatsapp_face_passed") as notify:
+            res = self.client.post(
+                "/webhooks/wema/face",
+                {"success": True, "c_id": "COR-EXISTING",
+                 "id": "22222222222", "id_type": "bvn"},
+                content_type="application/json", HTTP_ORIGIN="https://face.example")
+        self.assertEqual(res.status_code, 200)
+        create.assert_called_once()
+        notify.assert_called_once()
+        self.assertFalse(notify.call_args.kwargs["account_pending"])
+        self.assertTrue(notify.call_args.kwargs["account_failed"])
+
     def test_a_stateless_callback_for_an_identity_nobody_is_verifying_decides_nothing(self):
         """No pending session for that number means no customer asked for this check.
 
@@ -752,6 +769,17 @@ class FaceIsTheWayOutOfAnUndeliveredCodeTests(TestCase):
         return self.client.post("/api/kyc/face/start/",
                                 {"access_token": self.token, **body},
                                 content_type="application/json")
+
+    def test_completed_face_without_account_does_not_start_another_session(self):
+        WemaFaceSession.objects.create(
+            user=self.user, state="completed-face", identity_type="nin",
+            identity_hash=self.user.nin_hash, status=WemaFaceSession.VERIFIED,
+            expires_at=timezone.now() + timedelta(minutes=20))
+        with mock.patch("wallet.services.attach_existing_bank_account",
+                        return_value=(None, "not found")):
+            res = self._start(nin="44444444444", prefer_face=True)
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 1)
 
     def test_without_asking_the_pending_code_is_still_the_answer(self):
         """The default is unchanged: don't re-prove an identity for nothing."""
