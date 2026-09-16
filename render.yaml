@@ -3,6 +3,7 @@
 services:
   - type: web
     name: zitch-api
+    region: frankfurt
     runtime: python
     rootDir: backend
     # Money movement must not run on a sleeping/free instance. This takes effect
@@ -429,6 +430,7 @@ services:
   # correct even without this cron.)
   - type: cron
     name: zitch-maturities
+    region: frankfurt
     runtime: python
     rootDir: backend
     plan: starter
@@ -508,6 +510,7 @@ services:
   # post_save alert signal never fires.
   - type: cron
     name: zitch-purge-sessions
+    region: frankfurt
     runtime: python
     rootDir: backend
     plan: starter
@@ -546,6 +549,7 @@ services:
   # tier). Runs every 2 minutes so stuck purchases clear quickly.
   - type: cron
     name: zitch-reconcile-wema
+    region: frankfurt
     runtime: python
     rootDir: backend
     plan: starter
@@ -653,6 +657,7 @@ services:
   # paid plan (cron has no free tier).
   - type: cron
     name: zitch-integrity-check
+    region: frankfurt
     runtime: python
     rootDir: backend
     plan: starter
@@ -691,6 +696,7 @@ services:
   # when Wema is live (no-ops in sandbox/sim). Every 6 hours; tune as needed.
   - type: cron
     name: zitch-reconcile-balances
+    region: frankfurt
     runtime: python
     rootDir: backend
     plan: starter
@@ -743,6 +749,7 @@ services:
   # the thresholds and who owns the response.
   - type: cron
     name: zitch-settlement-report
+    region: frankfurt
     runtime: python
     rootDir: backend
     plan: starter
@@ -796,6 +803,7 @@ services:
   # differ). Needs only the database and SENTRY_DSN.
   - type: cron
     name: zitch-aml-scan
+    region: frankfurt
     runtime: python
     rootDir: backend
     plan: starter
@@ -823,6 +831,7 @@ services:
 
 databases:
   - name: zitch-db
+    region: frankfurt
     plan: basic-256mb
     # Application services use the private connection string above. Refuse every
     # public Postgres source; the current live database still needs this applied
