@@ -97,6 +97,11 @@ services:
         value: "true"
       - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "true"
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: zitch-cache
+          property: connectionString
       # Enrol super-admin/finance authenticators first, then set this true in the
       # dashboard. It is dashboard-owned so a Blueprint sync cannot lock every
       # operator out before the two-step enrolment is complete.
@@ -313,6 +318,11 @@ services:
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "false"
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: zitch-cache
+          property: connectionString
       - key: DATABASE_URL
         fromDatabase:
           name: zitch-db
@@ -859,6 +869,13 @@ services:
           property: connectionString
       - key: SENTRY_DSN
         sync: false
+
+  - type: keyvalue
+    name: zitch-cache
+    region: frankfurt
+    plan: starter
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
 
 databases:
   - name: zitch-db
