@@ -293,6 +293,36 @@ services:
       - key: SIMULATE_DEPOSIT_TOKEN
         sync: false
 
+  - type: worker
+    name: zitch-whatsapp-worker
+    region: frankfurt
+    runtime: python
+    rootDir: backend
+    plan: starter
+    autoDeployTrigger: commit
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py whatsapp_worker --batch-size 50 --poll-seconds 0.5"
+    maxShutdownDelaySeconds: 60
+    envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
+      - key: DJANGO_SECRET_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
+      # Keep deterministic identity/OTP hashes identical to the API service so
+      # WhatsApp and app verification read and write the same masked identity state.
+      - key: DJANGO_KYC_HASH_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_KYC_HASH_KEY}
+      - key: DJANGO_OTP_HASH_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_OTP_HASH_KEY}
       - key: WEMA_CHANNEL_ID
         sync: false
       - key: WEMA_WALLET_KEY
@@ -546,7 +576,8 @@ services:
   # Partner-bank biller reconciliation — settle purchases left PENDING by a provider timeout:
   # requery the aggregator by reference, then mark Successful (delivered) or
   # refund (definitively failed). Also requires a paid plan (cron has no free
-  # tier). Runs every 2 minutes so stuck purchases clear quickly.
+  # tier). Runs every 10 minutes, matching the live Oregon cadence used by the
+  # migration runbook so cutover does not increase bank/API pressure.
   - type: cron
     name: zitch-reconcile-wema
     region: frankfurt
@@ -555,7 +586,7 @@ services:
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: commit
-    schedule: "*/2 * * * *"
+    schedule: "*/10 * * * *"
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py reconcile_wema"
     envVars:
@@ -833,6 +864,8 @@ databases:
   - name: zitch-db
     region: frankfurt
     plan: basic-256mb
+    postgresMajorVersion: 18
+    storageAutoscalingEnabled: true
     # Application services use the private connection string above. Refuse every
     # public Postgres source; the current live database still needs this applied
     # manually or by an explicitly reviewed Blueprint sync.
