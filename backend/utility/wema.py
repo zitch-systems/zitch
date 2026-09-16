@@ -1819,7 +1819,11 @@ def vas_status_entitlement(product: str = "airtime") -> tuple[bool, str]:
         return True, ""
     res = vas_status(f"ZITCH-PREFLIGHT-{secrets.token_hex(6).upper()}",
                      "bill" if product == "bills" else "airtime")
-    if str(res.get("status") or "").startswith("REFUSED_"):
+    # The requery path flags a refused lookup rather than settling it (see _parse_vas),
+    # so this reads that flag. A REFUSED_ status would mean the purchase path answered,
+    # which this probe never takes — kept in the test only so a future change of shape
+    # is caught here rather than silently reporting every tenant as entitled.
+    if res.get("lookup_refused") or str(res.get("status") or "").startswith("REFUSED_"):
         return False, str(res.get("message") or "the gateway refused the product")
     return True, ""
 
@@ -1946,32 +1950,53 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
     status = raw_status.strip().upper() if isinstance(raw_status, str) else ""
     # A refusal is settled FIRST, ahead of every branch below, because a request the
     # gateway declined to execute has no outcome for them to read: no status string to
-    # trust, and no transactionStatus worth decoding against a legend. On the purchase
-    # path any 4xx means nothing ran; on a requery only a refusal of the whole product
-    # does (see the docstring). Logged at error — a refusal is a configuration or
-    # entitlement fault that no amount of retrying will clear.
+    # trust, and no transactionStatus worth decoding against a legend.
+    #
+    # What the refusal PROVES depends entirely on which request was refused, and the
+    # two cases are opposite:
+    #
+    #   PURCHASE  - refused before it ran, so nothing was executed and the debit must
+    #               go back. Any 4xx, or an entitlement refusal in the body, is a
+    #               definitive failure.
+    #   REQUERY   - the refusal is of the QUESTION, not of the purchase. Selling
+    #               airtime and reading its status are DIFFERENT ALAT products with
+    #               separate entitlements: this tenant's purchases authenticate on the
+    #               Wallet Services subscription while PartnerPayment status answers
+    #               "You've not been profiled to use this service". So a refused lookup
+    #               says nothing about whether the units were delivered, and refunding
+    #               on it could pay a customer back for airtime they already received.
+    #               It stays PENDING and is flagged, never settled.
+    #
+    # An earlier version of this function read the requery refusal as proof that the
+    # purchase had not run. That was wrong for the reason above, and it is the reading
+    # this comment exists to stop coming back.
     refused_message = r.get("message") or _msg(data)
-    refused_http = http_status in (_VAS_NOT_ENTITLED_HTTP if requery else _VAS_REFUSED_HTTP)
     # ALAT does not always put the refusal in the status line. Production answers an
-    # un-entitled product with HTTP *200*, hasError true and the refusal in the body
-    # ("You've not been profiled to use this service"), which the status check above
-    # cannot see — so the first version of this guard shipped, deployed, and left all
-    # six stuck rows exactly where they were. An envelope that reports an error AND
-    # names an entitlement refusal says we may not use this product at all, on either
-    # path: the purchase it describes cannot have been fulfilled, so it is the same
-    # definitive failure a 401/403 is. Requires the error envelope as well as the
+    # un-entitled product with HTTP *200*, hasError true and the refusal in the body,
+    # which a status-code check cannot see. Requires the error envelope as well as the
     # wording, so a delivered purchase that merely mentions authorisation is untouched.
     refused_body = (not (_ok(data) or bool(data.get("successful")))
                     and bool(_VAS_NOT_ENTITLED_RE.search(refused_message)))
-    if refused_http or refused_body:
-        message = refused_message
-        log.error("wema_vas_refused ref=%s product=%s http_status=%s requery=%s "
+    if requery:
+        # 401/403 (no entitlement for the status product) and the body-borne form of
+        # the same refusal. Both mean "we cannot read this"; neither means "it failed".
+        if http_status in _VAS_NOT_ENTITLED_HTTP or refused_body:
+            log.warning("wema_vas_lookup_refused ref=%s product=%s http_status=%s "
+                        "message=%r (outcome unknown — held PENDING, not refunded)",
+                        _log_safe(reference), product, http_status,
+                        _log_safe(refused_message))
+            return {"success": False, "pending": True, "lookup_refused": True,
+                    "status": "", "reference": r.get("transactionReference", reference),
+                    "message": refused_message, "raw": data}
+    elif http_status in _VAS_REFUSED_HTTP or refused_body:
+        log.error("wema_vas_refused ref=%s product=%s http_status=%s "
                   "by=%s message=%r (definitive failure — refunding, not left pending)",
-                  _log_safe(reference), product, http_status, requery,
-                  "http" if refused_http else "envelope", _log_safe(message))
+                  _log_safe(reference), product, http_status,
+                  "http" if http_status in _VAS_REFUSED_HTTP else "envelope",
+                  _log_safe(refused_message))
         return {"success": False, "pending": False, "status": f"REFUSED_{http_status}",
                 "reference": r.get("transactionReference", reference),
-                "message": message, "raw": data}
+                "message": refused_message, "raw": data}
     if not status and "transactionStatus" in r:
         code = r.get("transactionStatus")
         outcome = _vas_legend(product).get(str(code).strip())
