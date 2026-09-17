@@ -316,6 +316,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
+      - key: WHATSAPP_WORKER_RECONCILE
+        value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "false"
       - key: REDIS_URL
