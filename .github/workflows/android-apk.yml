@@ -1,0 +1,73 @@
+# Builds an installable Android APK on GitHub Actions — no Codemagic/EAS build
+# credits needed. Mirrors codemagic.yaml's android-apk workflow (same prebuild +
+# Gradle steps) so both stay usable side by side.
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'components/**'
+      - 'lib/**'
+      - 'hooks/**'
+      - 'constants/**'
+      - 'plugins/**'
+      - 'shims/**'
+      - 'assets/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'app.json'
+      - 'eas.json'
+      - 'babel.config.js'
+      - 'metro.config.js'
+      - '.github/workflows/android-apk.yml'
+  # Build on demand from the Actions tab, any branch.
+  workflow_dispatch: {}
+
+# Cancel superseded runs so a burst of pushes doesn't stack up Actions minutes.
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build release APK
+    runs-on: ubuntu-latest
+    env:
+      # Mirrors eas.json's "preview" profile so the app talks to the live API.
+      EXPO_PUBLIC_API_URL: "https://api.zitch.ng"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+          cache: npm
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Handles Gradle dependency/build caching, so we don't need a manual
+      # actions/cache step for $HOME/.gradle.
+      - uses: gradle/actions/setup-gradle@67621b124fd2e251c5e8a0e6e3b91318f2287669 # v6.3.0
+
+      - run: npm ci
+
+      - name: Expo prebuild (generate the native android/ project)
+        run: npx expo prebuild --platform android --clean
+
+      - name: Build release APK
+        # Expo's prebuild template signs the release variant with the debug key,
+        # so this APK is installable for testing/sideloading out of the box.
+        # For a Play Store upload, add a real signing config here instead.
+        working-directory: android
+        run: ./gradlew assembleRelease
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zitch-release-apk
+          path: android/app/build/outputs/**/*.apk
+          retention-days: 14
