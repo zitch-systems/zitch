@@ -100,12 +100,17 @@ class Command(BaseCommand):
             30.0,
             min(float(options["account_repair_interval_seconds"]), 3600.0),
         )
+        # Money reconciliation belongs to the dedicated cron. It can still be
+        # enabled explicitly for a single-process local/test worker, but keeping
+        # it off by default prevents several worker processes from sweeping and
+        # notifying the same settled transaction.
+        run_reconcile = bool(getattr(settings, "WHATSAPP_WORKER_RECONCILE", False))
         next_reconcile = time.monotonic()
         next_account_repair = time.monotonic()
 
         while not stopped:
             now = time.monotonic()
-            if not options["once"] and now >= next_reconcile:
+            if run_reconcile and not options["once"] and now >= next_reconcile:
                 threading.Thread(
                     target=reconcile_money,
                     name="money-reconcile",
