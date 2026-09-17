@@ -84,6 +84,11 @@ class Command(BaseCommand):
         """
         lock_key = "zitch:money-reconcile:lock"
         db_cursor = None
+        # Set only on the cache path, and only when WE took the lock. The release
+        # below compares it before deleting, so a run that times out and is taken
+        # over by another process cannot have that process's lock deleted out from
+        # under it when the slow one finally finishes.
+        lock_token = ""
         acquired = False
         try:
             if connection.vendor == "postgresql":
@@ -110,6 +115,12 @@ class Command(BaseCommand):
                     db_cursor.execute(
                         "SELECT pg_advisory_unlock(hashtext(%s))", [lock_key])
                     db_cursor.close()
+                elif lock_token and cache.get(lock_key) == lock_token:
+                    # The cache path has no session to fall out of, so the key
+                    # MUST be deleted here. Leaving it to the 90s timeout makes
+                    # every reconciliation in that window a silent no-op -- the
+                    # money is still unsettled, and nothing says so.
+                    cache.delete(lock_key)
             except Exception:  # noqa: BLE001 - cleanup must not mask the result
                 pass
 
