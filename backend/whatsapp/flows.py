@@ -322,6 +322,7 @@ def remember_pending(pa, user) -> None:
         action_type = str(getattr(pa, "action_type", "") or "")
         key = f"wa-fx-{action_id}" if action_type == "convert" else f"wa-{action_id}"
         cache.set(_pending_key(sign_flow_token(pa)), {
+            "action_id": int(action_id),
             "user_id": int(user.pk),
             "action_type": action_type,
             "idempotency_key": key,
@@ -372,7 +373,24 @@ def _refresh_pending_result(token: str):
         user_id=meta.get("user_id"),
         idempotency_key=meta.get("idempotency_key"),
     ).only("transaction_status").first())
-    if txn is None or txn.transaction_status == Transaction.PENDING:
+    if txn is None:
+        # A marker can outlive a test database reset (or a local reset of the
+        # action sequence). Do not let it pin a newly-created action with the
+        # same id to an old Pending screen. In production, a
+        # genuinely queued payment keeps its action in EXECUTING_STATE until
+        # the worker has created its ledger row.
+        from .models import PendingAction
+
+        live = (PendingAction.objects.filter(pk=meta.get("action_id"))
+                .only("state").first())
+        if live is None or live.state != "executing":
+            forget_pending(token)
+            return None
+        return _result_screen(
+            "Still processing - we will confirm in the chat as soon as it settles.",
+            status="pending",
+        )
+    if txn.transaction_status == Transaction.PENDING:
         return _result_screen(
             "Still processing - we will confirm in the chat as soon as it settles.",
             status="pending",
