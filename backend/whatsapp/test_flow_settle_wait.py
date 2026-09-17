@@ -17,7 +17,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from wallet.models import Transaction
-from whatsapp import router
+from whatsapp import flows, router
 from whatsapp.models import PendingAction
 from whatsapp.test_flows import MSISDN, _make_user
 
@@ -118,6 +118,44 @@ class SettleWaitTests(TestCase):
              patch("whatsapp.jobs.drain_in_background"):
             outcome = router.authorise_flow_execution(pa, self.user)
         self.assertEqual(outcome.status, router.OUTCOME_SUCCESS)
+
+    @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
+    def test_done_rechecks_a_payment_that_settled_after_initial_pending(self):
+        """A payment that settles after Meta rendered Pending must be shown as
+        successful before the next Done tap is allowed to close the Flow."""
+        pa = _action(self.user)
+        token = flows.sign_flow_token(pa)
+        _ledger(self.user, pa.id, Transaction.SUCCESS)
+        flows.remember_pending(pa, self.user)
+
+        refreshed = flows.handle_flow_request({
+            "action": "data_exchange", "flow_token": token,
+            "data": {"close": True},
+        })
+        self.assertEqual(refreshed["screen"], flows.RESULT_SCREEN)
+        self.assertEqual(refreshed["data"]["status"], "✅ Successful")
+        self.assertNotIn("extension_message_response", refreshed["data"])
+
+        closed = flows.handle_flow_request({
+            "action": "data_exchange", "flow_token": token,
+            "data": {"close": True},
+        })
+        self.assertIn("extension_message_response", closed["data"])
+
+    @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
+    def test_done_does_not_close_while_payment_is_still_pending(self):
+        pa = _action(self.user)
+        token = flows.sign_flow_token(pa)
+        _ledger(self.user, pa.id, Transaction.PENDING)
+        flows.remember_pending(pa, self.user)
+
+        response = flows.handle_flow_request({
+            "action": "data_exchange", "flow_token": token,
+            "data": {"close": True},
+        })
+        self.assertEqual(response["screen"], flows.RESULT_SCREEN)
+        self.assertEqual(response["data"]["status"], "⏳ Pending")
+        self.assertNotIn("extension_message_response", response["data"])
 
     @override_settings(WHATSAPP_FLOW_SETTLE_WAIT=2)
     def test_identity_unlock_is_done_not_a_pending_payment(self):
