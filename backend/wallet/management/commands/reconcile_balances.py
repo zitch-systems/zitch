@@ -20,7 +20,7 @@ Read-only; safe to run any time. It only does work when Wema is LIVE — in
 simulation/mock ``get_balance`` returns 0.00, which would flag every funded wallet
 as diverging, so it no-ops there instead of flooding false positives. Schedule it
 less often than the funding sweep (e.g. hourly/daily). ``--fail-nonzero`` exits 1
-on ANY divergence beyond ``--tolerance`` for cron/CI alerting.
+on ANY divergence beyond ``--tolerance`` or incomplete bank reads for cron/CI alerting.
 """
 from decimal import Decimal, InvalidOperation
 
@@ -40,10 +40,12 @@ class Command(BaseCommand):
             help="Naira delta to treat as noise, e.g. rounding (default: 0.00).")
         parser.add_argument(
             "--fail-nonzero", action="store_true",
-            help="Exit 1 on ANY divergence beyond tolerance (over or under) — for CI/manual audit.")
+            help="Exit 1 on ANY divergence beyond tolerance (over or under), or an incomplete "
+                 "bank read — for CI/manual audit.")
         parser.add_argument(
             "--fail-over", action="store_true",
-            help="Exit 1 ONLY on the dangerous ledger>bank direction. Use on the cron: a "
+            help="Exit 1 on the dangerous ledger>bank direction or an incomplete bank read. "
+                 "Use on the cron: a "
                  "benign bank>ledger delta (an unswept deposit between sweeps) won't create "
                  "a false cron failure, but a real float divergence still surfaces.")
 
@@ -110,5 +112,7 @@ class Command(BaseCommand):
         self.stdout.write(
             f"Balance recon: {checked} wallet(s), {len(over)} over / {len(under)} under / "
             f"{unreachable} unreachable (tolerance {tolerance})")
-        if (over and options["fail_over"]) or ((over or under) and options["fail_nonzero"]):
+        incomplete = unreachable > 0
+        if ((incomplete or over) and options["fail_over"]
+                or (incomplete or over or under) and options["fail_nonzero"]):
             raise SystemExit(1)

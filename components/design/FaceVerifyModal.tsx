@@ -140,7 +140,7 @@ const FaceVerifyModal = ({
             // customer staring at our callback's JSON response: close the bank
             // sheet immediately and reveal the KYC screen while the parent keeps
             // polling the authenticated server result.
-            onShouldStartLoadWithRequest={(request) => {
+            onShouldStartLoadWithRequest={(request: { url: string }) => {
               try {
                 const target = new URL(request.url);
                 // Matched against the API base this build actually talks to, not

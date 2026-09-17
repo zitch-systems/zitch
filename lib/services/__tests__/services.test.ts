@@ -3,7 +3,7 @@
 const mockApiJson = jest.fn();
 jest.mock('@/lib/api', () => ({ apiJson: (...args: any[]) => mockApiJson(...args) }));
 
-import { kycService } from '@/lib/services/kyc';
+import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute } from '@/lib/services/kyc';
 import { walletService } from '@/lib/services/wallet';
 import { transfersService } from '@/lib/services/transfers';
 import { EP } from '@/lib/endpoints';
@@ -19,8 +19,56 @@ describe('kycService', () => {
     expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.status);
   });
   it('startBvn posts the bvn', async () => {
+    mockApiJson.mockResolvedValueOnce({ success: true, otp_required: true, tracking_id: 'bvn-track-1' });
     await kycService.startBvn('22222222222');
     expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.bvnStart, { bvn: '22222222222' });
+  });
+  it('confirms BVN with the server tracking reference', async () => {
+    await kycService.confirmBvn('bvn-track-1', '123456');
+    expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.bvnConfirm, {
+      tracking_id: 'bvn-track-1', otp: '123456',
+    });
+  });
+  it('resends Wema OTP with the same tracking reference', async () => {
+    await kycService.resendBvn('bvn-track-1');
+    expect(mockApiJson).toHaveBeenCalledWith(EP.wallet.wemaResendOtp, { tracking_id: 'bvn-track-1' });
+  });
+  it('posts structured residential address fields', async () => {
+    await kycService.verifyAddress({
+      buildingNumber: '12', apartment: '2B', street: 'Allen Avenue', city: 'Ikeja',
+      town: 'Ikeja', state: 'Lagos', lga: 'Ikeja', lcda: 'Ikeja', landmark: 'Market',
+      additionalInformation: 'Behind the pharmacy', country: 'Nigeria', fullAddress: '', postalCode: '100001',
+    }, 'proof-b64');
+    expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.address, {
+      residentialAddress: expect.objectContaining({
+        buildingNumber: '12', apartment: '2B', street: 'Allen Avenue', city: 'Ikeja',
+        state: 'Lagos', lga: 'Ikeja', country: 'Nigeria', fullAddress: '12 2B Allen Avenue, Ikeja, Lagos',
+      }),
+      document: 'proof-b64',
+    });
+  });
+  it('keeps pending and identity review distinct from verified success', () => {
+    expect(classifyKycResponse({ success: false, pending: true })).toBe('pending');
+    expect(classifyKycResponse({ success: true, identity_review_required: true })).toBe('review');
+    expect(classifyKycResponse({ success: true }, ['bvn_verified'])).toBe('unverified');
+    expect(classifyKycResponse({ success: true, bvn_verified: false }, ['bvn_verified'])).toBe('unverified');
+    expect(classifyKycResponse({ success: true, bvn_verified: true }, ['bvn_verified'])).toBe('success');
+    expect(classifyKycResponse({ success: true })).toBe('success');
+    expect(classifyKycResponse({ success: false, identity_review_required: false })).toBe('error');
+  });
+  it('routes face-start account OTP to the server-selected identity tracking flow', () => {
+    const response = {
+      success: true,
+      status: 'account_otp_pending',
+      account_setup_state: 'otp_pending' as const,
+      tracking_id: 'nin-track-1',
+      using_bvn: false,
+      otp_destination_kind: 'nin',
+    };
+    expect(isAccountOtpPending(response)).toBe(true);
+    expect(resolveIdentityOtpRoute(response, 'bvn')).toEqual({ kind: 'nin', trackingId: 'nin-track-1' });
+    expect(resolveIdentityOtpRoute({ ...response, tracking_id: '' }, 'bvn')).toBeNull();
+    expect(resolveIdentityOtpRoute({ ...response, status: 'verified' }, 'bvn')).toBeNull();
   });
   it('verifyNin posts nin + image', async () => {
     await kycService.verifyNin('11111111111', 'b64');

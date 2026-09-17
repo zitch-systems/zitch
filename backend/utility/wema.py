@@ -531,6 +531,43 @@ def _mock_account(reference: str, name: str) -> dict:
             "reference": reference}
 
 
+def _kyc_ok(data, *, allow_pending: bool = False) -> bool:
+    """Creation products also use PascalCase and success/successful envelopes.
+
+    An explicit rejection wins over a contradictory success flag. Never interpret
+    the string 'false', a status code, or a nonempty object as a success boolean.
+    Only upgrade acknowledgement opts into pending; ownership checks stay strict.
+    """
+    if not isinstance(data, dict):
+        return False
+    containers = [data]
+    while containers:
+        item = containers.pop()
+        values = [_ci_get(item, key, default=None) for key in ("status", "success", "successful")]
+        if any(value is False or isinstance(value, str) and re.search(
+                r"\b(?:false|fail(?:ed|ure)?|rejected|declined|denied|unsuccessful|error|not[ _-]verified)\b", value, re.I)
+               for value in values):
+            return False
+        if not allow_pending and any(isinstance(value, str) and re.search(
+                r"\b(?:pending|processing|queued|accepted|in[ _-]?progress)\b", value, re.I)
+                for value in values):
+            return False
+        if any(_ci_get(item, key) for key in ("errors", "error", "errorMessage", "errorMessages")):
+            return False
+        for key in ("hasError", "pending"):
+            value = _ci_get(item, key, default=None)
+            if allow_pending and key == "pending" and value is True:
+                continue
+            if value is not None and value is not False:
+                return False
+        containers.extend(value for key in ("data", "result", "response")
+                          if isinstance(value := _ci_get(item, key), dict))
+    values = [_ci_get(data, key, default=None) for key in ("status", "success", "successful")]
+    return (any(value is True or isinstance(value, str) and value.casefold() == "true"
+                for value in values)
+            or _ci_get(data, "hasError", default=None) is False)
+
+
 def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "") -> dict:
     """Step 1 — request wallet creation; the bank validates the ID and sends its OTP.
 
@@ -571,21 +608,31 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
         data = resp.json()
         log.info(
             "wema_wallet_otp_request kind=%s status=%s success=%s response_keys=%s",
-            kind, resp.status_code, _ok(data),
+            kind, resp.status_code, _kyc_ok(data),
             sorted(str(key) for key in data.keys()) if isinstance(data, dict) else [],
         )
         # The documented ResponseModel has no `data` envelope, but the live gateway
         # returns the OTP tracking id (schemas B2BOTPResponseModel/B2BOnboardingResponse)
         # — look for it at the top level and under data/result so we don't depend on
         # one undocumented shape. An empty tracking_id would break OTP validation.
-        d = data.get("data") or data.get("result") or {}
-        if not isinstance(d, dict):
-            d = {}
-        tracking = (d.get("trackingId") or d.get("otpTrackingID")
-                    or data.get("trackingId") or data.get("otpTrackingID") or "")
+        containers = [data] if isinstance(data, dict) else []
+        # Only walk the documented envelope wrappers, with a fixed depth.
+        level = containers
+        for _ in range(3):
+            level = [value for item in level for key in ("data", "result", "response")
+                     for value in [_ci_get(item, key)] if isinstance(value, dict)]
+            containers.extend(level)
+        tracking = next((_ci_get(item, "trackingId", "otpTrackingID") for item in containers
+                         if _ci_get(item, "trackingId", "otpTrackingID")), "")
+        tracking = tracking.strip() if isinstance(tracking, str) else ""
+        if len(tracking) > 160:
+            tracking = ""
         # Only ever the bank's own answer. Undocumented today, so expect "" — see
         # the docstring for why that is better than substituting the Zitch number.
-        dest = d.get("otpDestination") or data.get("otpDestination") or ""
+        dest = next((_ci_get(item, "otpDestination") for item in containers
+                     if isinstance(_ci_get(item, "otpDestination"), str)
+                     and _ci_get(item, "otpDestination")), "")
+        accepted = 200 <= resp.status_code < 300 and _kyc_ok(data)
         # The gateway can answer status=True with NO data envelope and no tracking id —
         # observed against sandbox 2026-07-27 for an identity already registered with
         # the partner bank, which provisions nothing and replies with a message telling
@@ -595,16 +642,18 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
         # wording — the gateway's message names the provider and would both break
         # white-labelling and push the customer into another app. `raw` keeps the
         # original for support.
-        if _ok(data) and not tracking:
+        if accepted and not tracking:
             return {"success": False, "tracking_id": "", "otp_destination": dest,
                     "otp_destination_kind": kind,
                     "message": "We couldn't complete your account setup. "
                                "Please contact support.", "raw": data}
-        return {"success": _ok(data), "tracking_id": tracking,
+        return {"success": accepted, "tracking_id": tracking,
                 "otp_destination": dest, "otp_destination_kind": kind,
                 "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
+    except ValueError:
+        return {"success": False, "message": "Invalid bank response"}
 
 
 def validate_wallet_otp(phone: str, otp: str, tracking_id: str, *, bvn: bool = False) -> dict:
@@ -627,13 +676,27 @@ def validate_wallet_otp(phone: str, otp: str, tracking_id: str, *, bvn: bool = F
             "phoneNumber": phone, "otp": otp, "trackingId": tracking_id,
         })
         data = resp.json()
+        # HTTP acceptance is not completed OTP ownership verification. Account
+        # initiation may accept 202 with tracking; validation must fail closed.
+        completed = (200 <= resp.status_code < 300 and resp.status_code != 202
+                     and _kyc_ok(data))
+        for item in (data, _ci_get(data, "data"), _ci_get(data, "result")):
+            for key in ("message", "otpStatus", "verificationStatus"):
+                value = _ci_get(item, key)
+                if isinstance(value, str) and re.search(
+                        r"\b(?:pending|processing|queued|in[ _-]?progress|failed|rejected|declined)\b",
+                        value, re.I):
+                    completed = False
         log.info(
             "wema_wallet_otp_validate kind=%s status=%s success=%s has_tracking=%s",
-            "bvn" if bvn else "nin", resp.status_code, _ok(data), bool(tracking_id),
+            "bvn" if bvn else "nin", resp.status_code, completed, bool(tracking_id),
         )
-        return {"success": _ok(data), "message": _msg(data), "raw": data}
+        return {"success": completed,
+                "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
+    except ValueError:
+        return {"success": False, "message": "Invalid bank response"}
 
 
 def resend_wallet_otp(phone: str, tracking_id: str, *, bvn: bool = False) -> dict:
@@ -652,8 +715,8 @@ def resend_wallet_otp(phone: str, tracking_id: str, *, bvn: bool = False) -> dic
                      {"trackingId": tracking_id, "phoneNumber": phone})
         # The spec documents ResendOtp as 200 No-Content: a bare .json() on an empty
         # body raises ValueError (not a RequestException) and would crash a genuine
-        # success. Treat any 2xx with an empty/non-JSON body as resent.
-        if resp.status_code < 300 and not (resp.content or b"").strip():
+        # success. Only an empty 2xx body is the documented no-content response.
+        if 200 <= resp.status_code < 300 and not (resp.content or b"").strip():
             log.info(
                 "wema_wallet_otp_resend kind=%s status=%s success=True empty_body=True",
                 "bvn" if bvn else "nin", resp.status_code,
@@ -662,12 +725,13 @@ def resend_wallet_otp(phone: str, tracking_id: str, *, bvn: bool = False) -> dic
         try:
             data = resp.json()
         except ValueError:
-            return {"success": resp.status_code < 300, "message": "OTP resent"}
+            return {"success": False, "message": "Invalid bank response"}
         log.info(
             "wema_wallet_otp_resend kind=%s status=%s success=%s empty_body=False",
-            "bvn" if bvn else "nin", resp.status_code, _ok(data),
+            "bvn" if bvn else "nin", resp.status_code, _kyc_ok(data),
         )
-        return {"success": _ok(data), "message": _msg(data)}
+        return {"success": 200 <= resp.status_code < 300 and _kyc_ok(data),
+                "message": _msg(data)}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
@@ -708,6 +772,8 @@ def face_verify_live() -> bool:
     not us.
     """
     if wema_simulation():
+        return False
+    if face_cb_mode() == "none":
         return False
     if not (_face_key() and settings.WEMA.get("FACE_VERIFY_URL")):
         return False
@@ -832,9 +898,27 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
     try:
         resp = _post("face_account", path, body)
         data = resp.json()
-        d = data.get("data", {}) if isinstance(data, dict) else {}
-        ok = _ok(data)
-        message = _msg(data)
+        envelope = {str(key).casefold(): value for key, value in data.items()} if isinstance(data, dict) else {}
+        detail = envelope.get("data")
+        d = detail if isinstance(detail, dict) else {}
+        # This result attests a browser-supplied c_id. Account existence proves
+        # nothing about that correlation, even when accompanied by status=True.
+        # Inspect the raw envelope: the customer-facing message filter can hide a
+        # bank-branded duplicate error, and errors may be nested or multi-valued.
+        duplicate = False
+        response_values = [data]
+        while response_values and not duplicate:
+            value = response_values.pop()
+            if isinstance(value, dict):
+                response_values.extend(value.values())
+            elif isinstance(value, list):
+                response_values.extend(value)
+            elif isinstance(value, str):
+                duplicate = bool(re.search(r"\b(?:already\s+exist\w*|duplicate)\b", value, re.I))
+        ok = (200 <= resp.status_code < 300 and _kyc_ok(data)
+              and (detail is None or isinstance(detail, dict)) and not duplicate)
+        message = _msg({key: _ci_get(data, key) for key in
+                        ("message", "errorMessage", "errorMessages", "errors")})
         if not ok:
             log.warning(
                 "wema_face_account_failed status=%s message_fingerprint=%s",
@@ -843,11 +927,11 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
         return {
             "success": ok,
             "message": message,
-            "tracking_id": str((d or {}).get("trackingId") or ""),
-            "account_status": str((d or {}).get("accountGenerationStatus") or ""),
+            "tracking_id": str(_ci_get(d, "trackingId") or ""),
+            "account_status": str(_ci_get(d, "accountGenerationStatus") or ""),
             "raw": data,
         }
-    except requests.RequestException as exc:
+    except (requests.RequestException, ValueError) as exc:
         return _unreachable(exc)
 
 
@@ -905,7 +989,7 @@ def get_account_details(phone: str, *, bvn: bool = False) -> dict:
                 _ci_get(d, "firstName", "firstname"),
                 _ci_get(d, "lastName", "lastname"),
             ) if str(x or "").strip()).strip()
-        envelope_ok = _ok(data) or bool(_ci_get(data, "successful", "success"))
+        envelope_ok = 200 <= resp.status_code < 300 and _kyc_ok(data)
         log.info("wema_account_details_read product=%s status=%s envelope_keys=%s has_account=%s",
                  product, resp.status_code,
                  sorted(str(k) for k in data.keys()) if isinstance(data, dict) else type(data).__name__,
@@ -999,6 +1083,39 @@ def _residential_address(address) -> dict:
     return out
 
 
+def _upgrade_response(resp) -> dict:
+    try:
+        data = resp.json()
+    except ValueError:
+        if resp.status_code == 202:
+            return {"success": False, "pending": True, "message": "Bank verification is pending"}
+        raise
+    accepted = 200 <= resp.status_code < 300 and _kyc_ok(data, allow_pending=True)
+    # A successful request can mean the bank merely queued its verification.
+    # Preserve that distinction before any caller changes KYC flags or limits.
+    pending = resp.status_code == 202
+    rejected = False
+    containers = [data]
+    for item in containers:
+        if not isinstance(item, dict):
+            continue
+        containers.extend(value for key in ("data", "result", "response")
+                          if isinstance(value := _ci_get(item, key), dict))
+        pending = pending or _ci_get(item, "pending") is True
+        for key in ("status", "verificationStatus", "addressVerificationStatus", "message"):
+            value = _ci_get(item, key)
+            if key != "message" and (value is False or isinstance(value, str) and value.casefold() in
+                    {"false", "failed", "rejected", "declined", "unsuccessful", "not verified"}):
+                rejected = True
+            if isinstance(value, str) and re.search(
+                    r"\b(pending|processing|queued|initiated|submitted|accepted|scheduled|awaiting|in[ _-]?progress)\b",
+                    value, re.I):
+                pending = True
+    return {"success": accepted and not pending and not rejected and _kyc_ok(data),
+            "pending": bool(pending and not rejected and accepted),
+            "message": _msg(data), "raw": data}
+
+
 def upgrade_tier2(account_number: str, *, bvn: str = "", nin: str = "", live_image: str = "") -> dict:
     """Upgrade a partnership NUBAN to Tier 2 at the bank (partner-account-upgrade-tier2
     {accountNumber, nin, bvn, liveImageOfFace}).
@@ -1013,15 +1130,11 @@ def upgrade_tier2(account_number: str, *, bvn: str = "", nin: str = "", live_ima
     path = "/api/partnership/partner-account-upgrade-tier2"
     try:
         resp = _post("upgrade", path, body)
-        data = resp.json()
-        msg = _msg(data)
-        ok = _ok(data)
-        if not ok:
-            log.warning("wema_upgrade_tier2_failed status=%s base=%s msg=%s",
-                        resp.status_code, _base_url("upgrade"), msg)
-        return {"success": ok, "message": msg, "raw": data}
+        return _upgrade_response(resp)
     except requests.RequestException as exc:
         return _unreachable(exc)
+    except ValueError:
+        return {"success": False, "message": "Invalid bank response"}
 
 
 def upgrade_tier3(account_number: str, address) -> dict:
@@ -1031,12 +1144,14 @@ def upgrade_tier3(account_number: str, address) -> dict:
     if not _product_live("upgrade"):
         return {"success": not _mock_blocked(), "mock": True}
     try:
-        data = _post("upgrade", "/api/partnership/partner-account-upgrade-tier3",
+        resp = _post("upgrade", "/api/partnership/partner-account-upgrade-tier3",
                      {"accountNumber": account_number,
-                      "residentialAddress": _residential_address(address)}).json()
-        return {"success": _ok(data), "message": _msg(data), "raw": data}
+                      "residentialAddress": _residential_address(address)})
+        return _upgrade_response(resp)
     except requests.RequestException as exc:
         return _unreachable(exc)
+    except ValueError:
+        return {"success": False, "message": "Invalid bank response"}
 
 
 # ---------------------------------------------------------------------------

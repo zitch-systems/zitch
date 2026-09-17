@@ -645,25 +645,39 @@ services:
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        generateValue: true
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
+      # reconcile_wema uses cache-backed recovery throttles across cron runs;
+      # keep those keys shared and durable rather than per-process LocMem.
       - key: DJANGO_REQUIRE_SHARED_CACHE
-        value: "false"
+        value: "true"
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: zitch-cache
+          property: connectionString
       - key: DATABASE_URL
         fromDatabase:
           name: zitch-db
           property: connectionString
+      - key: DJANGO_KYC_HASH_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_KYC_HASH_KEY}
+      - key: DJANGO_OTP_HASH_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_OTP_HASH_KEY}
       - key: WEMA_CHANNEL_ID
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_CHANNEL_ID}
       - key: WEMA_WALLET_KEY
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_WALLET_KEY}
       - key: WEMA_ACCOUNT_CREATION_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCOUNT_CREATION_KEY}
+        # Optional override; utility.wema falls back to the Wallet Services key.
+        sync: false
       - key: WEMA_ACCT_MGT_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCT_MGT_KEY}
+        # Optional override; utility.wema falls back to WEMA_WALLET_KEY when blank.
+        sync: false
       - key: WEMA_ACCT_MGT_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCT_MGT_BASE_URL}
+        # Optional override; utility.wema falls back to WEMA_BASE_URL when blank.
+        sync: false
       - key: WEMA_SOURCE_ACCOUNT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_SOURCE_ACCOUNT}
       - key: WEMA_SECURITY_INFO
@@ -671,13 +685,15 @@ services:
       - key: WEMA_BASE_URL
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_BASE_URL}
       - key: WEMA_AIRTIME_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_AIRTIME_KEY}
+        # Optional override; airtime/data are covered by Wallet Services here.
+        sync: false
       - key: WEMA_BILLS_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_KEY}
+        # Optional override; Wallet Services covers bills here.
+        sync: false
       - key: WEMA_VAS_STATUS_LEGEND
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_STATUS_LEGEND}
+        sync: false
       - key: WEMA_BILLS_STATUS_LEGEND
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_STATUS_LEGEND}
+        sync: false
       # Rail safety mode is sourced from the web service so a cron cannot call
       # ALAT while customer-facing requests are deliberately simulated.
       - key: WEMA_SIMULATION
@@ -792,7 +808,7 @@ services:
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        generateValue: true
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
@@ -801,14 +817,24 @@ services:
         fromDatabase:
           name: zitch-db
           property: connectionString
+      - key: DJANGO_KYC_HASH_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_KYC_HASH_KEY}
+      - key: DJANGO_OTP_HASH_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_OTP_HASH_KEY}
       - key: WEMA_CHANNEL_ID
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CHANNEL_ID}
       - key: WEMA_WALLET_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_WALLET_KEY}
       - key: WEMA_ACCOUNT_CREATION_KEY
         sync: false
-      - key: WEMA_BASE_URL
+      - key: WEMA_ACCT_MGT_KEY
+        # Optional override; utility.wema falls back to WEMA_WALLET_KEY when blank.
         sync: false
+      - key: WEMA_ACCT_MGT_BASE_URL
+        # Optional override; utility.wema falls back to WEMA_BASE_URL when blank.
+        sync: false
+      - key: WEMA_BASE_URL
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BASE_URL}
       # Rail safety mode is sourced from the web service so a cron cannot call
       # ALAT while customer-facing requests are deliberately simulated.
       - key: WEMA_SIMULATION
@@ -845,7 +871,7 @@ services:
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        generateValue: true
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
@@ -854,14 +880,24 @@ services:
         fromDatabase:
           name: zitch-db
           property: connectionString
+      - key: DJANGO_KYC_HASH_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_KYC_HASH_KEY}
+      - key: DJANGO_OTP_HASH_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_OTP_HASH_KEY}
       - key: WEMA_CHANNEL_ID
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CHANNEL_ID}
       - key: WEMA_WALLET_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_WALLET_KEY}
       - key: WEMA_ACCOUNT_CREATION_KEY
         sync: false
-      - key: WEMA_BASE_URL
+      - key: WEMA_ACCT_MGT_KEY
+        # Optional override; utility.wema falls back to WEMA_WALLET_KEY when blank.
         sync: false
+      - key: WEMA_ACCT_MGT_BASE_URL
+        # Optional override; utility.wema falls back to WEMA_BASE_URL when blank.
+        sync: false
+      - key: WEMA_BASE_URL
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BASE_URL}
       # Rail safety mode is sourced from the web service so a cron cannot call
       # ALAT while customer-facing requests are deliberately simulated.
       - key: WEMA_SIMULATION
@@ -869,7 +905,7 @@ services:
       - key: ALLOW_PRODUCTION_SIMULATION
         fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: WEMA_SOURCE_ACCOUNT
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SOURCE_ACCOUNT}
       # The VAS asset rail. Without these the provider wallet reads as UNREADABLE
       # and the position is reported advisory rather than authoritative.
       - key: SENTRY_DSN

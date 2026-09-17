@@ -1434,7 +1434,7 @@
     },
     {
       "id": "PIN_SCREEN",
-      "title": "Confirm payment",
+      "title": "Confirm securely",
       "data": {
         "balance": {
           "type": "string",
@@ -1502,7 +1502,7 @@
               {
                 "type": "TextInput",
                 "name": "pin",
-                "label": "Transaction PIN",
+                "label": "Your Zitch PIN",
                 "input-type": "passcode",
                 "required": true,
                 "helper-text": "Your 6-digit PIN — entered privately, never sent to the chat",
@@ -1526,7 +1526,7 @@
     },
     {
       "id": "PIN_CHAIN",
-      "title": "Confirm payment",
+      "title": "Confirm securely",
       "data": {
         "balance": {
           "type": "string",
@@ -1594,7 +1594,7 @@
               {
                 "type": "TextInput",
                 "name": "pin",
-                "label": "Transaction PIN",
+                "label": "Your Zitch PIN",
                 "input-type": "passcode",
                 "required": true,
                 "helper-text": "Your 6-digit PIN — entered privately, never sent to the chat",
@@ -1618,7 +1618,7 @@
     },
     {
       "id": "PIN_RETRY",
-      "title": "Confirm payment",
+      "title": "Confirm securely",
       "data": {
         "balance": {
           "type": "string",
@@ -1686,7 +1686,7 @@
               {
                 "type": "TextInput",
                 "name": "pin",
-                "label": "Transaction PIN",
+                "label": "Your Zitch PIN",
                 "input-type": "passcode",
                 "required": true,
                 "helper-text": "Your 6-digit PIN — entered privately, never sent to the chat",
@@ -1862,7 +1862,7 @@
     },
     {
       "id": "RESULT",
-      "title": "Payment status",
+      "title": "Request status",
       "data": {
         "status": {
           "type": "string",

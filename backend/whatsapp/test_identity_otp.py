@@ -25,7 +25,8 @@ class IdentityOtpTests(TestCase):
         self.addCleanup(self._wema_disabled.stop)
         self.user = _make_user()
         self.user.bvn_verified = False
-        self.user.save(update_fields=["bvn_verified"])
+        self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
 
     def _pa(self):
         return PendingAction.objects.create(
@@ -217,7 +218,8 @@ class InvalidIdentityIsRejectedNotQueuedTests(TestCase):
         self.addCleanup(self._wema_disabled.stop)
         self.user = _make_user()
         self.user.bvn_verified = False
-        self.user.save(update_fields=["bvn_verified"])
+        self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
 
     def _pa(self):
         return PendingAction.objects.create(
@@ -279,8 +281,11 @@ class InvalidIdentityIsRejectedNotQueuedTests(TestCase):
              patch("whatsapp.router.reply"):
             resp = self._submit(pa)
         self.assertEqual(resp["screen"], RESULT_SCREEN)
-        pa.refresh_from_db()
-        self.assertEqual(pa.payload.get("pending_review"), "bvn")
+        # Advancing the chat can retire this form and open the next KYC step.
+        # The durable review record and unverified identity are what matter.
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+        self.assertFalse(self.user.nin_verified)
         self.assertIn("unreachable", SystemSetting.get("wa_last_identity_review", ""))
 
 

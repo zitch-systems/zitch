@@ -23,6 +23,147 @@ from wallet.services import get_or_create_wallet
 CB = "/webhooks/wema/face/{}"
 
 
+@override_settings(DEBUG=False, TESTING=False, SECURE_SSL_REDIRECT=False,
+    ALLOWED_HOSTS=["testserver"], WEMA={
+        "BASE_URL": "https://lagos-alat-blueapi.azure-api.net",
+        "CHANNEL_ID": "test-channel", "KEYS": {"wallet": "test-wallet", "face_account": "test-face"},
+        "SIMULATION": False, "FACE_CB_MODE": "registered", "FACE_CALLBACK_IPS": ["9.9.9.9"],
+        "FACE_CALLBACK_ORIGINS": ["https://face.example"], "CALLBACK_TOKEN": "test-token"})
+class BrowserFaceCorrelationTrustTests(TestCase):
+    """A spoofable Origin plus a duplicate-account error cannot attest c_id."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="browser-face", phone="08070000101",
+            email="face@example.test", email_verified=True, phone_verified=True)
+        self.session = WemaFaceSession.objects.create(user=self.user, state="browser-face-session",
+            identity_type="nin", identity_hash=hash_identifier("33333333333"),
+            expires_at=timezone.now() + timedelta(minutes=20))
+        self.wallet = get_or_create_wallet(self.user)
+        self.readback = mock.patch("wallet.services.attach_existing_bank_account",
+                                  return_value=(None, "pending"))
+        self.recover = self.readback.start()
+        self.addCleanup(self.readback.stop)
+        notifier = mock.patch("wallet.wema_callbacks._tell_whatsapp_face_passed")
+        self.notify = notifier.start()
+        self.addCleanup(notifier.stop)
+
+    def callback(self, result):
+        with mock.patch("utility.wema.create_wallet_with_face", return_value=result) as provider:
+            response = self.client.post("/webhooks/wema/face", {
+                "success": True, "c_id": "untrusted-correlation", "id": "33333333333", "id_type": "nin"},
+                content_type="application/json", REMOTE_ADDR="8.8.8.8", HTTP_ORIGIN="https://face.example")
+        self.assertEqual(response.status_code, 200)
+        provider.assert_called_once_with(self.user.phone, self.user.email, identity_type="nin",
+            identity_value="33333333333", correlation_id="untrusted-correlation")
+        return response
+
+    def assert_unverified(self):
+        self.user.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertFalse(self.user.nin_verified)
+        self.assertEqual(self.user.nin_hash, "")
+        self.assertEqual(self.user.tier, 0)
+        self.assertEqual(self.session.status, WemaFaceSession.FAILED)
+        self.assertEqual(self.session.correlation_id, "")
+        self.assertFalse(IdentityProof.objects.filter(user=self.user).exists())
+        self.notify.assert_not_called()
+        self.recover.assert_not_called()
+
+    def callback_envelope(self, envelope, *, status=200, invalid_json=False):
+        response = mock.Mock(status_code=status)
+        response.json.return_value = envelope
+        if invalid_json:
+            response.json.side_effect = ValueError("Malformed bank JSON")
+        with mock.patch("utility.wema.requests.post", return_value=response) as post:
+            callback = self.client.post("/webhooks/wema/face", {
+                "success": True, "c_id": "untrusted-correlation", "id": "33333333333", "id_type": "nin"},
+                content_type="application/json", REMOTE_ADDR="8.8.8.8", HTTP_ORIGIN="https://face.example")
+        self.assertEqual(callback.status_code, 200)
+        post.assert_called_once()
+        self.assertEqual(post.call_args.args[0],
+            "https://lagos-alat-blueapi.azure-api.net/create-account-face/api/partnership/tier1-nin-withoutOtp-v2")
+        self.assertEqual(post.call_args.kwargs["json"], {
+            "phoneNumber": self.user.phone, "email": self.user.email,
+            "nin": "33333333333", "correlationId": "untrusted-correlation"})
+        self.assertEqual(post.call_args.kwargs["headers"]["Ocp-Apim-Subscription-Key"], "test-face")
+
+    def test_real_http_error_cannot_attest_correlation_even_with_success_envelope(self):
+        self.callback_envelope({"status": True, "data": {}}, status=400)
+        self.assert_unverified()
+
+    def test_real_duplicate_envelope_with_success_flag_cannot_attest_correlation(self):
+        self.callback_envelope({"status": True, "message": "Customer already exists for this channel"})
+        self.assert_unverified()
+
+    def test_real_duplicate_in_branded_error_is_not_hidden_by_customer_message_filter(self):
+        self.callback_envelope({"status": True, "message": "Wema customer already exists"})
+        self.assert_unverified()
+
+    def test_real_duplicate_nested_in_error_collection_cannot_attest_correlation(self):
+        self.callback_envelope({"status": True, "message": "Request processed",
+            "errors": {"account": ["Account found", "Duplicate request"]}})
+        self.assert_unverified()
+
+    def test_real_contradictory_success_envelope_cannot_attest_correlation(self):
+        self.callback_envelope({"status": True, "successful": False, "data": {}})
+        self.assert_unverified()
+
+    def test_real_malformed_data_wrapper_fails_closed_without_crashing_callback(self):
+        self.callback_envelope({"status": True, "data": "Account created"})
+        self.assert_unverified()
+
+    def test_real_non_json_response_fails_closed_without_crashing_callback(self):
+        self.callback_envelope(None, invalid_json=True)
+        self.assert_unverified()
+
+    def test_real_pascalcase_success_envelope_attests_correlation(self):
+        self.callback_envelope({"Status": True, "Message": "Processing",
+            "Data": {"AccountGenerationStatus": "Pending"}})
+        self.user.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertTrue(self.user.nin_verified)
+        self.assertFalse(self.user.face_verified)
+        self.assertEqual(self.session.status, WemaFaceSession.VERIFIED)
+        self.assertEqual(IdentityProof.objects.get(user=self.user).provider_reference, "untrusted-correlation")
+
+    def test_channel_duplicate_with_existing_nuban_does_not_prove_correlation(self):
+        self.wallet.account_number = "0123456789"
+        self.wallet.save(update_fields=["account_number"])
+        self.callback({"success": False, "message": "Customer already exists for this channel"})
+        self.assert_unverified()
+
+    def test_duplicate_echoing_all_identity_fields_does_not_prove_correlation(self):
+        self.callback({"success": False,
+            "message": "33333333333 || face@example.test || 08070000101 already exist for this channel"})
+        self.assert_unverified()
+
+    def test_successful_account_readback_cannot_substitute_for_correlation_validation(self):
+        self.wallet.account_number = "0123456789"
+        self.recover.return_value = (self.wallet, "Recovered")
+        self.callback({"success": False, "message": "Customer already exists for this channel"})
+        self.assert_unverified()
+
+    def test_bare_duplicate_response_is_not_proof(self):
+        self.callback({"success": False, "message": "Customer already exists"})
+        self.assert_unverified()
+
+    def test_mock_success_does_not_attest_a_browser_correlation(self):
+        self.callback({"success": True, "mock": True})
+        self.assert_unverified()
+
+    def test_authenticated_provider_acceptance_remains_valid_proof(self):
+        self.callback({"success": True})
+        self.user.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertTrue(self.user.nin_verified)
+        self.assertFalse(self.user.face_verified)
+        self.assertEqual(self.session.status, WemaFaceSession.VERIFIED)
+        proof = IdentityProof.objects.get(user=self.user, identity_type=IdentityProof.NIN)
+        self.assertEqual(proof.source, IdentityProof.WEMA_FACE)
+        self.assertEqual(proof.identity_hash, hash_identifier("33333333333"))
+        self.assertEqual(proof.provider_reference, "untrusted-correlation")
+
+
 @override_settings(
     WEMA={"CALLBACK_TOKEN": "tok", "CALLBACK_TOKEN_PREV": "",
           "CALLBACK_ENFORCE_IPS": False, "CALLBACK_IPS": [],
@@ -213,12 +354,14 @@ class AddressRailTests(TestCase):
     def setUp(self):
         from wallet.services import get_or_create_wallet
         self.user = User.objects.create_user(username="a1", phone="08030000001",
-                                             password="Str0ng!pass1", email="a@z.ng")
-        self.user.email_verified = True
-        self.user.save(update_fields=["email_verified"])
+                                             password="Str0ng!pass1", email="a@z.ng",
+                                             email_verified=True, phone_verified=True,
+                                             bvn_verified=True, nin_verified=True,
+                                             face_verified=True, tier=2)
         wallet = get_or_create_wallet(self.user)
         wallet.account_number = "0123456789"
-        wallet.save(update_fields=["account_number"])
+        wallet.bank_tier = 2
+        wallet.save(update_fields=["account_number", "bank_tier"])
         from accounts.models import AccessToken
         self.token = AccessToken.issue(self.user).key
 
@@ -565,17 +708,19 @@ class TheRegisteredCallbackShapeTests(TestCase):
                 "/webhooks/wema/face",
                 {"success": True, "c_id": "COR-EXISTING",
                  "id": "22222222222", "id_type": "bvn"},
-                content_type="application/json")
+                content_type="application/json", REMOTE_ADDR="9.9.9.9")
         self.assertEqual(res.status_code, 200)
         self.user.refresh_from_db()
         self.session.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
         self.assertEqual(self.session.status, WemaFaceSession.VERIFIED)
 
-    def test_browser_duplicate_without_nuban_is_not_account_creation_success(self):
+    def test_browser_duplicate_without_nuban_is_not_identity_proof(self):
         duplicate = ("22222222222 || 08070000001@zitch.app || 08070000001 "
                      "provided already exist for this channel.")
-        with mock.patch("utility.wema.create_wallet_with_face",
+        from django.conf import settings
+        with override_settings(WEMA={**settings.WEMA, "FACE_CALLBACK_ORIGINS": ["https://face.example"]}), \
+                mock.patch("utility.wema.create_wallet_with_face",
                         return_value={"success": False, "message": duplicate}) as create, \
                 mock.patch("wallet.wema_callbacks._tell_whatsapp_face_passed") as notify:
             res = self.client.post(
@@ -585,9 +730,11 @@ class TheRegisteredCallbackShapeTests(TestCase):
                 content_type="application/json", HTTP_ORIGIN="https://face.example")
         self.assertEqual(res.status_code, 200)
         create.assert_called_once()
-        notify.assert_called_once()
-        self.assertFalse(notify.call_args.kwargs["account_pending"])
-        self.assertTrue(notify.call_args.kwargs["account_failed"])
+        notify.assert_not_called()
+        self.user.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+        self.assertEqual(self.session.status, WemaFaceSession.FAILED)
 
     def test_a_stateless_callback_for_an_identity_nobody_is_verifying_decides_nothing(self):
         """No pending session for that number means no customer asked for this check.

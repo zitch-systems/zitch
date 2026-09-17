@@ -20,13 +20,26 @@ Three properties this has to hold:
   that already succeeded.
 """
 import logging
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.db import transaction as db_transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.utils import timezone
 
 log = logging.getLogger("zitch")
+_LAGOS_TZ = ZoneInfo("Africa/Lagos")
+
+
+def _alert_timestamp(value, format_string: str) -> str:
+    """Render customer-facing financial timestamps in Lagos time with its label.
+
+    Transaction datetimes are timezone-aware UTC values in production. Formatting
+    them directly bypasses Django's display timezone and made alerts disagree with
+    the receipt shown to a Lagos customer.
+    """
+    return f"{timezone.localtime(value, _LAGOS_TZ):{format_string}} WAT"
 
 #: Rows the customer did not do and should not be pinged about. Matched against
 #: `Transaction.service` as a prefix.
@@ -145,20 +158,20 @@ def _describe(txn, *, reversal: bool = False) -> tuple:
                 f"{_detail_lines(txn)}"
                 f"{_narration_line(txn)}"
                 f"Ref: {txn.reference}\n"
-                f"{txn.created:%d %b %Y, %I:%M %p}")
+                f"{_alert_timestamp(txn.created, '%d %b %Y, %I:%M %p')}")
     elif reversal:
         subject = f"Reversal alert: {amount}"
         body = (f"The {amount} debit{where} did not go through and has been "
                 f"returned to your Zitch account.\n"
                 f"Ref: {txn.reference}\n"
-                f"{txn.created:%d %b %Y, %I:%M %p}")
+                f"{_alert_timestamp(txn.created, '%d %b %Y, %I:%M %p')}")
     else:
         subject = f"{word} alert: {amount}"
         body = (f"{word} of {amount}{where} on your Zitch account.\n"
                 f"{_detail_lines(txn)}"
                 f"{_narration_line(txn)}"
                 f"Ref: {txn.reference}\n"
-                f"{txn.created:%d %b %Y, %I:%M %p}")
+                f"{_alert_timestamp(txn.created, '%d %b %Y, %I:%M %p')}")
     if balance:
         body += f"\nAvailable balance: {balance}"
     body += "\n\nNot you? Contact Zitch support immediately."
@@ -203,8 +216,23 @@ def send_transaction_alert(txn, *, reversal: bool = False) -> None:
                     "credentials for them, so the customer was NOT notified",
                     txn.reference, ",".join(mocked))
     _push_alert(txn, subject)
-    if _whatsapp_alert(txn, subject, body, reversal=reversal):
-        _mark_flag(txn.pk, "whatsapp_alerted")
+    # Claim the chat leg before calling Meta. A settlement signal and the
+    # reconciliation retry sweep can run at the same time; marking only after
+    # the send lets both processes deliver the same screenshot-worthy alert.
+    whatsapp_flag = _whatsapp_claim_flag(reversal)
+    row = _claim_alert_flag(txn.pk, whatsapp_flag)
+    if row is None:
+        return
+    try:
+        delivered = _deliver_claimed_whatsapp_alert(row, reversal=reversal)
+    except Exception:  # noqa: BLE001 - release this claim for a later retry
+        log.exception("txn_alert_whatsapp_failed ref=%s", row.reference)
+        delivered = False
+    if not delivered:
+        # A rejected send is retryable. The database claim stays present while
+        # the provider call is in flight, so concurrent workers cannot send a
+        # second copy.
+        _clear_flag(row.pk, whatsapp_flag)
 
 
 def _push_alert(txn, subject: str) -> None:
@@ -258,11 +286,28 @@ def send_whatsapp_transaction_alert(txn, *, reversal: bool = False) -> bool:
     not duplicate, but the chat alert is still owed on the next ledger save or
     reconciliation touch.
     """
-    subject, body = _describe(txn, reversal=reversal)
-    if _whatsapp_alert(txn, subject, body, reversal=reversal):
-        _mark_flag(txn.pk, "whatsapp_alerted")
-        return True
+    whatsapp_flag = _whatsapp_claim_flag(reversal)
+    row = _claim_alert_flag(txn.pk, whatsapp_flag)
+    if row is None:
+        return False
+    try:
+        if _deliver_claimed_whatsapp_alert(row, reversal=reversal):
+            return True
+    except Exception:  # noqa: BLE001 - release this direct-call claim for retry
+        log.exception("txn_alert_whatsapp_failed ref=%s", row.reference)
+    _clear_flag(row.pk, whatsapp_flag)
     return False
+
+
+def _deliver_claimed_whatsapp_alert(txn, *, reversal: bool = False) -> bool:
+    """Deliver a WhatsApp alert after its durable row claim was acquired."""
+    subject, body = _describe(txn, reversal=reversal)
+    return _whatsapp_alert(txn, subject, body, reversal=reversal)
+
+
+def _whatsapp_claim_flag(reversal: bool) -> str:
+    """Return the durable claim for the notification being delivered."""
+    return "whatsapp_reversal_alerted" if reversal else "whatsapp_alerted"
 
 
 def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> bool:
@@ -451,14 +496,29 @@ def mark_awaiting_settlement(txn) -> None:
     """
     from .models import Transaction
 
-    row = Transaction.objects.filter(pk=txn.pk).first()
-    if row is None:
-        return
-    merged = dict(_meta(row))
-    if merged.get("wa_awaiting_settlement"):
-        return
-    merged["wa_awaiting_settlement"] = True
-    Transaction.objects.filter(pk=txn.pk).update(meta=merged)
+    terminal_status = None
+    with db_transaction.atomic():
+        row = (Transaction.objects.select_for_update()
+               .filter(pk=txn.pk).first())
+        if row is None:
+            return
+        merged = dict(_meta(row))
+        if merged.get("wa_awaiting_settlement"):
+            return
+        merged["wa_awaiting_settlement"] = True
+        # The row lock serializes this merge with settlement writes, preserving
+        # provider metadata and ensuring the terminal save sees the marker.
+        Transaction.objects.filter(pk=txn.pk).update(meta=merged)
+        terminal_status = row.transaction_status
+
+    # A bank response can settle between the provider call and this marker. In
+    # that case the post-save signal may already have run without knowing that
+    # the customer only heard "processing". Repair the terminal outcome now,
+    # using the same durable claims as the normal signal path.
+    if terminal_status == Transaction.FAILED:
+        _defer(txn, "reversal_alerted", reversal=True)
+    elif terminal_status == Transaction.SUCCESS:
+        _defer(txn, "whatsapp_alerted", reversal=False, whatsapp_only=True)
 
 
 def _meta(txn) -> dict:
@@ -470,7 +530,12 @@ def _meta(txn) -> dict:
 
 @receiver(post_save, sender="wallet.Transaction", dispatch_uid="wallet_txn_alert")
 def _alert_on_settled_transaction(sender, instance, **kwargs):
-    txn = instance
+    # Callers often set only transaction_status on an instance whose `meta` was
+    # loaded before mark_awaiting_settlement merged the provider response. Read
+    # the database row so the pending marker and alert claims are authoritative.
+    from .models import Transaction
+
+    txn = Transaction.objects.filter(pk=instance.pk).first() or instance
     if str(txn.service or "").startswith(_SILENT_SERVICES):
         return
 
@@ -482,7 +547,8 @@ def _alert_on_settled_transaction(sender, instance, **kwargs):
         # "was this row already announced?" is answered against the DB inside
         # _fire, not here: the flag is written with .update(), so the in-memory
         # instance the caller is holding never sees it and would always say no.
-        _defer(txn, "reversal_alerted", reversal=True, requires="alerted")
+        requires = "" if _meta(txn).get("wa_awaiting_settlement") else "alerted"
+        _defer(txn, "reversal_alerted", reversal=True, requires=requires)
         return
 
     if txn.transaction_status != txn.SUCCESS:
@@ -495,10 +561,12 @@ def _alert_on_settled_transaction(sender, instance, **kwargs):
     _defer(txn, "alerted", reversal=False)
 
 
-def _whatsapp_retry_due(txn) -> bool:
-    """Whether a settled row still owes a WhatsApp transaction alert."""
+def _whatsapp_retry_due(txn, *, reversal: bool = False) -> bool:
+    """Whether a terminal row still owes a WhatsApp transaction alert."""
     if not _alerts_on("whatsapp"):
         return False
+    if reversal:
+        return True
     meta = _meta(txn)
     if meta.get("channel") == "whatsapp" and not meta.get("wa_awaiting_settlement"):
         return False
@@ -506,17 +574,20 @@ def _whatsapp_retry_due(txn) -> bool:
 
 
 def retry_pending_whatsapp_alerts(*, since=None, limit: int = 50) -> int:
-    """Best-effort sweep for settled rows whose WhatsApp leg never landed.
+    """Best-effort sweep for terminal rows whose WhatsApp leg never landed.
 
     The post-save signal retries when a row is touched, but a completed transfer
-    can otherwise sit quiet forever after one Meta outage. Reconciliation already
-    runs frequently and is the right place to sweep a bounded recent window.
+    or reversal can otherwise sit quiet forever after one Meta outage. Reconciliation
+    already runs frequently and is the right place to sweep a bounded recent window.
     """
     from .models import Transaction
+    from django.db.models import Q
 
     qs = (Transaction.objects
-          .filter(transaction_status=Transaction.SUCCESS, meta__alerted=True)
-          .exclude(meta__has_key="whatsapp_alerted")
+          .filter(
+              Q(transaction_status=Transaction.SUCCESS, meta__alerted=True)
+              | Q(transaction_status=Transaction.FAILED, meta__reversal_alerted=True)
+          )
           .select_related("user")
           .order_by("-created"))
     if since is not None:
@@ -526,34 +597,57 @@ def retry_pending_whatsapp_alerts(*, since=None, limit: int = 50) -> int:
     for txn in qs[:max(0, int(limit or 0))]:
         if str(txn.service or "").startswith(_SILENT_SERVICES):
             continue
-        if not _whatsapp_retry_due(txn):
+        reversal = txn.transaction_status == Transaction.FAILED
+        claim = _whatsapp_claim_flag(reversal)
+        if claim in _meta(txn):
             continue
-        if send_whatsapp_transaction_alert(txn):
+        if not _whatsapp_retry_due(txn, reversal=reversal):
+            continue
+        if send_whatsapp_transaction_alert(txn, reversal=reversal):
             sent += 1
     return sent
 
 
-def _mark_flag(txn_pk, flag: str) -> None:
+def _claim_alert_flag(txn_pk, flag: str, *, requires: str = ""):
+    """Atomically claim an alert flag and return the current ledger row.
+
+    The claim is durable in Transaction.meta. PostgreSQL row locking and the
+    conditional update cover both the signal/reconcile race and callers that
+    enter through separate processes. A failed provider call may release the
+    claim for a later retry; while the call is active, the flag stays present.
+    """
     from .models import Transaction
 
-    row = Transaction.objects.filter(pk=txn_pk).first()
-    if row is None or _meta(row).get(flag):
-        return
-    merged = dict(_meta(row))
-    merged[flag] = True
-    Transaction.objects.filter(pk=txn_pk).exclude(meta__has_key=flag).update(meta=merged)
+    with db_transaction.atomic():
+        row = (Transaction.objects.select_for_update()
+               .filter(pk=txn_pk).first())
+        if row is None:
+            return None
+        meta = _meta(row)
+        if flag in meta:
+            return None
+        if requires and not meta.get(requires):
+            return None
+        merged = dict(meta)
+        merged[flag] = True
+        updated = (Transaction.objects.filter(pk=txn_pk)
+                   .exclude(meta__has_key=flag)
+                   .update(meta=merged))
+        return row if updated else None
 
 
 def _clear_flag(txn_pk, flag: str) -> None:
     """Release a failed delivery claim so the reconciliation sweep can retry it."""
     from .models import Transaction
 
-    row = Transaction.objects.filter(pk=txn_pk).first()
-    if row is None:
-        return
-    merged = dict(_meta(row))
-    merged.pop(flag, None)
-    Transaction.objects.filter(pk=txn_pk).update(meta=merged)
+    with db_transaction.atomic():
+        row = (Transaction.objects.select_for_update()
+               .filter(pk=txn_pk).first())
+        if row is None:
+            return
+        merged = dict(_meta(row))
+        merged.pop(flag, None)
+        Transaction.objects.filter(pk=txn_pk).update(meta=merged)
 
 
 def _defer(txn, flag: str, *, reversal: bool, requires: str = "",
@@ -565,45 +659,20 @@ def _defer(txn, flag: str, *, reversal: bool, requires: str = "",
     """
 
     def _fire():
-        # Re-read rather than trust the in-memory copy: between the save and the
-        # commit another writer may have alerted, and the flag is what stops the
-        # customer getting the same alert twice.
-        from .models import Transaction
-
-        row = Transaction.objects.filter(pk=txn.pk).first()
-        if row is None or _meta(row).get(flag):
-            return
-        if requires and not _meta(row).get(requires):
-            return
-        # Merge onto what is in the DB now, not onto the in-memory copy: `meta`
-        # carries real payload (provider response, recipient) that another writer
-        # may have added since this instance was loaded, and writing the whole
-        # field back from a stale copy would drop it.
-        #
-        # `has_key` rather than `meta__<flag>=True`: a JSON lookup for a key the
-        # row does not have yields NULL, and an `exclude` on NULL drops the row —
-        # which would make this claim "already alerted" for every first send.
         try:
-            if whatsapp_only:
-                # The normal alert path claims its flag before sending. This retry
-                # path used to send first and mark afterwards, so two reconcile
-                # processes could both pass the check and deliver the same alert.
-                # Claim atomically before the provider call; release only when the
-                # provider rejects the message so a later sweep can retry.
-                merged = dict(_meta(row))
-                merged[flag] = True
-                updated = Transaction.objects.filter(
-                    pk=txn.pk).exclude(meta__has_key=flag).update(meta=merged)
-                if not updated:
-                    return
-                if not send_whatsapp_transaction_alert(row, reversal=reversal):
-                    _clear_flag(row.pk, flag)
+            claim_flag = (_whatsapp_claim_flag(reversal)
+                          if whatsapp_only else flag)
+            row = _claim_alert_flag(txn.pk, claim_flag, requires=requires)
+            if row is None:
                 return
-            merged = dict(_meta(row))
-            merged[flag] = True
-            updated = Transaction.objects.filter(
-                pk=txn.pk).exclude(meta__has_key=flag).update(meta=merged)
-            if not updated:
+            if whatsapp_only:
+                try:
+                    delivered = _deliver_claimed_whatsapp_alert(row, reversal=reversal)
+                except Exception:  # noqa: BLE001 - this callback must not break payment
+                    log.exception("txn_alert_whatsapp_failed ref=%s", row.reference)
+                    delivered = False
+                if not delivered:
+                    _clear_flag(row.pk, claim_flag)
                 return
             send_transaction_alert(row, reversal=reversal)
         except Exception:  # noqa: BLE001 — an alert must never break a payment
@@ -662,7 +731,7 @@ def _sms_alert(txn, *, reversal: bool = False) -> str:
 
     head = (f"{'CR' if credit else 'DR'}:{_sms_money(txn.amount, txn.currency)}\n"
             f"Acct No:{_mask_account(account)}\n")
-    tail = f"\nBal :{balance}\n{txn.created:%d-%m-%Y %H:%M:%S}"
+    tail = f"\nBal :{balance}\n{_alert_timestamp(txn.created, '%d-%m-%Y %H:%M:%S')}"
     # Trim the description rather than the balance or the timestamp: those are
     # what the customer checks, and a second segment costs a second message.
     room = _SMS_MAX - len(head) - len(tail) - len("Desc :")
@@ -715,7 +784,7 @@ def _email_alert_html(txn, *, reversal: bool = False) -> str:
       {row("Description", counterparty)}
       {row("Account", account)}
       {row("Reference", txn.reference)}
-      {row("Date", f"{txn.created:%d %b %Y, %I:%M %p}")}
+      {row("Date", _alert_timestamp(txn.created, "%d %b %Y, %I:%M %p"))}
       {row("Available balance", balance, bold=True)}
     </table>
   </td></tr>

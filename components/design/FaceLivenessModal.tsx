@@ -1,30 +1,18 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Modal, View, Text, Pressable, ActivityIndicator, StyleSheet } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Modal, Pressable, Text, View } from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Svg, { Ellipse } from 'react-native-svg';
-import {
-  useCameraDevice,
-  useCameraPermission,
-  usePhotoOutput,
-} from 'react-native-vision-camera';
-import { Camera, type Face } from 'react-native-vision-camera-face-detector';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 
 /**
- * In-app liveness capture for the Tier-2 Prembly + Wema upgrade rail — a
- * live front-camera preview with a face guide and real-time "no face
- * detected" feedback, replacing a bare gallery-style camera snap.
+ * In-app selfie capture for the combined Wema Tier-2 upgrade.
  *
- * On-device face detection here is UX only, never the security boundary:
- * it just tells the customer when to press the shutter. The actual liveness
- * verdict is still decided server-side by Prembly on the captured photo,
- * before the same image is sent to Wema's combined account-upgrade endpoint.
- *
- * The bank rail (`FaceVerifyModal`) is a completely different component: it
- * hands the whole capture off to the bank's own hosted page. This one is
- * only for proving a BVN/NIN instead of SMS OTP.
+ * Expo SDK 51 does not include the Vision Camera stack used by newer builds.
+ * The configured verification service remains the decision boundary: this modal
+ * only captures a front-camera JPEG as base64 and passes it to the upgrade
+ * endpoint as `live_image`.
  */
 const FaceLivenessModal = ({
   visible,
@@ -33,163 +21,114 @@ const FaceLivenessModal = ({
 }: {
   visible: boolean;
   onClose: () => void;
-  /** Called with the captured selfie as base64 JPEG. */
   onCapture: (base64: string) => void;
 }) => {
   const { c } = useTheme();
-  const device = useCameraDevice('front');
-  const { hasPermission, requestPermission } = useCameraPermission();
-  // JPEG, and biased toward speed over quality — this only needs to be good
-  // enough for Prembly's liveness check, and a slow capture here reads to the
-  // customer as a frozen shutter.
-  const photoOutput = usePhotoOutput({
-    containerFormat: 'jpeg', quality: 0.7, qualityPrioritization: 'speed',
-  });
-  const [faceCount, setFaceCount] = useState(0);
+  const camera = useRef<React.ElementRef<typeof CameraView>>(null);
+  const [permission, requestPermission] = useCameraPermissions();
   const [capturing, setCapturing] = useState(false);
   const [captureError, setCaptureError] = useState('');
   const held = useRef(false);
 
-  const hold = () => { if (!held.current) { held.current = true; beginExternalActivity(); } };
-  const release = () => { if (held.current) { held.current = false; endExternalActivity(); } };
-
-  // Every open starts clean — mirrors FaceVerifyModal's onShow pattern. This
-  // is an event ("the sheet opened"), not state synchronization, so it lives
-  // in the Modal's onShow rather than an effect keyed on `visible`.
-  const open = () => {
-    hold();
-    setFaceCount(0);
-    setCapturing(false);
-    setCaptureError('');
-    if (!hasPermission) requestPermission();
+  const release = () => {
+    if (held.current) {
+      held.current = false;
+      endExternalActivity();
+    }
   };
 
-  // The hold has to release on every exit, not just the close button — same
-  // reasoning as FaceVerifyModal. No setState here, only a ref and the
-  // session module, so this is safe to run directly in the effect body.
+  const open = () => {
+    if (!held.current) {
+      held.current = true;
+      beginExternalActivity();
+    }
+    setCaptureError('');
+    if (!permission?.granted) void requestPermission();
+  };
+
   useEffect(() => {
     if (!visible) release();
     return release;
   }, [visible]);
 
-  const close = () => { release(); onClose(); };
-
-  const handleFaces = useCallback((faces: Face[]) => {
-    setFaceCount(Array.isArray(faces) ? faces.length : 0);
-  }, []);
-
-  const ready = hasPermission && faceCount === 1 && !capturing;
+  const close = () => {
+    release();
+    onClose();
+  };
 
   const capture = async () => {
-    if (!ready) return;
+    if (!permission?.granted || capturing || !camera.current) return;
     setCapturing(true);
     setCaptureError('');
     try {
-      const photo = await photoOutput.capturePhotoToFile({ flashMode: 'off' }, {});
-      const uri = photo.filePath.startsWith('file://') ? photo.filePath : `file://${photo.filePath}`;
-      const FS = await import('expo-file-system/legacy');
-      try {
-        const b64 = await FS.readAsStringAsync(uri, { encoding: 'base64' });
-        onCapture(b64);
-      } finally {
-        FS.deleteAsync(uri, { idempotent: true }).catch(() => {});
-      }
-    } catch (err) {
-      // Left in place with the shutter re-enabled — a failed capture is not
-      // a failed verification, and the customer should just be able to
-      // try again rather than meet a dead end.
-      setCaptureError(err instanceof Error ? err.message : 'Could not capture the photo. Try again.');
+      const photo = await camera.current.takePictureAsync({ base64: true, quality: 0.7, skipProcessing: false });
+      if (!photo?.base64) throw new Error('The camera did not return an image.');
+      onCapture(photo.base64);
+    } catch (error) {
+      setCaptureError(error instanceof Error ? error.message : 'Could not capture the photo. Try again.');
     } finally {
       setCapturing(false);
     }
   };
 
-  const status = captureError || (!hasPermission
-    ? 'Camera access is off — allow it in Settings to take your selfie.'
-    : faceCount === 0
-      ? 'No face detected — center your face in the oval'
-      : faceCount > 1
-        ? 'Only one face at a time, please'
-        : 'Face detected — tap the button');
-
   return (
     <Modal visible={visible} animationType="slide" onShow={open} onRequestClose={close}>
       <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
-        <View style={{
-          flexDirection: 'row', alignItems: 'center', gap: 12,
-          paddingHorizontal: 16, paddingVertical: 12,
-        }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 }}>
           <Pressable onPress={close} hitSlop={12} accessibilityLabel="Close selfie capture">
             <ZIcon name="x" size={22} color="#fff" stroke={2.2} />
           </Pressable>
-          <Text style={{ flex: 1, fontFamily: font.bold, color: '#fff', fontSize: 15 }}>
-            Verify your identity
-          </Text>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontFamily: font.bold, color: '#fff', fontSize: 15 }}>Verify your identity</Text>
+            <Text style={{ fontFamily: font.regular, color: 'rgba(255,255,255,.7)', fontSize: 12, marginTop: 2 }}>
+              Verification service review
+            </Text>
+          </View>
         </View>
 
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          {device && hasPermission ? (
-            <View style={{ width: '100%', flex: 1 }}>
-              <Camera
-                style={StyleSheet.absoluteFill}
-                device={device}
-                isActive={visible}
-                outputs={[photoOutput]}
-                runClassifications={false}
-                runContours={false}
-                runLandmarks={false}
-                performanceMode="fast"
-                onFacesDetected={handleFaces}
-                onError={() => setFaceCount(0)}
-              />
-              {/* Purely visual — the server never sees this overlay, only the
-                  photo underneath it. */}
-              <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-                <Svg width="100%" height="100%">
-                  <Ellipse
-                    cx="50%" cy="46%" rx="38%" ry="30%"
-                    fill="none"
-                    stroke={faceCount === 1 ? c.lime : '#fff'}
-                    strokeWidth={3}
-                    strokeOpacity={0.9}
-                  />
-                </Svg>
+          {permission?.granted ? (
+            <View style={{ width: '100%', flex: 1, overflow: 'hidden' }}>
+              <CameraView ref={camera} style={{ flex: 1 }} facing="front" mirror />
+              <View pointerEvents="none" style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, alignItems: 'center', justifyContent: 'center' }}>
+                <View style={{ width: 250, height: 330, borderRadius: 125, borderWidth: 3, borderColor: c.lime, opacity: 0.9 }} />
               </View>
             </View>
-          ) : !hasPermission ? (
-            <View style={{ padding: 32, alignItems: 'center', gap: 10 }}>
-              <ZIcon name="help" size={28} color="#fff" stroke={2} />
+          ) : permission?.canAskAgain !== false ? (
+            <View style={{ padding: 32, alignItems: 'center', gap: 14 }}>
+              <ZIcon name="camera" size={32} color="#fff" stroke={2} />
               <Text style={{ color: '#fff', textAlign: 'center', fontFamily: font.regular, fontSize: 13 }}>
-                {status}
+                Allow camera access to take a selfie for identity verification.
               </Text>
+              <Pressable onPress={() => void requestPermission()} style={{ paddingHorizontal: 18, paddingVertical: 12, borderRadius: 14, backgroundColor: c.brand }}>
+                <Text style={{ color: c.inkOnBrand, fontFamily: font.bold }}>Enable camera</Text>
+              </Pressable>
             </View>
           ) : (
-            <ActivityIndicator color="#fff" />
+            <View style={{ padding: 32, alignItems: 'center', gap: 12 }}>
+              <ZIcon name="help" size={28} color="#fff" stroke={2} />
+              <Text style={{ color: '#fff', textAlign: 'center', fontFamily: font.regular, fontSize: 13 }}>
+                Camera access is off. Enable it in Settings to continue.
+              </Text>
+            </View>
           )}
         </View>
 
-        <View style={{ paddingHorizontal: 24, paddingBottom: 28, paddingTop: 12, alignItems: 'center', gap: 16 }}>
+        <View style={{ paddingHorizontal: 24, paddingBottom: 28, paddingTop: 12, alignItems: 'center', gap: 14 }}>
           <Text style={{ color: '#fff', fontFamily: font.medium, fontSize: 13.5, textAlign: 'center' }}>
-            {status}
+            {captureError || (permission?.granted ? 'Center your face in the guide, then take the selfie.' : 'A selfie is required to continue.')}
           </Text>
           <Pressable
-            onPress={capture}
-            disabled={!ready}
+            onPress={() => void capture()}
+            disabled={!permission?.granted || capturing}
             accessibilityRole="button"
-            accessibilityLabel="Take photo"
-            accessibilityState={{ disabled: !ready }}
-            style={{
-              width: 68, height: 68, borderRadius: 34,
-              borderWidth: 4, borderColor: '#fff',
-              backgroundColor: ready ? c.brand : 'rgba(255,255,255,.25)',
-              alignItems: 'center', justifyContent: 'center',
-              opacity: ready ? 1 : 0.6,
-            }}
+            accessibilityLabel="Take selfie"
+            style={{ width: 68, height: 68, borderRadius: 34, borderWidth: 4, borderColor: '#fff', backgroundColor: permission?.granted ? c.brand : 'rgba(255,255,255,.25)', alignItems: 'center', justifyContent: 'center', opacity: permission?.granted && !capturing ? 1 : 0.6 }}
           >
             {capturing ? <ActivityIndicator color="#fff" /> : <ZIcon name="camera" size={24} color="#fff" stroke={2.2} />}
           </Pressable>
           <Text style={{ color: 'rgba(255,255,255,.6)', fontFamily: font.regular, fontSize: 11, textAlign: 'center' }}>
-            Your photo is used only to verify it&apos;s you.
+            Zitch sends the captured image to the configured verification service and does not store it. The service decides whether the submission can be accepted.
           </Text>
         </View>
       </SafeAreaView>

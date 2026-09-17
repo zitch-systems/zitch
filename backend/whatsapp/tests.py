@@ -275,9 +275,10 @@ class ChannelTests(TestCase):
     def test_unlinked_number_gets_create_or_link_choice(self):
         self.inbound("hello", "m1", msisdn="2349090000001")
         self.assertIn("create", self.last_reply(msisdn="2349090000001").lower())
-        # Choosing "link" points to the in-app link flow.
-        self.inbound("2", "m2", msisdn="2349090000001")
-        self.assertIn("Link WhatsApp", self.last_reply(msisdn="2349090000001"))
+        # Existing customers start the private WhatsApp sign-in flow.
+        with patch("whatsapp.login_flow.start_login") as login:
+            self.inbound("2", "m2", msisdn="2349090000001")
+        login.assert_called_once_with("2349090000001")
         self.assertFalse(WhatsAppLink.objects.filter(wa_msisdn="2349090000001", status=WhatsAppLink.ACTIVE).exists())
 
     @override_settings(WHATSAPP={"MODE": "sandbox", "ALLOW_CHAT_SIGNUP": False,
@@ -348,8 +349,9 @@ class ChannelTests(TestCase):
     def test_onboarding_existing_account_is_directed_to_link(self):
         # MSISDN normalises to 08011112222; create that account first.
         User.objects.create(username="08011112222", phone="08011112222")
-        self.inbound("1", "e1")  # default MSISDN
-        self.assertIn("already has a Zitch account", self.last_reply())
+        with patch("whatsapp.login_flow.start_login") as login:
+            self.inbound("1", "e1")  # default MSISDN
+        login.assert_called_once_with(MSISDN)
         self.assertFalse(WaMessageLog.objects.filter(text__icontains="first name").exists())
 
     def test_whatsapp_user_cannot_send_without_bvn(self):
@@ -487,26 +489,21 @@ class ChannelTests(TestCase):
         self.link()
         router.cache.delete(f"wema-missing-nuban:{self.user.pk}")
 
-        self.inbound("6", "am-missing-nuban")
+        with patch.object(router, "_send_identity_flow", return_value=True):
+            self.inbound("6", "am-missing-nuban")
 
         reply = self.last_reply()
-        self.assertIn("BVN is verified", reply)
-        self.assertIn("support has been notified", reply)
+        self.assertIn("BVN remains verified", reply)
         self.assertNotIn("being linked", reply)
         alerted.assert_called_once()
         self.assertEqual(alerted.call_args.kwargs["user_id"], self.user.pk)
 
-        # This assertion used to read assertFalse(...exists()) - it pinned the
-        # customer-facing dead end. Paging support is right and still happens
-        # above, but leaving NO pending action meant the only advice on offer
-        # ("reply 6 to add money") led straight back to this same sentence, with
-        # the account card still saying no funding number existed. BVN cannot be
-        # re-submitted once verified, so NIN is the one remaining rail and the
-        # customer is now put on it.
+        # Recover the same proven identity with the bank's face path. Never
+        # force a second identity merely because an account callback was missed.
         pa = PendingAction.objects.get(msisdn=MSISDN, action_type="add_account")
-        self.assertEqual(pa.state, "verification_method")
-        self.assertEqual(pa.payload.get("id_type"), "nin")
-        self.assertIn("NIN", reply)
+        self.assertEqual(pa.state, router.FACE_ID_STATE)
+        self.assertEqual(pa.payload.get("id_type"), "bvn")
+        self.assertEqual(pa.payload.get("id_purpose"), "account_face")
 
     @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
     @patch("whatsapp.router.attach_existing_bank_account",
@@ -2537,8 +2534,9 @@ class ChatSignupEntryTests(TestCase):
         for i, phrase in enumerate(["i already have an account", "link my account", "log in",
                                     "i already registered", "my existing zitch account"]):
             m = f"234909000006{i}"
-            self.inbound(phrase, f"e3-{i}", msisdn=m)
-            self.assertIn("Link WhatsApp", self.last_reply(m))
+            with patch("whatsapp.login_flow.start_login") as login:
+                self.inbound(phrase, f"e3-{i}", msisdn=m)
+            login.assert_called_once_with(m)
             self.assertFalse(WaOnboarding.objects.filter(msisdn=m).exists())
 
     @override_settings(WHATSAPP={**WA, "ALLOW_CHAT_SIGNUP": False})
@@ -3245,10 +3243,10 @@ class ChatKycTests(TestCase):
         self.inbound(re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1), "f3")
         self.assertIn("BVN", self.last_reply())
         self.inbound("12345678901", "f4")
-        self.assertIn("NIN", self.last_reply())
-        self.inbound("10987654321", "f5")
         self.user.refresh_from_db()
-        self.assertTrue(self.user.bvn_verified and self.user.nin_verified)
+        self.assertTrue(self.user.bvn_verified)
+        self.assertFalse(self.user.nin_verified)
+        nin.assert_not_called()  # Tier 1 needs either identity, not both.
         self.assertEqual(self.user.tier, 1)      # derived, not granted
         self.assertIn("Tier 1", self.last_reply())
         # Neither identity number is readable in the log.
@@ -3262,25 +3260,23 @@ class ChatKycTests(TestCase):
     @patch("whatsapp.router.verify_bvn", return_value={"success": True})
     @patch("whatsapp.router.send_email")
     @patch("whatsapp.router.send_sms", return_value={"success": True})
-    def test_an_unverifiable_identity_is_queued_not_dead_ended(self, sms, email, bvn, nin, _sl, _el):
-        """Our bank verifies exactly one identity, during account creation. The
-        second is stored hashed and queued for the portal's KYC review rather
-        than blocking the customer forever."""
+    def test_tier1_does_not_collect_an_unrequested_second_identity(self, sms, email, bvn, nin, _sl, _el):
+        """Completing Tier 1 must not silently collect or approve a second ID."""
         self.inbound("8", "q1")
         self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "q2")
         self.inbound(re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1), "q3")
         self.inbound("12345678901", "q4")     # BVN verifies
-        self.inbound("10987654321", "q5")     # NIN cannot be checked standalone
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
         self.assertFalse(self.user.nin_verified)
-        self.assertTrue(self.user.nin_hash)   # submitted for review, hashed
+        self.assertFalse(self.user.nin_hash)
+        nin.assert_not_called()
         # Tier 1 is earned on the FIRST verified identity (email + phone + BVN or
         # NIN — see User.recompute_tier). The second identity being queued for
         # review is what unlocks Tier 2, and must not hold the customer at the
         # floor in the meantime.
         self.assertEqual(self.user.tier, 1)
-        self.assertIn("review", self.last_reply().lower())
+        self.assertIn("Tier 1", self.last_reply())
         # And the flow ended rather than asking for the same number again.
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
 
@@ -3357,12 +3353,13 @@ class ChatKycTests(TestCase):
         self.assertTrue(self.user.phone_verified)
 
     def test_a_fully_verified_user_is_told_so(self):
-        for f in ("phone_verified", "email_verified", "bvn_verified", "nin_verified"):
+        for f in ("phone_verified", "email_verified", "bvn_verified", "nin_verified",
+                  "face_verified", "address_verified"):
             setattr(self.user, f, True)
         self.user.recompute_tier()
         self.user.save()
         self.inbound("verify", "v1")
-        self.assertIn("fully verified", self.last_reply())
+        self.assertIn("highest verification tier", self.last_reply())
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
 
     @patch("whatsapp.router.sms_live", return_value=True)
@@ -3458,12 +3455,12 @@ class LimitReferralTests(TestCase):
              "SUPPORT_WA": "2349012345678", "SUPPORT_EMAIL": "support@zitch.ng"}
 
     @override_settings(ZITCH_LINKS=LINKS)
-    def test_a_verified_customer_over_the_cap_is_sent_to_the_app_for_tier_3(self):
+    def test_a_verified_customer_over_the_cap_is_given_whatsapp_upgrade_entry(self):
         from whatsapp.router import _upgrade_block
 
         block = _upgrade_block(self.user)          # tier 1, all four checks done
         self.assertIn("Tier 3", block)
-        self.assertIn("https://zitch.ng/app", block)
+        self.assertIn("upgrade securely from WhatsApp", block)
         self.assertIn("https://zitch.ng", block)
 
     @override_settings(ZITCH_LINKS=LINKS)
@@ -3472,8 +3469,8 @@ class LimitReferralTests(TestCase):
         is done right here in the chat."""
         from whatsapp.router import _upgrade_block
 
-        self.user.nin_verified = False
-        self.user.save(update_fields=["nin_verified"])
+        self.user.bvn_verified = self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
         block = _upgrade_block(self.user)
         self.assertIn("*8*", block)
         self.assertNotIn("Tier 3", block)
@@ -4243,10 +4240,15 @@ class IdentityNeverFallsBackToChatInProductionTests(TestCase):
         with patch("whatsapp.router.flows_live", return_value=True), \
              patch("whatsapp.router.send_flow", return_value={"success": False}):
             handle_inbound(MSISDN, "8")
+            # Choose the SMS method on the new BVN/NIN chooser before testing
+            # delivery failure. No identity form is sent by opening the chooser.
+            handle_inbound(MSISDN, "bvn_sms")
         out = self._last()
-        self.assertIn("won't ask", out)
+        self.assertIn("secure identity form could not open", out)
         self.assertNotIn("Enter your 11-digit", out)
-        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
+        from whatsapp.router import BVN_METHOD_STATE
+        self.assertEqual(PendingAction.objects.get(
+            msisdn=MSISDN, action_type="kyc").state, BVN_METHOD_STATE)
 
     def test_a_failed_email_code_send_refuses_chat_entry_when_flows_exist(self):
         from whatsapp.router import handle_inbound

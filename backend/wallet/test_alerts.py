@@ -4,11 +4,14 @@ Wired to the ledger row rather than to each money path, so the properties worth
 pinning are about the wiring: fires on settlement not on intent, exactly once,
 never for a movement the database rolled back, and never fatal.
 """
+from datetime import datetime, timezone as dt_timezone
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from threading import Event
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 
 from .models import Transaction
 from .services import credit, debit, get_or_create_wallet
@@ -147,6 +150,29 @@ class TransactionAlertTests(TestCase):
             with self.captureOnCommitCallbacks(execute=True):
                 refund(txn)
         email.assert_not_called()
+
+
+class FinancialAlertTimestampTests(TestCase):
+    def setUp(self):
+        self.user = _user()
+
+    def test_financial_alert_timestamps_are_lagos_time_and_labelled(self):
+        """An aware UTC ledger timestamp must match the Lagos receipt time."""
+        from .alerts import _describe, _email_alert_html, _sms_alert
+
+        txn = Transaction.objects.create(
+            user=self.user, amount=Decimal("1000"), direction=Transaction.OUT,
+            service="transfer", reference="TZ-1",
+            transaction_status=Transaction.SUCCESS,
+        )
+        created = datetime(2026, 9, 14, 14, 14, tzinfo=dt_timezone.utc)
+        Transaction.objects.filter(pk=txn.pk).update(created=created)
+        txn.refresh_from_db()
+
+        _subject, body = _describe(txn)
+        self.assertIn("14 Sep 2026, 03:14 PM WAT", body)
+        self.assertIn("14-09-2026 15:14:00 WAT", _sms_alert(txn))
+        self.assertIn("14 Sep 2026, 03:14 PM WAT", _email_alert_html(txn))
 
 
 @override_settings(TXN_ALERTS={"EMAIL": True, "SMS": False, "WHATSAPP": True})
@@ -294,6 +320,40 @@ class WhatsAppChannelAlertTests(TestCase):
         wa_reply.assert_called_once()
         self.assertIn("Reversal", wa_reply.call_args[0][1])
 
+    def test_a_previously_alerted_debit_gets_a_distinct_reversal_alert(self):
+        """A reversal is a second, different customer event.
+
+        The original debit already owns ``whatsapp_alerted``. Reusing that flag
+        would suppress the later money-returned notification.
+        """
+        from .services import reverse_transfer
+
+        credit(self.user, Decimal("10000"), "funding")
+        with patch("utility.providers.send_email"), \
+             patch("whatsapp.router.reply",
+                   return_value={"success": True, "message_id": "wamid.debit"}) as wa_reply:
+            with self.captureOnCommitCallbacks(execute=True):
+                txn = debit(self.user, Decimal("1000"), "Transfer to Ada",
+                            meta={"channel": "app"})
+                txn.transaction_status = Transaction.SUCCESS
+                txn.save(update_fields=["transaction_status"])
+
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("whatsapp_alerted"))
+        wa_reply.reset_mock()
+
+        with patch("utility.providers.send_email"), \
+             patch("whatsapp.router.reply",
+                   return_value={"success": True, "message_id": "wamid.reversal"}) as wa_reply:
+            with self.captureOnCommitCallbacks(execute=True):
+                reverse_transfer(txn.reference)
+
+        wa_reply.assert_called_once()
+        self.assertIn("Reversal", wa_reply.call_args[0][1])
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("whatsapp_alerted"))
+        self.assertTrue(txn.meta.get("whatsapp_reversal_alerted"))
+
     def test_a_whatsapp_transfer_that_only_settles_later_is_announced(self):
         """The chat could only say "⏳ … processing", so the settlement alert is
         the ONE moment the customer can be told the money actually left. The
@@ -316,7 +376,95 @@ class WhatsAppChannelAlertTests(TestCase):
                 txn.transaction_status = Transaction.SUCCESS
                 txn.save(update_fields=["transaction_status"])
         wa_reply.assert_called_once()
-        self.assertIn("Debit alert", wa_reply.call_args[0][1])
+        self.assertIn("Transfer successful", wa_reply.call_args[0][1])
+
+    def test_a_whatsapp_transfer_that_fails_after_processing_is_announced(self):
+        """A pending debit needs one reversal notice when the rail refuses it.
+
+        The original processing message means the customer was already told about
+        the debit, even though the generic ``alerted`` flag was never set.
+        """
+        from .alerts import mark_awaiting_settlement
+
+        credit(self.user, Decimal("10000"), "funding")
+        with patch("utility.providers.send_email") as email, \
+             patch("whatsapp.router.reply",
+                   return_value={"success": True, "message_id": "wamid.fail"}) as wa_reply:
+            with self.captureOnCommitCallbacks(execute=True):
+                txn = debit(self.user, Decimal("1000"), "Transfer to Ada",
+                            meta={"channel": "whatsapp"})
+                mark_awaiting_settlement(txn)
+            with self.captureOnCommitCallbacks(execute=True):
+                txn.transaction_status = Transaction.FAILED
+                txn.save(update_fields=["transaction_status"])
+
+        email.assert_called_once()
+        wa_reply.assert_called_once()
+        self.assertIn("Reversal", wa_reply.call_args[0][1])
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("reversal_alerted"))
+        self.assertTrue(txn.meta.get("whatsapp_reversal_alerted"))
+
+    def test_direct_whatsapp_exception_releases_the_matching_claim(self):
+        from .alerts import send_whatsapp_transaction_alert
+
+        txn = Transaction.objects.create(
+            user=self.user, amount=Decimal("1000"), direction=Transaction.OUT,
+            service="Transfer to Ada", reference="WA-DIRECT-EXCEPTION",
+            transaction_status=Transaction.SUCCESS,
+            meta={"channel": "app", "alerted": True})
+
+        with patch("wallet.alerts._whatsapp_alert",
+                   side_effect=RuntimeError("provider raised")):
+            self.assertFalse(send_whatsapp_transaction_alert(txn))
+
+        txn.refresh_from_db()
+        self.assertNotIn("whatsapp_alerted", txn.meta)
+
+        with patch("wallet.alerts._whatsapp_alert", return_value=True):
+            self.assertTrue(send_whatsapp_transaction_alert(txn, reversal=True))
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("whatsapp_reversal_alerted"))
+
+    def test_reconcile_retries_a_reversal_with_its_distinct_claim(self):
+        from .alerts import retry_pending_whatsapp_alerts
+
+        txn = Transaction.objects.create(
+            user=self.user, amount=Decimal("1000"), direction=Transaction.OUT,
+            service="Transfer to Ada", reference="WA-REVERSAL-RETRY",
+            transaction_status=Transaction.PENDING,
+            meta={"channel": "whatsapp", "reversal_alerted": True,
+                  "wa_awaiting_settlement": True})
+        Transaction.objects.filter(pk=txn.pk).update(
+            transaction_status=Transaction.FAILED)
+
+        with patch("wallet.alerts._whatsapp_alert", return_value=True) as send:
+            self.assertEqual(retry_pending_whatsapp_alerts(limit=10), 1)
+
+        send.assert_called_once()
+        self.assertTrue(send.call_args.kwargs["reversal"])
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("whatsapp_reversal_alerted"))
+
+    def test_a_failed_reconcile_retry_releases_its_claim_for_the_next_attempt(self):
+        """A refused send can retry, while each attempt still claims first."""
+        from .alerts import retry_pending_whatsapp_alerts
+
+        txn = Transaction.objects.create(
+            user=self.user, amount=Decimal("1000"), direction=Transaction.OUT,
+            service="Transfer to Ada", reference="WA-RETRY-CLAIM",
+            transaction_status=Transaction.SUCCESS,
+            meta={"channel": "app", "alerted": True})
+
+        with patch("wallet.alerts._whatsapp_alert", side_effect=[False, True]) as send:
+            self.assertEqual(retry_pending_whatsapp_alerts(limit=10), 0)
+            txn.refresh_from_db()
+            self.assertNotIn("whatsapp_alerted", txn.meta)
+            self.assertEqual(retry_pending_whatsapp_alerts(limit=10), 1)
+
+        self.assertEqual(send.call_count, 2)
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("whatsapp_alerted"))
 
     def test_marking_awaiting_settlement_keeps_the_provider_payload(self):
         """It merges onto the row in the DB, not the in-memory copy — another
@@ -332,6 +480,62 @@ class WhatsAppChannelAlertTests(TestCase):
         meta = Transaction.objects.get(pk=txn.pk).meta
         self.assertEqual(meta["provider_ref"], "rail-99")
         self.assertTrue(meta["wa_awaiting_settlement"])
+
+
+@override_settings(TXN_ALERTS={"EMAIL": False, "SMS": False, "WHATSAPP": True})
+class WhatsAppAlertClaimConcurrencyTests(TransactionTestCase):
+    """The database claim, rather than a process-local flag, owns delivery."""
+
+    reset_sequences = True
+
+    def test_two_retry_workers_send_one_message(self):
+        from whatsapp.models import WhatsAppLink
+        from .alerts import retry_pending_whatsapp_alerts
+
+        user = _user()
+        WhatsAppLink.objects.create(
+            user=user, wa_msisdn="2348012340000", status=WhatsAppLink.ACTIVE)
+        txn = Transaction.objects.create(
+            user=user, amount=Decimal("1000"), direction=Transaction.OUT,
+            service="Transfer to Ada", reference="WA-CONCURRENT-CLAIM",
+            transaction_status=Transaction.PENDING,
+            meta={"channel": "app", "alerted": True})
+        Transaction.objects.filter(pk=txn.pk).update(
+            transaction_status=Transaction.SUCCESS)
+
+        first_send = Event()
+        release_first = Event()
+        calls = []
+
+        def fake_whatsapp_alert(*args, **kwargs):
+            calls.append(True)
+            if len(calls) == 1:
+                first_send.set()
+                self.assertTrue(release_first.wait(timeout=5))
+            return True
+
+        def worker():
+            from django.db import close_old_connections
+
+            close_old_connections()
+            try:
+                return retry_pending_whatsapp_alerts(limit=10)
+            finally:
+                close_old_connections()
+
+        with patch("wallet.alerts._whatsapp_alert", side_effect=fake_whatsapp_alert):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(worker)
+                self.assertTrue(first_send.wait(timeout=5))
+                second = pool.submit(worker)
+                second_result = second.result(timeout=5)
+                release_first.set()
+                first_result = first.result(timeout=5)
+
+        self.assertEqual(first_result + second_result, 1)
+        self.assertEqual(len(calls), 1)
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("whatsapp_alerted"))
 
 
 # A minimal WHATSAPP config carrying just the two template keys the fallback

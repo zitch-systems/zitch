@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import { Contact } from 'expo-contacts';
+import * as Contacts from 'expo-contacts';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { purchasablePhoneNumber } from '@/lib/phone';
 
@@ -14,12 +14,14 @@ export async function pickContactPhone(): Promise<ContactPickResult> {
   if (Platform.OS === 'web') return { status: 'unsupported' };
   beginExternalActivity();
   try {
-    const contact = await Contact.presentPicker();
-    if (!contact) return { status: 'cancelled' };
-    const phones = await contact.getPhones();
-    for (const entry of phones) {
-      const phone = purchasablePhoneNumber(entry.number);
-      if (phone) return { status: 'picked', phone };
+    const permission = await Contacts.requestPermissionsAsync();
+    if (permission.status !== 'granted') return { status: 'unsupported' };
+    const result = await Contacts.getContactsAsync({ fields: [Contacts.Fields.PhoneNumbers], pageSize: 1000 });
+    for (const contact of result.data) {
+      for (const entry of contact.phoneNumbers ?? []) {
+        const phone = purchasablePhoneNumber(entry.number);
+        if (phone) return { status: 'picked', phone };
+      }
     }
     return { status: 'missing' };
   } finally {

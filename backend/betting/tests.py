@@ -7,6 +7,8 @@ from django.test import Client, TestCase
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
+from utility.catalogue_fixtures import map_billers
+
 from .models import BettingPlatform
 
 
@@ -14,7 +16,9 @@ class BettingTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user("08030000001", "uche@zitch.test", balance="10000")
-        BettingPlatform.objects.create(code="bet9ja", name="Bet9ja", color="#0B7A3B", service_id="bet9ja")
+        map_billers("bet9ja-betting")
+        BettingPlatform.objects.create(code="bet9ja", name="Bet9ja", color="#0B7A3B",
+                                       service_id="bet9ja-betting")
 
     def post(self, path, payload):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")

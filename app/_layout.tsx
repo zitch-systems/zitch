@@ -44,7 +44,7 @@ const RootStack = () => {
   );
 };
 
-const _layout = () => {
+const RootLayout = () => {
   // The whole app uses Manrope (see lib/theme `font`). Only these are loaded.
   const [fontsLoaded, error] = useFonts(appFonts);
 
@@ -112,4 +112,4 @@ const _layout = () => {
   );
 };
 
-export default _layout;
+export default RootLayout;

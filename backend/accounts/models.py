@@ -9,7 +9,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import AbstractUser
-from django.db import IntegrityError, models
+from django.db import IntegrityError, models, transaction
 from django.db.models.functions import Lower
 from django.utils import timezone
 
@@ -321,15 +321,15 @@ class User(AbstractUser):
 
     def recompute_tier(self) -> None:
         """Derive the KYC tier from the verifications completed (ascending):
-        Tier 1 needs verified contact details and BVN; Tier 2 adds verified
-        NIN and liveness; Tier 3 adds address verification.
+        Tier 1 needs verified contact details and either BVN or NIN; Tier 2
+        needs both identities and liveness; Tier 3 adds address verification.
 
         Both contact requirements apply to every account, however it signed up.
         The app earns `phone_verified` at signup (that IS the signup OTP); a
         WhatsApp signup earns it in the chat KYC flow, because a messenger
         session outlives a SIM swap and so is not by itself proof of the
         number."""
-        has_identity = self.bvn_verified
+        has_identity = self.bvn_verified or self.nin_verified
         has_both_identities = self.bvn_verified and self.nin_verified
 
         # Both contact channels must be proven before any tier above the floor.
@@ -471,26 +471,8 @@ def rehydrate_verified_identity_flags(user: User) -> list[str]:
             )
             source_hash = attempt.identity_hash if attempt else ""
             source_last4 = attempt.identity_last4 if attempt else ""
-        # Account creation callbacks can persist the NUBAN before the customer
-        # submits the one-time bank OTP. In that ordering the attempt remains
-        # PENDING even though the bank account is already provisioned. Reconcile
-        # the pending BVN proof only when a real NUBAN is already attached; this
-        # cannot turn an abandoned identity form into verification.
-        if not source_hash:
-            from wallet.models import Wallet
-            has_account = Wallet.objects.filter(user=user).exclude(account_number="").exists()
-            if has_account:
-                pending_attempt = (
-                    WemaProvisioningAttempt.objects.filter(
-                        user=user,
-                        identity_type=identity_type,
-                        status=WemaProvisioningAttempt.PENDING,
-                    )
-                    .order_by("-updated")
-                    .first()
-                )
-                source_hash = pending_attempt.identity_hash if pending_attempt else ""
-                source_last4 = pending_attempt.identity_last4 if pending_attempt else ""
+        # A NUBAN can arrive before ownership is proved. Neither an account
+        # number nor a pending OTP attempt is evidence that its owner passed KYC.
         # A successful Wema face callback is also durable identity proof. This
         # fallback matters when face verification commits before account recovery:
         # the later WhatsApp read must not reopen BVN/NIN just because the
@@ -506,8 +488,13 @@ def rehydrate_verified_identity_flags(user: User) -> list[str]:
                 .first()
             )
             source_hash = face.identity_hash if face else ""
-            source_last4 = face.identity_last4 if face else ""
+            # Face sessions retain only the keyed hash; it cannot reveal last4.
+            source_last4 = ""
         if not source_hash:
+            continue
+        stored_hash = getattr(user, hash_field)
+        if stored_hash and not hmac.compare_digest(stored_hash, source_hash):
+            # Evidence for one identity cannot verify a different stored value.
             continue
         setattr(user, hash_field, getattr(user, hash_field) or source_hash)
         setattr(user, last4_field, getattr(user, last4_field) or source_last4)
@@ -517,8 +504,12 @@ def rehydrate_verified_identity_flags(user: User) -> list[str]:
         return []
     user.recompute_tier()
     try:
-        user.save(update_fields=fields + ["tier"])
+        with transaction.atomic():
+            user.save(update_fields=fields + ["tier"])
     except IntegrityError:
+        # Do not return a verified in-memory user after the ownership constraint
+        # rejected the write. Keep both the DB and the response unverified.
+        user.refresh_from_db(fields=fields + ["tier"])
         log.warning("identity_flag_rehydrate_conflict user=%s fields=%s", user.id, fields)
         return []
     return fields

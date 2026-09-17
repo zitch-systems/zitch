@@ -26,9 +26,20 @@ export type VirtualAccount = ApiResult<{
   otp_destination?: string;
   otp_destination_kind?: string;
   pending?: boolean;
+  identity_review_required?: boolean;
   bvn_verified?: boolean;
   nin_verified?: boolean;
   tier?: number;
+  tier_name?: string;
+  transaction_limit?: string;
+  daily_transfer_limit?: string;
+  daily_bill_limit?: string;
+  face_verified?: boolean;
+  address_verified?: boolean;
+  id_document_verified?: boolean;
+  identity_upgrade_required?: boolean;
+  upgrade_required?: boolean;
+  upgraded?: boolean;
 }>;
 
 export const walletService = {

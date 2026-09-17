@@ -2085,7 +2085,8 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     # token-scoped pointer so the published RESULT screen's Done exchange can
     # re-read the ledger instead of closing on stale Pending.
     from .flows import remember_pending
-    remember_pending(pa, user)
+    if pa.action_type != "unlock":
+        remember_pending(pa, user)
     enqueue_flow_execution(pa)
     # Same safety net the webhook uses for a worker that isn't running, and off
     # the request thread so Meta's answer is not held up by it. Not under the
@@ -2118,8 +2119,8 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     # yet, and a tick here would read as "done" for a payment that may still
     # fail - the one thing a banking channel must never say. The receipt in the
     # chat remains the authoritative outcome.
-    return Outcome("Confirmed - I'm completing your payment now. The receipt will "
-                   "arrive in this chat in a few seconds.", OUTCOME_PENDING)
+    return Outcome("Your payment is processing. Tap Done to check its status; "
+                   "we will also confirm the outcome in the chat.", OUTCOME_PENDING)
 
 
 #: What the settled screen calls each action. "Sent" is true of a transfer and
@@ -2134,6 +2135,8 @@ _SETTLED_VERB = {
     "cable": "Subscription paid",
     "exam": "Exam PIN purchased",
     "convert": "Converted",
+    "savings_create": "Fixed Save created",
+    "loan_repay": "Loan repayment completed",
 }
 
 
@@ -2170,15 +2173,15 @@ def _await_settlement(action_id: int, user, action_type: str = ""):
         # wide; the status and the reference are all that is read.
         txn = (Transaction.objects.filter(user=user, idempotency_key=key)
                .only("transaction_status", "reference").first())
-        if txn is not None and txn.transaction_status != Transaction.PENDING:
+        if txn is not None and txn.transaction_status in (Transaction.SUCCESS, Transaction.FAILED):
             if txn.transaction_status == Transaction.SUCCESS:
                 verb = _SETTLED_VERB.get(action_type, "Done")
                 return Outcome(f"{verb} - the receipt is in your chat.", OUTCOME_SUCCESS)
             # A failure is worth waiting for too: it is the one outcome the
             # customer should see BEFORE the screen closes, not only in a chat
             # message they may scroll past.
-            return Outcome("That didn't go through. You were not charged - "
-                           "see the chat for details.", OUTCOME_FAILED)
+            return Outcome("That payment was not completed. Check your balance and the chat "
+                           "for any reversal details before trying again.", OUTCOME_FAILED)
         if time.monotonic() >= deadline:
             return None
         time.sleep(_SETTLE_POLL)
@@ -2217,7 +2220,7 @@ def run_flow_execution(pa: PendingAction, user) -> str:
 
         live_user = get_user_model().objects.select_for_update().filter(pk=user.pk).first()
         if live_user is None or not live_user.is_active:
-            _clear_actions(live.msisdn)
+            live.delete()
             return Outcome("Your Zitch account is currently suspended. Please contact support.",
                            OUTCOME_FAILED)
 
@@ -2232,10 +2235,12 @@ def run_flow_execution(pa: PendingAction, user) -> str:
         "electricity": _exec_electricity, "cable": _exec_cable, "convert": _exec_convert,
         "exam": _exec_exam,
         "unlock": _exec_unlock,
+        "savings_create": savings_loans.execute_product,
+        "loan_repay": savings_loans.execute_product,
     }
     fn = executors.get(pa.action_type)
     if fn is None:
-        _clear_actions(pa.msisdn)
+        PendingAction.objects.filter(pk=pa.pk).delete()
         return Outcome("Sorry, this action can't be completed here. Please try again in the chat.",
                        OUTCOME_FAILED)
     outcome = fn(pa, user, pa.msisdn) or "Done ✅"
@@ -2253,4 +2258,7 @@ def run_flow_execution(pa: PendingAction, user) -> str:
         from .flows import remember_settled
 
         remember_settled(pa, str(outcome))
+    # Only the executor may retire an authorised action. Chat cancel/menu cannot
+    # erase a queued payment or misreport cancellation after PIN confirmation.
+    PendingAction.objects.filter(pk=pa.pk, user_id=user.pk).delete()
     return outcome

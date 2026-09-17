@@ -104,6 +104,27 @@ class ReconcileBalancesTests(TestCase):
         alert_mock.assert_not_called()
         self.assertEqual(code, 0)
 
+    def test_fail_over_fails_when_all_bank_reads_are_unreachable(self):
+        with mock.patch("utility.wema.get_balance",
+                        return_value={"success": False, "message": "unreachable"}):
+            out, _err, _alert, code = self._run("--fail-over")
+        self.assertIn("1 unreachable", out)
+        self.assertEqual(code, 1)
+
+    def test_fail_nonzero_fails_when_any_bank_read_is_unreachable(self):
+        other_user, _ = make_user("08033330002", "rb2@zitch.app", balance="2000")
+        _provision(other_user, account_number="0123456790")
+
+        def balance_for(account_number):
+            if account_number == "0123456789":
+                return _bank("5000")
+            return {"success": False, "message": "unreachable"}
+
+        with mock.patch("utility.wema.get_balance", side_effect=balance_for):
+            out, _err, _alert, code = self._run("--fail-nonzero")
+        self.assertIn("1 unreachable", out)
+        self.assertEqual(code, 1)
+
     def test_tolerance_absorbs_small_delta(self):
         with mock.patch("utility.wema.get_balance", return_value=_bank("4999.50")):
             out, _err, alert_mock, code = self._run("--tolerance=1.00", "--fail-nonzero")

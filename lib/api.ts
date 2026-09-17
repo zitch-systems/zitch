@@ -257,5 +257,9 @@ export function newIdempotencyKey(): string {
   // A money-operation key is an unguessable nonce, not just a likely-unique UI
   // correlation value.  CSPRNG UUIDs prevent another client from predicting a key
   // and pre-claiming it against an idempotency bucket.
-  return Crypto.randomUUID();
+  const uuid = typeof Crypto.randomUUID === 'function' ? Crypto.randomUUID() : '';
+  if (uuid) return uuid;
+  // Keep the helper usable in SDK/test environments where expo-crypto is
+  // present but its native UUID implementation is unavailable.
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }

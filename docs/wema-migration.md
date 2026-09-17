@@ -105,19 +105,19 @@ The ALAT OpenAPI bundle let us fix code that had been built on guessed shapes:
 |-----------|--------|
 | Recipient name enquiry | **live-capable** |
 | Bank payout (transfer out) | **wired**; production requires `securityInfo` to match the callback (see below) |
-| Payout settlement (no webhook) | polled by `reconcile_wema` (Phase 2) |
+| Payout settlement | authenticated callbacks/requery plus `reconcile_wema` (Phase 2) safety net |
 | Wallet funding account (NUBAN) | **wired** — BVN→OTP→NUBAN, app drives it in `addmoney.tsx` |
-| Inbound deposit crediting (no webhook) | polled by `reconcile_wema` (Phase 1); **only settled (Successfull) credit rows** |
+| Inbound deposit crediting | notification-triggered history verification plus `reconcile_wema` (Phase 1); only confirmed credit rows |
 | New-NUBAN PND lift | **wired** — `lift_debit_restriction` after provisioning (so the account can be debited) |
 | KYC — BVN / NIN | **wired via provisioning** — the account-creation OTP flow verifies + name-matches; no standalone lookup |
-| VAS — **airtime** | **wired** (live once VAS keys are set; debits user NUBAN) |
+| VAS — **airtime** | wired using this tenant’s approved wallet subscription fallback; debits user NUBAN |
 | VAS — **data / cable** | **wired, gated per-plan** on a synced `wema_code` (else refused) |
 | VAS — electricity / betting | **wired, gated per-service** on a `WemaBiller` row (else refused) |
 | VAS — settlement of a `PROCESSING` buy | **blocked on `WEMA_VAS_STATUS_LEGEND` / `WEMA_BILLS_STATUS_LEGEND`** — until set, purchases of that product are REFUSED up front (see below) |
 | VAS — **Remita RRR** | **wired** — `validate_rrr` + `payremita` debit the user NUBAN (pending stays for manual recon) |
 | Virtual cards | **wired to real card-management** (NUBAN-keyed issue/reveal/block); no reversible freeze/top-up |
 | NIP transfer charges | **wired** — `payout_charge` + `/api/transfers/charge/` (informational; debit unchanged) |
-| Account tier upgrade | **tier 3 synced** on address verify (bank-side limits); tier 2 needs BVN/NIN we don't retain |
+| Account tier upgrade | Tier 2 submits BVN, NIN and provider-verified live image together without retaining raw IDs; Tier 3 submits structured address after confirmed Tier 2 |
 | BNPL | **offers wired** (read-only `/api/loans/bnpl/offers/`); consent→disburse gated on product sign-off |
 | Fund from partner-bank account | **removed** — Pay-with-Bank required the customer to bank with the provider and named it in-app |
 | NUBAN bank statement | **wired** — `/api/wallet/statement/` over transhistoryV2 |
@@ -189,8 +189,8 @@ Set these in the host (never in source). Boolean-only status is visible at `/hea
 - `WEMA_CARD_KEY` — **Virtual Naira Card** subscription. Required for all card calls;
   Wallet Services is not a fallback. `WEMA_CARD_PRODUCT_KEY` is the separate `cardKey`
   product id required for issuance.
-- `WEMA_AIRTIME_KEY` — **Airtime and Data API** subscription. Without it, airtime and
-  data fail closed in production (there is no other rail).
+- `WEMA_AIRTIME_KEY` — optional dedicated override. This tenant’s approved wallet
+  subscription is used for airtime/data when the override is blank.
 - `WEMA_BILLS_KEY` — optional override; Bills Payment is covered by Wallet Services.
 - `WEMA_UPGRADE_KEY` — **Account Upgrade API** subscription used for tier/status sync.
 - `WEMA_REMITA_KEY` — **Remita Payment** subscription; no wallet-key fallback.
@@ -436,7 +436,7 @@ canned "use the bank's own app" message with no tracking id.)
 | Account Creation (`requestType 2`) | `/webhooks/wema/account/<token>` | provisions the NUBAN idempotently; does **not** lift KYC tier |
 | Authentication | `/webhooks/wema/authorize/<token>` | the bank asks whether a payout may proceed; we answer `{transactionReference, authorized}` |
 | Transaction (`requestType 3`) | `/webhooks/wema/transaction/<token>` | settles/refunds by **re-querying**, never from the payload |
-| Transaction Notification (prod) | `/webhooks/wema/notification/<token>` | recorded only; payload undocumented |
+| Transaction Notification | `/webhooks/wema/notification/<token>` | authenticated notification triggers bank-history verification; acknowledges with the documented OK response, never credits solely from caller-supplied amount |
 
 **Security.** ALAT signs nothing, so the endpoints stack a secret in the URL path
 (`WEMA_CALLBACK_TOKEN`) and a source-IP allowlist against the egress addresses below

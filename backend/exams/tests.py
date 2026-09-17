@@ -30,14 +30,17 @@ class ExamTests(TestCase):
         self.assertEqual(body["exams"][0]["code"], "waec")
         self.assertEqual(body["exams"][0]["price"], "3500.00")
 
-    def test_buy_debits_price_times_quantity(self):
+    def test_unmapped_exam_is_refused_without_debit(self):
         res, body = self.post("/api/exams/buy/", {
             "access_token": self.token, "exam": "waec", "quantity": 2,
             "phone": "08040000001", "transaction_pin": "1234",
         })
-        self.assertEqual(res.status_code, 200)
-        self.assertTrue(body["success"])
-        self.assertEqual(self.balance(), Decimal("3000"))  # 10000 - 2*3500
+        # The retired VTU rail is gone and Wema has no exam-PIN route. The
+        # provider contract refuses the unmapped service and the debit is
+        # refunded by run_provider_purchase.
+        self.assertEqual(res.status_code, 502)
+        self.assertFalse(body.get("success"))
+        self.assertEqual(self.balance(), Decimal("10000"))
 
     def test_buy_rejects_wrong_pin(self):
         res, _ = self.post("/api/exams/buy/", {
@@ -62,15 +65,14 @@ class ExamTests(TestCase):
         })
         self.assertEqual(res.status_code, 404)
 
-    def test_buy_idempotent(self):
+    def test_refused_exam_retry_does_not_charge_twice(self):
         payload = {
             "access_token": self.token, "exam": "waec", "quantity": 1,
             "phone": "08040000001", "transaction_pin": "1234", "idempotency_key": "exam-key-1",
         }
         res1, _ = self.post("/api/exams/buy/", payload)
         res2, body2 = self.post("/api/exams/buy/", payload)
-        self.assertEqual(res1.status_code, 200)
-        self.assertEqual(res2.status_code, 200)
-        self.assertTrue(body2.get("duplicate"))
-        # Debited exactly once despite the retry (10000 - 3500).
-        self.assertEqual(self.balance(), Decimal("6500"))
+        self.assertEqual(res1.status_code, 502)
+        self.assertEqual(res2.status_code, 409)
+        self.assertEqual(body2.get("code"), "duplicate")
+        self.assertEqual(self.balance(), Decimal("10000"))
