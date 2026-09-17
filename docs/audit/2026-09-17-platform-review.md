@@ -1,5 +1,7 @@
 # Zitch platform review — 17 September 2026
 
+**Live follow-up:** see [the subsequent Render audit](2026-09-17-live-followup.md). It confirms that production still routes to Oregon, the Frankfurt copy has diverged, and the Frankfurt worker is not staying running. The pre-release observations below must not be interpreted as completed migration verification.
+
 This is a code and evidence review, not a certification that every live service or financial balance is correct. Work starts from main `d2f5e393f7125bb1f13b8a56e458091b9eeca823`. The preceding three-week history contains 422 commits; related current implementations and regression suites were checked, not every historical commit replayed in production.
 
 ## Changes and evidence
@@ -64,7 +66,7 @@ The screenshots show successful airtime and transfer notifications and an older 
 
 Do not repeat the database migration or delete an API/database on the basis of its name. Service IDs, region, domain routes, active traffic and database connections must establish which service is authoritative.
 
-1. Confirm the Render workspace `My Workspace` (`tea-d8entvernols73agg0rg`) for the connector. Its selection operation explicitly requires the user's confirmation. Until selected, no live Render health/cron/database audit is certified.
+1. The user confirmed Render workspace `My Workspace` (`tea-d8entvernols73agg0rg`). The subsequent live audit is recorded in [the follow-up](2026-09-17-live-followup.md); the connector's SQL access remains unavailable.
 2. Inventory actual Frankfurt API, worker, cache, Postgres and cron IDs. Confirm API domain and Meta Flow endpoint route to the intended API. Check the database host and Redis host on each process without exposing their credentials.
 3. Confirm the migration job cannot run again. Retain the Oregon database until reconciliation and rollback requirements are satisfied; do not run an overwrite merely because a prior approval exists.
 4. Confirm `DJANGO_SECRET_KEY`, `DJANGO_KYC_HASH_KEY`, `DJANGO_OTP_HASH_KEY`, queue encryption keys and any MFA encryption keys match the established production values. Do not generate replacement identity hash keys after a restore.
@@ -96,8 +98,8 @@ Temi's recorded face callback allowlist confirmation names `https://zitch-api-zx
 
 The read-only Meta connector confirmed published Flow `1781880196163772`, 25 reachable screens, no validation errors, and endpoint `https://api.zitch.ng/webhooks/whatsapp/flow`. The current published name is “Zitch payment PIN 2”. Existing screen IDs support the new email-code/PIN sign-in without adding routes.
 
-Neutral titles in the repository require a new Meta Flow publication. The connector advertises creation tools, but the attempted new draft returned `Tool create_whatsapp_flow not found`. No draft was created and no publication was completed. Fix/update the connector deployment or publish the reviewed JSON through WhatsApp Manager, validate it, then update the runtime Flow ID. Existing published Flows cannot be edited in place.
+Neutral titles in the repository require a new Meta Flow publication. The attempted new draft returned `Tool create_whatsapp_flow not found`. The subsequent audit confirmed that the connector intentionally exposes only read operations (`readOnly: true`); a redeploy alone does not enable writes. No draft was created and no publication was completed. Use deliberately authorized configuration access or publish the reviewed JSON through WhatsApp Manager, validate it, then update the runtime Flow ID. Existing published Flows cannot be edited in place.
 
-Tier 2 browser liveness is not complete. The bank-hosted Tier 1 identity face page is not a substitute for the documented combined Tier 2 identity/live-image check. The code does not fabricate liveness or mark a pending upgrade successful. All activities cannot yet be described as WhatsApp-only: loan repayment and savings creation/management still have app-only routes. Disabled signup or missing secure confirmation services also prevent completion in WhatsApp; their security gates must not be bypassed. These remain product work, not a completed migration item.
+Tier 2 browser liveness is not complete. The bank-hosted Tier 1 identity face page is not a substitute for the documented combined Tier 2 identity/live-image check. The code does not fabricate liveness or mark a pending upgrade successful. The follow-up adds secure WhatsApp Fixed Save creation/management and existing-loan repayment using the same ledger services as the app. New borrowing and unsupported product changes are not added. All activities cannot yet be described as WhatsApp-only: browser Tier 2 liveness remains a gap. Disabled signup or missing secure confirmation services also prevent completion in WhatsApp; their security gates must not be bypassed.
 
 Native app code changes are not delivered to installed devices merely by deploying Django. The Android workflow must build the new revision; an installable test APK is distinct from a production-signed store release. Live handset verification remains necessary for camera permissions, bank-hosted face completion, OTP receipt, address submission and WhatsApp handoffs.

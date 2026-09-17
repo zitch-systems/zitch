@@ -3,7 +3,7 @@
 const mockApiJson = jest.fn();
 jest.mock('@/lib/api', () => ({ apiJson: (...args: any[]) => mockApiJson(...args) }));
 
-import { classifyKycResponse, kycService } from '@/lib/services/kyc';
+import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute } from '@/lib/services/kyc';
 import { walletService } from '@/lib/services/wallet';
 import { transfersService } from '@/lib/services/transfers';
 import { EP } from '@/lib/endpoints';
@@ -55,6 +55,20 @@ describe('kycService', () => {
     expect(classifyKycResponse({ success: true, bvn_verified: true }, ['bvn_verified'])).toBe('success');
     expect(classifyKycResponse({ success: true })).toBe('success');
     expect(classifyKycResponse({ success: false, identity_review_required: false })).toBe('error');
+  });
+  it('routes face-start account OTP to the server-selected identity tracking flow', () => {
+    const response = {
+      success: true,
+      status: 'account_otp_pending',
+      account_setup_state: 'otp_pending' as const,
+      tracking_id: 'nin-track-1',
+      using_bvn: false,
+      otp_destination_kind: 'nin',
+    };
+    expect(isAccountOtpPending(response)).toBe(true);
+    expect(resolveIdentityOtpRoute(response, 'bvn')).toEqual({ kind: 'nin', trackingId: 'nin-track-1' });
+    expect(resolveIdentityOtpRoute({ ...response, tracking_id: '' }, 'bvn')).toBeNull();
+    expect(resolveIdentityOtpRoute({ ...response, status: 'verified' }, 'bvn')).toBeNull();
   });
   it('verifyNin posts nin + image', async () => {
     await kycService.verifyNin('11111111111', 'b64');

@@ -5,7 +5,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import { walletService } from '@/lib/services/wallet';
-import { kycService } from '@/lib/services/kyc';
+import { isAccountOtpPending, kycService, resolveIdentityOtpRoute } from '@/lib/services/kyc';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Btn, Field } from '@/components/design/ui';
@@ -99,6 +99,33 @@ const AddMoney = () => {
     setCreating(true);
     try {
       const started = await kycService.startIdentityFace({ bvn });
+      const otpRoute = resolveIdentityOtpRoute(started, 'bvn');
+      if (otpRoute) {
+        if (otpRoute.kind === 'nin') {
+          // This screen owns a BVN field and its confirm/resend actions are
+          // consequently BVN-scoped. Never put a NIN tracking reference into
+          // that form; let KYC resume the server-selected identity route.
+          router.push({
+            pathname: '/kyc',
+            params: {
+              pending_identity: 'nin',
+              pending_tracking_id: otpRoute.trackingId,
+              pending_otp_destination: started.delivery || started.otp_destination || '',
+            },
+          });
+          return;
+        }
+        // A face request may hand back the existing bank OTP attempt. Keep its
+        // tracking reference on the SMS form instead of calling it a face outage.
+        setTrackingId(otpRoute.trackingId);
+        setOtp('');
+        notify('SMS verification required', started.message || 'Enter the bank code sent to the phone registered on your BVN.', 'info');
+        return;
+      }
+      if (isAccountOtpPending(started)) {
+        notify('SMS verification pending', started.message || 'Your bank verification is waiting for an SMS code. Please start the verification again.', 'info');
+        return;
+      }
       if (!started.success || !started.url || !started.session) {
         notify('Face verification unavailable', started.message || 'Please use the SMS code.');
         return;

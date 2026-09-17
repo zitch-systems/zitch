@@ -12,7 +12,8 @@ from accounts.models import (AccessToken, IdentityProof, User, hash_identifier,
                              record_identity_proof, rehydrate_verified_identity_flags)
 from accounts.views import verify_kyc_address
 from utility import wema
-from utility.providers import kyc_verify_address, kyc_verify_face, kyc_verify_id_document
+from utility.providers import (kyc_verify_address, kyc_verify_face,
+                               kyc_verify_id_document, kyc_verify_nin_document)
 from wallet.models import WemaFaceSession, WemaProvisioningAttempt
 from wallet.services import get_or_create_wallet
 from wallet.views import upgrade_wema_identity
@@ -228,6 +229,19 @@ class BankUpgradeContractsTests(TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertTrue(response.json()["upgrade_required"])
         bank.assert_not_called()
+
+    def test_invalid_or_truncated_address_never_reaches_provider(self):
+        for data in ({"address": "A" * 256}, {"street": "A" * 101},
+                     {"city": "Lagos\x00City"}, {"postalCode": "1" * 13},
+                     {"address": "Line one\nLine two"}):
+            with self.subTest(data=data), patch("utility.wema.upgrade_tier3") as bank, \
+                    patch("accounts.views.kyc_verify_address") as document:
+                response = self.post_address(**data)
+                self.assertEqual(response.status_code, 400)
+                bank.assert_not_called()
+                document.assert_not_called()
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.address_verified)
 
     def test_structured_address_reaches_bank_and_both_tiers_update_on_completion(self):
         address = {"buildingNumber": "12", "apartment": "2B", "street": "Allen Avenue",
@@ -510,6 +524,13 @@ class ProviderLivenessContractTests(SimpleTestCase):
     def test_face_match_alone_cannot_prove_liveness(self):
         self.assertFalse(self.check({"status": True, "data": {"face_match": True}})["success"])
 
+    def test_liveness_true_cannot_override_failed_or_pending_envelope(self):
+        for detail in ({"failed": True}, {"pending": "true"}, {"status": "Pending"},
+                       {"verification": {"status": "Rejected"}}, {"errors": ["unverified"]}):
+            with self.subTest(detail=detail):
+                self.assertFalse(self.check({"status": True,
+                                            "data": {"liveness": True, **detail}})["success"])
+
     def test_truthy_top_level_status_cannot_pass(self):
         for value in (False, "false", "true", 0, 1, None, {"status": True}):
             with self.subTest(value=value):
@@ -552,7 +573,8 @@ class ProviderDocumentEnvelopeTests(SimpleTestCase):
 
     def checks(self):
         return ((kyc_verify_address, ("12 Allen Avenue", "ZmFrZQ==")),
-                (kyc_verify_id_document, ("ZmFrZQ==", "passport")))
+                (kyc_verify_id_document, ("ZmFrZQ==", "passport")),
+                (kyc_verify_nin_document, ("ZmFrZQ==",)))
 
     def assert_envelope(self, envelope, status=200, *, success=False):
         for verify, args in self.checks():
@@ -607,6 +629,7 @@ class ProviderDocumentEnvelopeTests(SimpleTestCase):
             for value in (None, {}, [], 1, "", " "):
                 self.assertFalse(kyc_verify_address(value)["success"])
                 self.assertFalse(kyc_verify_id_document(value)["success"])
+                self.assertFalse(kyc_verify_nin_document(value)["success"])
             self.assertFalse(kyc_verify_address("12 Allen Avenue", document={})["success"])
             self.assertFalse(kyc_verify_id_document("ZmFrZQ==", doc_type={})["success"])
             post.assert_not_called()

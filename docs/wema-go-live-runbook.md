@@ -1,8 +1,13 @@
 # Wema / ALAT go-live runbook
 
-The exact, ordered procedure to take Zitch from **sandbox/mock** to **live money**
-on the Wema/ALAT rail. It is deliberately mechanical: the code is already
-fail-closed, so going live is a config + verification exercise, not a code change.
+The ordered checks for taking Zitch from **sandbox/mock** to **live money**
+on the Wema/ALAT rail. A passing preflight checks configuration; it does not
+certify provider delivery, financial reconciliation, or a completed migration.
+
+> **17 September 2026 live audit:** production still routes to Oregon and the
+> Frankfurt ledger is behind. Follow the [final-sync and cutover procedure](audit/2026-09-17-live-followup.md)
+> before changing routing or enabling Frankfurt money consumers. Do not purge,
+> overwrite, or adjust real customer data merely to make a health check pass.
 
 > **One-line status check any time:** `python manage.py wema_preflight`
 > (add `--strict` to also gate on the non-money rails). It exits non-zero until

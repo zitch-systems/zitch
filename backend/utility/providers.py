@@ -672,7 +672,7 @@ def kyc_verify_nin_document(image: str) -> dict:
     the Prembly dashboard before relying on this."""
     if not _prembly_live():
         return _kyc_mock_or_unavailable()
-    if not image:
+    if not isinstance(image, str) or not image.strip() or len(image) > 2_800_000:
         return {"success": False, "message": "Upload your NIN slip to continue"}
     try:
         resp = requests.post(
@@ -681,9 +681,9 @@ def kyc_verify_nin_document(image: str) -> dict:
             headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
         )
         data = resp.json()
-        return {"success": bool(data.get("status")), "raw": data}
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+        return {"success": _kyc_document_response_passed(data, resp.status_code), "raw": data}
+    except (requests.RequestException, ValueError):
+        return {"success": False, "message": "Document verification is temporarily unavailable. Please try again later."}
 
 
 def kyc_verify_face(selfie: str = "") -> dict:
@@ -707,8 +707,7 @@ def kyc_verify_face(selfie: str = "") -> dict:
         )
         data = resp.json()
         detail = data.get("data") if isinstance(data, dict) else None
-        passed = (200 <= resp.status_code < 300 and resp.status_code != 202
-                  and isinstance(data, dict) and data.get("status") is True
+        passed = (_kyc_document_response_passed(data, resp.status_code)
                   and isinstance(detail, dict) and detail.get("liveness") is True
                   and data.get("pending") is not True and detail.get("pending") is not True)
         return {"success": passed, "raw": data,

@@ -65,6 +65,7 @@ from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN, FLOW_EMAIL_CODE_STAT
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
 from .providers import (flows_live, send_buttons, send_cta_url, send_flow, send_image,
                         send_list, send_template, send_text)
+from . import savings_loans
 
 User = get_user_model()
 log = logging.getLogger("whatsapp")
@@ -174,7 +175,9 @@ MENU_BODY = (
     "9️⃣  🧾 Transaction history\n"
     "🔟  🎓 Exam PIN\n"
     "1️⃣1️⃣  📷 Scan a QR code\n"
-    "1️⃣2️⃣  ⭐ My saved people\n\n"
+    "1️⃣2️⃣  ⭐ My saved people\n"
+    "1️⃣3️⃣  🏦 Savings\n"
+    "1️⃣4️⃣  💳 My loan / repayment\n\n"
     # "just type it" was a promise the channel could not keep: free-form routing
     # needs the customer's own AI consent, which defaults off and which nobody
     # guesses the phrase for. Name the phrase where the promise is made.
@@ -500,6 +503,9 @@ def _flow_summary(pa: PendingAction) -> str:
                     f" · {_money(Decimal(p['amount']))}")
         if at == "convert":
             return "Confirm your currency conversion"
+        if at in ("savings_create", "loan_repay"):
+            fields = savings_loans.confirmation_fields(pa)
+            return f"{fields['recipient']} · {fields['amount']}\n{fields['details']}"
         if at == "unlock":
             # Not a payment, and the one confirm that arrives unprompted - so the
             # card has to say WHY it appeared. It used to rely on a chat line
@@ -623,6 +629,8 @@ def _flow_fields(pa: PendingAction) -> dict:
                 "narration": f"Note: {note}" if note else ""}
 
     try:
+        if at in ("savings_create", "loan_repay"):
+            return _with_context(savings_loans.confirmation_fields(pa))
         if at == "transfer":
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
@@ -703,6 +711,9 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     if pa.action_type == "unlock":
         body = "Enter your existing PIN privately to continue using your account here."
         cta = "Verify identity"
+    elif pa.action_type in ("savings_create", "loan_repay"):
+        body = f"{summary}\n{fields.get('balance', '')}"
+        cta = "Confirm with PIN"
     elif _has_app_session(user):
         body = f"{summary}\n{fields.get('balance', '')}\n\n{_approve_link_line(pa, primary=True)}"
         cta = "Use PIN instead"
@@ -1483,11 +1494,29 @@ def handle_inbound(msisdn: str, text: str) -> None:
     # A statement is the one history request that explicitly wants the FILE.
     if low in ("statement", "download statement", "bank statement", "account statement", "pdf"):
         return _do_history(user, msisdn, as_document=True)
-    if low in ("loan", "my loan", "loan balance", "my loan balance", "loans"):
+    if low in ("14", "loan", "my loan", "loan balance", "my loan balance", "loans"):
         return _do_loan_balance(user, msisdn)
-    if low in ("savings", "my savings", "savings balance", "my savings balance",
-               "fixed save", "my fixed save"):
+    if low in ("repay loan", "loan repayment", "repay my loan", "pay loan", "pay my loan"):
+        return savings_loans.start_repayment(user, msisdn)
+    if low in ("13", "savings", "my savings", "savings balance", "my savings balance",
+               "fixed save", "my fixed save", "manage savings"):
         return _do_savings_balance(user, msisdn)
+    if low in ("new savings", "create savings", "start savings", "new fixed save", "create fixed save"):
+        return savings_loans.start_savings(user, msisdn)
+    if low in ("savings rates", "savings terms"):
+        return savings_loans.show_rates(msisdn)
+    if low == "savings history":
+        return savings_loans.show_savings(user, msisdn, history=True)
+    saving_page = re.fullmatch(r"savings (page|history|plan) ([1-9]\d{0,8})", low)
+    if saving_page:
+        kind, number = saving_page[1], int(saving_page[2])
+        if kind == "plan":
+            return savings_loans.show_plan(user, msisdn, number)
+        return savings_loans.show_savings(user, msisdn, page=number, history=kind == "history")
+    if low in ("withdraw savings", "cancel savings", "top up savings", "change savings"):
+        return reply(msisdn, "Fixed Save plans cannot be withdrawn early, topped up or changed. "
+                     "Matured plans pay into your wallet automatically. Reply savings to check your plans "
+                     "or new savings to create a separate plan.")
     if low in ("reset pin", "change pin", "forgot pin", "new pin", "set pin", "pin"):
         return _start_pin_reset(user, msisdn)
     if low in ("8", "verify", "verify me", "verify identity", "kyc", "upgrade", "limits"):
@@ -1566,6 +1595,10 @@ _SENSITIVE_READS = {
     # strictly more than the account details already behind this gate.
     "12", "beneficiaries", "beneficiary", "saved", "saved people",
     "my people", "payees", "my saved people",
+    "13", "savings", "my savings", "savings balance", "my savings balance",
+    "fixed save", "my fixed save", "manage savings", "savings history",
+    "14", "loan", "my loan", "loan balance", "my loan balance", "loans",
+    "repay loan", "loan repayment", "repay my loan", "pay loan", "pay my loan",
 }
 _REAUTH_SETTING = "wa_reauth_idle_minutes"
 
@@ -1585,7 +1618,8 @@ def _is_sensitive_read(low: str) -> bool:
     # recipient's name, so they are gated like any other read of the address
     # book. _send_unlock replays the original text afterwards, and these ids
     # are well inside the length it can carry.
-    return low.strip() in _SENSITIVE_READS or low.startswith(("bene:save:", "bene:no:"))
+    return low.strip() in _SENSITIVE_READS or low.startswith((
+        "bene:save:", "bene:no:", "savings page ", "savings history ", "savings plan "))
 
 
 def _needs_reauth(convo: ConversationState) -> bool:
@@ -2660,64 +2694,13 @@ def _do_report_problem(user, msisdn: str, *, amount=None, days_ago=None, kind=No
 
 
 def _do_loan_balance(user, msisdn: str) -> None:
-    """What they owe, or what they could borrow - read from the loans ledger.
-
-    Exists because the assistant answered "how much is my loan balance" with
-    "Zitch doesn't offer loans", to a customer of a company that has a loans
-    product, a loans screen in the app and a /api/loans/ endpoint. A tool that
-    reads the real row is the only honest fix; a prompt asking the model to be
-    more careful would still be the model guessing.
-    """
-    from loans.models import Loan
-    from loans.services import credit_limit
-
-    active = user.loans.filter(status=Loan.ACTIVE).first()
-    if active is None:
-        try:
-            available = credit_limit(user)
-        except Exception:  # noqa: BLE001 - never fail a read on a limit calculation
-            log.exception("could not read the credit limit for %s", mask_pii(msisdn))
-            available = None
-        line = "💳 You don't have an active Zitch loan right now."
-        if available and available > 0:
-            line += f"\n\nYou could borrow up to {_money(available)}."
-        return reply(msisdn, line + "\n\nManage loans in the Zitch app: "
-                     + (_links().get("APP") or "https://zitch.ng/app"))
-    overdue = active.due_date < timezone.now()
-    return reply(
-        msisdn,
-        f"💳 *Your Zitch loan*\n\n"
-        f"Outstanding: {_money(active.outstanding)}\n"
-        f"Borrowed: {_money(active.principal)} · repaid {_money(active.amount_repaid)}\n"
-        f"Due: {timezone.localtime(active.due_date):%d %b %Y}{' - *overdue*' if overdue else ''}\n"
-        f"🔖 Ref {active.reference}\n\n"
-        "Repay in the Zitch app: " + (_links().get("APP") or "https://zitch.ng/app"))
+    """Read the owned loan and offer the existing ledger's secure repayment."""
+    return savings_loans.show_loan(user, msisdn)
 
 
 def _do_savings_balance(user, msisdn: str) -> None:
-    """What they have locked away and when it matures."""
-    from savings.models import FixedSave
-    from savings.services import settle_user_maturities
-
-    try:
-        # Anything that matured since their last visit is paid out first, so the
-        # number quoted here is the number their wallet agrees with.
-        settle_user_maturities(user)
-    except Exception:  # noqa: BLE001 - a stale total beats no answer
-        log.exception("could not settle maturities for %s", mask_pii(msisdn))
-    plans = list(user.savings.filter(status=FixedSave.ACTIVE).order_by("matures_at"))
-    if not plans:
-        return reply(msisdn, "🏦 You don't have any active Zitch savings right now.\n\n"
-                             "Start a Fixed Save in the Zitch app: "
-                     + (_links().get("APP") or "https://zitch.ng/app"))
-    total = sum((p.principal for p in plans), Decimal("0"))
-    lines = [f"• {_money(p.principal)} - matures {timezone.localtime(p.matures_at):%d %b %Y}" for p in plans[:5]]
-    more = f"\n...and {len(plans) - 5} more" if len(plans) > 5 else ""
-    return reply(msisdn, f"🏦 *Your Zitch savings*\n\nLocked: {_money(total)} "
-                         f"across {len(plans)} plan{'s' if len(plans) != 1 else ''}\n\n"
-                 + "\n".join(lines) + more
-                 + "\n\nManage them in the Zitch app: "
-                 + (_links().get("APP") or "https://zitch.ng/app"))
+    """Paginated plans, maturity payouts and creation without an app handoff."""
+    return savings_loans.show_savings(user, msisdn)
 
 
 def _do_support(msisdn: str) -> None:
@@ -4768,6 +4751,8 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "qr": _advance_qr,
         "beneficiary": _advance_beneficiary,
         "unlock": _advance_unlock,
+        "savings_create": savings_loans.advance_product,
+        "loan_repay": savings_loans.advance_product,
     }.get(pa.action_type)
     if handler is None:
         _clear_actions(msisdn)

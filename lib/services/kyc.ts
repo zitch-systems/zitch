@@ -18,6 +18,7 @@ export type KycStatus = ApiResult<{
   otp_destination?: string;
   otp_destination_kind?: string;
   using_bvn?: boolean;
+  account_setup_state?: 'ready' | 'otp_pending' | 'processing' | 'identity_verified' | 'identity_required';
   upgrade_required?: boolean;
   next_step?: string;
   address_verified?: boolean;
@@ -52,6 +53,30 @@ export type ResidentialAddress = {
 
 export type KycVerificationFlag = 'bvn_verified' | 'nin_verified' | 'face_verified' | 'address_verified';
 export type KycResponseKind = 'pending' | 'review' | 'unverified' | 'success' | 'error';
+export type IdentityOtpKind = 'bvn' | 'nin';
+
+export const isAccountOtpPending = (response: Pick<KycStatus, 'status' | 'account_setup_state'>): boolean =>
+  typeof response.status === 'string'
+    ? response.status === 'account_otp_pending'
+    : response.account_setup_state === 'otp_pending';
+
+/**
+ * Resolve the bank OTP continuation returned by face-start. The tracking
+ * reference belongs to the identity named by the server, so it takes
+ * precedence over the screen that initiated the face request.
+ */
+export const resolveIdentityOtpRoute = (
+  response: Pick<KycStatus, 'status' | 'account_setup_state' | 'tracking_id' | 'using_bvn' | 'otp_destination_kind'>,
+  fallbackKind: IdentityOtpKind,
+): { kind: IdentityOtpKind; trackingId: string } | null => {
+  if (!isAccountOtpPending(response) || !response.tracking_id) return null;
+  const kind = response.using_bvn === true || response.otp_destination_kind === 'bvn'
+    ? 'bvn'
+    : response.using_bvn === false || response.otp_destination_kind === 'nin'
+      ? 'nin'
+      : fallbackKind;
+  return { kind, trackingId: String(response.tracking_id) };
+};
 
 export const classifyKycResponse = (response: {
   success?: boolean;

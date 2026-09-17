@@ -1816,6 +1816,9 @@ def verify_kyc_address(user, data):
     fields = ("buildingNumber", "apartment", "street", "city", "town", "state", "lga",
               "lcda", "landmark", "additionalInformation", "country", "fullAddress", "postalCode")
     source = supplied if isinstance(supplied, dict) else {}
+    limits = {"buildingNumber": 24, "apartment": 24, "street": 100, "city": 60,
+              "town": 60, "state": 60, "lga": 60, "lcda": 60, "landmark": 100,
+              "additionalInformation": 255, "country": 60, "fullAddress": 255, "postalCode": 12}
     address_fields = {}
     for field in fields:
         snake = re.sub(r"(?<!^)(?=[A-Z])", "_", field).lower()
@@ -1823,7 +1826,10 @@ def verify_kyc_address(user, data):
                     data.get(field, data.get(snake, ""))))
         if not isinstance(value, str):
             return fail(f"Enter a valid {snake.replace('_', ' ')}")
-        address_fields[field] = value.strip()
+        value = value.strip()
+        if len(value) > limits[field] or any(ord(char) < 32 for char in value):
+            return fail(f"Enter a valid {snake.replace('_', ' ')} within {limits[field]} characters")
+        address_fields[field] = value
     if not address_fields["fullAddress"]:
         street = supplied.strip() if isinstance(supplied, str) else " ".join(
             value for value in (address_fields["buildingNumber"], address_fields["street"]) if value)
@@ -1832,6 +1838,8 @@ def verify_kyc_address(user, data):
     full = address_fields["fullAddress"]
     if len(full) < 6:
         return fail("Enter your full residential address")
+    if len(full) > 255 or any(ord(char) < 32 for char in full):
+        return fail("Enter a full residential address of at most 255 characters")
     address_fields["country"] = address_fields["country"] or "Nigeria"
     document = data.get("document") or data.get("image") or ""
     bank_rail = kyc_provider() == "wema" and wema.address_verify_live()

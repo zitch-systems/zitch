@@ -1,13 +1,13 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Animated, Easing, Pressable } from 'react-native';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as WebBrowser from 'expo-web-browser';
 import Svg, { Circle } from 'react-native-svg';
 import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
-import { classifyKycResponse, kycService, type KycStatus, type KycVerificationFlag, type ResidentialAddress } from '@/lib/services/kyc';
+import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute, type KycStatus, type KycVerificationFlag, type ResidentialAddress } from '@/lib/services/kyc';
 import type { VirtualAccount } from '@/lib/services/wallet';
 import FaceLivenessModal from '@/components/design/FaceLivenessModal';
 import ZIcon from '@/components/design/ZIcon';
@@ -56,6 +56,11 @@ const cardShadow = {
 
 const Kyc = () => {
   const { c } = useTheme();
+  const params = useLocalSearchParams<{
+    pending_identity?: string;
+    pending_tracking_id?: string;
+    pending_otp_destination?: string;
+  }>();
   const [, setToken] = useState('');
   const [status, setStatus] = useState<Status | null>(null);
   const [method, setMethod] = useState<Method>('menu');
@@ -82,6 +87,32 @@ const Kyc = () => {
   const [upgradeCameraOpen, setUpgradeCameraOpen] = useState(false);
   const [scanning, setScanning] = useState(false); // camera guide animation running
   const spin = useRef(new Animated.Value(0)).current;
+
+  // Add-money can discover that the bank's pending attempt belongs to NIN
+  // rather than the BVN form that started face verification. Resume that exact
+  // server-owned attempt here so the confirmation and resend actions use the
+  // matching identity route.
+  useEffect(() => {
+    const identity = params.pending_identity === 'nin' || params.pending_identity === 'bvn'
+      ? params.pending_identity
+      : '';
+    const trackingId = params.pending_tracking_id || '';
+    if (!identity || !trackingId) return;
+    const destination = params.pending_otp_destination || '';
+    if (identity === 'bvn') {
+      setBvnTrackingId(trackingId);
+      setBvnOtpDestination(destination);
+      setBvnOtp('');
+      setBvnSent(true);
+      setMethod('bvn');
+    } else {
+      setNinTrackingId(trackingId);
+      setNinOtpDestination(destination);
+      setNinOtp('');
+      setNinSent(true);
+      setMethod('nin');
+    }
+  }, [params.pending_identity, params.pending_otp_destination, params.pending_tracking_id]);
 
   const load = useCallback(async (): Promise<Status | null> => {
     const t = await getToken();
@@ -228,6 +259,35 @@ const Kyc = () => {
     setBusy(true);
     try {
       const started = await kycService.startIdentityFace(identity);
+      const otpRoute = resolveIdentityOtpRoute(started, identity.bvn ? 'bvn' : 'nin');
+      if (otpRoute) {
+        // Face-start can return the existing bank OTP attempt instead of a URL.
+        // Keep the server's KYC flags and tracking reference, then continue in
+        // the matching confirmation screen so the bank owns the identity state.
+        setStatus((current) => current ? { ...current, ...started } : started);
+        if (otpRoute.kind === 'bvn') {
+          setBvnTrackingId(otpRoute.trackingId);
+          setBvnOtpDestination(started.delivery || started.otp_destination || '');
+          setBvnOtp('');
+          setBvnSent(true);
+          setMethod('bvn');
+        } else {
+          setNinTrackingId(otpRoute.trackingId);
+          setNinOtpDestination(started.delivery || started.otp_destination || '');
+          setNinOtp('');
+          setNinSent(true);
+          setMethod('nin');
+        }
+        notify('SMS verification required', started.message || 'Enter the bank code sent to the phone registered on your identity.', 'info');
+        return;
+      }
+      if (isAccountOtpPending(started)) {
+        // Do not label this as a face outage when the server says the account
+        // is waiting on SMS but did not provide a usable tracking reference.
+        setStatus((current) => current ? { ...current, ...started } : started);
+        notify('SMS verification pending', started.message || 'Your bank verification is waiting for an SMS code. Please start the verification again.', 'info');
+        return;
+      }
       if (started.pending) {
         notify('Verification processing', started.message || 'The verification service is still processing this request. Check your status again shortly.', 'info');
         return;

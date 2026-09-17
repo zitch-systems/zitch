@@ -2135,6 +2135,8 @@ _SETTLED_VERB = {
     "cable": "Subscription paid",
     "exam": "Exam PIN purchased",
     "convert": "Converted",
+    "savings_create": "Fixed Save created",
+    "loan_repay": "Loan repayment completed",
 }
 
 
@@ -2233,6 +2235,8 @@ def run_flow_execution(pa: PendingAction, user) -> str:
         "electricity": _exec_electricity, "cable": _exec_cable, "convert": _exec_convert,
         "exam": _exec_exam,
         "unlock": _exec_unlock,
+        "savings_create": savings_loans.execute_product,
+        "loan_repay": savings_loans.execute_product,
     }
     fn = executors.get(pa.action_type)
     if fn is None:
