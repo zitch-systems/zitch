@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Secure verification · Zitch</title>
+  <style nonce="{{ nonce }}">
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f4f6f2; color: #142621; font: 16px/1.5 system-ui, sans-serif; }
+    main { max-width: 520px; margin: 24px auto; padding: 28px 22px; background: #fff; border-radius: 20px; }
+    .brand { font-weight: 800; letter-spacing: -.04em; font-size: 26px; color: #14583d; }
+    .eyebrow { font-size: 13px; color: #52665c; }
+    h1 { font-size: 26px; line-height: 1.2; margin: 18px 0 12px; }
+    label { display: block; font-weight: 600; margin-top: 16px; }
+    input { width: 100%; border: 1px solid #8c9b93; border-radius: 10px; padding: 12px; margin-top: 6px; font: inherit; }
+    input:focus, button:focus { outline: 3px solid #acdfaa; outline-offset: 2px; }
+    button { width: 100%; min-height: 48px; border: 0; border-radius: 12px; padding: 14px; margin-top: 24px; background: #14583d; color: white; font: inherit; font-weight: 700; }
+    button:disabled { opacity: .6; }
+    .note { color: #52665c; font-size: 14px; }
+    .message { background: #fff5de; border-radius: 10px; padding: 14px; }
+    .privacy { border-top: 1px solid #e4e9e3; margin-top: 26px; padding-top: 16px; }
+    @media (max-width: 560px) { main { margin: 0; min-height: 100dvh; border-radius: 0; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="brand">zitch</div>
+  <p class="eyebrow">Secure verification · From WhatsApp</p>
+  {% if screen == 'pin' %}
+    <h1>Confirm it’s you</h1>
+    <p>Enter your transaction PIN to open this verification step. No app install is needed.</p>
+    {% if message %}<p class="message" role="alert">{{ message }}</p>{% endif %}
+    <form method="post" autocomplete="off">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="pin">
+      <label for="pin">Transaction PIN</label>
+      <input id="pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button type="submit" disabled>Continue securely</button>
+      <p class="note" id="progress" role="status" aria-live="polite"></p>
+    </form>
+    <p class="note">Forgot your PIN? Return to WhatsApp and send “reset pin”. Too many incorrect attempts lock your PIN across Zitch.</p>
+  {% elif screen == 'address' %}
+    <h1>Verify your address</h1>
+    {% if proof_required %}
+      <p>Enter your residential address and upload a clear utility bill or bank statement showing your name and address.</p>
+    {% else %}
+      <p>Enter your residential address for your bank to verify. No document upload is needed for this step.</p>
+    {% endif %}
+    <p class="note">This link expires at {{ expires_at|date:"H:i T" }}. Fields marked “optional” can be left blank.</p>
+    {% if message %}<p class="message" role="alert">{{ message }}</p>{% endif %}
+    <form method="post" enctype="multipart/form-data" autocomplete="off">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="address">
+      <label for="buildingNumber">Building number</label>
+      <input id="buildingNumber" name="buildingNumber" value="{{ values.buildingNumber }}" maxlength="24" required>
+      <label for="street">Street</label>
+      <input id="street" name="street" value="{{ values.street }}" maxlength="100" required>
+      <label for="city">City or town</label>
+      <input id="city" name="city" value="{{ values.city }}" maxlength="60" required>
+      <label for="state">State</label>
+      <input id="state" name="state" value="{{ values.state }}" maxlength="60" required>
+      <label for="lga">Local government area (LGA)</label>
+      <input id="lga" name="lga" value="{{ values.lga }}" maxlength="60" required>
+      <label for="landmark">Landmark <span class="note">(optional)</span></label>
+      <input id="landmark" name="landmark" value="{{ values.landmark }}" maxlength="100">
+      <label for="postalCode">Postal code <span class="note">(optional)</span></label>
+      <input id="postalCode" name="postalCode" value="{{ values.postalCode }}" inputmode="numeric" maxlength="12">
+      <p class="note">Country: Nigeria</p>
+      {% if proof_required %}
+        <label for="document">Proof-of-address photo</label>
+        <input id="document" name="document" type="file" accept="image/jpeg,image/png" aria-describedby="document-help" required>
+        <p class="note" id="document-help">JPEG or PNG, under 2 MB. Include the whole document with readable text. After an unsuccessful submission, choose the photo again.</p>
+      {% endif %}
+      <button type="submit" disabled>Submit address for verification</button>
+      <p class="note" id="progress" role="status" aria-live="polite"></p>
+    </form>
+  {% elif screen == 'unavailable' %}
+    <h1>One more verification step</h1>
+    <p class="message" role="status">{{ message }}</p>
+    <p>You can close this page and return to your Zitch chat.</p>
+  {% elif screen == 'complete' %}
+    <h1>Address verified</h1>
+    <p>Your address verification is recorded. Return to WhatsApp to check your account’s updated verification status.</p>
+    <p class="note">This link is now closed and cannot submit another verification.</p>
+  {% elif screen == 'pending' %}
+    <h1>Your address is being checked</h1>
+    <p>Your bank is still verifying your address. Your verification tier has not changed yet. Return to WhatsApp to check the result before starting another verification.</p>
+    <p class="note">This link has submitted your request and cannot submit again.</p>
+  {% elif screen == 'review' %}
+    <h1>Check your verification status</h1>
+    <p>We could not confirm the final result. Return to WhatsApp and check your status before starting another verification. This link cannot submit again.</p>
+  {% elif screen == 'error' %}
+    <h1>Check your submission</h1>
+    <p class="message" role="alert">{{ message }}</p>
+    <p>Reopen your verification link from WhatsApp to continue.</p>
+  {% else %}
+    <h1>This link is closed</h1>
+    <p>The link has expired, has already been submitted, or is no longer available. Return to WhatsApp to check your status or request a new verification link.</p>
+  {% endif %}
+  <p class="note privacy">Keep this page private. Enter your PIN only here; never send your PIN or identity documents in chat.</p>
+  <noscript><p class="message">Enable JavaScript in your browser to continue secure verification.</p></noscript>
+</main>
+<script nonce="{{ nonce }}">
+  function bindForms() {
+    document.querySelectorAll('form').forEach(function (form) {
+      form.querySelector('button').disabled = false;
+      form.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        var file = form.querySelector('input[type=file]');
+        if (file && file.files[0] && file.files[0].size > 2000000) {
+          file.setCustomValidity('Choose a photo under 2 MB.');
+          file.reportValidity();
+          return;
+        }
+        var button = form.querySelector('button');
+        if (button.disabled) return;
+        button.disabled = true;
+        var progress = document.getElementById('progress');
+        progress.textContent = 'Checking securely. Please keep this page open.';
+        try {
+          // A native form POST under no-referrer can send Origin:null. CORS-mode
+          // fetch preserves Origin without leaking the capability URL as Referer.
+          // The target is always this exact resource, never a caller-provided URL.
+          var response = await fetch(window.location.pathname, {
+            method: 'POST', body: new FormData(form), mode: 'cors',
+            credentials: 'same-origin', referrerPolicy: 'no-referrer',
+            headers: { 'X-CSRFToken': form.elements.csrfmiddlewaretoken.value },
+            redirect: 'follow', cache: 'no-store'
+          });
+          var target = new URL(response.url);
+          if (target.origin !== window.location.origin || target.pathname !== window.location.pathname) {
+            throw new Error('Unexpected verification response');
+          }
+          var page = new DOMParser().parseFromString(await response.text(), 'text/html');
+          var main = page.querySelector('main');
+          if (!main) throw new Error('Verification response unavailable');
+          // Keep the original nonce-bearing stylesheet and script; response
+          // scripts are never evaluated. The refreshed form has a fresh CSRF token.
+          document.querySelector('main').replaceWith(main);
+          bindForms();
+          var heading = document.querySelector('h1');
+          heading.setAttribute('tabindex', '-1');
+          heading.focus();
+        } catch (error) {
+          // No automatic retry: a disconnected request may have reached the bank.
+          progress.textContent = 'We could not confirm this submission. Reopen your link from WhatsApp to check the status before trying again.';
+          var pin = form.querySelector('input[type=password]');
+          if (pin) pin.value = '';
+        }
+      });
+      var file = form.querySelector('input[type=file]');
+      if (file) file.addEventListener('change', function () { file.setCustomValidity(''); });
+    });
+  }
+  bindForms();
+  // Clear sensitive inputs when restoring a page from the browser's back cache.
+  window.addEventListener('pageshow', function (event) {
+    if (event.persisted) window.location.reload();
+  });
+</script>
+</body>
+</html>

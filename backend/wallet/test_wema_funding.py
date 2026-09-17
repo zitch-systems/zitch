@@ -369,17 +369,17 @@ class WemaWalletProvisioningTests(TestCase):
         r = self._post("/api/wallet/wema/upgrade-tier2/", {
             "bvn": "22222222222",
             "nin": "12345678901",
-            "live_image": "base64-face",
+            "live_image": "ZmFrZQ==",
         })
         self.assertEqual(r.status_code, 200)
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
         self.assertTrue(self.user.nin_verified)
         self.assertTrue(self.user.face_verified)
-        mock_liveness.assert_called_once_with("base64-face")
+        mock_liveness.assert_called_once_with("ZmFrZQ==")
         mock_upgrade.assert_called_once_with(
             "0123456789", bvn="22222222222", nin="12345678901",
-            live_image="base64-face")
+            live_image="ZmFrZQ==")
 
     @patch("wallet.views.kyc_verify_face",
            return_value={"success": False, "message": "No live face detected"})
@@ -392,7 +392,7 @@ class WemaWalletProvisioningTests(TestCase):
         r = self._post("/api/wallet/wema/upgrade-tier2/", {
             "bvn": "22222222222",
             "nin": "12345678901",
-            "live_image": "still-photo",
+            "live_image": "c3RpbGwtcGhvdG8=",
         })
         self.assertEqual(r.status_code, 400)
         self.assertIn("live face", r.json()["message"].lower())

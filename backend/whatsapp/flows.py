@@ -387,12 +387,12 @@ def _refresh_pending_result(token: str):
             forget_pending(token)
             return None
         return _result_screen(
-            "Still processing - we will confirm in the chat as soon as it settles.",
+            "Still processing. Tap Done to check again, or close this form; we will confirm in the chat.",
             status="pending",
         )
-    if txn.transaction_status == Transaction.PENDING:
+    if txn.transaction_status not in (Transaction.SUCCESS, Transaction.FAILED):
         return _result_screen(
-            "Still processing - we will confirm in the chat as soon as it settles.",
+            "Still processing. Tap Done to check again, or close this form; we will confirm in the chat.",
             status="pending",
         )
 
@@ -403,7 +403,7 @@ def _refresh_pending_result(token: str):
             status="success",
         )
     return _result_screen(
-        "That payment did not go through. You were not charged - see the chat for details.",
+        "That payment was not completed. Check your balance and the chat for reversal details.",
         status="failed",
     )
 
@@ -587,13 +587,9 @@ def _success_screen(message: str, status: str = "") -> dict:
     right for the non-money terminals - an expired session, a signup that ended
     in the chat - that have no transaction outcome to report.
 
-    KNOWN DEFECT, deliberately not fixed here: SUCCESS is Meta's RESERVED
-    completion value, so a screen payload sent under it is read as a malformed
-    completion rather than a render - the same root cause as the payment ending
-    that _close_flow now fixes. Every caller of this helper therefore reaches the
-    customer as "Couldn't load content" instead of its sentence. Routing them all
-    to RESULT is the fix and it is a wider change than the payment ending: it
-    alters how signup, VTU and identity sessions close. Kept separate on purpose.
+    RESULT renders a terminal message on current published flows. When RESULT
+    is disabled for an older flow, handle_flow_request turns the fallback into
+    Meta's reserved completion envelope instead of an invalid SUCCESS payload.
     """
     # SUCCESS is Meta's reserved completion value, not a renderable screen.
     # Use RESULT when it is published so signup/payment outcomes render normally.
@@ -712,7 +708,13 @@ def handle_flow_request(payload: dict) -> dict:
     unexpected shape resolves to a safe terminal screen so the endpoint always
     returns a well-formed (encryptable) reply."""
     started = time.monotonic()
-    response = _check_contract(_handle_flow_request(payload))
+    response = _handle_flow_request(payload)
+    # SUCCESS is a reserved completion envelope. Older published flows without
+    # RESULT must close cleanly instead of trying to render data on that name.
+    if (response.get("screen") == SUCCESS_SCREEN
+            and _TERMINATION_KEY not in (response.get("data") or {})):
+        response = _close_flow(str(payload.get("flow_token", "")) if isinstance(payload, dict) else "")
+    response = _check_contract(response)
     # One line per answered exchange. Without it the only trace of a Flow session
     # in Render was gunicorn's access log - a 200 and a byte count - which is why
     # "every request succeeded" and "the customer saw an error screen" were both
@@ -757,6 +759,10 @@ def _handle_flow_request(payload: dict) -> dict:
         if refreshed is not None:
             return refreshed
         return _close_flow(token)
+
+    from .login_flow import PREFIX as LOGIN_PREFIX, handle_login
+    if str(token).startswith(LOGIN_PREFIX):
+        return handle_login(token, action, data)
 
     # A signup setting its PIN uses the same published screen, addressed by a
     # prefixed token. Handled first so an onboarding token never falls through
@@ -837,10 +843,14 @@ def _handle_flow_request(payload: dict) -> dict:
         # than re-offer it.
         pa = resolve_flow_token(token)
         if pa is None:
+            refreshed = _refresh_pending_result(token)
+            if refreshed is not None:
+                return refreshed
+            done = settled_outcome(token)
+            if done:
+                return _result_screen(done, status="success")
             return _success_screen(
-                "That payment is already done or has expired, so there's nothing "
-                "to confirm. Check the chat for the receipt, or start again there.",
-                status="failed")
+                "This request has ended. Check the chat for its outcome, or start again there.")
         if pa.state == FLOW_FORM_STATE:
             return _transfer_form_screen()
         if pa.state == FLOW_VTU_STATE:
@@ -1058,8 +1068,8 @@ def _submit_signup_phone(ob, data: dict) -> dict:
     if len(digits) != 11 or not digits.startswith("0"):
         return _signup_phone_screen(error="Enter the 11-digit number, e.g. 08012345678.")
     if User.objects.filter(phone=digits).exists() or User.objects.filter(username=digits).exists():
-        return _signup_phone_screen(error="That number is already on a Zitch account - "
-                                          "open the app to link it, or use another number.")
+        return _signup_phone_screen(error="That number already has a Zitch account. Close this form and reply 2 "
+                                          "from its registered WhatsApp number to sign in securely.")
     ob.payload["phone"] = digits
     from .router import _local_phone, _onboard_to, send_onboarding_phone_code
 
@@ -1310,19 +1320,13 @@ def _submit_identity(pa, data: dict) -> dict:
         # SMS: the provider sees a duplicate customer. Its documented face route
         # completes the original account creation. The raw BVN remains inside the
         # encrypted Flow and is passed only to the bank-hosted one-time session.
-        if pa.payload.get("id_purpose") == "account_face":
+        if pa.payload.get("id_purpose") in ("account_face", "face"):
             from .router import _send_identity_face_option
 
             if _send_identity_face_option(pa, pa.user, pa.msisdn, kind, number,
-                                          account_setup=True):
-                return _success_screen("Face verification is ready. Complete it in the secure page; your account number will arrive in this chat.")
-            return _success_screen("Face verification is temporarily unavailable. Return to the chat and reply 6 to try again.")
-        if pa.payload.get("id_purpose") == "face":
-            pa.payload.pop("id_purpose", None)
-            pa.save(update_fields=["payload"])
-            return _success_screen(
-                f"Our partner bank requires the {kind.upper()} SMS verification code. "
-                "Enter the number again to request it from our partner bank.")
+                                          account_setup=pa.payload.get("id_purpose") == "account_face"):
+                return _success_screen("Face verification is ready. Open the secure face link in the chat. Your result will be confirmed after the bank completes its check.")
+            return _success_screen("Face verification is temporarily unavailable. Return to the chat and try verification again shortly.")
         # Both entry points collect the same number on the same screen; what
         # happens next is the action's business, not this module's.
         if pa.action_type == "add_account":
@@ -1339,8 +1343,8 @@ def _submit_identity(pa, data: dict) -> dict:
                 return _account_otp_screen(pa)
             if outcome == "face":
                 return _success_screen(
-                    f"Our partner bank does not use face verification for {kind.upper()} here. "
-                    "The partner-bank SMS code is required.")
+                    "Open the secure face-verification link in the chat. "
+                    "Your verification changes only after the bank confirms it.")
             if outcome == "adopted":
                 return _success_screen("Account found ✅ — see the chat for the bank-upgrade step.")
             if outcome == "upgrade":
@@ -1348,8 +1352,8 @@ def _submit_identity(pa, data: dict) -> dict:
                 # the failure screen below would say setup failed, which the
                 # chat is at that moment denying.
                 return _success_screen(
-                    "Your account is ready ✅ — one step left, in the Zitch app. "
-                    "See the chat.")
+                    "Your account is ready. Further identity checks are needed for an upgrade. "
+                    "See the next steps in the chat.")
             if outcome == "fail":
                 # A hard failure: the ID was refused, name-matched to a different
                 # person, or the provider was unreachable. _account_submit_identity
@@ -1415,8 +1419,8 @@ def _submit_identity(pa, data: dict) -> dict:
                     f"{kind.upper()} verification did not complete. See the chat for details.")
             if outcome == "face":
                 return _success_screen(
-                    f"Our partner bank does not use face verification for {kind.upper()} here. "
-                    "The partner-bank SMS code is required.")
+                    "Open the secure face-verification link in the chat. "
+                    "Your verification changes only after the bank confirms it.")
     except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("identity flow submission failed for pa=%s", pa.id)
         return _success_screen(
@@ -1704,6 +1708,9 @@ def _submit_pin(token: str, data: dict) -> dict:
         # live - WhatsApp has no way to take that back - so tapping it after the
         # payment already went through is normal, not an error. Answer with what
         # actually happened rather than implying the payment was lost.
+        refreshed = _refresh_pending_result(token)
+        if refreshed is not None:
+            return refreshed
         done = settled_outcome(token)
         if done:
             return _result_screen(f"{done}\n\nThe receipt is in your chat.",
@@ -1803,8 +1810,8 @@ def _submit_pin(token: str, data: dict) -> dict:
     except Exception:  # never leak a stack to the Flow; the money paths are idempotent
         log.exception("flow execution failed for pa=%s", pa.id)
         _clear_actions(pa.msisdn)
-        broke = ("Something went wrong completing that. If you were charged it "
-                 "will auto-reverse.")
+        broke = ("We couldn't confirm the outcome yet. Check your transaction history "
+                 "before trying again, or contact support.")
         _close_in_chat(pa.msisdn, f"❌ {broke}")
         return _hold_open(pa, summary, broke)
     # `status` is carried on the returned line itself (router.Outcome), so an
@@ -1824,7 +1831,7 @@ def _submit_pin(token: str, data: dict) -> dict:
     # The duplicate is gone a different way - RESULT's Done now ENDS the Flow
     # through the completion envelope instead of navigating to a second screen
     # that said the same thing. See _submit_close.
-    return _hold_open(pa, summary, str(outcome), status=status or "pending")
+    return _hold_open(pa, summary, str(outcome), status=status or "done")
 
 
 # --------------------------------------------------------------------------- #

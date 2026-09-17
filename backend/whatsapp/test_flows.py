@@ -337,8 +337,8 @@ class FlowExecutionOffMetasClockTests(TestCase):
         # rejected digits still in a box fixed at 6/6, which then refuses new
         # keystrokes. RESULT carries no form at all.
         self.assertEqual(resp["screen"], RESULT_SCREEN)
-        self.assertIn("Confirmed", resp["data"]["message"])
-        self.assertIn("receipt", resp["data"]["message"].lower())
+        self.assertIn("processing", resp["data"]["message"].lower())
+        self.assertIn("check its status", resp["data"]["message"].lower())
         self.assertEqual(resp["data"]["status"], "⏳ Pending")
 
     def test_a_held_panel_still_answers_a_complete_screen(self):
@@ -732,14 +732,15 @@ class IdentityFlowTests(TestCase):
         sent = []
         with patch.object(router, "send_cta_url", return_value={"success": False}), \
              patch.object(router, "reply", side_effect=lambda m, t, **k: sent.append(t)), \
-             patch.object(router, "_kyc_submit_identity") as submit:
+             patch.object(router, "_kyc_submit_identity") as submit, \
+             patch.object(router, "reply_buttons", side_effect=lambda m, t, *a, **k: sent.append(t)):
             router._advance_kyc(pa, self.user, MSISDN, "12345678901")
 
         submit.assert_not_called()
         self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
         body = "\\n".join(sent).lower()
         self.assertNotIn("enter your nin", body)
-        self.assertIn("account upgrade", body)
+        self.assertIn("upgrade to tier 2", body)
 
 
 class EmailFlowTests(TestCase):
@@ -857,17 +858,24 @@ class EmailFlowTests(TestCase):
     @patch("whatsapp.router.send_email", return_value={"success": True})
     @patch("whatsapp.router.email_live", return_value=True)
     def test_a_used_code_is_burnt_so_it_cannot_be_replayed(self, _live, mail):
-        # NIN still outstanding, so the ladder moves on rather than clearing the
-        # action — which is what lets us look at what it left behind.
+        # Completing email may finish Tier 1 and delete this action. Either way
+        # the old signed form must not redeem the same code twice.
         self.user.nin_verified = False
         self.user.save(update_fields=["nin_verified"])
         pa = self._action()
         self._submit(pa, "ada@example.com")
         code = mail.call_args.args[2].split()[-1]
         pa.refresh_from_db()
+        from whatsapp.flows import sign_identity_token, handle_flow_request
+        token = sign_identity_token(pa)
         self._submit(pa, code)
-        pa.refresh_from_db()
-        self.assertEqual(pa.payload.get("code_hash"), "")
+        remaining = PendingAction.objects.filter(pk=pa.pk).first()
+        self.assertFalse(remaining and remaining.payload.get("code_hash"))
+        replay = handle_flow_request({"action": "data_exchange", "flow_token": token,
+                                      "data": {"number": code}})
+        self.assertEqual(replay["screen"], RESULT_SCREEN)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_verified)
 
     def test_the_router_sends_the_email_flow_instead_of_asking_in_the_chat(self):
         from . import router
@@ -1302,7 +1310,8 @@ class SignupFormFlowTests(TestCase):
         self.assertEqual(short["screen"], SIGNUP_PHONE)
         self.assertIn("11-digit", short["data"]["error"])
         taken = self._submit(ob, phone="08055550000")
-        self.assertIn("already on a Zitch account", taken["data"]["error"])
+        self.assertIn("already has a Zitch account", taken["data"]["error"])
+        self.assertIn("registered WhatsApp number", taken["data"]["error"])
 
     def test_the_phone_page_chains_into_the_pin_screen(self):
         from .flows import FLOW_PHONE_STATE, PIN_CHAIN
@@ -1835,7 +1844,8 @@ class BlockedIdentityIsNotRequestedTests(TestCase):
         with patch.object(router, "flows_live", return_value=True), \
              patch.object(router, "send_flow",
                           side_effect=lambda *a, **k: flows.append(k) or {"success": True}), \
-             patch.object(router, "reply", side_effect=lambda m, t, **k: sent.append(t)):
+             patch.object(router, "reply", side_effect=lambda m, t, **k: sent.append(t)), \
+             patch.object(router, "reply_buttons", side_effect=lambda m, t, *a, **k: sent.append(t)):
             router._start_kyc(self.user, MSISDN)
         return sent, flows
 
@@ -1846,8 +1856,9 @@ class BlockedIdentityIsNotRequestedTests(TestCase):
     def test_the_customer_is_told_where_the_step_actually_happens(self):
         sent, _flows = self._start_kyc()
         body = "\n".join(sent)
-        self.assertIn("Verify identity", body)
-        self.assertIn("app", body.lower())
+        self.assertIn("Upgrade to Tier 2", body)
+        self.assertIn("both BVN and NIN", body)
+        self.assertNotIn("open the app", body.lower())
 
     def test_the_burst_never_contradicts_itself(self):
         """No message may ask for the NIN when another says it cannot be used."""
@@ -1859,13 +1870,13 @@ class BlockedIdentityIsNotRequestedTests(TestCase):
     def test_no_provider_vocabulary_reaches_the_customer(self):
         sent, _flows = self._start_kyc()
         body = "\n".join(sent)
-        for jargon in ("Wallet Service OTP", "NUBAN", "Tier 2", "existing-account upgrade", "Wema"):
+        for jargon in ("Wallet Service OTP", "NUBAN", "Prembly", "existing-account upgrade", "Wema"):
             self.assertNotIn(jargon, body)
 
-    def test_a_still_open_identity_is_unaffected(self):
-        """The gate is specific to the blocked account state - a customer whose
-        bank has not closed the per-identity path still gets the secure screen."""
+    def test_an_existing_account_uses_upgrade_even_without_legacy_flag(self):
+        """The account and verified identity determine the next step."""
         self.wallet.identity_upgrade_required = False
         self.wallet.save(update_fields=["identity_upgrade_required"])
-        _sent, flows = self._start_kyc()
-        self.assertTrue(flows, "the secure entry screen should still be offered here")
+        sent, flows = self._start_kyc()
+        self.assertEqual(flows, [])
+        self.assertIn("Upgrade to Tier 2", "\n".join(sent))

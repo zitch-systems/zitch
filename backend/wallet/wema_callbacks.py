@@ -1019,67 +1019,22 @@ def wema_face_callback(request, state=""):
         # not accepted because they do not prove Wema evaluated this correlation.
         if (getattr(request, "wema_face_browser_origin", "")
                 and not getattr(request, "wema_face_server_trusted", False)):
-            from .services import attach_existing_bank_account, get_or_create_wallet
-            existing_wallet = get_or_create_wallet(user)
             provider_validated_account = wema_provider.create_wallet_with_face(
                 user.phone or "", user.email or f"{user.phone}@zitch.app",
                 identity_type=kind, identity_value=identity,
                 correlation_id=correlation,
             )
-            if not provider_validated_account.get("success"):
-                message = str(provider_validated_account.get("message") or "")
-                # Wema returns HTTP 400 after a valid face check when the same
-                # BVN/email/phone already has a partnership account on this channel.
-                # Recover that account through the authenticated account-details API.
-                # A generic "already exists" string is not enough: the read-back must
-                # return and safely attach the NUBAN for this user's own phone.
-                duplicate = ("already exist" in message.lower()
-                             and "for this channel" in message.lower())
-                recovered = existing_wallet if existing_wallet.account_number else None
-                if duplicate and recovered is None:
-                    try:
-                        recovered, _detail = attach_existing_bank_account(
-                            user, using_bvn=kind == "bvn")
-                    except Exception:  # noqa: BLE001 — deny safely below
-                        recovered = None
-                        log.warning("wema_face_existing_readback_failed user=%s",
-                                    user.id, exc_info=True)
-
-                # The authenticated without-OTP endpoint returns this exact
-                # channel-scoped duplicate only after receiving the same identity,
-                # phone, email and Wema correlation from the completed face flow.
-                # That is sufficient to attest the face result even when the older
-                # NUBAN is not visible through GetPartnershipAccountDetails. Account
-                # recovery remains separate and must still produce a real NUBAN
-                # before funding; identity verification must not be falsely failed.
-                normalized_message = message.casefold()
-                expected_values = [
-                    str(identity or "").casefold(),
-                    str(user.phone or "").casefold(),
-                    str(user.email or f"{user.phone}@zitch.app").casefold(),
-                ]
-                exact_existing = duplicate and all(
-                    value and value in normalized_message for value in expected_values)
-                if duplicate and (
-                        (recovered is not None and recovered.account_number)
-                        or exact_existing):
-                    provider_validated_account = {
-                        "success": True,
-                        "existing": True,
-                        "account_started": bool(recovered is not None and recovered.account_number),
-                        "message": "Authenticated existing channel identity confirmed",
-                    }
-                    request.wema_action = (
-                        "validated:existing_account_readback"
-                        if recovered is not None and recovered.account_number
-                        else "validated:existing_channel_identity")
-                else:
-                    session.status = WemaFaceSession.FAILED
-                    session.save(update_fields=["status", "updated"])
-                    request.wema_action = "denied:provider_correlation_validation"
-                    log.warning("wema_face_browser_correlation_rejected user=%s kind=%s duplicate=%s",
-                                user.id, kind, duplicate)
-                    return JsonResponse({"status": True}, status=200)
+            # Neither an existing NUBAN nor echoed identity/contact values establish
+            # that Wema validated this c_id. Only an explicit, non-simulated success
+            # from the authenticated correlation request can attest a browser claim.
+            if (provider_validated_account.get("success") is not True
+                    or provider_validated_account.get("mock")):
+                session.status = WemaFaceSession.FAILED
+                session.save(update_fields=["status", "updated"])
+                request.wema_action = "denied:provider_correlation_validation"
+                log.warning("wema_face_browser_correlation_rejected user=%s kind=%s",
+                            user.id, kind)
+                return JsonResponse({"status": True}, status=200)
 
         # A successful face check may CLAIM an unverified identity, but it may not
         # replace a different identity this account has already proven. The global

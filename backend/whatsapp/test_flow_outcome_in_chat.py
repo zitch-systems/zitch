@@ -15,6 +15,7 @@ ending on the confirm card — still there, still looking live.
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -34,6 +35,7 @@ def _armed(user, **payload):
 class FlowOutcomeReachesTheChatTests(TestCase):
 
     def setUp(self):
+        cache.clear()
         self.user = _make_user()
 
     def _submit(self, pa, pin):
@@ -90,8 +92,9 @@ class FlowOutcomeReachesTheChatTests(TestCase):
              patch("whatsapp.router.authorise_flow_execution", side_effect=RuntimeError("boom")):
             screen, said = self._submit(pa, "123456")
         self.assertEqual(screen["screen"], flows.RESULT_SCREEN)
-        self.assertIn("auto-reverse", screen["data"]["message"])
-        self.assertIn("auto-reverse", " ".join(said))
+        self.assertIn("couldn't confirm", screen["data"]["message"])
+        self.assertIn("before trying again", " ".join(said))
+        self.assertNotIn("auto-reverse", " ".join(said))
 
     def test_a_send_failure_never_costs_the_customer_their_screen(self):
         """Mirroring is best-effort. A Graph outage must not turn a settled
@@ -124,6 +127,7 @@ class ARetappedCardDoesNotReopenThePinPadTests(TestCase):
     """
 
     def setUp(self):
+        cache.clear()
         self.user = _make_user()
 
     def _open(self, pa):
@@ -144,8 +148,8 @@ class ARetappedCardDoesNotReopenThePinPadTests(TestCase):
         pa.delete()                                  # what _clear_actions does on success
         screen = flows.handle_flow_request({"action": "INIT", "flow_token": token})
         self.assertEqual(screen["screen"], flows.RESULT_SCREEN)
-        self.assertEqual(screen["data"]["status"], "❌ Not completed")
-        self.assertIn("already done", screen["data"]["message"])
+        self.assertEqual(screen["data"]["status"], "Done")
+        self.assertIn("request has ended", screen["data"]["message"])
 
     def test_a_payment_mid_execution_does_not_reopen_either(self):
         """Authorised and queued is past the point of confirming. Reopening the

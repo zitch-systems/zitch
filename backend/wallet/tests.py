@@ -644,7 +644,7 @@ class SmsAlertFormatTests(TestCase):
         self.assertEqual(lines[1], "Acct No:0228****72")     # bank's own masking
         self.assertTrue(lines[2].startswith("Desc :"))
         self.assertTrue(lines[3].startswith("Bal :"))
-        self.assertRegex(lines[4], r"^\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2}$")
+        self.assertRegex(lines[4], r"^\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2} WAT$")
 
     def test_a_debit_reads_dr(self):
         from wallet.alerts import _sms_alert

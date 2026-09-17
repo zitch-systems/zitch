@@ -18,6 +18,7 @@ export function configureNotificationPresentation(): void {
   handlerConfigured = true;
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
+      shouldShowAlert: true,
       shouldShowBanner: true,
       shouldShowList: true,
       shouldPlaySound: true,
@@ -74,11 +75,11 @@ export function subscribeToNotificationOpens(onOpen: () => void): () => void {
     onOpen();
   };
   const sub = Notifications.addNotificationResponseReceivedListener(open);
-  const last = Notifications.getLastNotificationResponse();
-  if (last) {
-    Notifications.clearLastNotificationResponse();
+  void Notifications.getLastNotificationResponseAsync().then((last) => {
+    if (!last) return;
+    void Notifications.clearLastNotificationResponseAsync();
     setTimeout(open, 0);
-  }
+  });
   return () => sub.remove();
 }
 

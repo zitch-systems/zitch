@@ -12,6 +12,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import IntegrityError, transaction as db_transaction
 from django.db.models import Q
+from django.http import JsonResponse
 from django.utils import timezone
 
 from common.http import (api, fail, mask_pii, ok, require_user, resolve_token,
@@ -1380,6 +1381,43 @@ def _confirm_identity_ownership_challenge(user, kind: str, otp: str):
     return raw, None
 
 
+def _use_wema_identity_flow() -> bool:
+    # Unconfigured local tests retain their offline identity fixture. Configured,
+    # simulated and production deployments all use the ownership-bound bank flow.
+    return (kyc_provider() == "wema" and
+            (wema.wema_live() or wema.wema_simulation() or mock_disabled_in_prod()))
+
+
+def _start_bank_identity(request, kind):
+    from wallet.views import start_wema_identity
+
+    raw = request.data.get(kind)
+    if not isinstance(raw, str) or not re.fullmatch(r"[0-9]{11}", raw.strip()):
+        return fail(f"Enter your 11-digit {kind.upper()}")
+    return start_wema_identity(request.user_obj, **{kind: request.data.get(kind)})
+
+
+def _confirm_bank_identity(request, kind):
+    from wallet.views import complete_wema_provisioning
+
+    user = request.user_obj
+    tracking = request.data.get("tracking_id")
+    otp = request.data.get("otp")
+    if not isinstance(tracking, str) or not isinstance(otp, str):
+        return fail("Enter the bank verification code and tracking reference", status=400)
+    tracking, otp = tracking.strip(), otp.strip()
+    # The route's identity kind is a further constraint, never a replacement for
+    # the server-bound attempt or the authenticated session owner.
+    if not WemaProvisioningAttempt.objects.filter(
+            user=user, tracking_id=tracking, identity_type=kind,
+            status=WemaProvisioningAttempt.PENDING).exists():
+        return fail("This verification request has expired. Start account setup again.", status=400)
+    payload, status = complete_wema_provisioning(user, otp, tracking)
+    if payload.get("success"):
+        payload.update(_kyc_state(user))
+    return JsonResponse(payload, status=status)
+
+
 @api
 @ratelimit("kyc_bvn_start", limit=5, window=300)
 @require_user
@@ -1394,6 +1432,8 @@ def kyc_bvn_start(request):
     gate = _email_gate(user)
     if gate:
         return gate
+    if _use_wema_identity_flow():
+        return _start_bank_identity(request, "bvn")
     bvn = (request.data.get("bvn") or "").strip()
     if _identity_owned_by_another_user(user, "bvn", bvn):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
@@ -1413,6 +1453,8 @@ def kyc_bvn_confirm(request):
     gate = _email_gate(user)
     if gate:
         return gate
+    if request.data.get("tracking_id") or _use_wema_identity_flow():
+        return _confirm_bank_identity(request, "bvn")
     bvn, error = _confirm_identity_ownership_challenge(
         user, "bvn", (request.data.get("otp") or "").strip()
     )
@@ -1433,6 +1475,8 @@ def kyc_bvn(request):
     gate = _email_gate(user)
     if gate:
         return gate
+    if _use_wema_identity_flow():
+        return _start_bank_identity(request, "bvn")
     if mock_disabled_in_prod():
         return fail(
             "BVN ownership requires a verification code. Update the app and use the BVN verification flow.",
@@ -1460,6 +1504,8 @@ def kyc_nin(request):
     gate = _email_gate(user)
     if gate:
         return gate
+    if _use_wema_identity_flow():
+        return _start_bank_identity(request, "nin")
     nin = (request.data.get("nin") or "").strip()
     if _identity_owned_by_another_user(user, "nin", nin):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
@@ -1497,6 +1543,8 @@ def kyc_nin_confirm(request):
     gate = _email_gate(user)
     if gate:
         return gate
+    if request.data.get("tracking_id") or _use_wema_identity_flow():
+        return _confirm_bank_identity(request, "nin")
     nin, error = _confirm_identity_ownership_challenge(
         user, "nin", (request.data.get("otp") or "").strip()
     )
@@ -1637,10 +1685,10 @@ def kyc_face_start(request):
             return ok(success=True, status="account_otp_pending", already=True,
                       otp_required=True, tracking_id=pending.tracking_id,
                       using_bvn=identity_type == "bvn",
-                      otp_destination=user.phone or "",
+                      otp_destination="", otp_destination_kind=identity_type,
                       account_setup_state="otp_pending",
-                      message=(f"{identity_type.upper()} is verified. Enter the Wema SMS code "
-                               "already sent to finish creating your account."),
+                      message=(f"{identity_type.upper()} is verified. Enter the bank code from "
+                               "the phone registered on it to finish creating your account."),
                       **_kyc_state(user))
         try:
             recovered, _detail = attach_existing_bank_account(
@@ -1746,32 +1794,46 @@ def kyc_face(request):
 @ratelimit("kyc_address", limit=10, window=600)
 @require_user
 def kyc_address(request):
-    """POST /api/kyc/address/ {access_token, address, city, state?, document}
+    """Verify a Tier-2 customer's address. Accept residentialAddress or legacy
+    address/city/state plus structured fields. The document rail requires proof;
+    the bank rail requires a completed bank check before lifting either tier."""
+    return verify_kyc_address(request.user_obj, request.data)
 
-    Verifies a residential address for Tier 3. Requires the
-    address AND a proof-of-address document; marks the address verified on
-    success and recomputes the tier.
 
-    The document is mandatory. Typed text is a claim, not evidence: without a
-    utility bill or bank statement behind it, "verified address" on a Tier 2
-    account means only that the user typed something over six characters long,
-    while the tier it unlocks raises the transaction limit to ₦200,000. Every
-    other document-bearing check here (NIN slip, government ID) already refuses
-    an empty image; the address check was the one that did not. Only the
-    verified flag survives — the image is never retained, as with the others.
-    """
-    user = request.user_obj
+def verify_kyc_address(user, data):
+    """Shared address service. Callers must authenticate and rate-limit the user;
+    the service enforces KYC prerequisites and accepts no caller-selected account."""
     gate = _email_gate(user)
     if gate:
         return gate
-    address = (request.data.get("address") or "").strip()
-    if len(address) < 6:
+    if not (user.bvn_verified and user.nin_verified and user.face_verified
+            and user.phone_verified and user.email_verified):
+        return fail("Complete Tier 2 identity and liveness verification before verifying your address.",
+                    status=409, upgrade_required=True, required_tier=2)
+    supplied = data.get("residentialAddress", data.get("address", ""))
+    if not isinstance(supplied, (str, dict)):
         return fail("Enter your full residential address")
-    city = (request.data.get("city") or "").strip()
-    state = (request.data.get("state") or "").strip()
-    full = ", ".join(p for p in [address, city, state] if p)
-    document = request.data.get("document") or request.data.get("image") or ""
-    address_fields = {"fullAddress": full, "city": city, "state": state}
+    fields = ("buildingNumber", "apartment", "street", "city", "town", "state", "lga",
+              "lcda", "landmark", "additionalInformation", "country", "fullAddress", "postalCode")
+    source = supplied if isinstance(supplied, dict) else {}
+    address_fields = {}
+    for field in fields:
+        snake = re.sub(r"(?<!^)(?=[A-Z])", "_", field).lower()
+        value = source.get(field, source.get(snake,
+                    data.get(field, data.get(snake, ""))))
+        if not isinstance(value, str):
+            return fail(f"Enter a valid {snake.replace('_', ' ')}")
+        address_fields[field] = value.strip()
+    if not address_fields["fullAddress"]:
+        street = supplied.strip() if isinstance(supplied, str) else " ".join(
+            value for value in (address_fields["buildingNumber"], address_fields["street"]) if value)
+        address_fields["fullAddress"] = ", ".join(
+            value for value in (street, address_fields["city"], address_fields["state"]) if value)
+    full = address_fields["fullAddress"]
+    if len(full) < 6:
+        return fail("Enter your full residential address")
+    address_fields["country"] = address_fields["country"] or "Nigeria"
+    document = data.get("document") or data.get("image") or ""
     bank_rail = kyc_provider() == "wema" and wema.address_verify_live()
     if bank_rail:
         # The BANK verifies the address and lifts the NUBAN to its Tier 3 on the
@@ -1781,11 +1843,22 @@ def kyc_address(request):
         # Falling back to the document rail on a bank refusal would let anyone
         # rejected by Wema retry with a utility bill and pass, which is worse than
         # having no bank check at all.
-        acct = getattr(getattr(user, "wallet", None), "account_number", "") or ""
+        wallet = get_or_create_wallet(user)
+        acct = wallet.account_number
         if not acct:
             return fail("Set up your account number first — address verification is done by the bank.",
                         status=409)
+        if wallet.bank_tier < 2:
+            from wallet.services import sync_bank_tier
+            sync_bank_tier(wallet)
+            if wallet.bank_tier < 2:
+                return fail("Complete your bank's Tier 2 upgrade before verifying your address.",
+                            status=409, upgrade_required=True, required_tier=2)
         result = wema.upgrade_tier3(acct, address_fields)
+        if result.get("pending"):
+            return JsonResponse({"success": False, "pending": True,
+                                 "message": "Your bank is still verifying your address.",
+                                 **_kyc_state(user)}, status=202)
         if not result.get("success"):
             return fail(result.get("message") or "Couldn't verify your address", status=400)
     else:
@@ -1799,7 +1872,11 @@ def kyc_address(request):
     user.set_address(full)
     user.address_verified = True
     user.recompute_tier()
-    user.save(update_fields=["address", "address_verified", "tier"])
+    with db_transaction.atomic():
+        user.save(update_fields=["address", "address_verified", "tier"])
+        if bank_rail:
+            wallet.bank_tier = 3
+            wallet.save(update_fields=["bank_tier", "updated"])
     if not bank_rail:
         # Document rail: still sync the bank-side tier, best-effort as before.
         _sync_wema_tier3(user, address_fields)

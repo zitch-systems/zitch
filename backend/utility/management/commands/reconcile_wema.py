@@ -1,18 +1,18 @@
-﻿"""Reconcile Wema/ALAT money movement that has no webhook â€” inbound funding AND
-outbound payout and VAS settlement.
+"""Reconcile inbound Wema/ALAT funding, payouts and VAS settlement.
 
-The partner bank exposes NO webhooks for these paths, so three things must be polled:
+Authenticated transaction notifications can prompt history checks. This scheduled
+sweep recovers missed notifications and unresolved provider results:
 
-1. FUNDING (credits): a bank transfer into a user's Wema NUBAN is invisible until
-   we poll. This sweeps each Wema-provisioned wallet's transaction history over a
-   recent window and credits every inbound (``creditType == "Credit"``) deposit â€”
+1. FUNDING (credits): a bank transfer into a user's Wema NUBAN is confirmed from
+   authenticated history. This sweeps each Wema-provisioned wallet's transaction history over a
+   recent window and credits every inbound (``creditType == "Credit"``) deposit —
    idempotent on Wema's ``referenceId`` (stored under a ``WEMA-CR-`` ledger key), so
    re-polling the same window never double-credits.
 
 2. PAYOUTS (settlement): a Wema transfer returned PENDING/PROCESSING has no
    disbursement webhook to settle it. This polls
    confirm_transfer_status for each PENDING bank payout and settles (SUCCESS) or
-   reverses (FAILED) it â€” the settlement safety net behind the payout flow. Only runs when
+   reverses (FAILED) it — the settlement safety net behind the payout flow. Only runs when
    Wema is the payout rail.
 
 3. VAS (settlement): an airtime/data/bill purchase that answered PROCESSING has no
@@ -32,7 +32,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.cache import cache
 from django.db import connection
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from utility import wema
@@ -46,7 +46,7 @@ from wallet.services import (
 )
 
 class Command(BaseCommand):
-    help = "Poll Wema for inbound deposits (credit) and PENDING payout settlement (no webhooks)."
+    help = "Reconcile Wema inbound deposits and unresolved payout/VAS settlement."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -64,8 +64,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         # A crashed reconcile cron is the single thing you most want paged: it is
-        # the only settlement path (no webhooks), so silent death means deposits
-        # stop crediting and payouts stop settling. Capture + re-raise so both
+        # the recovery path for missed notifications and pending results. Silent
+        # failure can leave deposits uncredited and payouts unresolved. Capture + re-raise so both
         # Sentry and the platform's nonzero-exit alerting fire.
         from utility.alerts import alert
         try:
@@ -84,6 +84,7 @@ class Command(BaseCommand):
         """
         lock_key = "zitch:money-reconcile:lock"
         db_cursor = None
+        lock_token = None
         acquired = False
         try:
             if connection.vendor == "postgresql":
@@ -95,11 +96,23 @@ class Command(BaseCommand):
                 lock_token = secrets.token_urlsafe(16)
                 acquired = cache.add(lock_key, lock_token, timeout=90)
         except Exception as exc:  # noqa: BLE001 - fail closed for money safety
-            self.stderr.write(f"reconcile_wema: distributed lock unavailable: {exc}")
-            return
+            if db_cursor is not None:
+                try:
+                    db_cursor.close()
+                except Exception:  # noqa: BLE001 - cleanup must not mask the result
+                    pass
+            # A lock backend outage must make the cron fail visibly. Returning
+            # here makes Render report a successful run while no reconciliation
+            # happened, which can leave deposits and settlements waiting until
+            # the next scheduled attempt. Do not expose backend/provider details
+            # in the command diagnostic.
+            raise CommandError("reconcile_wema: distributed lock unavailable") from exc
         if not acquired:
             if db_cursor is not None:
-                db_cursor.close()
+                try:
+                    db_cursor.close()
+                except Exception:  # noqa: BLE001 - cleanup must not mask the result
+                    pass
             self.stdout.write("Wema reconcile: skipped; another reconciliation is running")
             return
         try:
@@ -109,9 +122,22 @@ class Command(BaseCommand):
                 if db_cursor is not None:
                     db_cursor.execute(
                         "SELECT pg_advisory_unlock(hashtext(%s))", [lock_key])
-                    db_cursor.close()
+                elif lock_token is not None and cache.get(lock_key) == lock_token:
+                    # The cache fallback is used by local/test databases. Keep
+                    # ownership checking on release to reduce accidental removal
+                    # of an expired lock that was acquired by another process.
+                    # GET followed by DELETE is not atomic, so this fallback is
+                    # not a distributed-lock guarantee; PostgreSQL advisory
+                    # locking remains the cross-host safety mechanism.
+                    cache.delete(lock_key)
             except Exception:  # noqa: BLE001 - cleanup must not mask the result
                 pass
+            finally:
+                if db_cursor is not None:
+                    try:
+                        db_cursor.close()
+                    except Exception:  # noqa: BLE001 - cleanup must not mask the result
+                        pass
 
     def _run_unlocked(self, **options):
         today = timezone.now().date()
@@ -197,7 +223,7 @@ class Command(BaseCommand):
                     f"wema_account_recovery_pending user={user.id} source={source} "
                     f"detail={detail}")
 
-        # Phase 1 â€” inbound funding credits.
+        # Phase 1 — inbound funding credits.
         scanned = 0
         credited = 0
         fetch_failures = 0
@@ -206,7 +232,7 @@ class Command(BaseCommand):
         # date_from/date_to are sent in the format the spec EXAMPLES show, never
         # confirmed against a live response: apply_wema_credit matches rows by
         # referenceId, not by date, so nothing here has ever needed to read a date
-        # back off a row. A wrong format guess would not error either â€” it would
+        # back off a row. A wrong format guess would not error either — it would
         # silently ask for the wrong window and quietly credit nothing (or too
         # much). Logging the field NAMES of one real row, once per run, turns that
         # from a question for Wema into something confirmed by our own log the
@@ -296,7 +322,7 @@ class Command(BaseCommand):
             else:
                 vas_still_pending += 1
 
-        # Phase 2 â€” settle PENDING payouts (only when Wema is the payout rail, so we
+        # Phase 2 — settle PENDING payouts (only when Wema is the payout rail, so we
         # payout_provider() is wema, the sole rail).
         settled = 0
         reversed_ = 0
@@ -342,10 +368,10 @@ class Command(BaseCommand):
         # Systemic-outage signal: individual transient failures are expected and
         # left PENDING for the next run, but when there was work to do and EVERY
         # gateway call failed, that's an auth/connectivity outage (not a quiet
-        # no-op) â€” page it so "nothing is crediting" doesn't go unnoticed.
+        # no-op) — page it so "nothing is crediting" doesn't go unnoticed.
         from utility.alerts import alert
         if scanned and fetch_failures == scanned:
-            alert(f"reconcile_wema: all {scanned} wallet history fetches failed â€” Wema "
+            alert(f"reconcile_wema: all {scanned} wallet history fetches failed — Wema "
                   f"unreachable or auth rejected; no deposits can be detected",
                   level="error", wallets=scanned)
             raise SystemExit(1)
@@ -398,7 +424,7 @@ class Command(BaseCommand):
         # the stuck-payout alert above until a terminal bank status is received.
 
         if payouts_seen and status_failures == payouts_seen:
-            alert(f"reconcile_wema: all {payouts_seen} pending-payout status queries failed â€” "
+            alert(f"reconcile_wema: all {payouts_seen} pending-payout status queries failed — "
                   f"settlement stalled", level="error", payouts=payouts_seen)
 
         from wallet.alerts import retry_pending_whatsapp_alerts

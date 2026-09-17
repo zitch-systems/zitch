@@ -4,7 +4,7 @@ from io import StringIO
 from unittest.mock import patch
 
 from django.core.cache import cache
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -59,6 +59,41 @@ class ReconciliationSchedulingTests(TestCase):
         self.assertTrue(claim_status_lookup(self.txn))
         cache.clear()  # deployment/cache restart must not reset the claim
         self.assertFalse(claim_status_lookup(Transaction.objects.get(pk=self.txn.pk)))
+
+    @patch("utility.management.commands.reconcile_wema.Command._run_unlocked")
+    def test_reconciliation_cache_lock_is_released_after_a_run(self, run):
+        from utility.management.commands.reconcile_wema import Command
+
+        call_command("reconcile_wema", account_recovery_limit=0, stdout=StringIO())
+        self.assertIsNone(cache.get("zitch:money-reconcile:lock"))
+        run.assert_called_once()
+
+    @patch("utility.management.commands.reconcile_wema.Command._run_unlocked",
+           side_effect=RuntimeError("provider failure"))
+    def test_reconciliation_cache_lock_is_released_after_failure(self, run):
+        from utility.management.commands.reconcile_wema import Command
+
+        with self.assertRaises(RuntimeError):
+            Command()._run(lookback_days=2, payout_older_than_minutes=2,
+                           account_recovery_limit=0)
+        self.assertIsNone(cache.get("zitch:money-reconcile:lock"))
+        run.assert_called_once()
+
+    @patch("utility.management.commands.reconcile_wema.Command._run_unlocked")
+    @patch("utility.management.commands.reconcile_wema.cache.add",
+           side_effect=RuntimeError("cache unavailable"))
+    @patch("utility.alerts.alert")
+    def test_lock_backend_failure_fails_command_without_reconciling(self, alert, add, run):
+
+        with self.assertRaises(CommandError) as raised:
+            call_command("reconcile_wema", account_recovery_limit=0,
+                         stderr=StringIO())
+
+        self.assertEqual(str(raised.exception),
+                         "reconcile_wema: distributed lock unavailable")
+        add.assert_called_once()
+        run.assert_not_called()
+        alert.assert_called_once_with("reconcile_wema: run crashed", level="fatal", exc=True)
 
     def test_retry_resumes_after_expiry_and_increases_delay(self):
         now = timezone.now()

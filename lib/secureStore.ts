@@ -153,8 +153,8 @@ const HAS_TXN_PIN_KEY = 'z-has-pin';
 
 export async function saveTransactionPin(pin: string): Promise<void> {
   if (isWeb) return; // don't persist the money PIN in unencrypted web storage
-  if (!/^\d{6}$/.test(pin)) {
-    throw new Error('A six-digit transaction PIN is required');
+  if (!/^\d{4}$/.test(pin)) {
+    throw new Error('A four-digit transaction PIN is required');
   }
   await SecureStore.setItemAsync(TXN_PIN_KEY, pin, TXN_PIN_KEYCHAIN_OPTS);
   await AsyncStorage.setItem(HAS_TXN_PIN_KEY, '1');

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Manrope_400Regular,
@@ -70,6 +70,7 @@ export type ThemeTokens = {
   brand: string;
   brandDeep: string;
   heroGradient: [string, string, string];
+  tierGradient: [string, string, string];
   // shared palette passthrough
   cyan: string;
   lime: string;
@@ -92,6 +93,7 @@ export const light: ThemeTokens = {
   brand: palette.teal500,
   brandDeep: palette.teal600,
   heroGradient: ['#0C5249', '#00847B', '#0FA295'],
+  tierGradient: ['#F6E4B4', '#EFD79B', '#E7C97E'],
   cyan: palette.cyan,
   lime: palette.lime,
   amber: palette.amber,
@@ -113,6 +115,7 @@ export const dark: ThemeTokens = {
   brand: palette.teal400,
   brandDeep: palette.teal500,
   heroGradient: ['#073A34', '#00847B', '#12B7AA'],
+  tierGradient: ['#4A3C1C', '#5C4A22', '#6E5928'],
   cyan: palette.cyan,
   lime: palette.lime,
   amber: palette.amber,
@@ -203,16 +206,17 @@ export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
     });
   }, []);
 
-  const setTheme = (t: ThemeName) => {
+  const setTheme = useCallback((t: ThemeName) => {
     setThemeState(t);
     AsyncStorage.setItem(STORAGE_KEY, t);
-  };
-  const toggle = () => setTheme(theme === 'dark' ? 'light' : 'dark');
+  }, []);
+  const toggle = useCallback(() => setTheme(theme === 'dark' ? 'light' : 'dark'), [theme, setTheme]);
 
   const c = theme === 'dark' ? dark : light;
+  const value = useMemo(() => ({ theme, c, setTheme, toggle }), [theme, c, setTheme, toggle]);
 
   return (
-    <ThemeContext.Provider value={{ theme, c, setTheme, toggle }}>
+    <ThemeContext.Provider value={value}>
       {children}
     </ThemeContext.Provider>
   );

@@ -36,6 +36,8 @@ the preflight will correctly report **NOT READY** and no real money can move.
 
 ---
 
+> September 17 audit: see [Frankfurt verification and release checklist](audit/2026-09-17-platform-review.md). Pilot host authorization, live runtime health, and application test success are separate checks.
+
 ## 1. Environment variables
 
 Set these in the **Render dashboard** (they are `sync: false` in `render.yaml`, so
@@ -51,7 +53,7 @@ crons too (`render.yaml` already declares the slots on each).
 | `WEMA_WALLET_KEY` | **Wallet Services** subscription: wallet creation, credit/debit wallet, account management, notifications and bills. | Wema |
 | `WEMA_CARD_KEY` | **Virtual Naira Card** subscription; no wallet-key fallback. | Wema |
 | `WEMA_CARD_PRODUCT_KEY` | Card product id (`cardKey`) required to issue a virtual card; distinct from the subscription key. | Wema |
-| `WEMA_AIRTIME_KEY` | **Airtime and Data API** subscription. Wallet Services does not cover it. | Wema |
+| `WEMA_AIRTIME_KEY` | Optional airtime/data override. This tenant uses the approved `WEMA_WALLET_KEY` fallback for airtime/data; do not require a separate VAS key. | Wema |
 | `WEMA_BILLS_KEY` | Optional override; Wallet Services already covers Bills Payment. | Wema |
 | `WEMA_UPGRADE_KEY` | **Account Upgrade API** subscription used for bank-side tier/status sync. | Wema |
 | `WEMA_REMITA_KEY` | **Remita Payment** subscription; no wallet-key fallback. | Wema |
@@ -60,7 +62,7 @@ crons too (`render.yaml` already declares the slots on each).
 | `WEMA_SOURCE_ACCOUNT` | Pool NUBAN that funds pool-sourced payouts | Wema |
 | `WEMA_SECURITY_INFO` | Strong random seed **we** choose. Zitch sends a unique HMAC derived from this seed and each transaction reference; the seed itself never crosses the wire. Minimum 32 characters. | us |
 | `WEMA_BASE_URL` | Live ALAT host (differs from `apiplayground.alat.ng`) | Wema |
-| `WEMA_SIMULATION` | **Deploy-wide simulation switch.** `true` puts the WHOLE stack (Wema, VTU airtime/data/bills, cards, FX, Mono, KYC) into mock mode so every feature can be walked end-to-end with no real money. **Must be unset/blank for live** — `wema_preflight` hard-fails while it is on. | — |
+| `WEMA_SIMULATION` | **Deploy-wide simulation switch.** `true` puts the WHOLE stack (Wema payments, airtime/data/bills, cards, FX, Mono, KYC) into mock mode so every feature can be walked end-to-end with no real money. **Must be unset/blank for live** — `wema_preflight` hard-fails while it is on. | — |
 
 ### Supporting
 
@@ -129,9 +131,9 @@ Simulated deposits are written through the same path a real reconciled deposit
 takes, so they are ordinary ledger credits: `integrity_check` cannot see them
 (balance and ledger agree — it is only the money behind them that never existed),
 and the balance stays spendable once the rail is live. Bank payouts are already
-refused for a wallet carrying a mock NUBAN, but **VTU has no such guard** and is a
-separate live rail with its own float, so simulated naira converts straight into
-real airtime.
+refused for a wallet carrying a mock NUBAN. Still reconcile simulation data before
+enabling live rails: ledger integrity alone does not establish real bank backing.
+The retired VTU provider is not a supported escape path.
 
 - Run: `python manage.py purge_simulation_data` — read-only, reports what it finds.
 - Then: `python manage.py purge_simulation_data --confirm`

@@ -138,18 +138,21 @@ class FaceLinkTests(TestCase):
         flow.assert_called_once_with(self.pa, "nin", fallback_state=router.FACE_ID_STATE)
         self.assertIn("secure form", str(rep.call_args.args[1]))
 
-    def test_tier2_uses_prembly_app_handoff_not_tier1_wema_face(self):
+    def test_tier2_does_not_present_hosted_identity_as_liveness(self):
         self.pa.state = router.KYC_UPGRADE_STATE
         self.pa.save(update_fields=["state"])
 
         with patch.object(router, "send_cta_url", return_value={"success": True}) as cta, \
-             patch.object(router, "_send_identity_flow") as identity_flow:
+             patch.object(router, "_send_identity_flow") as identity_flow, \
+             patch.object(router, "reply") as reply:
             router._advance_kyc(self.pa, self.user, MSISDN, "tier2")
 
         identity_flow.assert_not_called()
-        body = str(cta.call_args.args[1])
-        self.assertIn("BVN, NIN and a live selfie", body)
-        self.assertIn("Open Verify identity", str(cta.call_args.kwargs.get("cta")))
+        cta.assert_not_called()
+        body = str(reply.call_args.args[1])
+        self.assertIn("verified BVN, NIN and a live face check", body)
+        self.assertIn("not yet available from WhatsApp", body)
+        self.assertFalse(self.user.face_verified)
 
     def test_the_session_binds_the_identity_that_was_entered(self):
         from accounts.models import hash_identifier
@@ -420,8 +423,8 @@ class BvnMethodChoiceTests(TestCase):
 
     def setUp(self):
         self.user = _user()
-        self.user.bvn_verified = False
-        self.user.save(update_fields=["bvn_verified"])
+        self.user.bvn_verified = self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
         self.pa = PendingAction.objects.create(
             user=self.user, msisdn=MSISDN, action_type="kyc", state="idle",
             payload={"attempted": ["bvn"]}, expires_at=router._flow_deadline("idle"))
@@ -436,6 +439,23 @@ class BvnMethodChoiceTests(TestCase):
         offered = buttons.call_args.args[2]
         self.assertIn(("bvn_sms", "SMS OTP"), offered)
         self.assertIn(("bvn_face", "Face verification"), offered)
+
+    def test_nin_remains_available_when_only_bank_sms_is_configured(self):
+        self.pa.payload["attempted"] = []
+        self.pa.save(update_fields=["payload"])
+        with patch.object(router, "_face_step_available", return_value=False), \
+                patch.object(router, "flows_live", return_value=True), \
+                patch.object(router.wallet_views, "_wema_funding_enabled", return_value=True), \
+                patch.object(router, "reply_buttons") as buttons:
+            router._kyc_next(self.pa, self.user, MSISDN)
+            self.assertEqual(buttons.call_args.args[2], [
+                ("bvn_sms", "SMS OTP"), ("use_nin", "Use NIN instead")])
+            router._advance_kyc(self.pa, self.user, MSISDN, "use_nin")
+            self.assertEqual(buttons.call_args.args[2], [
+                ("nin_sms", "SMS OTP"), ("use_bvn", "Use BVN instead")])
+        with patch.object(router, "_send_identity_flow", return_value=True) as flow:
+            router._advance_kyc(self.pa, self.user, MSISDN, "nin_sms")
+        flow.assert_called_once_with(self.pa, "nin", fallback_state="nin")
 
     # These two assert on the IN-MEMORY payload, deliberately, and must not go
     # back to refresh_from_db(). Persisting it is _send_identity_flow's job — it
@@ -473,4 +493,27 @@ class BvnMethodChoiceTests(TestCase):
             router._advance_kyc(self.pa, self.user, MSISDN, "something else")
         offered = buttons.call_args.args[2]
         self.assertEqual(offered, [
-            ("bvn_sms", "SMS OTP"), ("bvn_face", "Face verification")])
+            ("bvn_sms", "SMS OTP"), ("bvn_face", "Face verification"),
+            ("use_nin", "Use NIN instead")])
+
+
+    def test_selected_face_method_never_falls_back_to_sms(self):
+        from .flows import _submit_identity
+        for kind in ("bvn", "nin"):
+            with self.subTest(kind=kind):
+                self.pa.payload.update({"id_kind": kind, "id_purpose": "face"})
+                with patch.object(router, "_send_identity_face_option", return_value=True) as face, \
+                     patch.object(router, "_kyc_submit_identity") as sms:
+                    response = _submit_identity(self.pa, {"number": VERIFIED_BVN})
+                face.assert_called_once_with(self.pa, self.user, MSISDN, kind,
+                                             VERIFIED_BVN, account_setup=False)
+                sms.assert_not_called()
+                self.assertIn("secure face link", response["data"]["message"])
+                self.user.refresh_from_db()
+                self.assertFalse(self.user.bvn_verified)
+                self.assertFalse(self.user.nin_verified)
+
+    def test_nin_verified_customer_does_not_repeat_tier1_bvn(self):
+        self.user.nin_verified = True
+        self.user.save(update_fields=["nin_verified"])
+        self.assertEqual(router._kyc_outstanding(self.user), [])

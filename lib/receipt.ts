@@ -18,6 +18,8 @@
  * they can be tested without a device.
  */
 import { Platform } from 'react-native';
+import * as FileSystem from 'expo-file-system';
+import * as MediaLibrary from 'expo-media-library';
 import { BANK_WHATSAPP_DISPLAY } from '@/components/configFiles/links';
 
 export type ReceiptRow = [string, string, boolean?];
@@ -228,7 +230,7 @@ export const exportReceipt = async (
   format: ReceiptFormat,
   src: ReceiptSource,
 ): Promise<{ uri: string; mime: string; filename: string }> => {
-  const FS = await import('expo-file-system/legacy');
+  const FS = FileSystem;
   const filename = receiptFileName(src.reference, format);
   const mime = format === 'pdf' ? 'application/pdf' : 'image/jpeg';
 
@@ -288,7 +290,6 @@ export const saveReceipt = async (format: ReceiptFormat, src: ReceiptSource): Pr
     if (format === 'jpeg') {
       // SDK 57 throws for the root mutating helper; use the supported legacy
       // namespace for this operation.
-      const MediaLibrary = await import('expo-media-library/legacy');
       // writeOnly is LOAD-BEARING, not an optimisation. Saving needs no read
       // access to the gallery, so the Android manifest blocks READ_MEDIA_IMAGES
       // (a Play-restricted permission a money app can't justify carrying) — and
@@ -301,7 +302,7 @@ export const saveReceipt = async (format: ReceiptFormat, src: ReceiptSource): Pr
     }
 
     if (Platform.OS === 'android') {
-      const FS = await import('expo-file-system/legacy');
+      const FS = FileSystem;
       const saf = FS.StorageAccessFramework;
       const perm = await saf.requestDirectoryPermissionsAsync();
       if (!perm?.granted) return 'cancelled';

@@ -108,7 +108,7 @@ const Register = () => {
         </View>
       </View>
       <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 18, marginTop: 14, fontFamily: font.regular }}>
-        By continuing you agree to Zitch's <Text style={{ color: c.brand, fontFamily: font.semibold }}>Terms</Text> &{' '}
+        By continuing you agree to Zitch&apos;s <Text style={{ color: c.brand, fontFamily: font.semibold }}>Terms</Text> &{' '}
         <Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy</Text>.
       </Text>
 

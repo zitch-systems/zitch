@@ -1,3 +1,5 @@
+import base64
+import binascii
 import hmac
 import json
 import logging
@@ -8,6 +10,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction as db_transaction
+from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
@@ -141,7 +144,8 @@ def _account_setup_state(user, wallet) -> dict:
             "otp_required": True,
             "tracking_id": attempt.tracking_id,
             "using_bvn": attempt.identity_type == WemaProvisioningAttempt.BVN,
-            # The attempt does not store or invent a phone destination. Wema\n            # owns the identity-linked line; expose only its identity kind.\n            "otp_destination": "",\n            "otp_destination_kind": "bvn" if attempt.identity_type == WemaProvisioningAttempt.BVN else "nin",
+            # Only Wema knows the identity-linked destination.
+            **_otp_delivery(None, using_bvn=attempt.identity_type == WemaProvisioningAttempt.BVN),
             "identity_verified": bool(user.bvn_verified or user.nin_verified),
         }
     if user.bvn_verified or user.nin_verified:
@@ -170,7 +174,7 @@ def wallet_account_create(request):
     dedicated account for a number that fails its own KYC) and issues the NUBAN. On
     success the user is marked KYC-verified for that identifier and their tier
     recomputed, so a single BVN both provisions the virtual wallet account AND lifts
-    their limit. Only a BVN is accepted for Tier 1. NIN is reserved for the combined Tier 2 upgrade. Idempotent:
+    their limit. Tier 1 accepts either BVN or NIN. Idempotent:
     returns the existing account on a repeat call.
 
     Note: we deliberately do NOT gate on a separate BVN details-match product here —
@@ -200,29 +204,18 @@ def wallet_account_create(request):
                 message="Your verified bank account has been reconnected."))
 
     if wallet.account_number:
-        if len(bvn) == 11:
+        if len(bvn) == 11 or len(nin) == 11:
+            identity_type, raw_identity = _identity_for_attempt(bvn, nin)
             payload, status = _verify_existing_wema_identity(
-                user, wallet, WemaProvisioningAttempt.BVN, bvn)
+                user, wallet, identity_type, raw_identity)
             if payload.get("success"):
                 return ok(**payload)
-            return fail(payload.get("message", "Couldn't verify identity with our partner bank"), status=status)
-        if len(nin) == 11:
-            return fail(
-                "NIN is a Tier 2 requirement. Submit it together with your BVN and live selfie "
-                "through the account upgrade.",
-                status=409, upgrade_required=True,
-            )
+            return JsonResponse(payload, status=status)
         # already provisioned — return it (idempotent)
         return ok(**_account_payload(
             wallet, tier=user.tier, bvn_verified=user.bvn_verified, nin_verified=user.nin_verified))
 
-    if len(bvn) != 11 and len(nin) == 11:
-        return fail(
-            "NIN is a Tier 2 requirement. Verify your BVN for Tier 1 first, then complete "
-            "the combined account upgrade with your NIN and live selfie.",
-            status=409, upgrade_required=True,
-        )
-    if len(bvn) != 11:
+    if len(bvn) != 11 and len(nin) != 11:
         if user.bvn_verified:
             recovered, _detail = attach_existing_bank_account(user, using_bvn=True)
             if recovered is not None and recovered.account_number:
@@ -239,8 +232,8 @@ def wallet_account_create(request):
                 )
                 state["otp_resent"] = bool(resend.get("success"))
                 message = (
-                    "Your BVN is already verified. Our partner bank sent the existing account "
-                    "setup code again; enter it to finish issuing your account number."
+                    "Your BVN is already verified. Our partner bank accepted the request to resend "
+                    "the account setup code; enter it to finish issuing your account number."
                     if resend.get("success") else
                     "Your BVN is already verified. Enter the existing partner-bank account "
                     "setup code to finish issuing your account number."
@@ -258,13 +251,13 @@ def wallet_account_create(request):
                 message=message,
             )
         return fail("Enter your 11-digit BVN or NIN")
-    using_bvn = True
+    using_bvn = len(bvn) == 11
 
     # Wema mints the NUBAN via a BVN/NIN + OTP round-trip (the sole funding rail),
     # not a one-step reserve — start it here so the existing "Get my account" call
     # drives the flow: the client shows the OTP step and finishes on
     # /api/wallet/wema/verify-otp/ (which persists the account + lifts KYC).
-    res, identity_error = _start_wema_attempt(user, bvn, "")
+    res, identity_error = _start_wema_attempt(user, bvn if using_bvn else "", nin if not using_bvn else "")
     if identity_error:
         return fail(identity_error, status=409)
     if not res.get("success"):
@@ -322,8 +315,8 @@ def _otp_prompt(using_bvn: bool) -> str:
     # with Wema). Someone who then waits for a message that never comes reasonably
     # concludes the app is broken, so the sentence also names the route that does
     # work rather than leaving them to find it under "No code arriving?".
-    return (f"Our partner bank checked your {kind} and is sending a code by SMS to the phone number "
-            "registered on it. Enter that code to finish.")
+    return (f"Our partner bank accepted the code request for your {kind}. "
+            "Check for an SMS on the phone number registered on it. Enter that code to finish.")
 
 
 def _otp_delivery(res: dict | None, *, using_bvn: bool) -> dict:
@@ -424,6 +417,10 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
         return {"success": False, "message": "Set up your partner-bank account first"}, 400
 
     identity_hash = hash_identifier(raw_identity)
+    if (getattr(user, f"{kind}_verified", False)
+            and not hmac.compare_digest(getattr(user, f"{kind}_hash", ""), identity_hash)):
+        return {"success": False,
+                "message": f"That {kind.upper()} does not match the identity already verified on this account."}, 409
     if getattr(user, f"{kind}_verified", False) and getattr(user, f"{kind}_hash", "") == identity_hash:
         return _account_payload(
             wallet,
@@ -476,6 +473,10 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
     return {
         "success": False,
         "upgrade_required": True,
+        "next_step": "tier2_upgrade",
+        "upgrade_endpoint": "/api/wallet/wema/upgrade-tier2/",
+        "identity_face_available": wema_provider.face_verify_live(),
+        "face_start_endpoint": ("/api/kyc/face/start/" if wema_provider.face_verify_live() else ""),
         "message": (
             "Your bank account is already open, so your bank needs the rest of your "
             "details together in one step - it can't take your "
@@ -490,6 +491,12 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
 def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
     """Start and bind an OTP request, returning (provider_result, error)."""
     identity_type, raw_identity = _identity_for_attempt(bvn, nin)
+    if not re.fullmatch(r"[0-9]{11}", raw_identity):
+        return None, "Enter your 11-digit BVN or NIN"
+    stored_hash = getattr(user, f"{identity_type}_hash", "")
+    if (getattr(user, f"{identity_type}_verified", False)
+            and not hmac.compare_digest(stored_hash, hash_identifier(raw_identity))):
+        return None, "This identity does not match the identity already verified on your account."
     if _identity_owned_by_another_user(user, identity_type, raw_identity):
         return None, "This identity is already linked to another account. Contact support if this is unexpected."
     # Wema explicitly forbids reusing customer identity fields across creation
@@ -536,12 +543,23 @@ def wema_wallet_create(request):
     The client then calls /api/wallet/wema/verify-otp/ with the code + tracking_id.
     Idempotent: returns the existing account if one is already provisioned.
     """
+    return start_wema_identity(
+        request.user_obj, bvn=request.data.get("bvn"), nin=request.data.get("nin"))
+
+
+def start_wema_identity(user, *, bvn="", nin=""):
+    """Shared authenticated-user entry point for bank identity onboarding."""
     if not _wema_funding_enabled():
         return fail("Bank account creation is not available right now")
-    user = request.user_obj
     wallet = get_or_create_wallet(user)
-    bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
-    nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
+    if not isinstance(bvn or "", str) or not isinstance(nin or "", str):
+        return fail("Enter your 11-digit BVN or NIN")
+    bvn, nin = (bvn or "").strip(), (nin or "").strip()
+    if (bvn and not re.fullmatch(r"[0-9]{11}", bvn)
+            or nin and not re.fullmatch(r"[0-9]{11}", nin)):
+        return fail("Enter your 11-digit BVN or NIN")
+    if bvn and nin:
+        return fail("Choose one identity for account setup; submit both through the Tier 2 upgrade.")
     if user.bvn_verified and bvn:
         return fail("Your BVN is already verified. You do not need to enter it again.", status=409)
     if user.bvn_verified and nin and not wallet.account_number:
@@ -576,9 +594,7 @@ def wema_wallet_create(request):
         # client, so it cannot tell "that number is wrong, try again" from "this
         # account can only be finished by the combined upgrade" - and it kept
         # offering the retry that can never succeed.
-        extra = {"upgrade_required": True} if payload.get("upgrade_required") else {}
-        return fail(payload.get("message", "Couldn't verify identity with our partner bank"),
-                    status=status, **extra)
+        return JsonResponse(payload, status=status)
     res, identity_error = _start_wema_attempt(user, bvn, nin)
     if identity_error:
         return fail(identity_error, status=409)
@@ -680,7 +696,9 @@ def complete_wema_provisioning(user, otp: str, tracking_id: str,
             return {
                 "success": False,
                 "pending": True,
-                "message": "Your identity was accepted. Your Zitch account is being created; we’ll message you when it is ready.",
+                "otp_required": False,
+                "account_setup_state": "processing",
+                "message": "Your bank accepted the code. Your account is still being created.",
             }, 202
         wallet, outcome = provision_wema_account(
             user, account_number=acct["account_number"],
@@ -768,7 +786,10 @@ def complete_wema_provisioning(user, otp: str, tracking_id: str,
             attempt.save(update_fields=["status", "updated"])
             return {"success": False,
                     "message": "This identity is already linked to another account. Contact support."}, 409
-    attempt.status = WemaProvisioningAttempt.VERIFIED
+    # VERIFIED is durable identity evidence consumed by status/rehydration reads.
+    # A successful OTP with a mismatched/unreadable bank name must never create it.
+    attempt.status = (WemaProvisioningAttempt.VERIFIED if name_ok
+                      else WemaProvisioningAttempt.FAILED)
     attempt.save(update_fields=["status", "updated"])
     # Read back the tier the BANK holds the NUBAN at. It runs its own ladder with its
     # own caps and enforces them regardless of ours, so knowing the real value lets us
@@ -779,7 +800,9 @@ def complete_wema_provisioning(user, otp: str, tracking_id: str,
     except Exception:                                        # noqa: BLE001
         log.warning("wema_bank_tier_sync_failed user=%s", user.id, exc_info=True)
     return {"success": True, **_account_payload(
-        wallet, message="Your Zitch account is ready", tier=user.tier,
+        wallet, message=("Your Zitch account is ready" if name_ok else
+                         "Your account is open, but your identity needs review. Contact support."),
+        identity_review_required=not name_ok, tier=user.tier,
         bvn_verified=user.bvn_verified, nin_verified=user.nin_verified)}, 200
 
 
@@ -793,15 +816,29 @@ def wema_wallet_upgrade_tier2(request):
     accountNumber + BVN + NIN + liveImageOfFace. The docs do not expose a separate
     OTP continuation for a second identity on an already-created NUBAN.
     """
+    return upgrade_wema_identity(request.user_obj, request.data)
+
+
+def upgrade_wema_identity(user, data):
+    """Shared Tier 2 service for authenticated, rate-limited app/portal handlers.
+    Account selection and identity ownership remain server-side."""
     if not _wema_funding_enabled():
         return fail("Bank account upgrade is not available right now")
-    user = request.user_obj
     wallet = get_or_create_wallet(user)
     if not wallet.account_number:
         return fail("Set up your partner-bank account first", status=400)
-    bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
-    nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
-    live_image = (request.data.get("live_image") or request.data.get("selfie") or "").strip()
+    bvn, nin = data.get("bvn") or "", data.get("nin") or ""
+    if not isinstance(bvn, str) or not isinstance(nin, str):
+        return fail("Enter your 11-digit BVN and NIN")
+    bvn, nin = bvn.strip(), nin.strip()
+    if (bvn and not re.fullmatch(r"[0-9]{11}", bvn)
+            or nin and not re.fullmatch(r"[0-9]{11}", nin)):
+        return fail("Enter your 11-digit BVN and NIN")
+    live_image = (data.get("live_image") or data.get("liveImageOfFace")
+                  or data.get("selfie") or "")
+    if not isinstance(live_image, str):
+        return fail("Take a live selfie to complete the bank upgrade")
+    live_image = live_image.strip()
     if user.bvn_verified:
         if len(bvn) != 11:
             return fail(
@@ -816,10 +853,22 @@ def wema_wallet_upgrade_tier2(request):
         return fail("Enter your 11-digit BVN")
     if len(nin) != 11:
         return fail("Enter your 11-digit NIN")
+    if user.nin_verified and not hmac.compare_digest(hash_identifier(nin), user.nin_hash):
+        return fail("That NIN does not match the NIN already verified on this account.", status=409)
     if not live_image:
         return fail("Take a live selfie to complete the bank upgrade")
     if len(live_image) > 2_800_000:
         return fail("Selfie is too large. Retake it at a lower resolution.")
+    if live_image.startswith("data:"):
+        header, separator, encoded = live_image.partition(",")
+        if not separator or not re.fullmatch(r"data:image/[a-zA-Z0-9.+-]+;base64", header):
+            return fail("Take a new live selfie and submit its base64 image.")
+        live_image = encoded
+    try:
+        if not base64.b64decode(live_image, validate=True):
+            return fail("Take a new live selfie and submit its base64 image.")
+    except (ValueError, binascii.Error):
+        return fail("Take a new live selfie and submit its base64 image.")
     if _identity_owned_by_another_user(user, WemaProvisioningAttempt.BVN, bvn):
         return fail("This BVN is already linked to another Zitch account", status=409)
     if _identity_owned_by_another_user(user, WemaProvisioningAttempt.NIN, nin):
@@ -834,18 +883,29 @@ def wema_wallet_upgrade_tier2(request):
 
     res = wema_provider.upgrade_tier2(wallet.account_number, bvn=bvn, nin=nin,
                                      live_image=live_image)
+    if res.get("pending"):
+        return JsonResponse({"success": False, "pending": True,
+                             "message": "Your bank is still processing your identity upgrade."}, status=202)
     if not res.get("success"):
         return fail(res.get("message", "Our partner bank could not upgrade this account right now"),
                     status=502)
 
-    user.set_bvn(bvn)
-    user.set_nin(nin)
-    user.bvn_verified = True
-    user.nin_verified = True
-    user.face_verified = True
-    user.recompute_tier()
     try:
         with db_transaction.atomic():
+            # Another ownership flow may have completed while the providers were
+            # checking the image. Recheck under lock before writing either ID.
+            user = User.objects.select_for_update().get(pk=user.pk)
+            for kind, raw in (("bvn", bvn), ("nin", nin)):
+                if (getattr(user, f"{kind}_verified") and not hmac.compare_digest(
+                        getattr(user, f"{kind}_hash"), hash_identifier(raw))):
+                    return fail(f"That {kind.upper()} does not match the identity already verified on this account.",
+                                status=409)
+            user.set_bvn(bvn)
+            user.set_nin(nin)
+            user.bvn_verified = True
+            user.nin_verified = True
+            user.face_verified = True
+            user.recompute_tier()
             user.save(update_fields=[
                 "bvn_hash", "bvn_last4", "bvn_verified",
                 "nin_hash", "nin_last4", "nin_verified",
@@ -858,17 +918,12 @@ def wema_wallet_upgrade_tier2(request):
             record_identity_proof(user, IdentityProof.NIN, nin,
                                   source=IdentityProof.WEMA_TIER2,
                                   provider_reference=ref)
+            wallet.bank_tier = max(wallet.bank_tier, 2)
+            wallet.identity_upgrade_required = False
+            wallet.save(update_fields=["bank_tier", "identity_upgrade_required", "updated"])
     except IntegrityError:
         return fail("This identity is already linked to another account. Contact support.",
                     status=409)
-    # The combined upgrade is exactly the step the flag was holding out for, so
-    # clear it: the identity ladder is complete and nothing should route this
-    # customer back here.
-    _mark_identity_upgrade_required(wallet, False)
-    try:
-        sync_bank_tier(wallet)
-    except Exception:  # noqa: BLE001
-        log.warning("wema_bank_tier_sync_failed user=%s", user.id, exc_info=True)
     return ok(**_account_payload(wallet, upgraded=True, tier=user.tier,
                                  bvn_verified=user.bvn_verified,
                                  nin_verified=user.nin_verified,
@@ -896,7 +951,7 @@ def wema_wallet_verify_otp(request):
     )
     if payload.get("success"):
         return ok(**payload)
-    return fail(payload.get("message", "OTP verification failed"), status=status)
+    return JsonResponse(payload, status=status)
 
 
 @api

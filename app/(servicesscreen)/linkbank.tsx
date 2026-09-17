@@ -94,7 +94,7 @@ const LinkBank = () => {
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 16, paddingHorizontal: 24 }}>
         <ZIcon name="lock" size={13} color={c.ink3} />
         <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.medium, textAlign: 'center' }}>
-          Your bank login never touches Zitch's servers.
+          Your bank login never touches Zitch&apos;s servers.
         </Text>
       </View>
 

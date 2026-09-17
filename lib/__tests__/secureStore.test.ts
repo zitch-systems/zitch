@@ -1,17 +1,21 @@
 // In-memory keychain so we can assert the token cache avoids redundant reads.
 const mockStore: Record<string, string> = {};
 const mockGetItemAsync = jest.fn((k: string) => Promise.resolve(mockStore[k] ?? null));
-const mockSetItemAsync = jest.fn((k: string, v: string) => { mockStore[k] = v; return Promise.resolve(); });
+const mockSetItemAsync = jest.fn((k: string, v: string, _options?: unknown) => { mockStore[k] = v; return Promise.resolve(); });
 const mockDeleteItemAsync = jest.fn((k: string) => { delete mockStore[k]; return Promise.resolve(); });
 
 jest.mock('expo-secure-store', () => ({
   getItemAsync: (k: string) => mockGetItemAsync(k),
-  setItemAsync: (k: string, v: string) => mockSetItemAsync(k, v),
+  setItemAsync: (...args: [string, string, unknown?]) => mockSetItemAsync(...args),
   deleteItemAsync: (k: string) => mockDeleteItemAsync(k),
 }));
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
-  default: { removeItem: () => Promise.resolve(), multiRemove: () => Promise.resolve() },
+  default: {
+    setItem: () => Promise.resolve(),
+    removeItem: () => Promise.resolve(),
+    multiRemove: () => Promise.resolve(),
+  },
 }));
 
 import {
@@ -45,7 +49,11 @@ describe('access token storage', () => {
 describe('transaction PIN storage', () => {
   it('round-trips the PIN through the keychain and clears it', async () => {
     await saveTransactionPin('1234');
-    expect(mockSetItemAsync).toHaveBeenCalledWith('txn_pin', '1234');
+    expect(mockSetItemAsync).toHaveBeenCalledWith(
+      'txn_pin',
+      '1234',
+      expect.objectContaining({ requireAuthentication: true }),
+    );
     expect(await getTransactionPin()).toBe('1234');
     await clearTransactionPin();
     expect(await getTransactionPin()).toBeNull();

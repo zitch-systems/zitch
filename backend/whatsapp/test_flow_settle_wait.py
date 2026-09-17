@@ -59,7 +59,8 @@ class SettleWaitTests(TestCase):
         # Phrased for every action, not just a transfer: an electricity payment
         # or a data bundle is not something "sent", and this line closes the Flow
         # for all of them.
-        self.assertIn("not charged", outcome)
+        self.assertIn("not completed", outcome)
+        self.assertNotIn("not charged", outcome)
 
     @override_settings(WHATSAPP_FLOW_SETTLE_WAIT=0.5)
     def test_a_row_still_pending_gives_up_and_says_pending(self):
@@ -172,6 +173,37 @@ class SettleWaitTests(TestCase):
         waited.assert_not_called()
         self.assertEqual(outcome.status, "done")
         self.assertIn("Identity confirmed", outcome)
+
+    def test_unlock_screen_does_not_disclose_balance_before_authentication(self):
+        pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="unlock", state="flow_pin",
+            payload={}, expires_at=timezone.now() + timedelta(minutes=5))
+        with patch.object(router, "_flow_balance_line") as balance:
+            fields = router._flow_fields(pa)
+        balance.assert_not_called()
+        self.assertEqual(fields["balance"], "")
+        self.assertIn("No payment", fields["details"])
+
+    @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
+    def test_reopening_queued_payment_checks_ledger_instead_of_reporting_expiry(self):
+        pa = _action(self.user)
+        token = flows.sign_flow_token(pa)
+        flows.remember_pending(pa, self.user)
+        pa.state = "executing"
+        pa.save(update_fields=["state"])
+        txn = _ledger(self.user, pa.pk, Transaction.PENDING)
+        response = flows.handle_flow_request({"action": "INIT", "flow_token": token})
+        self.assertEqual(response["data"]["status"], "⏳ Pending")
+        txn.transaction_status = Transaction.SUCCESS
+        txn.save(update_fields=["transaction_status"])
+        response = flows.handle_flow_request({"action": "INIT", "flow_token": token})
+        self.assertEqual(response["data"]["status"], "✅ Successful")
+
+    @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": False})
+    def test_legacy_flow_receives_completion_envelope_not_reserved_screen_payload(self):
+        response = flows.handle_flow_request({"action": "INIT", "flow_token": "expired"})
+        self.assertEqual(response["screen"], "SUCCESS")
+        self.assertIn("extension_message_response", response["data"])
 
     @override_settings(WHATSAPP_FLOW_SETTLE_WAIT=0.5)
     def test_the_queued_path_still_falls_back_to_pending(self):

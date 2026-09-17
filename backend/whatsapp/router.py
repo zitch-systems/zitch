@@ -139,29 +139,17 @@ def _chat_lock_tip() -> str:
 
 
 def _upgrade_block(user) -> str:
-    """What to do about a cap you just hit, appended to every limit refusal.
-
-    Which advice is right depends on where the customer already is:
-
-    * Below Tier 1 - the ladder is not the problem, unfinished verification is.
-      Reply 8 walks the same phone/email/BVN/NIN steps right here in the chat.
-    * Tier 1 or 2 - the next rungs need document and liveness capture, which a
-      chat cannot do. That referral goes to the app, with the links to get it.
-    * Tier 3 - there is no higher tier to sell. Saying "upgrade in the app" to
-      someone already at the top is the kind of advice that sends a customer to
-      do something that cannot work, so they get support instead.
-    """
+    """Give the next verification step without requiring an app install."""
     if user.tier >= 3:
         tail = ("You're on our highest tier. For a larger one-off payment, "
                 "talk to us.")
     elif _kyc_outstanding(user):
-        tail = ("Reply *8* to finish verifying your identity - it raises your "
-                "limit straight away, right here.")
+        tail = ("Reply *8* to finish verifying your identity securely from WhatsApp. "
+                "Your limit changes after verification is confirmed.")
     else:
         top = user.TIER_LIMITS[3]
-        tail = (f"To send more, upgrade in the Zitch app. *Tier 3* takes you up to "
-                f"₦{top:,.0f} per transaction - it needs a document and selfie "
-                f"check, which we can't do over chat.")
+        tail = (f"Reply *8* to upgrade securely from WhatsApp. *Tier 3* takes you up to "
+                f"₦{top:,.0f} per transaction after identity, liveness and address checks.")
     block = _more_info_block()
     return tail + (f"\n\n{block}" if block else "")
 
@@ -616,6 +604,11 @@ def _flow_fields(pa: PendingAction) -> dict:
     """
     p = pa.payload
     at = pa.action_type
+    if at == "unlock":
+        # Reauthentication must not reveal a balance before the PIN is proved.
+        return {"amount": "Confirm your identity", "recipient": "",
+                "details": "Enter your existing PIN to continue. No payment will be made.",
+                "balance": "", "narration": ""}
 
     def _with_context(fields: dict) -> dict:
         # Through the same cleaner as every other consumer. It is already clean
@@ -707,7 +700,10 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     # biometric approval and the Flow's own button becomes the fallback ("Use
     # PIN instead"). Both remain live either way - this only decides which one
     # the message presents as the way to confirm.
-    if _has_app_session(user):
+    if pa.action_type == "unlock":
+        body = "Enter your existing PIN privately to continue using your account here."
+        cta = "Verify identity"
+    elif _has_app_session(user):
         body = f"{summary}\n{fields.get('balance', '')}\n\n{_approve_link_line(pa, primary=True)}"
         cta = "Use PIN instead"
     else:
@@ -1105,7 +1101,8 @@ def _current_action(msisdn: str) -> PendingAction | None:
     `_announce_timeout` clears it, after saying so.
     """
     return PendingAction.objects.filter(
-        msisdn=msisdn, expires_at__gte=timezone.now()).order_by("-created").first()
+        msisdn=msisdn, expires_at__gte=timezone.now()).exclude(
+            action_type="verification_web").order_by("-created").first()
 
 
 def _announce_timeout(msisdn: str) -> bool:
@@ -1121,7 +1118,8 @@ def _announce_timeout(msisdn: str) -> bool:
     # moving in the worker, and deleting it would erase the only record of a
     # payment that has to be reconciled rather than forgotten.
     expired = PendingAction.objects.filter(
-        msisdn=msisdn, expires_at__lt=timezone.now()).exclude(state=EXECUTING_STATE)
+        msisdn=msisdn, expires_at__lt=timezone.now()).exclude(
+            state=EXECUTING_STATE).exclude(action_type="verification_web")
     stale = expired.order_by("-created").first()
     if stale is None:
         return False
@@ -1134,8 +1132,18 @@ def _announce_timeout(msisdn: str) -> bool:
     return True
 
 
-def _clear_actions(msisdn: str) -> None:
-    PendingAction.objects.filter(msisdn=msisdn).delete()
+def _clear_actions(msisdn: str, *, include_web: bool = False) -> None:
+    # Authorised money actions remain until the worker has recorded their result.
+    # Ordinary chat navigation must not erase an independent browser verification.
+    # Submitted verification may already be at the bank, including an uncertain
+    # result awaiting review. Cancelling chat cannot revoke that provider request.
+    from django.db.models import Q
+    rows = PendingAction.objects.filter(msisdn=msisdn).exclude(
+        Q(state=EXECUTING_STATE) & ~Q(action_type="unlock")).exclude(
+            action_type="verification_web", state__in=("web_processing", "web_review"))
+    if not include_web:
+        rows = rows.exclude(action_type="verification_web")
+    rows.delete()
 
 
 #: States in which a payment is armed and waiting for the customer to authorise
@@ -1355,8 +1363,19 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return
 
     if low in ("cancel", "quit"):
-        _clear_actions(msisdn)
-        return reply(msisdn, "Okay, cancelled. Reply \"menu\" for options.")
+        _clear_actions(msisdn, include_web=True)
+        if PendingAction.objects.filter(msisdn=msisdn, state=EXECUTING_STATE).exclude(action_type="unlock").exists():
+            return reply(msisdn, "Your confirmed payment is already processing and cannot be cancelled here. "
+                         "We will send its final result in this chat.")
+        submitted = PendingAction.objects.filter(
+            msisdn=msisdn, action_type="verification_web",
+            state__in=("web_processing", "web_review")).order_by("-created").first()
+        if submitted is not None:
+            status = ("is already processing" if submitted.state == "web_processing"
+                      else "has already been submitted and its final result is still unconfirmed")
+            return reply(msisdn, f"Your address verification {status} and cannot be cancelled here. "
+                         "Check your verification status before starting another request.")
+        return reply(msisdn, 'Okay, cancelled. Reply "menu" for options.')
 
     # An in-progress flow consumes the message before any fresh command -
     # except an explicit menu/help reset.
@@ -1601,7 +1620,7 @@ def _send_unlock(user, msisdn: str, resume: str) -> None:
 def _exec_unlock(pa: PendingAction, user, msisdn: str) -> str:
     """Identity proven: start the window and run the command that triggered it."""
     resume = str(pa.payload.get("resume") or "").strip()
-    _clear_actions(msisdn)
+    PendingAction.objects.filter(pk=pa.pk).delete()
     _mark_verified(msisdn)
     if resume:
         handle_inbound(msisdn, resume)
@@ -1678,7 +1697,8 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
     # asking for the opposite of a signup.
     if low in ("2", "link", "link account", "i have an account", "sign in", "login", "log in") \
             or LINK_INTENT.search(low):
-        return reply(msisdn, "To connect an existing account, open the Zitch app -> *Settings -> Link WhatsApp*, get your code, and send it here.")
+        from .login_flow import start_login
+        return start_login(msisdn)
     if low in ("1", "create", "create account", "sign up", "signup", "register", "open account", "new", "get started") \
             or CREATE_INTENT.search(low):
         return _start_onboarding(msisdn)
@@ -1699,7 +1719,8 @@ def _start_onboarding(msisdn: str) -> None:
         _clear_onboarding(msisdn)
         return reply(msisdn, UNLINKED_APP_ONLY)
     if User.objects.filter(phone=_local_phone(msisdn)).exists():
-        return reply(msisdn, "This number already has a Zitch account. Open the app -> *Settings -> Link WhatsApp* to connect it here.")
+        from .login_flow import start_login
+        return start_login(msisdn)
     # One private form for names + email, chained into the PIN pair on the same
     # open Flow - the whole signup with zero chat round-trips. Names and an
     # email address are not secrets, so unlike the PIN this falls back to the
@@ -1816,6 +1837,13 @@ def _onboard_to(ob: WaOnboarding, step: str) -> None:
 
 
 def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
+    from .login_flow import STATES as LOGIN_STATES
+    if ob.step in LOGIN_STATES:
+        if text.strip().lower() in ("cancel", "quit", "stop"):
+            _clear_onboarding(msisdn)
+            return reply(msisdn, "Sign-in cancelled. Reply *2* whenever you want to sign in.")
+        return reply(msisdn, "Enter your email code and PIN only in the secure sign-in form above. "
+                     "Never send them in chat. Reply *cancel* to restart.")
     if not _chat_signup_allowed():
         _clear_onboarding(msisdn)
         return reply(msisdn, UNLINKED_APP_ONLY)
@@ -1911,7 +1939,7 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
     ln = (ob.payload.get("last_name") or "").strip()
     if User.objects.filter(phone=local).exists():  # raced with the app / another signup
         _clear_onboarding(msisdn)
-        reply(msisdn, "This number already has a Zitch account - open the app to link it.")
+        reply(msisdn, "This number already has a Zitch account. Reply *2* to sign in securely here.")
         return False
     # WhatsApp onboarding creates an UNVERIFIED account at Tier 0, identically to
     # the app: only name + PIN are collected here (no BVN/NIN), and the app's tier
@@ -2119,7 +2147,7 @@ def finish_onboarding_from_flow(ob: WaOnboarding, pin: str) -> str:
     """
     msisdn = ob.msisdn
     if not _finish_onboarding(ob, msisdn, pin):
-        return "That account already exists. Sign in to the app and link WhatsApp from Settings."
+        return "That account already exists. Reply 2 from its registered WhatsApp number to sign in securely."
     return "✅ PIN set - your Zitch account is ready. Head back to the chat."
 
 
@@ -2706,9 +2734,8 @@ def _do_support(msisdn: str) -> None:
 # the chat. Each step drives the same server-side checks the app uses, and the
 # tier is DERIVED at the end (recompute_tier), never granted by this flow.
 # --------------------------------------------------------------------------- #
-# Tier 1 requires phone, email and BVN only. NIN belongs exclusively to the
-# existing-account Tier 2 upgrade, where it is submitted together with Prembly
-# liveness; it must never appear in the Tier 1 WhatsApp identity ladder.
+# The legacy "bvn" step represents the first identity. Its chooser accepts BVN
+# or NIN; Tier 1 needs either one, while Tier 2 requires both plus live face.
 _KYC_STEPS = ("phone", "email", "bvn")
 
 
@@ -2730,16 +2757,23 @@ def _face_step_available() -> bool:
     return wema_provider.face_verify_live()
 
 
-def _offer_bvn_verification_method(pa: PendingAction, msisdn: str) -> None:
-    """Present both BVN proof methods before the secure BVN entry screen."""
-    pa.payload["id_kind"] = "bvn"
+def _offer_bvn_verification_method(pa: PendingAction, msisdn: str, kind="bvn") -> None:
+    """Tier 1 accepts either bank-verified identity, by SMS or hosted face."""
+    kind = "nin" if kind == "nin" else "bvn"
+    other = "bvn" if kind == "nin" else "nin"
+    pa.payload["id_kind"] = kind
     pa.payload.pop("id_purpose", None)
     _touch(pa, state=BVN_METHOD_STATE, payload=pa.payload)
+    methods = [(f"{kind}_sms", "SMS OTP")]
+    message = "Choose SMS OTP to verify this identity."
+    if _face_step_available():
+        methods.append((f"{kind}_face", "Face verification"))
+        message = "Choose SMS OTP or a face check on our partner bank's secure page."
+    methods.append((f"use_{other}", f"Use {other.upper()} instead"))
     reply_buttons(
         msisdn,
-        "🪪 *How would you like to verify your BVN?*\n\n"
-        "Choose SMS OTP or complete a live face check on our partner bank's secure page.",
-        [("bvn_sms", "SMS OTP"), ("bvn_face", "Face verification")],
+        f"🪪 *How would you like to verify your {kind.upper()}?*\n\n" + message,
+        methods,
     )
 
 
@@ -2779,7 +2813,7 @@ def _kyc_outstanding(user) -> list:
     done = {
         "phone": user.phone_verified,
         "email": user.email_verified,
-        "bvn": user.bvn_verified,
+        "bvn": user.bvn_verified or user.nin_verified,
         "nin": user.nin_verified,
     }
     # Wema hosted face is an ALTERNATIVE way to complete the BVN/NIN item, not a
@@ -2793,12 +2827,12 @@ def _kyc_status_lines(user) -> str:
 
     rehydrate_verified_identity_flags(user)
     mark = lambda ok: "✅" if ok else "⬜"  # noqa: E731
-    # This card is the Tier 1 checklist. NIN is never a Tier 1 requirement;
-    # it belongs only to the separate Tier 2 bank upgrade with liveness.
+    # Tier 1 requires either identity; do not ask a NIN-verified customer to
+    # restart onboarding with BVN merely to satisfy this display.
     return "\n".join([
         f"{mark(user.phone_verified)} Phone number",
         f"{mark(user.email_verified)} Email address",
-        f"{mark(user.bvn_verified)} BVN",
+        f"{mark(user.bvn_verified or user.nin_verified)} BVN or NIN",
     ])
 
 
@@ -2894,7 +2928,8 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
         "face_verified", "address_verified", "id_document_verified",
     ])
     status = (
-        "✅ *Tier 1 verification is complete.*\n\n"
+        ("✅ *Tier 1 verification is complete.*\n\n" if not _kyc_outstanding(user)
+         else "🪪 *Your verification status*\n\n")
         + _kyc_status_lines(user)
         + f"\n\nTier {user.tier} · up to ₦{user.transaction_limit:,.0f} per transaction."
     )
@@ -2909,8 +2944,8 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
         return reply_buttons(
             msisdn,
             status + "\n\n*Upgrade to Tier 2*\n"
-            "Tier 2 adds NIN verification and a Prembly liveness check. "
-            "You can start it here on WhatsApp.",
+            "Tier 2 requires both BVN and NIN verification and a live face check. "
+            "We will show which checks remain.",
             [("tier2", "Upgrade to Tier 2"), ("later", "Later")],
         )
     return reply_buttons(
@@ -2923,32 +2958,26 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
 
 
 def _kyc_bank_upgrade_notice(user, msisdn: str) -> None:
-    """What is left, and the one place it can actually be done.
+    """Keep verified checks and show the account upgrade requirements."""
+    return _offer_tier_upgrade(user, msisdn)
 
-    No secure-entry screen: there is nothing this chat can do with the number,
-    and offering a form that cannot be submitted is what made the refusal read
-    as a contradiction.
-    """
-    _clear_actions(msisdn)
-    app_url = (_links().get("APP") or "https://zitch.ng/app").strip()
-    body = (
-        "🪪 *Complete your account upgrade*\n\n"
-        "Your phone, email and BVN are already verified. Only your NIN remains. "
-        "Our partner bank's existing-account upgrade must submit the remaining NIN together "
-        "with a live selfie; it is not a new BVN verification. WhatsApp cannot "
-        "capture the required live selfie inside this secure form, so I will not "
-        "collect your NIN here and then leave you stuck.\n\n"
-        "Use the secure WhatsApp form above to continue. "
-        "Your verified BVN remains saved and will not be restarted."
-    )
-    if app_url:
-        result = send_cta_url(
-            msisdn, body, app_url, cta="Open Verify identity",
-            footer="Return to this chat after completion",
-        )
-        if result.get("success"):
-            return None
-    reply(msisdn, body + (f"\n\nOpen Zitch: {app_url}" if app_url else ""))
+
+def _send_web_verification(user, msisdn: str, tier: int) -> None:
+    from .verification_web import start_verification
+    from django.core.exceptions import ImproperlyConfigured
+
+    try:
+        url = start_verification(user, msisdn, tier)
+    except (ValueError, ImproperlyConfigured):
+        log.warning("WhatsApp verification link unavailable", extra={"tier": tier})
+        return reply(msisdn, "The secure verification page could not open. Please try again shortly.")
+    body = ("Verify your address securely. Confirm your Zitch PIN on the page, then "
+            "enter your residential address and provide proof if requested. "
+            "No app installation is needed. The link expires in 15 minutes.")
+    sent = send_cta_url(msisdn, body, url, cta="Verify address",
+                        footer="Return to WhatsApp when finished")
+    if not sent.get("success"):
+        reply(msisdn, body + "\n\n" + url)
 
 
 def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
@@ -2958,9 +2987,8 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
     review is still "outstanding" (it is not verified), so without this the flow
     would ask for the same number forever."""
     attempted = set(pa.payload.get("attempted") or []) & set(_KYC_STEPS)
-    # Drop legacy KYC states from before Tier 1 was narrowed to BVN-only.
-    # Otherwise an already-open WhatsApp session can keep advancing to NIN even
-    # though new sessions no longer list it.
+    # Drop obsolete step names from older sessions. Tier 1 needs either proven
+    # identity; the method chooser selects BVN or NIN within the identity step.
     if set(pa.payload.get("attempted") or []) != attempted:
         pa.payload["attempted"] = sorted(attempted)
         _touch(pa, payload=pa.payload)
@@ -2978,7 +3006,8 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
         return _kyc_send_email_code(pa, user, msisdn)
     if step == "face":
         return _kyc_start_face_step(pa, user, msisdn)
-    if step == "bvn" and _face_step_available():
+    if step == "bvn" and (_face_step_available()
+                          or (flows_live() and wallet_views._wema_funding_enabled())):
         return _offer_bvn_verification_method(pa, msisdn)
     if _send_identity_flow(pa, step):
         return None
@@ -3016,7 +3045,7 @@ def _kyc_finish(pa: PendingAction, user, msisdn: str) -> None:
     # that is what the customer verified FOR. Instant in simulation (mock
     # NUBAN); in live mode the bank requires its own SMS round, so the ladder
     # points at it rather than silently launching another flow.
-    if user.bvn_verified and user.nin_verified:
+    if user.bvn_verified or user.nin_verified:
         wallet = get_or_create_wallet(user)
         if not wallet.account_number:
             if _chat_simulation_allowed():
@@ -3241,66 +3270,54 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
             pa.payload["id_purpose"] = "face"
             if _send_identity_flow(pa, "nin", fallback_state=FACE_ID_STATE):
                 return None
-            return reply(msisdn, "The secure NIN form could not open. Please use NIN verification in the Zitch app.")
+            return reply(msisdn, "The secure NIN form could not open. Please try again shortly; keep identity numbers out of this chat.")
         if low in ("later", "cancel", "no"):
             _clear_actions(msisdn)
             return reply(msisdn, "No problem. Reply *8* whenever you want to continue upgrading.")
-        if low in ("tier2", "2", "upgrade", "upgrade to tier 2"):
+        if low in ("tier2", "2", "upgrade", "upgrade to tier 2", "tier2_app"):
+            # A hosted ownership face check does not establish Tier-2 liveness.
+            # Keep this explicit until a supported browser liveness contract is
+            # configured; never turn a photo or a button click into verified KYC.
             if user.bvn_verified and not user.nin_verified and _face_step_available():
                 return reply_buttons(msisdn,
-                    "Tier 2 adds NIN verification, then Prembly liveness. Your verified BVN stays saved.",
-                    [("nin_face", "Verify NIN with face"), ("tier2_app", "Continue in app")])
-        if low in ("tier2", "2", "upgrade", "upgrade to tier 2", "tier2_app"):
-            _clear_actions(msisdn)
-            # ALAT Tier 2 is NOT the hosted Wema face page used as an SMS-OTP
-            # alternative for Tier 1. It requires BVN + NIN + a Prembly-verified
-            # live selfie in one request. WhatsApp cannot safely capture that
-            # liveness payload, so hand off to the app screen that performs the
-            # combined Prembly + ALAT upgrade rather than mislabelling Tier-1 face
-            # verification as a Tier-2 upgrade.
-            app_url = (_links().get("APP") or "https://zitch.ng/app").strip()
-            body = (
-                "🪪 *Upgrade to Tier 2*\n\n"
-                "Tier 2 requires your BVN, NIN and a live selfie together. "
-                "The selfie is checked securely before our partner bank upgrades "
-                "your existing account."
-            )
-            if app_url:
-                sent = send_cta_url(msisdn, body, app_url,
-                                    cta="Open Verify identity",
-                                    footer="Return here after completion")
-                if sent.get("success"):
-                    return None
-            return reply(msisdn, body + "\n\nOpen the Zitch app and choose *Verify identity*.")
+                    "Your BVN remains verified. You can verify your NIN with the bank's "
+                    "face check. A separate live face check is still required for Tier 2; "
+                    "that final check is not yet available from WhatsApp.",
+                    [("nin_face", "Verify NIN with face"), ("later", "Later")])
+            return reply(msisdn,
+                "Tier 2 requires verified BVN, NIN and a live face check. The final live "
+                "check is not yet available from WhatsApp. Your completed verification "
+                "stays saved. Contact support for help with this step.")
         if low in ("tier3", "3", "upgrade to tier 3"):
             if user.tier < 2:
-                return reply(msisdn, "Tier 3 starts after Tier 2. Reply *tier2* to complete NIN and liveness first.")
+                return reply(msisdn, "Tier 3 starts after Tier 2. Reply *tier2* to review your identity and live face checks.")
             _clear_actions(msisdn)
-            return reply(msisdn, "Tier 3 requires address verification only. Open the Zitch app to complete address verification. Your Tier 2 checks remain saved.")
-        return reply_buttons(msisdn, "Choose the upgrade you want:", [("tier2", "Upgrade to Tier 2"), ("later", "Later")])
+            return _send_web_verification(user, msisdn, 3)
+        choice = ("tier3", "Upgrade to Tier 3") if user.tier >= 2 else ("tier2", "Upgrade to Tier 2")
+        return reply_buttons(msisdn, "Choose the upgrade you want:", [choice, ("later", "Later")])
 
     if state == BVN_METHOD_STATE:
-        if low in ("bvn_sms", "sms", "sms otp", "1"):
+        if low in ("use_nin", "use_bvn"):
+            return _offer_bvn_verification_method(pa, msisdn, low[4:])
+        kind = "nin" if pa.payload.get("id_kind") == "nin" else "bvn"
+        if low in (f"{kind}_sms", "sms", "sms otp", "1"):
             pa.payload["id_method"] = "sms_otp"
             pa.payload.pop("id_purpose", None)
-            if _send_identity_flow(pa, "bvn", fallback_state="bvn"):
+            if _send_identity_flow(pa, kind, fallback_state=kind):
                 return None
-            _touch(pa, state="bvn", payload=pa.payload)
-            return reply(msisdn, "Enter your 11-digit BVN, or reply \"cancel\".")
-        if low in ("bvn_face", "face", "face verification", "2"):
+            _touch(pa, state=BVN_METHOD_STATE, payload=pa.payload)
+            return reply(msisdn, "The secure identity form could not open. Please try again shortly.")
+        if low in (f"{kind}_face", "face", "face verification", "2"):
+            if not _face_step_available():
+                return _offer_bvn_verification_method(pa, msisdn, kind)
             pa.payload["id_method"] = "wema_face"
             pa.payload["id_purpose"] = "face"
-            if _send_identity_flow(pa, "bvn", fallback_state=FACE_ID_STATE):
+            if _send_identity_flow(pa, kind, fallback_state=FACE_ID_STATE):
                 return None
             pa.payload.pop("id_purpose", None)
             _touch(pa, state=BVN_METHOD_STATE, payload=pa.payload)
-            return reply(msisdn, "⚠️ The secure BVN screen did not open. Please try again "
-                                 "shortly or complete face verification in the Zitch app.")
-        return reply_buttons(
-            msisdn,
-            "Choose how to verify your BVN:",
-            [("bvn_sms", "SMS OTP"), ("bvn_face", "Face verification")],
-        )
+            return reply(msisdn, "The secure identity form could not open. Please try again shortly.")
+        return _offer_bvn_verification_method(pa, msisdn, kind)
 
     if state == "phone":
         if low == "resend":

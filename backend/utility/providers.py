@@ -687,35 +687,86 @@ def kyc_verify_nin_document(image: str) -> dict:
 
 
 def kyc_verify_face(selfie: str = "") -> dict:
-    """Liveness / selfie-match — the gate for large transfers.
+    """Require an explicit provider liveness pass for the captured image.
 
-    MOCK accepts offline. LIVE requires a real liveness result AND a captured
-    selfie; fails closed without one, so the step-up can't be cleared without
-    genuine verification once a provider is configured.
+    Face similarity alone is not liveness. Only JSON booleans are accepted;
+    unknown response schemas fail closed until the provider contract is verified.
+    A local camera capture or a client-supplied success flag is never evidence.
+    MOCK remains confined to the existing development/simulation policy.
     """
     if not _prembly_live():
         return _kyc_mock_or_unavailable()
-    if not selfie:
+    if not isinstance(selfie, str) or not selfie.strip():
         return {"success": False, "message": "A selfie capture is required for face verification"}
+    if len(selfie) > 2_800_000:
+        return {"success": False, "message": "Selfie is too large. Retake it at a lower resolution."}
     try:
         resp = requests.post(
             f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/biometrics/face",
             json={"image": selfie}, headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
         )
         data = resp.json()
-        d = data.get("data", {}) or {}
-        return {"success": bool(data.get("status")) and bool(d.get("liveness") or d.get("face_match")), "raw": data}
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+        detail = data.get("data") if isinstance(data, dict) else None
+        passed = (200 <= resp.status_code < 300 and resp.status_code != 202
+                  and isinstance(data, dict) and data.get("status") is True
+                  and isinstance(detail, dict) and detail.get("liveness") is True
+                  and data.get("pending") is not True and detail.get("pending") is not True)
+        return {"success": passed, "raw": data,
+                "message": "Liveness verified" if passed else
+                           "We could not confirm a live face. Please take a new live selfie."}
+    except (requests.RequestException, ValueError):
+        return {"success": False,
+                "message": "Face verification is temporarily unavailable. Please try again later."}
+
+
+def _kyc_document_response_passed(data, status_code: int) -> bool:
+    """Reject failed/pending transport and envelope signals, without asserting a
+    provider-specific verification schema. Address/document contracts remain
+    unconfirmed; this guard alone does not certify either live integration.
+    """
+    import re
+
+    if (not 200 <= status_code < 300 or status_code == 202
+            or not isinstance(data, dict) or data.get("status") is not True):
+        return False
+    containers = [data]
+    while containers:
+        container = containers.pop()
+        if isinstance(container, list):
+            containers.extend(item for item in container if isinstance(item, (dict, list)))
+            continue
+        for key, value in container.items():
+            name = str(key).replace("_", "").casefold()
+            if name in ("data", "result", "response", "verification"):
+                if value is not None and not isinstance(value, dict):
+                    return False
+            if name in ("pending", "failed", "haserror") and value is not False and value is not None:
+                return False
+            if name in ("errors", "error", "errormessage", "errormessages") and value:
+                return False
+            is_status = name.endswith("status") or name in ("success", "successful", "verified", "isverified")
+            if is_status and value is not True and not isinstance(value, str):
+                return False
+            if is_status or name in ("message", "detail"):
+                if isinstance(value, str) and re.search(
+                        r"\b(?:pending|processing|in[ _-]progress|fail(?:ed|ure)?|rejected|declined|"
+                        r"false|error|unverified|invalid|not[ _-](?:verified|complete[d]?))\b", value, re.I):
+                    return False
+            if isinstance(value, (dict, list)):
+                containers.append(value)
+    return True
 
 
 def kyc_verify_address(address: str, document: str = "") -> dict:
-    """Verify a residential address (Tier 2). MOCK accepts offline; LIVE should
-    call the KYC provider's address / proof-of-address endpoint and fail closed
-    without a real pass. VERIFY-BEFORE-LIVE: confirm the endpoint/fields first."""
+    """Verify a residential address (Tier 3). MOCK accepts offline.
+
+    LIVE CONTRACT UNCONFIRMED: the endpoint and completed-verification schema
+    still need provider confirmation. Envelope validation is only a safety guard.
+    """
     if not _prembly_live():
         return _kyc_mock_or_unavailable()
-    if not (address or document):
+    if (not isinstance(address, str) or not isinstance(document, str)
+            or not (address.strip() or document.strip())):
         return {"success": False, "message": "Enter your residential address"}
     try:
         resp = requests.post(
@@ -724,18 +775,21 @@ def kyc_verify_address(address: str, document: str = "") -> dict:
             headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
         )
         data = resp.json()
-        return {"success": bool(data.get("status")), "raw": data}
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+        return {"success": _kyc_document_response_passed(data, resp.status_code), "raw": data}
+    except (requests.RequestException, ValueError):
+        return {"success": False, "message": "Address verification is temporarily unavailable. Please try again later."}
 
 
 def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
     """Verify a government-issued ID document (Tier 3): passport / driver's
-    licence / voter's card / NIN slip. MOCK accepts offline; LIVE must call the
-    provider's document-analysis endpoint and fail closed. VERIFY-BEFORE-LIVE."""
+    licence / voter's card / NIN slip. MOCK accepts offline.
+
+    LIVE CONTRACT UNCONFIRMED: the endpoint and completed-verification schema
+    still need provider confirmation. Envelope validation is only a safety guard.
+    """
     if not _prembly_live():
         return _kyc_mock_or_unavailable()
-    if not image:
+    if not isinstance(image, str) or not image.strip() or not isinstance(doc_type, str):
         return {"success": False, "message": "Upload a clear photo of your ID document"}
     try:
         resp = requests.post(
@@ -744,9 +798,9 @@ def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
             headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
         )
         data = resp.json()
-        return {"success": bool(data.get("status")), "raw": data}
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+        return {"success": _kyc_document_response_passed(data, resp.status_code), "raw": data}
+    except (requests.RequestException, ValueError):
+        return {"success": False, "message": "Document verification is temporarily unavailable. Please try again later."}
 
 
 # ---------------------------------------------------------------------------

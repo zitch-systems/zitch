@@ -17,6 +17,7 @@ from exams.models import ExamProduct
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 from common.ratelimit import _lockout_key, client_ip
+from utility.catalogue_fixtures import map_billers
 
 from .models import OTP, AccessToken
 
@@ -588,6 +589,9 @@ class KycTierTests(TestCase):
         """A document IS present, so the message must name the real problem —
         the size cap, not a missing upload. (The cap is patched down so the test
         exercises our check rather than Django's request-body limit.)"""
+        self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
+        self.user.recompute_tier()
+        self.user.save(update_fields=["bvn_verified", "nin_verified", "face_verified", "tier"])
         with patch.object(views, "MAX_KYC_IMAGE_BASE64", 8):
             res, body = self.post("/api/kyc/address/", {
                 "access_token": self.token, "address": "12 Allen Avenue",
@@ -598,6 +602,9 @@ class KycTierTests(TestCase):
     def test_address_proof_is_not_retained(self):
         """Same promise as the NIN slip and government ID: the flag survives,
         the image does not."""
+        self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
+        self.user.recompute_tier()
+        self.user.save(update_fields=["bvn_verified", "nin_verified", "face_verified", "tier"])
         self.post("/api/kyc/address/", {"access_token": self.token,
                                         "address": "12 Allen Avenue",
                                         "document": "ZmFrZXByb29m"})
@@ -802,7 +809,8 @@ class FullJourneyE2ETests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        BettingPlatform.objects.create(code="bet9ja", name="Bet9ja", service_id="bet9ja")
+        map_billers("bet9ja-betting", "ikeja-electric")
+        BettingPlatform.objects.create(code="bet9ja", name="Bet9ja", service_id="bet9ja-betting")
         ExamProduct.objects.create(code="waec", name="WAEC", description="Result PIN", price=Decimal("3500"))
 
     def post(self, path, **body):
@@ -891,8 +899,15 @@ class FullJourneyE2ETests(TestCase):
         self.assertEqual(self.post("/api/cards/details/", access_token=tok, transaction_pin="246810")[0], 200)
         self.assertEqual(self.post("/api/betting/fund/", access_token=tok, platform="bet9ja",
                                    user_id="ZB99999", amount="1000", transaction_pin="246810")[0], 200)
-        self.assertEqual(self.post("/api/exams/buy/", access_token=tok, exam="waec",
-                                   quantity=1, phone=P, transaction_pin="246810")[0], 200)
+        before_exam = get_or_create_wallet(user_obj).balance
+        exam_status, exam_body = self.post("/api/exams/buy/", access_token=tok, exam="waec",
+                                           quantity=1, phone=P, transaction_pin="246810")
+        # Exam PINs have no current partner-bank route. The retired VTU provider
+        # must not be revived in this integration test: refusal means no success
+        # and no net wallet charge.
+        self.assertEqual(exam_status, 502)
+        self.assertFalse(exam_body.get("success"))
+        self.assertEqual(get_or_create_wallet(user_obj).balance, before_exam)
 
         # --- name lookups require auth ---
         self.assertEqual(self.post("/api/utility/validate_meter/", disco="1", meter="1234567890")[0], 401)
