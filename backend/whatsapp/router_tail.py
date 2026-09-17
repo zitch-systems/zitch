@@ -2081,6 +2081,11 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     pa.state = EXECUTING_STATE
     pa.expires_at = timezone.now() + EXECUTION_TTL
     pa.save(update_fields=["state", "expires_at"])
+    # The worker may finish after this exchange times out. Keep a short-lived,
+    # token-scoped pointer so the published RESULT screen's Done exchange can
+    # re-read the ledger instead of closing on stale Pending.
+    from .flows import remember_pending
+    remember_pending(pa, user)
     enqueue_flow_execution(pa)
     # Same safety net the webhook uses for a worker that isn't running, and off
     # the request thread so Meta's answer is not held up by it. Not under the
@@ -2094,6 +2099,8 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     # The requested account/details command still runs on the durable worker;
     # report only what is already true here: identity was confirmed.
     if pa.action_type == "unlock":
+        from .flows import forget_pending, sign_flow_token
+        forget_pending(sign_flow_token(pa))
         return Outcome("Identity confirmed - your requested details will appear "
                        "in the chat.", "done")
 
@@ -2104,6 +2111,8 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     # not been attempted yet.
     settled = _await_settlement(pa.id, user, pa.action_type)
     if settled is not None:
+        from .flows import forget_pending, sign_flow_token
+        forget_pending(sign_flow_token(pa))
         return settled
     # Still working. PENDING, emphatically not success: the rail has not answered
     # yet, and a tick here would read as "done" for a payment that may still
@@ -2145,7 +2154,8 @@ def _await_settlement(action_id: int, user, action_type: str = ""):
     """
     from wallet.models import Transaction
 
-    budget = float(getattr(settings, "WHATSAPP_FLOW_SETTLE_WAIT", 3) or 3)
+    configured_budget = getattr(settings, "WHATSAPP_FLOW_SETTLE_WAIT", 3)
+    budget = 3 if configured_budget is None else float(configured_budget)
     budget = max(0, min(budget, 6))
     if budget <= 0:
         return None
@@ -2229,6 +2239,11 @@ def run_flow_execution(pa: PendingAction, user) -> str:
         return Outcome("Sorry, this action can't be completed here. Please try again in the chat.",
                        OUTCOME_FAILED)
     outcome = fn(pa, user, pa.msisdn) or "Done ✅"
+    # Inline execution has no authorise_flow_execution wrapper to record the
+    # delayed-status pointer. Record it here if the rail is still processing.
+    if getattr(outcome, "status", "") == OUTCOME_PENDING:
+        from .flows import remember_pending
+        remember_pending(pa, user)
     # Remember how this ended, keyed on the action id. The confirm card that armed
     # it is still sitting in the thread with a live "Use PIN instead" button -
     # WhatsApp cannot take that back - so tapping it afterwards has to be able to
