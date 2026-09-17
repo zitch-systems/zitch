@@ -572,7 +572,7 @@ services:
       - key: WHATSAPP_QUEUE_KEY
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
       - key: WHATSAPP_QUEUE_KEY_PREV
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY_PREV}
+        value: ""
       - key: WHATSAPP_TXN_ALERT_TEMPLATE
         sync: false
       - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
@@ -727,7 +727,7 @@ services:
       - key: WHATSAPP_QUEUE_KEY
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
       - key: WHATSAPP_QUEUE_KEY_PREV
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY_PREV}
+        value: ""
       - key: WHATSAPP_TXN_ALERT_TEMPLATE
         sync: false
       - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
