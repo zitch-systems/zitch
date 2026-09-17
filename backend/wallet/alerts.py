@@ -118,15 +118,42 @@ def _describe(txn, *, reversal: bool = False) -> tuple:
     except Exception:  # noqa: BLE001 — an alert must not depend on reading a balance
         balance = ""
 
-    counterparty = _meta(txn).get("recipient_name") or _meta(txn).get("counterparty") or ""
+    meta = _meta(txn)
+    counterparty = meta.get("recipient_name") or meta.get("counterparty") or ""
     where = f" {'from' if credit else 'to'} {counterparty}" if counterparty else ""
-    subject = f"{word} alert: {amount}"
-    if reversal:
+    # A WhatsApp request that returned PROCESSING already told the customer
+    # that it was processing. When the bank later settles that same row, the
+    # follow-up must say SUCCESSFUL explicitly; a second generic "Debit alert"
+    # looks like a second charge and was the source of the confusing screenshots.
+    service = str(getattr(txn, "service", "") or "").lower()
+    settled_after_pending = (
+        not reversal
+        and bool(meta.get("wa_awaiting_settlement"))
+        and getattr(txn, "transaction_status", None) == txn.SUCCESS
+    )
+    if settled_after_pending:
+        if "transfer" in service:
+            settled_word = "Transfer successful"
+        elif "airtime" in service:
+            settled_word = "Airtime purchase successful"
+        elif "data" in service:
+            settled_word = "Data purchase successful"
+        else:
+            settled_word = "Payment successful"
+        subject = f"{settled_word}: {amount}"
+        body = (f"✅ {settled_word}: {amount}{where} on your Zitch account.\n"
+                f"{_detail_lines(txn)}"
+                f"{_narration_line(txn)}"
+                f"Ref: {txn.reference}\n"
+                f"{txn.created:%d %b %Y, %I:%M %p}")
+    elif reversal:
+        subject = f"Reversal alert: {amount}"
         body = (f"The {amount} debit{where} did not go through and has been "
                 f"returned to your Zitch account.\n"
                 f"Ref: {txn.reference}\n"
                 f"{txn.created:%d %b %Y, %I:%M %p}")
     else:
+        subject = f"{word} alert: {amount}"
         body = (f"{word} of {amount}{where} on your Zitch account.\n"
                 f"{_detail_lines(txn)}"
                 f"{_narration_line(txn)}"
@@ -517,6 +544,18 @@ def _mark_flag(txn_pk, flag: str) -> None:
     Transaction.objects.filter(pk=txn_pk).exclude(meta__has_key=flag).update(meta=merged)
 
 
+def _clear_flag(txn_pk, flag: str) -> None:
+    """Release a failed delivery claim so the reconciliation sweep can retry it."""
+    from .models import Transaction
+
+    row = Transaction.objects.filter(pk=txn_pk).first()
+    if row is None:
+        return
+    merged = dict(_meta(row))
+    merged.pop(flag, None)
+    Transaction.objects.filter(pk=txn_pk).update(meta=merged)
+
+
 def _defer(txn, flag: str, *, reversal: bool, requires: str = "",
            whatsapp_only: bool = False) -> None:
     """Claim `flag` on the row and send once the surrounding transaction commits.
@@ -546,8 +585,19 @@ def _defer(txn, flag: str, *, reversal: bool, requires: str = "",
         # which would make this claim "already alerted" for every first send.
         try:
             if whatsapp_only:
-                if send_whatsapp_transaction_alert(row, reversal=reversal):
-                    _mark_flag(row.pk, flag)
+                # The normal alert path claims its flag before sending. This retry
+                # path used to send first and mark afterwards, so two reconcile
+                # processes could both pass the check and deliver the same alert.
+                # Claim atomically before the provider call; release only when the
+                # provider rejects the message so a later sweep can retry.
+                merged = dict(_meta(row))
+                merged[flag] = True
+                updated = Transaction.objects.filter(
+                    pk=txn.pk).exclude(meta__has_key=flag).update(meta=merged)
+                if not updated:
+                    return
+                if not send_whatsapp_transaction_alert(row, reversal=reversal):
+                    _clear_flag(row.pk, flag)
                 return
             merged = dict(_meta(row))
             merged[flag] = True

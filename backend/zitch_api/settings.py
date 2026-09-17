@@ -837,6 +837,10 @@ WHATSAPP_PROCESS_INLINE = env_bool("WHATSAPP_PROCESS_INLINE", not _PROD)
 # so this is what stops one customer's voice note or bank-rail wait from holding
 # up everybody else's reply. Raise it only alongside the DB connection pool.
 WHATSAPP_WORKER_CONCURRENCY = int(os.environ.get("WHATSAPP_WORKER_CONCURRENCY", "4") or 4)
+# Reconciliation is owned by the dedicated Wema cron in production. Keeping it
+# off the WhatsApp message worker prevents multiple worker processes from polling
+# and notifying on the same settlement at once.
+WHATSAPP_WORKER_RECONCILE = env_bool("WHATSAPP_WORKER_RECONCILE", False)
 # The web service also drains the inbound queue in a bounded background thread
 # after acknowledging a webhook, so a stopped/crashed/never-created worker service
 # cannot silently swallow every reply. Rows are claimed with SELECT FOR UPDATE, so

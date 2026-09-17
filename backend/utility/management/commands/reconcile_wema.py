@@ -26,10 +26,12 @@ The partner bank exposes NO webhooks for these paths, so three things must be po
 Schedule frequently (see render.yaml); each phase only does work when Wema
 is the relevant rail, so it's harmless otherwise.
 """
+import secrets
 from datetime import timedelta
 
 from django.conf import settings
 from django.core.cache import cache
+from django.db import connection
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
@@ -73,6 +75,45 @@ class Command(BaseCommand):
             raise
 
     def _run(self, **options):
+        """Run reconciliation once across all processes and services.
+
+        The WhatsApp worker and scheduled cron both call this command. PostgreSQL
+        advisory locks provide a database-backed guard even when a Render service
+        is missing or miswired to Redis; cache locking remains the fallback for
+        local/test databases.
+        """
+        lock_key = "zitch:money-reconcile:lock"
+        db_cursor = None
+        acquired = False
+        try:
+            if connection.vendor == "postgresql":
+                db_cursor = connection.cursor()
+                db_cursor.execute(
+                    "SELECT pg_try_advisory_lock(hashtext(%s))", [lock_key])
+                acquired = bool(db_cursor.fetchone()[0])
+            else:
+                lock_token = secrets.token_urlsafe(16)
+                acquired = cache.add(lock_key, lock_token, timeout=90)
+        except Exception as exc:  # noqa: BLE001 - fail closed for money safety
+            self.stderr.write(f"reconcile_wema: distributed lock unavailable: {exc}")
+            return
+        if not acquired:
+            if db_cursor is not None:
+                db_cursor.close()
+            self.stdout.write("Wema reconcile: skipped; another reconciliation is running")
+            return
+        try:
+            return self._run_unlocked(**options)
+        finally:
+            try:
+                if db_cursor is not None:
+                    db_cursor.execute(
+                        "SELECT pg_advisory_unlock(hashtext(%s))", [lock_key])
+                    db_cursor.close()
+            except Exception:  # noqa: BLE001 - cleanup must not mask the result
+                pass
+
+    def _run_unlocked(self, **options):
         today = timezone.now().date()
         date_to = today.strftime("%Y-%m-%d")
         date_from = (today - timedelta(days=max(0, options["lookback_days"]))).strftime("%Y-%m-%d")

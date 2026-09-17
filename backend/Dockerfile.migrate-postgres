@@ -1,0 +1,6 @@
+FROM postgres:18-bookworm
+
+COPY backend/scripts/migrate_render_postgres.sh /usr/local/bin/migrate_render_postgres
+RUN chmod 0555 /usr/local/bin/migrate_render_postgres
+
+ENTRYPOINT ["/usr/local/bin/migrate_render_postgres"]
