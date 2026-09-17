@@ -2154,7 +2154,8 @@ def _await_settlement(action_id: int, user, action_type: str = ""):
     """
     from wallet.models import Transaction
 
-    budget = float(getattr(settings, "WHATSAPP_FLOW_SETTLE_WAIT", 3) or 3)
+    configured_budget = getattr(settings, "WHATSAPP_FLOW_SETTLE_WAIT", 3)
+    budget = 3 if configured_budget is None else float(configured_budget)
     budget = max(0, min(budget, 6))
     if budget <= 0:
         return None
