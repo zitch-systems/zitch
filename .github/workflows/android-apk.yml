@@ -30,6 +30,11 @@ concurrency:
   group: android-apk-${{ github.ref }}
   cancel-in-progress: true
 
+# The job only checks out code, builds, and uploads an artifact — no GitHub
+# API writes — so the GITHUB_TOKEN needs nothing beyond read access.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build release APK
