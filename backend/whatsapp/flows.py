@@ -296,6 +296,100 @@ def remember_settled(pa, outcome: str) -> None:
         log.warning("wa_flow_settled_not_recorded pa=%s", getattr(pa, "pk", "?"), exc_info=True)
 
 
+def _pending_key(token: str) -> str:
+    """Cache key for an authorised payment whose Flow was answered too early.
+
+    The Flow token is signed and opaque; hashing the complete token prevents a
+    sequential action id from becoming a cross-user status oracle.
+    """
+    return "wa_flow_pending:" + hashlib.sha256((token or "").encode()).hexdigest()[:32]
+
+
+def remember_pending(pa, user) -> None:
+    """Remember enough to re-read a queued payment after its action is cleared.
+
+    The worker can finish after Meta has already rendered the RESULT screen. The
+    screen's Done exchange is therefore also a safe final-status check, but it
+    needs a durable mapping from the signed token to the idempotency key.
+    """
+    if pa is None or user is None:
+        return
+    try:
+        from django.core.cache import cache
+        action_id = getattr(pa, "pk", None)
+        if not action_id:
+            return
+        action_type = str(getattr(pa, "action_type", "") or "")
+        key = f"wa-fx-{action_id}" if action_type == "convert" else f"wa-{action_id}"
+        cache.set(_pending_key(sign_flow_token(pa)), {
+            "user_id": int(user.pk),
+            "action_type": action_type,
+            "idempotency_key": key,
+        }, _SETTLED_TTL)
+    except Exception:  # noqa: BLE001 - status recovery must never block payment
+        log.warning("wa_flow_pending_not_recorded pa=%s", getattr(pa, "pk", "?"),
+                    exc_info=True)
+
+
+def forget_pending(token: str) -> None:
+    """Drop the re-check marker once the first Flow response is terminal."""
+    raw = (token or "").strip()
+    if "." not in raw:
+        return
+    try:
+        from django.core.cache import cache
+        cache.delete(_pending_key(raw))
+    except Exception:  # noqa: BLE001
+        log.warning("wa_flow_pending_not_cleared", exc_info=True)
+
+
+def _pending_meta(token: str) -> dict:
+    raw = (token or "").strip()
+    if "." not in raw:
+        return {}
+    try:
+        from django.core.cache import cache
+        value = cache.get(_pending_key(raw))
+        return value if isinstance(value, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _refresh_pending_result(token: str):
+    """Return the latest safe result for a payment that previously timed out.
+
+    A pending Flow cannot receive a server push after Meta renders it. Reusing
+    the published Done exchange as a re-check avoids inventing success and lets
+    the customer see the final ledger state once the chat receipt arrives.
+    """
+    meta = _pending_meta(token)
+    if not meta:
+        return None
+
+    from wallet.models import Transaction
+
+    txn = (Transaction.objects.filter(
+        user_id=meta.get("user_id"),
+        idempotency_key=meta.get("idempotency_key"),
+    ).only("transaction_status").first())
+    if txn is None or txn.transaction_status == Transaction.PENDING:
+        return _result_screen(
+            "Still processing - we will confirm in the chat as soon as it settles.",
+            status="pending",
+        )
+
+    forget_pending(token)
+    if txn.transaction_status == Transaction.SUCCESS:
+        return _result_screen(
+            "Payment successful - the receipt is in your chat.",
+            status="success",
+        )
+    return _result_screen(
+        "That payment did not go through. You were not charged - see the chat for details.",
+        status="failed",
+    )
+
+
 def settled_outcome(token: str) -> str:
     """The recorded outcome for a token whose action is gone, or "".
 
@@ -636,16 +730,14 @@ def _handle_flow_request(payload: dict) -> dict:
 
     token = payload.get("flow_token", "")
 
-    # "Done" on the outcome page. Answered before any session lookup because it is
-    # the one exchange that must work no matter what state the action is in - the
-    # payment is already finished by the time this page is on screen, and a
-    # customer tapping Done on a resolved payment must never meet an error.
-    #
-    # It ends the Flow with the completion envelope rather than navigating to a
-    # second screen. That second screen was the duplicate: it declared the same
-    # two fields and rendered the same sentence, so every ending was read, dismissed
-    # and then read again.
+    # "Done" normally ends the outcome page. If the first response was pending,
+    # however, the rail may have settled after Meta rendered that page. Re-read
+    # the ledger first; a terminal result is shown once, a still-pending result
+    # stays honest, and the next Done exchange closes the Flow normally.
     if data.get("close") and action == "data_exchange":
+        refreshed = _refresh_pending_result(token)
+        if refreshed is not None:
+            return refreshed
         return _close_flow(token)
 
     # A signup setting its PIN uses the same published screen, addressed by a
