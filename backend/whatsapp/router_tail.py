@@ -2099,6 +2099,8 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     # The requested account/details command still runs on the durable worker;
     # report only what is already true here: identity was confirmed.
     if pa.action_type == "unlock":
+        from .flows import forget_pending, sign_flow_token
+        forget_pending(sign_flow_token(pa))
         return Outcome("Identity confirmed - your requested details will appear "
                        "in the chat.", "done")
 
