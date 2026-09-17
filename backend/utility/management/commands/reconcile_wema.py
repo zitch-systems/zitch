@@ -26,6 +26,7 @@ The partner bank exposes NO webhooks for these paths, so three things must be po
 Schedule frequently (see render.yaml); each phase only does work when Wema
 is the relevant rail, so it's harmless otherwise.
 """
+import secrets
 from datetime import timedelta
 
 from django.conf import settings
@@ -73,6 +74,34 @@ class Command(BaseCommand):
             raise
 
     def _run(self, **options):
+        """Run one reconciliation pass under a cross-process distributed lock.
+
+        The WhatsApp worker and the scheduled cron both use this command. A
+        process-local lock cannot stop them (or multiple worker processes) from
+        sweeping the same settled row together, which can duplicate customer
+        notifications and hammer Wema. Redis-backed Django cache add is atomic,
+        so only one pass may run across all services.
+        """
+        lock_key = "zitch:money-reconcile:lock"
+        lock_token = secrets.token_urlsafe(16)
+        try:
+            acquired = cache.add(lock_key, lock_token, timeout=90)
+        except Exception as exc:  # noqa: BLE001 - fail closed for money safety
+            self.stderr.write(f"reconcile_wema: distributed lock unavailable: {exc}")
+            return
+        if not acquired:
+            self.stdout.write("Wema reconcile: skipped; another reconciliation is running")
+            return
+        try:
+            return self._run_unlocked(**options)
+        finally:
+            try:
+                if cache.get(lock_key) == lock_token:
+                    cache.delete(lock_key)
+            except Exception:  # noqa: BLE001 - cleanup must not mask the result
+                pass
+
+    def _run_unlocked(self, **options):
         today = timezone.now().date()
         date_to = today.strftime("%Y-%m-%d")
         date_from = (today - timedelta(days=max(0, options["lookback_days"]))).strftime("%Y-%m-%d")
