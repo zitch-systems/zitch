@@ -542,41 +542,41 @@ services:
       # WhatsApp payouts remain owed but the cron can only log "WhatsApp banking
       # is currently unavailable" on every retry.
       - key: RESEND_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
+        sync: false
       - key: RESEND_FROM_EMAIL
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_FROM_EMAIL}
+        sync: false
       - key: TERMII_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_API_KEY}
+        sync: false
       - key: TERMII_SENDER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_SENDER_ID}
+        sync: false
       - key: TERMII_CHANNEL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
+        sync: false
       - key: TERMII_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
+        sync: false
       - key: TXN_ALERTS_WHATSAPP
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_WHATSAPP}
+        sync: false
       - key: WHATSAPP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_MODE}
+        sync: false
       - key: WHATSAPP_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BASE_URL}
+        sync: false
       - key: WHATSAPP_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TOKEN}
+        sync: false
       - key: WHATSAPP_PHONE_NUMBER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
+        sync: false
       - key: WHATSAPP_VERIFY_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_VERIFY_TOKEN}
+        sync: false
       - key: WHATSAPP_APP_SECRET
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_APP_SECRET}
+        sync: false
       - key: WHATSAPP_BUSINESS_NUMBER
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BUSINESS_NUMBER}
+        sync: false
       - key: WHATSAPP_QUEUE_KEY
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
       - key: WHATSAPP_QUEUE_KEY_PREV
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY_PREV}
       - key: WHATSAPP_TXN_ALERT_TEMPLATE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE}
+        sync: false
       - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE_LANG}
+        sync: false
 
   # Session hygiene — delete access/refresh tokens that can no longer
   # authenticate anything. Nothing removed these before: an AccessToken is
@@ -697,41 +697,41 @@ services:
       # WhatsApp payouts remain owed but the cron can only log "WhatsApp banking
       # is currently unavailable" on every retry.
       - key: RESEND_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
+        sync: false
       - key: RESEND_FROM_EMAIL
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_FROM_EMAIL}
+        sync: false
       - key: TERMII_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_API_KEY}
+        sync: false
       - key: TERMII_SENDER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_SENDER_ID}
+        sync: false
       - key: TERMII_CHANNEL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
+        sync: false
       - key: TERMII_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
+        sync: false
       - key: TXN_ALERTS_WHATSAPP
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_WHATSAPP}
+        sync: false
       - key: WHATSAPP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_MODE}
+        sync: false
       - key: WHATSAPP_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BASE_URL}
+        sync: false
       - key: WHATSAPP_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TOKEN}
+        sync: false
       - key: WHATSAPP_PHONE_NUMBER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
+        sync: false
       - key: WHATSAPP_VERIFY_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_VERIFY_TOKEN}
+        sync: false
       - key: WHATSAPP_APP_SECRET
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_APP_SECRET}
+        sync: false
       - key: WHATSAPP_BUSINESS_NUMBER
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BUSINESS_NUMBER}
+        sync: false
       - key: WHATSAPP_QUEUE_KEY
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
       - key: WHATSAPP_QUEUE_KEY_PREV
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY_PREV}
       - key: WHATSAPP_TXN_ALERT_TEMPLATE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE}
+        sync: false
       - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE_LANG}
+        sync: false
 
   # Ledger <-> balance integrity check — recomputes every wallet from the
   # append-only ledger and fails (alerting via cron failure + AuditLog snapshot)
