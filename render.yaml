@@ -335,7 +335,7 @@ services:
       - key: WHATSAPP_QUEUE_KEY
         sync: false
       - key: WHATSAPP_QUEUE_KEY_PREV
-        sync: false
+        value: ""
 
   - type: worker
     name: zitch-whatsapp-worker
