@@ -27,10 +27,10 @@ class VasLegendParsingTests(TestCase):
 
     def test_parses_comma_and_space_separated(self):
         with mock.patch.dict(settings.WEMA,
-                             {"VAS_STATUS_LEGEND": "200=success_or_pending, "
+                             {"VAS_STATUS_LEGEND": "200=success, "
                                                    "400=failed 401=unauthorized_authentication_failed_or_invalid_api"}):
             self.assertEqual(_vas_legend("airtime"),
-                             {"200": "pending", "400": "failed", "401": "pending"})
+                             {"200": "success", "400": "failed", "401": "pending"})
 
     def test_airtime_and_bills_legends_are_separate_ladders(self):
         # The two endpoints publish different enums; decoding a bills code against the

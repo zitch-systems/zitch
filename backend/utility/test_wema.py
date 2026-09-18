@@ -386,6 +386,42 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(result["status"], "SUCCESSFUL")
 
     @patch("utility.wema.requests.get")
+    def test_status_requery_numeric_200_is_payment_success(self, mock_get):
+        mock_get.return_value = _resp(
+            {"result": {"transactionStatus": 200,
+                        "transactionReference": "REF-200"},
+             "hasError": False}
+        )
+        result = wema.confirm_transfer_status("REF-200")
+        self.assertTrue(result["success"])
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["status"], "200")
+
+    @patch("utility.wema.requests.get")
+    def test_status_requery_numeric_400_is_payment_failure(self, mock_get):
+        mock_get.return_value = _resp(
+            {"result": {"transactionStatus": 400,
+                        "transactionReference": "REF-400"},
+             "hasError": False}
+        )
+        result = wema.confirm_transfer_status("REF-400")
+        self.assertFalse(result["success"])
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["status"], "400")
+
+    @patch("utility.wema.requests.get")
+    def test_status_requery_numeric_401_stays_pending(self, mock_get):
+        mock_get.return_value = _resp(
+            {"result": {"transactionStatus": 401,
+                        "transactionReference": "REF-401"},
+             "hasError": False}
+        )
+        result = wema.confirm_transfer_status("REF-401")
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+        self.assertEqual(result["status"], "401")
+
+    @patch("utility.wema.requests.get")
     def test_status_requery_pending_is_not_delivery_success(self, mock_get):
         mock_get.return_value = _resp(
             {"result": {"data": {"status": "PENDING",

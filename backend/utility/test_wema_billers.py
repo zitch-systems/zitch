@@ -16,8 +16,8 @@ from utility.providers import _wema_vas_route, vtu_purchase, vtu_verify_customer
 # routing against a purchase that is (correctly) never submitted.
 WEMA_ON = {"KEYS": {"wallet": "k", "airtime": "k", "bills": "k"}, "CHANNEL_ID": "c",
            "SIMULATION": False, "SOURCE_ACCOUNT": "0123456789",
-           "VAS_STATUS_LEGEND": "200=success_or_pending 400=failed 401=unauthorized_authentication_failed_or_invalid_api",
-           "BILLS_STATUS_LEGEND": "200=success_or_pending 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
+           "VAS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api",
+           "BILLS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
 
 
 @override_settings(VAS_PROVIDER="wema", WEMA=WEMA_ON)

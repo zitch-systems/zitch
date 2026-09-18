@@ -1405,12 +1405,17 @@ def resolve_account(account_number: str, bank_code: str) -> dict:
 TRANSFER_SETTLED_STATUSES = {
     "SUCCESS", "SUCCESSFUL", "SUCCESSFULL", "COMPLETED", "PAID", "APPROVED",
     "SETTLED", "CREDITED", "DELIVERED", "EXECUTED",
+    # Wema confirmed the payment status legend uses 200 as terminal success.
+    "200",
 }
 TRANSFER_FAILED_STATUSES = {
     "FAILED", "FAILURE", "REVERSED", "DECLINED", "CANCELLED", "CANCELED",
     "REJECTED", "RETURNED", "NOT_PROCESSED", "EXPIRED", "TIMED_OUT",
     "TIMEDOUT", "TIMEOUT", "REFUNDED", "BLOCKED", "INSUFFICIENT_FUNDS",
     "INSUFFICIENT FUNDS", "INVALID_ACCOUNT", "INVALID ACCOUNT",
+    # Wema confirmed 400 as terminal failed. Authentication/API statuses such as
+    # 401 still stay pending because they prove the lookup failed, not the transfer.
+    "400",
 }
 
 

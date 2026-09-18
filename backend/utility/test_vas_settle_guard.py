@@ -28,8 +28,8 @@ from utility import providers as P
 _KEYED = {"BASE_URL": "https://apiplayground.alat.ng", "CHANNEL_ID": "chan-1",
           "KEYS": {"wallet": "subkey", "airtime": "airkey"},
           "SOURCE_ACCOUNT": "0100000001", "SECURITY_INFO": "sec", "SIMULATION": False}
-_AIRTIME_LEGEND = {**_KEYED, "VAS_STATUS_LEGEND": "200=success_or_pending 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
-_BILLS_LEGEND = {**_KEYED, "BILLS_STATUS_LEGEND": "200=success_or_pending 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
+_AIRTIME_LEGEND = {**_KEYED, "VAS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
+_BILLS_LEGEND = {**_KEYED, "BILLS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
 
 _AIRTIME = ("mtn-airtime", {"amount": "500", "phone": "08012345678",
                             "source_account": "0100000001"})
