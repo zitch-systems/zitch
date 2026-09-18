@@ -86,7 +86,7 @@ export function renderConsentPage(opts: {
     <dt>Redirects to</dt><dd>${esc(opts.redirectUri)}</dd>
     <dt>Access</dt><dd>${esc(opts.scope)} — read-only</dd>
   </dl>
-  <form method="post" action="">
+  <form method="post" action="/oauth/authorize">
     <input type="hidden" name="request" value="${esc(opts.request)}">
     <label for="password">Operator passphrase</label>
     <input type="password" id="password" name="password" autocomplete="current-password"

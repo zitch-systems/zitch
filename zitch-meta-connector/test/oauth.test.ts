@@ -313,7 +313,7 @@ describe('OAuth 2.1 authorization-code + PKCE flow over HTTP', () => {
       body: new URLSearchParams({ request: blob!, password: PASSWORD }),
       redirect: 'manual',
     });
-    expect(approved.status).toBe(302);
+    expect(approved.status).toBe(303);
     return new URL(approved.headers.get('location')!);
   }
 

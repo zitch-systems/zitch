@@ -361,7 +361,10 @@ export function buildOAuthRouter(config: Config): Router {
     url.searchParams.set('code', code);
     if (pending.st) url.searchParams.set('state', pending.st);
     noStore(res);
-    res.redirect(302, url.toString());
+    // This redirect follows a form POST. 303 requires the user agent to load
+    // the callback with GET; embedded OAuth browsers are not all consistent
+    // about converting POST to GET for the historically ambiguous 302.
+    res.redirect(303, url.toString());
   });
 
   // ----------------------------------------------------------------- token
