@@ -948,7 +948,7 @@ class ReconnectBankAccountAdminTests(TestCase):
         self.assertEqual(wallet.account_number, "")
         fetch.assert_not_called()
         pnd.assert_not_called()
-        self.assertIn("pending", " ".join(self.messages).lower())
+        self.assertIn("no funding account is available", " ".join(self.messages).lower())
 
     def test_no_wallet_product_is_consulted_at_all(self):
         """Neither the BVN nor the NIN wallet product is asked any more.
@@ -989,7 +989,7 @@ class ReconnectBankAccountAdminTests(TestCase):
         self.assertEqual(wallet.account_number, "")
         # The operator is told what it is waiting on, not what the rail said —
         # nothing asks the rail any more.
-        self.assertIn("pending", " ".join(self.messages).lower())
+        self.assertIn("no funding account is available", " ".join(self.messages).lower())
 
 
 class WemaPartialReversalTests(TestCase):

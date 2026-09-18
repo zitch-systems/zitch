@@ -90,6 +90,8 @@ class BrowserFaceCorrelationTrustTests(TestCase):
     def test_real_http_error_cannot_attest_correlation_even_with_success_envelope(self):
         self.callback_envelope({"status": True, "data": {}}, status=400)
         self.assert_unverified()
+        self.assertEqual(self.session.account_state, "rejected")
+        self.assertEqual(self.session.account_http_status, 400)
 
     def test_real_duplicate_envelope_with_success_flag_cannot_attest_correlation(self):
         self.callback_envelope({"status": True, "message": "Customer already exists for this channel"})
@@ -98,6 +100,8 @@ class BrowserFaceCorrelationTrustTests(TestCase):
     def test_real_duplicate_in_branded_error_is_not_hidden_by_customer_message_filter(self):
         self.callback_envelope({"status": True, "message": "Wema customer already exists"})
         self.assert_unverified()
+        self.assertEqual(self.session.account_state, "review_required")
+        self.assertEqual(self.session.account_failure_category, "existing_customer")
 
     def test_real_duplicate_nested_in_error_collection_cannot_attest_correlation(self):
         self.callback_envelope({"status": True, "message": "Request processed",
@@ -125,6 +129,7 @@ class BrowserFaceCorrelationTrustTests(TestCase):
         self.assertFalse(self.user.face_verified)
         self.assertEqual(self.session.status, WemaFaceSession.VERIFIED)
         self.assertEqual(IdentityProof.objects.get(user=self.user).provider_reference, "untrusted-correlation")
+        self.assertEqual(self.session.account_state, "awaiting_callback")
 
     def test_channel_duplicate_with_existing_nuban_does_not_prove_correlation(self):
         self.wallet.account_number = "0123456789"

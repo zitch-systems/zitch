@@ -1756,7 +1756,18 @@ def kyc_face_status(request):
     status = session.status
     if status == WemaFaceSession.PENDING and session.expired:
         status = "expired"
-    return ok(success=True, status=status, **_kyc_state(user))
+    has_account = bool(get_or_create_wallet(user).account_number)
+    account_state = "ready" if has_account else session.account_state
+    if account_state == "unknown" and status == WemaFaceSession.VERIFIED:
+        account_state = "review_required"
+    elif account_state == "unknown" and status == WemaFaceSession.PENDING:
+        account_state = "awaiting_verification"
+    elif (account_state == "awaiting_callback"
+          and session.updated < timezone.now() - timedelta(hours=1)):
+        account_state = "review_required"
+    return ok(success=True, status=status, account_setup_state=account_state,
+              account_review_required=account_state in ("review_required", "rejected", "unknown"),
+              **_kyc_state(user))
 
 
 @api

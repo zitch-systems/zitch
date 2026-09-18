@@ -316,6 +316,13 @@ class WemaFaceSession(models.Model):
     # Wema's proof that the face check passed. Kept for audit and dispute handling —
     # it is an opaque reference, not biometric data.
     correlation_id = models.CharField(max_length=160, blank=True, default="")
+    # Verification and account issuance are separate outcomes. Legacy sessions
+    # stay unknown; a verified identity is NOT evidence that creation was accepted.
+    account_state = models.CharField(max_length=24, default="unknown", choices=[
+        (value, value) for value in
+        ("unknown", "awaiting_callback", "rejected", "review_required")])
+    account_failure_category = models.CharField(max_length=48, blank=True, default="")
+    account_http_status = models.PositiveSmallIntegerField(null=True, blank=True)
     status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
     expires_at = models.DateTimeField()
     created = models.DateTimeField(auto_now_add=True)

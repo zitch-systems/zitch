@@ -443,40 +443,43 @@ def is_demo_account(wallet) -> bool:
 
 
 def attach_existing_bank_account(user, *, using_bvn: bool | None = None) -> tuple:
-    """Attach the NUBAN the rail ALREADY holds for `user`. Returns (wallet, detail).
+    """Read callback-provisioned state; escalate stalled issuance without recreating.
 
-    `wallet` is None when nothing could be attached; `detail` always explains why,
-    for an operator or an API caller to relay.
-
-    The rail refuses to create a customer it already has, so an account that exists
-    on their side but not on ours can only be recovered from the wallet-details
-    callback. ALAT's documented account-details endpoint requires an account number;
-    it does not support looking up a wallet by phone number.
-
-    `using_bvn` picks the wallet product to ask; None tries BVN and falls back to
-    NIN, since either could have created the account and the operator running this
-    has no way to know which.
-
-    Deliberately does NOT touch the KYC tier or mark the identity verified: the OTP
-    round-trip is what attests identity, and this path has no OTP.
+    There is no confirmed phone-only recovery endpoint for this wallet product.
+    Do not call account creation again, invent a NUBAN, or imply that a no-op polled
+    the bank. The authenticated account callback remains the attachment mechanism.
     """
-    from utility import wema as wema_provider
+    from django.core.cache import cache
+    from utility.alerts import alert
+    from .models import WemaFaceSession
 
     wallet = get_or_create_wallet(user)
     if wallet.account_number:
         return wallet, "This wallet already has an account number."
-    return None, "Account generation is pending Wema's wallet-details callback."
+    sessions = WemaFaceSession.objects.filter(user=user)
+    if using_bvn is not None:
+        sessions = sessions.filter(identity_type="bvn" if using_bvn else "nin")
+    session = sessions.order_by("-created", "-pk").first()
+    if (session and session.account_state == "awaiting_callback"
+            and session.updated >= timezone.now() - timedelta(hours=1)):
+        return None, "Account creation was accepted; awaiting the bank's account callback."
+    # Legacy verified sessions have UNKNOWN issuance, not evidence of acceptance.
+    # Alert even for that branch, which previously bypassed the WhatsApp alert and
+    # silently looped every fifteen minutes forever.
+    if session and (session.status != WemaFaceSession.PENDING or session.expired):
+        if cache.add(f"wema-account-review:{user.pk}", True, timeout=60 * 60):
+            alert("Funding account requires review; no automatic recovery was performed",
+                  level="error", user_id=user.pk, session_id=session.pk,
+                  account_state=session.account_state,
+                  failure_category=session.account_failure_category or "legacy_unknown")
+        return None, "Account setup requires review; bank account creation is not confirmed."
+    return None, "No funding account is available; waiting for a confirmed bank account callback."
 
 
 def repair_missing_funding_accounts(*, email: str = "", limit: int = 20) -> dict:
-    """Recover funding accounts for verified customers without creating new KYC.
+    """Check callback-provisioned accounts and escalate stalled issuance.
 
-    A provider can accept a BVN verification yet fail to return the resulting
-    NUBAN to us.  Retrying account *creation* in that state is wrong: it asks for
-    an identity the customer has already proved and the provider rejects the
-    duplicate customer.  This recovery reads the provider's existing account and
-    attaches it when present.  It is therefore safe to run repeatedly from the
-    worker and is intentionally limited to a small batch.
+    Does not re-submit identities or promise an unsupported bank-side lookup.
     """
     from django.contrib.auth import get_user_model
     from django.db.models import Q

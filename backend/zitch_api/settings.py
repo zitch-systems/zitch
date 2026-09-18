@@ -112,7 +112,11 @@ _face_callback_origins = {
     for o in os.environ.get("WEMA_FACE_CALLBACK_ORIGINS", "").split(",")
     if o.strip()
 }
-_derived_face_origin = _url_origin(os.environ.get("WEMA_FACE_VERIFY_URL", ""))
+# Use the SAME effective URL for CORS and the customer-facing link. Otherwise
+# an unset env var sends customers to Pilot while rejecting its browser callback.
+_face_verify_url = os.environ.get(
+    "WEMA_FACE_VERIFY_URL", "https://face-verification-pilot.azurewebsites.net")
+_derived_face_origin = _url_origin(_face_verify_url)
 if _derived_face_origin:
     _face_callback_origins.add(_derived_face_origin)
 
@@ -445,10 +449,7 @@ WEMA = {
     #
     # Pilot is the approved Wema environment for this rollout. Keep this non-secret
     # fallback so a worker/API env-var drift cannot resurrect the old DEV host.
-    "FACE_VERIFY_URL": os.environ.get(
-        "WEMA_FACE_VERIFY_URL",
-        "https://face-verification-pilot.azurewebsites.net",
-    ),
+    "FACE_VERIFY_URL": _face_verify_url,
     # Pilot diagnostic only: Wema's pilot page currently fails when cb_uri is
     # supplied. Keep enabled for the real flow; disable only to isolate the
     # hosted verifier before Wema confirms its callback contract.

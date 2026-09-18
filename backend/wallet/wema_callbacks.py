@@ -859,6 +859,25 @@ def wema_notification_callback(request):
 # inside the bank page's address — so a token here would be published rather than
 # kept. The per-session state carries the entropy instead, and the source-IP
 # allowlist carries the authentication.
+def _record_face_account_outcome(session, result):
+    """Persist operational evidence, never the raw bank response or identity."""
+    state = result.get("account_state") or (
+        "awaiting_callback" if result.get("success") and not result.get("mock") else "unknown")
+    if state not in {"awaiting_callback", "rejected", "review_required", "unknown"}:
+        state = "unknown"
+    category = result.get("failure_category", "")
+    if category not in {"existing_customer", "authentication_or_entitlement",
+                        "invalid_correlation", "invalid_phone", "invalid_identity",
+                        "request_validation", "gateway_unavailable", "provider_rejected",
+                        "invalid_response", "unconfigured"}:
+        category = ""
+    code = result.get("http_status")
+    session.account_state = state
+    session.account_failure_category = category
+    session.account_http_status = code if type(code) is int and 100 <= code <= 599 else None
+    session.save(update_fields=["account_state", "account_failure_category", "account_http_status", "updated"])
+
+
 @wema_callback("face", token_required=False)
 def wema_face_callback(request, state=""):
     """The bank reports the outcome of a face-biometric check.
@@ -1024,6 +1043,7 @@ def wema_face_callback(request, state=""):
                 identity_type=kind, identity_value=identity,
                 correlation_id=correlation,
             )
+            _record_face_account_outcome(session, provider_validated_account)
             # Neither an existing NUBAN nor echoed identity/contact values establish
             # that Wema validated this c_id. Only an explicit, non-simulated success
             # from the authenticated correlation request can attest a browser claim.
@@ -1081,8 +1101,8 @@ def wema_face_callback(request, state=""):
     # A face pass can also replace OTP in Tier-1 account creation. The creation call
     # is intentionally outside the database transaction: an APIM timeout must not
     # hold locks or roll back genuine identity proof. Wema's profiled account callback
-    # remains the authoritative NUBAN delivery; the immediate read-back only shortens
-    # the happy path when the account is already visible.
+    # remains the authoritative NUBAN delivery; the local recheck observes a callback
+    # which may already have attached the account.
     account_started = True
     account_failed = False
     from .services import attach_existing_bank_account, get_or_create_wallet
@@ -1093,12 +1113,12 @@ def wema_face_callback(request, state=""):
             identity_type=kind, identity_value=identity,
             correlation_id=correlation,
         )
+        _record_face_account_outcome(session, account)
         account_started = bool(account.get("success") and account.get("account_started", True))
         account_failed = not account_started
-        # Read back on BOTH outcomes. "Customer already exists" is a failed create
-        # response but often means the NUBAN was created by an earlier request whose
-        # callback we missed; adopting it is the correct recovery, not asking the
-        # customer to verify again.
+        # Recheck locally on BOTH outcomes: an authenticated account callback may
+        # already have attached the NUBAN. No unsupported phone lookup or duplicate
+        # creation attempt is made here.
         try:
             recovered, _detail = attach_existing_bank_account(
                 user, using_bvn=kind == "bvn")

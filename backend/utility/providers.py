@@ -129,10 +129,11 @@ def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
     product = _SETTLE_PRODUCT.get(product, product)
     if not wema._vas_live(product):
         return True, ""
-    if not wema._vas_legend(product):
+    legend = wema._vas_legend(product)
+    if not legend or not any(outcome in ("success", "failed") for outcome in legend.values()):
         env = "WEMA_" + wema._LEGEND_SETTING.get(product, "VAS_STATUS_LEGEND")
-        return False, (f"{env} is not configured, so a PROCESSING purchase could never "
-                       f"be settled or refunded")
+        return False, (f"{env} has no unambiguous terminal outcome, so a PROCESSING "
+                       f"purchase could never be settled or refunded")
     return True, ""
 
 

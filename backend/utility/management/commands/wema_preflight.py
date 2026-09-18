@@ -356,13 +356,14 @@ class Command(BaseCommand):
             if not _vas_live(product):
                 continue
             legend = _vas_legend(product)
+            terminal_codes = sum(value in ("success", "failed") for value in legend.values())
             sells = "Remita bill payments" if product == "remita" else (
                 "airtime and data" if product == "airtime" else "bill payments")
             checks.append((
                 False, f"VAS status legend ({product})",
-                PASS if legend else WARN,
-                f"{len(legend)} code(s) mapped" if legend
-                else f"{env_var} unset — {sells} cannot be settled, so purchases are "
+                PASS if terminal_codes else WARN,
+                f"{len(legend)} code(s) mapped; {terminal_codes} terminal" if terminal_codes
+                else f"{env_var} has no unambiguous terminal outcome — {sells} cannot be settled, so purchases are "
                      "REFUSED up front (customer not charged). Ask Wema for the enum"))
 
         self.stdout.write("")

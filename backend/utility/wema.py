@@ -869,6 +869,43 @@ def face_verification_url(identity_type: str, identity_value: str, callback_url:
     return f"{base}/?{query}"
 
 
+def _face_account_diagnostic(data, http_status: int) -> dict:
+    """Classify the raw bank error without retaining identity, contact data or keys.
+
+    Customer-facing _msg intentionally hides bank-branded errors. Diagnostics must
+    classify BEFORE that filter, and emit only fixed categories, never raw text.
+    """
+    parts = []
+    stack = [data]
+    for _ in range(100):
+        if not stack:
+            break
+        value = stack.pop()
+        if isinstance(value, dict):
+            stack.extend(list(value.values())[:30])
+        elif isinstance(value, list):
+            stack.extend(value[:30])
+        elif isinstance(value, str):
+            parts.append(value[:2000])
+    text = " ".join(parts).lower()
+    category = "provider_rejected"
+    if re.search(r"\b(?:already\s+exist\w*|duplicate)\b", text):
+        category = "existing_customer"
+    elif http_status in (401, 403) or _VAS_NOT_ENTITLED_RE.search(text):
+        category = "authentication_or_entitlement"
+    elif "correlation" in text and re.search(r"invalid|expired|not found|fail|required", text):
+        category = "invalid_correlation"
+    elif re.search(r"phone|mobile", text) and re.search(r"invalid|required|not recogni", text):
+        category = "invalid_phone"
+    elif re.search(r"bvn|nin|identity", text) and re.search(r"invalid|mismatch|not found", text):
+        category = "invalid_identity"
+    elif isinstance(data, dict) and isinstance(data.get("errors"), dict):
+        category = "request_validation"
+    elif http_status >= 500 or http_status in (408, 429):
+        category = "gateway_unavailable"
+    return {"failure_category": category, "http_status": http_status}
+
+
 def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
                             identity_value: str, correlation_id: str) -> dict:
     """Create a Tier-1 partnership NUBAN after Wema's hosted face check.
@@ -884,6 +921,7 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
         if _mock_blocked():
             return {"success": False,
                     "message": "Face-based account creation is not configured",
+                    "account_state": "rejected", "failure_category": "unconfigured",
                     "diagnostic": _product_config_diag("face_account")}
         return {"success": True, "mock": True, "tracking_id": "mock-face"}
     if not correlation_id:
@@ -897,7 +935,13 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
     }
     try:
         resp = _post("face_account", path, body)
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            log.warning("wema_face_account_failed status=%s category=invalid_response", resp.status_code)
+            return {"success": False, "message": "Invalid bank response",
+                    "account_state": "unknown", "failure_category": "invalid_response",
+                    "http_status": resp.status_code}
         envelope = {str(key).casefold(): value for key, value in data.items()} if isinstance(data, dict) else {}
         detail = envelope.get("data")
         d = detail if isinstance(detail, dict) else {}
@@ -919,20 +963,29 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
               and (detail is None or isinstance(detail, dict)) and not duplicate)
         message = _msg({key: _ci_get(data, key) for key in
                         ("message", "errorMessage", "errorMessages", "errors")})
+        diagnostic = {} if ok else _face_account_diagnostic(data, resp.status_code)
+        account_state = ("awaiting_callback" if ok else
+                         "review_required" if duplicate else
+                         "rejected" if resp.status_code in (400, 401, 403, 404, 422) else "unknown")
         if not ok:
             log.warning(
-                "wema_face_account_failed status=%s message_fingerprint=%s",
-                resp.status_code, _fingerprint(message),
+                "wema_face_account_failed status=%s category=%s message_fingerprint=%s",
+                resp.status_code, diagnostic["failure_category"], _fingerprint(message),
             )
         return {
             "success": ok,
             "message": message,
             "tracking_id": str(_ci_get(d, "trackingId") or ""),
             "account_status": str(_ci_get(d, "accountGenerationStatus") or ""),
+            "account_state": account_state,
+            "http_status": resp.status_code,
+            **diagnostic,
             "raw": data,
         }
-    except (requests.RequestException, ValueError) as exc:
-        return _unreachable(exc)
+    except (requests.RequestException, ValueError):
+        log.warning("wema_face_account_failed category=gateway_unavailable")
+        return {"success": False, "message": "Bank gateway unavailable",
+                "account_state": "unknown", "failure_category": "gateway_unavailable"}
 
 
 def _ci_get(mapping, *names, default=""):
@@ -1902,6 +1955,9 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
         # meta on success, so the token survives there for the receipt.
         token = _vas_token(data) if product == "bills" else ""
         return {**res, "token": token} if token else res
+    except ValueError:
+        return {"success": False, "pending": True, "status": "INVALID_RESPONSE",
+                "reference": reference, "message": "Invalid bank status response"}
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
@@ -1950,7 +2006,9 @@ _VAS_OUTCOME_ALIASES = {
     # purchase response carries an explicit SUCCESS status.
     "success_or_pending": "pending",
     "pending_or_success": "pending",
-    "failed_insufficient_funds_or_network_timeout": "failed",
+    # A timeout cannot prove non-delivery. This deployed label combines a
+    # terminal refusal with an ambiguous timeout; never refund from it.
+    "failed_insufficient_funds_or_network_timeout": "pending",
     "unauthorized_authentication_failed_or_invalid_api": "pending",
 }
 
@@ -1981,20 +2039,32 @@ def _vas_legend(product: str) -> dict[str, str]:
     (leave the purchase PENDING) is the only money-safe outcome: a typo that silently
     resolved to ``success`` would settle undelivered top-ups.
     """
-    raw = str(settings.WEMA.get(_LEGEND_SETTING.get(product, "VAS_STATUS_LEGEND")) or "").strip()
+    setting = _LEGEND_SETTING.get(product)
+    if setting is None:
+        return {}
+    raw = str(settings.WEMA.get(setting) or "").strip()
     if not raw:
         return {}
     legend: dict[str, str] = {}
+    invalid_codes = set()
     for entry in raw.replace(",", " ").split():
         code, sep, outcome = entry.partition("=")
         outcome = outcome.strip().lower()
         outcome = _VAS_OUTCOME_ALIASES.get(outcome, outcome)
         code = code.strip()
-        if not sep or not code.isdigit() or outcome not in _VAS_OUTCOMES:
-            log.error("wema_vas_legend_bad_entry product=%s entry=%r (ignored — codes it "
-                      "would have covered stay PENDING)", product, entry)
+        valid_code = code.isascii() and code.isdigit() and len(code) <= 10
+        if not sep or not valid_code or outcome not in _VAS_OUTCOMES:
+            log.error("wema_vas_legend_bad_entry product=%s (left PENDING)", product)
+            if valid_code:
+                invalid_codes.add(str(int(code)))
             continue
+        code = str(int(code))
+        if code in legend and legend[code] != outcome:
+            invalid_codes.add(code)
         legend[code] = outcome
+    for code in invalid_codes:
+        # Order must never decide a monetary outcome when config contradicts itself.
+        legend.pop(code, None)
     return legend
 
 
@@ -2050,16 +2120,17 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
     customer debited the whole time. A 4xx is the gateway saying it understood and
     refused, so nothing was executed and a definitive failure is the truthful answer.
 
-    ``requery`` narrows that on the status-check path, where the refusal is of the
-    QUERY and not of the purchase. Only a refusal of the whole product (401/403 — we
-    hold no entitlement, so the purchase it is asking about could not have been
-    fulfilled either) settles as failed there; a 400/404/422 says nothing reliable
-    about an already-submitted purchase and stays pending."""
+    On REQUERY, every HTTP/envelope error is a failure of the lookup, NOT a
+    verdict on the earlier purchase. It must stay pending, even if an error body
+    also contains a numeric code which a configured legend recognises."""
+    if not isinstance(data, dict):
+        return {"success": False, "pending": True, "status": "INVALID_RESPONSE",
+                "reference": reference}
     r = data.get("result", {}) or {}
     if not isinstance(r, dict):
         r = {}
     raw_status = r.get("status")
-    if raw_status is None:
+    if raw_status is None and "transactionStatus" not in r:
         raw_status = data.get("status")
     # Envelope booleans describe the API call, never the purchase outcome.
     status = raw_status.strip().upper() if isinstance(raw_status, str) else ""
@@ -2085,7 +2156,7 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
     # An earlier version of this function read the requery refusal as proof that the
     # purchase had not run. That was wrong for the reason above, and it is the reading
     # this comment exists to stop coming back.
-    refused_message = r.get("message") or _msg(data)
+    refused_message = _first_text(r.get("message")) or _msg(data)
     # ALAT does not always put the refusal in the status line. Production answers an
     # un-entitled product with HTTP *200*, hasError true and the refusal in the body,
     # which a status-code check cannot see. Requires the error envelope as well as the
@@ -2103,6 +2174,24 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
             return {"success": False, "pending": True, "lookup_refused": True,
                     "status": "", "reference": r.get("transactionReference", reference),
                     "message": refused_message, "raw": data}
+        if ((http_status is not None and not 200 <= http_status < 300)
+                or data.get("hasError") not in (None, False)
+                or data.get("successful") is False
+                or data.get("status") is False):
+            return {"success": False, "pending": True, "status": "LOOKUP_ERROR",
+                    "reference": reference, "message": refused_message, "raw": data}
+        returned_reference = str(r.get("transactionReference") or "").strip()
+        if returned_reference and returned_reference != reference:
+            return {"success": False, "pending": True, "status": "REFERENCE_MISMATCH",
+                    "reference": reference, "raw": data}
+        if status and "transactionStatus" in r:
+            text_outcome = ("success" if status in ("SUCCESS", "SUCCESSFUL", "SUCCESSFULL", "COMPLETED")
+                            else "failed" if status in ("FAILED", "FAILURE", "DECLINED", "REJECTED", "REVERSED", "NOT_PROCESSED")
+                            else "pending")
+            code_outcome = _vas_legend(product).get(str(r["transactionStatus"]).strip())
+            if code_outcome is not None and code_outcome != text_outcome:
+                return {"success": False, "pending": True, "status": "CONFLICTING_STATUS",
+                        "reference": reference, "raw": data}
     elif http_status in _VAS_REFUSED_HTTP or refused_body:
         log.error("wema_vas_refused ref=%s product=%s http_status=%s "
                   "by=%s message=%r (definitive failure — refunding, not left pending)",
@@ -2114,6 +2203,10 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
                 "message": refused_message, "raw": data}
     if not status and "transactionStatus" in r:
         code = r.get("transactionStatus")
+        if requery and not (data.get("hasError") is False
+                            or data.get("successful") is True or data.get("status") is True):
+            return {"success": False, "pending": True, "status": "LOOKUP_UNCONFIRMED",
+                    "reference": reference, "raw": data}
         outcome = _vas_legend(product).get(str(code).strip())
         # `code` is the gateway's, not ours: it is whatever JSON arrived in
         # transactionStatus, so it is sanitised alongside the reference rather than

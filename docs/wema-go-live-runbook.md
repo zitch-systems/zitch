@@ -185,10 +185,13 @@ deploy is ready.
 - VAS (airtime/data/bills) has no probe of its own — it runs on the partner bank, so
   `/wema-diagnose` and `/preflight` cover it. `/preflight` is the one to read: it
   reports whether each VAS product is keyed AND whether its status legend
-  (`WEMA_VAS_STATUS_LEGEND` / `WEMA_BILLS_STATUS_LEGEND`) is set. Without the legend a
+  (`WEMA_VAS_STATUS_LEGEND` / `WEMA_BILLS_STATUS_LEGEND`) has an unambiguous terminal
+  outcome. An all-pending legend is not ready. Without a usable legend a
   `PROCESSING` purchase could never be settled or refunded, so purchases of that
   product are **refused up front** (the customer is not charged) — see
-  `docs/wema-migration.md`. Getting the enum from Wema is what turns VAS on.
+  `docs/wema-migration.md`. Getting the enum from Wema is what turns VAS on. A refused
+  status lookup is not a failed purchase; never refund from it. See
+  [18 September incident note](wema-incident-2026-09-18.md) for the interim holds.
 - `GET /wema-callbacks-diagnose` with a diagnostic bearer token — prints the
   four callback URL **templates** and confirms each
   resolves and that a wrong secret is refused. Read
