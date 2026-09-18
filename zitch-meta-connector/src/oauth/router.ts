@@ -17,7 +17,7 @@
 import express, { Router, type Request, type Response } from 'express';
 
 import type { Config } from '../config.js';
-import { renderConsentPage, renderErrorPage } from './consent.js';
+import { renderConsentPage, renderErrorPage, renderRedirectPage } from './consent.js';
 import {
   AuthorizationCodeStore,
   startCodeSweep,
@@ -361,10 +361,10 @@ export function buildOAuthRouter(config: Config): Router {
     url.searchParams.set('code', code);
     if (pending.st) url.searchParams.set('state', pending.st);
     noStore(res);
-    // This redirect follows a form POST. 303 requires the user agent to load
-    // the callback with GET; embedded OAuth browsers are not all consistent
-    // about converting POST to GET for the historically ambiguous 302.
-    res.redirect(303, url.toString());
+    // ChatGPT can host the authorization UI in an embedded browser which may
+    // not follow a redirect returned directly to a form POST. Return a small
+    // browser relay with top-window, meta-refresh, and visible-link fallbacks.
+    res.status(200).type('html').send(renderRedirectPage(url.toString()));
   });
 
   // ----------------------------------------------------------------- token

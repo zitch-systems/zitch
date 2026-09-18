@@ -49,6 +49,10 @@ const STYLE = `
   button { width:100%; margin-top:16px; padding:12px; font-size:15px; font-weight:600; color:#fff;
            background:#0fa295; border:0; border-radius:9px; cursor:pointer; }
   button:hover { background:#0c8b80; }
+  a.button { display:block; width:100%; margin-top:16px; padding:12px; text-align:center;
+             font-size:15px; font-weight:600; color:#fff; text-decoration:none;
+             background:#0fa295; border-radius:9px; }
+  a.button:hover { background:#0c8b80; }
   .err { margin:0 0 16px; padding:10px 12px; border-radius:9px; background:#fdecea; color:#a32c1c;
          font-size:13px; border:1px solid #f5c6c0; }
   .scope { margin:16px 0 0; font-size:12px; color:#5f7370; }
@@ -112,4 +116,41 @@ export function renderErrorPage(title: string, detail: string): string {
   <p class="scope">Nothing was authorized. Close this window and start again from
   the application that sent you here.</p>
 </div></body></html>`;
+}
+
+/**
+ * Browser relay used after an operator approves access.
+ *
+ * Some embedded OAuth windows do not reliably follow a redirect returned to
+ * a form POST. Use three progressively simpler navigation mechanisms: move
+ * the top-level window, refresh the current document, and expose a visible
+ * link the operator can click. The redirect URI has already passed exact
+ * client matching and host validation in router.ts.
+ */
+export function renderRedirectPage(redirectUri: string): string {
+  // JSON is safe for a JS string except that a literal '<' could terminate
+  // the script element. Encode it even though the redirect host is trusted.
+  const scriptTarget = JSON.stringify(redirectUri).replace(/</g, '\\u003c');
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta http-equiv="refresh" content="1;url=${esc(redirectUri)}">
+<title>Authorization complete · Zitch Meta Connector</title>
+<style>${STYLE}</style></head>
+<body><div class="card">
+  <h1>Authorization complete</h1>
+  <p class="sub">Returning you to ChatGPT…</p>
+  <a class="button" href="${esc(redirectUri)}" target="_top" rel="noreferrer">Continue to ChatGPT</a>
+  <p class="scope">If this window does not close automatically, select Continue to ChatGPT once.</p>
+</div>
+<script>
+  const target = ${scriptTarget};
+  try {
+    if (window.top && window.top !== window.self) window.top.location.href = target;
+    else window.location.replace(target);
+  } catch (_) {
+    window.location.href = target;
+  }
+</script></body></html>`;
 }

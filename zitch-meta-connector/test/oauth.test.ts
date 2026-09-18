@@ -313,8 +313,12 @@ describe('OAuth 2.1 authorization-code + PKCE flow over HTTP', () => {
       body: new URLSearchParams({ request: blob!, password: PASSWORD }),
       redirect: 'manual',
     });
-    expect(approved.status).toBe(303);
-    return new URL(approved.headers.get('location')!);
+    expect(approved.status).toBe(200);
+    const relay = await approved.text();
+    expect(relay).toContain('Continue to ChatGPT');
+    const target = /const target = ("[^\n]+?");/.exec(relay)?.[1];
+    expect(target).toBeTruthy();
+    return new URL(JSON.parse(target!));
   }
 
   it('publishes authorization-server metadata', async () => {
