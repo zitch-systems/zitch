@@ -34,16 +34,16 @@
   pending. HTTP 200/400/401 are **not** a verified Wema transaction enum. Bills and
   Remita must not borrow that mapping.
 
-## Publication blocker
+## Initial publication blocker (resolved)
 
 The complete backend suite passed: 2,499 tests; system and migration checks passed.
-The initial Git push failed because this session has no GitHub write authentication
-(`could not read Username`). No alternate credential path was attempted. The code
-and migration are committed locally but are not yet deployed. The live Frankfurt
-legend was cleared on API, WhatsApp worker and Wema cron through their existing
-Render connection; no secret values were read or replaced by this change.
+The initial direct Git push failed because command-line write authentication was
+not configured (`could not read Username`). Work paused until the owner authorized
+publication through the connected GitHub app. That app published the patch without
+reading or replacing credentials. The live Frankfurt legend was initially cleared
+on API, WhatsApp worker and Wema cron through their existing Render connection.
 
-Live verification after that configuration deployment:
+Initial verification after the configuration-only deployment:
 
 - API, WhatsApp worker and Wema reconciliation cron all report live deployments
   of existing main commit `052305b` (not the unpublished critical patch).
@@ -53,6 +53,25 @@ Live verification after that configuration deployment:
   refund, or account-creation retry was used for verification.
 - Render displays a payment-failed warning; the workspace owner should resolve
   billing to avoid service interruption.
+
+## Code release verified
+
+- Published `66f446a978fb6046b1e42f541153547126aecae3` to `main` through the
+  connected GitHub app. Every uploaded blob and the entire Git tree matched the
+  locally tested source exactly; no unrelated worktree edits were included.
+- API-first deployment applied `wallet.0020_face_account_outcome` successfully
+  at 14:46 UTC. The API was live before main was advanced for worker deployment.
+- The Frankfurt API, WhatsApp worker and all seven Frankfurt cron services report
+  live deployments of `66f446a`. API auto-deploy was restored to its original
+  On Commit setting after the staged release. Oregon remains suspended.
+- Runtime checks confirm the new fields are queryable, the effective face-verifier
+  origin is in CORS, timeouts map to pending, and new airtime purchases are blocked.
+- A real HTTP OPTIONS request to the public face callback returns HTTP 200 and
+  permits exactly the Pilot verifier origin. Public readiness returns HTTP 200.
+- The next scheduled Wema reconciliation run finished successfully at 14:51 UTC;
+  its summary reported no settlements, refunds or reversals.
+- This does not prove bank account issuance or restore status-product access.
+  The external evidence requirements below still apply.
 
 ## Release and verification
 
