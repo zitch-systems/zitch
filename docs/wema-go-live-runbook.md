@@ -4,10 +4,12 @@ The ordered checks for taking Zitch from **sandbox/mock** to **live money**
 on the Wema/ALAT rail. A passing preflight checks configuration; it does not
 certify provider delivery, financial reconciliation, or a completed migration.
 
-> **17 September 2026 live audit:** production still routes to Oregon and the
-> Frankfurt ledger is behind. Follow the [final-sync and cutover procedure](audit/2026-09-17-live-followup.md)
-> before changing routing or enabling Frankfurt money consumers. Do not purge,
-> overwrite, or adjust real customer data merely to make a health check pass.
+> **Historical 17 September 2026 audit:** that audit found production routing to
+> Oregon and an earlier Frankfurt ledger. It is retained as migration evidence,
+> not as current routing status. Frankfurt is the active target now; use the
+> [current Frankfurt release control](frankfurt-release-control-2026-09-19.md)
+> for promotion and verification. Do not purge, overwrite, or adjust real
+> customer data merely to make a health check pass.
 
 > **One-line status check any time:** `python manage.py wema_preflight`
 > (add `--strict` to also gate on the non-money rails). It exits non-zero until

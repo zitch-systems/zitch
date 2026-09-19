@@ -877,6 +877,15 @@ WHATSAPP_WORKER_CONCURRENCY = int(os.environ.get("WHATSAPP_WORKER_CONCURRENCY", 
 # off the WhatsApp message worker prevents multiple worker processes from polling
 # and notifying on the same settlement at once.
 WHATSAPP_WORKER_RECONCILE = env_bool("WHATSAPP_WORKER_RECONCILE", False)
+# Terminal transaction notifications are retried by the credentialed WhatsApp
+# worker, not by bank-reconciliation cron jobs. These bounds keep a transient
+# Meta outage from creating an unbounded catch-up burst after recovery.
+WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS = int(
+    os.environ.get("WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS", "60") or 60)
+WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS = int(
+    os.environ.get("WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS", "2") or 2)
+WHATSAPP_ALERT_RETRY_LIMIT = int(
+    os.environ.get("WHATSAPP_ALERT_RETRY_LIMIT", "50") or 50)
 # The web service also drains the inbound queue in a bounded background thread
 # after acknowledging a webhook, so a stopped/crashed/never-created worker service
 # cannot silently swallow every reply. Rows are claimed with SELECT FOR UPDATE, so

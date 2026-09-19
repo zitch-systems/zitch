@@ -30,23 +30,12 @@ retained Oregon resources instead of the `-ry6y` Frankfurt services.
    decision rather than a staging-only action.
 2. Verify that the API has completed migrations and reports the new commit.
    Then verify the worker and each relevant cron reports the same commit.
-3. Configure the **Frankfurt Wema reconciliation cron** with the same existing
-   WhatsApp values as the Frankfurt API.  Copy references in the dashboard,
-   not secret values through chat or a local file:
-
-   - `TXN_ALERTS_WHATSAPP`
-   - `WHATSAPP_MODE`
-   - `WHATSAPP_BASE_URL`
-   - `WHATSAPP_TOKEN`
-   - `WHATSAPP_PHONE_NUMBER_ID`
-   - `WHATSAPP_VERIFY_TOKEN`
-   - `WHATSAPP_APP_SECRET`
-   - `WHATSAPP_BUSINESS_NUMBER`
-   - `WHATSAPP_TXN_ALERT_TEMPLATE`
-   - `WHATSAPP_TXN_ALERT_TEMPLATE_LANG`
-
-   The release Blueprint gives the worker, Wema cron, and maturity cron the
-   same shared source.  Do not invent or rotate any value during this repair.
+3. Keep the existing Frankfurt WhatsApp credentials on the **WhatsApp worker**.
+   It is now the sole owner of terminal transaction-alert delivery and retries.
+   The Wema reconciliation and maturity crons deliberately set
+   `TXN_ALERTS_WHATSAPP=false` and carry no Meta credentials; their terminal
+   rows remain retryable for the worker.  Do not copy, invent, rotate, or expose
+   any secret during this repair.
 4. Configure the **Frankfurt balance reconciliation cron** to use the Frankfurt
    shared cache and run `python manage.py reconcile_balances --fail-nonzero`.
    The command remains read-only: a discrepancy emits an audited alert and a

@@ -308,8 +308,9 @@ services:
       - key: SIMULATE_DEPOSIT_TOKEN
         sync: false
 
-      # These notification variables are sourced by the scheduled jobs below.
-      # Declare them on the API service so Blueprint fromService references are valid.
+      # The credentialed WhatsApp worker is the only process that delivers
+      # terminal transaction alerts. Declare its source values here so the
+      # worker can inherit them without duplicating Meta credentials elsewhere.
       - key: TXN_ALERTS_WHATSAPP
         sync: false
       - key: WHATSAPP_TXN_ALERT_TEMPLATE
@@ -455,8 +456,9 @@ services:
         sync: false
       - key: RESEND_FROM_EMAIL
         sync: false
-      # The worker settles funding and reconciles VAS, so ledger rows reach
-      # Successful in this process too — it has to alert on the same terms.
+      # This worker owns durable chat execution and terminal WhatsApp-alert
+      # retries. Production money reconciliation remains cron-only; do not set
+      # WHATSAPP_WORKER_RECONCILE merely to compensate for a missing cron.
       - key: TXN_ALERTS_SMS
         sync: false
       - key: TXN_ALERTS_WHATSAPP
@@ -546,13 +548,10 @@ services:
         fromDatabase:
           name: zitch-db
           property: connectionString
-      # Customer alerts. wallet.alerts sends on a post_save SIGNAL, so any
-      # process that writes a ledger row tries to alert. This cron is the only
-      # process that credits Wema deposits and settles/reverses pending Wema
-      # payouts, so it needs every alert rail configured here too. If the
-      # WhatsApp keys are missing, app-originated credits/debits and late-settled
-      # WhatsApp payouts remain owed but the cron can only log "WhatsApp banking
-      # is currently unavailable" on every retry.
+      # Email/SMS/push remain best-effort at the ledger writer. Terminal
+      # WhatsApp alerts are deliberately deferred to zitch-whatsapp-worker,
+      # which owns the Meta credentials and durable retry sweep. Do not copy
+      # Meta secrets into this scheduled money process.
       - key: RESEND_API_KEY
         sync: false
       - key: RESEND_FROM_EMAIL
@@ -566,29 +565,7 @@ services:
       - key: TERMII_BASE_URL
         sync: false
       - key: TXN_ALERTS_WHATSAPP
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_WHATSAPP}
-      - key: WHATSAPP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_MODE}
-      - key: WHATSAPP_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BASE_URL}
-      - key: WHATSAPP_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TOKEN}
-      - key: WHATSAPP_PHONE_NUMBER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
-      - key: WHATSAPP_VERIFY_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_VERIFY_TOKEN}
-      - key: WHATSAPP_APP_SECRET
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_APP_SECRET}
-      - key: WHATSAPP_BUSINESS_NUMBER
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BUSINESS_NUMBER}
-      - key: WHATSAPP_QUEUE_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
-      - key: WHATSAPP_QUEUE_KEY_PREV
-        value: ""
-      - key: WHATSAPP_TXN_ALERT_TEMPLATE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE}
-      - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE_LANG}
+        value: "false"
 
   # Session hygiene — delete access/refresh tokens that can no longer
   # authenticate anything. Nothing removed these before: an AccessToken is
@@ -717,13 +694,10 @@ services:
       # in THIS cron's env (crons are separate processes from the web service).
       - key: SENTRY_DSN
         sync: false
-      # Customer alerts. wallet.alerts sends on a post_save SIGNAL, so any
-      # process that writes a ledger row tries to alert. This cron is the only
-      # process that credits Wema deposits and settles/reverses pending Wema
-      # payouts, so it needs every alert rail configured here too. If the
-      # WhatsApp keys are missing, app-originated credits/debits and late-settled
-      # WhatsApp payouts remain owed but the cron can only log "WhatsApp banking
-      # is currently unavailable" on every retry.
+      # Email/SMS/push remain best-effort at the ledger writer. Terminal
+      # WhatsApp alerts are deliberately deferred to zitch-whatsapp-worker,
+      # which owns the Meta credentials and durable retry sweep. Do not copy
+      # Meta secrets into this scheduled money process.
       - key: RESEND_API_KEY
         sync: false
       - key: RESEND_FROM_EMAIL
@@ -737,29 +711,7 @@ services:
       - key: TERMII_BASE_URL
         sync: false
       - key: TXN_ALERTS_WHATSAPP
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_WHATSAPP}
-      - key: WHATSAPP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_MODE}
-      - key: WHATSAPP_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BASE_URL}
-      - key: WHATSAPP_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TOKEN}
-      - key: WHATSAPP_PHONE_NUMBER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
-      - key: WHATSAPP_VERIFY_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_VERIFY_TOKEN}
-      - key: WHATSAPP_APP_SECRET
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_APP_SECRET}
-      - key: WHATSAPP_BUSINESS_NUMBER
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BUSINESS_NUMBER}
-      - key: WHATSAPP_QUEUE_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
-      - key: WHATSAPP_QUEUE_KEY_PREV
-        value: ""
-      - key: WHATSAPP_TXN_ALERT_TEMPLATE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE}
-      - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE_LANG}
+        value: "false"
 
   # Ledger <-> balance integrity check — recomputes every wallet from the
   # append-only ledger and fails (alerting via cron failure + AuditLog snapshot)

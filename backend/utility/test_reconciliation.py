@@ -67,7 +67,8 @@ class ReconciliationSchedulingTests(TestCase):
     @override_settings(WEMA={"CALLBACK_IPS": ["135.236.18.76"]}, PAYMENT_PROVIDER="wema")
     @patch("utility.management.commands.reconcile_wema.wema_provisioned_wallets", return_value=[])
     @patch("utility.management.commands.reconcile_wema.vas_requery")
-    def test_sweep_replays_success_even_during_lookup_backoff(self, query, wallets):
+    @patch("wallet.alerts.retry_pending_whatsapp_alerts")
+    def test_sweep_replays_success_even_during_lookup_backoff(self, retry_alerts, query, wallets):
         Transaction.objects.filter(pk=self.txn.pk).update(created=timezone.now() - timedelta(minutes=10))
         claim_status_lookup(self.txn)
         self.callback("Successful")
@@ -75,6 +76,7 @@ class ReconciliationSchedulingTests(TestCase):
         self.txn.refresh_from_db()
         self.assertEqual(self.txn.transaction_status, Transaction.SUCCESS)
         query.assert_not_called()
+        retry_alerts.assert_not_called()
 
     def test_duplicate_workers_share_durable_claim(self):
         self.assertTrue(claim_status_lookup(self.txn))

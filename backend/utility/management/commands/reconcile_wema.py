@@ -79,10 +79,11 @@ class Command(BaseCommand):
     def _run(self, **options):
         """Run reconciliation once across all processes and services.
 
-        The WhatsApp worker and scheduled cron both call this command. PostgreSQL
-        advisory locks provide a database-backed guard even when a Render service
-        is missing or miswired to Redis; cache locking remains the fallback for
-        local/test databases.
+        The scheduled Wema cron owns reconciliation in production. A WhatsApp
+        worker may call this only through the explicit local/test override, so
+        PostgreSQL advisory locks still provide a database-backed guard even when
+        a Render service is missing or miswired to Redis; cache locking remains
+        the fallback for local/test databases.
         """
         lock_key = "zitch:money-reconcile:lock"
         db_cursor = None
@@ -471,12 +472,6 @@ class Command(BaseCommand):
             alert(f"reconcile_wema: all {payouts_seen} pending-payout status queries failed — "
                   f"settlement stalled", level="error", payouts=payouts_seen)
 
-        from wallet.alerts import retry_pending_whatsapp_alerts
-        whatsapp_alerts = retry_pending_whatsapp_alerts(
-            since=timezone.now() - timedelta(days=max(1, options["lookback_days"])),
-            limit=50,
-        )
-
         self.stdout.write(
             f"Wema reconcile: accounts recovered {recovered_accounts}/"
             f"{recovery_checked} checked ({recovery_failures} still pending, "
@@ -485,5 +480,4 @@ class Command(BaseCommand):
             f"PND lifted {pnd_lifted}, retry failures {pnd_failures}; "
             f"payouts checked {payouts_seen}, settled {settled}, reversed {reversed_}; "
             f"VAS checked {vas_seen}, settled {vas_settled}, refunded {vas_refunded}, "
-            f"still pending {vas_still_pending}; "
-            f"WhatsApp alerts retried {whatsapp_alerts}")
+            f"still pending {vas_still_pending}")

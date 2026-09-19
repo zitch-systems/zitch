@@ -30,14 +30,8 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
         gate = "python manage.py migrate --check"
         self.assertEqual(self.text.count(gate), 8)
 
-    def test_ledger_writers_share_the_api_whatsapp_configuration(self):
-        """A scheduled settlement must not silently lose customer alerts.
-
-        Keep the queue worker, maturity sweep and Wema reconciliation tied to
-        the API's single WhatsApp configuration.  Dashboard-owned copies of
-        those values drifted during the Frankfurt move and left reconciliation
-        unable to deliver transaction alerts.
-        """
+    def test_only_the_credentialed_worker_owns_terminal_whatsapp_delivery(self):
+        """Money crons leave WhatsApp alerts retryable without copying Meta secrets."""
         keys = (
             "TXN_ALERTS_WHATSAPP",
             "WHATSAPP_MODE",
@@ -50,7 +44,21 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
             "WHATSAPP_TXN_ALERT_TEMPLATE",
             "WHATSAPP_TXN_ALERT_TEMPLATE_LANG",
         )
-        for service in ("zitch-whatsapp-worker", "zitch-maturities", "zitch-reconcile-wema"):
+        worker = re.search(
+            r"^    name: zitch-whatsapp-worker$.*?(?=^  - type:|\Z)",
+            self.text,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(worker)
+        for key in keys:
+            self.assertRegex(
+                worker.group(0),
+                rf"- key: {re.escape(key)}\n\s+fromService: "
+                rf"\{{type: web, name: zitch-api, envVarKey: {re.escape(key)}\}}",
+                f"zitch-whatsapp-worker must source {key} from zitch-api",
+            )
+
+        for service in ("zitch-maturities", "zitch-reconcile-wema"):
             match = re.search(
                 rf"^    name: {re.escape(service)}$.*?(?=^  - type:|\Z)",
                 self.text,
@@ -58,10 +66,7 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
             )
             self.assertIsNotNone(match, service)
             block = match.group(0)
-            for key in keys:
-                self.assertRegex(
-                    block,
-                    rf"- key: {re.escape(key)}\n\s+fromService: "
-                    rf"\{{type: web, name: zitch-api, envVarKey: {re.escape(key)}\}}",
-                    f"{service} must source {key} from zitch-api",
-                )
+            self.assertRegex(block, r'- key: TXN_ALERTS_WHATSAPP\n\s+value: "false"')
+            for key in keys[1:] + ("WHATSAPP_QUEUE_KEY", "WHATSAPP_QUEUE_KEY_PREV"):
+                self.assertNotIn(f"- key: {key}", block,
+                                 f"{service} must not carry WhatsApp credentials")

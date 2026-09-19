@@ -262,7 +262,7 @@ class WhatsAppChannelAlertTests(TestCase):
 
     def test_retry_sweep_sends_already_missed_app_alerts(self):
         """Rows that settled before the retry fix may already have the generic
-        alert flag without the WhatsApp delivery flag. The reconcile sweep should
+        alert flag without the WhatsApp delivery flag. The worker sweep should
         repair those without another email."""
         from .alerts import retry_pending_whatsapp_alerts
 
