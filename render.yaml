@@ -798,12 +798,12 @@ services:
   # Ledger <-> BANK (Wema NUBAN) reconciliation — the EXTERNAL integrity check.
   # integrity_check compares the ledger to our own stored balance; this compares
   # the ledger to the real balance ALAT holds in each user's NUBAN, and pages
-  # (Sentry) when the ledger EXCEEDS the bank (a possible float leak / double
-  # credit). --fail-over also exits nonzero on that dangerous direction so Render
-  # surfaces a cron failure even before Sentry is wired; a benign bank>ledger
-  # delta (a deposit not yet swept by zitch-reconcile-wema) neither pages nor
-  # fails. Read-only. Needs the WEMA_* balance-read keys + SENTRY_DSN. Only acts
-  # when Wema is live (no-ops in sandbox/sim). Every 6 hours; tune as needed.
+  # (Sentry) for either direction of ledger/bank divergence. --fail-nonzero
+  # makes every non-zero discrepancy visible as a Render cron failure while
+  # preserving a strictly read-only workflow: neither a ledger-over-bank nor a
+  # bank-over-ledger result may change balances, refunds, or payment states.
+  # Needs the WEMA_* balance-read keys + SENTRY_DSN. Only acts when Wema is live
+  # (no-ops in sandbox/sim). Every 6 hours; tune as needed.
   - type: cron
     name: zitch-reconcile-balances
     region: frankfurt
