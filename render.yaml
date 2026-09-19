@@ -951,10 +951,37 @@ services:
     name: zitch-cache
     region: frankfurt
     plan: starter
-    maxmemoryPolicy: noeviction
+    # allkeys_lru, NOT noeviction. This cache holds rate limits, the idempotency
+    # FALLBACK bucket and the WhatsApp throttle. Money dedup does not depend on
+    # it: the real control is the partial unique (user, idempotency_key) index in
+    # Postgres, so an evicted key cannot produce a double debit. Under noeviction
+    # a full instance makes cache.set() RAISE instead of evicting, which fails the
+    # /readyz cache probe and takes the whole API down -- trading a cold key for an
+    # outage. The live Oregon cache runs allkeys_lru; keep the two identical so a
+    # region cutover does not silently change failure behaviour.
+    maxmemoryPolicy: allkeys_lru
     ipAllowList: []
 
 databases:
+  # DANGER -- READ BEFORE SYNCING THIS BLUEPRINT.
+  #
+  # Render matches Blueprint resources to existing ones BY NAME, and a resource's
+  # region is IMMUTABLE once created. The live `zitch-db` is in OREGON and holds
+  # every wallet, ledger row and customer record. This block names that same
+  # database and asks for `region: frankfurt`, which is not an in-place move and
+  # cannot be one. A sync therefore either fails on this resource or reconciles it
+  # as a different one -- and "which of those two" is not something to discover on
+  # a live money rail. The same collision applies to `zitch-cache` above and to
+  # every service in this file: all of them are named after resources currently
+  # running in Oregon.
+  #
+  # The Frankfurt stack built in the dashboard uses DIFFERENT names (zitch-db-ry6y,
+  # zitch-cache-ry6y, zitch-api-frankfurt, zitch-*-ry6y), so a sync will NOT adopt
+  # it -- it will act on the Oregon resources instead.
+  #
+  # Region migration on Render is build-new + cut-over + retire-old, not an edit to
+  # this field. Until that cutover is done and the Oregon resources are gone, do
+  # not sync this Blueprint.
   - name: zitch-db
     region: frankfurt
     plan: basic-256mb
