@@ -32,7 +32,8 @@ from wallet.services import wallet_expected_balance, wema_provisioned_wallets
 
 class Command(BaseCommand):
     help = ("Reconcile each Wema-provisioned wallet's ledger balance against the real "
-            "NUBAN balance at the bank; page when the ledger exceeds the bank.")
+            "NUBAN balance at the bank; escalate any non-zero divergence without "
+            "changing money or payment state.")
 
     def add_arguments(self, parser):
         parser.add_argument(
