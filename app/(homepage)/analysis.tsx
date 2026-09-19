@@ -34,10 +34,10 @@ const Analysis = () => {
   const key = String(month || thisMonth);
 
   const { rows, spent, received, top } = useMemo(() => {
-    // Failed transactions are excluded throughout: nothing left the account, so
-    // counting them would describe spending that never happened.
+    // Only explicitly successful transactions are aggregated. Pending/unknown
+    // rows have not proved settlement and would inflate spending or receipts.
     const kept = txns.filter(
-      (t) => t.ts && monthKey(t.ts) === key && txnState(t.status) !== 'failed',
+      (t) => t.ts && monthKey(t.ts) === key && txnState(t.status) === 'success',
     );
     const out = kept.filter((t) => t.dir === 'out');
     const totals = new Map<string, number>();

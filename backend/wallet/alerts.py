@@ -46,6 +46,11 @@ def _alert_timestamp(value, format_string: str) -> str:
 _SILENT_SERVICES = ("reversal", "settlement", "adjustment", "sweep")
 
 
+def _silent_transaction(txn) -> bool:
+    return (bool(_meta(txn).get("suppress_transaction_alert"))
+            or str(txn.service or "").casefold().startswith(_SILENT_SERVICES))
+
+
 def _money(amount, currency: str = "NGN") -> str:
     symbol = "₦" if currency == "NGN" else f"{currency} "
     return f"{symbol}{amount:,.2f}"
@@ -217,7 +222,7 @@ def send_transaction_alert(txn, *, reversal: bool = False) -> None:
                     txn.reference, ",".join(mocked))
     _push_alert(txn, subject)
     # Claim the chat leg before calling Meta. A settlement signal and the
-    # reconciliation retry sweep can run at the same time; marking only after
+    # WhatsApp-worker retry sweep can run at the same time; marking only after
     # the send lets both processes deliver the same screenshot-worthy alert.
     whatsapp_flag = _whatsapp_claim_flag(reversal)
     row = _claim_alert_flag(txn.pk, whatsapp_flag)
@@ -284,7 +289,7 @@ def send_whatsapp_transaction_alert(txn, *, reversal: bool = False) -> bool:
     briefly refusing sends, while the customer's WhatsApp link is being repaired,
     or inside a process missing WhatsApp credentials. In those cases email must
     not duplicate, but the chat alert is still owed on the next ledger save or
-    reconciliation touch.
+    WhatsApp-worker retry sweep.
     """
     whatsapp_flag = _whatsapp_claim_flag(reversal)
     row = _claim_alert_flag(txn.pk, whatsapp_flag)
@@ -369,7 +374,7 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> 
         #
         # ONLY on the window-closed codes: any other rejection (a transient Meta
         # error, an undeliverable number) is left owed and retried as free-form on
-        # the next ledger touch or the reconcile sweep — the customer may be back
+        # the next ledger touch or the WhatsApp-worker retry sweep — the customer may be back
         # inside the window by then, and escalating a transient blip to a paid
         # template every time would be both wasteful and a duplicate once the text
         # goes through. The in-window path already returned above, so a template
@@ -536,7 +541,7 @@ def _alert_on_settled_transaction(sender, instance, **kwargs):
     from .models import Transaction
 
     txn = Transaction.objects.filter(pk=instance.pk).first() or instance
-    if str(txn.service or "").startswith(_SILENT_SERVICES):
+    if _silent_transaction(txn):
         return
 
     # A reversal does not create a ledger row — `refund` and the disbursement
@@ -577,8 +582,9 @@ def retry_pending_whatsapp_alerts(*, since=None, limit: int = 50) -> int:
     """Best-effort sweep for terminal rows whose WhatsApp leg never landed.
 
     The post-save signal retries when a row is touched, but a completed transfer
-    or reversal can otherwise sit quiet forever after one Meta outage. Reconciliation
-    already runs frequently and is the right place to sweep a bounded recent window.
+    or reversal can otherwise sit quiet forever after one Meta outage. The credentialed
+    WhatsApp worker sweeps a bounded recent window, so bank-reconciliation cron jobs
+    never need Meta credentials.
     """
     from .models import Transaction
     from django.db.models import Q
@@ -595,7 +601,7 @@ def retry_pending_whatsapp_alerts(*, since=None, limit: int = 50) -> int:
 
     sent = 0
     for txn in qs[:max(0, int(limit or 0))]:
-        if str(txn.service or "").startswith(_SILENT_SERVICES):
+        if _silent_transaction(txn):
             continue
         reversal = txn.transaction_status == Transaction.FAILED
         claim = _whatsapp_claim_flag(reversal)
@@ -612,7 +618,7 @@ def _claim_alert_flag(txn_pk, flag: str, *, requires: str = ""):
     """Atomically claim an alert flag and return the current ledger row.
 
     The claim is durable in Transaction.meta. PostgreSQL row locking and the
-    conditional update cover both the signal/reconcile race and callers that
+    conditional update cover both the signal/worker race and callers that
     enter through separate processes. A failed provider call may release the
     claim for a later retry; while the call is active, the flag stays present.
     """
@@ -637,7 +643,7 @@ def _claim_alert_flag(txn_pk, flag: str, *, requires: str = ""):
 
 
 def _clear_flag(txn_pk, flag: str) -> None:
-    """Release a failed delivery claim so the reconciliation sweep can retry it."""
+    """Release a failed delivery claim so the WhatsApp worker can retry it."""
     from .models import Transaction
 
     with db_transaction.atomic():

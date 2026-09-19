@@ -213,11 +213,12 @@ following `../docs/whatsapp-production-operations.md`.
   `--dry-run` first). **Electricity/betting** need `--only billers` to map a
   `WemaBiller` row each. Until a service is mapped it is off sale.
 - **`WEMA_VAS_STATUS_LEGEND` / `WEMA_BILLS_STATUS_LEGEND` gate VAS sales.** ALAT's
-  status endpoints answer with a bare integer `transactionStatus` and publish no
-  legend, so without one a purchase that comes back `PROCESSING` could never be
+  status endpoints answer with a bare integer `transactionStatus`; the confirmed
+  payment legend is 200 success, 400 failure and 401 authentication/API failure.
+  Without a configured map a purchase that comes back `PROCESSING` could never be
   settled OR refunded — the customer would be debited for nothing, permanently.
   `providers.vas_can_settle()` therefore refuses such a purchase up front (the debit
-  is refunded by the normal failure path) and pages. Ask Wema for the enum, set it as
+  is refunded by the normal failure path) and pages. Set the confirmed values as
   `<int>=success|pending|failed` pairs, and VAS turns on with no deploy.
 - Wema / ALAT request/response shapes are VERIFY-BEFORE-LIVE: set `WEMA_CHANNEL_ID`,
   `WEMA_WALLET_KEY` (+ `WEMA_CARD_KEY` / `WEMA_AIRTIME_KEY` / `WEMA_BILLS_KEY` /

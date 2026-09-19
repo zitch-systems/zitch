@@ -86,6 +86,13 @@ class DailyLimitHelperTests(TestCase):
         # the failed 900k is excluded, so a 200k transfer is fine again
         self.assertIsNone(daily_limit_error(u, Decimal("200000"), "transfer"))
 
+    def test_internal_reversal_adjustment_does_not_consume_daily_cap(self):
+        u, _ = make_user("08070000015", "dinternal@zitch.test", tier=2)
+        txn = _seed_out(u, "Transfer to reversal correction", "900000")
+        txn.meta = {"internal_movement": True, "reversal_resolution": True}
+        txn.save(update_fields=["meta"])
+        self.assertIsNone(daily_limit_error(u, Decimal("200000"), "transfer"))
+
 
 class DailyLimitEndpointTests(TestCase):
     def setUp(self):
@@ -94,10 +101,16 @@ class DailyLimitEndpointTests(TestCase):
         self.sender.face_verified = True  # bypass the >=₦100k face gate for the test
         self.sender.save(update_fields=["face_verified"])
         self.recipient, _ = make_user("08070000021", "dr@zitch.test", tier=2)
+        self._key_seq = 0
 
     def post(self, path, payload):
+        self._key_seq += 1
         return self.client.post(
-            path, data=json.dumps({**payload, "access_token": self.token}),
+            path, data=json.dumps({
+                **payload,
+                "access_token": self.token,
+                "idempotency_key": payload.get("idempotency_key") or f"daily-limit-{self._key_seq}",
+            }),
             content_type="application/json",
         )
 

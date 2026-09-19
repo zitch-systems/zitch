@@ -61,7 +61,8 @@ from utility import wema as wema_provider
 from utility.alerts import alert
 
 from .models import Transaction
-from .services import is_bank_payout, provision_wema_account, settle_or_refund
+from .services import (is_bank_payout, is_vas_purchase, merge_transaction_meta,
+                       provision_wema_account, settle_or_refund)
 
 log = logging.getLogger("zitch.security")
 
@@ -594,12 +595,18 @@ def _authorize_payout(ref: str, security_info: str, ip: str) -> tuple:
         # meta.reconcile is exactly that marker: run_provider_purchase sets it
         # atomically with the debit, BEFORE the provider call, which is the very
         # window this callback arrives in. An internal transfer never carries it.
-        vas_purchase = bool((txn.meta or {}).get("reconcile"))
+        vas_purchase = is_vas_purchase(txn)
         if not is_bank_payout(txn) and not vas_purchase:
             return False, "not_a_bank_payout_or_vas_purchase"
         if txn.transaction_status != Transaction.PENDING:
             # SUCCESS => already treated as sent; FAILED => already refunded.
             return False, f"state_{txn.transaction_status}"
+        quarantine = (txn.meta or {}).get("wema_reversal_quarantine") or {}
+        if isinstance(quarantine, dict) and quarantine.get("active") is True:
+            # A correlated returned credit is awaiting audited reconciliation.
+            # Authorizing the original payout while that hold is active could let
+            # money leave after it has already returned (or only partly returned).
+            return False, "reversal_quarantined"
         age = (timezone.now() - txn.created).total_seconds()
         if age > max_age:
             return False, "stale"
@@ -691,7 +698,7 @@ def _transaction_callback_data(body: dict) -> dict:
             if actual is not None and str(data.get(actual) or "").strip():
                 normalized = dict(data)
                 normalized["transactionReference"] = str(data[actual]).strip()
-                for field in ("status", "transactionStan", "platformTransactionReference",
+                for field in ("status", "transactionStatus", "transactionStan", "platformTransactionReference",
                               "originalTxnTransactionDate", "orinalTxnTransactionDate"):
                     source_key = keys.get(field.casefold())
                     if source_key is not None:
@@ -716,7 +723,9 @@ def wema_transaction_callback(request):
 
     Bank transfers are verified over APIM. Explicit VAS outcomes may settle only
     from a configured bank source IP, after the decorator validates the URL token.
-    Terminal callbacks bypass the requery cooldown; numeric 200 remains ambiguous.
+    Terminal callbacks bypass the requery cooldown. Wema's confirmed direct legend
+    is 200=success, 400=failed, 401=authentication/API refusal; lookup failures are
+    still handled separately and never decide the earlier payment.
     Settlement is idempotent, including duplicated and out-of-order callbacks.
 
     Never credits a wallet: the payload has no amount and no account number.
@@ -724,7 +733,7 @@ def wema_transaction_callback(request):
     body = request.wema_body
     data = _transaction_callback_data(body)
     ref = str(data.get("transactionReference") or "").strip()[:_REF_MAX]
-    payload_status = str(data.get("status") or "").strip()
+    payload_status = str(data.get("status") or data.get("transactionStatus") or "").strip()
 
     if not ref:
         log.warning("wema_txn_cb_no_reference ip=%s keys=%s", request.wema_ip, sorted(body))
@@ -745,12 +754,17 @@ def wema_transaction_callback(request):
     outcome = "noop"
     if txn.transaction_status == Transaction.PENDING:
         callback_outcome = payload_status.casefold().strip()
+        vas_purchase = is_vas_purchase(txn)
         trusted_vas = (
-            not is_bank_payout(txn)
+            vas_purchase
             and request.wema_ip in set(_conf("CALLBACK_IPS") or DEFAULT_CALLBACK_IPS)
         )
-        terminal_success = callback_outcome in {"successful", "success", "completed", "complete"}
-        terminal_failure = callback_outcome in {"failed", "failure", "declined", "rejected", "reversed"}
+        terminal_success = callback_outcome in {
+            "successful", "success", "completed", "complete", "200",
+        }
+        terminal_failure = callback_outcome in {
+            "failed", "failure", "declined", "rejected", "reversed", "400", "401",
+        }
         if trusted_vas and (terminal_success or terminal_failure):
             outcome = settle_or_refund(txn, {
                 "success": terminal_success, "pending": False,
@@ -768,27 +782,29 @@ def wema_transaction_callback(request):
             result = wema_provider.confirm_transfer_status(
                 txn.reference, platform_reference=platform_reference)
             outcome = settle_or_refund(txn, result)
-        else:
+        elif vas_purchase:
             from utility import providers
             result = providers.vtu_requery(ref)
             outcome = settle_or_refund(txn, result)
+        else:
+            # Card funding and every future provider rail have their own
+            # reconciliation contract. A Wema callback sharing only a reference
+            # must never settle/refund them through the VAS state machine.
+            outcome = "wrong_reconciliation_rail"
+            log.warning("wema_txn_cb_wrong_rail ref=%s ip=%s", ref, request.wema_ip)
     else:
         outcome = f"already_{txn.transaction_status}"
 
     # Bank identifiers are stamped under a namespaced key so raw provider text never
     # merges into the ledger's own meta (and never reaches a customer unfiltered).
-    txn.refresh_from_db(fields=["meta"])
-    meta = dict(txn.meta or {})
-    meta["wema_callback"] = {
+    merge_transaction_meta(txn, {"wema_callback": {
         "status": payload_status,
         "stan": str(data.get("transactionStan") or ""),
         "platform_reference": str(data.get("platformTransactionReference") or ""),
         "txn_date": str(data.get("orinalTxnTransactionDate")
                         or data.get("originalTxnTransactionDate") or ""),
         "received": timezone.now().isoformat(),
-    }
-    txn.meta = meta
-    txn.save(update_fields=["meta"])
+    }})
 
     log.info("wema_txn_cb ref=%s payload_status=%s outcome=%s", ref, payload_status, outcome)
     return JsonResponse({"status": True}, status=200)

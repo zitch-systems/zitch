@@ -22,7 +22,8 @@ from savings.models import FixedSave
 from savings.services import run_maturities as run_maturities_service
 from utility.providers import fx_quote, vtu_requery
 from wallet.models import CurrencyWallet, Transaction, Wallet
-from wallet.services import is_bank_payout, pending_vas_purchases, settle_or_refund
+from wallet.services import (is_bank_payout, is_vas_purchase,
+                             pending_vas_purchases, settle_or_refund)
 from whatsapp.models import (
     AuditLog,
     Broadcast,
@@ -145,8 +146,17 @@ def _user_row(u, links_by_user, wallets_by_user, cw_by_user) -> dict:
     }
 
 
-def _txn_row(t) -> dict:
+_REVIEW_UNSET = object()
+
+
+def _txn_row(t, review=_REVIEW_UNSET) -> dict:
+    from wallet.review_state import transaction_review_map
+
     meta = t.meta or {}
+    if review is _REVIEW_UNSET:
+        review = transaction_review_map([t]).get(t.pk)
+    under_review = review is not None
+    review_kind = review[0] if review else ""
     amt = float(t.amount)
     if t.direction == Transaction.OUT:
         amt = -amt
@@ -159,10 +169,18 @@ def _txn_row(t) -> dict:
         "amt": amt,
         "cur": t.currency,
         "fee": float(meta.get("fee") or 0),
-        "status": "flagged" if meta.get("flagged") else t.transaction_status.lower(),
+        "status": ("under_review" if under_review else
+                   "flagged" if meta.get("flagged") else
+                   t.transaction_status.lower()),
+        "underReview": under_review,
+        "reviewKind": review_kind,
         "time": t.created.isoformat(),
         "canRequery": bool(
-            t.transaction_status == Transaction.PENDING and meta.get("reconcile")
+            t.transaction_status == Transaction.PENDING
+            and meta.get("reconcile")
+            and not under_review
+            and is_vas_purchase(t)
+            and not is_bank_payout(t)
         ),
     }
 
@@ -207,8 +225,16 @@ def summary(request):
         volume_14d=[float(by_day.get(d, 0)) for d in days],
         success_rate=_success_rate(),
         providers=_providers(),
-        latest=[_txn_row(t) for t in Transaction.objects.select_related("user").order_by("-created")[:8]],
+        latest=_latest_transaction_rows(),
     )
+
+
+def _latest_transaction_rows():
+    from wallet.review_state import transaction_review_map
+
+    rows = list(Transaction.objects.select_related("user").order_by("-created")[:8])
+    reviews = transaction_review_map(rows)
+    return [_txn_row(row, reviews.get(row.pk)) for row in rows]
 
 
 def _success_rate() -> float:
@@ -400,6 +426,8 @@ def kyc_review(request):
 @api
 @require_cap()
 def transactions(request):
+    from wallet.review_state import transaction_review_map
+
     q = (request.data.get("q") or "").strip()
     typ = (request.data.get("type") or "all").lower()
     qs = Transaction.objects.select_related("user").order_by("-created")
@@ -413,7 +441,9 @@ def transactions(request):
             Q(reference__icontains=q) | Q(user__first_name__icontains=q)
             | Q(user__last_name__icontains=q) | Q(service__icontains=q)
         )
-    return ok(rows=[_txn_row(t) for t in qs[:PAGE]])
+    rows = list(qs[:PAGE])
+    reviews = transaction_review_map(rows)
+    return ok(rows=[_txn_row(t, reviews.get(t.pk)) for t in rows])
 
 
 @api
@@ -431,6 +461,12 @@ def txn_requery(request):
         # A bank transfer settles via the reconcile_wema poller, not a VTU
         # requery — don't query the wrong provider for a reference it never saw.
         return fail("Bank transfers reconcile via the disbursement webhook, not partner-bank VAS requery", status=409)
+    if not is_vas_purchase(txn):
+        return fail(
+            "This transaction belongs to a different provider rail and cannot use VAS requery",
+            status=409,
+            code="wrong_reconciliation_rail",
+        )
     result = vtu_requery(txn.reference)
     status = settle_or_refund(txn, result)
     record_audit("txn.requery", actor=request.user_obj, target=ref,

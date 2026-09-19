@@ -1,8 +1,9 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
-import { newIdempotencyKey } from '@/lib/api';
+import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
+import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { loansService } from '@/lib/services/loans';
 import { Screen, Card, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
@@ -24,21 +25,17 @@ type ActiveLoan = {
 const Loans = () => {
   const { c } = useTheme();
   const { reload: reloadWallet } = useWallet();
-  const [token, setToken] = useState('');
   const [limit, setLimit] = useState(500000);
   const [available, setAvailable] = useState(500000);
   const [active, setActive] = useState<ActiveLoan | null>(null);
   const [pinOpen, setPinOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pinError, setPinError] = useState('');
-  // Stable per-repayment key so a retry / double-tap is deduped server-side and
-  // never debits the wallet twice. Reset after a successful repayment.
-  const idemKey = useRef<string>('');
+  const [repaymentPending, setRepaymentPending] = useState(false);
 
   const load = useCallback(async () => {
     const t = await getToken();
     if (!t) return;
-    setToken(t);
     try {
       const res = await loansService.getStatus();
       if (res.limit != null) setLimit(Number(res.limit));
@@ -55,26 +52,61 @@ const Loans = () => {
 
   const repay = async (pin: string) => {
     if (!active) return;
+    // The repayment endpoint binds idempotency to the amount. Persisting the key
+    // under the same fingerprint makes an app-restart retry replay that request.
+    const fingerprint = String(Number(active.outstanding));
+    let requestKey = '';
+    let deliveryStarted = false;
     setBusy(true);
-    if (!idemKey.current) idemKey.current = newIdempotencyKey();
     try {
-      const res = await loansService.repay(active.outstanding, pin, idemKey.current);
-      if (res.success) {
+      requestKey = await acquireSpendAttempt('loan-repay', fingerprint);
+      deliveryStarted = true;
+      const res = await loansService.repay(active.outstanding, pin, requestKey);
+      const outcome = classifySpendResponse(res);
+      if (outcome === 'success') {
+        await clearSpendAttempt('loan-repay', fingerprint, requestKey);
         setPinOpen(false);
         setPinError('');
-        idemKey.current = '';
-        notify('Success', 'Loan repaid');
+        setRepaymentPending(false);
+        if (isRecoveredSpendResponse(res)) {
+          notify(
+            'Earlier repayment confirmed',
+            'This confirms the earlier repayment; no new repayment was made. Authorize a new repayment to pay again.',
+            'info',
+          );
+        } else {
+          notify('Success', 'Loan repaid');
+        }
+        reloadWallet();
+        load();
+      } else if (outcome === 'pending' || outcome === 'unknown') {
+        setPinOpen(false);
+        setPinError('');
+        setRepaymentPending(true);
+        notify(
+          'Repayment processing',
+          outcome === 'pending'
+            ? (res.message || 'Its final status will update only after provider confirmation.')
+            : 'We could not confirm this repayment. Check History before trying again.',
+          'info',
+        );
         reloadWallet();
         load();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
+        await clearSpendAttempt('loan-repay', fingerprint, requestKey);
         setPinOpen(false);
         notify('Error', res.message || 'Repayment failed');
       }
     } catch {
-      setPinOpen(false);
-      notify('Error', 'Something went wrong. Please try again later.');
+      if (deliveryStarted) {
+        setPinOpen(false);
+        setRepaymentPending(true);
+        notify('Repayment processing', 'We could not confirm this repayment. Check History before trying again.', 'info');
+      } else {
+        notify('Unable to start repayment', 'Could not safely prepare this request. Please try again.');
+      }
     } finally {
       setBusy(false);
     }
@@ -115,7 +147,11 @@ const Loans = () => {
               <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{money(Number(active.outstanding))}</Text>
             </View>
             <View style={{ marginTop: 14 }}>
-              <Btn label={`Repay ${money(Number(active.outstanding))}`} onPress={() => { setPinError(''); setPinOpen(true); }} />
+              <Btn
+                label={repaymentPending ? 'Repayment processing' : `Repay ${money(Number(active.outstanding))}`}
+                disabled={repaymentPending}
+                onPress={() => { setPinError(''); setPinOpen(true); }}
+              />
             </View>
           </View>
         ) : (

@@ -19,10 +19,27 @@ class BankTransferTests(TestCase):
         self.client = Client()
         self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="50000")
         self.bank = Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#E32119")
+        self._key_seq = 0
 
     def post(self, path, payload):
+        payload = dict(payload)
+        if path == "/api/transfers/send/" and "idempotency_key" not in payload:
+            self._key_seq += 1
+            payload["idempotency_key"] = f"bank-test-{self._key_seq}"
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
+
+    def test_send_requires_a_client_idempotency_key(self):
+        with patch("transfers.views.payout_resolve_account") as resolve:
+            res, body = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789",
+                "bank": "gtb", "name": "John Doe", "amount": "1000",
+                "transaction_pin": "1234", "idempotency_key": None,
+            })
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(body.get("code"), "idempotency_key_required")
+        resolve.assert_not_called()
+        self.assertEqual(self.balance(), Decimal("50000"))
 
     def balance(self):
         return get_or_create_wallet(self.user).balance
@@ -241,11 +258,14 @@ class BankTransferTests(TestCase):
         """If the payout provider declines, the wallet debit must be reversed."""
         with patch("transfers.services.payout_send",
                    return_value={"success": False, "message": "bank declined"}):
-            res, _ = self.post("/api/transfers/send/", {
+            res, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
                 "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
             })
-        self.assertEqual(res.status_code, 502)
+        self.assertEqual(res.status_code, 422)
+        self.assertEqual(body.get("code"), "transfer_failed")
+        self.assertTrue(body.get("refunded"))
+        self.assertTrue(body.get("reference"))
         self.assertEqual(self.balance(), Decimal("50000"))  # fully refunded
         self.assertTrue(Transaction.objects.filter(user=self.user, transaction_status=Transaction.FAILED).exists())
         # A failed payout must not save the beneficiary.
@@ -297,11 +317,14 @@ class BankTransferTests(TestCase):
         with patch("transfers.services.payout_send",
                    return_value={"success": True, "status": "DECLINED",
                                  "message": "Transaction declined"}):
-            res, _ = self.post("/api/transfers/send/", {
+            res, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
                 "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
             })
-        self.assertEqual(res.status_code, 502)
+        self.assertEqual(res.status_code, 422)
+        self.assertEqual(body.get("code"), "transfer_failed")
+        self.assertTrue(body.get("refunded"))
+        self.assertTrue(body.get("reference"))
         self.assertEqual(self.balance(), Decimal("50000"))
 
     def test_provider_success_echo_is_never_shown_as_the_error(self):
@@ -314,7 +337,10 @@ class BankTransferTests(TestCase):
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
                 "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
             })
-        self.assertEqual(res.status_code, 502)
+        self.assertEqual(res.status_code, 422)
+        self.assertEqual(body.get("code"), "transfer_failed")
+        self.assertTrue(body.get("refunded"))
+        self.assertTrue(body.get("reference"))
         self.assertNotEqual(body["message"].strip().lower(), "success")
         self.assertEqual(self.balance(), Decimal("50000"))  # definitive -> refunded
 
@@ -372,6 +398,7 @@ class DemoSourceAccountTests(TestCase):
         res = self.client.post("/api/transfers/send/", data=json.dumps({
             "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
             "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            "idempotency_key": "demo-source-send-1",
         }), content_type="application/json")
         return res, res.json()
 
@@ -458,6 +485,7 @@ class PayoutFailureIsRecordedTests(TestCase):
             res = self.client.post("/api/transfers/send/", data=json.dumps({
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
                 "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+                "idempotency_key": "failure-reason-send-1",
             }), content_type="application/json")
         self.assertFalse(res.json().get("success"))
         txn = Transaction.objects.filter(user=self.user, direction=Transaction.OUT).first()
@@ -495,6 +523,7 @@ class NoSourceAccountTests(TestCase):
         res = self.client.post("/api/transfers/send/", data=json.dumps({
             "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
             "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            "idempotency_key": "no-source-send-1",
         }), content_type="application/json")
         return res, res.json()
 
@@ -691,7 +720,8 @@ class SavedBeneficiaryTests(TestCase):
                    return_value={"success": True, "status": "success"}):
             _, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0777777777", "bank": "gtb3",
-                "name": "MUSA ADAMU", "amount": "1000", "transaction_pin": "1234"})
+                "name": "MUSA ADAMU", "amount": "1000", "transaction_pin": "1234",
+                "idempotency_key": "saved-beneficiary-send-1"})
         self.assertTrue(body.get("success"), body)
         row = Beneficiary.objects.get(user=self.user, account_number="0777777777")
         self.assertEqual(body["beneficiary_id"], row.id)

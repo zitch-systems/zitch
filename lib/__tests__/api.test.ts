@@ -28,9 +28,9 @@ describe('newIdempotencyKey', () => {
 
 describe('apiJson', () => {
   it('parses a valid JSON body', async () => {
-    mockFetch.mockResolvedValue({ status: 200, text: async () => JSON.stringify({ success: true, value: 42 }) });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ success: true, value: 42 }) });
     const res = await apiJson('/api/x/');
-    expect(res).toEqual({ success: true, value: 42 });
+    expect(res).toEqual({ success: true, value: 42, _httpOk: true, _httpStatus: 200 });
   });
 
   it('degrades to the offline shape on a non-JSON body', async () => {

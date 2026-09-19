@@ -17,8 +17,13 @@ class ConvertTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user("08030000002", "ada@zitch.test", balance="5000")
+        self._key_seq = 0
 
     def post(self, path, payload):
+        payload = dict(payload)
+        if path == "/api/convert/airtime/" and "idempotency_key" not in payload:
+            self._key_seq += 1
+            payload["idempotency_key"] = f"convert-test-{self._key_seq}"
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
@@ -84,6 +89,15 @@ class ConvertTests(TestCase):
             "network": "1", "phone": "08030000002", "amount": "1000", "transaction_pin": "1234",
         })
         self.assertEqual(res.status_code, 401)
+
+    def test_convert_requires_idempotency_key(self):
+        res, body = self.post("/api/convert/airtime/", {
+            "access_token": self.token, "network": "1", "phone": "08030000002",
+            "amount": "1000", "transaction_pin": "1234", "idempotency_key": None,
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(body.get("code"), "idempotency_key_required")
+        self.assertEqual(self.balance(), Decimal("5000"))
 
     def test_convert_idempotent(self):
         payload = {

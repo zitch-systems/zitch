@@ -84,6 +84,18 @@ describe('receiptHtml', () => {
     expect(failedHtml).not.toContain('#128c4a');
   });
 
+  it('renders blank or unknown status as amber, never success green', () => {
+    const blankHtml = receiptHtml({ title: 'Transfer', message: 'x', rows: [], status: '' });
+    expect(blankHtml).toContain('<span class="badge">Status unavailable</span>');
+    expect(blankHtml).toContain('#b9770e');
+    expect(blankHtml).not.toContain('#128c4a');
+
+    const unknownHtml = receiptHtml({ title: 'Transfer', message: 'x', rows: [], status: 'BANK_REVIEW' });
+    expect(unknownHtml).toContain('<span class="badge">BANK_REVIEW</span>');
+    expect(unknownHtml).toContain('#b9770e');
+    expect(unknownHtml).not.toContain('#128c4a');
+  });
+
   // A recipient name comes from the bank and a note comes from the user; neither
   // is ours to trust. Escaping matters here because the PDF renderer is a real
   // browser engine — an unescaped value would become markup in the receipt.

@@ -47,7 +47,31 @@ window.ZAPI = (function () {
       D.SUMMARY = s; D.VOLUME_14D = s.volume_14d; D.PROVIDERS = s.providers;
     },
     users: async (q) => { const r = await call('users', { q }); D.USERS = r.rows; D.USERS_TOTAL = r.total; },
-    txns: async (q, type) => { D.TXNS = (await call('transactions', { q, type })).rows; },
+    txns: async (q, type, includeReviews = true) => {
+      const txns = await call('transactions', { q, type });
+      D.TXNS = txns.rows;
+      if (!includeReviews) return;
+      if (!(me && me.caps && me.caps.money)) {
+        D.APPROVALS = [];
+        D.REVERSAL_CASES = [];
+        D.CARD_FUNDING_CASES = [];
+        D.FUNDING_REVIEW_CASES = [];
+        return;
+      }
+      const [approvals, reversals, cards, funding] = await Promise.all([
+        call('approvals/list', { status: 'pending' }),
+        call('txn/reversal-cases'),
+        call('txn/card-funding-cases'),
+        call('txn/funding-review-cases'),
+      ]);
+      D.APPROVALS = approvals.rows;
+      D.REVERSAL_CASES = reversals.cases || [];
+      D.REVERSAL_DISPOSITIONS = reversals.dispositions || [];
+      D.CARD_FUNDING_CASES = cards.cases || [];
+      D.CARD_FUNDING_DISPOSITIONS = cards.dispositions || [];
+      D.FUNDING_REVIEW_CASES = funding.cases || [];
+      D.FUNDING_REVIEW_DISPOSITIONS = funding.dispositions || [];
+    },
     inbox: async () => { D.CONVOS = (await call('inbox')).rows; },
     broadcasts: async () => {
       const [r, a] = await Promise.all([call('broadcasts'), call('approvals/list', { status: 'pending' })]);
@@ -93,6 +117,9 @@ window.ZAPI = (function () {
     userAction: (user_id, action) => call('user-action', { user_id, action }),
     kycReview: (user_id, approve) => call('kyc-review', { user_id, approve }),
     txnRequery: (reference) => call('txn-requery', { reference }),
+    reversalResolution: (payload) => call('txn/reversal-resolution', payload),
+    cardFundingResolution: (payload) => call('txn/card-funding-resolution', payload),
+    fundingResolution: (payload) => call('txn/funding-resolution', payload),
     fxMargin: (bps) => call('fx-margin', { bps }),
     fxCorridor: (currency, enabled) => call('fx-corridor', { currency, enabled }),
     cardAction: (card_id) => call('card-action', { card_id }),

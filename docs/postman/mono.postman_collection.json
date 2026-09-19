@@ -83,7 +83,7 @@
             "method": "POST",
             "header": [ { "key": "Content-Type", "value": "application/json" } ],
             "body": { "mode": "raw", "raw": "{\n  \"amount\": 500000,\n  \"type\": \"onetime-debit\",\n  \"description\": \"Zitch wallet funding\",\n  \"reference\": \"ZMONO-<unique>\",\n  \"redirect_url\": \"https://api.zitch.ng/api/banklink/webhook/\",\n  \"customer\": { \"email\": \"ada@example.com\", \"name\": \"Ada Eze\" }\n}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{baseurl}}/v1/payments/initiate", "host": ["{{baseurl}}"], "path": ["v1", "payments", "initiate"] },
+            "url": { "raw": "{{baseurl}}/v2/payments/initiate", "host": ["{{baseurl}}"], "path": ["v2", "payments", "initiate"] },
             "description": "Start a DirectPay debit to fund the Zitch wallet. amount is in KOBO. Returns data.mono_url for the user to authorize. Used by /api/banklink/fund/; the wallet is credited via the Mono webhook (settle_funding, idempotent)."
           }
         },
@@ -92,7 +92,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{baseurl}}/v1/payments/verify/:reference", "host": ["{{baseurl}}"], "path": ["v1", "payments", "verify", ":reference"], "variable": [ { "key": "reference", "value": "ZMONO-<unique>" } ] }
+            "url": { "raw": "{{baseurl}}/v2/payments/verify/:reference", "host": ["{{baseurl}}"], "path": ["v2", "payments", "verify", ":reference"], "variable": [ { "key": "reference", "value": "ZMONO-<unique>" } ] }
           }
         }
       ]

@@ -11,10 +11,10 @@ Direction matters, so the two are reported separately:
   * ledger > bank  — we think the user has MORE than their NUBAN holds. The
     dangerous direction (a double-credit, or a debit that never reached the bank).
     This PAGES via Sentry.
-  * bank > ledger  — the NUBAN holds more than our books show. Usually benign and
-    transient: a deposit that has landed at the bank but not yet been swept by
-    ``reconcile_wema``, or a queued payout already deducted from our ledger. It
-    self-heals on the next sweep, so it is reported but does not page by default.
+  * bank > ledger  — the NUBAN holds more than our books show. It can be a
+    transient deposit between sweeps, but a six-hour reconciliation is too late
+    to dismiss as harmless. It is escalated for operator review (rate-limited by
+    the exact discrepancy), without ever changing a customer balance.
 
 Read-only; safe to run any time. It only does work when Wema is LIVE — in
 simulation/mock ``get_balance`` returns 0.00, which would flag every funded wallet
@@ -32,7 +32,8 @@ from wallet.services import wallet_expected_balance, wema_provisioned_wallets
 
 class Command(BaseCommand):
     help = ("Reconcile each Wema-provisioned wallet's ledger balance against the real "
-            "NUBAN balance at the bank; page when the ledger exceeds the bank.")
+            "NUBAN balance at the bank; escalate any non-zero divergence without "
+            "changing money or payment state.")
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -44,10 +45,9 @@ class Command(BaseCommand):
                  "bank read — for CI/manual audit.")
         parser.add_argument(
             "--fail-over", action="store_true",
-            help="Exit 1 on the dangerous ledger>bank direction or an incomplete bank read. "
-                 "Use on the cron: a "
-                 "benign bank>ledger delta (an unswept deposit between sweeps) won't create "
-                 "a false cron failure, but a real float divergence still surfaces.")
+            help="Legacy alias for the non-zero reconciliation gate: exit 1 on either "
+                 "discrepancy direction or an incomplete bank read. It never changes a "
+                 "customer balance or payment outcome.")
 
     def handle(self, *args, **options):
         from utility.alerts import alert
@@ -68,7 +68,7 @@ class Command(BaseCommand):
         checked = 0
         unreachable = 0
         over = []   # ledger > bank  (dangerous — float risk)
-        under = []  # bank > ledger  (usually benign / transient)
+        under = []  # bank > ledger  (operator review; no automatic correction)
         for w in wema_provisioned_wallets():
             checked += 1
             res = wema.get_balance(w.account_number)
@@ -97,13 +97,25 @@ class Command(BaseCommand):
             self.stdout.write(f"under user={row['user']} ledger={row['ledger']} "
                               f"bank={row['bank']} delta={row['delta']}")
 
-        # Page on the dangerous direction only (ledger exceeds bank — a possible
-        # float leak or double-credit). The benign direction self-heals on the next
-        # funding sweep, so it is logged/audited but not paged.
+        # Ledger exceeding bank is an immediate float risk. Bank exceeding
+        # ledger is not safe to ignore either once it survives to this
+        # six-hour job: it can be a missed funding credit or other provenance
+        # break. Both incidents only alert; neither branch changes money,
+        # refunds, or resolves a pending transaction.
         if over:
             alert("reconcile_balances: ledger exceeds bank NUBAN balance (possible float leak "
                   "or double-credit)", level="error",
                   wallets=checked, over=len(over), sample=over[:10])
+        if under:
+            from utility.reconciliation import alert_due
+            fingerprint = [
+                f"{row['user']}:{row['ledger']}:{row['bank']}"
+                for row in under
+            ]
+            if alert_due("balance-bank-over-ledger", fingerprint):
+                alert("reconcile_balances: bank NUBAN balance exceeds ledger; "
+                      "operator provenance review required and no correction was applied",
+                      level="error", wallets=checked, under=len(under), sample=under[:10])
         # Total outage (every balance read failed) is its own signal.
         if checked and unreachable == checked:
             alert(f"reconcile_balances: all {checked} NUBAN balance reads failed — Wema "
@@ -113,6 +125,6 @@ class Command(BaseCommand):
             f"Balance recon: {checked} wallet(s), {len(over)} over / {len(under)} under / "
             f"{unreachable} unreachable (tolerance {tolerance})")
         incomplete = unreachable > 0
-        if ((incomplete or over) and options["fail_over"]
-                or (incomplete or over or under) and options["fail_nonzero"]):
+        if ((incomplete or over or under)
+                and (options["fail_over"] or options["fail_nonzero"])):
             raise SystemExit(1)

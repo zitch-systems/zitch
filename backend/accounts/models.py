@@ -3,6 +3,7 @@ import hmac
 import logging
 import re
 import secrets
+import uuid
 from datetime import timedelta
 from decimal import Decimal
 
@@ -150,6 +151,17 @@ class User(AbstractUser):
     PIN_LOCKOUT_ESCALATED_MINUTES = 24 * 60     # locked again without a correct PIN since
 
     phone = models.CharField(max_length=20, unique=True, null=True, blank=True)
+    # Immutable, non-secret identity used only to namespace durable client-side
+    # idempotency attempts. Unlike a token or SECRET_KEY-derived digest it stays
+    # stable across sign-ins, token rotation, region moves and secret rotation.
+    # Nullable for expand/contract safety: Render currently applies migrations
+    # while the previous release is still serving.  That older code does not
+    # know this column and can therefore insert NULL during the cutover window.
+    # Current code supplies a UUID by default, and session/recipient payloads
+    # repair any legacy NULL atomically before exposing the namespace.
+    spend_namespace = models.UUIDField(
+        default=uuid.uuid4, unique=True, null=True, editable=False,
+    )
     #: A limit the CUSTOMER chose for themselves, at or below their tier ceiling.
     #: NULL means "no self-limit" and the tier ceiling applies — deliberately
     #: distinct from 0, which is a customer who has frozen their own spending.

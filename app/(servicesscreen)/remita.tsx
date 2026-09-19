@@ -1,7 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
-import { apiJson, newIdempotencyKey } from '@/lib/api';
+import { apiJson } from '@/lib/api';
+import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
+import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, HeaderLink } from '@/components/design/ui';
 import { Label, ConfirmSheet, BalanceHint, AmountField } from '@/components/design/flowkit';
@@ -17,7 +19,7 @@ const Remita = () => {
   const { balance, reload } = useWallet();
 
   const [rrr, setRrr] = useState('');
-  const [validated, setValidated] = useState(false);
+  const [validatedFor, setValidatedFor] = useState('');
   const [payerName, setPayerName] = useState('');
   // A validated RRR may carry a FIXED amount (most government bills do). When it
   // does, the amount field locks to it; an open-amount RRR leaves it editable.
@@ -31,63 +33,88 @@ const Remita = () => {
   // receipt and carried into the saved/shared file, so a support ticket can name it.
   const [txnRef, setTxnRef] = useState('');
   const [pending, setPending] = useState(false); // rail-pending: bill may still be settling
+  const [pendingMessage, setPendingMessage] = useState('');
+  const [recovered, setRecovered] = useState(false);
   const [pinError, setPinError] = useState('');
-  const idemKey = useRef(''); // stable across retries of one payment attempt
+  const validationGeneration = useRef(0);
 
-  // Editing the RRR invalidates the previous lookup.
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setValidated(false);
-      setPayerName('');
-      setFixedAmt('');
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [rrr]);
-
-  // Any edit to the payment details is a new spend — drop the retained key so a
-  // stale one can't replay the PRIOR payment for the edited one (mirrors sendmoney).
-  useEffect(() => { idemKey.current = ''; }, [rrr, amt]);
-
+  const normalizedRrr = rrr.trim();
+  const validated = !!normalizedRrr && validatedFor === normalizedRrr;
   const amount = Number((fixedAmt || amt) || 0);
   const valid = validated && amount >= 100 && amount <= balance;
 
   const validate = async () => {
+    const requestedRrr = normalizedRrr;
+    const generation = ++validationGeneration.current;
     setValidating(true);
     try {
-      const res = await apiJson('/api/utility/validate_rrr/', { rrr });
+      const res = await apiJson('/api/utility/validate_rrr/', { rrr: requestedRrr });
+      if (generation !== validationGeneration.current) return;
       if (res.success) {
-        setValidated(true);
+        setValidatedFor(requestedRrr);
         setPayerName(res.name || '');
-        if (res.amount) { setFixedAmt(String(res.amount)); setAmt(''); }
+        setFixedAmt(res.amount ? String(res.amount) : '');
+        if (res.amount) setAmt('');
       } else {
         notify('Not found', res.message || 'Could not validate this RRR.');
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
+      if (generation === validationGeneration.current) {
+        notify('Error', 'Something went wrong. Please try again later.');
+      }
     } finally {
-      setValidating(false);
+      if (generation === validationGeneration.current) setValidating(false);
     }
   };
 
+  const changeRrr = (value: string) => {
+    validationGeneration.current += 1;
+    setValidating(false);
+    setValidatedFor('');
+    setPayerName('');
+    setFixedAmt('');
+    setAmt('');
+    setRrr(value.replace(/\D/g, '').slice(0, 20));
+  };
+
   const pay = async (pin: string) => {
-    if (!idemKey.current) idemKey.current = newIdempotencyKey();
+    const fingerprint = [rrr.trim(), String(amount)].join('|');
+    let deliveryStarted = false;
     setBusy(true);
     try {
+      // Always acquire by the CURRENT validated material. This both reuses an
+      // unresolved retry after restart and prevents a changed biller amount from
+      // inheriting the previous amount's in-memory key.
+      const requestKey = await acquireSpendAttempt('remita', fingerprint);
+      deliveryStarted = true;
       const res = await apiJson('/api/utility/payremita/', {
         rrr,
         amount: String(amount),
         transaction_pin: pin,
-        idempotency_key: idemKey.current,
+        idempotency_key: requestKey,
       });
       // `pending` = the rail accepted but hasn't confirmed: the money is debited
       // and the bill may still settle — it is NOT auto-refunded (a maybe-paid
       // government bill must never be double-spent), so the receipt must say
-      // "processing", never promise a refund. `duplicate` = idempotent replay of
-      // a completed attempt — the payment DID go through.
-      if (res.success || res.pending || res.duplicate) {
-        idemKey.current = '';
+      // "processing", never promise a refund. `duplicate` says only that this
+      // idempotency key was already submitted; the accompanying `success` or
+      // `pending` flag remains the authoritative outcome. In particular, a
+      // replay of a PENDING ledger row must keep the processing receipt.
+      const outcome = classifySpendResponse(res);
+      if (outcome === 'success' || outcome === 'pending') {
+        if (outcome === 'success') {
+          await clearSpendAttempt('remita', fingerprint, requestKey);
+          setRecovered(isRecoveredSpendResponse(res));
+        }
         setTxnRef(String(res.reference || ''));
-        setPending(!res.success && !!res.pending && !res.duplicate);
+        setPending(outcome === 'pending');
+        setPendingMessage(res.message || 'Your Remita payment is processing. Its final status will update only after provider confirmation.');
+        setStep(null);
+        setDone(true);
+        reload();
+      } else if (outcome === 'unknown') {
+        setPending(true);
+        setPendingMessage('We could not confirm this Remita payment. Check History before trying again.');
         setStep(null);
         setDone(true);
         reload();
@@ -97,13 +124,22 @@ const Remita = () => {
         // Only a definitive backend rejection mints a new key; on a connectivity
         // failure (`offline`) the request may have been delivered, so keep it and
         // let a retry replay server-side instead of paying twice.
-        if (!res.offline) idemKey.current = '';
+        if (!res.offline) {
+          await clearSpendAttempt('remita', fingerprint, requestKey);
+        }
         notify('Error', res.message || 'Payment could not be completed.');
         setStep(null);
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
-      setStep(null);
+      if (deliveryStarted) {
+        setPending(true);
+        setPendingMessage('We could not confirm this Remita payment. Check History before trying again.');
+        setStep(null);
+        setDone(true);
+        reload();
+      } else {
+        notify('Unable to start payment', 'Could not safely prepare this request. Please try again.');
+      }
     } finally {
       setBusy(false);
     }
@@ -113,9 +149,11 @@ const Remita = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title={pending ? 'Payment processing' : 'Bill paid'}
+          title={pending ? 'Payment processing' : recovered ? 'Earlier attempt confirmed' : 'Bill paid'}
           message={pending
-            ? `Your Remita payment of ${money(amount)} is processing and will be confirmed shortly. Keep your RRR — the biller will reflect it once settled.`
+            ? pendingMessage
+            : recovered
+              ? 'This confirms your earlier Remita payment. No new payment was made. Start a new payment to pay again.'
             : `Your Remita payment of ${money(amount)} was successful.`}
           rows={[['Type', 'Remita bill'], ['RRR', rrr], ...(payerName ? ([['Payer', payerName]] as [string, string][]) : []), ['Amount', money(amount)], ['Fee', '₦0'], ['Total', money(amount), true]]}
           reference={txnRef}
@@ -133,7 +171,7 @@ const Remita = () => {
       <Label>Remita Retrieval Reference (RRR)</Label>
       <Field
         value={rrr}
-        onChangeText={(v) => setRrr(v.replace(/\D/g, '').slice(0, 20))}
+        onChangeText={changeRrr}
         keyboardType="number-pad"
         placeholder="Enter the RRR on your bill"
         prefix={<ZIcon name="bills" size={18} color={c.ink3} />}

@@ -276,32 +276,41 @@ def bank_transfer(request):
     -> {success, wallet, reference}
     """
     user, data = request.user_obj, request.data
-
-    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
-    if pin_err:
-        return pin_err
-
     acct = (data.get("account_number") or "").strip()
     if len(acct) != 10:
         return fail("Enter a valid 10-digit account number")
-    bank = Bank.objects.filter(code=str(data.get("bank", ""))).first()
-    if bank is None:
-        return fail("Select a bank", status=404)
-
+    bank_code = str(data.get("bank", ""))
     amount = parse_amount(data.get("amount"))
     if amount is None:
         return fail("Enter a valid amount")
     if amount < MIN_TRANSFER:
         return fail(f"Minimum transfer is ₦{MIN_TRANSFER:,.0f}")
 
-    limit_err = check_send_limits(user, amount)
-    if limit_err:
-        return limit_err
-
-    key = spend_key(data.get("idempotency_key"), user, "bank", acct, bank.code, amount)
+    raw_key = data.get("idempotency_key")
+    if not isinstance(raw_key, str) or not raw_key.strip():
+        return fail(
+            "A stable idempotency key is required for bank transfers",
+            status=400,
+            code="idempotency_key_required",
+        )
+    key = spend_key(raw_key, user, "bank", acct, bank_code, amount)
     replay = idempotent_replay(existing_for_key(user, key))
     if replay:
         return replay
+
+    # Everything below authorizes or enriches a NEW payout. A lost-response
+    # retry must replay before mutable PIN/limit/bank/name-enquiry state can make
+    # the client discard its original key and submit a second transfer.
+    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
+    bank = Bank.objects.filter(code=bank_code).first()
+    if bank is None:
+        return fail("Select a bank", status=404)
+
+    limit_err = check_send_limits(user, amount)
+    if limit_err:
+        return limit_err
 
     # Daily transfer cap (after replay so a retried transfer replays cleanly).
     daily_err = check_daily_limit(user, amount, "transfer")
@@ -345,6 +354,17 @@ def bank_transfer(request):
             )
         if exc.kind == "insufficient":
             return fail("Insufficient wallet balance", status=402)
+        if exc.kind == "limit_exceeded":
+            return fail(exc.message, status=403, code="limit_exceeded")
+        if exc.kind == "state_conflict":
+            prior = existing_for_key(user, key)
+            return ok(
+                pending=True,
+                under_review=True,
+                reference=prior.reference if prior is not None else "",
+                message=("The bank response conflicted with the ledger. Your "
+                         "transaction is under review; do not send it again."),
+            )
         # Provider messages pass through to the user, but a bare status echo
         # ("success" when the API REQUEST succeeded) or an empty string would render
         # a nonsense "Error / success" dialog on app builds that show the message
@@ -352,15 +372,41 @@ def bank_transfer(request):
         message = (exc.message or "").strip()
         if not message or message.lower() in ("success", "successful"):
             message = "Transfer could not be completed. Please try again."
-        return fail(message, status=502)
+        prior = existing_for_key(user, key)
+        if exc.kind == "provider":
+            return fail(
+                message,
+                status=422,
+                code="transfer_failed",
+                reference=prior.reference if prior is not None else "",
+                refunded=True,
+            )
+        source_codes = {
+            "source_unusable": "source_account_unusable",
+            "source_missing": "source_account_missing",
+            "source_restricted": "source_account_restricted",
+        }
+        return fail(
+            message,
+            status=422,
+            code=source_codes.get(exc.kind, "transfer_failed"),
+            reference=prior.reference if prior is not None else "",
+        )
 
     from wallet.services import get_or_create_wallet
     wallet = get_or_create_wallet(user)
-    if txn.transaction_status == Transaction.PENDING:
+    quarantine = (txn.meta or {}).get("wema_reversal_quarantine") or {}
+    if (txn.transaction_status == Transaction.PENDING
+            or (isinstance(quarantine, dict) and quarantine.get("active") is True)):
         # Rail queued it but hasn't confirmed — don't claim "sent".
         return ok(pending=True, wallet=str(wallet.balance), reference=txn.reference, name=name,
                   narration=(txn.meta or {}).get("narration", ""),
-                  message="Your transfer is processing and will be confirmed shortly.")
+                  message=("Your transfer is under review. Do not send it again; "
+                           "we will update its final status after reconciliation."
+                           if isinstance(quarantine, dict) and quarantine.get("active") is True
+                           else
+                           "Your transfer is processing. Its final status will be updated "
+                           "after the bank confirms the outcome."))
     return ok(success=True, wallet=str(wallet.balance), reference=txn.reference, name=name,
               narration=(txn.meta or {}).get("narration", ""),
               # So the receipt can offer "save this recipient" and act on the tap

@@ -22,12 +22,15 @@ class ReconciliationSchedulingTests(TestCase):
         self.txn = debit(self.user, Decimal("55"), "airtime",
                          meta={"vas_type": "airtime", "reconcile": True})
 
-    def callback(self, status, ip="135.236.18.76"):
+    def callback(self, status=None, ip="135.236.18.76", **extra):
         from whatsapp.models import WebhookEvent
+        data = {"transactionReference": self.txn.reference, **extra}
+        if status is not None:
+            data["status"] = status
         return WebhookEvent.objects.create(
             source="wema.txn", verified=True, outcome=WebhookEvent.ACCEPTED,
             http_status=200, reference=self.txn.reference, remote_ip=ip,
-            payload={"data": {"transactionReference": self.txn.reference, "status": status}})
+            payload={"data": data})
 
     @override_settings(WEMA={"CALLBACK_IPS": ["135.236.18.76"]})
     def test_recovers_confirmed_callback_but_never_guesses_from_conflicting_events(self):
@@ -43,10 +46,29 @@ class ReconciliationSchedulingTests(TestCase):
         self.callback("Successful", ip="8.8.8.8")
         self.assertIsNone(recorded_vas_outcome(self.txn))
 
+    @override_settings(WEMA={"CALLBACK_IPS": ["135.236.18.76"]})
+    def test_recovers_numeric_transaction_status_legend(self):
+        for code, expected in ((200, True), (400, False), (401, False)):
+            with self.subTest(code=code):
+                from whatsapp.models import WebhookEvent
+
+                WebhookEvent.objects.all().delete()
+                self.callback(transactionStatus=code)
+                result = recorded_vas_outcome(self.txn)
+                self.assertIsNotNone(result)
+                self.assertEqual(result["success"], expected)
+
+    @override_settings(WEMA={"CALLBACK_IPS": ["135.236.18.76"]})
+    def test_conflicting_status_fields_never_choose_by_precedence(self):
+        self.callback("Successful", transactionStatus=400)
+
+        self.assertIsNone(recorded_vas_outcome(self.txn))
+
     @override_settings(WEMA={"CALLBACK_IPS": ["135.236.18.76"]}, PAYMENT_PROVIDER="wema")
     @patch("utility.management.commands.reconcile_wema.wema_provisioned_wallets", return_value=[])
     @patch("utility.management.commands.reconcile_wema.vas_requery")
-    def test_sweep_replays_success_even_during_lookup_backoff(self, query, wallets):
+    @patch("wallet.alerts.retry_pending_whatsapp_alerts")
+    def test_sweep_replays_success_even_during_lookup_backoff(self, retry_alerts, query, wallets):
         Transaction.objects.filter(pk=self.txn.pk).update(created=timezone.now() - timedelta(minutes=10))
         claim_status_lookup(self.txn)
         self.callback("Successful")
@@ -54,6 +76,7 @@ class ReconciliationSchedulingTests(TestCase):
         self.txn.refresh_from_db()
         self.assertEqual(self.txn.transaction_status, Transaction.SUCCESS)
         query.assert_not_called()
+        retry_alerts.assert_not_called()
 
     def test_duplicate_workers_share_durable_claim(self):
         self.assertTrue(claim_status_lookup(self.txn))

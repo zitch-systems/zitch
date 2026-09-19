@@ -2,6 +2,30 @@ from django.conf import settings
 from django.db import models
 
 
+class BankConnectSession(models.Model):
+    """One expiring, single-use Mono Connect attempt bound to one Zitch user.
+
+    Only a SHA-256 digest of the browser-visible state token is stored.  The
+    callback must present that state before its short-lived Mono code is exchanged,
+    preventing login-CSRF/account swapping and code replay across users.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name="bank_connect_sessions",
+    )
+    state_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created"]
+
+    def __str__(self):
+        return f"bank-connect:{self.user_id}:{'used' if self.used_at else 'pending'}"
+
+
 class LinkedBankAccount(models.Model):
     """An external bank account a user linked via Mono open banking.
 

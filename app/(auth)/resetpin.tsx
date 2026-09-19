@@ -8,6 +8,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
+import { TRANSACTION_PIN_LENGTH } from '@/lib/transactionPin';
 
 // Change the transaction PIN for a signed-in user. The backend requires the
 // account password to change an existing PIN, so a stolen session token alone
@@ -19,7 +20,9 @@ const ResetPin = () => {
   const [pin2, setPin2] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const canSubmit = password.length >= 8 && pin.length >= 4 && pin === pin2;
+  const canSubmit = password.length >= 8
+    && pin.length === TRANSACTION_PIN_LENGTH
+    && pin === pin2;
 
   const submit = async () => {
     if (pin !== pin2) {
@@ -48,7 +51,7 @@ const ResetPin = () => {
     <Screen>
       <Header title="Change transaction PIN" onBack={() => router.back()} />
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 2, marginBottom: 22, fontFamily: font.regular }}>
-        For your security, confirm your account password to set a new 4-digit transaction PIN.
+        For your security, confirm your account password to set a new {TRANSACTION_PIN_LENGTH}-digit transaction PIN.
       </Text>
 
       <View style={{ gap: 16 }}>
@@ -63,20 +66,20 @@ const ResetPin = () => {
         <Field
           label="New PIN"
           value={pin}
-          onChangeText={(v) => setPin(v.replace(/\D/g, '').slice(0, 4))}
+          onChangeText={(v) => setPin(v.replace(/\D/g, '').slice(0, TRANSACTION_PIN_LENGTH))}
           secureTextEntry
           keyboardType="number-pad"
-          maxLength={4}
-          placeholder="4-digit PIN"
+          maxLength={TRANSACTION_PIN_LENGTH}
+          placeholder={`${TRANSACTION_PIN_LENGTH}-digit PIN`}
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
         <Field
           label="Confirm new PIN"
           value={pin2}
-          onChangeText={(v) => setPin2(v.replace(/\D/g, '').slice(0, 4))}
+          onChangeText={(v) => setPin2(v.replace(/\D/g, '').slice(0, TRANSACTION_PIN_LENGTH))}
           secureTextEntry
           keyboardType="number-pad"
-          maxLength={4}
+          maxLength={TRANSACTION_PIN_LENGTH}
           placeholder="Re-enter PIN"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />

@@ -45,7 +45,15 @@ const SIGNING_CONFIG = `        release {
         }
 `;
 
-const BUILD_TYPE_SIGNING = `def zitchHasUploadKey = project.hasProperty("ZITCH_UPLOAD_STORE_FILE")
+const BUILD_TYPE_SIGNING = `def zitchHasUploadKey = [
+                "ZITCH_UPLOAD_STORE_FILE",
+                "ZITCH_UPLOAD_STORE_PASSWORD",
+                "ZITCH_UPLOAD_KEY_ALIAS",
+                "ZITCH_UPLOAD_KEY_PASSWORD"
+            ].every { project.hasProperty(it) }
+            if (project.hasProperty("ZITCH_REQUIRE_UPLOAD_KEY") && !zitchHasUploadKey) {
+                throw new GradleException("ZITCH_REQUIRE_UPLOAD_KEY=true requires all ZITCH_UPLOAD_* signing properties")
+            }
             println("[zitch] release signing: " + (zitchHasUploadKey ? "upload keystore" : "DEBUG key — sideload only, Play will reject this"))
             signingConfig zitchHasUploadKey ? signingConfigs.release : signingConfigs.debug`;
 
@@ -99,6 +107,12 @@ function addReleaseSigning(contents) {
 
 const withAndroidReleaseSigning = (config) =>
   withAppBuildGradle(config, (cfg) => {
+    // EAS may apply its own managed signing config after prebuild. Do not
+    // rewrite the generated template unless the caller explicitly opted into
+    // the ZITCH_UPLOAD_* Gradle-property path (the production CI workflows do
+    // this before prebuild). This keeps EAS-managed credentials compatible and
+    // leaves local/preview builds visibly debug-signed.
+    if (process.env.ZITCH_CONFIGURE_UPLOAD_SIGNING !== 'true') return cfg;
     if (cfg.modResults.language !== 'groovy') {
       throw new Error(
         'withAndroidReleaseSigning: app/build.gradle is not Groovy; cannot apply release signing'

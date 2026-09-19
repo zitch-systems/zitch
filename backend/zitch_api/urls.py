@@ -32,9 +32,9 @@ def health(_request):
         response["Cache-Control"] = "no-store"
         return response
 
-    from utility.providers import (_prembly_live, kyc_provider, payment_provider,
-                                    payout_live, payout_provider, sms_live,
-                                    vas_provider, vtu_live)
+    from utility.providers import (_prembly_live, card_issuer_live, kyc_provider,
+                                    payment_provider, payout_live, payout_provider,
+                                    sms_live, vas_provider, vtu_live)
     from utility import wema
     from whatsapp.providers import flows_live as _flows_live
     from whatsapp.providers import wa_live, wa_mode
@@ -71,7 +71,7 @@ def health(_request):
         "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN/vNIN (wema Full KYC)
         "kyc_wema": wema.wema_live(),
         "kyc_prembly": _prembly_live(),  # selfie/liveness + address + ID-doc stay on Prembly
-        "cards_issuer": bool(settings.CARD_ISSUER["API_KEY"]),
+        "cards_issuer": card_issuer_live(),
         # The audit that found the queue backlog also found REDIS_URL
         # disconnected — and there is a reason a boot-time check couldn't have
         # been trusted to catch it: DJANGO_REQUIRE_SHARED_CACHE can be set to

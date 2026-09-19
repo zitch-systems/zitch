@@ -1,17 +1,19 @@
 import signal
 import threading
 import time
+from datetime import timedelta
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections, connections
+from django.utils import timezone
 
 from whatsapp.jobs import process_once
 from whatsapp.providers import wa_live
 
 
 class Command(BaseCommand):
-    help = "Process durable WhatsApp inbound messages and broadcast recipients."
+    help = "Process durable WhatsApp messages and retry terminal transaction alerts."
 
     def add_arguments(self, parser):
         parser.add_argument("--once", action="store_true")
@@ -29,6 +31,24 @@ class Command(BaseCommand):
             default=30.0,
             help="Read back missing partner-bank funding accounts at this interval.",
         )
+        parser.add_argument(
+            "--alert-retry-interval-seconds",
+            type=float,
+            default=float(getattr(settings, "WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS", 60.0)),
+            help="Retry undelivered terminal transaction alerts at this interval.",
+        )
+        parser.add_argument(
+            "--alert-retry-lookback-days",
+            type=int,
+            default=int(getattr(settings, "WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS", 2)),
+            help="Recent terminal-transaction window for alert retries (default: 2 days).",
+        )
+        parser.add_argument(
+            "--alert-retry-limit",
+            type=int,
+            default=int(getattr(settings, "WHATSAPP_ALERT_RETRY_LIMIT", 50)),
+            help="Maximum terminal transaction alerts to retry per sweep (default: 50).",
+        )
 
     def handle(self, *args, **options):
         # A misconfigured production worker must never consume commands, execute
@@ -43,6 +63,7 @@ class Command(BaseCommand):
         stopped = False
         reconcile_lock = threading.Lock()
         account_repair_lock = threading.Lock()
+        alert_retry_lock = threading.Lock()
 
         def stop(*_args):
             nonlocal stopped
@@ -88,6 +109,27 @@ class Command(BaseCommand):
                 connections.close_all()
                 account_repair_lock.release()
 
+        def retry_transaction_alerts():
+            # Money reconciliation belongs exclusively to the Wema cron. This
+            # worker-owned pass only resumes delivery of alerts that were already
+            # claimed safely on terminal ledger rows. It uses the worker's Meta
+            # credentials, so the bank cron never needs to hold or duplicate them.
+            if not alert_retry_lock.acquire(blocking=False):
+                return
+            try:
+                close_old_connections()
+                from wallet.alerts import retry_pending_whatsapp_alerts
+
+                retry_pending_whatsapp_alerts(
+                    since=timezone.now() - timedelta(days=alert_retry_lookback_days),
+                    limit=alert_retry_limit,
+                )
+            except Exception:  # noqa: BLE001 - delivery is retried on the next scheduled pass
+                self.stderr.write("background WhatsApp transaction alert retry failed; retrying")
+            finally:
+                connections.close_all()
+                alert_retry_lock.release()
+
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         batch = max(1, min(int(options["batch_size"]), 200))
@@ -100,6 +142,12 @@ class Command(BaseCommand):
             30.0,
             min(float(options["account_repair_interval_seconds"]), 3600.0),
         )
+        alert_retry_interval = max(
+            10.0,
+            min(float(options["alert_retry_interval_seconds"]), 3600.0),
+        )
+        alert_retry_lookback_days = max(1, min(int(options["alert_retry_lookback_days"]), 7))
+        alert_retry_limit = max(1, min(int(options["alert_retry_limit"]), 200))
         # Money reconciliation belongs to the dedicated cron. It can still be
         # enabled explicitly for a single-process local/test worker, but keeping
         # it off by default prevents several worker processes from sweeping and
@@ -107,6 +155,7 @@ class Command(BaseCommand):
         run_reconcile = bool(getattr(settings, "WHATSAPP_WORKER_RECONCILE", False))
         next_reconcile = time.monotonic()
         next_account_repair = time.monotonic()
+        next_alert_retry = time.monotonic()
 
         while not stopped:
             now = time.monotonic()
@@ -125,6 +174,14 @@ class Command(BaseCommand):
                     daemon=True,
                 ).start()
                 next_account_repair = now + account_repair_interval
+
+            if not options["once"] and now >= next_alert_retry:
+                threading.Thread(
+                    target=retry_transaction_alerts,
+                    name="whatsapp-transaction-alert-retry",
+                    daemon=True,
+                ).start()
+                next_alert_retry = now + alert_retry_interval
 
             inbound, outbound = process_once(batch)
             if options["once"]:

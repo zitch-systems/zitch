@@ -129,11 +129,6 @@ def convert_airtime(request):
     Credits the wallet the cash value of the airtime, idempotently.
     """
     user, data = request.user_obj, request.data
-
-    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
-    if pin_err:
-        return pin_err
-
     net = str(data.get("network", ""))
     if net not in RATES:
         return fail("Select a valid network")
@@ -148,12 +143,18 @@ def convert_airtime(request):
     if airtime > MAX_AIRTIME:
         return fail(f"Maximum airtime is ₦{MAX_AIRTIME:,.0f}")
 
-    # Fall back to a deterministic server key when the client omits one, so a
-    # retried convert can't credit free cash twice for one airtime transfer.
-    key = spend_key(data.get("idempotency_key"), user, "convert", net, phone, airtime)
+    raw_key = data.get("idempotency_key")
+    if not isinstance(raw_key, str) or not raw_key.strip():
+        return fail("A stable idempotency key is required for airtime conversion",
+                    status=400, code="idempotency_key_required")
+    key = spend_key(raw_key, user, "convert", net, phone, airtime)
     replay = idempotent_replay(existing_for_key(user, key))
     if replay:
         return replay
+
+    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
 
     rate = RATES.get(net, DEFAULT_RATE)
     payout = (airtime * rate).quantize(Decimal("0.01"), rounding=ROUND_DOWN)

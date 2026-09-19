@@ -1,6 +1,13 @@
 from django.contrib import admin, messages
 
-from .models import FundingIntent, Transaction, Wallet
+from .models import (
+    FundingIntent,
+    ReversalEvidence,
+    ReversalEvidenceObservation,
+    ReversalEvidenceResolution,
+    Transaction,
+    Wallet,
+)
 from .services import attach_existing_bank_account, is_demo_account
 
 
@@ -79,7 +86,7 @@ class TransactionAdmin(admin.ModelAdmin):
     # produces integrity errors (and, previously, a 500 response).
     readonly_fields = (
         "user", "service", "amount", "currency", "direction",
-        "reference", "idempotency_key", "created",
+        "reference", "idempotency_key", "created", "transaction_status", "meta",
     )
 
     def has_delete_permission(self, request, obj=None):
@@ -95,6 +102,57 @@ class TransactionAdmin(admin.ModelAdmin):
         unreachable — every failed row looks alike.
         """
         return (obj.meta or {}).get("failure") or "—"
+
+
+class _ReadOnlyMoneyAdmin(admin.ModelAdmin):
+    """Audit records are append-only and changed only by checked services."""
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(ReversalEvidence)
+class ReversalEvidenceAdmin(_ReadOnlyMoneyAdmin):
+    list_display = (
+        "id", "state", "initial_reason", "reason", "provider_reference", "amount", "user",
+        "payout", "version", "first_seen", "last_seen",
+    )
+    list_filter = ("state", "initial_reason", "reason", "provider", "first_seen")
+    search_fields = (
+        "provider_reference", "ledger_reference", "payout__reference",
+        "associated_payouts__reference",
+        "user__phone", "user__email",
+    )
+    readonly_fields = [field.name for field in ReversalEvidence._meta.fields] + [
+        "associated_payouts",
+    ]
+
+
+@admin.register(ReversalEvidenceObservation)
+class ReversalEvidenceObservationAdmin(_ReadOnlyMoneyAdmin):
+    list_display = ("evidence", "amount", "sightings", "first_seen", "last_seen")
+    search_fields = ("evidence__provider_reference", "evidence__payout__reference")
+    readonly_fields = [field.name for field in ReversalEvidenceObservation._meta.fields]
+
+
+@admin.register(ReversalEvidenceResolution)
+class ReversalEvidenceResolutionAdmin(_ReadOnlyMoneyAdmin):
+    list_display = (
+        "evidence", "payout", "disposition", "confirmed_amount", "actor", "approval_id",
+        "movement_amount", "movement_direction", "created",
+    )
+    list_filter = ("disposition", "movement_direction", "created")
+    search_fields = (
+        "evidence__provider_reference", "payout__reference", "evidence__payout__reference",
+        "reason", "approval_id",
+    )
+    readonly_fields = [field.name for field in ReversalEvidenceResolution._meta.fields]
 
 
 @admin.register(FundingIntent)

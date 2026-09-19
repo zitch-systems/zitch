@@ -1,8 +1,9 @@
 """
 Django settings for the Zitch API.
 
-Local SQLite by default; Render + Postgres in production via environment
-variables. See .env.example for the full list.
+PostgreSQL is mandatory outside the Django test runner. Local development and
+GitHub Actions may opt into SQLite explicitly; Render can never fall back to an
+ephemeral local ledger. See .env.example for the full list.
 """
 import os
 import sys
@@ -35,6 +36,10 @@ OTP_HASH_KEY = os.environ.get("DJANGO_OTP_HASH_KEY", "") or SECRET_KEY
 # would disable the HTTPS redirect, secure cookies, and the fail-closed provider
 # mock guards below). Local dev opts in with DJANGO_DEBUG=true (see .env.example).
 DEBUG = env_bool("DJANGO_DEBUG", False)
+# The management command itself is an explicit test-only SQLite context. Other
+# local/CI commands must opt in below; a deployed process can never silently
+# fall back from the shared PostgreSQL ledger to an ephemeral SQLite file.
+TESTING = "test" in sys.argv
 
 # Fail closed: an unset host list allows everything ONLY in debug (convenient for
 # LAN/device testing). In production (DEBUG off) an unset DJANGO_ALLOWED_HOSTS
@@ -147,13 +152,40 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "zitch_api.wsgi.application"
 
+_database_url = os.environ.get("DATABASE_URL", "").strip()
+_sqlite_override = env_bool("DJANGO_ALLOW_SQLITE", False)
+_hosted_on_render = env_bool("RENDER", False) or bool(RENDER_HOST)
+_safe_sqlite_context = TESTING or (
+    _sqlite_override
+    and not _hosted_on_render
+    and (DEBUG or env_bool("GITHUB_ACTIONS", False))
+)
+if not _database_url and not _safe_sqlite_context:
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured(
+        "DATABASE_URL is required outside the Django test runner. Local/CI "
+        "SQLite requires DJANGO_ALLOW_SQLITE=true together with DJANGO_DEBUG=true "
+        "or GITHUB_ACTIONS=true, and is never allowed on Render."
+    )
+
 DATABASES = {
     "default": dj_database_url.config(
         default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
         conn_max_age=600,
-        ssl_require=env_bool("DJANGO_DB_SSL", not DEBUG and bool(os.environ.get("DATABASE_URL"))),
+        ssl_require=env_bool("DJANGO_DB_SSL", not DEBUG and bool(_database_url)),
     )
 }
+_database_engine = str(DATABASES["default"].get("ENGINE") or "")
+_is_postgresql = _database_engine.endswith("postgresql")
+_is_sqlite = _database_engine.endswith("sqlite3")
+if not _is_postgresql and not (_is_sqlite and _safe_sqlite_context):
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured(
+        "Production DATABASE_URL must use PostgreSQL; refusing a local/ephemeral "
+        f"database backend ({_database_engine or 'unset'})."
+    )
 
 AUTH_USER_MODEL = "accounts.User"
 
@@ -264,7 +296,6 @@ USER_LOGIN_LOCKOUT_SECONDS = int(os.environ.get("USER_LOGIN_LOCKOUT_SECONDS", "9
 # process cache can't bleed counts across unrelated cases; a dedicated test
 # re-enables it. In production, back the cache with Redis (or rate-limit at the
 # edge) for accurate limits across workers.
-TESTING = "test" in sys.argv
 if TESTING:
     # A checked-out repo or CI environment may contain real provider keys.  Tests
     # must never turn fixture data into a live SMS/email/WhatsApp/bank request;
@@ -420,9 +451,11 @@ WEMA = {
     "AUTH_MAX_AGE": int(os.environ.get("WEMA_AUTH_MAX_AGE", "900") or 900),
     "AUTH_REQUIRE_SECURITY_INFO": env_bool(
         "WEMA_AUTH_REQUIRE_SECURITY_INFO", not DEBUG and not TESTING),
-    # VAS status legends. ALAT's PartnerPayment status checks answer with a bare
-    # INTEGER `transactionStatus` — 1..11 for airtime/data, 1..9 for bills — and do
-    # not publish what the numbers mean. Without the legend a timed-out VAS purchase
+    # VAS status legends. The live payment legend confirmed for this integration is
+    # 200=success, 400=failed, 401=unauthorized/authentication-failed/invalid-API.
+    # Keep the maps product-scoped and environment-backed so a future bank contract
+    # change cannot silently reinterpret historical or in-flight payments. Without
+    # the legend a timed-out VAS purchase
     # can never be auto-settled or auto-refunded: it stays PENDING forever, because
     # guessing either way loses money (settle a failure and the customer is debited
     # for nothing; refund a delivered top-up and we pay twice).
@@ -628,11 +661,13 @@ PREMBLY = {
 # checks the number lookups can't do: the selfie/liveness step (kyc_verify_face — the
 # ≥₦100k gate), address (kyc_verify_address), and ID-document OCR
 # (kyc_verify_nin_document / kyc_verify_id_document).
-# Card issuer (virtual cards) — generic provider; blank => mock mode.
+# Card issuer (virtual cards) — generic provider.  Credentials alone never turn
+# on an unverified money/card contract: LIVE_ENABLED is a separate go-live gate.
 CARD_ISSUER = {
     "BASE_URL": os.environ.get("CARD_ISSUER_BASE_URL", ""),
     "API_KEY": os.environ.get("CARD_ISSUER_API_KEY", ""),
     "BRAND": os.environ.get("CARD_ISSUER_BRAND", "Verve"),
+    "LIVE_ENABLED": env_bool("CARD_ISSUER_LIVE_ENABLED", False),
 }
 
 # WhatsApp Cloud API (Meta). Runtime mode is explicit: disabled | sandbox | live.
@@ -842,6 +877,15 @@ WHATSAPP_WORKER_CONCURRENCY = int(os.environ.get("WHATSAPP_WORKER_CONCURRENCY", 
 # off the WhatsApp message worker prevents multiple worker processes from polling
 # and notifying on the same settlement at once.
 WHATSAPP_WORKER_RECONCILE = env_bool("WHATSAPP_WORKER_RECONCILE", False)
+# Terminal transaction notifications are retried by the credentialed WhatsApp
+# worker, not by bank-reconciliation cron jobs. These bounds keep a transient
+# Meta outage from creating an unbounded catch-up burst after recovery.
+WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS = int(
+    os.environ.get("WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS", "60") or 60)
+WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS = int(
+    os.environ.get("WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS", "2") or 2)
+WHATSAPP_ALERT_RETRY_LIMIT = int(
+    os.environ.get("WHATSAPP_ALERT_RETRY_LIMIT", "50") or 50)
 # The web service also drains the inbound queue in a bounded background thread
 # after acknowledging a webhook, so a stopped/crashed/never-created worker service
 # cannot silently swallow every reply. Rows are claimed with SELECT FOR UPDATE, so

@@ -18,8 +18,9 @@
 // key WE hold across renewals, or a documented rotation runbook that guarantees the
 // backup pin is already deployed before the primary changes.
 //
-// Until then, transport security rests on system CA validation plus
-// `usesCleartextTraffic: false` (already set) and the release-build host allowlist in
+// Until then, transport security rests on system CA validation plus the
+// `android:usesCleartextTraffic="false"` manifest invariant enforced by
+// withAndroidSecurity and the release-build host allowlist in
 // components/configFiles/apiConfig.
 //
 // ── Enabling it, once a key you control exists ──────────────────────────────────

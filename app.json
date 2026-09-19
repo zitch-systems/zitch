@@ -6,7 +6,7 @@
     "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "scheme": "Zitch",
+    "scheme": "zitch",
     "userInterfaceStyle": "automatic",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -23,6 +23,7 @@
       }
     },
     "android": {
+      "versionCode": 11,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "monochromeImage": "./assets/adaptive-icon-mono.png",
@@ -31,11 +32,18 @@
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.CAMERA",
-        "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.USE_BIOMETRIC",
         "android.permission.USE_FINGERPRINT"
       ],
-      "usesCleartextTraffic": false,
+      "blockedPermissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.READ_CONTACTS",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WRITE_CONTACTS"
+      ],
+      "allowBackup": false,
       "package": "com.zitch.app"
     },
     "web": {
@@ -54,7 +62,8 @@
       [
         "expo-image-picker",
         {
-          "cameraPermission": "Allow Zitch to use the camera to verify your identity (face check)."
+          "cameraPermission": "Allow Zitch to use the camera to verify your identity (face check).",
+          "microphonePermission": false
         }
       ],
       [
@@ -71,7 +80,9 @@
           "savePhotosPermission": "Allow Zitch to save transaction receipts to your photos.",
           "isAccessMediaLocationEnabled": false
         }
-      ]
+      ],
+      "./plugins/withAndroidSecurity",
+      "./plugins/withAndroidReleaseSigning"
     ],
     "experiments": {
       "typedRoutes": true

@@ -1,4 +1,5 @@
 """Loan endpoints: eligibility/quote, request (disburse), repay."""
+import hmac
 from decimal import Decimal
 
 from django.db import IntegrityError
@@ -11,7 +12,7 @@ from utility.providers import bnpl_offers as provider_bnpl_offers
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, get_or_create_wallet
 
 from .models import Loan
-from .services import LoanError, credit_limit, disburse, repay
+from .services import LoanError, LoanRepaymentStale, credit_limit, disburse, repay
 
 ALLOWED_TENURES = {15, 30, 60}
 MIN_PRINCIPAL = Decimal("10000")
@@ -38,6 +39,26 @@ def _loan_dict(loan: Loan) -> dict:
         "status": loan.status,
         "due_date": loan.due_date.strftime("%Y-%m-%d"),
     }
+
+
+def _stale_repayment_replay(prior):
+    """Replay the stable stale-loan response without bypassing key binding."""
+    if prior is None:
+        return None
+    meta = prior.meta if isinstance(prior.meta, dict) else {}
+    if meta.get("loan_repayment_outcome") != "stale_loan":
+        return None
+    expected = str(getattr(prior, "_requested_idempotency_fingerprint", "") or "")
+    stored = str(meta.get("idempotency_fingerprint") or "")
+    if not expected or not stored or not hmac.compare_digest(expected, stored):
+        return None
+    return fail(
+        "This loan was repaid before this request could be applied. No money was taken.",
+        status=409,
+        code=LoanRepaymentStale.code,
+        duplicate=True,
+        reference=prior.reference,
+    )
 
 
 @api
@@ -85,22 +106,11 @@ def loan_request(request):
     -> {success, wallet, loan}
     """
     user, data = request.user_obj, request.data
-
-    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
-    if pin_err:
-        return pin_err
-
-    if user.loans.filter(status=Loan.ACTIVE).exists():
-        return fail("You already have an active loan", status=409)
-
     principal = parse_amount(data.get("amount"))
     if principal is None:
         return fail("Enter a valid amount")
     if principal < MIN_PRINCIPAL:
         return fail(f"Minimum loan is ₦{MIN_PRINCIPAL:,.0f}")
-    if principal > credit_limit(user):
-        return fail("Amount exceeds your available credit", status=403)
-
     tenure = _parse_tenure(data.get("tenure_days", 30))
     if tenure is None:
         return fail("Tenure must be 15, 30 or 60 days")
@@ -108,10 +118,23 @@ def loan_request(request):
     # Dedupe the disbursement: a retried/replayed request (esp. after the prior
     # loan was repaid, which clears the one-active-loan guard) must not disburse a
     # second principal. Mirrors loan_repay.
-    key = spend_key(data.get("idempotency_key"), user, "loan-request", principal, tenure)
+    raw_key = data.get("idempotency_key")
+    if not isinstance(raw_key, str) or not raw_key.strip():
+        return fail("A stable idempotency key is required for loan requests",
+                    status=400, code="idempotency_key_required")
+    key = spend_key(raw_key, user, "loan-request", principal, tenure)
     replay = idempotent_replay(existing_for_key(user, key))
     if replay:
         return replay
+
+    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
+
+    if user.loans.filter(status=Loan.ACTIVE).exists():
+        return fail("You already have an active loan", status=409)
+    if principal > credit_limit(user):
+        return fail("Amount exceeds your available credit", status=403)
 
     try:
         loan = disburse(user, principal, tenure, idempotency_key=key)
@@ -124,7 +147,13 @@ def loan_request(request):
         # DB partial-unique backstop: a concurrent disbursement won the race.
         return fail("You already have an active loan", status=409)
     wallet = get_or_create_wallet(user)
-    return ok(success=True, wallet=str(wallet.balance), loan=_loan_dict(loan), message="Loan disbursed")
+    return ok(
+        success=True,
+        wallet=str(wallet.balance),
+        loan=_loan_dict(loan),
+        reference=loan.reference,
+        message="Loan disbursed",
+    )
 
 
 @api
@@ -135,33 +164,65 @@ def loan_repay(request):
     -> {success, wallet, loan}
     """
     user, data = request.user_obj, request.data
+    amount = parse_amount(data.get("amount"))
+    if amount is None:
+        return fail("Enter a valid amount")
+
+    # Replay before the active-loan guard: the first successful repayment can
+    # close the loan, so a lost-response retry must still replay instead of
+    # answering "no active loan" and tempting the client to mint a new key.
+    raw_key = data.get("idempotency_key")
+    if not isinstance(raw_key, str) or not raw_key.strip():
+        return fail("A stable idempotency key is required for loan repayments",
+                    status=400, code="idempotency_key_required")
+    key = spend_key(raw_key, user, "loan-repay", amount)
+    prior = existing_for_key(user, key)
+    active = user.loans.filter(status=Loan.ACTIVE).first()
+    if prior is not None and active is not None:
+        prior_loan = str((prior.meta or {}).get("loan") or "")
+        if prior_loan and prior_loan != active.reference:
+            return fail(
+                "That retry key belongs to a repayment on a different loan. "
+                "Authorize this loan repayment again.",
+                status=409,
+                code="idempotency_conflict",
+            )
+    replay = _stale_repayment_replay(prior) or idempotent_replay(prior)
+    if replay:
+        return replay
+
+    if active is None:
+        return fail("You have no active loan", status=404)
 
     pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
     if pin_err:
         return pin_err
 
-    active = user.loans.filter(status=Loan.ACTIVE).first()
-    if active is None:
-        return fail("You have no active loan", status=404)
-
-    amount = parse_amount(data.get("amount"))
-    if amount is None:
-        return fail("Enter a valid amount")
-
-    key = spend_key(data.get("idempotency_key"), user, "loan-repay", active.reference, amount)
-    replay = idempotent_replay(existing_for_key(user, key))
-    if replay:
-        return replay
-
     try:
         loan = repay(user, active, amount, idempotency_key=key)
     except DuplicateTransaction:
-        return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
+        prior = existing_for_key(user, key)
+        return (_stale_repayment_replay(prior) or idempotent_replay(prior)
+                or fail("Duplicate request", status=409))
+    except LoanRepaymentStale as e:
+        return fail(
+            str(e),
+            status=409,
+            code=e.code,
+            reference=e.transaction_reference,
+        )
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
 
     wallet = get_or_create_wallet(user)
-    return ok(success=True, wallet=str(wallet.balance), loan=_loan_dict(loan), message="Repayment successful")
+    payment = existing_for_key(user, key)
+    return ok(
+        success=True,
+        wallet=str(wallet.balance),
+        loan=_loan_dict(loan),
+        reference=payment.reference,
+        message="Repayment successful",
+    )
 
 
 @api

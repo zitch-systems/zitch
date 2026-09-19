@@ -61,7 +61,7 @@ const BobArrow = ({ icon, color, dir, delay }: { icon: string; color: string; di
     );
     loop.start();
     return () => loop.stop();
-  }, []);
+  }, [delay, v]);
   const translateY = v.interpolate({ inputRange: [0, 1], outputRange: [0, 3 * dir] });
   return (
     <Animated.View style={{ transform: [{ translateY }] }}>

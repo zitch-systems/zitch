@@ -26,7 +26,8 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from utility import wema
-from utility.providers import card_provider, kyc_provider, payment_provider, payout_provider, vas_provider
+from utility.providers import (card_issuer_live, card_provider, kyc_provider,
+                               payment_provider, payout_provider, vas_provider)
 
 
 def _face_host() -> str:
@@ -214,10 +215,16 @@ class Command(BaseCommand):
         # this, and warning "virtual cards disabled" next to that PASS told the
         # operator running the go-live check that a working feature was off.
         if card_provider() != "wema":
+            issuer_live = card_issuer_live()
+            issuer = settings.CARD_ISSUER
             checks.append((False, "Card issuer",
-                           PASS if settings.CARD_ISSUER["API_KEY"] else WARN,
-                           "keyed" if settings.CARD_ISSUER["API_KEY"]
-                           else "no issuer key — virtual cards disabled"))
+                           PASS if issuer_live else WARN,
+                           "live gate, key and base URL configured" if issuer_live
+                           else ("not live — CARD_ISSUER_LIVE_ENABLED=true, API key, "
+                                 "and base URL are all required"
+                                 if any((issuer.get("LIVE_ENABLED"), issuer.get("API_KEY"),
+                                         issuer.get("BASE_URL")))
+                                 else "not configured — virtual cards disabled")))
 
         # SOFT — an avatar upload can return 200 locally while producing a URL
         # that is never served in production and a file that disappears on the
@@ -355,16 +362,28 @@ class Command(BaseCommand):
         for product, env_var in legend_products:
             if not _vas_live(product):
                 continue
+            if product == "remita":
+                checks.append((
+                    False, "Remita automated settlement",
+                    WARN,
+                    "live Remita payments are BLOCKED before debit: the verified "
+                    "integration has no automated status/requery contract, so a "
+                    "lost payment response would otherwise remain manual forever",
+                ))
+                continue
             legend = _vas_legend(product)
-            terminal_codes = sum(value in ("success", "failed") for value in legend.values())
+            terminal_outcomes = set(legend.values()) & {"success", "failed"}
+            settleable = terminal_outcomes == {"success", "failed"}
             sells = "Remita bill payments" if product == "remita" else (
                 "airtime and data" if product == "airtime" else "bill payments")
             checks.append((
                 False, f"VAS status legend ({product})",
-                PASS if terminal_codes else WARN,
-                f"{len(legend)} code(s) mapped; {terminal_codes} terminal" if terminal_codes
-                else f"{env_var} has no unambiguous terminal outcome — {sells} cannot be settled, so purchases are "
-                     "REFUSED up front (customer not charged). Ask Wema for the enum"))
+                PASS if settleable else WARN,
+                (f"{len(legend)} code(s) mapped; success and failed are terminal"
+                 if settleable else
+                 f"{env_var} must map both an unambiguous success and failed outcome — "
+                 f"{sells} cannot be fully settled, so purchases are REFUSED up front "
+                 "(customer not charged). Ask Wema for the enum")))
 
         self.stdout.write("")
         # Operator-portal insider controls. SOFT, deliberately: OPS_REQUIRE_MFA is

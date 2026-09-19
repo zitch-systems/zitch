@@ -1,11 +1,13 @@
 import base64
 import binascii
+import hashlib
 import hmac
 import json
 import logging
 import re
 import secrets
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -24,7 +26,7 @@ from utility.providers import (funding_initialize, funding_verify, kyc_verify_fa
                                payment_provider)
 from utility import wema as wema_provider
 
-from .models import FundingIntent, Wallet, WemaProvisioningAttempt
+from .models import FundingIntent, Transaction, Wallet, WemaProvisioningAttempt
 from .services import (
     DuplicateTransaction,
     InsufficientFunds,
@@ -32,6 +34,8 @@ from .services import (
     attach_existing_bank_account,
     ensure_reserved_account,
     existing_for_key,
+    hold_funding_review,
+    customer_visible_transactions,
     get_or_create_wallet,
     make_reference,
     provision_wema_account,
@@ -52,7 +56,7 @@ def wallet_balance(request):
     """POST /api/wallet_balance/ {access_token}
     -> {success, wallet, user_first_name, user_last_name, user_phone_number, user_email}
     """
-    from accounts.views import avatar_url
+    from accounts.views import avatar_url, spend_account_namespace
 
     user = request.user_obj
     wallet = get_or_create_wallet(user)
@@ -64,6 +68,7 @@ def wallet_balance(request):
         bank_name=wallet.bank_name,
         bank_accounts=wallet.bank_accounts or [],
         bank_tier=wallet.bank_tier,
+        account_namespace=spend_account_namespace(user),
         user_first_name=user.first_name or "",
         user_last_name=user.last_name or "",
         user_phone_number=user.phone or "",
@@ -990,24 +995,50 @@ def transaction_history(request):
     -> {status, all_site_transactions: [{service, amount, transaction_status, date}]}
     """
     user = request.user_obj
-    txns = user.transactions.all()[:100]
+    txns = list(customer_visible_transactions(user.transactions.all())[:100])
+    reviews = _transaction_reviews(txns)
     return ok(
         status=True,
-        all_site_transactions=[_txn_row(t) for t in txns],
+        all_site_transactions=[_txn_row(t, reviews.get(t.pk)) for t in txns],
     )
 
 
-def _txn_row(t) -> dict:
+def _transaction_reviews(txns) -> dict[int, str]:
+    """Bulk-resolve every durable review rail for customer transaction rows."""
+    from .review_state import transaction_review_map
+
+    return {pk: kind for pk, (kind, _reason) in
+            transaction_review_map(txns).items()}
+
+
+_REVIEW_UNSET = object()
+
+
+def _txn_row(t, review_kind=_REVIEW_UNSET) -> dict:
     """One transaction, in the shape the app's history list already expects.
 
     Extracted so the single-transaction lookup below cannot drift from the list:
     two hand-written copies of the same row is how a detail screen ends up
     disagreeing with the list it was opened from.
     """
+    meta = t.meta if isinstance(t.meta, dict) else {}
+    if review_kind is _REVIEW_UNSET:
+        review_kind = _transaction_reviews([t]).get(t.pk, "")
+    else:
+        review_kind = review_kind or ""
+    under_review = bool(review_kind)
     return {
         "service": t.service,
         "amount": str(t.amount),
-        "transaction_status": t.transaction_status,
+        # A terminal-looking row with unresolved bank evidence is not a terminal
+        # customer outcome. Expose it as Pending until finance resolves the hold;
+        # otherwise FAILED invites a retry and SUCCESS creates a false receipt.
+        "transaction_status": (Transaction.PENDING if under_review
+                               else t.transaction_status),
+        "under_review": under_review,
+        "review_kind": review_kind,
+        "status_message": ("We are confirming the provider's final outcome. Do not retry."
+                           if under_review else ""),
         "date": t.created.strftime("%Y-%m-%d %H:%M"),
         "reference": t.reference,
         "direction": t.direction,
@@ -1016,8 +1047,7 @@ def _txn_row(t) -> dict:
         # (run_provider_purchase) — two keys for one idea, named differently long
         # before there was a field to fill either, and wallet.alerts._narration_line
         # already reads both the same way.
-        "narration": str((t.meta or {}).get("note")
-                         or (t.meta or {}).get("narration") or "")[:120],
+        "narration": str(meta.get("note") or meta.get("narration") or "")[:120],
     }
 
 
@@ -1043,22 +1073,170 @@ def transaction_status(request):
     reference = str(request.data.get("reference") or "").strip()
     if not reference:
         return fail("Missing transaction reference")
-    txn = user.transactions.filter(reference=reference).first()
+    txn = customer_visible_transactions(
+        user.transactions.filter(reference=reference)).first()
     if txn is None:
         return fail("Transaction not found", status=404)
     return ok(success=True, transaction=_txn_row(txn))
 
 
 # ----------------------- WALLET FUNDING (Wema) -----------------------
+def _fund_initialize_reference(user_id: int, key: str) -> str:
+    """Return one opaque merchant reference per user + funding request key."""
+    digest = hashlib.sha256(f"wallet-fund|{user_id}|{key}".encode()).hexdigest().upper()
+    return f"ZPAY{digest[:40]}"
+
+
+@db_transaction.atomic
+def _fund_initialize_replay(intent: FundingIntent):
+    """Replay a persisted checkout initialization without calling the rail."""
+    # Re-read under a row lock so a concurrent settlement either completes before
+    # this decision (and leaves its immutable ledger proof), or observes the review
+    # hold written below.  A stale in-memory PAID flag must never become a receipt.
+    intent = FundingIntent.objects.select_for_update().get(pk=intent.pk)
+    meta = intent.meta if isinstance(intent.meta, dict) else {}
+    state = str(meta.get("initialize_state") or "").lower()
+    reference = intent.reference
+    review = meta.get("funding_review")
+    if isinstance(review, dict) and review.get("active") is True:
+        # A later provider/callback conflict is newer evidence than the
+        # terminal-looking flags. Preserve any existing credit, but do not tell
+        # the customer the disputed outcome is settled.
+        return ok(
+            pending=True, code="funding_review", reference=reference,
+            duplicate=True,
+            message="This funding request is under review. Your wallet outcome has not been confirmed yet.",
+        )
+    if intent.credited or intent.status == FundingIntent.PAID:
+        credit_exists = Transaction.objects.filter(
+            reference=reference,
+            user_id=intent.user_id,
+            direction=Transaction.IN,
+            transaction_status=Transaction.SUCCESS,
+            currency="NGN",
+            amount=intent.amount,
+        ).exists()
+        if credit_exists:
+            return ok(
+                success=True,
+                funded=True,
+                reference=reference,
+                message="Wallet funding already confirmed",
+                duplicate=True,
+            )
+        hold_funding_review(
+            reference,
+            reason="credited_without_ledger",
+            observed_amount=intent.amount,
+            observed_currency="NGN",
+            evidence={"source": "fund_initialize_replay"},
+        )
+        return ok(
+            pending=True,
+            code="funding_review",
+            reference=reference,
+            duplicate=True,
+            message=(
+                "This funding request requires review. Your wallet outcome has "
+                "not been confirmed. Do not retry this payment."
+            ),
+        )
+    if intent.status == FundingIntent.FAILED or state == "failed":
+        return fail(
+            str(meta.get("initialize_message") or
+                "This funding request already failed. Start a new request."),
+            status=409,
+            code="duplicate",
+            duplicate=True,
+            reference=reference,
+        )
+    if state == "started":
+        return ok(
+            success=True,
+            reference=reference,
+            authorization_url=str(meta.get("authorization_url") or ""),
+            mock=bool(meta.get("mock", False)),
+            duplicate=True,
+        )
+    # ``starting`` covers the window while the first provider request is in
+    # flight; ``pending`` is an explicitly unknown provider outcome. In either
+    # state another POST could create a second charge, so wait for confirmation.
+    return ok(
+        pending=True,
+        reference=reference,
+        duplicate=True,
+        message=str(
+            meta.get("initialize_message")
+            or "This funding request is still processing. Its final status will be updated after confirmation."
+        ),
+    )
+
+
+@db_transaction.atomic
+def _claim_fund_initialize(user, amount, provider: str, key):
+    """Create or lock the single checkout attempt represented by ``key``."""
+    reference = _fund_initialize_reference(user.id, str(key))
+    fingerprint = str(getattr(key, "fingerprint", "") or "")
+    intent, created = FundingIntent.objects.select_for_update().get_or_create(
+        reference=reference,
+        defaults={
+            "user": user,
+            "amount": amount,
+            "meta": {
+                "provider": provider,
+                "idempotency_key": str(key),
+                "idempotency_fingerprint": fingerprint,
+                # Commit the claim before the provider call. A retry arriving
+                # during that call must not create a second checkout/charge.
+                "initialize_state": "starting",
+            },
+        },
+    )
+    if intent.user_id != user.id:
+        return intent, False, "conflict"
+    meta = intent.meta if isinstance(intent.meta, dict) else {}
+    stored = str(meta.get("idempotency_fingerprint") or "")
+    if stored and fingerprint and not hmac.compare_digest(stored, fingerprint):
+        return intent, False, "conflict"
+    # Explicit fields protect legacy/incomplete rows whose fingerprint is absent.
+    if intent.amount != amount or str(meta.get("provider") or "") != provider:
+        return intent, False, "conflict"
+    return intent, created, ""
+
+
+@db_transaction.atomic
+def _record_fund_initialize_result(intent_id: int, result: dict, state: str) -> FundingIntent:
+    """Merge a provider result without clobbering a fast settlement callback."""
+    intent = FundingIntent.objects.select_for_update().get(pk=intent_id)
+    meta = dict(intent.meta or {})
+    meta["initialize_state"] = state
+    meta["provider_reference"] = str(result.get("reference") or intent.reference)
+    if result.get("authorization_url") is not None:
+        meta["authorization_url"] = str(result.get("authorization_url") or "")
+    if result.get("message"):
+        meta["initialize_message"] = str(result["message"])[:500]
+    if result.get("mock"):
+        meta["mock"] = True
+    intent.meta = meta
+    update_fields = ["meta", "updated"]
+    if state == "failed" and not intent.credited and intent.status != FundingIntent.PAID:
+        intent.status = FundingIntent.FAILED
+        update_fields.append("status")
+    intent.save(update_fields=update_fields)
+    return intent
+
+
 @api
 @ratelimit("fund_initialize", limit=20, window=60)
 @require_user
 def fund_initialize(request):
-    """POST /api/fund/initialize/ {access_token, amount}
+    """POST /api/fund/initialize/ {access_token, amount, idempotency_key}
     -> {success, reference, authorization_url}
 
     The app opens authorization_url in a browser. The wallet is credited only
     after the payment rail confirms payment (verify endpoint and/or webhook).
+    Retrying one idempotency key replays its persisted initialization; it never
+    sends a second provider POST.
     """
     user = request.user_obj
     amount = parse_amount(request.data.get("amount"))
@@ -1067,20 +1245,76 @@ def fund_initialize(request):
     if amount < 100:
         return fail("Minimum funding amount is ₦100")
 
-    reference = make_reference("ZPAY")
     # Stamp the rail that started this charge so verify uses the same one even if
     # PAYMENT_PROVIDER is flipped before the user returns from checkout.
     provider = payment_provider()
-    FundingIntent.objects.create(user=user, reference=reference, amount=amount,
-                                 meta={"provider": provider})
+    raw_key = request.data.get("idempotency_key")
+    if raw_key is None:
+        raw_key = request.headers.get("Idempotency-Key", "")
+    if not isinstance(raw_key, str):
+        return fail("Invalid idempotency key")
+    if not raw_key.strip():
+        # A time-bucket fallback is unsafe for provider initialization: a retry
+        # delayed beyond the bucket could create a second checkout or charge.
+        return fail(
+            "An idempotency key is required for wallet funding",
+            code="idempotency_key_required",
+        )
+    key = spend_key(raw_key, user, "wallet-fund", provider, amount)
+    intent, created, claim_error = _claim_fund_initialize(
+        user, amount, provider, key,
+    )
+    if claim_error:
+        return fail(
+            "That retry key belongs to a different funding request. Start a new request.",
+            status=409,
+            code="idempotency_conflict",
+            duplicate=True,
+        )
+    if not created:
+        return _fund_initialize_replay(intent)
+
+    reference = intent.reference
     email = user.email or f"{user.phone}@zitch.app"
     name = (user.get_full_name() or user.phone or "").strip()
-    result = funding_initialize(email, amount, reference, name=name)
+    try:
+        result = funding_initialize(email, amount, reference, name=name)
+    except Exception as exc:  # noqa: BLE001 - POST outcome is financially ambiguous
+        log.exception("fund_initialize_outcome_unknown ref=%s", reference)
+        result = {
+            "success": False,
+            "pending": True,
+            "reference": reference,
+            "message": "Funding request is processing; its outcome is not yet confirmed.",
+            "error_type": type(exc).__name__,
+        }
+    if not isinstance(result, dict):
+        log.error("fund_initialize_invalid_result ref=%s type=%s",
+                  reference, type(result).__name__)
+        result = {
+            "success": False,
+            "pending": True,
+            "reference": reference,
+            "message": "Funding request is processing; its outcome is not yet confirmed.",
+        }
+    if result.get("pending"):
+        _record_fund_initialize_result(intent.id, result, "pending")
+        return ok(
+            pending=True,
+            reference=reference,
+            message=(result.get("message") or
+                     "Funding request is processing; its outcome is not yet confirmed."),
+        )
     if not result.get("success"):
-        return fail(result.get("message", "Could not start payment"), status=502)
+        _record_fund_initialize_result(intent.id, result, "failed")
+        return fail(result.get("message", "Could not start payment"), status=422,
+                    code="funding_initialize_failed", reference=reference)
+    _record_fund_initialize_result(intent.id, result, "started")
     return ok(
         success=True,
-        reference=result["reference"],
+        # Always expose our merchant reference: it owns the FundingIntent and is
+        # therefore the stable reference that /fund/verify can safely settle.
+        reference=reference,
         authorization_url=result.get("authorization_url", ""),
         mock=result.get("mock", False),
     )
@@ -1092,26 +1326,153 @@ def fund_verify(request):
     """POST /api/fund/verify/ {access_token, reference}
     -> {success, wallet} — confirms with the rail and credits once.
     """
-    reference = (request.data.get("reference") or "").strip()
+    raw_reference = request.data.get("reference")
+    if not isinstance(raw_reference, str):
+        return fail("Reference is required")
+    reference = raw_reference.strip()
     if not reference:
         return fail("Reference is required")
 
-    # Verify against the rail that started this intent (falls back to the current
-    # default when the intent or its stamp is missing).
-    intent = FundingIntent.objects.filter(reference=reference).first()
-    # Scope the reference to its owner: settle_funding always credits the intent's
-    # own user (never the caller), so this is an ownership/info-exposure guard rather
-    # than a theft vector — but a caller has no business verifying another user's ref.
-    if intent is not None and intent.user_id != request.user_obj.id:
+    # Require an intent owned by this caller before touching the provider.  Calling
+    # verify for an unbound reference can expose provider state and, historically,
+    # was followed by a false "Wallet funded" response even though settlement was
+    # a no-op.
+    intent = FundingIntent.objects.filter(
+        reference=reference, user=request.user_obj,
+    ).first()
+    if intent is None:
         return fail("Reference not found", status=404)
-    provider = (intent.meta or {}).get("provider", "") if intent else ""
-    result = funding_verify(reference, provider=provider)
+
+    def credited_transaction():
+        return Transaction.objects.filter(
+            reference=intent.reference,
+            user=intent.user,
+            direction=Transaction.IN,
+            transaction_status=Transaction.SUCCESS,
+            amount=intent.amount,
+        ).first()
+
+    meta = intent.meta if isinstance(intent.meta, dict) else {}
+    review = meta.get("funding_review")
+    if isinstance(review, dict) and review.get("active") is True:
+        return ok(
+            pending=True, code="funding_review", reference=reference,
+            message="This funding request is under review. Your wallet outcome has not been confirmed yet.",
+        )
+
+    # An idempotent replay succeeds only when both state and the immutable ledger
+    # prove the credit exists.  A corrupt PAID/credited flag without its ledger row
+    # is held for review rather than shown to the customer as money they do not have.
+    if intent.credited:
+        prior = credited_transaction()
+        if prior is not None:
+            wallet = get_or_create_wallet(request.user_obj)
+            return ok(
+                success=True, funded=True, duplicate=True, reference=reference,
+                wallet=str(wallet.balance), message="Wallet funding already confirmed",
+            )
+        hold_funding_review(
+            reference, reason="credited_without_ledger",
+            observed_currency="NGN", evidence={"source": "wallet_verify"},
+        )
+        return ok(
+            pending=True, code="funding_review", reference=reference,
+            message="Funding confirmation requires review before it can be shown in your wallet.",
+        )
+
+    provider = meta.get("provider", "")
+    # Some hosted rails return their own verification reference. Keep exposing
+    # our merchant reference to the client (it owns the FundingIntent), but use
+    # the stored provider reference when asking that rail to verify.
+    provider_reference = str(meta.get("provider_reference") or reference)
+    try:
+        result = funding_verify(provider_reference, provider=provider)
+    except Exception as exc:  # noqa: BLE001 - verification outcome is ambiguous
+        log.exception("fund_verify_outcome_unknown ref=%s", reference)
+        hold_funding_review(
+            reference, reason="verify_outcome_unknown", observed_currency="NGN",
+            evidence={"source": "wallet_verify",
+                      "provider_reference": provider_reference},
+        )
+        return ok(
+            pending=True, code="funding_review", reference=reference,
+            message="Payment verification is still pending. Your wallet has not been credited yet.",
+        )
+    if not isinstance(result, dict):
+        hold_funding_review(
+            reference, reason="invalid_verify_response", observed_currency="NGN",
+            evidence={"source": "wallet_verify",
+                      "provider_reference": provider_reference},
+        )
+        return ok(
+            pending=True, code="funding_review", reference=reference,
+            message="Payment verification requires review. Your wallet has not been credited yet.",
+        )
     if not result.get("success"):
+        if result.get("pending"):
+            return ok(
+                pending=True, reference=reference,
+                message=result.get("message", "Payment verification is still pending."),
+            )
         return fail(result.get("message", "Payment not successful"), status=402)
 
-    settle_funding(reference, result.get("amount_naira"))  # idempotent
+    try:
+        verified_amount = Decimal(str(result.get("amount_naira")))
+        if not verified_amount.is_finite() or verified_amount <= 0:
+            raise InvalidOperation
+    except (InvalidOperation, TypeError, ValueError):
+        hold_funding_review(
+            reference, reason="invalid_verified_amount",
+            observed_amount=result.get("amount_naira"),
+            observed_currency=result.get("currency"),
+            evidence={"source": "wallet_verify",
+                      "provider_reference": provider_reference},
+        )
+        return ok(
+            pending=True, code="funding_review", reference=reference,
+            message="Payment amount requires review. Your wallet has not been credited yet.",
+        )
+    currency = str(result.get("currency") or "").strip().upper()
+    if verified_amount != intent.amount or currency != "NGN":
+        reason = "amount_mismatch" if verified_amount != intent.amount else "currency_mismatch"
+        hold_funding_review(
+            reference, reason=reason, observed_amount=verified_amount,
+            observed_currency=currency,
+            evidence={"source": "wallet_verify",
+                      "provider_reference": provider_reference},
+        )
+        return ok(
+            pending=True, code="funding_review", reference=reference,
+            message="Payment details require review. Your wallet has not been credited yet.",
+        )
+
+    settled = settle_funding(
+        reference, verified_amount=verified_amount, verified_currency=currency,
+        evidence={"source": "wallet_verify",
+                  "provider_reference": provider_reference},
+    )
+    if settled is None:
+        # A concurrent callback may have won the row lock.  Re-read both intent and
+        # ledger before calling that a successful replay; every other no-op remains
+        # visibly pending for review.
+        intent.refresh_from_db()
+        prior = credited_transaction() if intent.credited else None
+        if prior is None:
+            hold_funding_review(
+                reference, reason="settlement_noop",
+                observed_amount=verified_amount, observed_currency=currency,
+                evidence={"source": "wallet_verify",
+                          "provider_reference": provider_reference},
+            )
+            return ok(
+                pending=True, code="funding_review", reference=reference,
+                message="Funding requires review. Your wallet has not been credited yet.",
+            )
     wallet = get_or_create_wallet(request.user_obj)
-    return ok(success=True, wallet=str(wallet.balance), message="Wallet funded")
+    return ok(
+        success=True, funded=True, duplicate=settled is None, reference=reference,
+        wallet=str(wallet.balance), message="Wallet funded",
+    )
 
 
 def apply_simulated_deposit(user, amount):
@@ -1284,11 +1645,16 @@ def statement_request(request):
     # dropped everything after midnight on the 14th would look like missing money.
     start = timezone.make_aware(datetime.strptime(date_from, "%Y-%m-%d"))
     end = timezone.make_aware(datetime.strptime(date_to, "%Y-%m-%d")) + timedelta(days=1)
-    txns = list(user.transactions.filter(created__gte=start, created__lt=end).order_by("-created")[:1000])
+    txns = list(customer_visible_transactions(
+        user.transactions.filter(created__gte=start, created__lt=end)
+    ).order_by("-created")[:1000])
+    reviews = _transaction_reviews(txns)
 
     from .models import Transaction
 
     def state(t) -> str:
+        if t.pk in reviews:
+            return "under_review"
         if t.transaction_status == Transaction.SUCCESS:
             return "success"
         if t.transaction_status == Transaction.FAILED:
@@ -1366,7 +1732,7 @@ def _find_recipient(identifier: str):
 @require_user
 def resolve_recipient(request):
     """POST /api/transfer/resolve/ {access_token, identifier}
-    -> {success, name, phone} — name confirmation before sending.
+    -> {success, name, phone, recipient_key} — name confirmation before sending.
 
     Rate-limited: without a throttle this is an unauthenticated-cost enumeration
     oracle that confirms whether any phone/@tag/email maps to a Zitch user and
@@ -1378,7 +1744,19 @@ def resolve_recipient(request):
     if recipient.id == request.user_obj.id:
         return fail("You can't send money to yourself", status=400)
     name = (recipient.get_full_name() or recipient.phone or "Zitch user").strip()
-    return ok(success=True, name=name, phone=recipient.phone or "")
+    # The client uses this opaque, immutable identity only to bind a durable
+    # idempotency attempt to the resolved recipient. Phone/email/username are
+    # mutable aliases and two aliases for the same customer must not mint two
+    # transfer keys after an ambiguous response. The UUID is persisted on the
+    # user, so it also survives SECRET_KEY rotation and regional migration.
+    from accounts.views import spend_account_namespace
+    recipient_key = f"user_{spend_account_namespace(recipient).replace('-', '')}"
+    return ok(
+        success=True,
+        name=name,
+        phone=recipient.phone or "",
+        recipient_key=recipient_key,
+    )
 
 
 @api
@@ -1390,31 +1768,65 @@ def transfer_send(request):
     """
     sender = request.user_obj
     data = request.data
-
-    pin_err = verify_transaction_pin(sender, data.get("transaction_pin"))
-    if pin_err:
-        return pin_err
-
     amount = parse_amount(data.get("amount"))
     if amount is None:
         return fail("Enter a valid amount")
     if amount < MIN_TRANSFER:
         return fail(f"Minimum transfer is ₦{MIN_TRANSFER:,.0f}")
 
-    limit_err = check_send_limits(sender, amount)
-    if limit_err:
-        return limit_err
+    raw_key = data.get("idempotency_key")
+    if not isinstance(raw_key, str) or not raw_key.strip():
+        return fail(
+            "A stable idempotency key is required for Zitch transfers",
+            status=400,
+            code="idempotency_key_required",
+        )
 
-    recipient = _find_recipient(data.get("identifier", ""))
+    recipient = None
+    opaque_recipient = str(data.get("recipient_key") or "").strip()
+    if opaque_recipient:
+        match = re.fullmatch(r"user_([0-9a-fA-F]{32})", opaque_recipient)
+        if match is None:
+            return fail(
+                "Invalid recipient key. Resolve the recipient again before sending.",
+                status=400,
+                code="invalid_recipient_key",
+            )
+        from accounts.models import User
+
+        recipient = User.objects.filter(
+            spend_namespace=match.group(1),
+        ).first()
+    if recipient is None and not opaque_recipient:
+        recipient = _find_recipient(data.get("identifier", ""))
     if recipient is None:
         return fail("No Zitch user found with that detail", status=404)
     if recipient.id == sender.id:
         return fail("You can't send money to yourself", status=400)
 
-    key = spend_key(data.get("idempotency_key"), sender, "p2p", recipient.id, amount)
+    key = spend_key(raw_key, sender, "p2p", recipient.id, amount)
     replay = idempotent_replay(existing_for_key(sender, key))
     if replay:
         return replay
+
+    # For a NEW transfer, the alias shown to the customer must still resolve to
+    # the opaque account they confirmed. A retry already returned above, so a
+    # later username/email change cannot hide its durable result.
+    if opaque_recipient:
+        alias_recipient = _find_recipient(data.get("identifier", ""))
+        if alias_recipient is None or alias_recipient.id != recipient.id:
+            return fail(
+                "The recipient detail changed. Resolve the recipient again before sending.",
+                status=409,
+                code="recipient_changed",
+            )
+
+    pin_err = verify_transaction_pin(sender, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
+    limit_err = check_send_limits(sender, amount)
+    if limit_err:
+        return limit_err
 
     # Daily transfer cap (after replay so a retried transfer replays cleanly).
     daily_err = check_daily_limit(sender, amount, "transfer")

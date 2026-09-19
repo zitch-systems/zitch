@@ -70,12 +70,166 @@ function TxnTable({ rows, compact, onRow }) {
             <td className="dim">{t.desc}</td>
             <td><Badge v={t.channel} /></td>
             <td className={'r num ' + (t.amt > 0 ? 'pos' : '')}>{D.fmtN(t.amt, t.cur)}</td>
-            <td><Badge v={t.status} /></td>
+            <td><Badge v={t.status}>{t.status === 'under_review' ? 'under review' : t.status}</Badge></td>
             <td className="r dim num">{D.fmtT(t.time)}</td>
           </tr>
         ))}
       </tbody>
     </table>
+  );
+}
+
+function MoneyReviews({ toast, refresh }) {
+  const [form, setForm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const label = (value) => String(value || '').replace(/_/g, ' ');
+  const open = (kind, row) => {
+    const choices = row.dispositions || (kind === 'reversal' ? D.REVERSAL_DISPOSITIONS
+      : kind === 'card' ? D.CARD_FUNDING_DISPOSITIONS
+      : D.FUNDING_REVIEW_DISPOSITIONS);
+    const evidence = kind === 'reversal' ? row.provider_reference
+      : kind === 'funding' ? (row.evidence_reference || row.provider_reference || '')
+      : '';
+    const amount = kind === 'reversal'
+      ? ((row.observed_amounts || [])[0] || row.original_amount || '')
+      : row.amount || '';
+    const payoutReferences = kind === 'reversal'
+      ? (row.payout_references || (row.payout_reference ? [row.payout_reference] : []))
+      : [];
+    setForm({
+      kind, row, disposition: '', reason: '', evidence, amount,
+      // Multiple durable payout associations are deliberately not defaulted:
+      // the maker must choose which held payout the evidence resolves.
+      payoutReference: payoutReferences.length === 1 ? payoutReferences[0] : '',
+      payoutReferences,
+      choices: choices || [],
+    });
+  };
+  const update = (key, value) => setForm((old) => ({ ...old, [key]: value }));
+  const submit = async () => {
+    if (!form.disposition) return toast('⚠ Choose an accounting treatment');
+    if (form.kind === 'reversal' && form.payoutReferences.length > 1 && !form.payoutReference) return toast('⚠ Choose the payout this evidence resolves');
+    if (form.reason.trim().length < 12) return toast('⚠ Enter a clear reason of at least 12 characters');
+    if (form.evidence.trim().length < 4) return toast('⚠ Enter the provider evidence reference you checked');
+    if (!form.amount || Number(form.amount) <= 0) return toast('⚠ Enter the amount confirmed by the evidence');
+    const payload = {
+      reference: form.kind === 'reversal' ? form.payoutReference : form.row.reference,
+      evidence_reference: form.evidence.trim(),
+      disposition: form.disposition,
+      reason: form.reason.trim(),
+      confirmed_amount: String(form.amount).trim(),
+    };
+    setBusy(true);
+    try {
+      const result = form.kind === 'reversal'
+        ? await ZAPI.reversalResolution(payload)
+        : form.kind === 'card'
+          ? await ZAPI.cardFundingResolution(payload)
+          : await ZAPI.fundingResolution(payload);
+      toast('Resolution request #' + result.approval_id + ' created — a different finance operator must approve it');
+      setForm(null);
+      await refresh();
+    } catch (e) { toast('⚠ ' + e.message); }
+    setBusy(false);
+  };
+  const empty = !D.REVERSAL_CASES.length && !D.CARD_FUNDING_CASES.length && !D.FUNDING_REVIEW_CASES.length;
+  return (
+    <div style={{ marginTop: 16 }}>
+      <Card title="Money reviews" sub="Provider evidence is held here until one operator proposes a treatment and another approves it" pad={false}>
+        {empty && <Empty text="No reversal, card-funding, or wallet-funding cases need review." />}
+        {!!D.REVERSAL_CASES.length && (
+          <React.Fragment>
+            <div className="card-sub" style={{ padding: '14px 16px 4px' }}>Bank returns / payout reversals</div>
+            <table className="tbl">
+              <thead><tr><th>Evidence</th><th>Payout</th><th>Customer</th><th>Observed amount(s)</th><th>State</th><th></th></tr></thead>
+              <tbody>{D.REVERSAL_CASES.map((r) => (
+                <tr key={'rev-' + r.id}>
+                  <td className="mono">{r.provider_reference}</td>
+                  <td className="mono">{(r.payout_references || (r.payout_reference ? [r.payout_reference] : [])).join(', ') || 'unmatched'}</td>
+                  <td>{r.customer}</td>
+                  <td className="num">{(r.observed_amounts || [r.original_amount]).join(', ')}</td>
+                  <td><Badge v={r.state === 'conflict' ? 'flagged' : 'pending'}>{r.state}</Badge></td>
+                  <td className="r"><button className="btn primary sm-btn" onClick={() => open('reversal', r)}>Propose resolution</button></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </React.Fragment>
+        )}
+        {!!D.CARD_FUNDING_CASES.length && (
+          <React.Fragment>
+            <div className="card-sub" style={{ padding: '14px 16px 4px' }}>Unresolved card funding</div>
+            <table className="tbl">
+              <thead><tr><th>Reference</th><th>Card</th><th>Customer</th><th>Amount</th><th>Review</th><th></th></tr></thead>
+              <tbody>{D.CARD_FUNDING_CASES.map((r) => (
+                <tr key={'card-' + r.reference}>
+                  <td className="mono">{r.reference}</td>
+                  <td>{r.card_last4 ? '•••• ' + r.card_last4 : '—'}</td>
+                  <td>{r.customer}</td>
+                  <td className="num">{D.fmtN(Number(r.amount), r.currency)}</td>
+                  <td><Badge v="pending">{label(r.review_type)}</Badge></td>
+                  <td className="r"><button className="btn primary sm-btn" onClick={() => open('card', r)}>Propose resolution</button></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </React.Fragment>
+        )}
+        {!!D.FUNDING_REVIEW_CASES.length && (
+          <React.Fragment>
+            <div className="card-sub" style={{ padding: '14px 16px 4px' }}>Wallet funding holds</div>
+            <table className="tbl">
+              <thead><tr><th>Reference</th><th>Customer</th><th>Requested</th><th>Observed</th><th>Reason</th><th></th></tr></thead>
+              <tbody>{D.FUNDING_REVIEW_CASES.map((r) => (
+                <tr key={'fund-' + r.reference}>
+                  <td className="mono">{r.reference}</td>
+                  <td>{r.customer}</td>
+                  <td className="num">{D.fmtN(Number(r.amount), 'NGN')}</td>
+                  <td className="num">{r.observed_amount ? r.observed_currency + ' ' + r.observed_amount : '—'}</td>
+                  <td>{label(r.review_reason)}</td>
+                  <td className="r"><button className="btn primary sm-btn" onClick={() => open('funding', r)}>Propose resolution</button></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </React.Fragment>
+        )}
+      </Card>
+      <Drawer open={!!form} onClose={() => !busy && setForm(null)} title="Propose money-review resolution">
+        {form && (
+          <div>
+            <div className="note warn"><Icon name="alert" size={15} /> This does not move money now. A different finance operator must approve the exact evidence and treatment.</div>
+            {form.kind === 'reversal' && form.payoutReferences.length > 1 ? (
+              <React.Fragment>
+                <label className="f-label">Payout to resolve</label>
+                <select className="f-input" value={form.payoutReference} onChange={(e) => update('payoutReference', e.target.value)}>
+                  <option value="">Choose payout…</option>
+                  {form.payoutReferences.map((reference) => <option key={reference} value={reference}>{reference}</option>)}
+                </select>
+              </React.Fragment>
+            ) : (
+              <div className="kv"><span>Reference</span><b className="mono">{form.kind === 'reversal' ? (form.payoutReference || 'unmatched') : form.row.reference}</b></div>
+            )}
+            <label className="f-label">Provider evidence reference</label>
+            <input className="f-input" value={form.evidence} onChange={(e) => update('evidence', e.target.value)} placeholder="Statement, trace or settlement reference" />
+            <label className="f-label">Confirmed amount</label>
+            {form.kind === 'reversal' && (form.row.observed_amounts || []).length > 1
+              ? <select className="f-input" value={form.amount} onChange={(e) => update('amount', e.target.value)}>
+                  {(form.row.observed_amounts || []).map((amount) => <option key={amount} value={amount}>{amount}</option>)}
+                </select>
+              : <input className="f-input" type="number" min="0.01" step="0.01" value={form.amount} onChange={(e) => update('amount', e.target.value)} />}
+            <label className="f-label">Accounting treatment</label>
+            <select className="f-input" value={form.disposition} onChange={(e) => update('disposition', e.target.value)}>
+              <option value="">Choose treatment…</option>
+              {form.choices.map((choice) => <option key={choice} value={choice}>{label(choice)}</option>)}
+            </select>
+            <label className="f-label">Reason</label>
+            <textarea className="f-input" rows="4" value={form.reason} onChange={(e) => update('reason', e.target.value)} placeholder="What evidence was checked and why this treatment is correct" />
+            <div className="drawer-actions">
+              <button className="btn ghost" disabled={busy} onClick={() => setForm(null)}>Cancel</button>
+              <button className="btn primary" disabled={busy} onClick={submit}>{busy ? 'Submitting…' : 'Send for second approval'}</button>
+            </div>
+          </div>
+        )}
+      </Drawer>
+    </div>
   );
 }
 
@@ -85,14 +239,36 @@ function Transactions({ toast, refresh }) {
   const [type, setType] = useState('all');
   const [sel, setSel] = useState(null);
   const [rows, setRows] = useState(D.TXNS);
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const moneyApprovals = (D.APPROVALS || [])
+    .filter((r) => r.action !== 'whatsapp.broadcast');
   const TYPES = ['all', 'transfer', 'fx', 'fund', 'airtime', 'data', 'electricity', 'cable'];
-  const refetch = (nq, ntype) => ZAPI.load.txns(nq, ntype).then(() => setRows(D.TXNS)).catch((e) => toast('⚠ ' + e.message));
+  const refetch = (nq, ntype) => ZAPI.load.txns(nq, ntype, false).then(() => setRows(D.TXNS)).catch((e) => toast('⚠ ' + e.message));
   const requery = async () => {
     try {
       const r = await ZAPI.txnRequery(sel.id);
       toast(sel.id + ' requeried — now ' + r.status + ' (audit logged)');
       setSel(null); refetch(q, type);
     } catch (e) { toast('⚠ ' + e.message); }
+  };
+  const decideApproval = async (row, approve) => {
+    setApprovalBusy(true);
+    try {
+      const result = await ZAPI.approvalDecide(
+        row.id, approve,
+        approve ? 'Finance evidence checked' : 'Finance request rejected'
+      );
+      if (!approve) {
+        toast('Request #' + row.id + ' rejected');
+      } else if (result.status === 'executed') {
+        toast('Request #' + row.id + ' approved and executed');
+      } else {
+        const error = result.result && result.result.error ? ': ' + result.result.error : '';
+        toast('⚠ Request #' + row.id + ' was not executed (' + result.status + ')' + error);
+      }
+      await refresh();
+    } catch (e) { toast('⚠ ' + e.message); }
+    setApprovalBusy(false);
   };
   return (
     <div>
@@ -103,6 +279,38 @@ function Transactions({ toast, refresh }) {
       <Card pad={false}>
         {rows.length ? <TxnTable rows={rows} onRow={setSel} /> : <Empty text="No transactions match." />}
       </Card>
+      {can.money && <MoneyReviews toast={toast} refresh={refresh} />}
+      {can.money && <div style={{ marginTop: 16 }}>
+        <Card title="Pending finance approvals" sub="A different finance operator must decide each held money action" pad={false}>
+          {moneyApprovals.length ? (
+            <table className="tbl">
+              <thead><tr><th>Request</th><th>Action</th><th>Reference / treatment</th><th>Requested by</th><th></th></tr></thead>
+              <tbody>{moneyApprovals.map((r) => (
+                <tr key={r.id}>
+                  <td className="mono">#{r.id}</td>
+                  <td className="mono">{r.action}</td>
+                  <td>
+                    <b className="mono">{(r.payload || {}).reference || (r.payload || {}).evidence_reference || ((r.payload || {}).uid ? 'user #' + (r.payload || {}).uid : '—')}</b>
+                    {(r.payload || {}).evidence_reference && (r.payload || {}).reference
+                      ? <div className="sm dim">Evidence: {(r.payload || {}).evidence_reference}</div> : null}
+                    <div className="sm dim">{(r.payload || {}).disposition || 'manual credit'}</div>
+                    {((r.payload || {}).confirmed_amount || (r.payload || {}).amount)
+                      ? <div className="sm num">Amount: ₦{(r.payload || {}).confirmed_amount || (r.payload || {}).amount}</div> : null}
+                    <div className="sm dim">{r.reason || (r.payload || {}).reason || ''}</div>
+                  </td>
+                  <td>{r.requested_by}{r.is_own_request ? ' (you)' : ''}</td>
+                  <td className="r">
+                    <button className="btn ghost sm-btn" disabled={approvalBusy || !r.can_decide}
+                      onClick={() => decideApproval(r, false)}>Reject</button>{' '}
+                    <button className="btn primary sm-btn" disabled={approvalBusy || !r.can_decide}
+                      onClick={() => decideApproval(r, true)}>Approve</button>
+                  </td>
+                </tr>
+              ))}</tbody>
+            </table>
+          ) : <Empty text="No finance requests are waiting for your role." />}
+        </Card>
+      </div>}
       <Drawer open={!!sel} onClose={() => setSel(null)} title={sel ? sel.id : ''}>
         {sel && (
           <div>
@@ -110,8 +318,10 @@ function Transactions({ toast, refresh }) {
             <div className="kv"><span>Detail</span><b>{sel.desc}</b></div>
             <div className="kv"><span>Amount</span><b className="num">{D.fmtN(sel.amt, sel.cur)}</b></div>
             <div className="kv"><span>Channel</span><Badge v={sel.channel} /></div>
-            <div className="kv"><span>Status</span><Badge v={sel.status} /></div>
-            {sel.canRequery
+            <div className="kv"><span>Status</span><Badge v={sel.status}>{sel.status === 'under_review' ? 'under review' : sel.status}</Badge></div>
+            {sel.underReview
+              ? <div className="note warn"><Icon name="alert" size={15} /> Conflicting provider evidence is under finance review. Do not mark this settled or ask the customer to retry.</div>
+              : sel.canRequery
               ? <div className="note warn"><Icon name="alert" size={15} /> Provider timeout — money held PENDING. Requery settles it (success) or refunds it (definitive failure), exactly like the reconcile cron.</div>
               : <div className="note"><Icon name="check" size={15} /> Settled. Failed payouts auto-refund via the reversal webhook; purchases via reconciliation.</div>}
             <div className="drawer-actions">

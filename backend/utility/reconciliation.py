@@ -20,6 +20,14 @@ def claim_status_lookup(txn):
     if current.transaction_status != Transaction.PENDING:
         return False
     meta = dict(current.meta or {})
+    quarantine = meta.get("wema_reversal_quarantine") or {}
+    if isinstance(quarantine, dict) and quarantine.get("active") is True:
+        # A bank-history return was correlated with this payout but cannot be
+        # applied safely (for example, only part returned or old code already
+        # credited the inbound row).  No status poll may transition the payout
+        # until an audited operator resolution clears/reclassifies the hold.
+        txn.meta = meta
+        return False
     retry = meta.get("wema_requery") or {}
     now = timezone.now()
     try:
@@ -57,7 +65,9 @@ def alert_due(kind, references):
 def recorded_vas_outcome(txn):
     """Recover a terminal callback received before a deploy/cooldown interruption.
     Only accepted callbacks from configured bank IPs qualify. Conflicting final
-    events require a bank status lookup; neither age nor a numeric 200 is proof.
+    events require a bank status lookup. Wema's authenticated transaction-callback
+    legend is 200=success and 400/401=failed; these values are payment evidence
+    only here, never when they are merely an HTTP or status-lookup response.
     """
     from django.conf import settings
     from wallet.wema_callbacks import DEFAULT_CALLBACK_IPS, _transaction_callback_data
@@ -73,11 +83,18 @@ def recorded_vas_outcome(txn):
         data = _transaction_callback_data(event.payload)
         if data.get("transactionReference") != txn.reference:
             continue
-        status = str(data.get("status") or "").strip().casefold()
-        if status in {"successful", "success", "completed", "complete"}:
-            outcomes.add("success")
-        elif status in {"failed", "failure", "declined", "rejected", "reversed"}:
-            outcomes.add("failed")
+        # Some callback deployments send the outcome as `status`, others as
+        # `transactionStatus`, and a transitional payload can carry both. Read
+        # both so a contradictory event is held for requery rather than allowing
+        # field precedence to manufacture a terminal result.
+        for value in (data.get("status"), data.get("transactionStatus")):
+            status = str(value if value is not None else "").strip().casefold()
+            if status in {"successful", "success", "completed", "complete", "200"}:
+                outcomes.add("success")
+            elif status in {
+                "failed", "failure", "declined", "rejected", "reversed", "400", "401",
+            }:
+                outcomes.add("failed")
     if len(outcomes) != 1:
         return None
     success = outcomes == {"success"}

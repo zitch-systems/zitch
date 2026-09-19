@@ -136,8 +136,8 @@ const Limits = () => {
           busy={busy}
           title="Confirm it's you"
           subtitle={pendingClear
-            ? 'Enter your 4-digit PIN to remove your own limit.'
-            : 'Enter your 4-digit PIN to change your transaction limit.'}
+            ? 'Enter your 6-digit PIN to remove your own limit.'
+            : 'Enter your 6-digit PIN to change your transaction limit.'}
         />
       </Screen>
     </AuthGuard>

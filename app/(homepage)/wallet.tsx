@@ -4,7 +4,7 @@ import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, TxnRow, money, NText } from '@/components/design/ui';
+import { Screen, TxnRow, money, NText, settledTransactionTotal } from '@/components/design/ui';
 import { SectionLabel } from '@/components/design/widgets';
 import { ConnectedAccounts } from '@/components/design/ConnectedAccounts';
 import { useTheme, font } from '@/lib/theme';
@@ -18,8 +18,10 @@ const Wallet = () => {
   // Keep balance & transactions fresh each time the tab is opened.
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
 
-  const moneyIn = txns.filter((t) => t.dir === 'in').reduce((s, t) => s + Math.abs(t.amount), 0);
-  const moneyOut = txns.filter((t) => t.dir === 'out').reduce((s, t) => s + Math.abs(t.amount), 0);
+  // Only explicitly settled rows contribute. Pending/unknown value remains in
+  // History but cannot inflate either movement total before confirmation.
+  const moneyIn = settledTransactionTotal(txns, 'in');
+  const moneyOut = settledTransactionTotal(txns, 'out');
 
   // Copy ONLY the bare account number (not the "· bank" suffix); pop a brief
   // local confirmation bubble above the chip, matching Home's pattern.

@@ -4,10 +4,12 @@ The ordered checks for taking Zitch from **sandbox/mock** to **live money**
 on the Wema/ALAT rail. A passing preflight checks configuration; it does not
 certify provider delivery, financial reconciliation, or a completed migration.
 
-> **17 September 2026 live audit:** production still routes to Oregon and the
-> Frankfurt ledger is behind. Follow the [final-sync and cutover procedure](audit/2026-09-17-live-followup.md)
-> before changing routing or enabling Frankfurt money consumers. Do not purge,
-> overwrite, or adjust real customer data merely to make a health check pass.
+> **Historical 17 September 2026 audit:** that audit found production routing to
+> Oregon and an earlier Frankfurt ledger. It is retained as migration evidence,
+> not as current routing status. Frankfurt is the active target now; use the
+> [current Frankfurt release control](frankfurt-release-control-2026-09-19.md)
+> for promotion and verification. Do not purge, overwrite, or adjust real
+> customer data merely to make a health check pass.
 
 > **One-line status check any time:** `python manage.py wema_preflight`
 > (add `--strict` to also gate on the non-money rails). It exits non-zero until
@@ -184,12 +186,14 @@ deploy is ready.
   Banks → *"Sync bank codes from the payout rail"*.
 - VAS (airtime/data/bills) has no probe of its own — it runs on the partner bank, so
   `/wema-diagnose` and `/preflight` cover it. `/preflight` is the one to read: it
-  reports whether each VAS product is keyed AND whether its status legend
+  reports whether each VAS product is keyed AND whether its confirmed status legend
   (`WEMA_VAS_STATUS_LEGEND` / `WEMA_BILLS_STATUS_LEGEND`) has an unambiguous terminal
   outcome. An all-pending legend is not ready. Without a usable legend a
   `PROCESSING` purchase could never be settled or refunded, so purchases of that
   product are **refused up front** (the customer is not charged) — see
-  `docs/wema-migration.md`. Getting the enum from Wema is what turns VAS on. A refused
+  `docs/wema-migration.md`. Configure 200=success, 400=failed and
+  401=unauthorized_authentication_failed_or_invalid_api for each enabled payment map.
+  A refused
   status lookup is not a failed purchase; never refund from it. See
   [18 September incident note](wema-incident-2026-09-18.md) for the interim holds.
 - `GET /wema-callbacks-diagnose` with a diagnostic bearer token — prints the

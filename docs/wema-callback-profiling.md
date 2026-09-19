@@ -17,7 +17,8 @@ actual state, from the channel.
 | **Wema compliance approval** | **Granted 24 Jul.** Jumoke Fayemiwo: *"We have Compliance Approval for the Customer. Kindly assist to push the Partner live"* |
 | **Bank egress IPs** | **Supplied in writing** — see §2 |
 | **`securityInfo`** | Resolved 27 Jul; a value we choose. See `wema-migration.md` |
-| **VAS status legend, `cardKey`, live host + keys** | **Never asked.** See §3 |
+| **VAS status legend** | **Resolved:** 200 success, 400 failed, 401 authentication/API failure; configure VAS and bills maps separately |
+| **`cardKey`, live host + keys** | Still outstanding. See §3 |
 
 The four URLs, as profiled on dev (the token is `WEMA_CALLBACK_TOKEN`; with these
 endpoints the secret *is* the URL, because ALAT signs nothing):
@@ -91,13 +92,11 @@ both about `securityInfo`, which was then answered.
 >
 > Thanks for profiling our dev callbacks on the 28th. Four things outstanding:
 >
-> **1. The `transactionStatus` legends.**
-> `PartnerPayment/CheckTransactionStatus` returns an integer `transactionStatus` (1–11),
-> and `PartnerPayment/checktransactionstatus` for bills returns 1–9, but we can't find
-> the meanings documented. Please send the integer → meaning map for both. Until we have
-> it, a timed-out airtime/data/bill purchase stays PENDING indefinitely: we won't
-> auto-settle (which would debit a customer for an undelivered top-up) or auto-refund
-> (which would pay twice for a delivered one) on a code we can't read.
+> **1. `transactionStatus` legends — resolved.**
+> The confirmed payment mapping is 200 success, 400 failed and 401
+> authentication/API failure for both VAS and bills. It remains configured separately
+> per product so unknown or conflicting future codes stay PENDING rather than being
+> guessed.
 >
 > **2. The `cardKey`** (card product id) for the Virtual Naira Card `virtualCard` /
 > `virtual-card-details` requests, plus the shape of the opaque `data` field those

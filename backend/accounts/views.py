@@ -4,6 +4,7 @@ import hmac
 import logging
 import re
 import secrets
+import uuid
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
@@ -52,6 +53,49 @@ def _session_device_id(request) -> str:
     return (request.headers.get("X-Zitch-Device") or "").strip()[:64]
 
 
+def spend_account_namespace(user) -> str:
+    """Stable, pseudonymous account identity for device-local spend attempts.
+
+    A device can be shared by multiple Zitch customers. The mobile app needs a
+    stable account namespace so an unresolved idempotency key from one customer
+    is never replayed by another. This random value is persisted on the user: it
+    survives access-token, signing-secret and region rotation and contains no PII.
+    """
+    namespace = getattr(user, "spend_namespace", None)
+    if namespace:
+        return str(namespace)
+    if not getattr(user, "pk", None):
+        raise ValueError("A persisted user is required for a spend namespace")
+
+    # During an expand/contract deployment the previous release can create a
+    # user without this newly-added field. Claim the NULL with one conditional
+    # UPDATE: concurrent requests either write the candidate or observe the UUID
+    # written by the winner; neither can overwrite the other. A savepoint keeps
+    # the vanishingly unlikely UUID collision from poisoning an outer atomic
+    # request so a fresh candidate can be tried safely.
+    for _attempt in range(3):
+        candidate = uuid.uuid4()
+        try:
+            with db_transaction.atomic():
+                claimed = User.objects.filter(
+                    pk=user.pk, spend_namespace__isnull=True,
+                ).update(spend_namespace=candidate)
+        except IntegrityError:
+            continue
+        if claimed:
+            user.spend_namespace = candidate
+            return str(candidate)
+
+        namespace = (User.objects.filter(pk=user.pk)
+                     .values_list("spend_namespace", flat=True).first())
+        if namespace:
+            user.spend_namespace = namespace
+            return str(namespace)
+        raise User.DoesNotExist("User disappeared while assigning spend namespace")
+
+    raise RuntimeError("Unable to allocate a unique spend namespace")
+
+
 def _session_payload(user, request) -> dict:
     """The fields every authenticating endpoint returns, so a session is issued
     the same way whether it came from a sign-in, a signup OTP or a password reset.
@@ -67,6 +111,7 @@ def _session_payload(user, request) -> dict:
     refresh = RefreshToken.issue(user, device_id=device_id)
     return {"access_token": access.key,
             "refresh_token": refresh.key,
+            "account_namespace": spend_account_namespace(user),
             "expires_in": int(settings.TOKEN_TTL_HOURS) * 3600}
 
 
@@ -461,6 +506,7 @@ def token_refresh(request):
     user = outcome
     access = AccessToken.issue(user, device_id=fresh.device_id)
     return ok(access_token=access.key, refresh_token=fresh.key,
+              account_namespace=spend_account_namespace(user),
               expires_in=int(settings.TOKEN_TTL_HOURS) * 3600,
               message="Session renewed")
 

@@ -3,6 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import {
   Screen, Header, TxnRow, HeaderLink, SelectRow, PickerSheet, Card, NText, money, txnState,
+  settledTransactionTotal,
 } from '@/components/design/ui';
 import { SkeletonRow } from '@/components/design/Skeleton';
 import ZIcon from '@/components/design/ZIcon';
@@ -62,6 +63,9 @@ const History = () => {
       type: x.type, amount: String(x.amount), status: x.status, dir: x.dir,
       detail: x.detail, reference: x.reference, icon: x.icon,
       narration: x.narration ?? '',
+      underReview: x.underReview ? '1' : '',
+      statusMessage: x.statusMessage ?? '',
+      reviewKind: x.reviewKind ?? '',
     } });
   }, []);
 
@@ -100,12 +104,10 @@ const History = () => {
         // screen — a filter tap, a pull-to-refresh, the ledger arriving. Built
         // once per (txns, cat, status) instead, the memo actually holds.
         rows: rows.map((t) => (t.ts ? { ...t, detail: txnDate(t.ts) } : t)),
-        // Failed money never left the account, so counting it would overstate
-        // both sides of the summary.
-        moneyIn: rows.filter((t) => t.dir === 'in' && txnState(t.status) !== 'failed')
-          .reduce((s, t) => s + Math.abs(t.amount), 0),
-        moneyOut: rows.filter((t) => t.dir === 'out' && txnState(t.status) !== 'failed')
-          .reduce((s, t) => s + Math.abs(t.amount), 0),
+        // Only explicitly settled money belongs in movement totals. Pending or
+        // unknown rows remain visible below with their non-green status.
+        moneyIn: settledTransactionTotal(rows, 'in'),
+        moneyOut: settledTransactionTotal(rows, 'out'),
       }));
   }, [txns, cat, status]);
 

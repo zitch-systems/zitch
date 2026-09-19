@@ -35,4 +35,19 @@ describe('mapTxn', () => {
   it('uses the row index as a last-resort id', () => {
     expect(mapTxn({ service: 'X' }, 7).id).toBe('7');
   });
+
+  it('preserves an active review and never exposes its older terminal status', () => {
+    const t = mapTxn({
+      service: 'Bank transfer',
+      transaction_status: 'Successful',
+      under_review: true,
+      review_kind: 'reversal',
+      status_message: "We are confirming the bank's final outcome. Do not retry.",
+    }, 0);
+
+    expect(t.status).toBe('Under review');
+    expect(t.underReview).toBe(true);
+    expect(t.reviewKind).toBe('reversal');
+    expect(t.statusMessage).toContain('Do not retry');
+  });
 });

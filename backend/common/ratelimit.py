@@ -74,7 +74,14 @@ def ratelimit(scope: str, limit: int, window: int):
                     cache.set(key, 1, window)
                     count = 1
                 if count > limit:
-                    return fail("Too many requests. Please slow down and try again shortly.", status=429)
+                    # This rejection happens before the wrapped handler executes,
+                    # so money clients can safely distinguish it from an unknown
+                    # provider/gateway 429 and discard an unused attempt key.
+                    return fail(
+                        "Too many requests. Please slow down and try again shortly.",
+                        status=429,
+                        code="rate_limited",
+                    )
             return view(request, *args, **kwargs)
         return wrapper
     return decorator

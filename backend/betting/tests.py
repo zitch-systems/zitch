@@ -19,8 +19,13 @@ class BettingTests(TestCase):
         map_billers("bet9ja-betting")
         BettingPlatform.objects.create(code="bet9ja", name="Bet9ja", color="#0B7A3B",
                                        service_id="bet9ja-betting")
+        self._key_seq = 0
 
     def post(self, path, payload):
+        payload = dict(payload)
+        if path == "/api/betting/fund/" and "idempotency_key" not in payload:
+            self._key_seq += 1
+            payload["idempotency_key"] = f"betting-test-{self._key_seq}"
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
@@ -94,4 +99,30 @@ class BettingTests(TestCase):
         self.assertEqual(res2.status_code, 200)
         self.assertTrue(body2.get("duplicate"))
         # Debited exactly once despite the retry.
+        self.assertEqual(self.balance(), Decimal("8000"))
+
+    def test_fund_requires_a_client_idempotency_key(self):
+        res, body = self.post("/api/betting/fund/", {
+            "access_token": self.token, "platform": "bet9ja", "user_id": "ZB12345",
+            "amount": "2000", "transaction_pin": "1234", "idempotency_key": None,
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(body.get("code"), "idempotency_key_required")
+        self.assertEqual(self.balance(), Decimal("10000"))
+
+    def test_retry_replays_after_platform_is_deactivated(self):
+        payload = {
+            "access_token": self.token, "platform": "bet9ja", "user_id": "ZB12345",
+            "amount": "2000", "transaction_pin": "1234",
+            "idempotency_key": "betting-retired-platform-1",
+        }
+        first, first_body = self.post("/api/betting/fund/", payload)
+        BettingPlatform.objects.filter(code="bet9ja").update(active=False)
+        retry, retry_body = self.post("/api/betting/fund/", {
+            **payload, "transaction_pin": "0000",
+        })
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(retry.status_code, 200)
+        self.assertTrue(retry_body["duplicate"])
+        self.assertEqual(retry_body["reference"], first_body["reference"])
         self.assertEqual(self.balance(), Decimal("8000"))

@@ -40,12 +40,13 @@ model (no standalone lookup), and the Post-No-Debit (PND) lift a new NUBAN needs
    "a private key best known to you" which the bank simply echoes back to our Authentication
    Callback. We choose the value; nothing is issued and nothing is owed. See the
    `securityInfo` section below.
-3. **VAS status-requery legend** — `PartnerPayment/CheckTransactionStatus` returns an
-   INTEGER `transactionStatus` (enum 1..11) whose meaning ALAT doesn't publish; the client
-   reads it but leaves such a purchase **PENDING** (never auto-settle/refund on an
-   un-decodable code). Confirm the integer legend to enable auto-settlement of timed-out
-   VAS buys. The bank-transfer `confirm_transfer_status` string legend is still matched
-   defensively (`_SETTLED`/`_REVERSED`, now incl. ALAT's `SUCCESSFULL` spelling).
+3. ~~**VAS status-requery legend**~~ — **RESOLVED.** The confirmed payment legend is
+   `200=success`, `400=failed`, and
+   `401=unauthorized_authentication_failed_or_invalid_api` for both VAS and bills
+   payment status. Keep the per-product maps configured so an unexpected future code
+   still remains **PENDING** rather than being guessed. The bank-transfer
+   `confirm_transfer_status` string legend is matched defensively
+   (`_SETTLED`/`_REVERSED`, including ALAT's `SUCCESSFULL` spelling).
 4. **Opaque card fields** — the card-management `virtualCard`/`virtual-card-details`
    responses carry an opaque `data` field (masked PAN / expiry / CVV shape not in the spec)
    and the request needs a `cardKey` (card product id, `WEMA_CARD_PRODUCT_KEY`) Wema must
@@ -142,14 +143,16 @@ services off sale and leaves the rest working.
 **A purchase is refused when this deploy could not settle it.** ALAT's purchase endpoints
 may answer `PROCESSING`; `settle_or_refund` then HOLDS the money (never refund a
 maybe-delivered top-up) and leaves the row for the reconcile cron. The cron's only tool is
-`wema.vas_status`, which answers with a bare integer `transactionStatus` that ALAT publishes
-no legend for — and the bank's own transaction callback routes through the same requery. So
+`wema.vas_status`, which answers with a bare integer `transactionStatus`; the confirmed
+map is 200 success, 400 failure and 401 authentication/API failure. The bank's own
+transaction callback routes through the same requery. So
 with no `WEMA_VAS_STATUS_LEGEND` / `WEMA_BILLS_STATUS_LEGEND`, a `PROCESSING` purchase would
 be debited, undelivered and unrefundable forever, with no job able to clear it.
 `providers.vas_can_settle()` therefore refuses the purchase up front — before the provider
 call, so the ordinary failure path refunds the debit in full — and pages. The two legends
-decode DIFFERENT enums (1..11 airtime/data vs 1..9 bills) and are gated separately.
-Getting the enum from Wema is the single action that turns VAS on; it needs no deploy.
+are configured and gated separately so one product can never borrow the other product's
+status contract. Set both maps to the confirmed values before enabling sales; no deploy is
+required.
 
 The fulfilling rail is stamped on the ledger row (`vas_rail`/`vas_type`). A PENDING row from
 the retired rail is therefore identifiable, and `vtu_requery` refuses to requery it against
@@ -229,17 +232,18 @@ new Remita / pay-with-bank / BNPL products). Summary:
 | Balance + transaction history | ✅ correct | `status` now honored — see funding guard below. |
 | Debit wallet / transfer (payout) | ✅ correct | `ClientTransferRequestDto` is a perfect field match. `GetNIPCharges` is unused (optional). |
 | Credit wallet / FundWallet | ✅ correct | Status poll is bound to the `debit` suffix; a credit-rail poll is optional. |
-| Airtime & Data | ⚠️ mostly correct | On the right (Client/SingleAccount) endpoints. **Requery bug:** `CheckTransactionStatus` returns `result.transactionStatus` as an **integer** enum (1–11), not a string — legend needed (below). |
-| Bills payment | ⚠️ mostly correct | Same integer-status requery gap (`checktransactionstatus`, enum 1–9). `packageId` is int32 in the spec. |
+| Airtime & Data | ⚠️ live verification required | On the right (Client/SingleAccount) endpoints. `CheckTransactionStatus` returns `result.transactionStatus`; configure the confirmed 200/400/401 legend before sales. |
+| Bills payment | ⚠️ live verification required | Uses the same confirmed 200/400/401 outcomes in its own separately configured map. `packageId` is int32 in the spec. |
 | **Virtual cards** | ⚠️ wired, live-shape check required | The real card-management issue/reveal/block paths are wired; Wema must supply `cardKey` and confirm the opaque response shape before production. |
 | **KYC (BVN/NIN/vNIN)** | ✅ corrected model | Wema has no standalone identity lookup; Zitch verifies and name-matches identity through the wallet-provisioning OTP flow. |
 
 **Funding-correctness fix (landed):** `normalize_transaction` now treats an inbound
 `creditType=='Credit'` row as fundable only when its `status` is settled. The ALAT
-`TransactionStatus` enum is `{Default, Successfull(sic), Failed, Pending}`; a **Pending**
-(in-flight) or **Failed** (bounced) credit row is skipped, so a deposit is never credited
-before it settles. Unknown/blank still counts (a live gateway that omits the field can't
-strand real money); a Pending row credits on a later sweep once it settles.
+`TransactionStatus` enum is `{Default, Successfull(sic), Failed, Pending}`; live history
+has also used the conventional `Successful` spelling. Only those two explicit terminal
+success spellings are fundable. **Pending**, **Failed**, unknown and blank rows are skipped,
+so a deposit is never credited before it settles; a later authenticated settled observation
+credits the same reference exactly once.
 
 ### `securityInfo` — dynamic per transaction
 
@@ -295,14 +299,16 @@ account-creation OTP flow, and the holder name ALAT returns is name-matched
 non-existent endpoint — in production they route the caller to account setup; dev/tests keep the
 mock. (Prembly stays the image/biometric KYC rail for face/address/ID.)
 
-### Transaction-status legends — still needed from Wema
+### Transaction-status legends
 
 - **Transfer/credit:** `result.status` / `result.data.status` are plain strings; the spec
   examples are all `"string"`. `reconcile_wema` matches SUCCESS/FAILED families defensively.
-- **VAS airtime/data requery:** `CheckTransactionStatus` → `result.transactionStatus` is an
-  **integer enum (1–11)**; `transactionType` on the request is an **int enum {1,2}** (not the
-  string `'airtime'`/`'data'`). Requery cannot interpret the code until Wema supplies the map.
-- **Bills requery:** `checktransactionstatus` → `result.transactionStatus` **integer enum (1–9)**.
+- **VAS airtime/data requery:** `CheckTransactionStatus` → `result.transactionStatus` uses
+  the confirmed 200 success / 400 failure / 401 authentication-or-API-failure legend;
+  `transactionType` on the request is an **int enum {1,2}** (not the string
+  `'airtime'`/`'data'`).
+- **Bills requery:** `checktransactionstatus` uses the same confirmed 200/400/401 outcomes,
+  held in its own map so product-specific drift fails closed.
 - **History:** `TransactionStatus {Default, Successfull, Failed, Pending}` — now honored.
 
 ### New portal products — now wired (client + endpoints)
@@ -357,13 +363,12 @@ The follow-up rails from the bundle are wired (mock-first, fail-closed):
    or `WEMA_SOURCE_ACCOUNT` must be funded to cover pool-sourced payouts.
 2. ~~**`securityInfo` construction.**~~ **CLOSED 2026-07-27** — there is no construction. It
    is a value we pick that the bank echoes back to our Authentication Callback.
-3. **Transaction-status legends.** `transhistoryV2` history status is now documented and
-   honored (`{Default, Successfull, Failed, Pending}` — only settled credits fund). Two legends
-   remain: the `confirm_transfer_status` bank-payout status STRING (matched defensively via
-   `_SETTLED`/`_REVERSED`, incl. the `SUCCESSFULL` spelling), and the **integer**
-   `transactionStatus` the VAS/bills `CheckTransactionStatus` returns (enum 1..11) — the code
-   reads it but leaves such a purchase PENDING until the code→meaning map is confirmed. Confirm
-   both with Wema.
+3. ~~**Transaction-status legends.**~~ **CLOSED for VAS/bills.** `transhistoryV2`
+   history status is honored (`Successfull` and observed `Successful` settle; Default,
+   blank, unknown, Failed and Pending do not). VAS/bills `transactionStatus` is confirmed
+   as 200 success / 400 failure / 401 authentication-or-API failure and remains configured
+   per product. Bank-payout STRING statuses remain matched defensively via
+   `_SETTLED`/`_REVERSED`, including the `SUCCESSFULL` spelling.
 4. **Where the wallet-creation OTP is delivered — RESOLVED (was mis-stated in code).**
    ALAT's wallet-creation (NIN) and account-creation (BVN) rails both *validate the identity
    against its issuing register on the bank's side* and then SMS a **consent** code to the phone
@@ -398,9 +403,10 @@ The follow-up rails from the bundle are wired (mock-first, fail-closed):
 
    **The reconciliation invariant already exists** — `manage.py reconcile_balances`
    (`wallet/management/commands/reconcile_balances.py`), on the `zitch-reconcile-balances`
-   cron every 6 hours with `--fail-over`. It compares each wallet's ledger balance against the
-   real Wema NUBAN balance and pages via Sentry the moment the ledger exceeds the bank — the
-   dangerous direction. This item was stale; the code predates the note.
+   cron every 6 hours with `--fail-nonzero`. It compares each wallet's ledger balance against
+   the real Wema NUBAN balance and escalates either non-zero direction for provenance review.
+   The job is strictly read-only: no balance, refund, or pending payment outcome is selected
+   from arithmetic alone. This item was stale; the code predates the note.
 
    **A real gap was found and fixed:** a row `apply_wema_credit` quarantines as an unmatched
    reversal (an explicit "REVERSAL"/"BOUNCED" marker with no reference we can tie to a specific

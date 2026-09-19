@@ -41,8 +41,10 @@ from utility.reconciliation import alert_due, claim_status_lookup, recorded_vas_
 from wallet.models import Wallet, WemaFaceSession, WemaProvisioningAttempt
 from wallet.services import (
     apply_wema_credit, attach_existing_bank_account, pending_bank_payouts,
-    pending_vas_purchases, reverse_transfer, self_payout_references,
-    settle_or_refund, settle_payout, wema_provisioned_wallets,
+    pending_card_fundings,
+    pending_vas_purchases, quarantined_bank_payouts, reverse_transfer,
+    self_payout_references, settle_or_refund, settle_payout,
+    unmatched_reversal_evidence, wema_provisioned_wallets,
 )
 
 class Command(BaseCommand):
@@ -77,10 +79,11 @@ class Command(BaseCommand):
     def _run(self, **options):
         """Run reconciliation once across all processes and services.
 
-        The WhatsApp worker and scheduled cron both call this command. PostgreSQL
-        advisory locks provide a database-backed guard even when a Render service
-        is missing or miswired to Redis; cache locking remains the fallback for
-        local/test databases.
+        The scheduled Wema cron owns reconciliation in production. A WhatsApp
+        worker may call this only through the explicit local/test override, so
+        PostgreSQL advisory locks still provide a database-backed guard even when
+        a Render service is missing or miswired to Redis; cache locking remains
+        the fallback for local/test databases.
         """
         lock_key = "zitch:money-reconcile:lock"
         db_cursor = None
@@ -395,6 +398,48 @@ class Command(BaseCommand):
                   level="error", payouts=len(stuck),
                   references=[t.reference for t in stuck[:10]])
 
+        # Reversal quarantines are a separate manual-review queue, not a flavour
+        # of PENDING.  Some legitimate holds sit on payouts that had already
+        # reached SUCCESS/FAILED before the returned credit appeared.  Remind on
+        # every run (hourly de-duplicated) until an audited operator resolution
+        # clears the durable marker; bank-history lookback expiry must not silence
+        # the incident.
+        quarantined = list(quarantined_bank_payouts()[:50])
+        if quarantined and alert_due(
+                "payout-quarantine", [t.reference for t in quarantined]):
+            alert(
+                f"reconcile_wema: {len(quarantined)} bank payout reversal "
+                "quarantine(s) still require manual provenance review; no balance "
+                "or payout status will change while the hold is active",
+                level="error", payouts=len(quarantined),
+                references=[t.reference for t in quarantined[:10]],
+            )
+
+        unmatched = list(unmatched_reversal_evidence()[:50])
+        if unmatched and alert_due(
+                "unmatched-reversal", [str(case.pk) for case in unmatched]):
+            alert(
+                f"reconcile_wema: {len(unmatched)} unmatched bank-return "
+                "case(s) still require finance review; the provider rows are "
+                "durably claimed and no customer balance was changed",
+                level="error", cases=len(unmatched),
+                evidence_ids=[case.pk for case in unmatched[:10]],
+                references=[case.provider_reference for case in unmatched[:10]],
+            )
+
+        card_stuck_after = timedelta(
+            hours=int(getattr(settings, "CARD_FUNDING_STUCK_HOURS", 2) or 2))
+        card_stuck = list(pending_card_fundings(
+            timezone.now() - card_stuck_after)[:50])
+        if card_stuck and alert_due("card-funding", [t.reference for t in card_stuck]):
+            alert(
+                f"reconcile_wema: {len(card_stuck)} card funding attempt(s) still "
+                f"unconfirmed after {card_stuck_after}; the wallet debit remains held "
+                "until the issuer confirms whether the card was loaded",
+                level="error", purchases=len(card_stuck),
+                references=[t.reference for t in card_stuck[:10]],
+            )
+
         # The same net under VAS, for the same reason and with the same blind spot:
         # a stuck airtime/data/bill purchase is a pending DEBIT, so every other
         # control reads it as benign (owed by integrity_check, bank-over-ledger by
@@ -427,12 +472,6 @@ class Command(BaseCommand):
             alert(f"reconcile_wema: all {payouts_seen} pending-payout status queries failed — "
                   f"settlement stalled", level="error", payouts=payouts_seen)
 
-        from wallet.alerts import retry_pending_whatsapp_alerts
-        whatsapp_alerts = retry_pending_whatsapp_alerts(
-            since=timezone.now() - timedelta(days=max(1, options["lookback_days"])),
-            limit=50,
-        )
-
         self.stdout.write(
             f"Wema reconcile: accounts recovered {recovered_accounts}/"
             f"{recovery_checked} checked ({recovery_failures} still pending, "
@@ -441,5 +480,4 @@ class Command(BaseCommand):
             f"PND lifted {pnd_lifted}, retry failures {pnd_failures}; "
             f"payouts checked {payouts_seen}, settled {settled}, reversed {reversed_}; "
             f"VAS checked {vas_seen}, settled {vas_settled}, refunded {vas_refunded}, "
-            f"still pending {vas_still_pending}; "
-            f"WhatsApp alerts retried {whatsapp_alerts}")
+            f"still pending {vas_still_pending}")

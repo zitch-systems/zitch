@@ -9,8 +9,11 @@ type LoanResult = ApiResult<Record<string, any>>;
 
 export const loansService = {
   getStatus: () => apiJson<LoanResult>(EP.loans.status),
-  request: (amount: number | string, tenureDays: number | string, pin: string) =>
-    apiJson<LoanResult>(EP.loans.request, { amount: String(amount), tenure_days: tenureDays, transaction_pin: pin }),
+  request: (amount: number | string, tenureDays: number | string, pin: string, idempotencyKey: string) =>
+    apiJson<LoanResult>(EP.loans.request, {
+      amount: String(amount), tenure_days: tenureDays, transaction_pin: pin,
+      idempotency_key: idempotencyKey,
+    }),
   repay: (amount: number | string, pin: string, idempotencyKey: string) =>
     apiJson<LoanResult>(EP.loans.repay, { amount, transaction_pin: pin, idempotency_key: idempotencyKey }),
 };

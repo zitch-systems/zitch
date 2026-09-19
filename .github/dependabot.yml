@@ -32,6 +32,12 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
 
+  - package-ecosystem: npm
+    directory: "/zitch-meta-connector"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

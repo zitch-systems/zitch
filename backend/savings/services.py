@@ -10,7 +10,8 @@ from django.db import IntegrityError, transaction as db_transaction
 from django.utils import timezone
 
 from wallet.models import Transaction, Wallet
-from wallet.services import DuplicateTransaction, InsufficientFunds, credit, make_reference
+from wallet.services import (DuplicateTransaction, InsufficientFunds, credit,
+                             make_reference, with_idempotency_fingerprint)
 
 from .models import FixedSave
 
@@ -38,7 +39,8 @@ def lock(user, principal, days: int, idempotency_key: str = "") -> FixedSave:
             Transaction.objects.create(
                 user=user, service="Fixed Save locked", amount=principal,
                 direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
-                reference=ref, meta={"days": days, "rate": str(rate)},
+                reference=ref, meta=with_idempotency_fingerprint(
+                    {"days": days, "rate": str(rate)}, idempotency_key),
                 idempotency_key=idempotency_key,
             )
     except IntegrityError:

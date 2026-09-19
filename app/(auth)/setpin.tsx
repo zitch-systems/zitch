@@ -9,8 +9,7 @@ import { ZMark } from '@/components/design/Brand';
 import { Screen } from '@/components/design/ui';
 import { Keypad } from '@/components/design/Keypad';
 import { useTheme, font } from '@/lib/theme';
-
-const PIN_LEN = 4;
+import { TRANSACTION_PIN_LENGTH } from '@/lib/transactionPin';
 
 const SetPin = () => {
   const { c } = useTheme();
@@ -53,11 +52,11 @@ const SetPin = () => {
 
   // Drive the create → confirm → submit flow.
   useEffect(() => {
-    if (confirm === null && pin.length === PIN_LEN) {
+    if (confirm === null && pin.length === TRANSACTION_PIN_LENGTH) {
       const t = setTimeout(() => setConfirm(''), 180);
       return () => clearTimeout(t);
     }
-    if (confirm !== null && confirm.length === PIN_LEN) {
+    if (confirm !== null && confirm.length === TRANSACTION_PIN_LENGTH) {
       if (confirm === pin) {
         const t = setTimeout(() => submit(pin), 220);
         return () => clearTimeout(t);
@@ -71,9 +70,9 @@ const SetPin = () => {
   const onKey = (k: string) => {
     if (submitting) return;
     if (confirm === null) {
-      setPin((p) => (k === 'del' ? p.slice(0, -1) : p.length < PIN_LEN ? p + k : p));
+      setPin((p) => (k === 'del' ? p.slice(0, -1) : p.length < TRANSACTION_PIN_LENGTH ? p + k : p));
     } else {
-      setConfirm((cf) => (k === 'del' ? (cf || '').slice(0, -1) : (cf || '').length < PIN_LEN ? (cf || '') + k : cf));
+      setConfirm((cf) => (k === 'del' ? (cf || '').slice(0, -1) : (cf || '').length < TRANSACTION_PIN_LENGTH ? (cf || '') + k : cf));
     }
   };
 
@@ -84,14 +83,14 @@ const SetPin = () => {
           <ZMark size={44} />
         </View>
         <Text style={{ fontSize: 22, fontFamily: font.extrabold, color: c.ink1, marginTop: 20 }}>
-          {confirm === null ? 'Create a 4-digit PIN' : 'Confirm your PIN'}
+          {confirm === null ? `Create a ${TRANSACTION_PIN_LENGTH}-digit PIN` : 'Confirm your PIN'}
         </Text>
         <Text style={{ fontSize: 14, color: err ? c.red : c.ink3, marginTop: 6, textAlign: 'center', fontFamily: err ? font.bold : font.regular }}>
           {err ? "PINs don't match, try again" : submitting ? 'Setting up your PIN…' : "You'll use this to authorize payments"}
         </Text>
 
         <View style={{ flexDirection: 'row', gap: 18, marginVertical: 30 }}>
-          {Array.from({ length: PIN_LEN }).map((_, k) => {
+          {Array.from({ length: TRANSACTION_PIN_LENGTH }).map((_, k) => {
             const filled = active.length > k;
             const color = err ? c.red : c.brand;
             return (

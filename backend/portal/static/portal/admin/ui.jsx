@@ -40,7 +40,7 @@ const STATUS_COLORS = {
   success: { bg: '#E6F6EE', fg: '#0B7A43' }, active: { bg: '#E6F6EE', fg: '#0B7A43' },
   operational: { bg: '#E6F6EE', fg: '#0B7A43' }, done: { bg: '#E6F6EE', fg: '#0B7A43' },
   delivered: { bg: '#E6F6EE', fg: '#0B7A43' },
-  pending: { bg: '#FFF4E0', fg: '#9A5B00' }, degraded: { bg: '#FFF4E0', fg: '#9A5B00' },
+  pending: { bg: '#FFF4E0', fg: '#9A5B00' }, under_review: { bg: '#FFF4E0', fg: '#9A5B00' }, degraded: { bg: '#FFF4E0', fg: '#9A5B00' },
   draft: { bg: '#EEF1F4', fg: '#4A4E57' }, paused: { bg: '#EEF1F4', fg: '#4A4E57' }, none: { bg: '#EEF1F4', fg: '#697077' },
   failed: { bg: '#FDEAEA', fg: '#B42318' }, flagged: { bg: '#FDEAEA', fg: '#B42318' }, frozen: { bg: '#FDEAEA', fg: '#B42318' },
   sending: { bg: '#E8F4FB', fg: '#0B6196' }, human: { bg: '#E8F4FB', fg: '#0B6196' }, whatsapp: { bg: '#E6F6EE', fg: '#0B7A43' },

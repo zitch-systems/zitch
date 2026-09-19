@@ -3,8 +3,8 @@
 The hazard, end to end. ALAT's airtime/data and bills purchase endpoints may answer
 ``PROCESSING``. ``settle_or_refund`` correctly HOLDS the money on that — refunding a
 maybe-delivered top-up would leak it — and leaves the row for the reconcile cron.
-The cron's only tool is ``wema.vas_status``, which answers with a bare integer
-``transactionStatus`` that ALAT publishes no legend for; with no
+The cron's only tool is ``wema.vas_status``, which answers with the confirmed
+200-success / 400-failure / 401-auth-failure integer ``transactionStatus``; with no
 ``WEMA_VAS_STATUS_LEGEND`` / ``WEMA_BILLS_STATUS_LEGEND`` configured, ``_parse_vas``
 reports ``pending`` for every code it sees, forever. Nothing else can settle the row
 either: the bank's own transaction callback routes back through ``vtu_requery``.
@@ -30,6 +30,11 @@ _KEYED = {"BASE_URL": "https://apiplayground.alat.ng", "CHANNEL_ID": "chan-1",
           "SOURCE_ACCOUNT": "0100000001", "SECURITY_INFO": "sec", "SIMULATION": False}
 _AIRTIME_LEGEND = {**_KEYED, "VAS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
 _BILLS_LEGEND = {**_KEYED, "BILLS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
+_REMITA_KEYED = {
+    **_KEYED,
+    "KEYS": {**_KEYED["KEYS"], "remita": "remita-key"},
+    "REMITA_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api",
+}
 
 _AIRTIME = ("mtn-airtime", {"amount": "500", "phone": "08012345678",
                             "source_account": "0100000001"})
@@ -46,10 +51,18 @@ class CanSettleTests(SimpleTestCase):
     def test_live_with_a_legend_can_settle(self):
         self.assertEqual(P.vas_can_settle("airtime"), (True, ""))
 
+    def test_live_with_only_one_terminal_direction_cannot_settle(self):
+        for legend in ("1=success 2=pending", "1=failed 2=pending"):
+            with self.subTest(legend=legend), override_settings(
+                    WEMA={**_KEYED, "VAS_STATUS_LEGEND": legend}):
+                ok, why = P.vas_can_settle("airtime")
+                self.assertFalse(ok)
+                self.assertIn("success and failed", why)
+
     @override_settings(WEMA=_KEYED)
     def test_bills_are_gated_on_their_own_legend(self):
-        # The two status endpoints answer with DIFFERENT integer enums (1..11 vs 1..9),
-        # so an airtime legend cannot decode a bill and must not unblock one.
+        # Maps remain product-scoped so an airtime contract cannot silently decode
+        # a bill if the bank later changes either product independently.
         with override_settings(WEMA=_AIRTIME_LEGEND):
             self.assertFalse(P.vas_can_settle("bill")[0])
         with override_settings(WEMA=_BILLS_LEGEND):
@@ -70,6 +83,12 @@ class CanSettleTests(SimpleTestCase):
     @override_settings(WEMA={**_AIRTIME_LEGEND, "SIMULATION": True})
     def test_simulation_needs_no_legend(self):
         self.assertTrue(P.vas_can_settle("airtime")[0])
+
+    @override_settings(WEMA=_REMITA_KEYED)
+    def test_live_remita_is_blocked_even_with_a_direct_response_legend(self):
+        ok, why = P.vas_can_settle("remita")
+        self.assertFalse(ok)
+        self.assertIn("no automated status/requery", why)
 
 
 class PurchaseRefusalTests(SimpleTestCase):

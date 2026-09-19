@@ -7,6 +7,10 @@
 
 export type ApiResult<T = {}> = {
   success?: boolean;
+  pending?: boolean;
+  duplicate?: boolean;
+  offline?: boolean;
+  reference?: string;
   status?: boolean | string; // legacy envelopes use booleans; status endpoints may return a state string
   message?: string;
   code?: string; // standard error envelope code (e.g. pin_incorrect, face_required)

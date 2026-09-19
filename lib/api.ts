@@ -7,6 +7,7 @@ import {
   getRefreshToken,
   saveToken,
   saveRefreshToken,
+  saveSpendAccountNamespace,
 } from '@/lib/secureStore';
 import { touchActivity } from '@/lib/session';
 // Importing this also installs the global fetch guard: it stamps the app
@@ -65,6 +66,9 @@ async function refreshSession(): Promise<RefreshOutcome> {
         // died between using the new token and storing it, the next launch would
         // present the burnt one and be treated as a theft.
         await saveRefreshToken(data.refresh_token);
+        if (data.account_namespace) {
+          await saveSpendAccountNamespace(data.account_namespace);
+        }
         await saveToken(data.access_token);
         return 'renewed';
       }
@@ -180,7 +184,10 @@ export async function apiJson<T = any>(path: string, body: Record<string, any> =
           message: 'A network security check blocked this request. Please try again in a moment.',
         } as T;
       }
-      return parsed as T;
+      // Preserve the transport outcome for money callers that use apiJson.
+      // A parsed 2xx body with no explicit success/pending flag is ambiguous,
+      // while the same body on a 4xx is a definitive rejection.
+      return { ...parsed, _httpOk: res.ok, _httpStatus: res.status } as T;
     } catch {
       return offline;
     }

@@ -1,7 +1,7 @@
-"""The VAS status legend — ALAT's undocumented integer `transactionStatus`.
+"""The VAS status legend — ALAT's integer `transactionStatus`.
 
-The airtime/data status check returns an integer enum 1..11 and the bills one 1..9,
-and Wema publishes neither legend. Everything here protects one property: a code we
+The live payment legend is 200 success, 400 failure, and 401 API/authentication
+failure. Everything here protects one property: a code we
 cannot decode leaves the purchase PENDING. Settling an undelivered top-up debits a
 customer for nothing; refunding a delivered one pays twice. So the legend is
 configuration, it is parsed strictly, and every gap in it fails to PENDING.
@@ -30,7 +30,7 @@ class VasLegendParsingTests(TestCase):
                              {"VAS_STATUS_LEGEND": "200=success, "
                                                    "400=failed 401=unauthorized_authentication_failed_or_invalid_api"}):
             self.assertEqual(_vas_legend("airtime"),
-                             {"200": "success", "400": "failed", "401": "pending"})
+                             {"200": "success", "400": "failed", "401": "failed"})
 
     def test_airtime_and_bills_legends_are_separate_ladders(self):
         # The two endpoints publish different enums; decoding a bills code against the
@@ -74,10 +74,10 @@ class VasLegendParsingTests(TestCase):
         with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": "200=success_or_pending"}):
             self.assertEqual(_vas_legend("airtime"), {"200": "pending"})
 
-    def test_wema_401_auth_alias_stays_pending(self):
+    def test_wema_401_auth_alias_is_a_terminal_direct_refusal(self):
         with mock.patch.dict(settings.WEMA, {
                 "VAS_STATUS_LEGEND": "401=unauthorized_authentication_failed_or_invalid_api"}):
-            self.assertEqual(_vas_legend("airtime"), {"401": "pending"})
+            self.assertEqual(_vas_legend("airtime"), {"401": "failed"})
 
 
 class VasStatusDecodeTests(TestCase):
@@ -134,10 +134,18 @@ class VasStatusDecodeTests(TestCase):
         self.assertFalse(res["success"])
         self.assertTrue(res["pending"])
 
-    def test_mapped_401_auth_problem_stays_pending(self):
+    def test_mapped_401_auth_problem_refunds_a_direct_purchase(self):
         with mock.patch.dict(settings.WEMA, {
                 "VAS_STATUS_LEGEND": "401=unauthorized_authentication_failed_or_invalid_api"}):
             res = _parse_vas(_int_shape(401), "REF1", product="airtime")
+        self.assertFalse(res["success"])
+        self.assertFalse(res["pending"])
+
+    def test_mapped_401_auth_problem_on_requery_stays_pending(self):
+        with mock.patch.dict(settings.WEMA, {
+                "VAS_STATUS_LEGEND": "401=unauthorized_authentication_failed_or_invalid_api"}):
+            res = _parse_vas(_int_shape(401), "REF1", product="airtime",
+                             requery=True, http_status=200)
         self.assertFalse(res["success"])
         self.assertTrue(res["pending"])
 

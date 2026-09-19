@@ -12,6 +12,7 @@ import WhatsAppBankingPromo from '@/components/design/whatsapp-banking-promo';
 import { ReceiptRow, receiptHtml, receiptStamp, senderRows } from '@/lib/receipt';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { transactionStatusPresentation } from '@/lib/transactionStatus';
 
 // Full-screen success receipt shown after a completed purchase.
 //
@@ -61,6 +62,13 @@ const Receipt = ({
   // proof. accountName is the bank's legal name for the NUBAN; firstName is a
   // greeting and only stands in when the fuller name isn't there.
   const { accountName, firstName, accountNumber, bankName } = useWallet();
+  const statusView = transactionStatusPresentation(status);
+  const statusTone = statusView.state === 'failed'
+    ? c.red
+    : statusView.state === 'pending' ? c.amber : c.lime;
+  const statusHalo = statusView.state === 'failed'
+    ? 'rgba(192,57,43,.14)'
+    : statusView.state === 'pending' ? 'rgba(224,138,0,.14)' : 'rgba(0,181,29,.14)';
   const from = senderRows({
     name: accountName || firstName,
     account: accountNumber,
@@ -103,12 +111,18 @@ const Receipt = ({
             black on Android. */}
         <View ref={card} collapsable={false} style={{ backgroundColor: c.bg, paddingBottom: 4, position: 'relative' }}>
           <View style={{ alignItems: 'center', paddingTop: 40 }}>
-            <View style={{ width: 110, height: 110, borderRadius: 55, backgroundColor: 'rgba(0,181,29,.14)', alignItems: 'center', justifyContent: 'center' }}>
-              <View style={{ width: 78, height: 78, borderRadius: 39, backgroundColor: c.lime, alignItems: 'center', justifyContent: 'center' }}>
-                <ZIcon name="check" size={40} color="#fff" stroke={3} />
+            <View style={{ width: 110, height: 110, borderRadius: 55, backgroundColor: statusHalo, alignItems: 'center', justifyContent: 'center' }}>
+              <View style={{ width: 78, height: 78, borderRadius: 39, backgroundColor: statusTone, alignItems: 'center', justifyContent: 'center' }}>
+                <ZIcon name={statusView.icon} size={40} color="#fff" stroke={3} />
               </View>
             </View>
             <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 22 }}>{title}</Text>
+            <View
+              accessibilityLabel={`Transaction status: ${statusView.label}`}
+              style={{ marginTop: 9, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: `${statusTone}1F` }}
+            >
+              <Text style={{ fontSize: 12, fontFamily: font.bold, color: statusTone }}>{statusView.label}</Text>
+            </View>
             <Text style={{ fontSize: 14, color: c.ink3, marginTop: 8, textAlign: 'center', maxWidth: 290, fontFamily: font.regular }}>{message}</Text>
           </View>
 

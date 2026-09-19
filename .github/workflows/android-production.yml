@@ -1,0 +1,89 @@
+# Manual production Android release gate.
+#
+# This workflow intentionally cannot run without the encrypted upload-keystore
+# secrets. The preview APK workflow is debug-key signed and must never be used
+# for Play Console uploads.
+name: Android production AAB
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_ref:
+        description: "Commit, tag, or branch to build"
+        required: true
+        default: "main"
+        type: string
+
+concurrency:
+  group: android-production-aab
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build signed production AAB
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      EXPO_PUBLIC_API_URL: "https://api.zitch.ng"
+      ZITCH_CONFIGURE_UPLOAD_SIGNING: "true"
+      ZITCH_REQUIRE_UPLOAD_KEY: "true"
+      ZITCH_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+      ZITCH_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+      ZITCH_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@67621b124fd2e251c5e8a0e6e3b91318f2287669 # v6.3.0
+
+      - name: Require production signing secrets
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_B64" || { echo "Missing ANDROID_UPLOAD_KEYSTORE_BASE64" >&2; exit 1; }
+          test -n "$ZITCH_UPLOAD_STORE_PASSWORD" || { echo "Missing ANDROID_UPLOAD_STORE_PASSWORD" >&2; exit 1; }
+          test -n "$ZITCH_UPLOAD_KEY_ALIAS" || { echo "Missing ANDROID_UPLOAD_KEY_ALIAS" >&2; exit 1; }
+          test -n "$ZITCH_UPLOAD_KEY_PASSWORD" || { echo "Missing ANDROID_UPLOAD_KEY_PASSWORD" >&2; exit 1; }
+          umask 077
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/zitch-upload.keystore"
+          test -s "$RUNNER_TEMP/zitch-upload.keystore"
+          echo "ZITCH_UPLOAD_STORE_FILE=$RUNNER_TEMP/zitch-upload.keystore" >> "$GITHUB_ENV"
+        shell: bash
+
+      - run: npm ci
+      - name: Expo prebuild
+        run: npx expo prebuild --platform android --clean
+      - name: Build production bundle
+        working-directory: android
+        run: ./gradlew bundleRelease --no-daemon -PZITCH_UPLOAD_STORE_FILE="$ZITCH_UPLOAD_STORE_FILE" -PZITCH_UPLOAD_STORE_PASSWORD="$ZITCH_UPLOAD_STORE_PASSWORD" -PZITCH_UPLOAD_KEY_ALIAS="$ZITCH_UPLOAD_KEY_ALIAS" -PZITCH_UPLOAD_KEY_PASSWORD="$ZITCH_UPLOAD_KEY_PASSWORD" -PZITCH_REQUIRE_UPLOAD_KEY=true
+      - name: Verify AAB is signed by the configured upload key
+        env:
+          KEYSTORE: ${{ env.ZITCH_UPLOAD_STORE_FILE }}
+        run: |
+          AAB="android/app/build/outputs/bundle/release/app-release.aab"
+          test -s "$AAB"
+          jarsigner -verify -verbose -certs "$AAB" >/tmp/zitch-jarsigner.txt
+          ! grep -q 'CN=Android Debug' /tmp/zitch-jarsigner.txt
+          keytool -list -v -keystore "$KEYSTORE" -storepass "$ZITCH_UPLOAD_STORE_PASSWORD" -alias "$ZITCH_UPLOAD_KEY_ALIAS" >/tmp/zitch-key.txt
+          grep -q 'Alias name: ' /tmp/zitch-key.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zitch-production-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+          retention-days: 14

@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 
 
 class VirtualCard(models.Model):
@@ -30,6 +31,9 @@ class VirtualCard(models.Model):
 
     class Meta:
         ordering = ["-created"]
+        constraints = [
+            models.UniqueConstraint(fields=["user"], name="cards_one_card_per_user"),
+        ]
 
     @property
     def masked(self) -> str:
@@ -41,3 +45,66 @@ class VirtualCard(models.Model):
 
     def __str__(self):
         return f"{self.user} · {self.masked} · {self.status}"
+
+
+class CardIssuance(models.Model):
+    """Durable intent for one non-idempotent card-issuer POST.
+
+    The provider call is made only after this row commits.  A process crash or
+    lost response therefore leaves an inspectable pending row instead of making
+    a retry mint a second card.  Client keys are stored only as keyed hashes.
+    """
+
+    STARTING = "starting"
+    PENDING = "pending"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    STATES = [
+        (STARTING, "Starting"),
+        (PENDING, "Pending review"),
+        (SUCCEEDED, "Succeeded"),
+        (FAILED, "Failed"),
+    ]
+    ACTIVE_STATES = (STARTING, PENDING)
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="card_issuances",
+    )
+    idempotency_key_hash = models.CharField(max_length=64)
+    reference = models.CharField(max_length=40, unique=True)
+    provider = models.CharField(max_length=20)
+    state = models.CharField(max_length=12, choices=STATES, default=STARTING)
+    provider_reference = models.CharField(max_length=100, blank=True, default="")
+    provider_status = models.CharField(max_length=40, blank=True, default="")
+    message = models.CharField(max_length=300, blank=True, default="")
+    card = models.OneToOneField(
+        VirtualCard,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="issuance",
+    )
+    created = models.DateTimeField(auto_now_add=True)
+    updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "idempotency_key_hash"],
+                name="cards_unique_issue_key_per_user",
+            ),
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=Q(state__in=("starting", "pending")),
+                name="cards_one_active_issuance_per_user",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["user", "state", "created"], name="cards_issue_user_state_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.reference} · {self.user} · {self.state}"

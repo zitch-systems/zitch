@@ -76,3 +76,53 @@ workflows:
     #     notify:
     #       success: true
     #       failure: true
+
+  android-production-aab:
+    name: Zitch Android production AAB
+    instance_type: linux_x2
+    max_build_duration: 60
+    triggering:
+      events:
+        - tag
+      tag_patterns:
+        - pattern: "v*"
+          include: true
+    environment:
+      node: 20
+      java: 17
+      android_signing:
+        - zitch-production-upload
+      vars:
+        EXPO_PUBLIC_API_URL: "https://api.zitch.ng"
+        ZITCH_CONFIGURE_UPLOAD_SIGNING: "true"
+        ZITCH_REQUIRE_UPLOAD_KEY: "true"
+    cache:
+      cache_paths:
+        - $CM_BUILD_DIR/node_modules
+        - $HOME/.gradle/caches
+    scripts:
+      - name: Install dependencies
+        script: npm ci
+      - name: Expo prebuild
+        script: npx expo prebuild --platform android --clean
+      - name: Build signed production AAB
+        script: |
+          test -n "$CM_KEYSTORE_PATH"
+          test -n "$CM_KEYSTORE_PASSWORD"
+          test -n "$CM_KEY_ALIAS"
+          test -n "$CM_KEY_PASSWORD"
+          cd android
+          ./gradlew bundleRelease --no-daemon \
+            -PZITCH_UPLOAD_STORE_FILE="$CM_KEYSTORE_PATH" \
+            -PZITCH_UPLOAD_STORE_PASSWORD="$CM_KEYSTORE_PASSWORD" \
+            -PZITCH_UPLOAD_KEY_ALIAS="$CM_KEY_ALIAS" \
+            -PZITCH_UPLOAD_KEY_PASSWORD="$CM_KEY_PASSWORD" \
+            -PZITCH_REQUIRE_UPLOAD_KEY=true
+      - name: Verify signed AAB
+        script: |
+          AAB="android/app/build/outputs/bundle/release/app-release.aab"
+          test -s "$AAB"
+          jarsigner -verify -verbose -certs "$AAB" >/tmp/zitch-jarsigner.txt
+          ! grep -q 'CN=Android Debug' /tmp/zitch-jarsigner.txt
+    artifacts:
+      - android/app/build/outputs/bundle/release/app-release.aab

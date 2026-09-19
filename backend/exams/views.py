@@ -30,12 +30,7 @@ def buy_exam(request):
     -> {success, message, pins, reference}
     """
     user, data = request.user_obj, request.data
-
-    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
-    if pin_err:
-        return pin_err
-
-    product = ExamProduct.objects.filter(code=str(data.get("exam", "")), active=True).first()
+    product = ExamProduct.objects.filter(code=str(data.get("exam", ""))).first()
     if product is None:
         return fail("Exam product not found", status=404)
 
@@ -47,18 +42,26 @@ def buy_exam(request):
     phone = data.get("phone", "")
     amount = product.price * quantity
 
+    raw_key = data.get("idempotency_key")
+    if not isinstance(raw_key, str) or not raw_key.strip():
+        return fail("A stable idempotency key is required for exam purchases",
+                    status=400, code="idempotency_key_required")
+    key = spend_key(raw_key, user, "exam", product.code, phone, quantity)
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+    if not product.active:
+        return fail("Exam product not found", status=404)
+
+    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
+
     # Buying exam PINs spends wallet cash, so enforce the same KYC tier / large-
     # transfer face ceiling as the other money-out flows.
     limit_err = check_send_limits(user, amount)
     if limit_err:
         return limit_err
-
-    # Idempotency: a retried / double-tapped request must not debit twice — fall
-    # back to a deterministic server key when the client omits one.
-    key = spend_key(data.get("idempotency_key"), user, "exam", product.code, phone, quantity)
-    replay = idempotent_replay(existing_for_key(user, key))
-    if replay:
-        return replay
 
     # Daily aggregate cap (shared "non-transfer spend" bucket) — after the replay
     # check. The "Exam" label prefix is what _daily_spent matches on.

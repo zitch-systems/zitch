@@ -9,7 +9,7 @@ services:
     # Money movement must not run on a sleeping/free instance. This takes effect
     # only when an operator deliberately syncs the Blueprint.
     plan: starter
-    autoDeployTrigger: commit
+    autoDeployTrigger: checksPass
     buildCommand: "./build.sh"
     # Bind to 0.0.0.0:$PORT so Render's port scan can detect the service. Without
     # an explicit --bind, gunicorn listens on 127.0.0.1:8000 (loopback only), which
@@ -138,6 +138,16 @@ services:
       # Virtual-card backend: "issuer" (generic CARD_ISSUER) — the sole backend; blank => issuer.
       - key: CARD_PROVIDER
         sync: false
+      # Generic card issuance is provider-TBD and stays fail-closed even when a
+      # credential is staged. Enable only after the live contract is verified.
+      - key: CARD_ISSUER_LIVE_ENABLED
+        value: "false"
+      - key: CARD_ISSUER_API_KEY
+        sync: false
+      - key: CARD_ISSUER_BASE_URL
+        sync: false
+      - key: CARD_ISSUER_BRAND
+        value: "Verve"
       # Wallet FUND-IN rail: "wema" (the sole rail); blank => wema.
       - key: PAYMENT_PROVIDER
         sync: false
@@ -298,8 +308,9 @@ services:
       - key: SIMULATE_DEPOSIT_TOKEN
         sync: false
 
-      # These notification variables are sourced by the scheduled jobs below.
-      # Declare them on the API service so Blueprint fromService references are valid.
+      # The credentialed WhatsApp worker is the only process that delivers
+      # terminal transaction alerts. Declare its source values here so the
+      # worker can inherit them without duplicating Meta credentials elsewhere.
       - key: TXN_ALERTS_WHATSAPP
         sync: false
       - key: WHATSAPP_TXN_ALERT_TEMPLATE
@@ -343,8 +354,10 @@ services:
     runtime: python
     rootDir: backend
     plan: starter
-    autoDeployTrigger: commit
-    buildCommand: "pip install -r requirements.txt"
+    autoDeployTrigger: checksPass
+    # Build-time schema gate: a failed candidate is never promoted, so the prior
+    # healthy worker keeps running until zitch-api has applied shared migrations.
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py whatsapp_worker --batch-size 50 --poll-seconds 0.5"
     maxShutdownDelaySeconds: 60
     envVars:
@@ -443,8 +456,9 @@ services:
         sync: false
       - key: RESEND_FROM_EMAIL
         sync: false
-      # The worker settles funding and reconciles VAS, so ledger rows reach
-      # Successful in this process too — it has to alert on the same terms.
+      # This worker owns durable chat execution and terminal WhatsApp-alert
+      # retries. Production money reconciliation remains cron-only; do not set
+      # WHATSAPP_WORKER_RECONCILE merely to compensate for a missing cron.
       - key: TXN_ALERTS_SMS
         sync: false
       - key: TXN_ALERTS_WHATSAPP
@@ -464,19 +478,19 @@ services:
       - key: FINCRA_BUSINESS_ID
         sync: false
       - key: WHATSAPP_MODE
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_MODE}
       - key: WHATSAPP_BASE_URL
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BASE_URL}
       - key: WHATSAPP_TOKEN
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TOKEN}
       - key: WHATSAPP_PHONE_NUMBER_ID
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
       - key: WHATSAPP_VERIFY_TOKEN
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_VERIFY_TOKEN}
       - key: WHATSAPP_APP_SECRET
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_APP_SECRET}
       - key: WHATSAPP_BUSINESS_NUMBER
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BUSINESS_NUMBER}
       - key: WHATSAPP_TXN_ALERT_TEMPLATE
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE}
       - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
@@ -516,16 +530,16 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: commit
+    autoDeployTrigger: checksPass
     schedule: "0 1 * * *"   # 01:00 UTC daily
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py run_maturities"
     envVars:
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        generateValue: true
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
@@ -534,13 +548,10 @@ services:
         fromDatabase:
           name: zitch-db
           property: connectionString
-      # Customer alerts. wallet.alerts sends on a post_save SIGNAL, so any
-      # process that writes a ledger row tries to alert. This cron is the only
-      # process that credits Wema deposits and settles/reverses pending Wema
-      # payouts, so it needs every alert rail configured here too. If the
-      # WhatsApp keys are missing, app-originated credits/debits and late-settled
-      # WhatsApp payouts remain owed but the cron can only log "WhatsApp banking
-      # is currently unavailable" on every retry.
+      # Email/SMS/push remain best-effort at the ledger writer. Terminal
+      # WhatsApp alerts are deliberately deferred to zitch-whatsapp-worker,
+      # which owns the Meta credentials and durable retry sweep. Do not copy
+      # Meta secrets into this scheduled money process.
       - key: RESEND_API_KEY
         sync: false
       - key: RESEND_FROM_EMAIL
@@ -554,29 +565,7 @@ services:
       - key: TERMII_BASE_URL
         sync: false
       - key: TXN_ALERTS_WHATSAPP
-        sync: false
-      - key: WHATSAPP_MODE
-        sync: false
-      - key: WHATSAPP_BASE_URL
-        sync: false
-      - key: WHATSAPP_TOKEN
-        sync: false
-      - key: WHATSAPP_PHONE_NUMBER_ID
-        sync: false
-      - key: WHATSAPP_VERIFY_TOKEN
-        sync: false
-      - key: WHATSAPP_APP_SECRET
-        sync: false
-      - key: WHATSAPP_BUSINESS_NUMBER
-        sync: false
-      - key: WHATSAPP_QUEUE_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
-      - key: WHATSAPP_QUEUE_KEY_PREV
-        value: ""
-      - key: WHATSAPP_TXN_ALERT_TEMPLATE
-        sync: false
-      - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
-        sync: false
+        value: "false"
 
   # Session hygiene — delete access/refresh tokens that can no longer
   # authenticate anything. Nothing removed these before: an AccessToken is
@@ -596,16 +585,16 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: commit
+    autoDeployTrigger: checksPass
     schedule: "45 3 * * *"   # 03:45 UTC daily, off the hour the other jobs use
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py purge_expired_sessions"
     envVars:
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        generateValue: true
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
@@ -636,9 +625,9 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: commit
+    autoDeployTrigger: checksPass
     schedule: "*/10 * * * *"
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py reconcile_wema"
     envVars:
       # Match GitHub CI exactly; never let Render's moving default change prod.
@@ -705,13 +694,10 @@ services:
       # in THIS cron's env (crons are separate processes from the web service).
       - key: SENTRY_DSN
         sync: false
-      # Customer alerts. wallet.alerts sends on a post_save SIGNAL, so any
-      # process that writes a ledger row tries to alert. This cron is the only
-      # process that credits Wema deposits and settles/reverses pending Wema
-      # payouts, so it needs every alert rail configured here too. If the
-      # WhatsApp keys are missing, app-originated credits/debits and late-settled
-      # WhatsApp payouts remain owed but the cron can only log "WhatsApp banking
-      # is currently unavailable" on every retry.
+      # Email/SMS/push remain best-effort at the ledger writer. Terminal
+      # WhatsApp alerts are deliberately deferred to zitch-whatsapp-worker,
+      # which owns the Meta credentials and durable retry sweep. Do not copy
+      # Meta secrets into this scheduled money process.
       - key: RESEND_API_KEY
         sync: false
       - key: RESEND_FROM_EMAIL
@@ -725,29 +711,7 @@ services:
       - key: TERMII_BASE_URL
         sync: false
       - key: TXN_ALERTS_WHATSAPP
-        sync: false
-      - key: WHATSAPP_MODE
-        sync: false
-      - key: WHATSAPP_BASE_URL
-        sync: false
-      - key: WHATSAPP_TOKEN
-        sync: false
-      - key: WHATSAPP_PHONE_NUMBER_ID
-        sync: false
-      - key: WHATSAPP_VERIFY_TOKEN
-        sync: false
-      - key: WHATSAPP_APP_SECRET
-        sync: false
-      - key: WHATSAPP_BUSINESS_NUMBER
-        sync: false
-      - key: WHATSAPP_QUEUE_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
-      - key: WHATSAPP_QUEUE_KEY_PREV
-        value: ""
-      - key: WHATSAPP_TXN_ALERT_TEMPLATE
-        sync: false
-      - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
-        sync: false
+        value: "false"
 
   # Ledger <-> balance integrity check — recomputes every wallet from the
   # append-only ledger and fails (alerting via cron failure + AuditLog snapshot)
@@ -760,16 +724,16 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: commit
+    autoDeployTrigger: checksPass
     schedule: "30 2 * * *"   # 02:30 UTC daily, after the maturity sweep
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py integrity_check --fail-nonzero"
     envVars:
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        generateValue: true
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
@@ -786,12 +750,12 @@ services:
   # Ledger <-> BANK (Wema NUBAN) reconciliation — the EXTERNAL integrity check.
   # integrity_check compares the ledger to our own stored balance; this compares
   # the ledger to the real balance ALAT holds in each user's NUBAN, and pages
-  # (Sentry) when the ledger EXCEEDS the bank (a possible float leak / double
-  # credit). --fail-over also exits nonzero on that dangerous direction so Render
-  # surfaces a cron failure even before Sentry is wired; a benign bank>ledger
-  # delta (a deposit not yet swept by zitch-reconcile-wema) neither pages nor
-  # fails. Read-only. Needs the WEMA_* balance-read keys + SENTRY_DSN. Only acts
-  # when Wema is live (no-ops in sandbox/sim). Every 6 hours; tune as needed.
+  # (Sentry) for either direction of ledger/bank divergence. --fail-nonzero
+  # makes every non-zero discrepancy visible as a Render cron failure while
+  # preserving a strictly read-only workflow: neither a ledger-over-bank nor a
+  # bank-over-ledger result may change balances, refunds, or payment states.
+  # Needs the WEMA_* balance-read keys + SENTRY_DSN. Only acts when Wema is live
+  # (no-ops in sandbox/sim). Every 6 hours; tune as needed.
   - type: cron
     name: zitch-reconcile-balances
     region: frankfurt
@@ -799,10 +763,13 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: commit
+    autoDeployTrigger: checksPass
     schedule: "0 */6 * * *"
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python manage.py reconcile_balances --fail-over"
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
+    # Every non-zero ledger/bank divergence is a finance-review incident. The
+    # command remains read-only: this only makes the platform surface it until
+    # authenticated bank evidence resolves the case.
+    startCommand: "python manage.py reconcile_balances --fail-nonzero"
     envVars:
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
@@ -812,7 +779,15 @@ services:
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
-        value: "false"
+        value: "true"
+      # Persist discrepancy-alert fingerprints across ephemeral cron runs so a
+      # stable case is reminded at a controlled cadence rather than re-alerted
+      # as a brand-new incident every time this process starts.
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: zitch-cache
+          property: connectionString
       - key: DATABASE_URL
         fromDatabase:
           name: zitch-db
@@ -862,9 +837,9 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: commit
+    autoDeployTrigger: checksPass
     schedule: "0 6 * * *"   # 06:00 UTC = 07:00 Lagos, before the business day
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py settlement_report --fail-on-breach"
     envVars:
       # Match GitHub CI exactly; never let Render's moving default change prod.
@@ -926,16 +901,16 @@ services:
     rootDir: backend
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
-    autoDeployTrigger: commit
+    autoDeployTrigger: checksPass
     schedule: "0 5 * * *"   # 05:00 UTC = 06:00 Lagos, before the settlement report
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py aml_scan --fail-on-overdue"
     envVars:
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        generateValue: true
+        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
