@@ -6,6 +6,8 @@ jest.mock('@/lib/api', () => ({ apiJson: (...args: any[]) => mockApiJson(...args
 import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute } from '@/lib/services/kyc';
 import { walletService } from '@/lib/services/wallet';
 import { transfersService } from '@/lib/services/transfers';
+import { loansService } from '@/lib/services/loans';
+import { cardsService } from '@/lib/services/cards';
 import { EP } from '@/lib/endpoints';
 
 beforeEach(() => {
@@ -96,5 +98,26 @@ describe('transfersService', () => {
     const body = { account_number: '0123456789', bank: '058', amount: 5000, transaction_pin: '1234', idempotency_key: 'idem-key-1' };
     await transfersService.send(body);
     expect(mockApiJson).toHaveBeenCalledWith(EP.transfers.send, body);
+  });
+});
+
+describe('loansService', () => {
+  it('attaches the stable idempotency key to a loan request', async () => {
+    await loansService.request(50000, 30, '1234', 'loan-request-key-1');
+    expect(mockApiJson).toHaveBeenCalledWith(EP.loans.request, {
+      amount: '50000',
+      tenure_days: 30,
+      transaction_pin: '1234',
+      idempotency_key: 'loan-request-key-1',
+    });
+  });
+});
+
+describe('cardsService', () => {
+  it('attaches the stable idempotency key to a card issuance request', async () => {
+    await cardsService.create('card-issue-key-1');
+    expect(mockApiJson).toHaveBeenCalledWith(EP.cards.create, {
+      idempotency_key: 'card-issue-key-1',
+    });
   });
 });

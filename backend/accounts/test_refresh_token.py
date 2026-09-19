@@ -11,12 +11,15 @@ The properties that make it safe are the ones tested here — rotation, reuse
 detection, family revocation, an absolute ceiling, device binding, and a single
 indistinguishable refusal for every failure mode.
 """
+import importlib
+import uuid
 from datetime import timedelta
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import AccessToken, RefreshToken, User
+from accounts.views import spend_account_namespace
 
 DEVICE = "install-a"
 
@@ -167,6 +170,7 @@ class EndpointTests(TestCase):
         body = self._signin()
         self.assertTrue(body["access_token"])
         self.assertTrue(body["refresh_token"])
+        self.assertTrue(body["account_namespace"])
         # So the client can renew BEFORE a request fails, rather than discovering
         # the expiry as a 401 in the middle of a payment.
         self.assertEqual(body["expires_in"], 24 * 3600)
@@ -176,8 +180,66 @@ class EndpointTests(TestCase):
         renewed = self._refresh(body["refresh_token"]).json()
         self.assertNotEqual(renewed["access_token"], body["access_token"])
         self.assertNotEqual(renewed["refresh_token"], body["refresh_token"])
+        self.assertEqual(renewed["account_namespace"], body["account_namespace"])
         self.assertEqual(AccessToken.resolve(renewed["access_token"], device_id=DEVICE),
                          self.user)
+
+    def test_account_namespace_is_stable_but_different_between_customers(self):
+        first = self._signin()["account_namespace"]
+        other = _user(email="bola@example.com", phone="08010000002")
+        response = self.client.post(
+            "/api/sigin/",
+            {"email_or_phone": other.email, "password": "Sup3r-Secret-1"},
+            content_type="application/json", **self.headers).json()
+        self.assertNotEqual(response["account_namespace"], first)
+        self.assertNotEqual(first, str(self.user.pk))
+        self.assertNotEqual(first, self.user.email)
+        self.assertEqual(len(first), 36)
+
+    def test_account_namespace_survives_django_secret_rotation(self):
+        first = self._signin()["account_namespace"]
+        with self.settings(SECRET_KEY="rotated-secret-that-must-not-change-spend-identity"):
+            second = self._signin()["account_namespace"]
+        self.assertEqual(second, first)
+
+    def test_account_namespace_repairs_a_null_left_by_an_old_release(self):
+        User.objects.filter(pk=self.user.pk).update(spend_namespace=None)
+        self.user.spend_namespace = None
+
+        namespace = spend_account_namespace(self.user)
+
+        self.user.refresh_from_db()
+        self.assertEqual(namespace, str(self.user.spend_namespace))
+        self.assertEqual(len(namespace), 36)
+
+    def test_account_namespace_does_not_overwrite_a_concurrent_winner(self):
+        winner = uuid.uuid4()
+        User.objects.filter(pk=self.user.pk).update(spend_namespace=winner)
+        # Simulate a stale request that loaded this row before the other request
+        # won the conditional UPDATE.
+        self.user.spend_namespace = None
+
+        namespace = spend_account_namespace(self.user)
+
+        self.assertEqual(namespace, str(winner))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.spend_namespace, winner)
+
+    def test_namespace_backfill_fills_only_null_users(self):
+        populated = _user(email="populated@example.com", phone="08010000003")
+        original = populated.spend_namespace
+        User.objects.filter(pk=self.user.pk).update(spend_namespace=None)
+        migration = importlib.import_module(
+            "accounts.migrations.0029_backfill_spend_namespace"
+        )
+
+        from django.apps import apps
+        migration.populate_spend_namespaces(apps, None)
+
+        self.user.refresh_from_db()
+        populated.refresh_from_db()
+        self.assertIsNotNone(self.user.spend_namespace)
+        self.assertEqual(populated.spend_namespace, original)
 
     def test_the_endpoint_works_when_the_access_token_is_already_dead(self):
         """The entire point: it must not be behind @require_user, or it would be

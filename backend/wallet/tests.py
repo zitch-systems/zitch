@@ -21,8 +21,10 @@ from common.http import unverified_error
 
 from .forex import FxError, create_fx_quote
 from .models import CurrencyWallet, FundingIntent, Transaction, Wallet
-from .services import (LimitExceeded, credit, debit, get_or_create_wallet,
-                       settle_funding, settle_reserved_funding)
+from .services import (LimitExceeded, credit, customer_visible_transactions,
+                       debit, funding_review_evidence, get_or_create_wallet,
+                       hold_funding_review, resolve_funding_review, settle_funding,
+                       settle_reserved_funding)
 
 User = get_user_model()
 
@@ -159,8 +161,13 @@ class WalletTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="20000")
+        self._transfer_key_seq = 0
 
     def post(self, path, payload):
+        payload = dict(payload)
+        if path == "/api/transfer/send/" and "idempotency_key" not in payload:
+            self._transfer_key_seq += 1
+            payload["idempotency_key"] = f"p2p-test-{self._transfer_key_seq}"
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
@@ -173,6 +180,7 @@ class WalletTests(TestCase):
         self.assertTrue(body["success"])
         self.assertEqual(Decimal(body["wallet"]), Decimal("20000"))
         self.assertEqual(body["user_first_name"], "Ada")
+        self.assertTrue(body["account_namespace"])
 
     def test_balance_requires_valid_token(self):
         res, _ = self.post("/api/wallet_balance/", {"access_token": "nope"})
@@ -192,6 +200,116 @@ class WalletTests(TestCase):
                                content_type="application/json",
                                HTTP_AUTHORIZATION=f"Bearer {self.token}")
         self.assertEqual(res.status_code, 200)
+
+    def test_recipient_resolution_returns_stable_opaque_key_for_all_aliases(self):
+        recipient = User.objects.create(
+            username="recipient_alias",
+            email="recipient-alias@zitch.test",
+            first_name="Alias",
+            last_name="Recipient",
+        )
+
+        _, by_username = self.post("/api/transfer/resolve/", {
+            "access_token": self.token,
+            "identifier": "recipient_alias",
+        })
+        _, by_email = self.post("/api/transfer/resolve/", {
+            "access_token": self.token,
+            "identifier": "RECIPIENT-ALIAS@ZITCH.TEST",
+        })
+
+        expected = f"user_{recipient.spend_namespace.hex}"
+        self.assertEqual(by_username["recipient_key"], expected)
+        self.assertEqual(by_email["recipient_key"], expected)
+        self.assertNotIn("recipient_alias", expected)
+        self.assertNotIn("recipient-alias@zitch.test", expected)
+
+    def test_recipient_resolution_repairs_old_release_null_namespace(self):
+        recipient = User.objects.create(
+            username="cutover_recipient",
+            email="cutover-recipient@zitch.test",
+            first_name="Cutover",
+            last_name="Recipient",
+        )
+        User.objects.filter(pk=recipient.pk).update(spend_namespace=None)
+
+        response, body = self.post("/api/transfer/resolve/", {
+            "access_token": self.token,
+            "identifier": recipient.email,
+        })
+
+        self.assertEqual(response.status_code, 200)
+        recipient.refresh_from_db()
+        self.assertIsNotNone(recipient.spend_namespace)
+        self.assertEqual(body["recipient_key"],
+                         f"user_{recipient.spend_namespace.hex}")
+
+    def test_transfer_rejects_recipient_key_that_does_not_match_alias(self):
+        alias_owner, _ = make_user("08020000021", "alias-owner@zitch.test")
+        other, _ = make_user("08020000022", "other-recipient@zitch.test")
+
+        res, body = self.post("/api/transfer/send/", {
+            "access_token": self.token,
+            "identifier": alias_owner.email,
+            "recipient_key": f"user_{other.spend_namespace.hex}",
+            "amount": "5000",
+            "transaction_pin": "1234",
+            "idempotency_key": "recipient-mismatch-1",
+        })
+
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(body.get("code"), "recipient_changed")
+        self.assertEqual(self.balance(self.user), Decimal("20000"))
+        self.assertEqual(self.balance(alias_owner), Decimal("0"))
+        self.assertEqual(self.balance(other), Decimal("0"))
+
+    def test_transfer_rejects_malformed_opaque_recipient_key_without_500(self):
+        recipient, _ = make_user("08020000025", "valid-recipient@zitch.test")
+
+        res, body = self.post("/api/transfer/send/", {
+            "access_token": self.token,
+            "identifier": recipient.email,
+            "recipient_key": "user_not-a-uuid",
+            "amount": "5000",
+            "transaction_pin": "1234",
+            "idempotency_key": "malformed-recipient-key-1",
+        })
+
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(body.get("code"), "invalid_recipient_key")
+        self.assertEqual(self.balance(self.user), Decimal("20000"))
+        self.assertEqual(self.balance(recipient), Decimal("0"))
+
+    def test_transfer_replays_original_recipient_after_alias_changes(self):
+        original, _ = make_user("08020000023", "movable-alias@zitch.test")
+        replacement, _ = make_user("08020000024", "replacement@zitch.test")
+        recipient_key = f"user_{original.spend_namespace.hex}"
+        payload = {
+            "access_token": self.token,
+            "identifier": "movable-alias@zitch.test",
+            "recipient_key": recipient_key,
+            "amount": "5000",
+            "transaction_pin": "1234",
+            "idempotency_key": "alias-replay-1",
+        }
+
+        first, first_body = self.post("/api/transfer/send/", payload)
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(first_body.get("success"))
+
+        original.email = "original-new@zitch.test"
+        original.save(update_fields=["email"])
+        replacement.email = "movable-alias@zitch.test"
+        replacement.save(update_fields=["email"])
+
+        replay, replay_body = self.post("/api/transfer/send/", payload)
+
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(replay_body.get("success"))
+        self.assertTrue(replay_body.get("duplicate"))
+        self.assertEqual(self.balance(self.user), Decimal("15000"))
+        self.assertEqual(self.balance(original), Decimal("5000"))
+        self.assertEqual(self.balance(replacement), Decimal("0"))
 
     def test_history_returns_authoritative_direction(self):
         """History must carry a `direction` field — the app keys inflow/outflow
@@ -236,6 +354,17 @@ class WalletTests(TestCase):
         self.assertIn("already verified", body["message"].lower())
 
     # --- transfer ---
+    def test_transfer_requires_a_client_idempotency_key(self):
+        make_user("08020000002", "bob@zitch.test")
+        res, body = self.post("/api/transfer/send/", {
+            "access_token": self.token, "identifier": "08020000002",
+            "amount": "5000", "transaction_pin": "1234",
+            "idempotency_key": None,
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(body.get("code"), "idempotency_key_required")
+        self.assertEqual(self.balance(self.user), Decimal("20000"))
+
     def test_transfer_moves_funds_atomically(self):
         bob, _ = make_user("08020000002", "bob@zitch.test")
         res, body = self.post("/api/transfer/send/", {
@@ -318,6 +447,7 @@ class WalletTests(TestCase):
         res = self.client.post("/api/transfer/send/", data=json.dumps({
             "access_token": token, "identifier": "08040000004",
             "amount": "60000", "transaction_pin": "1234",
+            "idempotency_key": "tier-limit-transfer-1",
         }), content_type="application/json")
         self.assertEqual(res.status_code, 403)
         self.assertEqual(res.json()["code"], "limit_exceeded")
@@ -503,6 +633,435 @@ class FundVerifyOwnershipTests(TestCase):
             content_type="application/json")
         self.assertEqual(res.status_code, 404)
 
+    @patch("wallet.views.funding_verify")
+    def test_missing_intent_is_rejected_before_provider_call(self, verify):
+        _, token = make_user("08088800013", "missing-fund@zitch.test")
+
+        response = Client().post(
+            "/api/fund/verify/",
+            data=json.dumps({"access_token": token, "reference": "ZPAY-MISSING"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        verify.assert_not_called()
+
+
+class FundVerifySettlementTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(
+            "08088800014", "fund-verify@zitch.test",
+        )
+
+    def _intent(self, reference="ZPAY-VERIFY-EXACT"):
+        return FundingIntent.objects.create(
+            user=self.user, reference=reference, amount=Decimal("5000"),
+            meta={"provider": "card", "provider_reference": f"provider-{reference}"},
+        )
+
+    def _post(self, intent):
+        return self.client.post(
+            "/api/fund/verify/",
+            data=json.dumps({"access_token": self.token,
+                             "reference": intent.reference}),
+            content_type="application/json",
+        )
+
+    @patch("wallet.views.funding_verify")
+    def test_already_credited_replay_skips_provider_and_succeeds(self, verify):
+        intent = self._intent("ZPAY-VERIFY-REPLAY")
+        settle_funding(
+            intent.reference, Decimal("5000"), verified_currency="NGN",
+        )
+
+        response = self._post(intent)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        self.assertTrue(response.json()["duplicate"])
+        verify.assert_not_called()
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("5000"))
+
+    @patch("wallet.views.funding_verify")
+    def test_active_review_after_credit_overrides_customer_success_without_undoing_credit(self, verify):
+        intent = self._intent("ZPAY-VERIFY-PAID-REVIEW")
+        settle_funding(
+            intent.reference, Decimal("5000"), verified_currency="NGN",
+        )
+        hold_funding_review(
+            intent.reference, reason="late_amount_conflict",
+            observed_amount="4000", observed_currency="NGN",
+            evidence={"source": "late_callback"},
+        )
+
+        response = self._post(intent)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["pending"])
+        self.assertEqual(response.json()["code"], "funding_review")
+        self.assertNotIn("success", response.json())
+        verify.assert_not_called()
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("5000"))
+        self.assertEqual(Transaction.objects.filter(reference=intent.reference).count(), 1)
+
+    @patch("wallet.views.funding_verify")
+    def test_success_without_amount_is_held_not_reported_funded(self, verify):
+        intent = self._intent("ZPAY-VERIFY-NO-AMOUNT")
+        verify.return_value = {"success": True, "currency": "NGN"}
+
+        response = self._post(intent)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["pending"])
+        self.assertNotIn("success", response.json())
+        intent.refresh_from_db()
+        self.assertFalse(intent.credited)
+        self.assertEqual(
+            intent.meta["funding_review"]["reason"], "invalid_verified_amount",
+        )
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
+
+    @patch("wallet.views.funding_verify")
+    def test_amount_mismatch_is_held_without_rewriting_request(self, verify):
+        intent = self._intent("ZPAY-VERIFY-MISMATCH")
+        verify.return_value = {
+            "success": True, "amount_naira": "2500", "currency": "NGN",
+        }
+
+        response = self._post(intent)
+
+        self.assertTrue(response.json()["pending"])
+        intent.refresh_from_db()
+        self.assertEqual(intent.amount, Decimal("5000"))
+        self.assertFalse(intent.credited)
+        self.assertEqual(intent.meta["funding_review"]["reason"], "amount_mismatch")
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
+
+    @patch("wallet.views.funding_verify")
+    def test_currency_mismatch_is_held(self, verify):
+        intent = self._intent("ZPAY-VERIFY-CURRENCY")
+        verify.return_value = {
+            "success": True, "amount_naira": "5000", "currency": "USD",
+        }
+
+        response = self._post(intent)
+
+        self.assertTrue(response.json()["pending"])
+        intent.refresh_from_db()
+        self.assertEqual(intent.meta["funding_review"]["reason"], "currency_mismatch")
+        self.assertFalse(intent.credited)
+
+    @patch("wallet.views.settle_funding", return_value=None)
+    @patch("wallet.views.funding_verify")
+    def test_unexplained_settlement_noop_is_never_reported_success(self, verify, settle):
+        intent = self._intent("ZPAY-VERIFY-NOOP")
+        verify.return_value = {
+            "success": True, "amount_naira": "5000", "currency": "NGN",
+        }
+
+        response = self._post(intent)
+
+        self.assertTrue(response.json()["pending"])
+        self.assertNotIn("success", response.json())
+        intent.refresh_from_db()
+        self.assertEqual(intent.meta["funding_review"]["reason"], "settlement_noop")
+        self.assertFalse(intent.credited)
+        settle.assert_called_once()
+
+    @patch("wallet.views.funding_verify")
+    def test_exact_verified_payment_credits_and_reports_success(self, verify):
+        intent = self._intent("ZPAY-VERIFY-SUCCESS")
+        verify.return_value = {
+            "success": True, "amount_naira": "5000", "currency": "NGN",
+        }
+
+        response = self._post(intent)
+
+        self.assertTrue(response.json()["success"])
+        intent.refresh_from_db()
+        self.assertTrue(intent.credited)
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("5000"))
+
+    @patch("wallet.views.funding_verify")
+    def test_active_review_is_sticky_and_skips_provider(self, verify):
+        intent = self._intent("ZPAY-VERIFY-HELD")
+        intent.meta = {
+            **intent.meta,
+            "funding_review": {
+                "active": True,
+                "reason": "amount_mismatch",
+                "expected_amount": "5000.00",
+                "observed_amount": "2500",
+            },
+        }
+        intent.save(update_fields=["meta", "updated"])
+
+        response = self._post(intent)
+
+        self.assertTrue(response.json()["pending"])
+        self.assertEqual(response.json()["code"], "funding_review")
+        verify.assert_not_called()
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
+
+
+class FundInitializeIdempotencyTests(TestCase):
+    """Funding retries reuse one intent and never create a second provider POST."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(
+            "08088800011", "fund-init@zitch.test",
+        )
+
+    def _post(self, payload):
+        return self.client.post(
+            "/api/fund/initialize/",
+            data=json.dumps({**payload, "access_token": self.token}),
+            content_type="application/json",
+        )
+
+    @patch("wallet.views.funding_initialize")
+    def test_retry_replays_stored_checkout_without_second_provider_call(self, initialize):
+        initialize.return_value = {
+            "success": True,
+            "reference": "provider-reference-1",
+            "authorization_url": "https://pay.example/one",
+        }
+        payload = {"amount": "5000", "idempotency_key": "wallet-fund-1"}
+
+        first = self._post(payload)
+        second = self._post(payload)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["reference"], second.json()["reference"])
+        self.assertEqual(second.json()["authorization_url"], "https://pay.example/one")
+        self.assertTrue(second.json()["duplicate"])
+        self.assertEqual(initialize.call_count, 1)
+        self.assertEqual(FundingIntent.objects.count(), 1)
+        intent = FundingIntent.objects.get()
+        self.assertEqual(intent.meta["provider_reference"], "provider-reference-1")
+        self.assertEqual(intent.meta["initialize_state"], "started")
+
+    @patch("wallet.views.funding_initialize")
+    def test_paid_then_conflicting_review_replays_pending_without_second_provider_call(self, initialize):
+        initialize.return_value = {
+            "success": True,
+            "reference": "provider-paid-review",
+            "authorization_url": "https://pay.example/review",
+        }
+        payload = {"amount": "5000", "idempotency_key": "wallet-paid-review"}
+        first = self._post(payload)
+        intent = FundingIntent.objects.get(reference=first.json()["reference"])
+        settle_funding(intent.reference, Decimal("5000"), verified_currency="NGN")
+        hold_funding_review(
+            intent.reference, reason="late_amount_conflict",
+            observed_amount="4000", observed_currency="NGN",
+            evidence={"source": "late_callback"},
+        )
+
+        replay = self._post(payload)
+
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(replay.json()["pending"])
+        self.assertEqual(replay.json()["code"], "funding_review")
+        self.assertNotIn("success", replay.json())
+        self.assertEqual(initialize.call_count, 1)
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("5000"))
+        self.assertEqual(Transaction.objects.filter(reference=intent.reference).count(), 1)
+
+    @patch("wallet.views.funding_initialize")
+    def test_legacy_paid_intent_without_ledger_replays_under_review(self, initialize):
+        initialize.return_value = {
+            "success": True,
+            "reference": "provider-legacy-paid",
+            "authorization_url": "https://pay.example/legacy",
+        }
+        payload = {"amount": "5000", "idempotency_key": "wallet-legacy-paid"}
+        first = self._post(payload)
+        intent = FundingIntent.objects.get(reference=first.json()["reference"])
+        intent.status = FundingIntent.PAID
+        intent.credited = False
+        intent.save(update_fields=["status", "credited", "updated"])
+
+        replay = self._post(payload)
+
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(replay.json()["pending"])
+        self.assertEqual(replay.json()["code"], "funding_review")
+        self.assertNotIn("success", replay.json())
+        self.assertNotIn("funded", replay.json())
+        self.assertIn("Do not retry", replay.json()["message"])
+        self.assertEqual(initialize.call_count, 1)
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
+        self.assertFalse(Transaction.objects.filter(reference=intent.reference).exists())
+        intent.refresh_from_db()
+        self.assertTrue(intent.meta["funding_review"]["active"])
+        self.assertEqual(
+            intent.meta["funding_review"]["reason"], "credited_without_ledger",
+        )
+
+    @patch("wallet.views.funding_initialize")
+    def test_corrupt_credited_flag_without_ledger_cannot_report_funded(self, initialize):
+        initialize.return_value = {
+            "success": True,
+            "reference": "provider-corrupt-credit",
+            "authorization_url": "https://pay.example/corrupt",
+        }
+        payload = {"amount": "5000", "idempotency_key": "wallet-corrupt-credit"}
+        first = self._post(payload)
+        intent = FundingIntent.objects.get(reference=first.json()["reference"])
+        intent.credited = True
+        intent.save(update_fields=["credited", "updated"])
+
+        replay = self._post(payload)
+
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(replay.json()["pending"])
+        self.assertEqual(replay.json()["code"], "funding_review")
+        self.assertNotIn("success", replay.json())
+        self.assertNotIn("funded", replay.json())
+        self.assertEqual(initialize.call_count, 1)
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
+        self.assertFalse(Transaction.objects.filter(reference=intent.reference).exists())
+
+    @patch("wallet.views.funding_initialize")
+    def test_definitive_initialize_failure_is_terminal_not_transport_unknown(self, initialize):
+        initialize.return_value = {
+            "success": False,
+            "message": "Funding request rejected",
+        }
+
+        response = self._post({
+            "amount": "5000", "idempotency_key": "wallet-fund-rejected",
+        })
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["code"], "funding_initialize_failed")
+        self.assertEqual(FundingIntent.objects.get().status, FundingIntent.FAILED)
+
+    @patch("wallet.views.funding_initialize")
+    def test_key_is_bound_to_amount(self, initialize):
+        initialize.return_value = {
+            "success": True,
+            "reference": "provider-reference-2",
+            "authorization_url": "https://pay.example/two",
+        }
+        first = self._post({
+            "amount": "5000", "idempotency_key": "wallet-fund-bound",
+        })
+        conflict = self._post({
+            "amount": "6000", "idempotency_key": "wallet-fund-bound",
+        })
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.json()["code"], "idempotency_conflict")
+        self.assertEqual(initialize.call_count, 1)
+        self.assertEqual(FundingIntent.objects.count(), 1)
+
+    @patch("wallet.views.funding_initialize")
+    def test_key_is_bound_to_provider(self, initialize):
+        initialize.return_value = {
+            "success": True,
+            "reference": "provider-reference-3",
+            "authorization_url": "https://pay.example/three",
+        }
+        payload = {"amount": "5000", "idempotency_key": "wallet-fund-rail-bound"}
+        with patch("wallet.views.payment_provider", side_effect=["wema", "card"]):
+            first = self._post(payload)
+            conflict = self._post(payload)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.json()["code"], "idempotency_conflict")
+        self.assertEqual(initialize.call_count, 1)
+        self.assertEqual(FundingIntent.objects.count(), 1)
+
+    @patch("wallet.views.funding_initialize")
+    def test_ambiguous_result_stays_pending_and_retry_does_not_repost(self, initialize):
+        initialize.return_value = {
+            "success": False,
+            "pending": True,
+            "message": "Provider outcome is not confirmed.",
+        }
+        payload = {"amount": "5000", "idempotency_key": "wallet-fund-pending"}
+
+        first = self._post(payload)
+        second = self._post(payload)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(first.json()["pending"])
+        self.assertEqual(second.status_code, 200)
+        self.assertTrue(second.json()["pending"])
+        self.assertTrue(second.json()["duplicate"])
+        self.assertEqual(initialize.call_count, 1)
+        intent = FundingIntent.objects.get()
+        self.assertEqual(intent.status, FundingIntent.PENDING)
+        self.assertEqual(intent.meta["initialize_state"], "pending")
+
+    @patch("wallet.views.funding_initialize", side_effect=TimeoutError("response lost"))
+    def test_provider_exception_is_unknown_not_failed(self, initialize):
+        payload = {"amount": "5000", "idempotency_key": "wallet-fund-timeout"}
+
+        first = self._post(payload)
+        second = self._post(payload)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(first.json()["pending"])
+        self.assertTrue(second.json()["pending"])
+        self.assertTrue(second.json()["duplicate"])
+        self.assertEqual(initialize.call_count, 1)
+        intent = FundingIntent.objects.get()
+        self.assertEqual(intent.status, FundingIntent.PENDING)
+
+    @patch("wallet.views.funding_initialize")
+    def test_non_string_key_is_rejected_before_provider_call(self, initialize):
+        response = self._post({
+            "amount": "5000", "idempotency_key": {"not": "a string"},
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(initialize.call_count, 0)
+        self.assertEqual(FundingIntent.objects.count(), 0)
+
+    @patch("wallet.views.funding_initialize")
+    def test_missing_key_is_rejected_instead_of_using_a_short_time_bucket(self, initialize):
+        response = self._post({"amount": "5000"})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "idempotency_key_required")
+        self.assertEqual(initialize.call_count, 0)
+        self.assertEqual(FundingIntent.objects.count(), 0)
+
+    @patch("wallet.views.funding_verify")
+    def test_verify_uses_stored_provider_reference_but_settles_merchant_intent(self, verify):
+        verify.return_value = {
+            "success": True, "amount_naira": "5000", "currency": "NGN",
+        }
+        intent = FundingIntent.objects.create(
+            user=self.user,
+            reference="ZPAY-MERCHANT-REFERENCE",
+            amount=Decimal("5000"),
+            meta={"provider": "card", "provider_reference": "PROVIDER-REFERENCE"},
+        )
+
+        response = self.client.post(
+            "/api/fund/verify/",
+            data=json.dumps({
+                "access_token": self.token,
+                "reference": intent.reference,
+            }),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        verify.assert_called_once_with("PROVIDER-REFERENCE", provider="card")
+        intent.refresh_from_db()
+        self.assertTrue(intent.credited)
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("5000"))
+
 
 class FundingSettlementAmountTests(TestCase):
     def setUp(self):
@@ -512,19 +1071,151 @@ class FundingSettlementAmountTests(TestCase):
         return FundingIntent.objects.create(
             user=self.user, reference=reference, amount=Decimal("5000"))
 
-    def test_provider_cannot_credit_above_intent(self):
-        self._intent("ZPAYCAP0001")
-        settle_funding("ZPAYCAP0001", Decimal("9000"))
-        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("5000"))
+    def test_provider_amount_mismatch_never_credits_or_rewrites_intent(self):
+        intent = self._intent("ZPAYCAP0001")
+        self.assertIsNone(settle_funding(
+            "ZPAYCAP0001", Decimal("9000"), verified_currency="NGN",
+        ))
+        intent.refresh_from_db()
+        self.assertEqual(intent.amount, Decimal("5000"))
+        self.assertFalse(intent.credited)
+        self.assertEqual(intent.meta["funding_review"]["reason"], "amount_mismatch")
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
 
     def test_invalid_provider_amount_does_not_credit(self):
         for index, amount in enumerate(("NaN", "not-money", Decimal("-1")), start=1):
             ref = f"ZPAYBAD000{index}"
             intent = self._intent(ref)
-            self.assertIsNone(settle_funding(ref, amount))
+            self.assertIsNone(settle_funding(
+                ref, amount, verified_currency="NGN",
+            ))
             intent.refresh_from_db()
             self.assertFalse(intent.credited)
         self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
+
+    def test_missing_currency_does_not_credit(self):
+        intent = self._intent("ZPAYNOCURRENCY")
+
+        self.assertIsNone(settle_funding(intent.reference, Decimal("5000")))
+
+        intent.refresh_from_db()
+        self.assertFalse(intent.credited)
+        self.assertEqual(intent.meta["funding_review"]["reason"], "currency_mismatch")
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
+
+    def test_exact_amount_and_currency_credit_once_with_evidence(self):
+        intent = self._intent("ZPAYEXACT0001")
+
+        txn = settle_funding(
+            intent.reference, Decimal("5000"), verified_currency="NGN",
+            evidence={"source": "test_verify", "provider_reference": "provider-1"},
+        )
+
+        self.assertIsNotNone(txn)
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("5000"))
+        intent.refresh_from_db()
+        self.assertEqual(intent.amount, Decimal("5000"))
+        self.assertTrue(intent.credited)
+        self.assertEqual(txn.meta["funding_settlement"]["source"], "test_verify")
+        self.assertEqual(
+            txn.meta["funding_settlement"]["provider_reference"], "provider-1",
+        )
+
+    def test_credited_conflict_can_be_evidence_classified_without_moving_money(self):
+        intent = self._intent("ZPAY-PAID-CONFLICT")
+        settle_funding(
+            intent.reference, Decimal("5000"), verified_currency="NGN",
+            evidence={"source": "first_callback", "provider_reference": "provider-1"},
+        )
+        hold_funding_review(
+            intent.reference, reason="late_amount_conflict",
+            observed_amount="4000", observed_currency="NGN",
+            evidence={"source": "late_callback", "provider_reference": "provider-2"},
+        )
+        intent.refresh_from_db()
+        snapshot = funding_review_evidence(intent)
+        before_balance = get_or_create_wallet(self.user).balance
+        before_rows = Transaction.objects.filter(reference=intent.reference).count()
+
+        resolved = resolve_funding_review(
+            intent.reference,
+            disposition="confirm_existing_credit",
+            reason="Provider statement confirms the original exact credit",
+            confirmed_amount="5000",
+            evidence_reference="provider-statement-123",
+            evidence_snapshot=snapshot,
+            actor=self.user,
+            approval_id=123,
+        )
+
+        intent.refresh_from_db()
+        self.assertEqual(resolved["balance_movement"], "0.00")
+        self.assertTrue(intent.credited)
+        self.assertEqual(intent.status, FundingIntent.PAID)
+        self.assertFalse(intent.meta["funding_review"]["active"])
+        self.assertEqual(
+            intent.meta["funding_review"]["resolution"]["disposition"],
+            "confirm_existing_credit",
+        )
+        self.assertEqual(get_or_create_wallet(self.user).balance, before_balance)
+        self.assertEqual(
+            Transaction.objects.filter(reference=intent.reference).count(),
+            before_rows,
+        )
+
+    def test_credited_conflict_cannot_be_marked_failed_or_credited_again(self):
+        for index, disposition in enumerate(("mark_failed", "confirm_paid"), start=1):
+            intent = self._intent(f"ZPAY-PAID-WRONG-{index}")
+            settle_funding(intent.reference, Decimal("5000"), verified_currency="NGN")
+            hold_funding_review(
+                intent.reference, reason="late_amount_conflict",
+                observed_amount="4000", observed_currency="NGN",
+            )
+            intent.refresh_from_db()
+            snapshot = funding_review_evidence(intent)
+
+            with self.assertRaisesRegex(ValueError, "confirm_existing_credit"):
+                resolve_funding_review(
+                    intent.reference,
+                    disposition=disposition,
+                    reason="Conflicting late callback needs classification",
+                    confirmed_amount="5000",
+                    evidence_reference=f"provider-statement-{index}",
+                    evidence_snapshot=snapshot,
+                    actor=self.user,
+                    approval_id=200 + index,
+                )
+
+            intent.refresh_from_db()
+            self.assertTrue(intent.credited)
+            self.assertEqual(intent.status, FundingIntent.PAID)
+            self.assertTrue(intent.meta["funding_review"]["active"])
+
+    def test_uncredited_review_cannot_use_existing_credit_disposition(self):
+        intent = self._intent("ZPAY-NO-EXISTING-CREDIT")
+        hold_funding_review(
+            intent.reference, reason="amount_mismatch",
+            observed_amount="4000", observed_currency="NGN",
+        )
+        intent.refresh_from_db()
+
+        with self.assertRaisesRegex(ValueError, "No existing wallet credit"):
+            resolve_funding_review(
+                intent.reference,
+                disposition="confirm_existing_credit",
+                reason="No original credit exists for this payment",
+                confirmed_amount="5000",
+                evidence_reference="provider-statement-none",
+                evidence_snapshot=funding_review_evidence(intent),
+                actor=self.user,
+                approval_id=300,
+            )
+
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
+        intent.refresh_from_db()
+        self.assertEqual(intent.amount, Decimal("5000"))
+        self.assertFalse(intent.credited)
+        self.assertTrue(intent.meta["funding_review"]["active"])
 
 
 class FxLimitParityTests(TestCase):
@@ -897,3 +1588,54 @@ class FxSettlementGateTests(TestCase):
         self.user.save(update_fields=["bvn_verified"])
         with self.assertRaises(FxError):
             execute_fx(self.user, quote.quote_ref)
+
+
+class CustomerVisibleTransactionTests(TestCase):
+    def test_missing_json_flag_remains_visible_while_internal_evidence_is_hidden(self):
+        user, _ = make_user("08019990001", "history-filter@zitch.test")
+        normal = Transaction.objects.create(
+            user=user, service="Normal payment", amount=Decimal("100"),
+            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+            reference="VISIBLE-NO-FLAG", meta={},
+        )
+        explicit_false = Transaction.objects.create(
+            user=user, service="Normal payment", amount=Decimal("100"),
+            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+            reference="VISIBLE-FALSE-FLAG", meta={"internal_evidence": False},
+        )
+        Transaction.objects.create(
+            user=user, service="Payout reversal evidence", amount=Decimal("100"),
+            direction=Transaction.IN, transaction_status=Transaction.FAILED,
+            reference="HIDDEN-EVIDENCE", meta={"internal_evidence": True},
+        )
+
+        visible = set(customer_visible_transactions(
+            Transaction.objects.filter(user=user)).values_list("reference", flat=True))
+
+        self.assertEqual(visible, {normal.reference, explicit_false.reference})
+
+    def test_active_reversal_hold_is_customer_visible_as_pending_review(self):
+        user, token = make_user("08019990002", "history-review@zitch.test")
+        Transaction.objects.create(
+            user=user, service="Bank transfer", amount=Decimal("100"),
+            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+            reference="VISIBLE-UNDER-REVIEW",
+            meta={
+                "bank": "Wema",
+                "wema_reversal_quarantine": {
+                    "active": True,
+                    "reason": "provider_success_after_refund",
+                },
+            },
+        )
+
+        body = Client().post(
+            "/api/user-transaction-history/",
+            data={"access_token": token},
+            content_type="application/json",
+        ).json()
+        row = next(item for item in body["all_site_transactions"]
+                   if item["reference"] == "VISIBLE-UNDER-REVIEW")
+        self.assertEqual(row["transaction_status"], Transaction.PENDING)
+        self.assertTrue(row["under_review"])
+        self.assertIn("Do not retry", row["status_message"])

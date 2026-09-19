@@ -91,7 +91,10 @@ def signup(phone, email, password="Sup3r#secret", pin="1234", first="Test", last
 
 
 def fund(tok, amount="50000"):
-    r = post("/api/fund/initialize/", {"amount": amount}, token=tok)
+    r = post("/api/fund/initialize/", {
+        "amount": amount,
+        "idempotency_key": f"e2e-fund-{uuid.uuid4().hex[:12]}",
+    }, token=tok)
     ref = j(r).get("reference")
     if not ref:
         return False, f"fund/initialize {r.status_code}: {j(r)}"
@@ -494,4 +497,3 @@ def report():
 
 if __name__ == "__main__":
     main()
-

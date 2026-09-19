@@ -14,7 +14,7 @@ from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
 from .catalogue_fixtures import map_billers, map_cable
-from .models import DataPlan
+from .models import CablePlan, DataPlan
 
 
 class UtilityTests(TestCase):
@@ -23,8 +23,20 @@ class UtilityTests(TestCase):
         self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="20000")
         map_billers()
         map_cable()
+        self._key_seq = 0
 
     def post(self, path, payload):
+        payload = dict(payload)
+        money_paths = {
+            "/api/utility/buyairtime/",
+            "/api/utility/buydata/",
+            "/api/utility/buycable/",
+            "/api/utility/buyelectricity/",
+            "/api/utility/payremita/",
+        }
+        if path in money_paths and "idempotency_key" not in payload:
+            self._key_seq += 1
+            payload["idempotency_key"] = f"utility-test-{self._key_seq}"
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
@@ -45,11 +57,14 @@ class UtilityTests(TestCase):
         """If the aggregator declines, the debit must be reversed — the user
         keeps their money and the ledger row is marked Failed."""
         with patch("utility.views.vtu_purchase", return_value={"success": False, "message": "declined"}):
-            res, _ = self.post("/api/utility/buyairtime/", {
+            res, body = self.post("/api/utility/buyairtime/", {
                 "access_token": self.token, "amount": "1000", "network": "1",
                 "phone": "08010000001", "transaction_pin": "1234",
             })
-        self.assertEqual(res.status_code, 502)
+        self.assertEqual(res.status_code, 422)
+        self.assertEqual(body.get("code"), "purchase_failed")
+        self.assertTrue(body.get("refunded"))
+        self.assertTrue(body.get("reference"))
         self.assertEqual(self.balance(), Decimal("20000"))  # fully refunded
         self.assertTrue(Transaction.objects.filter(user=self.user, transaction_status=Transaction.FAILED).exists())
 
@@ -91,10 +106,72 @@ class UtilityTests(TestCase):
     def test_payremita_refunds_on_failure(self):
         with patch("utility.views.remita_pay",
                    return_value={"success": False, "message": "invalid rrr"}):
-            res, _ = self.post("/api/utility/payremita/", {
+            res, body = self.post("/api/utility/payremita/", {
                 "access_token": self.token, "rrr": "BAD", "amount": "5000", "transaction_pin": "1234"})
-        self.assertEqual(res.status_code, 502)
+        self.assertEqual(res.status_code, 422)
+        self.assertEqual(body.get("code"), "purchase_failed")
+        self.assertTrue(body.get("refunded"))
+        self.assertTrue(body.get("reference"))
         self.assertEqual(self.balance(), Decimal("20000"))   # fully refunded
+
+    @patch("utility.views.vas_can_settle", return_value=(False, "manual-only"))
+    @patch("utility.views.remita_validate")
+    @patch("utility.views.remita_pay")
+    def test_payremita_unsettleable_rail_is_blocked_before_debit(
+            self, pay, validate, _can_settle):
+        res, body = self.post("/api/utility/payremita/", {
+            "access_token": self.token,
+            "rrr": "120000000001",
+            "amount": "5000",
+            "transaction_pin": "1234",
+        })
+
+        self.assertEqual(res.status_code, 422)
+        self.assertEqual(body.get("code"), "remita_unavailable")
+        self.assertTrue(body.get("not_charged"))
+        validate.assert_not_called()
+        pay.assert_not_called()
+        self.assertEqual(self.balance(), Decimal("20000"))
+        self.assertFalse(Transaction.objects.filter(
+            user=self.user, direction=Transaction.OUT,
+        ).exists())
+
+    def test_payremita_pending_retry_never_becomes_a_success_receipt(self):
+        payload = {
+            "access_token": self.token,
+            "rrr": "120000000001",
+            "amount": "5000",
+            "transaction_pin": "1234",
+            "idempotency_key": "remita-pending-retry-1",
+        }
+        with patch("utility.views.remita_pay", return_value={
+            "success": False,
+            "pending": True,
+            "status": "PROCESSING",
+        }) as pay:
+            first, first_body = self.post("/api/utility/payremita/", payload)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(first_body["pending"])
+        self.assertNotIn("success", first_body)
+        self.assertEqual(self.balance(), Decimal("15000"))
+        pay.assert_called_once()
+
+        # A client retry must replay the PENDING ledger row without debiting or
+        # contacting Remita again, and without upgrading the receipt to success.
+        with patch("utility.views.remita_pay",
+                   side_effect=AssertionError("pending replay called Remita twice")) as retry_pay:
+            retry, retry_body = self.post("/api/utility/payremita/", payload)
+
+        self.assertEqual(retry.status_code, 200)
+        self.assertTrue(retry_body["pending"])
+        self.assertTrue(retry_body["duplicate"])
+        self.assertNotIn("success", retry_body)
+        self.assertEqual(retry_body["reference"], first_body["reference"])
+        self.assertEqual(self.balance(), Decimal("15000"))
+        retry_pay.assert_not_called()
+        txn = Transaction.objects.get(reference=first_body["reference"])
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)
 
     def test_airtime_rejects_wrong_pin_without_debit(self):
         res, _ = self.post("/api/utility/buyairtime/", {
@@ -103,6 +180,30 @@ class UtilityTests(TestCase):
         })
         # Wrong PIN -> rejected before any wallet movement.
         self.assertEqual(res.status_code, 403)
+        self.assertEqual(self.balance(), Decimal("20000"))
+
+    def test_money_purchases_require_a_client_idempotency_key(self):
+        cases = [
+            ("/api/utility/buyairtime/", {
+                "access_token": self.token, "amount": "1000", "network": "1",
+                "phone": "08010000001", "transaction_pin": "1234",
+                "idempotency_key": None,
+            }),
+            ("/api/utility/buyelectricity/", {
+                "access_token": self.token, "amount": "1000", "disco": "1",
+                "meter": "1023542134", "meter_type": "prepaid",
+                "transaction_pin": "1234", "idempotency_key": None,
+            }),
+            ("/api/utility/payremita/", {
+                "access_token": self.token, "rrr": "120000000001", "amount": "5000",
+                "transaction_pin": "1234", "idempotency_key": None,
+            }),
+        ]
+        for path, payload in cases:
+            with self.subTest(path=path):
+                res, body = self.post(path, payload)
+                self.assertEqual(res.status_code, 400)
+                self.assertEqual(body.get("code"), "idempotency_key_required")
         self.assertEqual(self.balance(), Decimal("20000"))
 
     # --- data ---
@@ -121,6 +222,62 @@ class UtilityTests(TestCase):
         })
         self.assertEqual(res.status_code, 200)
         self.assertEqual(self.balance(), Decimal("18800"))  # 20000 - 1200
+
+    def test_data_retry_replays_after_plan_is_deactivated(self):
+        plan = DataPlan.objects.create(
+            network="1", plan_type="1", name="1.5GB", validity="30 days",
+            plan_code="mtn-replay", price=Decimal("1200"), wema_code="7001",
+        )
+        payload = {
+            "access_token": self.token, "datanetwork": "1",
+            "selectedDataPlan": plan.plan_code, "phone": "08010000001",
+            "transaction_pin": "1234", "idempotency_key": "data-retired-plan-1",
+        }
+        with patch("utility.views.vtu_purchase", return_value={
+                "success": True, "status": "SUCCESS",
+             }):
+            first, first_body = self.post("/api/utility/buydata/", payload)
+        plan.active = False
+        plan.save(update_fields=["active"])
+        with patch("utility.views.vtu_purchase",
+                   side_effect=AssertionError("provider called on replay")) as purchase:
+            retry, retry_body = self.post("/api/utility/buydata/", {
+                **payload, "transaction_pin": "0000",
+            })
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(retry.status_code, 200)
+        self.assertTrue(retry_body["duplicate"])
+        self.assertEqual(retry_body["reference"], first_body["reference"])
+        purchase.assert_not_called()
+
+    def test_cable_retry_replays_after_plan_is_deactivated(self):
+        plan = CablePlan.objects.get(cable_plan_code="dstv-compact")
+        payload = {
+            "access_token": self.token, "cablenetwork": "2",
+            "selectedcablePlan": plan.cable_plan_code, "iuc": "1234567890",
+            "transaction_pin": "1234", "idempotency_key": "cable-retired-plan-1",
+        }
+        with patch("utility.views.vtu_verify_customer", return_value={
+                "success": True, "customer_name": "ADA EZE",
+             }), patch("utility.views.vtu_purchase", return_value={
+                 "success": True, "status": "SUCCESS",
+             }):
+            first, first_body = self.post("/api/utility/buycable/", payload)
+        plan.active = False
+        plan.save(update_fields=["active"])
+        with patch("utility.views.vtu_verify_customer",
+                   side_effect=AssertionError("customer verified on replay")) as verify, \
+             patch("utility.views.vtu_purchase",
+                   side_effect=AssertionError("provider called on replay")) as purchase:
+            retry, retry_body = self.post("/api/utility/buycable/", {
+                **payload, "transaction_pin": "0000",
+            })
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(retry.status_code, 200)
+        self.assertTrue(retry_body["duplicate"])
+        self.assertEqual(retry_body["reference"], first_body["reference"])
+        verify.assert_not_called()
+        purchase.assert_not_called()
 
     # --- electricity ---
     def test_electricity_enforces_minimum(self):
@@ -182,6 +339,26 @@ class UtilityTests(TestCase):
         purchase.assert_not_called()
         self.assertEqual(self.balance(), Decimal("19000"))
 
+    def test_electricity_success_replay_preserves_the_prepaid_token(self):
+        payload = {
+            "access_token": self.token, "amount": "1000", "disco": "1",
+            "meter": "1023542134", "meter_type": "prepaid",
+            "transaction_pin": "1234", "idempotency_key": "electricity-token-1",
+        }
+        with patch("utility.views.vtu_verify_customer", return_value={
+                "success": True, "customer_name": "ADEYEMI WILLIAM",
+                "customer_address": "12 Marina Road, Lagos",
+             }), patch("utility.views.vtu_purchase", return_value={
+                 "success": True, "status": "SUCCESS", "token": "1234-5678-9012",
+             }):
+            first, first_body = self.post("/api/utility/buyelectricity/", payload)
+        retry, retry_body = self.post("/api/utility/buyelectricity/", payload)
+
+        self.assertEqual(first_body["token"], "1234-5678-9012")
+        self.assertTrue(retry_body["duplicate"])
+        self.assertEqual(retry_body["token"], "1234-5678-9012")
+        self.assertEqual(self.balance(), Decimal("19000"))
+
     def test_validate_iuc_requires_auth(self):
         res, _ = self.post("/api/utility/validate_iuc/", {"cablenetwork": "2", "iuc": "1234567890"})
         self.assertEqual(res.status_code, 401)
@@ -215,6 +392,7 @@ class VtuReconciliationTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="20000")
+        self._key_seq = 0
 
     def _reconcile(self, requery_result, *, age=timedelta(minutes=1), reference=None):
         """Age the pending purchase past the sweep's cutoff and run the VAS sweep.
@@ -234,6 +412,10 @@ class VtuReconciliationTests(TestCase):
             call_command("reconcile_wema", "--lookback-days=1")
 
     def post(self, path, payload):
+        payload = dict(payload)
+        if path == "/api/utility/buyairtime/" and "idempotency_key" not in payload:
+            self._key_seq += 1
+            payload["idempotency_key"] = f"vtu-reconcile-test-{self._key_seq}"
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 

@@ -10,6 +10,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
 
 log = logging.getLogger("zitch.security")
@@ -117,7 +118,9 @@ def scan_transactions(*, since=None):
     since = since or (now - timedelta(hours=24))
     rows = list(Transaction.objects.filter(
         created__gte=min(widest, since), direction=Transaction.OUT, currency="NGN",
-    ).exclude(transaction_status=Transaction.FAILED).select_related("user"))
+    ).exclude(transaction_status=Transaction.FAILED).filter(
+        Q(meta__internal_movement__isnull=True) | Q(meta__internal_movement=False),
+    ).select_related("user"))
 
     counts = {"scanned": len(rows), "threshold": 0, "structuring": 0, "velocity": 0}
 
@@ -345,6 +348,7 @@ def open_dispute(user, *, reference, reason, detail=""):
     """
     from compliance.models import Dispute
     from wallet.models import Transaction
+    from wallet.services import customer_visible_transactions
     from whatsapp.ops import record_audit
 
     reference = (reference or "").strip()
@@ -352,7 +356,8 @@ def open_dispute(user, *, reference, reason, detail=""):
         raise ValueError("A transaction reference is required")
     if reason not in dict(Dispute.REASONS):
         raise ValueError("Unknown dispute reason")
-    if not Transaction.objects.filter(user=user, reference=reference).exists():
+    if not customer_visible_transactions(
+            Transaction.objects.filter(user=user, reference=reference)).exists():
         raise ValueError("We can't find that transaction on your account")
     existing = Dispute.objects.filter(
         user=user, reference=reference,

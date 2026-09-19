@@ -37,14 +37,16 @@ const LinkBank = () => {
       }
       const result = await WebBrowser.openAuthSessionAsync(init.mono_url, redirect);
       if (result.type !== 'success' || !result.url) return; // user dismissed
-      const code = Linking.parse(result.url).queryParams?.code;
-      if (!code) {
+      const callbackParams = Linking.parse(result.url).queryParams;
+      const code = callbackParams?.code;
+      const state = callbackParams?.state;
+      if (!code || !state) {
         notify('Error', "Bank linking didn't complete. Please try again.");
         return;
       }
       const res = await apiJson<{ success?: boolean; message?: string }>(
         '/api/banklink/connect/',
-        { code: String(code) },
+        { code: String(code), state: String(state) },
       );
       if (res.success) {
         notify('Bank linked', 'Your account is now connected.');

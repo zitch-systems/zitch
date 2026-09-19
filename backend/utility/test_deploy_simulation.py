@@ -25,6 +25,7 @@ _STAGED = {
         "API_KEY": "issuer-live-key",
         "BASE_URL": "https://issuer.invalid",
         "BRAND": "Verve",
+        "LIVE_ENABLED": True,
     },
     "MONO": {
         "SECRET_KEY": "mono-live-key",

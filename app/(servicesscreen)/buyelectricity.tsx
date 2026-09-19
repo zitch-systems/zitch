@@ -1,8 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
-import { apiPost, newIdempotencyKey } from '@/lib/api';
+import { apiPost } from '@/lib/api';
+import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
+import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, ProviderGrid, Segmented, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
@@ -41,6 +43,10 @@ const BuyElectricity = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState('');
+  const [recovered, setRecovered] = useState(false);
+  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
 
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
@@ -68,37 +74,57 @@ const BuyElectricity = () => {
     }
   };
 
-  const idemKey = useRef('');  // stable across retries of one purchase attempt
-
   const purchase = async (enteredPin: string) => {
-    if (!idemKey.current) idemKey.current = newIdempotencyKey();
+    const fingerprint = [disco, meterType, meter.trim(), String(amount)].join('|');
+    let deliveryStarted = false;
     setBusy(true);
     try {
+      const requestKey = await acquireSpendAttempt('electricity', fingerprint);
+      deliveryStarted = true;
       const response = await apiPost(EP.utility.buyElectricity, {
         disco,
         meter,
         meter_type: meterType,
         amount: amt,
         transaction_pin: enteredPin,
-        idempotency_key: idemKey.current,
+        idempotency_key: requestKey,
       });
       const result = await response.json();
-      if (response.ok) {
-        idemKey.current = '';
+      const outcome = classifySpendResponse(result, response.status);
+      if (outcome === 'success') {
+        await clearSpendAttempt('electricity', fingerprint, requestKey);
+        setRecovered(isRecoveredSpendResponse(result, response.status));
+        setTxnRef(String(result.reference || ''));
         if (result.token) setPurchasedToken(String(result.token));
+        setStep(null);
+        setDone(true);
+        reload();
+      } else if (outcome === 'pending' || outcome === 'unknown') {
+        setPending(true);
+        setPendingMessage(outcome === 'pending'
+          ? (result.message || 'Your electricity payment is processing. Its final status will update only after provider confirmation.')
+          : 'We could not confirm this electricity payment. Check History before trying again.');
+        setTxnRef(String(result.reference || ''));
         setStep(null);
         setDone(true);
         reload();
       } else if (result.code === 'pin_incorrect' || result.code === 'pin_locked') {
         setPinError(result.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
-        idemKey.current = '';  // definitive server failure — retry is a fresh attempt
+        await clearSpendAttempt('electricity', fingerprint, requestKey);
         notify('Error', result.message || 'Transaction failed');
         setStep(null);
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
-      setStep(null);
+      if (deliveryStarted) {
+        setPending(true);
+        setPendingMessage('We could not confirm this electricity payment. Check History before trying again.');
+        setStep(null);
+        setDone(true);
+        reload();
+      } else {
+        notify('Unable to start payment', 'Could not safely prepare this request. Please try again.');
+      }
     } finally {
       setBusy(false);
     }
@@ -108,8 +134,12 @@ const BuyElectricity = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title={purchasedToken ? 'Token generated' : 'Payment successful'}
-          message={`Your ${provider.name} ${meterType} purchase was successful.`}
+          title={pending ? 'Payment processing' : recovered ? 'Earlier attempt confirmed' : purchasedToken ? 'Token generated' : 'Payment successful'}
+          message={pending
+            ? pendingMessage
+            : recovered
+              ? 'This confirms your earlier electricity payment. No new payment was made. Start a new purchase to pay again.'
+            : `Your ${provider.name} ${meterType} purchase was successful.`}
           rows={[
             ['Disco', provider.name],
             ['Meter', meter],
@@ -117,6 +147,8 @@ const BuyElectricity = () => {
             ...(purchasedToken ? ([['Token', purchasedToken]] as [string, string][]) : []),
             ['Total', money(amount), true],
           ]}
+          reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>

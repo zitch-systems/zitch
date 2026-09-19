@@ -80,10 +80,9 @@ reports whether simulation is on.
 | `POST /api/banklink/refresh/` `{linked_id}` | Re-pull one account's balance |
 | `POST /api/banklink/unlink/` `{linked_id}` | Unlink |
 | `POST /api/banklink/fund/` `{linked_id, amount, idempotency_key}` | **Fund Zitch** — Mono DirectPay debit-in (wallet credited via webhook) |
-| `POST /api/banklink/payout/` `{linked_id, amount, pin, idempotency_key}` | **Fund bank** — wallet → linked bank, PIN-verified, via the transfers payout rail |
 | `POST /api/banklink/webhook/` | Mono callback (signature-verified) |
 
-`payout/` reuses the same `execute_payout` rail as normal bank transfers, so the
-balance / send-limit / daily-limit / idempotency guards and the Monnify settlement
-webhook all apply. It routes by detecting the bank for the linked account number
-(the linked record stores the bank name, not a routable code).
+**Remaining feature:** wallet-to-linked-bank payout is not exposed in this
+release. There is no verified `/api/banklink/payout/` backend contract or safe
+linked-account-to-payout-bank-code mapping yet, so the app deliberately omits the
+old **Fund bank** control. Use the ordinary verified bank-transfer flow instead.

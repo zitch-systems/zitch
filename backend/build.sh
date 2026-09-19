@@ -4,6 +4,11 @@ set -o errexit
 
 pip install -r requirements.txt
 python manage.py collectstatic --no-input
+# Migration 0004 makes one card per user a database invariant. Detect legacy
+# duplicates first so the deploy stops with actionable, non-sensitive evidence
+# rather than failing while adding the constraint. The migration repeats the
+# check to close the race between this preflight and schema application.
+python manage.py audit_card_uniqueness
 python manage.py migrate
 python manage.py seed_plans
 

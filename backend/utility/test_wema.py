@@ -22,6 +22,11 @@ WEMA_LIVE = {"BASE_URL": "https://apiplayground.alat.ng", "CHANNEL_ID": "chan-1"
 WEMA_NOKEY = {**WEMA_LIVE, "CHANNEL_ID": "", "KEYS": {"wallet": ""}, "SECURITY_INFO": ""}
 WEMA_VAS = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "airtime": "airkey", "bills": "billkey"},
             "SOURCE_ACCOUNT": "0100000001"}
+WEMA_REMITA = {
+    **WEMA_LIVE,
+    "KEYS": {"wallet": "subkey", "remita": "remita-key"},
+    "SOURCE_ACCOUNT": "0100000001",
+}
 
 
 def _resp(body, status=200):
@@ -373,6 +378,21 @@ class WemaLiveTests(SimpleTestCase):
         self.assertFalse(result["success"])
         self.assertTrue(result["pending"])
 
+    @patch("utility.wema.requests.post")
+    def test_direct_transfer_numeric_401_is_terminal_auth_failure(self, mock_post):
+        mock_post.return_value = _resp(
+            {"result": {"transactionStatus": 401,
+                        "transactionReference": "REF-DIRECT-401"},
+             "hasError": False}
+        )
+        result = wema.transfer(
+            1000, "REF-DIRECT-401", "test", source_account="01",
+            destination_account="02", destination_bank_code="035",
+            destination_bank_name="Wema", destination_name="ADA",
+        )
+        self.assertFalse(result["success"])
+        self.assertFalse(result["pending"])
+
     @patch("utility.wema.requests.get")
     def test_status_requery_accepts_direct_result_shape(self, mock_get):
         mock_get.return_value = _resp(
@@ -422,6 +442,23 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(result["status"], "401")
 
     @patch("utility.wema.requests.get")
+    def test_numeric_401_lookup_does_not_conflict_with_successful_fallback(self, mock_get):
+        mock_get.side_effect = [
+            _resp({"result": {"transactionStatus": 401,
+                              "transactionReference": "CLIENT-401"},
+                   "hasError": False}),
+            _resp({"result": {"transactionStatus": 200,
+                              "transactionReference": "PLATFORM-OK"},
+                   "hasError": False}),
+        ]
+        result = wema.confirm_transfer_status(
+            "CLIENT-401", platform_reference="PLATFORM-OK")
+        self.assertTrue(result["success"])
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["lookup_reference"], "PLATFORM-OK")
+        self.assertNotIn("conflict", result)
+
+    @patch("utility.wema.requests.get")
     def test_status_requery_pending_is_not_delivery_success(self, mock_get):
         mock_get.return_value = _resp(
             {"result": {"data": {"status": "PENDING",
@@ -451,6 +488,143 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(mock_get.call_count, 2)
         self.assertTrue(mock_get.call_args_list[0].args[0].endswith("/CLIENT-123"))
         self.assertTrue(mock_get.call_args_list[1].args[0].endswith("/PLATFORM-123"))
+
+    @patch("utility.wema.requests.get")
+    def test_status_requery_checks_every_distinct_reference_after_terminal_answer(self, mock_get):
+        mock_get.side_effect = [
+            _resp({"result": {"status": "Successful",
+                              "transactionReference": "CLIENT-ALL"},
+                   "hasError": False}),
+            _resp({"result": {"status": "Completed",
+                              "transactionReference": "PLATFORM-ALL"},
+                   "hasError": False}),
+        ]
+
+        result = wema.confirm_transfer_status(
+            "CLIENT-ALL", platform_reference="PLATFORM-ALL")
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["pending"])
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertTrue(mock_get.call_args_list[0].args[0].endswith("/CLIENT-ALL"))
+        self.assertTrue(mock_get.call_args_list[1].args[0].endswith("/PLATFORM-ALL"))
+
+    @patch("utility.wema.requests.get")
+    def test_conflicting_terminal_statuses_from_known_references_stay_pending(self, mock_get):
+        mock_get.side_effect = [
+            _resp({"result": {"transactionStatus": 200,
+                              "transactionReference": "CLIENT-CONFLICT"},
+                   "hasError": False}),
+            _resp({"result": {"transactionStatus": 400,
+                              "transactionReference": "PLATFORM-CONFLICT"},
+                   "hasError": False}),
+        ]
+
+        with self.assertLogs("zitch", level="ERROR") as captured:
+            result = wema.confirm_transfer_status(
+                "CLIENT-CONFLICT", platform_reference="PLATFORM-CONFLICT")
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+        self.assertEqual(result["status"], "CONFLICT")
+        self.assertTrue(result["conflict"])
+        self.assertEqual(result["conflict_type"], "transfer_status")
+        self.assertEqual(
+            [item["outcome"] for item in result["lookup_results"]],
+            ["success", "failed"],
+        )
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertIn("wema_transfer_status_conflict", " ".join(captured.output))
+
+    @patch("utility.wema.requests.get")
+    def test_unbound_terminal_answer_cannot_override_bound_fallback(self, mock_get):
+        mock_get.side_effect = [
+            _resp({"result": {"status": "Successful",
+                              "transactionReference": "SOMEONE-ELSE"},
+                   "hasError": False}),
+            _resp({"result": {"status": "Failed",
+                              "transactionReference": "PLATFORM-BOUND"},
+                   "hasError": False}),
+        ]
+
+        result = wema.confirm_transfer_status(
+            "CLIENT-BOUND", platform_reference="PLATFORM-BOUND")
+
+        self.assertFalse(result["success"])
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["lookup_reference"], "PLATFORM-BOUND")
+        self.assertEqual(mock_get.call_count, 2)
+
+    @patch("utility.wema.requests.get")
+    def test_error_envelope_with_terminal_text_does_not_suppress_fallback(self, mock_get):
+        mock_get.side_effect = [
+            _resp({"result": {"status": "Failed",
+                              "transactionReference": "CLIENT-ERROR"},
+                   "hasError": True, "errorMessage": "Status lookup rejected"}),
+            _resp({"result": {"status": "Successful",
+                              "transactionReference": "PLATFORM-OK"},
+                   "hasError": False}),
+        ]
+
+        result = wema.confirm_transfer_status(
+            "CLIENT-ERROR", platform_reference="PLATFORM-OK")
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["lookup_reference"], "PLATFORM-OK")
+        self.assertEqual(mock_get.call_count, 2)
+
+    @patch("utility.wema.requests.get")
+    def test_http_error_with_positive_envelope_does_not_suppress_fallback(self, mock_get):
+        mock_get.side_effect = [
+            _resp({"result": {"status": "Failed",
+                              "transactionReference": "CLIENT-HTTP-ERROR"},
+                   "hasError": False}, status=401),
+            _resp({"result": {"status": "Successful",
+                              "transactionReference": "PLATFORM-HTTP-OK"},
+                   "hasError": False}),
+        ]
+
+        result = wema.confirm_transfer_status(
+            "CLIENT-HTTP-ERROR", platform_reference="PLATFORM-HTTP-OK")
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["lookup_reference"], "PLATFORM-HTTP-OK")
+        self.assertEqual(mock_get.call_count, 2)
+
+    @patch("utility.wema.requests.get")
+    def test_error_envelope_does_not_hide_an_identified_pending_fallback(self, mock_get):
+        mock_get.side_effect = [
+            _resp({"result": {"status": "Failed",
+                              "transactionReference": "CLIENT-ERROR-PENDING"},
+                   "hasError": True, "errorMessage": "Status lookup rejected"}),
+            _resp({"result": {"status": "Processing",
+                              "transactionReference": "PLATFORM-PENDING"},
+                   "hasError": False}),
+        ]
+
+        result = wema.confirm_transfer_status(
+            "CLIENT-ERROR-PENDING", platform_reference="PLATFORM-PENDING")
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+        self.assertEqual(result["status"], "PROCESSING")
+        self.assertEqual(result["lookup_reference"], "PLATFORM-PENDING")
+        self.assertNotIn("lookup_error", result)
+        self.assertEqual(mock_get.call_count, 2)
+
+    @patch("utility.wema.requests.get")
+    def test_terminal_answer_without_a_known_response_reference_stays_pending(self, mock_get):
+        mock_get.return_value = _resp(
+            {"result": {"status": "Successful"}, "hasError": False})
+
+        result = wema.confirm_transfer_status("CLIENT-UNBOUND")
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+        self.assertTrue(result["reference_mismatch"])
 
 
 @override_settings(WEMA=WEMA_LIVE)
@@ -513,6 +687,37 @@ class TransferAmbiguityTests(SimpleTestCase):
         )
         self.assertFalse(result["success"])
         self.assertTrue(result["pending"])
+
+    @patch("utility.wema.requests.post")
+    def test_ambiguous_transfer_post_statuses_stay_pending(self, mock_post):
+        for status in (409, 425):
+            with self.subTest(status=status):
+                mock_post.return_value = _resp(
+                    {"statusCode": status, "message": "Request outcome unknown"},
+                    status=status,
+                )
+                result = wema.transfer(
+                    1000, f"REF-{status}", "test", source_account="01",
+                    destination_account="02", destination_bank_code="035",
+                    destination_bank_name="Wema", destination_name="ADA",
+                )
+                self.assertFalse(result["success"])
+                self.assertTrue(result["pending"])
+
+    @patch("utility.wema.requests.post")
+    def test_ambiguous_vas_post_statuses_stay_pending(self, mock_post):
+        for status in (409, 425):
+            with self.subTest(status=status):
+                mock_post.return_value = _resp(
+                    {"statusCode": status, "message": "Request outcome unknown"},
+                    status=status,
+                )
+                result = wema.purchase_airtime(
+                    500, f"VAS-{status}", "08030000000", "MTN",
+                    source_account="01",
+                )
+                self.assertFalse(result["success"])
+                self.assertTrue(result["pending"])
 
     @patch("utility.wema.requests.post")
     def test_a_business_rejection_on_the_transfer_post_is_definitive(self, mock_post):
@@ -744,18 +949,119 @@ class WemaCatalogueTests(SimpleTestCase):
         self.assertFalse(mock_get.call_args[1].get("params"))
 
 
-class WemaStatusLegendTests(SimpleTestCase):
-    def test_failed_pending_are_unsettled(self):
-        for st in ("Failed", "Pending", "Reversed", "Declined"):
-            n = wema.normalize_transaction({"referenceId": "R", "amount": "100",
-                                            "creditType": "Credit", "status": st})
-            self.assertFalse(n["settled"], st)
+class WemaStrictEnvelopeTests(SimpleTestCase):
+    def test_only_literal_booleans_can_confirm_envelope_success(self):
+        for data in (
+            {"status": "true"},
+            {"successful": "true"},
+            {"hasError": "false"},
+            {"status": True, "successful": "false"},
+            {"status": True, "hasError": True},
+        ):
+            with self.subTest(data=data):
+                self.assertIsNone(wema._envelope_outcome(data))
+                self.assertFalse(wema._ok(data))
 
-    def test_success_or_absent_is_settled(self):
-        for st in ("Successfull", "Default", ""):
+        self.assertTrue(wema._ok({"status": True}))
+        self.assertTrue(wema._ok({"successful": True}))
+        self.assertTrue(wema._ok({"hasError": False}))
+        self.assertFalse(wema._ok({"successful": False}))
+
+    def test_kyc_envelopes_reject_non_boolean_and_conflicting_flags(self):
+        for data in (
+            {"status": "true"},
+            {"successful": "true"},
+            {"status": True, "successful": False},
+        ):
+            with self.subTest(data=data):
+                self.assertFalse(wema._kyc_ok(data))
+
+    @override_settings(WEMA=WEMA_LIVE)
+    @patch("utility.wema.requests.get")
+    def test_account_balance_rejects_string_false_success(self, mock_get):
+        mock_get.return_value = _resp({
+            "successful": "false",
+            "result": {"availableBalance": "5000"},
+        })
+
+        self.assertFalse(wema.get_balance("0155500011")["success"])
+
+    @override_settings(WEMA=WEMA_VAS)
+    @patch("utility.wema.requests.post")
+    def test_bill_validation_rejects_contradictory_non_boolean_success(self, mock_post):
+        mock_post.return_value = _resp({
+            "status": True,
+            "successful": "false",
+            "result": {"customerName": "ADA EZE"},
+        })
+
+        self.assertFalse(
+            wema.validate_bill_customer("1234567890", "101")["success"]
+        )
+
+    @override_settings(WEMA=WEMA_REMITA)
+    @patch("utility.wema.requests.get")
+    def test_rrr_validation_rejects_non_boolean_or_conflicting_flags(self, mock_get):
+        cases = (
+            {"status": True, "result": {"isValidated": "false", "amount": "5000"}},
+            {"successful": "false", "result": {"isValidated": True, "amount": "5000"}},
+            {"successful": False, "result": {"isValidated": True, "amount": "5000"}},
+        )
+        for data in cases:
+            with self.subTest(data=data):
+                mock_get.return_value = _resp(data)
+                self.assertFalse(wema.validate_rrr("120000000001")["success"])
+
+    def test_vas_settlement_holds_non_boolean_or_conflicting_envelopes(self):
+        cases = (
+            {"successful": "false", "result": {"status": "SUCCESS"}},
+            {"status": True, "successful": False,
+             "result": {"status": "SUCCESS"}},
+            {"hasError": False, "successful": "false",
+             "result": {"transactionStatus": 200}},
+        )
+        for data in cases:
+            with self.subTest(data=data), patch.dict(
+                    wema.settings.WEMA,
+                    {"VAS_STATUS_LEGEND": "200=success 400=failed"}):
+                result = wema._parse_vas(data, "REF1")
+                self.assertFalse(result["success"])
+                self.assertTrue(result["pending"])
+
+    def test_explicit_boolean_failure_and_failed_status_remain_terminal(self):
+        result = wema._parse_vas(
+            {"successful": False, "result": {"status": "FAILED"}},
+            "REF1",
+        )
+        self.assertFalse(result["success"])
+        self.assertFalse(result["pending"])
+
+    def test_transfer_success_with_invalid_or_negative_envelope_stays_pending(self):
+        for data in (
+            {"hasError": False, "successful": "false",
+             "result": {"status": "SUCCESS", "transactionReference": "REF1"}},
+            {"successful": False,
+             "result": {"status": "SUCCESS", "transactionReference": "REF1"}},
+        ):
+            with self.subTest(data=data):
+                result = wema._parse_transfer(data, "REF1")
+                self.assertFalse(result["success"])
+                self.assertTrue(result["pending"])
+
+
+class WemaStatusLegendTests(SimpleTestCase):
+    def test_only_explicit_documented_success_is_settled(self):
+        for st in ("Successfull", " successFULL ", "Successful", " successful "):
             n = wema.normalize_transaction({"referenceId": "R", "amount": "100",
                                             "creditType": "Credit", "status": st})
             self.assertTrue(n["settled"], repr(st))
+
+    def test_non_success_statuses_are_unsettled(self):
+        for st in ("Failed", "Pending", "Reversed", "Declined", "Default", "", None,
+                   "Success", "Completed", "FutureProviderStatus"):
+            n = wema.normalize_transaction({"referenceId": "R", "amount": "100",
+                                            "creditType": "Credit", "status": st})
+            self.assertFalse(n["settled"], repr(st))
 
 
 WEMA_CARD = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "card": "cardkey"},
@@ -792,6 +1098,33 @@ class WemaCardTests(SimpleTestCase):
         self.assertFalse(result["success"])
         mock_post.assert_not_called()
 
+    @patch("utility.wema.requests.post")
+    def test_issue_rejects_truthy_failure_status_strings(self, mock_post):
+        for status in ("false", "failed"):
+            with self.subTest(status=status):
+                mock_post.return_value = _resp({
+                    "status": status,
+                    "data": {"maskedPan": "506100******1234", "expiry": "01/29"},
+                })
+                result = wema.card_issue(
+                    "ADA EZE", "42", account_number="0155500011",
+                )
+                self.assertFalse(result["success"])
+
+    @patch("utility.wema.requests.post")
+    def test_issue_rejects_contradictory_boolean_envelope(self, mock_post):
+        mock_post.return_value = _resp({
+            "successful": True,
+            "hasError": True,
+            "data": {"maskedPan": "506100******1234", "expiry": "01/29"},
+        })
+
+        result = wema.card_issue(
+            "ADA EZE", "42", account_number="0155500011",
+        )
+
+        self.assertFalse(result["success"])
+
     @patch("utility.wema.requests.get")
     def test_reveal_uses_account_details_endpoint(self, mock_get):
         mock_get.return_value = _resp({"status": True,
@@ -802,6 +1135,26 @@ class WemaCardTests(SimpleTestCase):
         self.assertTrue(mock_get.call_args[0][0].endswith(
             "/api/Partner/partnerCard/virtual-card-details/0155500011"))
 
+    @patch("utility.wema.requests.get")
+    def test_reveal_rejects_truthy_failure_status_strings(self, mock_get):
+        for field, value in (("status", "failed"), ("successful", "false")):
+            with self.subTest(field=field, value=value):
+                mock_get.return_value = _resp({
+                    field: value,
+                    "data": {"cardPan": "5061000000001234", "cvv": "123"},
+                })
+                self.assertFalse(wema.card_reveal("0155500011")["success"])
+
+    @patch("utility.wema.requests.get")
+    def test_reveal_rejects_contradictory_boolean_envelope(self, mock_get):
+        mock_get.return_value = _resp({
+            "successful": True,
+            "status": False,
+            "data": {"cardPan": "5061000000001234", "cvv": "123"},
+        })
+
+        self.assertFalse(wema.card_reveal("0155500011")["success"])
+
     @patch("utility.wema.requests.post")
     def test_block_hotlists_by_account(self, mock_post):
         mock_post.return_value = _resp({"successful": True, "message": "blocked"})
@@ -810,10 +1163,50 @@ class WemaCardTests(SimpleTestCase):
         self.assertEqual(mock_post.call_args[1]["params"]["accountNumber"], "0155500011")
         self.assertTrue(mock_post.call_args[0][0].endswith("/api/Partner/partnerCard/hotlistCard"))
 
+    @patch("utility.wema.requests.post")
+    def test_block_rejects_truthy_failure_status_strings(self, mock_post):
+        for field, value in (("status", "failed"), ("successful", "false")):
+            with self.subTest(field=field, value=value):
+                mock_post.return_value = _resp({field: value, "message": "not blocked"})
+                self.assertFalse(
+                    wema.card_set_status("0155500011", active=False)["success"]
+                )
+
+    @patch("utility.wema.requests.post")
+    def test_block_ambiguous_response_stays_pending(self, mock_post):
+        mock_post.return_value = _resp({"successful": "false", "message": "unknown"})
+
+        result = wema.card_set_status("0155500011", active=False)
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+        self.assertTrue(result["permanent_block"])
+
+    @patch("utility.wema.requests.post", side_effect=requests.Timeout("timed out"))
+    def test_block_timeout_stays_pending(self, _mock_post):
+        result = wema.card_set_status("0155500011", active=False)
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+        self.assertTrue(result["permanent_block"])
+
     def test_unfreeze_and_topup_report_unsupported(self):
         # ALAT virtual cards have no reversible freeze / incremental top-up.
         self.assertFalse(wema.card_set_status("0155500011", active=True)["success"])
         self.assertFalse(wema.card_fund("0155500011", 5000)["success"])
+
+    def test_unfreeze_and_topup_remain_unsupported_without_live_credentials(self):
+        # Product capabilities must not change between simulation and live: a mock
+        # success here would let direct/admin integrations ship impossible actions.
+        with override_settings(WEMA={**WEMA_CARD, "KEYS": {"card": ""}}):
+            unfreeze = wema.card_set_status("0155500011", active=True)
+            topup = wema.card_fund("0155500011", 5000)
+
+        self.assertFalse(unfreeze["success"])
+        self.assertTrue(unfreeze["unsupported"])
+        self.assertTrue(unfreeze["permanent_block"])
+        self.assertFalse(topup["success"])
+        self.assertTrue(topup["unsupported"])
 
 
 @override_settings(WEMA=WEMA_LIVE)

@@ -48,14 +48,26 @@ describe('access token storage', () => {
 
 describe('transaction PIN storage', () => {
   it('round-trips the PIN through the keychain and clears it', async () => {
-    await saveTransactionPin('1234');
+    await saveTransactionPin('135790');
     expect(mockSetItemAsync).toHaveBeenCalledWith(
       'txn_pin',
-      '1234',
+      '135790',
       expect.objectContaining({ requireAuthentication: true }),
     );
-    expect(await getTransactionPin()).toBe('1234');
+    expect(await getTransactionPin()).toBe('135790');
     await clearTransactionPin();
     expect(await getTransactionPin()).toBeNull();
+  });
+
+  it('refuses legacy, malformed and non-numeric PINs', async () => {
+    await expect(saveTransactionPin('1234')).rejects.toThrow(
+      'A 6-digit transaction PIN is required',
+    );
+    await expect(saveTransactionPin('1234567')).rejects.toThrow(
+      'A 6-digit transaction PIN is required',
+    );
+    await expect(saveTransactionPin('12a456')).rejects.toThrow(
+      'A 6-digit transaction PIN is required',
+    );
   });
 });

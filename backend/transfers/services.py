@@ -19,6 +19,7 @@ from wallet.services import (
     InsufficientFunds,
     LimitExceeded,
     debit,
+    merge_transaction_meta,
     settle_or_refund,
 )
 
@@ -379,13 +380,10 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     # Wema callbacks may identify a transfer by its platform reference rather than
     # echoing our transactionReference. Persist both identifiers immediately so a
     # later authenticated callback can map to this exact debit.
-    provider_meta = dict(txn.meta or {})
-    provider_meta["wema_transfer"] = {
+    merge_transaction_meta(txn, {"wema_transfer": {
         "platform_reference": str(result.get("platform_reference") or ""),
         "status": str(result.get("status") or ""),
-    }
-    txn.meta = provider_meta
-    txn.save(update_fields=["meta"])
+    }})
 
     if result.get("pending"):
         outcome = "pending"
@@ -402,6 +400,14 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         # callback/reconciler may already have resolved the row; never overwrite
         # its terminal state from this request's stale in-memory object.
         settled = settle_or_refund(txn, {"success": True, "status": result.get("status", "")})
+        if settled == "quarantined":
+            # A bank-history sweep found conflicting returned-funds evidence
+            # while this provider response was in flight.  The debit remains on
+            # a durable operator-review hold.  Return the row as under review so
+            # callers preserve their retry key and never invite a second payout.
+            txn.refresh_from_db()
+            txn.provider_outcome = "quarantined"
+            return txn
         if settled != "success":
             log.critical("payout_state_conflict ref=%s provider=success ledger=%s",
                          txn.reference, settled)
@@ -434,6 +440,13 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
              "message": result.get("message", "") or "Transfer failed",
              "status": result.get("status", "")},
         )
+        if settled == "quarantined":
+            # A conflicting returned-credit record beats this stale provider
+            # response. Keep the debit under review and make every caller render
+            # it as non-terminal rather than clearing the durable retry key.
+            txn.refresh_from_db()
+            txn.provider_outcome = "quarantined"
+            return txn
         # A verified callback/reconciler can win before this stale failure
         # response returns. Its success is authoritative; refunding would create
         # free money after the recipient was paid.

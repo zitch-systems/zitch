@@ -18,8 +18,10 @@ from django.utils import timezone
 
 from accounts.models import AccessToken
 from wallet.forex import FxError, create_fx_quote
+from wallet.models import (FundingIntent, ReversalEvidence,
+                           ReversalEvidenceObservation, Transaction)
 from wallet.services import credit, get_or_create_wallet
-from whatsapp.models import AuditLog, SystemSetting
+from whatsapp.models import ApprovalRequest, AuditLog, SystemSetting
 
 User = get_user_model()
 
@@ -283,6 +285,258 @@ class MutationTests(PortalTestCase):
         # thread to its oldest 200 rows forever) and order is oldest-first.
         self.assertEqual(msgs[-1]["text"], "msg 204")
         self.assertEqual(msgs[0]["text"], "msg 5")
+
+
+class MoneyReviewPortalTests(PortalTestCase):
+    """The ordinary browser portal can work every held-money queue safely."""
+
+    def setUp(self):
+        super().setUp()
+        from cards.models import VirtualCard
+
+        self.maker_user = make_staff("review-maker", role="finance")
+        self.checker_user = make_staff("review-checker", role="finance")
+        self.support_user = make_staff("review-support", role="support")
+        self.super_user = make_staff("review-super", superuser=True)
+        self.maker = AccessToken.issue(
+            self.maker_user, scope=AccessToken.ADMIN).key
+        self.checker = AccessToken.issue(
+            self.checker_user, scope=AccessToken.ADMIN).key
+        self.support = AccessToken.issue(
+            self.support_user, scope=AccessToken.ADMIN).key
+        self.super_token = AccessToken.issue(
+            self.super_user, scope=AccessToken.ADMIN).key
+        self.customer = User.objects.create(
+            username="review-customer", phone="08012223334",
+            email="review-customer@zitch.test",
+        )
+        get_or_create_wallet(self.customer)
+        self.card = VirtualCard.objects.create(
+            user=self.customer, card_token="never-return-this-token",
+            last4="7788", holder="REVIEW CUSTOMER",
+        )
+        self.card_txn = Transaction.objects.create(
+            user=self.customer, service="Card funding", amount=Decimal("1500"),
+            direction=Transaction.OUT, transaction_status=Transaction.PENDING,
+            reference="ZPORTALCARDREVIEW1",
+            meta={"card_funding": True, "card": self.card.pk,
+                  "reconcile": True, "card_balance_applied": False,
+                  "raw_provider_payload": {"secret": "must-not-leak"}},
+        )
+        self.funding = FundingIntent.objects.create(
+            user=self.customer, reference="ZPORTALFUNDREVIEW1",
+            amount=Decimal("2500"),
+            meta={
+                "provider": "mono", "provider_reference": "MONO-PAY-PORTAL-1",
+                "raw_provider_payload": {"secret": "must-not-leak"},
+                "funding_review": {
+                    "active": True, "reason": "amount_mismatch",
+                    "observed_amount": "2000", "currency": "NGN",
+                    "evidence": {"provider_reference": "MONO-EVIDENCE-1"},
+                },
+            },
+        )
+        self.reversal = ReversalEvidence.objects.create(
+            provider=ReversalEvidence.WEMA,
+            provider_reference="ALAT-PORTAL-RETURN-1",
+            provider_reference_hash="a" * 64,
+            user=self.customer, amount=Decimal("700"),
+            initial_reason="unmatched_reversal", reason="unmatched_reversal",
+            state=ReversalEvidence.ACTIVE,
+        )
+        ReversalEvidenceObservation.objects.create(
+            evidence=self.reversal, amount=Decimal("700"))
+
+    def test_finance_lists_every_review_without_raw_provider_payloads(self):
+        reversals = self.post("txn/reversal-cases", token=self.maker)
+        cards = self.post("txn/card-funding-cases", token=self.maker)
+        funding = self.post("txn/funding-review-cases", token=self.maker)
+
+        self.assertEqual(reversals.status_code, 200, reversals.content)
+        self.assertEqual(cards.status_code, 200, cards.content)
+        self.assertEqual(funding.status_code, 200, funding.content)
+        self.assertEqual(reversals.json()["cases"][0]["provider_reference"],
+                         "ALAT-PORTAL-RETURN-1")
+        self.assertEqual(cards.json()["cases"][0]["card_last4"], "7788")
+        self.assertEqual(funding.json()["cases"][0]["review_reason"],
+                         "amount_mismatch")
+        rendered = b"".join((reversals.content, cards.content, funding.content))
+        self.assertNotIn(b"never-return-this-token", rendered)
+        self.assertNotIn(b"must-not-leak", rendered)
+
+    def test_reversal_queue_lists_every_associated_payout_for_selection(self):
+        payouts = [
+            Transaction.objects.create(
+                user=self.customer, service="Bank transfer",
+                amount=Decimal("700"), direction=Transaction.OUT,
+                transaction_status=Transaction.SUCCESS,
+                reference=f"ZPORTALMULTIPAYOUT{index}", meta={"bank": "Wema"},
+            )
+            for index in (1, 2)
+        ]
+        self.reversal.associated_payouts.add(*payouts)
+
+        response = self.post("txn/reversal-cases", token=self.maker)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        case = next(row for row in response.json()["cases"]
+                    if row["id"] == self.reversal.pk)
+        self.assertEqual(
+            case["payout_references"],
+            ["ZPORTALMULTIPAYOUT1", "ZPORTALMULTIPAYOUT2"],
+        )
+        self.assertEqual(case["payout_reference"], "")
+
+    def test_non_finance_cannot_list_or_submit_money_reviews(self):
+        for path in ("txn/reversal-cases", "txn/card-funding-cases",
+                     "txn/funding-review-cases"):
+            self.assertEqual(self.post(path, token=self.support).status_code, 403)
+        response = self.post("txn/funding-resolution", {
+            "reference": self.funding.reference,
+            "evidence_reference": "MONO-EVIDENCE-1",
+            "confirmed_amount": "2500",
+            "disposition": "confirm_paid",
+            "reason": "Settlement statement checked carefully",
+        }, token=self.support)
+        self.assertEqual(response.status_code, 403)
+
+    def test_super_admin_can_open_every_money_review_queue(self):
+        for path in ("txn/reversal-cases", "txn/card-funding-cases",
+                     "txn/funding-review-cases", "approvals"):
+            self.assertEqual(self.post(path, token=self.super_token).status_code,
+                             200, path)
+
+    def test_each_review_can_be_submitted_and_enters_the_generic_queue(self):
+        reversal = self.post("txn/reversal-resolution", {
+            "reference": "", "evidence_reference": "ALAT-PORTAL-RETURN-1",
+            "confirmed_amount": "700", "disposition": "credit_as_deposit",
+            "reason": "Bank return statement confirms customer deposit",
+        }, token=self.maker)
+        card = self.post("txn/card-funding-resolution", {
+            "reference": self.card_txn.reference,
+            "evidence_reference": "ISSUER-TRACE-PORTAL-1",
+            "confirmed_amount": "1500", "disposition": "confirm_failed",
+            "reason": "Issuer settlement statement confirms failed load",
+        }, token=self.maker)
+        funding = self.post("txn/funding-resolution", {
+            "reference": self.funding.reference,
+            "evidence_reference": "MONO-EVIDENCE-1",
+            "confirmed_amount": "2500", "disposition": "confirm_paid",
+            "reason": "Provider settlement statement confirms exact payment",
+        }, token=self.maker)
+        for response in (reversal, card, funding):
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertTrue(response.json()["pending_approval"])
+
+        queue = self.post("approvals", token=self.checker)
+        self.assertEqual(queue.status_code, 200, queue.content)
+        actions = {row["action"] for row in queue.json()["rows"]}
+        self.assertTrue({
+            "wallet.reversal_quarantine_resolution",
+            "wallet.card_funding_resolution",
+            "wallet.funding_review_resolution",
+        }.issubset(actions))
+        by_action = {row["action"]: row for row in queue.json()["rows"]}
+        self.assertEqual(
+            by_action["wallet.reversal_quarantine_resolution"]["payload"]["amount"],
+            "700.00",
+        )
+        self.assertEqual(
+            by_action["wallet.card_funding_resolution"]["payload"]["evidence_reference"],
+            "ISSUER-TRACE-PORTAL-1",
+        )
+        self.assertEqual(
+            by_action["wallet.funding_review_resolution"]["payload"]["amount"],
+            "2500.00",
+        )
+        # The browser gets a rendering allowlist, not immutable evidence snapshots.
+        self.assertNotIn("evidence_snapshot", json.dumps(queue.json()))
+        self.assertNotIn("raw_provider_payload", json.dumps(queue.json()))
+
+    def test_already_credited_funding_conflict_is_visible_and_acknowledged_only(self):
+        from wallet.models import Wallet
+
+        self.funding.status = FundingIntent.PAID
+        self.funding.credited = True
+        self.funding.save(update_fields=["status", "credited", "updated"])
+        Transaction.objects.create(
+            user=self.customer, service="Wallet top-up",
+            amount=self.funding.amount, direction=Transaction.IN,
+            transaction_status=Transaction.SUCCESS,
+            reference=self.funding.reference,
+        )
+        before = Wallet.objects.get(user=self.customer).balance
+
+        listed = self.post("txn/funding-review-cases", token=self.maker)
+        case = next(row for row in listed.json()["cases"]
+                    if row["reference"] == self.funding.reference)
+        self.assertTrue(case["credited"])
+        self.assertEqual(case["dispositions"], ["confirm_existing_credit"])
+
+        requested = self.post("txn/funding-resolution", {
+            "reference": self.funding.reference,
+            "evidence_reference": "MONO-EVIDENCE-PAID-1",
+            "confirmed_amount": "2500",
+            "disposition": "confirm_existing_credit",
+            "reason": "Existing exact wallet credit matches settlement statement",
+        }, token=self.maker)
+        self.assertEqual(requested.status_code, 200, requested.content)
+        decided = self.post("approvals-decide", {
+            "id": requested.json()["approval_id"], "approve": True,
+            "note": "Exact credit and settlement evidence rechecked",
+        }, token=self.checker)
+        self.assertEqual(decided.status_code, 200, decided.content)
+        self.assertEqual(decided.json()["status"], ApprovalRequest.EXECUTED)
+        self.assertEqual(Wallet.objects.get(user=self.customer).balance, before)
+
+    def test_operator_rows_override_terminal_status_while_review_is_active(self):
+        reversal_txn = Transaction.objects.create(
+            user=self.customer, service="Bank transfer", amount=Decimal("700"),
+            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+            reference="ZPORTALREVERSALSTATUS1",
+            meta={"bank": "Wema"},
+        )
+        self.reversal.payout = reversal_txn
+        self.reversal.save(update_fields=["payout", "last_seen"])
+        associated_reversal_txn = Transaction.objects.create(
+            user=self.customer, service="Bank transfer", amount=Decimal("700"),
+            direction=Transaction.OUT,
+            transaction_status=Transaction.SUCCESS,
+            reference="ZPORTALASSOCIATEDREV1", meta={"bank": "Wema"},
+        )
+        self.reversal.associated_payouts.add(associated_reversal_txn)
+        self.card_txn.transaction_status = Transaction.SUCCESS
+        self.card_txn.meta = {
+            **self.card_txn.meta, "reconcile": False,
+            "card_balance_review": True,
+        }
+        self.card_txn.save(update_fields=["transaction_status", "meta"])
+        funding_txn = Transaction.objects.create(
+            user=self.customer, service="Wallet funding", amount=Decimal("2500"),
+            direction=Transaction.IN, transaction_status=Transaction.SUCCESS,
+            reference=self.funding.reference,
+        )
+
+        rows = self.post("transactions", token=self.maker).json()["rows"]
+        by_ref = {row["id"]: row for row in rows}
+        for reference in (
+            reversal_txn.reference, associated_reversal_txn.reference,
+            self.card_txn.reference, funding_txn.reference,
+        ):
+            self.assertEqual(by_ref[reference]["status"], "under_review")
+            self.assertTrue(by_ref[reference]["underReview"])
+
+    def test_live_bundle_exposes_explicit_review_fields_and_second_approval(self):
+        root = Path(__file__).resolve().parent / "static" / "portal" / "admin"
+        source = (root / "views-a.jsx").read_text(encoding="utf-8")
+        api = (root / "api.js").read_text(encoding="utf-8")
+        for label in ("Provider evidence reference", "Confirmed amount",
+                      "Accounting treatment", "Payout to resolve", "Reason"):
+            self.assertIn(label, source)
+        self.assertIn("A different finance operator must approve", source)
+        for action in ("reversalResolution", "cardFundingResolution",
+                       "fundingResolution", "approvalDecide"):
+            self.assertIn(action, api)
 
 
 class WebPagesTests(TestCase):

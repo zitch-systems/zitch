@@ -30,5 +30,19 @@ module.exports = {
   },
   // docs/ holds the in-browser-Babel design-handoff prototypes (reference only,
   // not shipped) and landing/ + mcp-server/ are separate sub-projects.
-  ignorePatterns: ['node_modules/', 'dist/', '.expo/', 'landing/', 'backend/', 'coverage/', 'docs/', 'mcp-server/'],
+  ignorePatterns: [
+    'node_modules/',
+    'dist/',
+    'dist-audit/',
+    '.expo/',
+    'landing/',
+    'landing-legacy/',
+    'backend/',
+    'coverage/',
+    'docs/',
+    'mcp-server/',
+    'zitch-meta-connector/',
+    'android/',
+    'ios/',
+  ],
 };

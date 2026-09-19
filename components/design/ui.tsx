@@ -23,7 +23,14 @@ import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
 import { isBiometricTxnEnabled, isBiometricAvailable, biometricLabel } from '@/lib/biometrics';
 import { getTransactionPin, hasTransactionPin } from '@/lib/secureStore';
+import { TRANSACTION_PIN_LENGTH } from '@/lib/transactionPin';
 import { usePinScreenProtection } from '@/lib/screenCapture';
+import {
+  txnState,
+  settledTransactionTotal,
+  transactionStatusPresentation,
+  type TxnState,
+} from '@/lib/transactionStatus';
 
 export const money = fmtMoney;
 export const moneyk = fmtMoneyk;
@@ -597,7 +604,7 @@ export const Sheet = ({
 };
 
 // ---- PIN entry ----
-export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiometric = true }: { onComplete?: (pin: string, viaBiometric?: boolean) => void; length?: number; busy?: boolean; error?: string; autoBiometric?: boolean }) => {
+export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = false, error, autoBiometric = true }: { onComplete?: (pin: string, viaBiometric?: boolean) => void; length?: number; busy?: boolean; error?: string; autoBiometric?: boolean }) => {
   const { c } = useTheme();
   const [pin, setPin] = useState('');
   // Biometric "pay" shortcut: shown only when the user enabled biometrics, the
@@ -809,7 +816,7 @@ export const PinSheet = ({
   onClose,
   onComplete,
   title = 'Enter your PIN',
-  subtitle = 'Confirm this transaction with your 4-digit PIN',
+  subtitle = `Confirm this transaction with your ${TRANSACTION_PIN_LENGTH}-digit PIN`,
   busy = false,
   error,
   autoBiometric = false,
@@ -858,18 +865,11 @@ export const StatPill = ({ icon, label, onPress }: { icon: string; label: string
 // this they each styled them differently — a failed transfer was red on one
 // screen and plain grey on another, which is the one status you cannot afford
 // to under-state.
-export type TxnState = 'success' | 'pending' | 'failed';
-
-export const txnState = (status: string): TxnState => {
-  const s = (status || '').toLowerCase();
-  if (/fail|declin|revers|cancel/.test(s)) return 'failed';
-  if (/pend|process|await|queue/.test(s)) return 'pending';
-  return 'success';
-};
+export { txnState, settledTransactionTotal, type TxnState };
 
 export const StatusPill = ({ status, small }: { status: string; small?: boolean }) => {
   const { c, theme } = useTheme();
-  const state = txnState(status);
+  const { state, label } = transactionStatusPresentation(status);
   const tone = state === 'failed' ? c.red : state === 'pending' ? c.amber : c.lime;
   return (
     <View
@@ -881,7 +881,7 @@ export const StatusPill = ({ status, small }: { status: string; small?: boolean 
         backgroundColor: iconTint(tone, theme === 'dark'),
       }}
     >
-      <Text style={{ fontSize: small ? 10 : 11, fontFamily: font.semibold, color: tone }}>{status}</Text>
+      <Text style={{ fontSize: small ? 10 : 11, fontFamily: font.semibold, color: tone }}>{label}</Text>
     </View>
   );
 };
@@ -1146,6 +1146,11 @@ export type Txn = {
   reference?: string;
   /** The customer's own note for this payment, when they gave one. */
   narration?: string;
+  /** A provider/ledger conflict is active, so the displayed status must stay
+   * non-terminal even when the older immutable ledger row says Successful. */
+  underReview?: boolean;
+  statusMessage?: string;
+  reviewKind?: string;
   /** Epoch ms parsed from the backend's date string, or undefined when it
    *  couldn't be read. Grouping by month needs a real instant; `detail` is a
    *  pre-formatted display string and cannot be sorted or bucketed. */

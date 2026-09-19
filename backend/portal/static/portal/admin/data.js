@@ -26,6 +26,9 @@ window.ZADM = (function () {
     SUMMARY: null,        // overview KPIs + volume series + providers + latest
     USERS: [], USERS_TOTAL: 0,
     TXNS: [],
+    REVERSAL_CASES: [], REVERSAL_DISPOSITIONS: [],
+    CARD_FUNDING_CASES: [], CARD_FUNDING_DISPOSITIONS: [],
+    FUNDING_REVIEW_CASES: [], FUNDING_REVIEW_DISPOSITIONS: [],
     CONVOS: [],           // inbox rows (threads fetched per selection)
     BROADCASTS: [], BC_META: { opted_in: 0, linked: 0 }, APPROVALS: [],
     AUDIT: [],

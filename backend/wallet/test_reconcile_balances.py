@@ -1,14 +1,16 @@
 """Tests for reconcile_balances — the ledger-vs-bank (Wema NUBAN) integrity check.
 
-Compares each provisioned wallet's ledger balance to the real NUBAN balance and
-PAGES only when the ledger EXCEEDS the bank (the float-risk direction). The benign
-direction (bank ahead of ledger — an unswept deposit) is logged, not paged. Runs
-only when Wema is live; no-ops in simulation/mock.
+Compares each provisioned wallet's ledger balance to the real NUBAN balance.
+Neither discrepancy direction changes money automatically: ledger-over-bank is
+an immediate float risk, while bank-over-ledger is escalated for provenance
+review after the normal funding sweep has had time to catch up. Runs only when
+Wema is live; no-ops in simulation/mock.
 """
 from decimal import Decimal
 from io import StringIO
 from unittest import mock
 
+from django.core.cache import cache
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -50,6 +52,8 @@ class LedgerCurrencyScopeTests(TestCase):
 
 class ReconcileBalancesTests(TestCase):
     def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
         # Seed credit => ledger == 5000; provision a NUBAN so the wallet is swept.
         self.user, _ = make_user("08033330001", "rb@zitch.app", balance="5000")
         _provision(self.user)
@@ -81,14 +85,26 @@ class ReconcileBalancesTests(TestCase):
         alert_mock.assert_called_once()
         self.assertEqual(code, 1)
 
-    def test_bank_over_ledger_no_page(self):
-        # Bank holds MORE (unswept deposit) — benign: logged, not paged, but still a
-        # divergence, so --fail-nonzero trips for investigation.
+    def test_bank_over_ledger_alerts_for_operator_review(self):
+        # A six-hour check must surface a bank-ahead discrepancy, but may never
+        # make an arithmetic correction or select a payment outcome.
         with mock.patch("utility.wema.get_balance", return_value=_bank("6000")):
             out, _err, alert_mock, code = self._run("--fail-nonzero")
         self.assertIn("1 under", out)
-        alert_mock.assert_not_called()
+        alert_mock.assert_called_once()
+        self.assertIn("bank NUBAN balance exceeds ledger", alert_mock.call_args.args[0])
+        self.assertEqual(alert_mock.call_args.kwargs["level"], "error")
         self.assertEqual(code, 1)
+
+    def test_bank_over_ledger_alert_is_rate_limited_until_the_case_changes(self):
+        with (
+            mock.patch("utility.wema.wema_live", return_value=True),
+            mock.patch("utility.wema.get_balance", return_value=_bank("6000")),
+            mock.patch("utility.alerts.alert") as alert_mock,
+        ):
+            call_command("reconcile_balances", stdout=StringIO(), stderr=StringIO())
+            call_command("reconcile_balances", stdout=StringIO(), stderr=StringIO())
+        alert_mock.assert_called_once()
 
     def test_fail_over_trips_on_over(self):
         # --fail-over is the cron flag: the dangerous ledger>bank direction exits 1.
@@ -96,12 +112,13 @@ class ReconcileBalancesTests(TestCase):
             _out, _err, _alert, code = self._run("--fail-over")
         self.assertEqual(code, 1)
 
-    def test_fail_over_ignores_benign_under(self):
-        # A benign unswept-deposit divergence must NOT fail the cron under --fail-over.
+    def test_fail_over_escalates_under_without_changing_exit_contract(self):
+        # --fail-over retains its historical exit contract, but an under must
+        # still reach the operator review path.
         with mock.patch("utility.wema.get_balance", return_value=_bank("6000")):
             out, _err, alert_mock, code = self._run("--fail-over")
         self.assertIn("1 under", out)
-        alert_mock.assert_not_called()
+        alert_mock.assert_called_once()
         self.assertEqual(code, 0)
 
     def test_fail_over_fails_when_all_bank_reads_are_unreachable(self):

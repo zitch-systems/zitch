@@ -71,11 +71,6 @@ def savings_create(request):
     -> {success, wallet, plan}
     """
     user, data = request.user_obj, request.data
-
-    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
-    if pin_err:
-        return pin_err
-
     principal = parse_amount(data.get("amount"))
     if principal is None:
         return fail("Enter a valid amount")
@@ -85,10 +80,18 @@ def savings_create(request):
     if days is None:
         return fail("Invalid lock period")
 
-    key = spend_key(data.get("idempotency_key"), user, "save", principal, days)
+    raw_key = data.get("idempotency_key")
+    if not isinstance(raw_key, str) or not raw_key.strip():
+        return fail("A stable idempotency key is required for fixed savings",
+                    status=400, code="idempotency_key_required")
+    key = spend_key(raw_key, user, "save", principal, days)
     replay = idempotent_replay(existing_for_key(user, key))
     if replay:
         return replay
+
+    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
 
     try:
         plan = lock(user, principal, days, idempotency_key=key)
@@ -98,7 +101,8 @@ def savings_create(request):
         return fail("Insufficient wallet balance", status=402)
 
     wallet = get_or_create_wallet(user)
-    return ok(success=True, wallet=str(wallet.balance), plan=_plan_dict(plan), message="Savings locked")
+    return ok(success=True, reference=plan.reference, wallet=str(wallet.balance),
+              plan=_plan_dict(plan), message="Savings locked")
 
 
 @api

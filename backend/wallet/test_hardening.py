@@ -72,6 +72,19 @@ class VelocityGuardTests(TestCase):
         debit(self.user, Decimal("100"), "Airtime — MTN")
         self.assertIsNone(check_velocity(self.user))
 
+    @override_settings(VELOCITY_MAX_OUT_10MIN=1)
+    def test_internal_adjustment_does_not_trip_customer_velocity(self):
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal("100"),
+            direction=Transaction.OUT,
+            transaction_status=Transaction.SUCCESS,
+            reference="INTERNAL-REVERSAL-1",
+            service="Duplicate payout-refund correction",
+            meta={"internal_movement": True, "reversal_resolution": True},
+        )
+        self.assertIsNone(check_velocity(self.user))
+
     @override_settings(VELOCITY_MAX_OUT_10MIN=0)
     def test_disabled_when_zero(self):
         for _ in range(5):

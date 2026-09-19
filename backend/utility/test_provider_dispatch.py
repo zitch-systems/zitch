@@ -5,7 +5,7 @@ The partner bank is the sole money-movement, Nigeria-KYC and VAS rail; virtual
 cards stay on the generic issuer where configured.
 """
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
@@ -172,6 +172,18 @@ class VasDispatchTests(SimpleTestCase):
 
 
 class CardDispatchTests(SimpleTestCase):
+    def test_card_capabilities_match_backend_contracts(self):
+        self.assertEqual(P.card_capabilities("wema"), {
+            "can_fund": False,
+            "can_unfreeze": False,
+            "permanent_block": True,
+        })
+        self.assertEqual(P.card_capabilities("issuer"), {
+            "can_fund": True,
+            "can_unfreeze": True,
+            "permanent_block": False,
+        })
+
     def test_card_issue_routes_to_generic_issuer_by_default(self):
         # No partner bank card key configured -> card_provider() is 'issuer'.
         with patch("utility.providers.issue_card",
@@ -179,6 +191,203 @@ class CardDispatchTests(SimpleTestCase):
             out = P.card_issue("ADA EZE", "42", email="ada@b.com")
         m.assert_called_once()
         self.assertTrue(out["success"])
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": True},
+    )
+    def test_generic_card_fund_timeout_is_ambiguous_not_refundable(self):
+        with patch("utility.providers.requests.post",
+                   side_effect=P.requests.Timeout("response lost")):
+            out = P.card_fund("card_1", 5000)
+
+        self.assertFalse(out["success"])
+        self.assertTrue(out["pending"])
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": True},
+    )
+    def test_generic_card_fund_http_acceptance_without_terminal_status_is_pending(self):
+        response = Mock(status_code=202, ok=True, content=b"{}")
+        response.json.return_value = {}
+        with patch("utility.providers.requests.post", return_value=response):
+            out = P.card_fund("card_1", 5000)
+        self.assertFalse(out["success"])
+        self.assertTrue(out["pending"])
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": True},
+    )
+    def test_generic_card_fund_http_409_is_ambiguous_not_refundable(self):
+        response = Mock(status_code=409, ok=False, content=b"{}")
+        response.json.return_value = {"status": "duplicate", "message": "conflict"}
+        with patch("utility.providers.requests.post", return_value=response):
+            out = P.card_fund("card_1", 5000)
+        self.assertFalse(out["success"])
+        self.assertTrue(out["pending"])
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": True},
+    )
+    def test_generic_card_fund_explicit_terminal_success_is_success(self):
+        response = Mock(status_code=200, ok=True, content=b"{}")
+        response.json.return_value = {"data": {"status": "completed", "id": "load_1"}}
+        with patch("utility.providers.requests.post", return_value=response):
+            out = P.card_fund("card_1", 5000)
+        self.assertTrue(out["success"])
+        self.assertFalse(out.get("pending", False))
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": False},
+    )
+    def test_generic_card_credentials_do_not_enable_unverified_live_contract(self):
+        self.assertFalse(P._card_issuer_live())
+        with patch("utility.providers.requests.post") as post:
+            out = P.card_issue("ADA EZE", "CI-1")
+        post.assert_not_called()
+        self.assertTrue(out["success"])  # test environment uses the deliberate mock
+        self.assertTrue(out["mock"])
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": True},
+    )
+    def test_generic_card_issue_timeout_is_pending(self):
+        with patch("utility.providers.requests.post",
+                   side_effect=P.requests.Timeout("response lost")):
+            out = P.card_issue("ADA EZE", "CI-1")
+        self.assertFalse(out["success"])
+        self.assertTrue(out["pending"])
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": True},
+    )
+    def test_generic_card_issue_bare_id_without_terminal_success_is_pending(self):
+        response = Mock(status_code=200, ok=True, content=b"{}")
+        response.json.return_value = {"data": {"id": "card_1", "maskedPan": "50611234",
+                                                "expiryMonth": "12", "expiryYear": "2029"}}
+        with patch("utility.providers.requests.post", return_value=response):
+            out = P.card_issue("ADA EZE", "CI-1")
+        self.assertFalse(out["success"])
+        self.assertTrue(out["pending"])
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": True},
+    )
+    def test_generic_card_issue_needs_explicit_success_and_card_evidence(self):
+        response = Mock(status_code=200, ok=True, content=b"{}")
+        response.json.return_value = {
+            "status": True,
+            "data": {"id": "card_1", "status": "issued", "maskedPan": "50611234",
+                     "expiryMonth": "12", "expiryYear": "2029"},
+        }
+        with patch("utility.providers.requests.post", return_value=response):
+            out = P.card_issue("ADA EZE", "CI-1")
+        self.assertTrue(out["success"])
+        self.assertEqual(out["last4"], "1234")
+        self.assertEqual(out["expiry"], "12/29")
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": True},
+    )
+    def test_generic_card_issue_terminal_rejection_allows_failure(self):
+        response = Mock(status_code=422, ok=False, content=b"{}")
+        response.json.return_value = {"status": "rejected", "message": "Invalid customer"}
+        with patch("utility.providers.requests.post", return_value=response):
+            out = P.card_issue("ADA EZE", "CI-1")
+        self.assertFalse(out["success"])
+        self.assertFalse(out.get("pending", False))
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": True},
+    )
+    def test_generic_card_status_timeout_is_pending(self):
+        with patch("utility.providers.requests.put",
+                   side_effect=P.requests.Timeout("response lost")):
+            out = P.card_set_status("card_1", active=False)
+        self.assertFalse(out["success"])
+        self.assertTrue(out["pending"])
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": True},
+    )
+    def test_generic_card_status_bare_2xx_is_pending(self):
+        response = Mock(status_code=200, ok=True, content=b"{}")
+        response.json.return_value = {}
+        with patch("utility.providers.requests.put", return_value=response):
+            out = P.card_set_status("card_1", active=False)
+        self.assertFalse(out["success"])
+        self.assertTrue(out["pending"])
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": True},
+    )
+    def test_generic_card_status_needs_explicit_expected_state(self):
+        response = Mock(status_code=200, ok=True, content=b"{}")
+        response.json.return_value = {"data": {"status": "blocked"}}
+        with patch("utility.providers.requests.put", return_value=response):
+            out = P.card_set_status("card_1", active=False)
+        self.assertTrue(out["success"])
+
+    @override_settings(
+        CARD_PROVIDER="issuer",
+        WEMA={"SIMULATION": False},
+        CARD_ISSUER={"API_KEY": "issuer-key", "BASE_URL": "https://issuer.invalid",
+                     "BRAND": "Verve", "LIVE_ENABLED": True},
+    )
+    def test_generic_card_status_explicit_false_is_terminal(self):
+        response = Mock(status_code=200, ok=True, content=b"{}")
+        response.json.return_value = {"success": False, "message": "not changed"}
+        with patch("utility.providers.requests.put", return_value=response):
+            out = P.card_set_status("card_1", active=False)
+        self.assertFalse(out["success"])
+        self.assertFalse(out.get("pending", False))
+
+    @override_settings(
+        CARD_PROVIDER="wema",
+        WEMA={"BASE_URL": "https://wema.invalid", "CHANNEL_ID": "channel",
+              "KEYS": {"card": "card-subscription"}, "CARD_PRODUCT_KEY": "product-key",
+              "SIMULATION": False},
+    )
+    def test_wema_card_issue_timeout_is_pending(self):
+        with patch("utility.wema._post", side_effect=P.requests.Timeout("response lost")):
+            out = P.card_issue("ADA EZE", "CI-1", account_number="0123456789")
+        self.assertFalse(out["success"])
+        self.assertTrue(out["pending"])
 
     @override_settings(CARD_PROVIDER="wema")
     def test_card_issue_routes_to_wema_when_selected(self):
@@ -202,6 +411,21 @@ class CardDispatchTests(SimpleTestCase):
         ms.assert_called_once_with("wema_1", False)
         mf.assert_called_once_with("wema_1", 5000)
         mr.assert_called_once_with("wema_1")
+
+    @override_settings(CARD_PROVIDER="issuer")
+    def test_explicit_card_backend_override_keeps_existing_wema_card_on_wema(self):
+        with patch("utility.wema.card_set_status", return_value={"success": True}) as ms, \
+             patch("utility.wema.card_fund", return_value={"success": False}) as mf, \
+             patch("utility.wema.card_reveal", return_value={"success": True}) as mr:
+            P.card_set_status("0155500011", active=False, provider="wema",
+                              masked_pan="5061******1234")
+            P.card_fund("0155500011", 5000, provider="wema")
+            P.card_reveal("0155500011", provider="wema")
+
+        ms.assert_called_once_with("0155500011", False,
+                                   masked_pan="5061******1234")
+        mf.assert_called_once_with("0155500011", 5000)
+        mr.assert_called_once_with("0155500011")
 
 
 class WemaVasRoutingTests(TestCase):

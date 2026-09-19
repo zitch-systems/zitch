@@ -14,7 +14,13 @@ from common.ratelimit import ratelimit
 from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key, run_provider_purchase
 
 from .models import CablePlan, DataPlan
-from .providers import remita_pay, remita_validate, vtu_purchase, vtu_verify_customer
+from .providers import (
+    remita_pay,
+    remita_validate,
+    vas_can_settle,
+    vtu_purchase,
+    vtu_verify_customer,
+)
 
 NETWORK_NAMES = {"1": "MTN", "2": "GLO", "3": "Airtel", "4": "9mobile"}
 CABLE_NAMES = {"1": "GoTV", "2": "DSTV", "3": "StarTimes"}
@@ -32,6 +38,17 @@ def _amount(value):
 def _check_pin(user, data):
     """PIN gate with brute-force lockout; returns an error response or None."""
     return verify_transaction_pin(user, data.get("transaction_pin"))
+
+
+def _required_spend_key(data, user, *parts):
+    raw = data.get("idempotency_key")
+    if not isinstance(raw, str) or not raw.strip():
+        return None, fail(
+            "A stable idempotency key is required for this payment",
+            status=400,
+            code="idempotency_key_required",
+        )
+    return spend_key(raw, user, *parts), None
 
 
 def _run_purchase(user, amount, service, meta, provider_call, idempotency_key=""):
@@ -71,14 +88,21 @@ def _run_purchase(user, amount, service, meta, provider_call, idempotency_key=""
 @require_user
 def buyairtime(request):
     user, data = request.user_obj, request.data
-    err = _check_pin(user, data)
-    if err:
-        return err
     amount = _amount(data.get("amount"))
     if amount is None or amount < 50:
         return fail("Enter a valid amount")
     net = str(data.get("network", ""))
     phone = data.get("phone", "")
+    key, key_error = _required_spend_key(
+        data, user, "airtime", net, phone, amount)
+    if key_error:
+        return key_error
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+    err = _check_pin(user, data)
+    if err:
+        return err
     # Sender's own NUBAN — the source account a Wema airtime buy debits (per-user
     # money-flow model). Blank only when the buyer has no NUBAN yet, in which case
     # the rail falls back to the pool account.
@@ -89,7 +113,7 @@ def buyairtime(request):
         lambda ref: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-airtime",
                                  {"amount": str(amount), "phone": phone, "source_account": source},
                                  reference=ref),
-        idempotency_key=spend_key(data.get("idempotency_key"), user, "airtime", net, phone, amount),
+        idempotency_key=key,
     )
     if not isinstance(outcome, tuple):
         return outcome
@@ -120,20 +144,28 @@ def get_data_plans_price(request):
 @require_user
 def buydata(request):
     user, data = request.user_obj, request.data
+    net = str(data.get("datanetwork", ""))
+    plan_code = str(data.get("selectedDataPlan", ""))
+    phone = data.get("phone", "")
+    key, key_error = _required_spend_key(
+        data, user, "data", net, phone, plan_code)
+    if key_error:
+        return key_error
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+    plan = DataPlan.objects.filter(plan_code=plan_code, network=net).first()
+    if plan is None or not plan.active:
+        return fail("Plan not found", status=404)
     err = _check_pin(user, data)
     if err:
         return err
-    plan = DataPlan.objects.filter(plan_code=str(data.get("selectedDataPlan", ""))).first()
-    if plan is None:
-        return fail("Plan not found", status=404)
-    net = str(data.get("datanetwork", ""))
-    phone = data.get("phone", "")
     outcome = _run_purchase(
         user, plan.price, f"Data — {NETWORK_NAMES.get(net, net)} {plan.name}",
         {"phone": phone, "network": net, "plan_code": plan.plan_code},
         lambda ref: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-data",
                                  {"billersCode": phone, "variation_code": plan.plan_code, "phone": phone}, reference=ref),
-        idempotency_key=spend_key(data.get("idempotency_key"), user, "data", net, phone, plan.plan_code),
+        idempotency_key=key,
     )
     if not isinstance(outcome, tuple):
         return outcome
@@ -180,20 +212,32 @@ def validate_iuc(request):
 @require_user
 def buycable(request):
     user, data = request.user_obj, request.data
+    prov = str(data.get("cablenetwork", ""))
+    plan_code = str(data.get("selectedcablePlan", ""))
+    iuc = data.get("iuc", "")
+    key, key_error = _required_spend_key(
+        data, user, "cable", prov, iuc, plan_code)
+    if key_error:
+        return key_error
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+    plan = CablePlan.objects.filter(cable_plan_code=plan_code, provider=prov).first()
+    if plan is None or not plan.active:
+        return fail("Plan not found", status=404)
     err = _check_pin(user, data)
     if err:
         return err
-    plan = CablePlan.objects.filter(cable_plan_code=str(data.get("selectedcablePlan", ""))).first()
-    if plan is None:
-        return fail("Plan not found", status=404)
-    prov = str(data.get("cablenetwork", ""))
-    iuc = data.get("iuc", "")
+    verified = vtu_verify_customer(CABLE_NAMES.get(prov, "dstv").lower(), iuc)
+    if not verified.get("success"):
+        return fail(verified.get("message", "Could not verify IUC number"), status=400)
     outcome = _run_purchase(
         user, plan.price, f"Cable — {CABLE_NAMES.get(prov, prov)} {plan.name}",
-        {"iuc": iuc, "provider": prov, "plan_code": plan.cable_plan_code},
+        {"iuc": iuc, "provider": prov, "plan_code": plan.cable_plan_code,
+         "customer_name": str(verified.get("customer_name") or "")},
         lambda ref: vtu_purchase(CABLE_NAMES.get(prov, "dstv").lower(),
                                  {"billersCode": iuc, "variation_code": plan.cable_plan_code}, reference=ref),
-        idempotency_key=spend_key(data.get("idempotency_key"), user, "cable", prov, iuc, plan.cable_plan_code),
+        idempotency_key=key,
     )
     if not isinstance(outcome, tuple):
         return outcome
@@ -220,9 +264,6 @@ def validate_meter(request):
 @require_user
 def buyelectricity(request):
     user, data = request.user_obj, request.data
-    err = _check_pin(user, data)
-    if err:
-        return err
     amount = _amount(data.get("amount"))
     if amount is None or amount < MIN_ELECTRICITY:
         return fail(f"Minimum amount is ₦{MIN_ELECTRICITY:,.0f}")
@@ -230,8 +271,10 @@ def buyelectricity(request):
     meter = str(data.get("meter", "") or "").strip()
     meter_type = data.get("meter_type", "prepaid")
     disco_name = DISCO_NAMES.get(disco, disco)
-    idempotency_key = spend_key(
-        data.get("idempotency_key"), user, "electricity", disco, meter, amount)
+    idempotency_key, key_error = _required_spend_key(
+        data, user, "electricity", disco, meter, meter_type, amount)
+    if key_error:
+        return key_error
     # A connectivity retry after the provider has already accepted the payment
     # must replay from our ledger even if customer verification is temporarily
     # unavailable. Re-verifying before this lookup turned a completed purchase
@@ -239,6 +282,9 @@ def buyelectricity(request):
     replay = idempotent_replay(existing_for_key(user, idempotency_key))
     if replay:
         return replay
+    err = _check_pin(user, data)
+    if err:
+        return err
     verified = vtu_verify_customer(
         f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric", meter, meter_type)
     if not verified.get("success"):
@@ -293,15 +339,40 @@ def payremita(request):
     stays PENDING (ALAT has no Remita status endpoint — see wema.vas_status); it is
     never auto-refunded, so a maybe-paid bill is not double-spent."""
     user, data = request.user_obj, request.data
-    err = _check_pin(user, data)
-    if err:
-        return err
     rrr = (data.get("rrr") or "").strip()
     if not rrr:
         return fail("Enter the Remita RRR")
     amount = _amount(data.get("amount"))
     if amount is None or amount < 100:
         return fail("Enter a valid amount")
+    key, key_error = _required_spend_key(data, user, "remita", rrr, amount)
+    if key_error:
+        return key_error
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+    can_settle, _settlement_reason = vas_can_settle("remita")
+    if not can_settle:
+        return fail(
+            "Remita payments are temporarily unavailable. You have not been charged.",
+            status=422,
+            code="remita_unavailable",
+            not_charged=True,
+        )
+    err = _check_pin(user, data)
+    if err:
+        return err
+    verified = remita_validate(rrr)
+    if not verified.get("success"):
+        return fail(verified.get("message", "Could not validate this RRR"), status=400)
+    authoritative_amount = _amount(verified.get("amount"))
+    if authoritative_amount is not None and authoritative_amount != amount:
+        return fail(
+            "The amount for this RRR changed. Review it again before paying.",
+            status=409,
+            code="rrr_amount_changed",
+            amount=str(authoritative_amount),
+        )
     source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
     name = user.get_full_name() or user.phone or "Zitch User"
     outcome = _run_purchase(
@@ -309,7 +380,7 @@ def payremita(request):
         {"rrr": rrr, "vas_rail": "wema", "vas_type": "remita"},
         lambda ref: remita_pay(amount, ref, rrr=rrr, source_account=source,
                                email=user.email or "", phone=user.phone or "", name=name),
-        idempotency_key=spend_key(data.get("idempotency_key"), user, "remita", rrr, amount),
+        idempotency_key=key,
     )
     if not isinstance(outcome, tuple):
         return outcome

@@ -28,7 +28,7 @@ is configured.
 import hashlib
 import hmac
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import requests
 from django.conf import settings
@@ -76,8 +76,19 @@ def _url(path: str) -> str:
 
 def _ok(data: dict) -> bool:
     """Mono's envelope status — "successful" (v1/v2) or a truthy boolean."""
-    s = data.get("status")
-    return s is True or str(s).lower() in ("successful", "success", "true") or bool(data.get("data"))
+    if not isinstance(data, dict):
+        return False
+    if "status" in data:
+        # An explicit provider verdict is authoritative. Some failure envelopes
+        # include diagnostic `data`; treating that non-empty object as success
+        # can link or display an account the provider explicitly rejected.
+        status = data.get("status")
+        return status is True or str(status).strip().lower() in (
+            "successful", "success", "true",
+        )
+    # Older Mono responses can omit status entirely. Preserve that compatibility
+    # only when there is no contradictory status field to override.
+    return bool(data.get("data"))
 
 
 def _get(path: str, params: dict | None = None) -> requests.Response:
@@ -94,8 +105,11 @@ def _unreachable(exc: Exception) -> dict:
 
 def _naira(kobo) -> Decimal | None:
     try:
-        return (Decimal(str(kobo)) / 100).quantize(Decimal("0.01"))
-    except (TypeError, ValueError):
+        value = Decimal(str(kobo))
+        if not value.is_finite():
+            return None
+        return (value / 100).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError):
         return None
 
 
@@ -201,7 +215,9 @@ def get_balance(account_id: str) -> dict:
     try:
         data = _get(f"/v2/accounts/{account_id}/balance").json()
         d = data.get("data", {}) or {}
-        return {"success": _ok(data), "balance_naira": _naira(d.get("balance")), "raw": data}
+        balance = _naira(d.get("balance"))
+        return {"success": _ok(data) and balance is not None,
+                "balance_naira": balance, "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
@@ -224,7 +240,7 @@ def initiate_directpay(amount_naira, reference: str, *, email: str = "", name: s
                        redirect_url: str = "") -> dict:
     """Start a DirectPay debit to fund the wallet.
 
-    POST /v1/payments/initiate -> {authorization_url, reference}. Amount is sent in
+    POST /v2/payments/initiate -> {authorization_url, reference}. Amount is sent in
     kobo. MOCK returns a sentinel URL so funding is testable offline.
     """
     if not mono_live():
@@ -241,16 +257,88 @@ def initiate_directpay(amount_naira, reference: str, *, email: str = "", name: s
             "redirect_url": redirect_url,
             "customer": {"email": email, "name": name or (email or "Zitch user").split("@")[0]},
         }
-        data = _post("/v1/payments/initiate", body).json()
+        response = _post("/v2/payments/initiate", body)
+        try:
+            status_code = int(getattr(response, "status_code", 0) or 0)
+        except (TypeError, ValueError):
+            # An HTTP client/proxy adapter returning an unfamiliar status shape
+            # is not proof that a money-moving POST was rejected.
+            status_code = 0
+        data = response.json()
+        if not isinstance(data, dict):
+            log.warning("mono_directpay_ambiguous_payload ref=%s http=%s type=%s",
+                        reference, status_code, type(data).__name__)
+            return {
+                "success": False,
+                "pending": True,
+                "reference": reference,
+                "http_status": status_code,
+                "message": ("Bank funding request is processing; its outcome is not yet "
+                            "confirmed."),
+            }
         d = data.get("data", {}) or {}
+        if not isinstance(d, dict):
+            d = {}
         url = d.get("mono_url", "") or d.get("payment_link", "")
-        if not (_ok(data) and url):
-            log.warning("mono_directpay_failed ref=%s msg=%s", reference, data.get("message"))
-        return {"success": _ok(data) and bool(url), "authorization_url": url,
-                "reference": d.get("reference", reference),
-                "message": data.get("message", "Could not start bank funding"), "raw": data}
+        provider_reference = (d.get("id") or d.get("_id")
+                              or d.get("reference") or reference)
+        provider_status = str(data.get("status") or "").strip().lower()
+        if (200 <= status_code < 300
+                and provider_status in {"successful", "success"}
+                and url):
+            return {
+                "success": True,
+                "authorization_url": url,
+                "reference": provider_reference,
+                "http_status": status_code,
+                "message": data.get("message", "Bank funding started"),
+                "raw": data,
+            }
+
+        # A response from a money-moving POST is definitive only when the provider
+        # rejected the request at the HTTP boundary.  A 2xx with an incomplete or
+        # unfamiliar envelope, a retryable HTTP status, or a redirect does not prove
+        # the provider failed to create the payment.  Holding the merchant reference
+        # pending prevents a customer retry from creating a second bank debit.
+        definitive_rejection = 400 <= status_code < 500 and status_code not in {
+            408, 409, 425, 429,
+        }
+        if definitive_rejection:
+            log.warning("mono_directpay_rejected ref=%s http=%s msg=%s",
+                        reference, status_code, data.get("message"))
+            return {
+                "success": False,
+                "reference": provider_reference,
+                "http_status": status_code,
+                "message": data.get("message", "Could not start bank funding"),
+                "raw": data,
+            }
+
+        log.warning("mono_directpay_outcome_unknown ref=%s http=%s msg=%s",
+                    reference, status_code, data.get("message"))
+        return {
+            "success": False,
+            "pending": True,
+            "reference": provider_reference,
+            "http_status": status_code,
+            "message": (data.get("message") or
+                        "Bank funding request is processing; its outcome is not yet confirmed."),
+            "raw": data,
+        }
     except requests.RequestException as exc:
-        return _unreachable(exc)
+        # DirectPay is a money-moving POST.  A timeout/connection reset does not
+        # prove that Mono rejected it: the provider may have accepted the debit
+        # before the response was lost.  Callers must keep the SAME merchant
+        # reference pending and wait for the webhook instead of presenting a
+        # failure that invites a second charge.
+        log.warning("mono_directpay_outcome_unknown ref=%s error=%s",
+                    reference, type(exc).__name__)
+        return {
+            "success": False,
+            "pending": True,
+            "reference": reference,
+            "message": "Bank funding request is processing; its outcome is not yet confirmed.",
+        }
 
 
 # ---------------------------------------------------------------------------

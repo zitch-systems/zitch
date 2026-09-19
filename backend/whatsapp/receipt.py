@@ -348,6 +348,7 @@ def render_receipt(title: str, rows: list, ref: str, *, status: str = "Successfu
 _STATUS_BADGE = {
     "success": ("✓ Successful", (226, 244, 240), _BRAND_DEEP),
     "pending": ("⏳ Pending", (255, 244, 219), (156, 108, 5)),
+    "under_review": ("⏳ Under review", (255, 244, 219), (156, 108, 5)),
     "failed": ("✕ Failed", (252, 228, 226), (168, 45, 38)),
 }
 

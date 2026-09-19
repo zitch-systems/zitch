@@ -90,6 +90,20 @@ class TransactionAlertTests(TestCase):
                 credit(self.user, Decimal("5000"), "reversal:transfer")
         email.assert_not_called()
 
+    def test_internal_reversal_evidence_never_sends_customer_alerts(self):
+        with patch("utility.providers.send_email") as email, \
+             patch("utility.providers.send_sms") as sms:
+            with self.captureOnCommitCallbacks(execute=True):
+                Transaction.objects.create(
+                    user=self.user, amount=Decimal("500"), direction=Transaction.IN,
+                    service="Payout reversal evidence", reference="REV-EVIDENCE-1",
+                    transaction_status=Transaction.SUCCESS,
+                    meta={"internal_evidence": True,
+                          "suppress_transaction_alert": True},
+                )
+        email.assert_not_called()
+        sms.assert_not_called()
+
     def test_a_provider_outage_does_not_break_the_payment(self):
         with patch("utility.providers.send_email", side_effect=RuntimeError("mail down")), \
              patch("utility.providers.send_sms", side_effect=RuntimeError("sms down")):

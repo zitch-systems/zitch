@@ -21,6 +21,7 @@ import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as MediaLibrary from 'expo-media-library';
 import { BANK_WHATSAPP_DISPLAY } from '@/components/configFiles/links';
+import { transactionStatusPresentation } from '@/lib/transactionStatus';
 
 export type ReceiptRow = [string, string, boolean?];
 export type ReceiptFormat = 'jpeg' | 'pdf';
@@ -120,8 +121,9 @@ const esc = (s: string) =>
 /** Badge colours per outcome — a shared document must never dress a pending or
  *  failed transaction in success green. */
 const badgeTone = (status: string): { bg: string; fg: string } => {
-  if (/fail|revers|declin/i.test(status)) return { bg: '#fdecec', fg: '#c0392b' };
-  if (/pend|process/i.test(status)) return { bg: '#fdf3e0', fg: '#b9770e' };
+  const state = transactionStatusPresentation(status).state;
+  if (state === 'failed') return { bg: '#fdecec', fg: '#c0392b' };
+  if (state === 'pending') return { bg: '#fdf3e0', fg: '#b9770e' };
   return { bg: '#e8f6ee', fg: '#128c4a' };
 };
 
@@ -195,7 +197,7 @@ export const receiptHtml = ({
   `<div>${'ZITCH &nbsp;&bull;&nbsp; '.repeat(14)}</div>`).join('')}</div>
 <div class="band"><div class="mark">zitch</div><div class="kicker">Transaction receipt</div></div>
 <div class="body">
-  <span class="badge">${esc(status)}</span>
+  <span class="badge">${esc(transactionStatusPresentation(status).label)}</span>
   <h1>${esc(title)}</h1>
   <p class="msg">${esc(message)}</p>
   <table>${rows

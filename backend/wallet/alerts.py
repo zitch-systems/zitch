@@ -46,6 +46,11 @@ def _alert_timestamp(value, format_string: str) -> str:
 _SILENT_SERVICES = ("reversal", "settlement", "adjustment", "sweep")
 
 
+def _silent_transaction(txn) -> bool:
+    return (bool(_meta(txn).get("suppress_transaction_alert"))
+            or str(txn.service or "").casefold().startswith(_SILENT_SERVICES))
+
+
 def _money(amount, currency: str = "NGN") -> str:
     symbol = "₦" if currency == "NGN" else f"{currency} "
     return f"{symbol}{amount:,.2f}"
@@ -536,7 +541,7 @@ def _alert_on_settled_transaction(sender, instance, **kwargs):
     from .models import Transaction
 
     txn = Transaction.objects.filter(pk=instance.pk).first() or instance
-    if str(txn.service or "").startswith(_SILENT_SERVICES):
+    if _silent_transaction(txn):
         return
 
     # A reversal does not create a ledger row — `refund` and the disbursement
@@ -595,7 +600,7 @@ def retry_pending_whatsapp_alerts(*, since=None, limit: int = 50) -> int:
 
     sent = 0
     for txn in qs[:max(0, int(limit or 0))]:
-        if str(txn.service or "").startswith(_SILENT_SERVICES):
+        if _silent_transaction(txn):
             continue
         reversal = txn.transaction_status == Transaction.FAILED
         claim = _whatsapp_claim_flag(reversal)

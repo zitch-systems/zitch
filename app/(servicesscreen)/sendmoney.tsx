@@ -3,7 +3,9 @@ import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { apiPost, newIdempotencyKey } from '@/lib/api';
+import { apiPost } from '@/lib/api';
+import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
+import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
 import { transfersService } from '@/lib/services/transfers';
 import { isBiometricAvailable, authenticate } from '@/lib/biometrics';
@@ -20,7 +22,7 @@ const AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 const LARGE_TXN = 100000;
 type Step = null | 'confirm' | 'pin';
 type Bank = { code: string; name: string; color: string };
-type Beneficiary = { id: number; name: string; account_number: string; bank_name: string; initials: string; color: string };
+type Beneficiary = { id: number; name: string; account_number: string; bank_name: string; bank_code?: string; initials: string; color: string };
 type BankMatch = { bank: string; bank_name: string; name: string };
 
 const SendMoney = () => {
@@ -28,7 +30,6 @@ const SendMoney = () => {
   const { balance, reload } = useWallet();
   const params = useLocalSearchParams<{ identifier?: string }>();
 
-  const [token, setToken] = useState('');
   const [mode, setMode] = useState<'bank' | 'zitch'>('bank');
   const [banks, setBanks] = useState<Bank[]>([]);
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
@@ -41,7 +42,10 @@ const SendMoney = () => {
   // zitch mode
   const [identifier, setIdentifier] = useState('');
   const [resolvedName, setResolvedName] = useState('');
+  const [resolvedRecipient, setResolvedRecipient] = useState('');
+  const [resolvedFor, setResolvedFor] = useState('');
   const [resolving, setResolving] = useState(false);
+  const resolveGeneration = useRef(0);
 
   const [amt, setAmt] = useState('');
   const [note, setNote] = useState('');
@@ -49,12 +53,15 @@ const SendMoney = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState('');
+  const [recovered, setRecovered] = useState(false);
+  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
 
   useEffect(() => {
     getToken().then((t) => {
       if (!t) return;
-      setToken(t);
       fetch(`${baseUrl}/api/transfers/banks/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
         .then((r) => r.json()).then((res) => res.banks && setBanks(res.banks)).catch(() => {});
       apiPost(EP.transfers.beneficiaries)
@@ -62,21 +69,22 @@ const SendMoney = () => {
     });
   }, []);
 
-  useEffect(() => { setResolvedName(''); }, [identifier]);
-
   const amount = Number(amt || 0);
   // Bank mode: type a 10-digit account and we AUTO-DETECT the bank — the server
   // name-enquires across banks and returns the match, so the bank + holder name
   // fill in by themselves. The user can still tap the bank field to override
   // (which resolves at just that one bank).
   const [bankName, setBankName] = useState('');   // resolved account holder name
+  const [bankNameFor, setBankNameFor] = useState('');
   const [resolvingBank, setResolvingBank] = useState(false);
   const [bankErr, setBankErr] = useState('');
   const [matches, setMatches] = useState<BankMatch[]>([]);  // shown when >1 bank matches
+  const bankResolveGeneration = useRef(0);
 
-  const applyMatch = (m: BankMatch) => {
+  const applyMatch = (m: BankMatch, requestedAccount = acct) => {
     setBank(banks.find((b) => b.code === m.bank) || { code: m.bank, name: m.bank_name, color: c.brand });
     setBankName(m.name);
+    setBankNameFor(`${requestedAccount}|${m.bank}`);
     setMatches([]);
     setBankErr('');
   };
@@ -85,21 +93,25 @@ const SendMoney = () => {
   // (or a manual pick) doesn't re-trigger it; editing the account re-detects.
   useEffect(() => {
     if (mode !== 'bank') return;
-    setBank(null); setBankName(''); setBankErr(''); setMatches([]);
-    if (acct.length !== 10) return;
+    const requestedAccount = acct;
+    const generation = ++bankResolveGeneration.current;
+    setBank(null); setBankName(''); setBankNameFor(''); setBankErr(''); setMatches([]);
+    if (requestedAccount.length !== 10) { setResolvingBank(false); return; }
     let cancelled = false;
     setResolvingBank(true);
     const t = setTimeout(async () => {
       try {
-        const res = await transfersService.resolve(acct); // no bank -> auto-detect
-        if (cancelled) return;
-        if (res.success && res.matches?.length === 1) applyMatch(res.matches[0]);
+        const res = await transfersService.resolve(requestedAccount); // no bank -> auto-detect
+        if (cancelled || generation !== bankResolveGeneration.current) return;
+        if (res.success && res.matches?.length === 1) applyMatch(res.matches[0], requestedAccount);
         else if (res.success && res.matches?.length) setMatches(res.matches);
         else setBankErr(res.message || "Couldn't detect the bank — tap “Bank” to pick it.");
       } catch {
-        if (!cancelled) setBankErr("Couldn't verify this account. Please try again.");
+        if (!cancelled && generation === bankResolveGeneration.current) {
+          setBankErr("Couldn't verify this account. Please try again.");
+        }
       } finally {
-        if (!cancelled) setResolvingBank(false);
+        if (!cancelled && generation === bankResolveGeneration.current) setResolvingBank(false);
       }
     }, 500);
     return () => { cancelled = true; clearTimeout(t); };
@@ -107,53 +119,126 @@ const SendMoney = () => {
 
   // Manual override: resolve at the specific bank the user picks from the sheet.
   const chooseBank = async (b: Bank) => {
-    setBank(b); setBankSheet(false); setMatches([]); setBankName(''); setBankErr('');
-    if (acct.length !== 10) return;
+    const requestedAccount = acct;
+    const generation = ++bankResolveGeneration.current;
+    setBank(b); setBankSheet(false); setMatches([]); setBankName(''); setBankNameFor(''); setBankErr('');
+    if (requestedAccount.length !== 10) { setResolvingBank(false); return; }
     setResolvingBank(true);
     try {
-      const res = await transfersService.resolve(acct, b.code);
-      if (res.success && res.name) setBankName(res.name);
+      const res = await transfersService.resolve(requestedAccount, b.code);
+      if (generation !== bankResolveGeneration.current) return;
+      if (res.success && res.name) {
+        setBankName(res.name);
+        setBankNameFor(`${requestedAccount}|${b.code}`);
+      }
       else setBankErr(res.message || "Couldn't verify this account at that bank.");
-    } catch { setBankErr("Couldn't verify this account. Please try again."); }
-    finally { setResolvingBank(false); }
+    } catch {
+      if (generation === bankResolveGeneration.current) {
+        setBankErr("Couldn't verify this account. Please try again.");
+      }
+    }
+    finally {
+      if (generation === bankResolveGeneration.current) setResolvingBank(false);
+    }
   };
 
-  const acctReady = mode === 'bank' ? acct.length === 10 && !!bank : !!resolvedName;
-  const recipientName = picked ? picked.name : mode === 'bank' ? bankName : resolvedName;
-  const valid = (!!picked || acctReady) && amount >= 10 && amount <= balance;
+  const identifierKey = identifier.trim().toLowerCase();
+  const activeResolvedName = resolvedFor === identifierKey ? resolvedName : '';
+  const activeResolvedRecipient = resolvedFor === identifierKey ? resolvedRecipient : '';
+  const bankResolutionKey = `${acct.trim()}|${bank?.code || ''}`;
+  const activeBankName = bankNameFor === bankResolutionKey ? bankName : '';
+  const pickedBankCode = picked?.bank_code
+    || banks.find((candidate) => candidate.name === picked?.bank_name)?.code
+    || '';
+  const pickedReady = !!picked && (picked.bank_name === 'Zitch' || !!pickedBankCode);
+  const acctReady = mode === 'bank'
+    ? acct.length === 10 && !!bank && !!activeBankName
+    : !!activeResolvedName;
+  const recipientName = picked ? picked.name : mode === 'bank' ? activeBankName : activeResolvedName;
+  const valid = (pickedReady || acctReady) && amount >= 10 && amount <= balance;
 
   const resolveZitch = async () => {
-    if (identifier.trim().length < 4) { notify('Error', 'Enter the recipient phone number.'); return; }
+    const requestedIdentifier = identifier.trim();
+    if (requestedIdentifier.length < 4) { notify('Error', 'Enter the recipient phone number.'); return; }
+    const requestedFor = requestedIdentifier.toLowerCase();
+    const generation = ++resolveGeneration.current;
     setResolving(true);
     try {
-      const res = await transfersService.resolveLegacy(identifier);
-      if (res.success) setResolvedName(res.name);
+      const res = await transfersService.resolveLegacy(requestedIdentifier);
+      if (generation !== resolveGeneration.current) return;
+      const recipientKey = String(res.recipient_key || '').trim();
+      if (res.success && recipientKey) {
+        setResolvedName(res.name);
+        // The same account may be typed as phone, email or @username. Bind the
+        // local durable marker to the backend's immutable opaque account key,
+        // never to mutable PII or the alias the customer happened to type.
+        setResolvedRecipient(recipientKey);
+        setResolvedFor(requestedFor);
+      }
+      else if (res.success) {
+        notify('Unable to confirm recipient', 'Refresh the app and confirm this recipient again.');
+      }
       else notify('Not found', res.message || 'No Zitch user with that detail.');
-    } catch { notify('Error', 'Something went wrong.'); }
-    finally { setResolving(false); }
+    } catch {
+      if (generation === resolveGeneration.current) notify('Error', 'Something went wrong.');
+    }
+    finally {
+      if (generation === resolveGeneration.current) setResolving(false);
+    }
   };
 
-  const postSend = async (pin: string) => {
+  const changeIdentifier = (value: string) => {
+    resolveGeneration.current += 1;
+    setResolving(false);
+    setResolvedName('');
+    setResolvedRecipient('');
+    setResolvedFor('');
+    setIdentifier(value.replace(/[^\d@a-zA-Z]/g, '').slice(0, 15));
+  };
+
+  const transferAttempt = () => {
     const usingBank = (picked && picked.bank_name !== 'Zitch') || (!picked && mode === 'bank');
     if (usingBank) {
       const accountNumber = picked ? picked.account_number : acct;
-      const bankNameFinal = picked ? picked.bank_name : bank?.name;
-      const bankCode = picked ? banks.find((b) => b.name === bankNameFinal)?.code : bank?.code;
+      const bankCode = picked ? pickedBankCode : bank?.code;
+      return {
+        scope: 'bank-transfer',
+        fingerprint: [
+          accountNumber.trim(),
+          String(bankCode || '').trim(),
+          String(amount),
+        ].join('|'),
+      };
+    }
+    const id = picked ? picked.account_number : activeResolvedRecipient;
+    return {
+      scope: 'zitch-transfer',
+      fingerprint: [id.trim().toLowerCase(), String(amount)].join('|'),
+    };
+  };
+
+  const postSend = async (pin: string, idempotencyKey: string) => {
+    const usingBank = (picked && picked.bank_name !== 'Zitch') || (!picked && mode === 'bank');
+    if (usingBank) {
+      const accountNumber = picked ? picked.account_number : acct;
+      const bankCode = picked ? pickedBankCode : bank?.code;
       return transfersService.send({
         account_number: accountNumber, bank: bankCode, name: recipientName, amount: amt,
-        transaction_pin: pin, note, idempotency_key: idemKey.current,
+        transaction_pin: pin, note, idempotency_key: idempotencyKey,
       });
     }
     const id = picked ? picked.account_number : identifier;
     return transfersService.sendLegacy({
-      identifier: id, amount: amt, transaction_pin: pin, note, idempotency_key: idemKey.current,
+      identifier: id,
+      recipient_key: picked ? undefined : activeResolvedRecipient,
+      amount: amt, transaction_pin: pin, note, idempotency_key: idempotencyKey,
     });
   };
 
-  const idemKey = useRef('');  // stable across retries of one transfer attempt
-
   const send = async (pin: string) => {
-    if (!idemKey.current) idemKey.current = newIdempotencyKey();
+    const attempt = transferAttempt();
+    let requestKey = '';
+    let deliveryStarted = false;
     setBusy(true);
     try {
       // Defense-in-depth: a device biometric step-up for large transfers, on top
@@ -163,10 +248,16 @@ const SendMoney = () => {
         const okScan = await authenticate(`Authorize ${money(amount)} transfer`);
         if (!okScan) { setStep(null); return; }
       }
-      const res = await postSend(pin);
+      // Persist before delivery. A retry after an app restart therefore presents
+      // the same key, while a different material recipient/amount gets its own.
+      requestKey = await acquireSpendAttempt(attempt.scope, attempt.fingerprint);
+      deliveryStarted = true;
+      const res = await postSend(pin, requestKey);
+      const outcome = classifySpendResponse(res);
 
       // Large transfers need durable face verification (done once in KYC).
       if (!res.success && res.code === 'face_required') {
+        await clearSpendAttempt(attempt.scope, attempt.fingerprint, requestKey);
         setStep(null);
         Alert.alert(
           'Face verification needed',
@@ -179,11 +270,40 @@ const SendMoney = () => {
         return;
       }
 
-      if (res.success) { idemKey.current = ''; setStep(null); setDone(true); reload(); }
+      if (outcome === 'success') {
+        await clearSpendAttempt(attempt.scope, attempt.fingerprint, requestKey);
+        setRecovered(isRecoveredSpendResponse(res));
+        setTxnRef(String(res.reference || ''));
+        setStep(null);
+        setDone(true);
+        reload();
+      }
+      else if (outcome === 'pending' || outcome === 'unknown') {
+        setPending(true);
+        setPendingMessage(outcome === 'pending'
+          ? (res.message || 'Your transfer is processing. Its final status will update only after provider confirmation.')
+          : 'We could not confirm this transfer. Check History before trying again.');
+        setTxnRef(String(res.reference || ''));
+        setStep(null);
+        setDone(true);
+        reload();
+      }
       else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
-      else { idemKey.current = ''; notify('Error', res.message || 'Transfer failed'); setStep(null); }
+      else {
+        await clearSpendAttempt(attempt.scope, attempt.fingerprint, requestKey);
+        notify('Error', res.message || 'Transfer failed');
+        setStep(null);
+      }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.'); setStep(null);
+      if (deliveryStarted) {
+        setPending(true);
+        setPendingMessage('We could not confirm this transfer. Check History before trying again.');
+        setStep(null);
+        setDone(true);
+        reload();
+      } else {
+        notify('Unable to start transfer', 'Could not safely prepare or authorize this request. Please try again.');
+      }
     } finally { setBusy(false); }
   };
 
@@ -193,9 +313,15 @@ const SendMoney = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title="Money sent"
-          message={`${money(amount)} sent to ${recipientName || 'recipient'}.`}
+          title={pending ? 'Transfer processing' : recovered ? 'Earlier attempt confirmed' : 'Money sent'}
+          message={pending
+            ? pendingMessage
+            : recovered
+              ? 'This confirms your earlier transfer. No new transfer was made. Authorize a new transfer to send again.'
+            : `${money(amount)} sent to ${recipientName || 'recipient'}.`}
           rows={[['Recipient', recipientName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Fee', '₦0'], ['Total', money(amount), true]]}
+          reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>
@@ -211,7 +337,24 @@ const SendMoney = () => {
       <Segmented
         options={[{ v: 'bank', label: 'To Bank' }, { v: 'zitch', label: 'To Zitch' }]}
         value={mode}
-        onChange={(v) => { setMode(v as any); setPicked(null); setAcct(''); setBank(null); setIdentifier(''); setResolvedName(''); }}
+        onChange={(v) => {
+          resolveGeneration.current += 1;
+          bankResolveGeneration.current += 1;
+          setResolving(false);
+          setResolvingBank(false);
+          setResolvedFor('');
+          setResolvedRecipient('');
+          setMode(v as any);
+          setPicked(null);
+          setAcct('');
+          setBank(null);
+          setBankName('');
+          setBankNameFor('');
+          setBankErr('');
+          setMatches([]);
+          setIdentifier('');
+          setResolvedName('');
+        }}
       />
 
       {picked ? (
@@ -225,7 +368,23 @@ const SendMoney = () => {
         </View>
       ) : mode === 'bank' ? (
         <>
-          <Field label="Account number" value={acct} onChangeText={(v) => setAcct(v.replace(/\D/g, '').slice(0, 10))} keyboardType="number-pad" placeholder="Enter 10-digit account number" prefix={<ZIcon name="bank" size={18} color={c.ink3} />} />
+          <Field
+            label="Account number"
+            value={acct}
+            onChangeText={(v) => {
+              bankResolveGeneration.current += 1;
+              setResolvingBank(false);
+              setBank(null);
+              setBankName('');
+              setBankNameFor('');
+              setBankErr('');
+              setMatches([]);
+              setAcct(v.replace(/\D/g, '').slice(0, 10));
+            }}
+            keyboardType="number-pad"
+            placeholder="Enter 10-digit account number"
+            prefix={<ZIcon name="bank" size={18} color={c.ink3} />}
+          />
           <View style={{ height: 14 }} />
           <Pressable onPress={() => setBankSheet(true)}>
             <Field
@@ -244,14 +403,22 @@ const SendMoney = () => {
             <View style={{ marginTop: 8 }}>
               <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12, marginBottom: 4 }}>Found at more than one bank — pick the right one:</Text>
               {matches.map((m) => (
-                <Pressable key={m.bank} onPress={() => applyMatch(m)} style={{ paddingVertical: 7 }}>
+                <Pressable
+                  key={m.bank}
+                  onPress={() => {
+                    bankResolveGeneration.current += 1;
+                    setResolvingBank(false);
+                    applyMatch(m);
+                  }}
+                  style={{ paddingVertical: 7 }}
+                >
                   <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 13 }}>{m.bank_name}</Text>
                   <Text style={{ color: c.ink2, fontFamily: font.regular, fontSize: 12 }}>{m.name}</Text>
                 </Pressable>
               ))}
             </View>
-          ) : bankName ? (
-            <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 12.5, marginTop: 8 }}>✓ {bankName}</Text>
+          ) : activeBankName ? (
+            <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 12.5, marginTop: 8 }}>✓ {activeBankName}</Text>
           ) : bankErr ? (
             <Text style={{ color: c.red, fontFamily: font.semibold, fontSize: 12.5, marginTop: 8 }}>{bankErr}</Text>
           ) : null}
@@ -259,9 +426,9 @@ const SendMoney = () => {
         </>
       ) : (
         <>
-          <Field label="Zitch tag or phone" value={identifier} onChangeText={(v) => setIdentifier(v.replace(/[^\d@a-zA-Z]/g, '').slice(0, 15))} placeholder="@username / 0801…" prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
+          <Field label="Zitch tag or phone" value={identifier} onChangeText={changeIdentifier} placeholder="@username / 0801…" prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
           <View style={{ marginTop: 8, marginBottom: 8 }}>
-            {resolvedName ? <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 12.5 }}>✓ {resolvedName}</Text>
+            {activeResolvedName ? <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 12.5 }}>✓ {activeResolvedName}</Text>
               : <Btn label="Confirm recipient" variant="outline" size="sm" full={false} onPress={resolveZitch} disabled={resolving} />}
           </View>
         </>

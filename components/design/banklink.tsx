@@ -1,13 +1,15 @@
-import React, { useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { View, Text, Pressable, ScrollView, Alert } from 'react-native';
 import { router } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
-import { Card, Sheet, PinSheet, money, NText } from '@/components/design/ui';
+import { Card, Sheet, money, NText } from '@/components/design/ui';
 import { SectionLabel } from '@/components/design/widgets';
 import { Monogram, AmountField } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
-import { apiJson, newIdempotencyKey } from '@/lib/api';
+import { apiJson } from '@/lib/api';
+import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
+import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet, type LinkedAccount } from '@/lib/wallet';
 
@@ -83,21 +85,18 @@ export const LinkedBanksSummary = () => {
   );
 };
 
-// ---- Wallet: connected-accounts carousel + fund/payout/refresh/unlink -------
+// ---- Wallet: connected-accounts carousel + fund/refresh/unlink --------------
 export const ConnectedAccounts = () => {
   const { c } = useTheme();
   const { linked, showBal, reload, reloadLinked } = useWallet();
 
   const [busyId, setBusyId] = useState<number | null>(null);
-  const [mode, setMode] = useState<null | 'in' | 'out'>(null); // fund Zitch / fund bank
+  const [fundingOpen, setFundingOpen] = useState(false);
   const [target, setTarget] = useState<LinkedAccount | null>(null);
   const [amount, setAmount] = useState('');
-  const [pinOpen, setPinOpen] = useState(false);
-  const [pinErr, setPinErr] = useState('');
   const [busy, setBusy] = useState(false);
-  const idem = useRef('');
 
-  const closeAll = () => { setMode(null); setTarget(null); setAmount(''); setPinOpen(false); setPinErr(''); idem.current = ''; };
+  const closeFunding = () => { setFundingOpen(false); setTarget(null); setAmount(''); };
 
   const refreshOne = async (b: LinkedAccount) => {
     setBusyId(b.id);
@@ -124,60 +123,96 @@ export const ConnectedAccounts = () => {
     ]);
   };
 
-  const openFund = (b: LinkedAccount, m: 'in' | 'out') => { setTarget(b); setMode(m); setAmount(''); idem.current = newIdempotencyKey(); };
-
-  // A NEW amount is a new payment, so it needs a new key. The key used to be
-  // minted once when the sheet opened and reused across edits: an offline retry
-  // after changing the amount replayed the PREVIOUS one server-side and returned
-  // its result, so the confirmation named an amount that never moved. Every other
-  // money screen resets on amount change; this one was missed.
-  //
-  // Only on an actual edit — an unchanged amount fires no keystroke, so the
-  // accidental-double-tap protection the key exists for is untouched.
-  const changeAmount = (v: string) => { setAmount(v); idem.current = newIdempotencyKey(); };
+  const openFund = (b: LinkedAccount) => { setTarget(b); setFundingOpen(true); setAmount(''); };
 
   // Fund Zitch FROM the bank (Mono DirectPay) — wallet credited via webhook.
   const fundIn = async () => {
     if (!target) return;
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt < 100) { notify('Error', 'Minimum amount is ₦100'); return; }
+    const scope = 'banklink-fund';
+    // Match the backend's material binding: one linked account and one canonical
+    // two-decimal amount. Changing either acquires a separate durable marker,
+    // while reopening this exact authorization after an app restart reuses it.
+    const fingerprint = [String(target.id), amt.toFixed(2)].join('|');
+    let requestKey = '';
+    let deliveryStarted = false;
     setBusy(true);
     try {
-      const r = await apiJson<{ success?: boolean; authorization_url?: string; mock?: boolean; message?: string }>(
-        '/api/banklink/fund/', { linked_id: target.id, amount: String(amt), idempotency_key: idem.current });
-      if (!r?.success) { notify('Error', r?.message || 'Could not start bank funding.'); return; }
-      closeAll();
-      if (r.mock || !r.authorization_url || !/^https?:/.test(r.authorization_url)) {
+      requestKey = await acquireSpendAttempt(scope, fingerprint);
+      deliveryStarted = true;
+      const r = await apiJson<{
+        success?: boolean;
+        pending?: boolean;
+        duplicate?: boolean;
+        funded?: boolean;
+        authorization_url?: string;
+        mock?: boolean;
+        message?: string;
+        reference?: string;
+        offline?: boolean;
+        _httpOk?: boolean;
+        _httpStatus?: number;
+      }>('/api/banklink/fund/', {
+        linked_id: target.id,
+        amount: String(amt),
+        idempotency_key: requestKey,
+      });
+      const outcome = classifySpendResponse(r);
+
+      if (outcome === 'pending' || outcome === 'unknown') {
+        notify(
+          'Not confirmed',
+          r.message || 'We could not confirm this bank funding request. Do not start it again; retrying will safely resume the same attempt.',
+        );
+        return;
+      }
+      if (outcome === 'failed') {
+        await clearSpendAttempt(scope, fingerprint, requestKey);
+        notify('Error', r.message || 'Could not start bank funding.');
+        return;
+      }
+
+      const recovered = isRecoveredSpendResponse(r);
+      if (r.funded === true) {
+        await clearSpendAttempt(scope, fingerprint, requestKey);
+        closeFunding();
+        await Promise.all([reload(), reloadLinked()]);
+        notify(
+          recovered ? 'Earlier funding confirmed' : 'Funding confirmed',
+          `${money(amt)} was credited to your Zitch wallet. Start a new request if you want to fund it again.`,
+        );
+        return;
+      }
+      if (r.mock) {
+        await clearSpendAttempt(scope, fingerprint, requestKey);
+        closeFunding();
         notify('Test mode', 'Bank funding is in test mode — no real debit was made.');
         return;
       }
-      await WebBrowser.openBrowserAsync(r.authorization_url);
-      notify('Authorize in your bank', 'Finish there — your Zitch wallet is credited once your bank confirms.');
-    } catch { notify('Error', 'Something went wrong. Please try again later.'); }
-    finally { setBusy(false); }
-  };
-
-  // Fund the bank FROM Zitch (wallet debit -> bank payout), PIN-verified.
-  const fundOut = async (pin: string) => {
-    if (!target) return;
-    const amt = Number(amount);
-    setBusy(true);
-    try {
-      const r = await apiJson<{ success?: boolean; code?: string; message?: string; offline?: boolean }>(
-        '/api/banklink/payout/', { linked_id: target.id, amount: String(amt), pin, idempotency_key: idem.current });
-      if (r?.success) { closeAll(); reload(); reloadLinked(); notify('On its way', `${money(amt)} sent to ${target.bank_name}.`); }
-      else if (r?.code === 'pin_incorrect' || r?.code === 'pin_locked') { setPinErr(r.message || 'Incorrect PIN'); }
-      else if (r?.offline) {
-        // The request may already have reached the server. closeAll() would mint
-        // a fresh idempotency key on reopen, so a retry would look like a NEW
-        // payout and could disburse a second time. Keep the sheet and the key —
-        // this is the same rule every other money screen follows.
-        notify('Not confirmed', 'We could not confirm that payout. Check your connection and tap Send again — it will not send twice.');
+      if (!r.authorization_url || !/^https?:/.test(r.authorization_url)) {
+        // `success` here only means initialization succeeded; without a usable
+        // authorization URL it is not evidence that the bank debit failed.
+        notify('Not confirmed', 'Your bank funding request was started, but its authorization link was not confirmed. Retry to safely resume the same attempt.');
+        return;
       }
-      else { closeAll(); notify('Error', r?.message || 'Could not complete the payout.'); }
+
+      // Do not clear yet: an authorization URL is only an initialized debit,
+      // not a bank-confirmed wallet credit. A later identical action first
+      // replays this key and reports the earlier outcome accurately.
+      closeFunding();
+      await WebBrowser.openBrowserAsync(r.authorization_url);
+      notify(
+        recovered ? 'Continue earlier authorization' : 'Authorize in your bank',
+        'Finish there — your Zitch wallet is credited only after your bank confirms.',
+      );
     } catch {
-      // A thrown error is equally ambiguous about whether the server acted.
-      notify('Not confirmed', 'We could not confirm that payout. Check your connection and tap Send again — it will not send twice.');
+      notify(
+        deliveryStarted ? 'Not confirmed' : 'Unable to start funding',
+        deliveryStarted
+          ? 'We could not confirm this bank funding request. Retry to safely resume the same attempt.'
+          : 'Could not safely prepare this request. Please try again.',
+      );
     }
     finally { setBusy(false); }
   };
@@ -195,7 +230,7 @@ export const ConnectedAccounts = () => {
           </View>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>Connect a bank</Text>
-            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>See its balance & move money in or out</Text>
+            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>See its balance & fund your Zitch wallet</Text>
           </View>
           <ZIcon name="right" size={18} color={c.ink3} />
         </Pressable>
@@ -231,13 +266,9 @@ export const ConnectedAccounts = () => {
                 </View>
 
                 <View style={{ flexDirection: 'row', gap: 9, marginTop: 14 }}>
-                  <Pressable onPress={() => openFund(b, 'in')} hitSlop={2} accessibilityRole="button" accessibilityLabel={`Fund Zitch from ${b.bank_name}`} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.12)' }}>
+                  <Pressable onPress={() => openFund(b)} hitSlop={2} accessibilityRole="button" accessibilityLabel={`Fund Zitch from ${b.bank_name}`} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.12)' }}>
                     <ZIcon name="deposit" size={15} color={c.brand} />
                     <Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.bold }}>Fund Zitch</Text>
-                  </Pressable>
-                  <Pressable onPress={() => openFund(b, 'out')} hitSlop={2} accessibilityRole="button" accessibilityLabel={`Fund ${b.bank_name} from Zitch`} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 40, borderRadius: 12, borderWidth: 1.5, borderColor: c.line }}>
-                    <ZIcon name="withdraw" size={15} color={c.ink2} />
-                    <Text numberOfLines={1} style={{ fontSize: 12.5, color: c.ink2, fontFamily: font.bold }}>Fund bank</Text>
                   </Pressable>
                 </View>
               </Pressable>
@@ -246,41 +277,24 @@ export const ConnectedAccounts = () => {
         </ScrollView>
       )}
 
-      {/* amount sheet (fund in / out) */}
-      <Sheet open={!!mode && !pinOpen} onClose={() => !busy && closeAll()} title={mode === 'out' ? `Fund ${target?.bank_name || 'bank'}` : `Fund Zitch from ${target?.bank_name || 'bank'}`}>
+      {/* Mono DirectPay amount sheet (linked bank -> Zitch wallet). */}
+      <Sheet open={fundingOpen} onClose={() => !busy && closeFunding()} title={`Fund Zitch from ${target?.bank_name || 'bank'}`}>
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 16, marginTop: -6, fontFamily: font.regular }}>
-          {mode === 'out'
-            ? `Move money from your Zitch wallet to ${target?.bank_name || 'your bank'}. You’ll confirm with your PIN.`
-            : `We’ll open ${target?.bank_name || 'your bank'} to authorize the debit. Your wallet is credited once it’s confirmed.`}
+          {`We’ll open ${target?.bank_name || 'your bank'} to authorize the debit. Your wallet is credited once it’s confirmed.`}
         </Text>
-        <AmountField value={amount} onChangeText={changeAmount} />
+        <AmountField value={amount} onChangeText={setAmount} />
         <View style={{ height: 16 }} />
-        {mode === 'out' ? (
-          <Pressable onPress={() => { if (Number(amount) >= 100) { setPinErr(''); setPinOpen(true); } else notify('Error', 'Minimum amount is ₦100'); }}
-            style={{ height: 54, borderRadius: 16, backgroundColor: Number(amount) >= 100 ? c.brand : c.surface3, alignItems: 'center', justifyContent: 'center' }}>
-            <Text style={{ color: Number(amount) >= 100 ? '#fff' : c.ink3, fontFamily: font.bold, fontSize: 15 }}>Continue</Text>
-          </Pressable>
-        ) : (
-          <Pressable onPress={fundIn} disabled={busy || Number(amount) < 100}
-            style={{ height: 54, borderRadius: 16, backgroundColor: Number(amount) >= 100 && !busy ? c.brand : c.surface3, alignItems: 'center', justifyContent: 'center' }}>
-            <Text style={{ color: Number(amount) >= 100 && !busy ? '#fff' : c.ink3, fontFamily: font.bold, fontSize: 15 }}>
-              {busy ? 'Starting…' : Number(amount) >= 100 ? `Fund ${money(Number(amount))}` : 'Fund Zitch'}
-            </Text>
-          </Pressable>
-        )}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Confirm linked-bank funding"
+          onPress={fundIn}
+          disabled={busy || Number(amount) < 100}
+          style={{ height: 54, borderRadius: 16, backgroundColor: Number(amount) >= 100 && !busy ? c.brand : c.surface3, alignItems: 'center', justifyContent: 'center' }}>
+          <Text style={{ color: Number(amount) >= 100 && !busy ? '#fff' : c.ink3, fontFamily: font.bold, fontSize: 15 }}>
+            {busy ? 'Starting…' : Number(amount) >= 100 ? `Fund ${money(Number(amount))}` : 'Fund Zitch'}
+          </Text>
+        </Pressable>
       </Sheet>
-
-      {/* PIN step for payout (fund bank) */}
-      <PinSheet
-        open={pinOpen}
-        onClose={() => !busy && setPinOpen(false)}
-        onComplete={fundOut}
-        busy={busy}
-        error={pinErr}
-        autoBiometric
-        title={`Send ${money(Number(amount) || 0)}`}
-        subtitle={`Enter your PIN to send to ${target?.bank_name || 'your bank'}`}
-      />
     </>
   );
 };

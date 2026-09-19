@@ -22,12 +22,15 @@ class ReconciliationSchedulingTests(TestCase):
         self.txn = debit(self.user, Decimal("55"), "airtime",
                          meta={"vas_type": "airtime", "reconcile": True})
 
-    def callback(self, status, ip="135.236.18.76"):
+    def callback(self, status=None, ip="135.236.18.76", **extra):
         from whatsapp.models import WebhookEvent
+        data = {"transactionReference": self.txn.reference, **extra}
+        if status is not None:
+            data["status"] = status
         return WebhookEvent.objects.create(
             source="wema.txn", verified=True, outcome=WebhookEvent.ACCEPTED,
             http_status=200, reference=self.txn.reference, remote_ip=ip,
-            payload={"data": {"transactionReference": self.txn.reference, "status": status}})
+            payload={"data": data})
 
     @override_settings(WEMA={"CALLBACK_IPS": ["135.236.18.76"]})
     def test_recovers_confirmed_callback_but_never_guesses_from_conflicting_events(self):
@@ -41,6 +44,24 @@ class ReconciliationSchedulingTests(TestCase):
     @override_settings(WEMA={"CALLBACK_IPS": ["135.236.18.76"]})
     def test_does_not_replay_untrusted_callback(self):
         self.callback("Successful", ip="8.8.8.8")
+        self.assertIsNone(recorded_vas_outcome(self.txn))
+
+    @override_settings(WEMA={"CALLBACK_IPS": ["135.236.18.76"]})
+    def test_recovers_numeric_transaction_status_legend(self):
+        for code, expected in ((200, True), (400, False), (401, False)):
+            with self.subTest(code=code):
+                from whatsapp.models import WebhookEvent
+
+                WebhookEvent.objects.all().delete()
+                self.callback(transactionStatus=code)
+                result = recorded_vas_outcome(self.txn)
+                self.assertIsNotNone(result)
+                self.assertEqual(result["success"], expected)
+
+    @override_settings(WEMA={"CALLBACK_IPS": ["135.236.18.76"]})
+    def test_conflicting_status_fields_never_choose_by_precedence(self):
+        self.callback("Successful", transactionStatus=400)
+
         self.assertIsNone(recorded_vas_outcome(self.txn))
 
     @override_settings(WEMA={"CALLBACK_IPS": ["135.236.18.76"]}, PAYMENT_PROVIDER="wema")

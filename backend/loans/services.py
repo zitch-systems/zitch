@@ -22,6 +22,24 @@ class LoanError(Exception):
     """Eligibility violated at disbursement time (raced past the view's checks)."""
 
 
+class LoanRepaymentStale(LoanError):
+    """The quoted loan closed before this repayment acquired its row lock.
+
+    ``transaction_reference`` identifies the FAILED audit row which durably
+    claims the request key without moving the wallet balance.
+    """
+
+    code = "loan_repayment_stale"
+
+    def __init__(self, loan_reference: str, transaction_reference: str = ""):
+        super().__init__(
+            "This loan was repaid before this request could be applied. "
+            "No money was taken."
+        )
+        self.loan_reference = loan_reference
+        self.transaction_reference = transaction_reference
+
+
 def credit_limit(user) -> Decimal:
     """Available credit = limit minus outstanding on any active loan.
 
@@ -74,7 +92,6 @@ def disburse(user, principal, tenure_days: int, idempotency_key: str = "") -> Lo
     return loan
 
 
-@db_transaction.atomic
 def repay(user, loan: Loan, amount, idempotency_key: str = "") -> Loan:
     """Debit the wallet toward a loan; mark repaid when fully settled.
 
@@ -88,39 +105,85 @@ def repay(user, loan: Loan, amount, idempotency_key: str = "") -> Loan:
     from django.db import IntegrityError
 
     from wallet.models import Transaction
-    from wallet.services import DuplicateTransaction
+    from wallet.services import DuplicateTransaction, with_idempotency_fingerprint
 
     amount = Decimal(str(amount))
-    loan = Loan.objects.select_for_update().get(pk=loan.pk)
-    if loan.status == Loan.REPAID:
-        return loan
+    stale_detected = False
+    stale_reference = ""
+    with db_transaction.atomic():
+        loan = Loan.objects.select_for_update().get(pk=loan.pk)
+        if loan.status != Loan.ACTIVE or loan.outstanding <= Decimal("0.00"):
+            stale_detected = True
+            # The view may have selected this row while it was ACTIVE, then wait
+            # behind another repayment which closed it.  A silent return here
+            # used to make the loser report success despite taking no money and,
+            # worse, left its idempotency key free for a future loan.  Claim that
+            # key with a FAILED evidence row. FAILED OUT rows have no balance
+            # effect, and the original loan reference prevents reuse against a
+            # later loan.
+            if idempotency_key:
+                # The active repayment path caps an overpayment to the loan's
+                # outstanding amount. Keep the audit row within that same
+                # ledger-safe bound even if an untrusted request supplied more
+                # digits than Transaction.amount can store; the exact request
+                # remains bound by its fingerprint and requested_amount below.
+                marker_amount = min(
+                    amount, max(loan.total_repayment, Decimal("0.01")),
+                )
+                try:
+                    with db_transaction.atomic():  # contain a same-key race
+                        marker = Transaction.objects.create(
+                            user=user,
+                            service="Loan repayment conflict",
+                            amount=marker_amount,
+                            direction=Transaction.OUT,
+                            transaction_status=Transaction.FAILED,
+                            reference=make_reference("ZLRF"),
+                            meta=with_idempotency_fingerprint({
+                                "loan": loan.reference,
+                                "loan_repayment_outcome": "stale_loan",
+                                "requested_amount": str(amount),
+                                "balance_movement": "0.00",
+                                "internal_evidence": True,
+                            }, idempotency_key),
+                            idempotency_key=idempotency_key,
+                        )
+                except IntegrityError:
+                    raise DuplicateTransaction(idempotency_key)
+                stale_reference = marker.reference
+        else:
+            pay = min(amount, loan.outstanding)
+            wallet = Wallet.objects.select_for_update().get(user=user)
+            if wallet.balance < pay:
+                raise InsufficientFunds("Insufficient wallet balance")
 
-    pay = min(amount, loan.outstanding)
-    wallet = Wallet.objects.select_for_update().get(user=user)
-    if wallet.balance < pay:
-        raise InsufficientFunds("Insufficient wallet balance")
+            wallet.balance -= pay
+            wallet.save(update_fields=["balance", "updated"])
+            try:
+                with db_transaction.atomic():  # savepoint: contain the unique violation
+                    Transaction.objects.create(
+                        user=user,
+                        service="Loan repayment",
+                        amount=pay,
+                        direction=Transaction.OUT,
+                        transaction_status=Transaction.SUCCESS,
+                        reference=make_reference(f"{loan.reference}-R"),
+                        meta=with_idempotency_fingerprint(
+                            {"loan": loan.reference}, idempotency_key),
+                        idempotency_key=idempotency_key,
+                    )
+            except IntegrityError:
+                if idempotency_key:
+                    raise DuplicateTransaction(idempotency_key)
+                raise
 
-    wallet.balance -= pay
-    wallet.save(update_fields=["balance", "updated"])
-    try:
-        with db_transaction.atomic():  # savepoint: contain the unique violation
-            Transaction.objects.create(
-                user=user,
-                service="Loan repayment",
-                amount=pay,
-                direction=Transaction.OUT,
-                transaction_status=Transaction.SUCCESS,
-                reference=make_reference(f"{loan.reference}-R"),
-                meta={"loan": loan.reference},
-                idempotency_key=idempotency_key,
-            )
-    except IntegrityError:
-        if idempotency_key:
-            raise DuplicateTransaction(idempotency_key)
-        raise
+            loan.amount_repaid += pay
+            if loan.outstanding <= Decimal("0.00"):
+                loan.status = Loan.REPAID
+            loan.save(update_fields=["amount_repaid", "status", "updated"])
 
-    loan.amount_repaid += pay
-    if loan.outstanding <= Decimal("0.00"):
-        loan.status = Loan.REPAID
-    loan.save(update_fields=["amount_repaid", "status", "updated"])
+    # Raise only after the inner transaction commits, otherwise the durable key
+    # claim above would roll back with the exception.
+    if stale_detected:
+        raise LoanRepaymentStale(loan.reference, stale_reference)
     return loan

@@ -122,6 +122,38 @@ class PreflightGoTests(TestCase):
         self.assertEqual(code, 1)
 
 
+@override_settings(
+    CARD_PROVIDER="issuer",
+    RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
+    TERMII={"API_KEY": "tk_x"},
+    WEMA=_SAFE_CALLBACKS,
+)
+class CardIssuerPreflightTests(TestCase):
+    def run_with_issuer(self, issuer):
+        with override_settings(CARD_ISSUER=issuer), \
+                mock.patch(_DIAG, return_value=_LIVE_DIAG), \
+                mock.patch(_PROBE, return_value=_VTU_OK):
+            return _run()
+
+    def test_staged_key_with_disabled_gate_warns(self):
+        out, _code = self.run_with_issuer({
+            "API_KEY": "issuer-key",
+            "BASE_URL": "https://issuer.invalid",
+            "LIVE_ENABLED": False,
+        })
+        self.assertIn("Card issuer", out)
+        self.assertIn("not live", out)
+
+    def test_fully_enabled_issuer_passes(self):
+        out, _code = self.run_with_issuer({
+            "API_KEY": "issuer-key",
+            "BASE_URL": "https://issuer.invalid",
+            "LIVE_ENABLED": True,
+        })
+        self.assertIn("Card issuer", out)
+        self.assertIn("live gate, key and base URL configured", out)
+
+
 @override_settings(WEMA=_SAFE_CALLBACKS)
 class PreflightGateTests(TestCase):
     def test_missing_security_info_blocks_go_live(self):
@@ -167,6 +199,49 @@ class PreflightGateTests(TestCase):
         with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
             out, code = _run()
         self.assertIn("covered by the Wallet Services key", out)
+
+    @override_settings(
+        VAS_PROVIDER="wema",
+        WEMA={
+            **_SAFE_CALLBACKS,
+            "BASE_URL": "https://api.alat.ng",
+            "CHANNEL_ID": "chan-1",
+            "KEYS": {"wallet": "wallet-key", "airtime": "airtime-key"},
+            "SIMULATION": False,
+            "VAS_STATUS_LEGEND": "1=success 2=pending",
+        },
+    )
+    def test_preflight_does_not_pass_a_one_sided_vas_legend(self):
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), \
+             mock.patch(_PROBE, return_value=_VTU_OK), \
+             mock.patch("utility.wema.vas_status_entitlement", return_value=(True, "")):
+            out, _code = _run()
+        self.assertIn("VAS status legend (airtime)", out)
+        self.assertIn("must map both an unambiguous success and failed outcome", out)
+
+    @override_settings(
+        WEMA={
+            **_SAFE_CALLBACKS,
+            "BASE_URL": "https://api.alat.ng",
+            "CHANNEL_ID": "chan-1",
+            "KEYS": {
+                "wallet": "wallet-key",
+                "airtime": "airtime-key",
+                "remita": "remita-key",
+            },
+            "SIMULATION": False,
+            "VAS_STATUS_LEGEND": "200=success 400=failed",
+            "REMITA_STATUS_LEGEND": "200=success 400=failed",
+        },
+    )
+    def test_preflight_reports_live_remita_as_blocked_manual_only(self):
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), \
+             mock.patch(_PROBE, return_value=_VTU_OK), \
+             mock.patch("utility.wema.vas_status_entitlement", return_value=(True, "")):
+            out, _code = _run()
+
+        self.assertIn("Remita automated settlement", out)
+        self.assertIn("BLOCKED before debit", out)
 
     @override_settings(CARD_PROVIDER="wema", WEMA={**_SAFE_CALLBACKS, "CARD_PRODUCT_KEY": ""})
     def test_wema_cards_require_subscription_and_product_id(self):

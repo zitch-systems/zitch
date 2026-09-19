@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { getToken, saveDisplayName } from '@/lib/secureStore';
+import { getToken, saveDisplayName, saveSpendAccountNamespace } from '@/lib/secureStore';
 import { apiPost, apiJson } from '@/lib/api';
 import type { Txn } from '@/components/design/ui';
 
@@ -47,17 +47,25 @@ export const mapTxn = (raw: any, i: number): Txn => {
   else if (/transfer|send|withdraw/.test(s)) icon = 'send';
   else if (/fund|deposit|add/.test(s)) icon = 'deposit';
   const when = String(raw?.date ?? raw?.created_at ?? raw?.time ?? '');
+  const underReview = raw?.under_review === true;
   return {
     id: String(raw?.id ?? raw?.reference ?? i),
     type: service,
     detail: when,
     ts: parseTs(when),
     amount: Number(raw?.amount ?? 0),
-    status: String(raw?.transaction_status ?? 'Successful'),
+    // Missing/unknown ledger status is never proof of settlement. The shared
+    // classifier renders this conservatively rather than painting it green.
+    status: underReview
+      ? 'Under review'
+      : String(raw?.transaction_status ?? 'Status unavailable'),
     icon,
     dir: raw?.direction === 'in' || raw?.direction === 'out' ? raw.direction : inflow ? 'in' : 'out',
     reference: String(raw?.reference ?? ''),
     narration: String(raw?.narration ?? ''),
+    underReview,
+    statusMessage: underReview ? String(raw?.status_message ?? '') : '',
+    reviewKind: underReview ? String(raw?.review_kind ?? '') : '',
   };
 };
 
@@ -168,6 +176,9 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
 
         if (balRes.status === 'fulfilled' && balRes.value?.success) {
           const value = balRes.value;
+          if (value.account_namespace) {
+            await saveSpendAccountNamespace(String(value.account_namespace));
+          }
           setBalance(Number(value.wallet ?? 0));
           const first = String(value.user_first_name || '');
           const last = String(value.user_last_name || '');

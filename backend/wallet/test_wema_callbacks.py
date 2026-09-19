@@ -266,6 +266,18 @@ class WemaAuthenticateCallbackTests(TestCase):
         r = self._post({"transactionReference": txn.reference, "securityInfo": "opaque"})
         self.assertTrue(r.json()["authorized"])
 
+    def test_a_pending_card_load_is_not_authorized_as_vas(self):
+        txn = debit(
+            self.user, Decimal("500.00"), "Card funding",
+            meta={"reconcile": True, "card_funding": True,
+                  "card": 1, "card_balance_applied": False},
+        )
+        response = self._post({
+            "transactionReference": txn.reference,
+            "securityInfo": "opaque",
+        })
+        self.assertFalse(response.json()["authorized"])
+
     def test_a_reference_we_never_put_in_flight_is_denied(self):
         """What the old rule was really protecting, kept. Authorising is
         per-reference, so a VAS row cannot release a payout — but a row we never
@@ -509,6 +521,38 @@ class WemaTransactionCallbackTests(TestCase):
         self._post(self._payload("ZTRF-unknown"))
         self.assertEqual(Wallet.objects.get(user=self.user).balance, before)
 
+    @patch("utility.providers.vtu_requery")
+    def test_card_load_callback_success_uses_no_vas_transition(self, requery):
+        txn = debit(
+            self.user, Decimal("500.00"), "Card funding",
+            meta={"reconcile": True, "card_funding": True,
+                  "card": 1, "card_balance_applied": False},
+        )
+        before = Wallet.objects.get(user=self.user).balance
+
+        self._post(self._payload(txn.reference, status="Successful"))
+
+        requery.assert_not_called()
+        txn.refresh_from_db()
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, before)
+
+    @patch("utility.providers.vtu_requery")
+    def test_card_load_callback_failure_uses_no_vas_refund(self, requery):
+        txn = debit(
+            self.user, Decimal("500.00"), "Card funding",
+            meta={"reconcile": True, "card_funding": True,
+                  "card": 1, "card_balance_applied": False},
+        )
+        before = Wallet.objects.get(user=self.user).balance
+
+        self._post(self._payload(txn.reference, status="Failed"))
+
+        requery.assert_not_called()
+        txn.refresh_from_db()
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, before)
+
 
 @override_settings(WEMA=WEMA_CB)
 class WemaNotificationCallbackTests(TestCase):
@@ -530,7 +574,7 @@ class WemaNotificationCallbackTests(TestCase):
     def test_credit_notification_reconciles_authenticated_history(self, history):
         history.return_value = {"success": True, "transactions": [{
             "referenceId": "338135484403", "amount": 100,
-            "creditType": "Credit", "status": "Successful",
+            "creditType": "Credit", "status": "Successfull",
         }]}
 
         response = self._post({
@@ -763,11 +807,25 @@ class WemaVasTerminalCallbackTests(TestCase):
         self.assertEqual(query.call_count, 1)
 
     @patch("utility.providers.vtu_requery", return_value={"pending": True})
-    def test_numeric_200_does_not_prove_success(self, query):
+    def test_numeric_200_is_confirmed_success(self, query):
         self.post_status(200)
         self.txn.refresh_from_db()
-        self.assertEqual(self.txn.transaction_status, Transaction.PENDING)
-        query.assert_called_once()
+        self.assertEqual(self.txn.transaction_status, Transaction.SUCCESS)
+        query.assert_not_called()
+
+    @patch("utility.providers.vtu_requery")
+    def test_numeric_400_and_401_are_terminal_direct_failures(self, query):
+        for index, status in enumerate((400, 401)):
+            with self.subTest(status=status):
+                if index:
+                    self.txn = debit(
+                        self.user, Decimal("55"), "airtime",
+                        meta={"reconcile": True, "vas_type": "airtime"},
+                    )
+                self.post_status(status)
+                self.txn.refresh_from_db()
+                self.assertEqual(self.txn.transaction_status, Transaction.FAILED)
+        query.assert_not_called()
 
     @patch("utility.providers.vtu_requery", return_value={"pending": True})
     def test_untrusted_source_cannot_settle_even_with_ip_enforcement_disabled(self, query):

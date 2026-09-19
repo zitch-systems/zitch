@@ -92,7 +92,7 @@ party were implemented. Recorded here so the audit is not read as current.
 | Item | Where |
 |---|---|
 | P1 Expo/React Native upgrade | SDK 54 / RN 0.81.5 (closed before this pass) |
-| P1 ESLint config + CI gate | `eslint.config.js`, gated in CI and Codemagic |
+| P1 ESLint config + CI gate | `.eslintrc.js`, gated in CI and Codemagic |
 | P1 Android target API 36 | pinned via expo-build-properties. **The SDK 54 upgrade did NOT achieve this** — `ExpoRootProjectPlugin.kt` defaults `targetSdk` to 35 |
 | P1 production signing + AAB | `plugins/withAndroidReleaseSigning.js` + the `android-aab` Codemagic workflow, which reads the signer off the finished bundle and refuses a debug-signed one |
 | P1 device automation | 10 Maestro flows + `npm run test:e2e`. **Not yet run on a device**, and nothing provisions the Android 8/11/14/16 matrix |
@@ -107,9 +107,10 @@ party were implemented. Recorded here so the audit is not read as current.
 
 **Still open, and why**
 
-* **P0 Wema items** — the live host and keys, the VAS status legend, the `cardKey`, and the
-  reversal history shape. All need the bank. The legend is now an env var
-  (`WEMA_VAS_STATUS_LEGEND`) so it lands without a deploy.
+* **P0 Wema items** — the live host and keys, the `cardKey`, and the reversal history
+  shape still need the bank. The VAS/bills payment legend is now confirmed as 200
+  success, 400 failed and 401 authentication/API failure; it remains in per-product
+  environment maps so future contract drift can fail closed without a deploy.
 
   **Callback profiling is further along than this audit records.** Reading the `#zitch`
   Slack channel on 30 July: the four URLs were sent on 2026-07-28 and Wema confirmed

@@ -70,6 +70,8 @@ class OnboardingOtpTests(TestCase):
         res, body = self.post("/api/verify_otp/", {"phone": "08011112222", "otp": "112233"})
         self.assertEqual(res.status_code, 200)
         self.assertIn("access_token", body)
+        user = User.objects.get(phone="08011112222")
+        self.assertEqual(body["account_namespace"], views.spend_account_namespace(user))
         self.assertTrue(User.objects.filter(phone="08011112222").exists())
         # The stored value is a hash, not the plaintext code.
         self.assertNotEqual(OTP.objects.get(phone="08011112222").code_hash, "112233")
@@ -858,7 +860,8 @@ class FullJourneyE2ETests(TestCase):
 
         # --- spend + history shape the app depends on ---
         self.assertEqual(self.post("/api/utility/buyairtime/", access_token=tok, amount="1000",
-                                   network="1", phone=P, transaction_pin="246810")[0], 200)
+                                   network="1", phone=P, transaction_pin="246810",
+                                   idempotency_key="journey-airtime-1")[0], 200)
         self.assertEqual(self.post("/api/wallet_balance/", access_token=tok)[1]["wallet"], "49000.00")
         txns = self.post("/api/user-transaction-history/", access_token=tok)[1]["all_site_transactions"]
         self.assertTrue({"service", "amount", "transaction_status", "date"} <= set(txns[0]))
@@ -868,14 +871,16 @@ class FullJourneyE2ETests(TestCase):
         get_or_create_wallet(recip)
         self.assertEqual(self.post("/api/transfer/resolve/", access_token=tok, identifier=R)[0], 200)
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="5000", transaction_pin="246810")[0], 200)
+                                   amount="5000", transaction_pin="246810",
+                                   idempotency_key="journey-p2p-1")[0], 200)
         self.assertEqual(get_or_create_wallet(recip).balance, Decimal("5000"))
 
         # --- tier limits ---
         _credit(user_obj, Decimal("200000"), "Wallet top-up")
         # Tier 1 caps at ₦50k/txn, so a ₦150k transfer is blocked...
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="150000", transaction_pin="246810")[0], 403)
+                                   amount="150000", transaction_pin="246810",
+                                   idempotency_key="journey-p2p-tier-blocked")[0], 403)
         # ...face raises the user to Tier 2 and address to Tier 3, satisfying
         # the >=₦100k face step-up, so the same transfer now goes through.
         self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
@@ -883,29 +888,37 @@ class FullJourneyE2ETests(TestCase):
                                    address="12 Allen Avenue", city="Ikeja", state="Lagos",
                                    document="ZmFrZQ==")[1]["tier"], 3)
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="150000", transaction_pin="246810")[0], 200)
+                                   amount="150000", transaction_pin="246810",
+                                   idempotency_key="journey-p2p-large-1")[0], 200)
 
         # --- loan, savings, card, betting, exam ---
         self.assertEqual(self.post("/api/loans/request/", access_token=tok, amount="100000",
-                                   tenure_days=30, transaction_pin="246810")[0], 200)
+                                   tenure_days=30, transaction_pin="246810",
+                                   idempotency_key="journey-loan-request-1")[0], 200)
         self.assertEqual(self.post("/api/loans/repay/", access_token=tok, amount="200000",
-                                   transaction_pin="246810")[1]["loan"]["status"], "repaid")
+                                   transaction_pin="246810",
+                                   idempotency_key="journey-loan-repay-1")[1]["loan"]["status"], "repaid")
         self.assertEqual(self.post("/api/savings/create/", access_token=tok, amount="10000",
-                                   days=90, transaction_pin="246810")[0], 200)
+                                   days=90, transaction_pin="246810",
+                                   idempotency_key="journey-savings-1")[0], 200)
         self.assertGreaterEqual(len(self.post("/api/savings/list/", access_token=tok)[1]["plans"]), 1)
-        self.assertEqual(self.post("/api/cards/create/", access_token=tok)[0], 200)
+        self.assertEqual(self.post("/api/cards/create/", access_token=tok,
+                                   idempotency_key="journey-card-create-1")[0], 200)
         self.assertEqual(self.post("/api/cards/fund/", access_token=tok, amount="5000",
-                                   transaction_pin="246810")[1]["card"]["balance"], "5000.00")
+                                   transaction_pin="246810",
+                                   idempotency_key="journey-card-fund-1")[1]["card"]["balance"], "5000.00")
         self.assertEqual(self.post("/api/cards/details/", access_token=tok, transaction_pin="246810")[0], 200)
         self.assertEqual(self.post("/api/betting/fund/", access_token=tok, platform="bet9ja",
-                                   user_id="ZB99999", amount="1000", transaction_pin="246810")[0], 200)
+                                   user_id="ZB99999", amount="1000", transaction_pin="246810",
+                                   idempotency_key="journey-betting-1")[0], 200)
         before_exam = get_or_create_wallet(user_obj).balance
         exam_status, exam_body = self.post("/api/exams/buy/", access_token=tok, exam="waec",
-                                           quantity=1, phone=P, transaction_pin="246810")
+                                           quantity=1, phone=P, transaction_pin="246810",
+                                           idempotency_key="journey-exam-1")
         # Exam PINs have no current partner-bank route. The retired VTU provider
         # must not be revived in this integration test: refusal means no success
         # and no net wallet charge.
-        self.assertEqual(exam_status, 502)
+        self.assertEqual(exam_status, 422)
         self.assertFalse(exam_body.get("success"))
         self.assertEqual(get_or_create_wallet(user_obj).balance, before_exam)
 
@@ -1001,15 +1014,18 @@ class TransactionPinLockoutTests(TestCase):
         self.client = Client()
         self.user, self.token = make_user("08010000001", "ada@zitch.test", pin="1234", balance="20000")
         make_user("08020000002", "bob@zitch.test")  # a transfer recipient
+        self._transfer_sequence = 0
 
     def post(self, path, payload):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
     def transfer(self, pin):
+        self._transfer_sequence += 1
         return self.post("/api/transfer/send/", {
             "access_token": self.token, "identifier": "08020000002",
             "amount": "1000", "transaction_pin": pin,
+            "idempotency_key": f"pin-lock-transfer-{self._transfer_sequence}",
         })
 
     def balance(self):
@@ -1039,6 +1055,7 @@ class TransactionPinLockoutTests(TestCase):
         # PIN — so an attacker can't just hop endpoints to keep guessing.
         res, body = self.post("/api/savings/create/", {
             "access_token": self.token, "amount": "5000", "days": 90, "transaction_pin": "1234",
+            "idempotency_key": "pin-lock-savings-1",
         })
         self.assertEqual(res.status_code, 429)
         self.assertEqual(body.get("code"), "pin_locked")
@@ -1312,6 +1329,7 @@ class PasswordRecoveryTests(TestCase):
                               otp=self._reset_code("08010000001"), password="NewPassw0rd1!")
         self.assertEqual(res.status_code, 200)
         self.assertIn("access_token", body)
+        self.assertEqual(body["account_namespace"], views.spend_account_namespace(user))
         self.assertTrue(User.objects.get(pk=user.pk).check_password("NewPassw0rd1!"))
         # Old session is revoked; the freshly issued one works.
         self.assertEqual(self._auth(old_token), 401)

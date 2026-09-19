@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { newIdempotencyKey } from '@/lib/api';
+import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
+import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { bettingService } from '@/lib/services/bills';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
@@ -28,9 +29,11 @@ const Betting = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState('');
+  const [recovered, setRecovered] = useState(false);
+  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
-  const idemKey = useRef('');  // stable across retries of one funding attempt
-
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
   useEffect(() => {
     fetch(`${baseUrl}/api/betting/list/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
@@ -44,25 +47,47 @@ const Betting = () => {
   const valid = !!platform && userId.length >= 4 && amount >= 100;
 
   const fund = async (pin: string) => {
-    if (!idemKey.current) idemKey.current = newIdempotencyKey();
+    const fingerprint = [selected, userId.trim(), String(amount)].join('|');
+    let deliveryStarted = false;
     setBusy(true);
     try {
-      const res = await bettingService.fund(selected, userId, amt, pin, idemKey.current);
-      if (res.success) {
-        idemKey.current = '';
+      const requestKey = await acquireSpendAttempt('betting', fingerprint);
+      deliveryStarted = true;
+      const res = await bettingService.fund(selected, userId, amt, pin, requestKey);
+      const outcome = classifySpendResponse(res);
+      if (outcome === 'success') {
+        await clearSpendAttempt('betting', fingerprint, requestKey);
+        setRecovered(isRecoveredSpendResponse(res));
+        setTxnRef(String(res.reference || ''));
+        setStep(null);
+        setDone(true);
+        reload();
+      } else if (outcome === 'pending' || outcome === 'unknown') {
+        setPending(true);
+        setPendingMessage(outcome === 'pending'
+          ? (res.message || 'Your betting-wallet funding is processing. Its final status will update only after provider confirmation.')
+          : 'We could not confirm this funding attempt. Check History before trying again.');
+        setTxnRef(String(res.reference || ''));
         setStep(null);
         setDone(true);
         reload();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
-        idemKey.current = '';  // definitive server failure — a retry is a fresh attempt
+        await clearSpendAttempt('betting', fingerprint, requestKey);
         notify('Error', res.message || 'Transaction failed');
         setStep(null);
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
-      setStep(null);
+      if (deliveryStarted) {
+        setPending(true);
+        setPendingMessage('We could not confirm this funding attempt. Check History before trying again.');
+        setStep(null);
+        setDone(true);
+        reload();
+      } else {
+        notify('Unable to start funding', 'Could not safely prepare this request. Please try again.');
+      }
     } finally {
       setBusy(false);
     }
@@ -72,9 +97,15 @@ const Betting = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title="Wallet funded"
-          message={`${money(amount)} added to your ${platform.name} account ${userId}.`}
+          title={pending ? 'Funding processing' : recovered ? 'Earlier attempt confirmed' : 'Wallet funded'}
+          message={pending
+            ? pendingMessage
+            : recovered
+              ? 'This confirms your earlier betting-wallet funding. No new funding was made. Start a new purchase to fund again.'
+            : `${money(amount)} added to your ${platform.name} account ${userId}.`}
           rows={[['Platform', platform.name], ['User ID', userId], ['Fee', '₦0'], ['Total', money(amount), true]]}
+          reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>

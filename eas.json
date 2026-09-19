@@ -24,6 +24,9 @@
       "distribution": "internal"
     },
     "production": {
+      "android": {
+        "buildType": "app-bundle"
+      },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://api.zitch.ng"
       }

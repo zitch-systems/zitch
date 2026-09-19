@@ -4,7 +4,7 @@ import { notify } from '@/components/design/Notify';
 import { router, Link } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
-import { saveToken, getToken } from '@/lib/secureStore';
+import { storeSession, getToken } from '@/lib/secureStore';
 import { unlockSession } from '@/lib/session';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
@@ -79,7 +79,7 @@ const Signin = () => {
       const result = await response.json();
       if (response.ok && result.access_token) {
         // Persist the session BEFORE navigating so the auth guard sees a token.
-        await saveToken(result.access_token);
+        await storeSession(result);
         await AsyncStorage.setItem('userID', form.email);
         await AsyncStorage.setItem('sessionExpiration', Date.now().toString());
         await unlockSession(); // clear any idle lock + stamp activity

@@ -33,8 +33,13 @@ class SavingsTests(TestCase):
         # Fund the wallet so locks succeed.
         get_or_create_wallet(self.user)
         credit(self.user, Decimal("250000"), "Test top-up")
+        self._key_seq = 0
 
     def post(self, path, payload):
+        payload = dict(payload)
+        if path == "/api/savings/create/" and "idempotency_key" not in payload:
+            self._key_seq += 1
+            payload["idempotency_key"] = f"save-test-{self._key_seq}"
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
@@ -69,10 +74,39 @@ class SavingsTests(TestCase):
         plan = FixedSave.objects.get(user=self.user)
         self.assertEqual(plan.principal, Decimal("50000"))
         self.assertEqual(plan.status, FixedSave.ACTIVE)
+        self.assertEqual(body["reference"], plan.reference)
         # Returned plan dict carries every field the app renders.
         for key in ("reference", "principal", "interest", "rate", "duration_days",
                     "maturity_value", "status", "matures_at"):
             self.assertIn(key, body["plan"])
+
+    def test_create_and_replay_return_the_same_top_level_reference(self):
+        payload = {
+            "access_token": self.token,
+            "amount": "50000",
+            "days": 90,
+            "transaction_pin": "1234",
+            "idempotency_key": "save-reference-parity",
+        }
+
+        first, first_body = self.post("/api/savings/create/", payload)
+        replay, replay_body = self.post("/api/savings/create/", payload)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(replay_body["duplicate"])
+        self.assertEqual(first_body["reference"], replay_body["reference"])
+        self.assertEqual(first_body["reference"], first_body["plan"]["reference"])
+
+    def test_create_requires_a_client_idempotency_key(self):
+        response, body = self.post(
+            "/api/savings/create/",
+            {"access_token": self.token, "amount": "50000", "days": 90,
+             "transaction_pin": "1234", "idempotency_key": None},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(body["code"], "idempotency_key_required")
+        self.assertFalse(FixedSave.objects.exists())
 
     def test_create_rejects_wrong_pin(self):
         res, body = self.post(

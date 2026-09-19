@@ -3,19 +3,20 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore: ['landing/**', 'docs/**', '**/*.md']
   pull_request:
-    paths-ignore: ['landing/**', 'docs/**', '**/*.md']
 
 # Cancel superseded runs so a burst of pushes doesn't stack up Actions minutes.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   # Decide which suites actually need to run for this change, so a backend-only
   # PR doesn't spin up the (heavier) Expo job and vice versa — the single biggest
-  # lever on Actions minutes. The backend/app jobs gate on these outputs; a job
+  # lever on Actions minutes. The suite jobs gate on these outputs; a job
   # skipped this way still reports success, so required-status-check branch
   # protection is unaffected (unlike a workflow-level paths filter, which would
   # leave a required check pending forever).
@@ -25,12 +26,14 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       app: ${{ steps.filter.outputs.app }}
+      connector: ${{ steps.filter.outputs.connector }}
     steps:
       - id: filter
         run: |
           echo "backend=true" >> "$GITHUB_OUTPUT"
           echo "app=true" >> "$GITHUB_OUTPUT"
-          echo "Running both suites so required checks produce real signal."
+          echo "connector=true" >> "$GITHUB_OUTPUT"
+          echo "Running every suite so required checks produce real signal."
 
   backend:
     name: Backend (Django)
@@ -43,13 +46,20 @@ jobs:
       # SECRET_KEY when DEBUG is off" boot guard. Not a real secret; the test
       # step is unaffected (Django forces DEBUG off under tests anyway).
       DJANGO_SECRET_KEY: "ci-only-throwaway-secret-not-used-in-production-000"
-      DJANGO_DEBUG: "true"
+      DJANGO_DEBUG: "false"
+      # System-check/migration steps intentionally exercise SQLite before the
+      # test command sets settings.TESTING. The settings guard accepts this only
+      # in CI; a deployed process still requires PostgreSQL.
+      DJANGO_ALLOW_SQLITE: "true"
+      DJANGO_ALLOWED_HOSTS: "testserver,localhost"
       DJANGO_REQUIRE_SHARED_CACHE: "false"
     defaults:
       run:
         working-directory: backend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
@@ -74,9 +84,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
       - run: npm ci
       - name: Typecheck
@@ -93,3 +105,30 @@ jobs:
       - name: Bundle (Metro export, iOS)
         if: github.event_name == 'push'
         run: npx expo export --platform ios --output-dir /tmp/ciexport
+
+  meta-connector:
+    name: Meta connector
+    needs: changes
+    if: needs.changes.outputs.connector == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: zitch-meta-connector
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: zitch-meta-connector/.node-version
+          cache: npm
+          cache-dependency-path: zitch-meta-connector/package-lock.json
+      - run: npm ci
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Build
+        run: npm run build

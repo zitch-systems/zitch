@@ -104,8 +104,9 @@ def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
     purchase endpoints may answer ``PROCESSING``, which settle_or_refund correctly
     treats as "hold the money, requery later" — it must never refund a purchase that
     may have been delivered. Settlement then depends on ``wema.vas_status``, whose
-    only answer is a bare integer ``transactionStatus`` that ALAT does not publish a
-    legend for; with no ``WEMA_VAS_STATUS_LEGEND`` / ``WEMA_BILLS_STATUS_LEGEND``,
+    only answer is a bare integer ``transactionStatus``. The confirmed payment
+    legend is 200 success, 400 failure and 401 API/auth failure; with no matching
+    ``WEMA_VAS_STATUS_LEGEND`` / ``WEMA_BILLS_STATUS_LEGEND``,
     ``_parse_vas`` reports ``pending`` for every code, forever. There is no second
     settlement path: the bank's own transaction callback also routes through
     ``vtu_requery``. So on a legend-less deploy a PROCESSING purchase leaves the
@@ -129,11 +130,26 @@ def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
     product = _SETTLE_PRODUCT.get(product, product)
     if not wema._vas_live(product):
         return True, ""
+    if product == "remita":
+        # ProcessRemitaPayment has no automated status/requery endpoint in the
+        # integration we have verified. A lost POST response would therefore hold
+        # the customer's debit forever: a direct-response legend cannot resolve a
+        # response that never arrived. Keep live sales disabled until Wema provides
+        # a documented requery/callback contract and we exercise it end to end.
+        return False, (
+            "live Remita payments are manual-only after an ambiguous response; "
+            "no automated status/requery contract is configured"
+        )
     legend = wema._vas_legend(product)
-    if not legend or not any(outcome in ("success", "failed") for outcome in legend.values()):
+    terminal_outcomes = set(legend.values()) & {"success", "failed"}
+    # One terminal direction is not enough. A success-only map can strand every
+    # declined purchase, while a failure-only map can strand every delivered one.
+    # Require evidence that this deployment can resolve both sides before it is
+    # allowed to create a purchase that may return PROCESSING.
+    if terminal_outcomes != {"success", "failed"}:
         env = "WEMA_" + wema._LEGEND_SETTING.get(product, "VAS_STATUS_LEGEND")
-        return False, (f"{env} has no unambiguous terminal outcome, so a PROCESSING "
-                       f"purchase could never be settled or refunded")
+        return False, (f"{env} must contain unambiguous success and failed outcomes, "
+                       f"so every PROCESSING purchase can be settled or refunded")
     return True, ""
 
 
@@ -1019,12 +1035,22 @@ def verify_vnin(vnin: str, name: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Card issuer (virtual cards) — provider TBD. Blank key => MOCK mode.
+# Card issuer (virtual cards) — provider TBD.  Live calls require an explicit
+# feature gate as well as credentials; otherwise dev/test mock and production
+# fails closed.
 # ---------------------------------------------------------------------------
-def _card_issuer_live() -> bool:
+def card_issuer_live() -> bool:
     # Keep card creation fake while the deploy-wide simulation switch is on,
     # even if the production issuer key is already staged in the environment.
-    return not simulation_mode() and bool(settings.CARD_ISSUER["API_KEY"])
+    config = settings.CARD_ISSUER
+    return (not simulation_mode()
+            and config.get("LIVE_ENABLED") is True
+            and bool(config.get("API_KEY") and config.get("BASE_URL")))
+
+
+# Backward-compatible private name for existing provider tests/callers. New
+# diagnostics import the public selector so readiness and dispatch cannot drift.
+_card_issuer_live = card_issuer_live
 
 
 def _card_issuer_headers() -> dict:
@@ -1035,8 +1061,13 @@ def _card_issuer_headers() -> dict:
 
 
 def issue_card(holder: str, customer_ref: str) -> dict:
-    """Create a virtual card with the issuer. MOCK fabricates presentation data."""
-    if not _card_issuer_live():
+    """Create a virtual card with the issuer. MOCK fabricates presentation data.
+
+    Issuance is non-idempotent.  Transport errors and every unrecognised/accepted
+    response are therefore pending, never failed: only an explicit terminal
+    rejection permits a fresh customer attempt.
+    """
+    if not card_issuer_live():
         if mock_disabled_in_prod():
             # Never fabricate a card in production — a fake PAN/last4 would look
             # real in the app. Fail closed until a real issuer is configured.
@@ -1056,22 +1087,72 @@ def issue_card(holder: str, customer_ref: str) -> dict:
                   "holderName": holder, "customerId": customer_ref},
             headers=_card_issuer_headers(), timeout=REQUEST_TIMEOUT,
         )
-        data = resp.json()
-        d = data.get("data", {}) or {}
-        return {
-            "success": bool(d.get("_id") or d.get("id")),
-            "card_token": d.get("_id") or d.get("id", ""),
-            "brand": d.get("brand", settings.CARD_ISSUER.get("BRAND", "Verve")),
-            "last4": (d.get("maskedPan") or d.get("number") or "")[-4:],
-            "expiry": f"{d.get('expiryMonth', '')}/{str(d.get('expiryYear', ''))[-2:]}",
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError:
+            data = {}
+        data = data if isinstance(data, dict) else {}
+        d = data.get("data")
+        d = d if isinstance(d, dict) else {}
+        raw_status = d.get("status") or data.get("status") or ""
+        status = str(raw_status).strip().lower()
+        token = str(d.get("_id") or d.get("id") or "").strip()
+        expiry = str(d.get("expiry") or "").strip()
+        if not expiry:
+            month = str(d.get("expiryMonth") or "").strip()
+            year = str(d.get("expiryYear") or "").strip()
+            expiry = f"{month.zfill(2)}/{year[-2:]}" if month and year else ""
+        base = {
+            "status": status,
+            "provider_reference": str(d.get("reference") or token)[:100],
             "raw": data,
         }
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"Card issuer unreachable: {exc}"}
+        if resp.status_code in (202, 408, 409, 425, 429) or resp.status_code >= 500:
+            return {**base, "success": False, "pending": True,
+                    "message": "Card issuer outcome is not yet confirmed"}
+
+        terminal_failure = (
+            status in {
+                "failed", "failure", "declined", "rejected", "cancelled", "canceled",
+            }
+            or data.get("success") is False
+            or data.get("status") is False
+            or d.get("success") is False
+            or d.get("status") is False
+        )
+        if terminal_failure or not resp.ok:
+            return {**base, "success": False,
+                    "message": str(data.get("message") or "Card creation failed")[:300]}
+
+        explicit_success = (
+            status in {"success", "successful", "completed", "complete", "issued"}
+            or data.get("success") is True
+            or data.get("status") is True
+        )
+        if explicit_success and token:
+            pan = str(d.get("maskedPan") or d.get("number") or "")
+            return {
+                **base,
+                "success": True,
+                "card_token": token,
+                "brand": d.get("brand", settings.CARD_ISSUER.get("BRAND", "Verve")),
+                "last4": pan[-4:],
+                "expiry": expiry,
+            }
+        return {**base, "success": False, "pending": True,
+                "message": "Card issuer accepted the request; final outcome is unconfirmed"}
+    except requests.RequestException:
+        return {"success": False, "pending": True,
+                "message": "Card issuer outcome is not yet confirmed"}
 
 
 def set_card_status(card_token: str, active: bool) -> dict:
-    """Freeze/unfreeze a card with the issuer. MOCK always succeeds."""
+    """Freeze/unfreeze a card with the generic issuer.
+
+    A state-changing request can have been applied even when its response is
+    lost.  Only explicit terminal evidence updates our local card projection;
+    transport/gateway failures and bare 2xx acceptance remain pending.
+    """
     if not _card_issuer_live():
         if mock_disabled_in_prod():
             return {"success": False, "message": "Card issuing is not configured"}
@@ -1082,9 +1163,50 @@ def set_card_status(card_token: str, active: bool) -> dict:
             json={"status": "active" if active else "inactive"},
             headers=_card_issuer_headers(), timeout=REQUEST_TIMEOUT,
         )
-        return {"success": resp.ok, "raw": resp.json()}
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError:
+            data = {}
+        data = data if isinstance(data, dict) else {}
+        payload = data.get("data")
+        payload = payload if isinstance(payload, dict) else {}
+        raw_status = payload.get("status") or data.get("status") or ""
+        status = str(raw_status).strip().lower()
+        base = {"status": status, "raw": data}
+        if resp.status_code in (202, 408, 409, 425, 429) or resp.status_code >= 500:
+            return {**base, "success": False, "pending": True,
+                    "message": "Card status outcome is not yet confirmed"}
+
+        terminal_failure = (
+            status in {
+                "failed", "failure", "declined", "rejected", "cancelled", "canceled",
+            }
+            or data.get("success") is False
+            or data.get("status") is False
+            or payload.get("success") is False
+            or payload.get("status") is False
+        )
+        if terminal_failure or not resp.ok:
+            return {**base, "success": False,
+                    "message": str(data.get("message") or "Could not update card")[:300]}
+
+        expected_states = ({"active", "unfrozen", "enabled"} if active else
+                           {"inactive", "frozen", "blocked", "disabled", "hotlisted"})
+        explicit_success = (
+            data.get("success") is True
+            or data.get("status") is True
+            or payload.get("success") is True
+            or status in expected_states
+        )
+        if explicit_success:
+            return {**base, "success": True}
+        return {**base, "success": False, "pending": True,
+                "message": "Card issuer accepted the request; final status is unconfirmed"}
     except requests.RequestException as exc:
-        return {"success": False, "message": f"Card issuer unreachable: {exc}"}
+        # The issuer may have applied the state change before the response was
+        # lost. Keep our local state unchanged and report the ambiguity.
+        return {"success": False, "pending": True,
+                "message": f"Card issuer outcome unconfirmed: {exc}"}
 
 
 def card_secure_details(card_token: str) -> dict:
@@ -1125,9 +1247,45 @@ def fund_card(card_token: str, amount) -> dict:
             json={"amount": float(amount), "currency": "NGN"},
             headers=_card_issuer_headers(), timeout=REQUEST_TIMEOUT,
         )
-        return {"success": resp.ok, "raw": resp.json()}
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError:
+            data = {}
+        payload = data.get("data") if isinstance(data, dict) else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        raw_status = (payload.get("status") or data.get("status")
+                      if isinstance(data, dict) else "")
+        status = str(raw_status or "").strip().lower()
+        provider_reference = str(
+            payload.get("reference") or payload.get("id")
+            or (data.get("reference") if isinstance(data, dict) else "") or ""
+        )
+        base = {"status": status, "provider_reference": provider_reference,
+                "raw": data}
+        if resp.status_code in (202, 408, 409, 425, 429) or resp.status_code >= 500:
+            return {**base, "success": False, "pending": True,
+                    "message": "Card issuer outcome is not yet confirmed"}
+        if status in {"success", "successful", "completed", "complete", "funded"}:
+            return {**base, "success": True}
+        if status in {"failed", "failure", "declined", "rejected", "cancelled", "canceled"}:
+            return {**base, "success": False,
+                    "message": str(data.get("message") or "Card funding failed")[:300]}
+        # This integration has no documented response contract in the repository.
+        # A bare 2xx proves only HTTP acceptance, not that the non-idempotent load
+        # completed. Hold every unrecognised response for checked reconciliation.
+        if resp.ok:
+            return {**base, "success": False, "pending": True,
+                    "message": "Card issuer accepted the request; final outcome is unconfirmed"}
+        return {**base, "success": False,
+                "message": str(data.get("message") or "Card funding failed")[:300]}
     except requests.RequestException as exc:
-        return {"success": False, "message": f"Card issuer unreachable: {exc}"}
+        # This POST is non-idempotent and may have loaded the card before the
+        # response was lost.  A definitive failure would make the caller refund
+        # the wallet and create value on both sides.  Hold the debit until issuer
+        # evidence resolves the outcome.
+        return {"success": False, "pending": True,
+                "message": f"Card issuer outcome unconfirmed: {exc}"}
 
 
 # --------------------------------------------------------------------------- #
@@ -1243,6 +1401,31 @@ def card_provider() -> str:
     return "wema" if wema.card_opted_in() else "issuer"
 
 
+def card_capabilities(provider: str = "") -> dict:
+    """Return customer-facing operations supported by a card backend.
+
+    Wema's card-management product funds only during issuance and its hotlist
+    operation is permanent.  The generic issuer retains reversible status and
+    incremental funding support.
+    """
+    backend = provider if provider in ("wema", "issuer") else card_provider()
+    if backend == "wema":
+        return {
+            "can_fund": False,
+            "can_unfreeze": False,
+            "permanent_block": True,
+        }
+    return {
+        "can_fund": True,
+        "can_unfreeze": True,
+        "permanent_block": False,
+    }
+
+
+def _card_backend(provider: str = "") -> str:
+    return provider if provider in ("wema", "issuer") else card_provider()
+
+
 # --- Funding (wallet top-up) dispatch — partner bank (OTP-provisioned NUBAN) ---
 def funding_initialize(email: str, amount_naira, reference: str, *,
                        name: str = "", redirect_url: str = "") -> dict:
@@ -1335,22 +1518,25 @@ def card_issue(holder: str, customer_ref: str, email: str = "", *, account_numbe
     return issue_card(holder, customer_ref)
 
 
-def card_set_status(card_token: str, active: bool) -> dict:
-    if card_provider() == "wema":
+def card_set_status(card_token: str, active: bool, *, provider: str = "",
+                    masked_pan: str = "") -> dict:
+    if _card_backend(provider) == "wema":
         from . import wema
+        if masked_pan:
+            return wema.card_set_status(card_token, active, masked_pan=masked_pan)
         return wema.card_set_status(card_token, active)
     return set_card_status(card_token, active)
 
 
-def card_fund(card_token: str, amount) -> dict:
-    if card_provider() == "wema":
+def card_fund(card_token: str, amount, *, provider: str = "") -> dict:
+    if _card_backend(provider) == "wema":
         from . import wema
         return wema.card_fund(card_token, amount)
     return fund_card(card_token, amount)
 
 
-def card_reveal(card_token: str) -> dict:
-    if card_provider() == "wema":
+def card_reveal(card_token: str, *, provider: str = "") -> dict:
+    if _card_backend(provider) == "wema":
         from . import wema
         return wema.card_reveal(card_token)
     return card_secure_details(card_token)

@@ -1,6 +1,9 @@
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
+
+import { isValidTransactionPin, TRANSACTION_PIN_LENGTH } from '@/lib/transactionPin';
 
 /**
  * Centralised access-token storage.
@@ -16,6 +19,11 @@ const TOKEN_KEY = 'access_token';
 // access token, and on web kept nowhere at all: a credential that survives a
 // reload is exactly what a browser session must not persist.
 const REFRESH_KEY = 'refresh_token';
+// Hash of the server-issued, pseudonymous account namespace.  This pointer is
+// deliberately retained on logout: unresolved attempt records must still be
+// available when the same customer signs back in.  A different customer gets a
+// different hash, so their identical payment details cannot reuse those keys.
+const SPEND_ACCOUNT_NAMESPACE_KEY = 'z-spend-account-v1';
 const isWeb = Platform.OS === 'web';
 
 // Bind secrets (session token + money PIN) to THIS device: `WHEN_UNLOCKED_THIS_
@@ -100,9 +108,35 @@ export async function getRefreshToken(): Promise<string | null> {
  * The refresh token is written FIRST: if only one of the two lands, the session
  * that survives should be the recoverable one.
  */
-export async function storeSession(result: { access_token?: string; refresh_token?: string }): Promise<void> {
+export async function storeSession(result: {
+  access_token?: string;
+  refresh_token?: string;
+  account_namespace?: string;
+}): Promise<void> {
+  // Set (or fail closed by clearing) the account pointer before making the new
+  // access token usable.  Old servers omit this field; sharing an old account's
+  // namespace would be worse than requiring that session to sign in again.
+  await saveSpendAccountNamespace(result?.account_namespace || '');
   if (result?.refresh_token) await saveRefreshToken(result.refresh_token);
   if (result?.access_token) await saveToken(result.access_token);
+}
+
+/** Persist only a hash of the authenticated account's opaque namespace. */
+export async function saveSpendAccountNamespace(namespace: string): Promise<void> {
+  const clean = String(namespace || '').trim();
+  if (!clean) {
+    await AsyncStorage.removeItem(SPEND_ACCOUNT_NAMESPACE_KEY);
+    return;
+  }
+  const digest = await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    `zitch-spend-account\u0000${clean}`,
+  );
+  await AsyncStorage.setItem(SPEND_ACCOUNT_NAMESPACE_KEY, digest);
+}
+
+export async function getSpendAccountNamespace(): Promise<string> {
+  return (await AsyncStorage.getItem(SPEND_ACCOUNT_NAMESPACE_KEY)) || '';
 }
 
 export async function clearRefreshToken(): Promise<void> {
@@ -153,8 +187,8 @@ const HAS_TXN_PIN_KEY = 'z-has-pin';
 
 export async function saveTransactionPin(pin: string): Promise<void> {
   if (isWeb) return; // don't persist the money PIN in unencrypted web storage
-  if (!/^\d{4}$/.test(pin)) {
-    throw new Error('A four-digit transaction PIN is required');
+  if (!isValidTransactionPin(pin)) {
+    throw new Error(`A ${TRANSACTION_PIN_LENGTH}-digit transaction PIN is required`);
   }
   await SecureStore.setItemAsync(TXN_PIN_KEY, pin, TXN_PIN_KEYCHAIN_OPTS);
   await AsyncStorage.setItem(HAS_TXN_PIN_KEY, '1');
@@ -251,6 +285,8 @@ export async function clearSession(): Promise<void> {
   //
   // LAST_IDENTIFIER_KEY is not cleared either, and for the same reason: it says
   // which account this device belongs to, not how to get into it.
+  // SPEND_ACCOUNT_NAMESPACE_KEY also remains. It is a pseudonymous pointer to
+  // that account's unresolved idempotency records, not an authentication secret.
   await Promise.all([
     'userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt',
     'z-locked', 'z-has-pin', DISPLAY_NAME_KEY,

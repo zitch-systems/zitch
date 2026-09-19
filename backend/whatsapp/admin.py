@@ -1,4 +1,4 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 
 from .models import PendingAction, WaMessageLog, WhatsAppLink
 
@@ -181,8 +181,9 @@ class ApprovalRequestAdmin(admin.ModelAdmin):
     list_filter = ("status", "action")
     search_fields = ("action", "reason", "requested_by__username", "decided_by__username")
     readonly_fields = ("action", "payload", "reason", "requested_by", "created",
-                       "decided", "result", "status")
-    fields = readonly_fields + ("decided_by", "decision_note")
+                       "decided", "result", "status", "decided_by", "decision_note")
+    fields = readonly_fields
+    actions = ("approve_selected", "reject_selected")
 
     def has_add_permission(self, request):
         # Requests are created by the endpoint that would have performed the action.
@@ -191,3 +192,46 @@ class ApprovalRequestAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+    def _decide_selected(self, request, queryset, *, approve):
+        from admin_api.auth import CAN, staff_role
+        from common.approvals import ApprovalError, capability_for, decide
+
+        role = staff_role(request.user)
+        completed = refused = 0
+        for row in queryset.order_by("pk"):
+            capability = capability_for(row.action)
+            if not capability or capability not in CAN.get(role, set()):
+                refused += 1
+                self.message_user(
+                    request,
+                    f"Request {row.pk}: your role cannot decide {row.action}.",
+                    messages.ERROR,
+                )
+                continue
+            try:
+                decide(
+                    row,
+                    approver=request.user,
+                    approve=approve,
+                    note=("Approved from Django admin" if approve
+                          else "Rejected from Django admin"),
+                )
+            except ApprovalError as exc:
+                refused += 1
+                self.message_user(request, f"Request {row.pk}: {exc}", messages.ERROR)
+            else:
+                completed += 1
+        if completed:
+            verb = "approved/executed" if approve else "rejected"
+            self.message_user(request, f"{completed} request(s) {verb}.", messages.SUCCESS)
+        if refused and not completed:
+            self.message_user(request, "No selected request was changed.", messages.WARNING)
+
+    @admin.action(description="Approve selected requests (executes after checks)")
+    def approve_selected(self, request, queryset):
+        self._decide_selected(request, queryset, approve=True)
+
+    @admin.action(description="Reject selected requests")
+    def reject_selected(self, request, queryset):
+        self._decide_selected(request, queryset, approve=False)

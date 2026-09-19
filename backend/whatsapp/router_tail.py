@@ -268,6 +268,95 @@ class Outcome(str):
         return obj
 
 
+def _stored_provider_result(txn) -> dict:
+    """Rebuild the safe, durable part of a provider result for a replay.
+
+    ``settle_or_refund`` deliberately persists provider outcome fields on the
+    ledger row (and stores a refusal as ``failure``).  A duplicate WhatsApp
+    submission must read that row; it must never call the provider again or
+    guess that "duplicate" means success.
+    """
+    result = dict(txn.meta or {})
+    if result.get("failure") and not result.get("message"):
+        result["message"] = result["failure"]
+    return result
+
+
+def _transfer_outcome(pa: PendingAction, user, msisdn: str, txn, *, replay: bool = False) -> Outcome:
+    """Tell the customer what the transfer ledger says *now*.
+
+    This is shared by the first response and an idempotent replay.  In
+    particular, a duplicate key is only request identity: the durable row may
+    still be Pending or may have failed and been refunded.
+    """
+    from wallet.alerts import mark_awaiting_settlement
+    from wallet.models import Transaction
+
+    txn.refresh_from_db(fields=["transaction_status", "meta", "reference"])
+    _clear_actions(msisdn)
+    amount = Decimal(pa.payload["amount"])
+    who = pa.payload["name"].upper()
+
+    quarantine = (txn.meta or {}).get("wema_reversal_quarantine") or {}
+    if isinstance(quarantine, dict) and quarantine.get("active") is True:
+        # A conflicting returned-funds row is awaiting maker/checker review.
+        # Regardless of the payout row's pre-existing status, never issue a
+        # success receipt or invite another payment while that hold is active.
+        mark_awaiting_settlement(txn)
+        lead = "That transfer" if replay else "Your transfer"
+        line = (f"⏳ {lead} of {_money(amount)} to {who} is under review. "
+                f"Do not send it again; we'll confirm after reconciliation. "
+                f"Ref {txn.reference}.")
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_PENDING)
+
+    if txn.transaction_status == Transaction.FAILED:
+        result = _stored_provider_result(txn)
+        reason = customer_safe_failure(
+            result, service="transfer", fallback="the bank did not complete it")
+        lead = "That earlier transfer" if replay else "Your transfer"
+        line = (f"❌ {lead} of {_money(amount)} to {who} failed: {reason}. "
+                f"Any held amount was returned. Ref {txn.reference}.")
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_FAILED)
+
+    if txn.transaction_status == Transaction.PENDING:
+        # "processing" is not an outcome, so the settlement alert has to be let
+        # through when the row finally resolves.
+        mark_awaiting_settlement(txn)
+        lead = "That transfer" if replay else "Your transfer"
+        line = (f"⏳ {lead} of {_money(amount)} to {who} is still processing - "
+                f"we'll confirm once it settles. Ref {txn.reference}.")
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_PENDING)
+
+    if txn.transaction_status != Transaction.SUCCESS:
+        line = (f"That {_money(amount)} transfer to {who} has an unrecognised ledger "
+                f"status. Do not send it again; contact support with ref {txn.reference}.")
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_PENDING)
+
+    # Only a durable Successful row gets a receipt.  Replaying the receipt is
+    # safe; replaying the payout is not, which is why this helper is reached only
+    # after the idempotency lookup.
+    wallet = get_or_create_wallet(user)
+    reply_receipt(msisdn, "Transfer receipt", _with_narration(pa, [
+        ("To", who),
+        ("Bank", pa.payload["bank_name"]),
+        ("Account", pa.payload["account"]),
+        ("Amount", _money(amount)),
+        ("Reference", txn.reference),
+        ("Date", txn.created.strftime("%d %b %Y, %H:%M")),
+    ]), ref=txn.reference, user=user, balance_after=wallet.balance)
+    if not replay:
+        _offer_to_save(user, msisdn, getattr(txn, "beneficiary_id", None))
+    if replay:
+        return Outcome(f"That {_money(amount)} transfer to {who} was already completed - "
+                       "the receipt is in your chat.", OUTCOME_SUCCESS)
+    return Outcome(f"{_money(amount)} sent to {who} - the receipt is in your chat.",
+                   OUTCOME_SUCCESS)
+
+
 def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
     """Execute a PIN-confirmed transfer (called by the chat PIN path AND the
     secure Flow endpoint). Sends the chat receipt and returns a short outcome
@@ -314,63 +403,35 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
             idempotency_key=f"wa-{pa.id}", channel="whatsapp",
         )
     except PayoutError as exc:
-        _clear_actions(msisdn)
         who = pa.payload["name"].upper()
         if exc.kind == "insufficient":
+            _clear_actions(msisdn)
             msg = f"Insufficient balance for the {_money(amount)} transfer to {who} - cancelled."
             reply(msisdn, msg)
             return Outcome(msg, OUTCOME_FAILED)
         if exc.kind == "duplicate":
-            msg = f"That {_money(amount)} transfer to {who} was already processed."
+            # Duplicate means only that this action's key already has a ledger
+            # row.  It does *not* mean the rail settled successfully.  Read the
+            # row and render its actual terminal/pending state without sending
+            # another payout.
+            from wallet.models import Transaction
+
+            prior = Transaction.objects.filter(
+                user=user, idempotency_key=f"wa-{pa.id}").first()
+            if prior is not None:
+                return _transfer_outcome(pa, user, msisdn, prior, replay=True)
+            _clear_actions(msisdn)
+            msg = (f"That {_money(amount)} transfer to {who} was submitted before, but its "
+                   "status is not available yet. Do not send it again; contact support so "
+                   "we can confirm it.")
             reply(msisdn, msg)
-            return Outcome(msg, OUTCOME_FAILED)
+            return Outcome(msg, OUTCOME_PENDING)
+        _clear_actions(msisdn)
         msg = f"Transfer of {_money(amount)} to {who} failed: {exc.message}"
         reply(msisdn, msg)
         return Outcome(msg, OUTCOME_FAILED)
 
-    _clear_actions(msisdn)
-
-    # execute_payout returns a PENDING row for a queued (PROCESSING) transfer
-    # AND for the ambiguous send-timeout / lost-response case where the rail may
-    # or may not have paid the recipient (transfers/services.py holds the debit
-    # rather than refunding a maybe-delivered transfer). Only a SETTLED-success
-    # row may be announced as "Successful": a receipt is a forwardable proof of
-    # payment, and issuing one for a transfer that is only pending - or may have
-    # failed - is the single worst thing a banking channel can tell a customer.
-    # Mirror _run_vtu's pending branch and the app path (transfers/views.py),
-    # which both report "processing" and let the webhook / reconciler settle it.
-    from wallet.alerts import mark_awaiting_settlement
-    from wallet.models import Transaction
-
-    if txn.transaction_status != Transaction.SUCCESS:
-        # "processing" is not an outcome, so the settlement alert has to be let
-        # through when the row finally resolves - otherwise this line is the last
-        # word the customer ever gets on the money.
-        mark_awaiting_settlement(txn)
-        line = (f"⏳ Your transfer of {_money(amount)} to {pa.payload['name'].upper()} "
-                f"is processing - we'll confirm once it settles. Ref {txn.reference}.")
-        reply(msisdn, line)
-        return Outcome(line, OUTCOME_PENDING)
-
-    wallet = get_or_create_wallet(user)
-    reply_receipt(msisdn, "Transfer receipt", _with_narration(pa, [
-        ("To", pa.payload["name"].upper()),
-        ("Bank", pa.payload["bank_name"]),
-        ("Account", pa.payload["account"]),
-        ("Amount", _money(amount)),
-        ("Reference", txn.reference),
-        ("Date", timezone.now().strftime("%d %b %Y, %H:%M")),
-    ]), ref=txn.reference, user=user, balance_after=wallet.balance)
-    # Offered against the exact row execute_payout just wrote, so the tap that
-    # follows needs no account number and no second name enquiry to know who it
-    # means. Silent for a recipient already saved or already declined.
-    _offer_to_save(user, msisdn, getattr(txn, "beneficiary_id", None))
-    # A settled transfer is the one case that may be CALLED successful, and it is
-    # now said rather than inferred: this used to return whatever reply_receipt
-    # gave back, which run_flow_execution turned into a bare "Done ✅" - the same
-    # words a cancelled transfer closed on.
-    return Outcome(f"{_money(amount)} sent to {pa.payload['name'].upper()} - "
-                   f"the receipt is in your chat.", OUTCOME_SUCCESS)
+    return _transfer_outcome(pa, user, msisdn, txn)
 
 
 # ---------------------------------------------------------------------------
@@ -825,6 +886,54 @@ def _vtu_detail(pa: PendingAction, amount: Decimal) -> str:
     return f"{_money(amount)}{' - ' + recip if recip else ''}"
 
 
+def _vtu_outcome(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
+                 txn, result: dict, receipt, *, replay: bool = False) -> Outcome:
+    """Render a VAS purchase from the ledger's durable state.
+
+    Provider calls can time out after accepting a purchase, so a duplicate key
+    cannot be treated as either success or failure by itself.  This function
+    refreshes the row and is used for both the original response and a replay.
+    """
+    from wallet.models import Transaction
+
+    txn.refresh_from_db(fields=["transaction_status", "meta", "reference"])
+    result = {**(result or {}), **_stored_provider_result(txn)}
+    _clear_actions(msisdn)
+    detail = _vtu_detail(pa, amount)
+
+    if txn.transaction_status == Transaction.SUCCESS:
+        title, rows = receipt(txn, result)
+        reply_receipt(msisdn, title, _with_narration(pa, rows), ref=txn.reference,
+                      user=user, balance_after=get_or_create_wallet(user).balance)
+        lead = f"{label} was already completed" if replay else f"{label} successful"
+        return Outcome(f"{lead} - the receipt is in your chat.", OUTCOME_SUCCESS)
+
+    if txn.transaction_status == Transaction.PENDING:
+        # The chat has only announced an intermediate state, so allow the later
+        # settlement alert through when the reconciler learns the real outcome.
+        from wallet.alerts import mark_awaiting_settlement
+
+        mark_awaiting_settlement(txn)
+        line = (f"⏳ Your {label} ({detail}) is still processing - we'll confirm shortly. "
+                f"Ref {txn.reference}.")
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_PENDING)
+
+    if txn.transaction_status == Transaction.FAILED:
+        # Failed is terminal and settle_or_refund has restored the held amount.
+        # Use the persisted failure on a replay, not an invented provider result.
+        line = (f"❌ {label} ({detail}) failed: "
+                f"{customer_safe_failure(result, service=pa.action_type)}. "
+                f"You were not charged. Ref {txn.reference}.")
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_FAILED)
+
+    line = (f"Your {label} ({detail}) has an unrecognised ledger status. Do not pay "
+            f"again; contact support with ref {txn.reference}.")
+    reply(msisdn, line)
+    return Outcome(line, OUTCOME_PENDING)
+
+
 def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
              provider_call, receipt) -> str:
     """Debit -> provider -> settle via the shared run_provider_purchase, then send
@@ -858,7 +967,7 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         purchase_meta = {**pa.payload.get("meta", {}), "channel": "whatsapp"}
         if _narration(pa):
             purchase_meta["narration"] = _narration(pa)
-        status, txn, result = run_provider_purchase(
+        _, txn, result = run_provider_purchase(
             user, amount, label, purchase_meta, provider_call,
             idempotency_key=f"wa-{pa.id}",
         )
@@ -873,36 +982,23 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         reply(msisdn, line)
         return Outcome(line, OUTCOME_FAILED)
     except DuplicateTransaction:
-        _clear_actions(msisdn)
-        line = f"That {label} ({detail}) was already processed."
-        reply(msisdn, line)
-        return Outcome(line, OUTCOME_FAILED)
-    _clear_actions(msisdn)
-    if status == "success":
-        title, rows = receipt(txn, result)
-        reply_receipt(msisdn, title, _with_narration(pa, rows), ref=txn.reference,
-                      user=user, balance_after=get_or_create_wallet(user).balance)
-        # Named rather than inferred, for the same reason as the transfer path.
-        return Outcome(f"{label} successful - the receipt is in your chat.", OUTCOME_SUCCESS)
-    if status == "pending":
-        # Same as the transfer path: the chat can only say "processing", so the
-        # alert on the eventual settlement must not be de-duped away as an echo
-        # of a receipt this branch never sent.
-        from wallet.alerts import mark_awaiting_settlement
+        from wallet.models import Transaction
 
-        mark_awaiting_settlement(txn)
-        line = (f"⏳ Your {label} ({detail}) is processing - we'll confirm shortly. "
-                f"Ref {txn.reference}.")
+        prior = Transaction.objects.filter(
+            user=user, idempotency_key=f"wa-{pa.id}").first()
+        if prior is not None:
+            return _vtu_outcome(
+                pa, user, msisdn, amount, label, prior,
+                _stored_provider_result(prior), receipt, replay=True)
+        _clear_actions(msisdn)
+        line = (f"That {label} ({detail}) was submitted before, but its status is not "
+                "available yet. Do not pay again; contact support so we can confirm it.")
         reply(msisdn, line)
         return Outcome(line, OUTCOME_PENDING)
-    # Not result["message"]: an empty provider float comes back phrased as the
-    # CUSTOMER's balance being too low, and this line is also what the Flow's
-    # "Not completed" page renders. See wallet.services.customer_safe_failure.
-    line = (f"❌ {label} ({detail}) failed: "
-            f"{customer_safe_failure(result, service=pa.action_type)}. "
-            f"You were not charged.")
-    reply(msisdn, line)
-    return Outcome(line, OUTCOME_FAILED)
+    # `status` is useful to callers of the lower-level service, but the ledger is
+    # authoritative here.  A callback may have changed it between provider return
+    # and this line, and `_vtu_outcome` refreshes before saying what happened.
+    return _vtu_outcome(pa, user, msisdn, amount, label, txn, result, receipt)
 
 
 # ---- service sub-menus (tap 1 or 2 - no need to type "airtime"/"data" etc.) ----

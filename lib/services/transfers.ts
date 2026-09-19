@@ -12,6 +12,9 @@ export type ResolveResult = ApiResult<{
   account_name?: string;
   bank_name?: string;
   bank_code?: string;
+  phone?: string;
+  /** Opaque, immutable account identifier used only to bind durable retries. */
+  recipient_key?: string;
   // Auto-detect (no bank) returns candidate matches keyed by bank code.
   matches?: { bank: string; bank_name: string; name: string }[];
 }>;
@@ -30,6 +33,7 @@ export type SendBody = {
 
 export type SendLegacyBody = {
   identifier: string;
+  recipient_key?: string;
   amount: number | string;
   transaction_pin: string;
   note?: string;

@@ -86,12 +86,14 @@ def velocity_exceeded(user) -> bool:
     cap = int(getattr(dj_settings, "VELOCITY_MAX_OUT_10MIN", 20) or 0)
     if cap <= 0:
         return False
+    from django.db.models import Q
     from wallet.models import Transaction
 
-    recent = Transaction.objects.filter(
+    recent = (Transaction.objects.filter(
+        Q(meta__internal_movement__isnull=True) | Q(meta__internal_movement=False),
         user=user, direction=Transaction.OUT,
         created__gte=timezone.now() - timedelta(minutes=10),
-    ).count()
+    ).count())
     if recent >= cap:
         log.warning("velocity_blocked user=%s recent_out=%s cap=%s", user.id, recent, cap)
         return True
@@ -162,6 +164,8 @@ def _daily_spent(user, prefixes) -> Decimal:
            .filter(label_q, user=user, direction=Transaction.OUT,
                    currency="NGN", created__gte=start)
            .exclude(transaction_status=Transaction.FAILED)
+           .filter(Q(meta__internal_movement__isnull=True)
+                   | Q(meta__internal_movement=False))
            .aggregate(s=Sum("amount")))
     return agg["s"] or Decimal("0")
 
@@ -349,6 +353,15 @@ def parse_amount(value):
         return None
 
 
+class SpendKey(str):
+    """String idempotency key carrying a hashed request binding in-process."""
+
+    def __new__(cls, value: str, fingerprint: str):
+        obj = str.__new__(cls, value)
+        obj.fingerprint = fingerprint
+        return obj
+
+
 def spend_key(client_key, user, *parts, window_seconds: int = 30):
     """The idempotency key to use for a spend.
 
@@ -363,12 +376,22 @@ def spend_key(client_key, user, *parts, window_seconds: int = 30):
     import hashlib
     import time
 
-    key = (client_key or "").strip()
+    fingerprint_raw = "|".join(
+        [str(getattr(user, "id", user)), *[str(p) for p in parts]])
+    fingerprint = hashlib.sha256(fingerprint_raw.encode()).hexdigest()
+    # Request JSON is untrusted: objects/lists/numbers have no ``strip`` and used
+    # to turn a malformed idempotency_key into a 500 on money endpoints.
+    key = client_key.strip() if isinstance(client_key, str) else ""
     if key:
-        return key
+        # The model column is bounded to 80. Hash an oversized untrusted key
+        # instead of letting PostgreSQL reject it mid-payment or truncating two
+        # distinct values onto the same prefix.
+        if len(key) > 80:
+            key = "client-" + hashlib.sha256(key.encode()).hexdigest()
+        return SpendKey(key, fingerprint)
     bucket = int(time.time() // max(1, window_seconds))
     raw = "|".join([str(getattr(user, "id", user)), *[str(p) for p in parts], str(bucket)])
-    return "auto-" + hashlib.sha256(raw.encode()).hexdigest()[:24]
+    return SpendKey("auto-" + hashlib.sha256(raw.encode()).hexdigest()[:24], fingerprint)
 
 
 def idempotent_replay(prior):
@@ -377,10 +400,86 @@ def idempotent_replay(prior):
     request never debits / charges twice."""
     if prior is None:
         return None
-    from wallet.models import Transaction
+    from wallet.models import ReversalEvidence, Transaction
+    expected = str(getattr(prior, "_requested_idempotency_fingerprint", "") or "")
+    meta = prior.meta if isinstance(getattr(prior, "meta", None), dict) else {}
+    stored = str(meta.get("idempotency_fingerprint") or "")
+    if expected and stored:
+        import hmac
+
+        if not hmac.compare_digest(expected, stored):
+            return fail(
+                "That retry key belongs to a different transaction. Start a new request.",
+                status=409,
+                code="idempotency_conflict",
+                duplicate=True,
+            )
+    quarantine = meta.get("wema_reversal_quarantine") or {}
+    under_reversal_review = (
+        isinstance(quarantine, dict) and quarantine.get("active") is True
+    )
+    if not under_reversal_review and getattr(prior, "pk", None):
+        from django.db.models import Q
+
+        under_reversal_review = ReversalEvidence.objects.filter(
+            Q(payout_id=prior.pk) | Q(associated_payouts__pk=prior.pk),
+            state__in=(ReversalEvidence.ACTIVE, ReversalEvidence.CONFLICT),
+        ).distinct().exists()
+    if under_reversal_review:
+        # A terminal-looking ledger status can be in conflict with newer bank
+        # evidence (notably provider success racing a refund). Preserve the retry
+        # key and show review/pending; never invite a second payout attempt.
+        return ok(
+            pending=True,
+            under_review=True,
+            reference=prior.reference,
+            message=("This transaction is under review while we confirm the bank's "
+                     "final outcome. Do not retry it."),
+            duplicate=True,
+        )
     if prior.transaction_status == Transaction.FAILED:
         return fail("This request already failed — please start a new one", status=409, code="duplicate")
-    return ok(success=True, reference=prior.reference, message="Already processed", duplicate=True)
+    if prior.transaction_status == Transaction.PENDING:
+        # A duplicate key proves only that we already accepted this ATTEMPT. It
+        # does not prove that the provider delivered it. Reporting every
+        # non-failed row as success turned a retry during an ambiguous rail
+        # timeout into a false receipt while the immutable ledger still said
+        # Pending. Keep the same 200/pending contract as the original request;
+        # `duplicate` describes why no second debit/provider call happened, not
+        # the financial outcome.
+        return ok(
+            pending=True,
+            reference=prior.reference,
+            message=("This request is still processing. Its final status will be updated "
+                     "after the provider confirms the outcome."),
+            duplicate=True,
+        )
+    if prior.transaction_status == Transaction.SUCCESS:
+        # Purchased value must survive a lost first response. These are the only
+        # provider-returned secrets the original success endpoints expose; raw
+        # provider payloads and unrelated metadata are never replayed.
+        extra = {}
+        pins = meta.get("pins") or meta.get("Pin")
+        if isinstance(pins, (list, tuple)):
+            extra["pins"] = list(pins)
+        token = meta.get("token")
+        if not token and str(getattr(prior, "service", "")).casefold().startswith("electricity"):
+            token = meta.get("provider_reference")
+        if token:
+            extra["token"] = str(token)
+        return ok(success=True, reference=prior.reference, message="Already processed",
+                  duplicate=True, **extra)
+    # Transaction.status has model choices, but fail closed if legacy or corrupt
+    # data contains another value: an unknown outcome must never become a success
+    # receipt merely because the idempotency key already exists.
+    return ok(
+        pending=True,
+        unknown=True,
+        message="This request was already submitted, but its status could not be confirmed.",
+        code="duplicate_unknown",
+        duplicate=True,
+        reference=prior.reference,
+    )
 
 
 def evaluate_transaction_pin(user, raw_pin):
@@ -513,20 +612,37 @@ def provider_purchase_response(status, txn, result, *, success_message, **succes
     success -> 200 with the success message (plus any extra fields, e.g. a meter
                token or exam PINs); pending -> 200 with pending=True and a
                'processing' note (the money is held while reconciliation confirms
-               or refunds it later); failed -> 502 with the provider's message.
+               or refunds it later); failed -> 422 with the provider's message,
+               reference, and an explicit terminal code.
     """
-    if status == "pending":
-        return ok(pending=True, reference=txn.reference,
-                  message="Your purchase is processing and will be confirmed shortly.",
-                  **success_extra)
+    if status in {"pending", "quarantined"}:
+        return ok(
+            pending=True,
+            under_review=status == "quarantined",
+            reference=txn.reference,
+            message=(
+                "Your purchase is under review. Do not pay again; we will update "
+                "its final status after reconciliation."
+                if status == "quarantined"
+                else
+                "Your purchase is processing. Its final status will be updated "
+                "after the provider confirms the outcome."
+            ),
+            **success_extra,
+        )
     if status != "success":
         # Same reason as the WhatsApp path: a provider's "insufficient balance"
         # is about our float, and reads to the customer as their own money having
         # gone. See wallet.services.customer_safe_failure.
         from wallet.services import customer_safe_failure
 
-        return fail(customer_safe_failure(result, fallback="Transaction failed"),
-                    status=502)
+        return fail(
+            customer_safe_failure(result, fallback="Transaction failed"),
+            status=422,
+            code="purchase_failed",
+            reference=txn.reference,
+            refunded=True,
+        )
     return ok(success=True, message=success_message, reference=txn.reference, **success_extra)
 
 

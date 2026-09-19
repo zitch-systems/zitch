@@ -29,10 +29,11 @@
 - Failed/refused status lookups, malformed responses, conflicting outcomes, and
   mismatched references cannot settle or refund a payment.
 - An all-pending legend cannot authorize new VAS purchases in the patched code.
-  The live interim configuration is an empty `WEMA_VAS_STATUS_LEGEND`, which also
-  blocks new airtime/data purchases on the previous code. Unknown outcomes remain
-  pending. HTTP 200/400/401 are **not** a verified Wema transaction enum. Bills and
-  Remita must not borrow that mapping.
+  The confirmed payment outcomes are 200 success, 400 failure and 401
+  authentication/API failure. Configure VAS and bills separately even though their
+  current values match; unknown outcomes remain pending and neither product may
+  silently borrow the other's map. Remita still cannot be enabled for live ambiguous
+  outcomes until it has an automated requery/callback contract.
 
 ## Initial publication blocker (resolved)
 

@@ -198,6 +198,182 @@ class Transaction(models.Model):
         return f"{self.service} {sign}₦{self.amount} ({self.transaction_status})"
 
 
+class ReversalEvidence(models.Model):
+    """One durable bank-history row that may represent returned payout money.
+
+    ``Transaction`` remains the money ledger.  This table is the reconciliation
+    case ledger: it keeps every provider row independently indexed instead of
+    growing an unbounded JSON array on the payout transaction.  It also covers a
+    reversal marker that cannot yet be matched to a payout, so the row is claimed
+    durably and can be worked by operations rather than living only in logs.
+
+    ``amount`` and the provider identity are the first observed values.  A provider
+    later reusing the same reference with a different amount does not overwrite
+    them; the competing value is recorded in ``ReversalEvidenceObservation`` and
+    the case moves to CONFLICT until two operators explicitly choose an observed
+    amount.
+    """
+
+    WEMA = "wema"
+    PROVIDERS = [(WEMA, "Wema")]
+
+    ACTIVE = "active"
+    CONFLICT = "conflict"
+    RESOLVED = "resolved"
+    STATES = [(ACTIVE, ACTIVE), (CONFLICT, CONFLICT), (RESOLVED, RESOLVED)]
+
+    provider = models.CharField(max_length=20, choices=PROVIDERS, default=WEMA)
+    # Keep the readable value for operations, but key idempotency on the full
+    # value's hash so an unexpectedly long provider reference cannot overflow a
+    # ledger/model column or collide after truncation.
+    provider_reference = models.CharField(max_length=255)
+    provider_reference_hash = models.CharField(max_length=64)
+    ledger_reference = models.CharField(max_length=64, blank=True, default="")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="reversal_evidence",
+    )
+    payout = models.ForeignKey(
+        Transaction, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="reversal_evidence",
+    )
+    # Usually this contains the canonical ``payout`` only. A reused provider
+    # reference can implicate more than one payout; retaining every association
+    # keeps all holds selectable without duplicating the provider event/case.
+    associated_payouts = models.ManyToManyField(
+        Transaction, blank=True, related_name="reversal_evidence_associations",
+    )
+    ledger_transaction = models.OneToOneField(
+        Transaction, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="reversal_evidence_claim",
+    )
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    initial_reason = models.CharField(max_length=64)
+    reason = models.CharField(max_length=64)
+    state = models.CharField(max_length=12, choices=STATES, default=ACTIVE, db_index=True)
+    # Incremented only when material evidence changes.  Maker/checker requests bind
+    # to it, while harmless repeat sightings merely update ``last_seen``.
+    version = models.PositiveIntegerField(default=1)
+    resolved_amount = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True)
+    resolution_disposition = models.CharField(max_length=48, blank=True, default="")
+    resolution_reason = models.CharField(max_length=300, blank=True, default="")
+    resolution_approval_id = models.PositiveBigIntegerField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="resolved_reversal_evidence",
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    first_seen = models.DateTimeField(auto_now_add=True)
+    last_seen = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-last_seen", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "provider_reference_hash"],
+                name="uniq_reversal_provider_ref",
+            ),
+            models.CheckConstraint(
+                check=models.Q(amount__gt=0), name="reversal_evidence_amount_positive"),
+            models.CheckConstraint(
+                check=~models.Q(initial_reason=""),
+                name="reversal_initial_reason_present",
+            ),
+            models.CheckConstraint(
+                check=(~models.Q(state="resolved")
+                       | (models.Q(resolved_amount__gt=0)
+                          & models.Q(resolved_at__isnull=False))),
+                name="resolved_reversal_has_amount_time",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["payout", "state"], name="reversal_payout_state_idx"),
+            models.Index(fields=["user", "state"], name="reversal_user_state_idx"),
+        ]
+
+    @property
+    def is_active(self):
+        return self.state in (self.ACTIVE, self.CONFLICT)
+
+    def __str__(self):
+        payout = self.payout_id or "unmatched"
+        return f"{self.provider}:{self.provider_reference} -> {payout} ({self.state})"
+
+
+class ReversalEvidenceObservation(models.Model):
+    """A distinct amount observed for one provider reversal reference."""
+
+    evidence = models.ForeignKey(
+        ReversalEvidence, on_delete=models.PROTECT, related_name="observations")
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    sightings = models.PositiveIntegerField(default=1)
+    first_seen = models.DateTimeField(auto_now_add=True)
+    last_seen = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["first_seen", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["evidence", "amount"], name="uniq_reversal_observed_amount"),
+            models.CheckConstraint(
+                check=models.Q(amount__gt=0), name="reversal_observation_amount_positive"),
+        ]
+
+
+class ReversalEvidenceResolution(models.Model):
+    """Append-only accounting/audit result for a reversal evidence case."""
+
+    evidence = models.ForeignKey(
+        ReversalEvidence, on_delete=models.PROTECT, related_name="resolutions")
+    payout = models.ForeignKey(
+        Transaction, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="reversal_evidence_resolutions",
+    )
+    disposition = models.CharField(max_length=48)
+    reason = models.CharField(max_length=300, blank=True, default="")
+    confirmed_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="reversal_evidence_resolutions",
+    )
+    approval_id = models.PositiveBigIntegerField(null=True, blank=True, unique=True)
+    movement_transaction = models.ForeignKey(
+        Transaction, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="reversal_resolutions",
+    )
+    movement_amount = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True)
+    movement_direction = models.CharField(
+        max_length=3, choices=Transaction.DIRECTIONS, blank=True, default="")
+    payout_status_before = models.CharField(max_length=12, blank=True, default="")
+    payout_status_after = models.CharField(max_length=12, blank=True, default="")
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created", "-id"]
+        indexes = [
+            models.Index(fields=["evidence", "-created"], name="reversal_resolution_idx"),
+            models.Index(fields=["payout", "-created"], name="reversal_res_payout_idx"),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(confirmed_amount__gt=0),
+                name="reversal_resolution_amount_positive",
+            ),
+            models.CheckConstraint(
+                check=(
+                    (models.Q(movement_amount__isnull=True)
+                     & models.Q(movement_direction=""))
+                    | (models.Q(movement_amount__gt=0)
+                       & models.Q(movement_direction__in=(Transaction.IN,
+                                                          Transaction.OUT)))
+                ),
+                name="reversal_resolution_movement_valid",
+            ),
+        ]
+
+
 class FundingIntent(models.Model):
     """Tracks a wallet top-up from initialize -> verified, keyed by the payment
     reference. Crediting is idempotent: a reference can only fund the wallet once

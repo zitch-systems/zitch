@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { newIdempotencyKey } from '@/lib/api';
+import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
+import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { examsService } from '@/lib/services/bills';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, Monogram, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
@@ -30,9 +31,12 @@ const Exams = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState('');
+  const [recovered, setRecovered] = useState(false);
+  const [txnRef, setTxnRef] = useState('');
+  const [purchasedPins, setPurchasedPins] = useState<string[]>([]);
   const [pinError, setPinError] = useState('');
-  const idemKey = useRef('');  // stable across retries of one purchase attempt
-
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
   useEffect(() => {
     fetch(`${baseUrl}/api/exams/list/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
@@ -46,37 +50,80 @@ const Exams = () => {
   const valid = !!exam && phone.length >= 10;
 
   const purchase = async (pin: string) => {
-    if (!idemKey.current) idemKey.current = newIdempotencyKey();
+    const fingerprint = [selected, String(qty), phone.trim()].join('|');
+    let deliveryStarted = false;
     setBusy(true);
     try {
-      const res = await examsService.buy(selected, qty, phone, pin, idemKey.current);
-      if (res.success) {
-        idemKey.current = '';
+      const requestKey = await acquireSpendAttempt('exam', fingerprint);
+      deliveryStarted = true;
+      const res = await examsService.buy(selected, qty, phone, pin, requestKey);
+      const outcome = classifySpendResponse(res);
+      if (outcome === 'success') {
+        await clearSpendAttempt('exam', fingerprint, requestKey);
+        setRecovered(isRecoveredSpendResponse(res));
+        setTxnRef(String(res.reference || ''));
+        const delivered = Array.isArray(res.pins)
+          ? res.pins
+          : (res.pins ? [res.pins] : []);
+        setPurchasedPins(delivered.map((value: unknown) => String(value)));
+        setStep(null);
+        setDone(true);
+        reload();
+      } else if (outcome === 'pending' || outcome === 'unknown') {
+        setPending(true);
+        setPendingMessage(outcome === 'pending'
+          ? (res.message || 'Your exam PIN purchase is processing. Its final status will update only after provider confirmation.')
+          : 'We could not confirm this exam PIN purchase. Check History before trying again.');
+        setTxnRef(String(res.reference || ''));
         setStep(null);
         setDone(true);
         reload();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
-        idemKey.current = '';  // definitive server failure — a retry is a fresh attempt
+        await clearSpendAttempt('exam', fingerprint, requestKey);
         notify('Error', res.message || 'Transaction failed');
         setStep(null);
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
-      setStep(null);
+      if (deliveryStarted) {
+        setPending(true);
+        setPendingMessage('We could not confirm this exam PIN purchase. Check History before trying again.');
+        setStep(null);
+        setDone(true);
+        reload();
+      } else {
+        notify('Unable to start purchase', 'Could not safely prepare this request. Please try again.');
+      }
     } finally {
       setBusy(false);
     }
   };
 
   if (done && exam) {
+    const pinRows: [string, string][] = purchasedPins.map((value, index) => [
+      purchasedPins.length === 1 ? 'PIN' : `PIN ${index + 1}`,
+      value,
+    ]);
     return (
       <Screen scroll={false}>
         <Receipt
-          title="PIN purchased"
-          message={`Your ${exam.name} ${exam.description} (${qty}) was sent to ${phone}.`}
-          rows={[['Exam', exam.name], ['Item', exam.description], ['Quantity', String(qty)], ['Phone', phone], ['Total', money(amount), true]]}
+          title={pending ? 'Purchase processing' : recovered ? 'Earlier attempt confirmed' : 'PIN purchased'}
+          message={pending
+            ? pendingMessage
+            : recovered
+              ? 'This confirms your earlier exam PIN purchase. No new purchase was made. Start a new purchase to buy again.'
+            : `Your ${exam.name} ${exam.description} (${qty}) was sent to ${phone}.`}
+          rows={[
+            ['Exam', exam.name],
+            ['Item', exam.description],
+            ['Quantity', String(qty)],
+            ['Phone', phone],
+            ...pinRows,
+            ['Total', money(amount), true],
+          ]}
+          reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>

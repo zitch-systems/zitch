@@ -20,6 +20,12 @@ urlpatterns = [
     path("kyc/review", views.kyc_review),
     path("txn/flag", views.txn_flag),
     path("txn/requery", views.txn_requery),
+    path("txn/reversal-cases", views.reversal_cases),
+    path("txn/reversal-resolution", views.reversal_resolution),
+    path("txn/card-funding-cases", views.card_funding_cases),
+    path("txn/card-funding-resolution", views.card_funding_resolution),
+    path("txn/funding-review-cases", views.funding_review_cases),
+    path("txn/funding-resolution", views.funding_resolution),
     path("fx/margin", views.fx_margin),
     path("fx/corridor", views.fx_corridor),
     path("loans/remind", views.loan_remind),
@@ -30,8 +36,8 @@ urlpatterns = [
     path("wa/handover", views.wa_handover),
     path("wa/conv_ai", views.wa_conv_ai),
     path("wa/reply", views.wa_reply),
-    # Maker/checker queue (see common.approvals). Reachable by API and from Django
-    # admin today; the portal SPA has no screen for it yet.
+    # Maker/checker queue (see common.approvals), shared by the API and live
+    # operator portal. Django admin remains a guarded fallback surface.
     path("approvals/list", views.approvals_list),
     path("approvals/decide", views.approvals_decide),
     # Operator second factor.

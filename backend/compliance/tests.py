@@ -109,6 +109,21 @@ class AmlMonitoringTests(TestCase):
         txn.save(update_fields=["transaction_status"])
         self.assertEqual(scan_transactions()["threshold"], 0)
 
+    def test_internal_reversal_adjustment_is_not_customer_aml_activity(self):
+        Transaction.objects.create(
+            user=self.user,
+            amount=Decimal("5000000"),
+            direction=Transaction.OUT,
+            transaction_status=Transaction.SUCCESS,
+            reference="INTERNAL-REVERSAL-AML",
+            service="Duplicate payout-refund correction",
+            meta={"internal_movement": True, "reversal_resolution": True},
+        )
+        counts = scan_transactions()
+        self.assertEqual(counts["scanned"], 0)
+        self.assertEqual(counts["threshold"], 0)
+        self.assertFalse(AmlCase.objects.exists())
+
     def test_monitoring_does_not_block_the_transaction(self):
         # The policy wording says a suspicious transaction is "blocked pending
         # investigation". The code flags and does not block — deliberately, and

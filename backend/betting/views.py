@@ -30,12 +30,7 @@ def fund_betting(request):
     -> {success, message, reference}
     """
     user, data = request.user_obj, request.data
-
-    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
-    if pin_err:
-        return pin_err
-
-    platform = BettingPlatform.objects.filter(code=str(data.get("platform", "")), active=True).first()
+    platform = BettingPlatform.objects.filter(code=str(data.get("platform", ""))).first()
     if platform is None:
         return fail("Betting platform not found", status=404)
 
@@ -49,19 +44,27 @@ def fund_betting(request):
     if amount < 100:
         return fail("Minimum funding is ₦100")
 
+    raw_key = data.get("idempotency_key")
+    if not isinstance(raw_key, str) or not raw_key.strip():
+        return fail("A stable idempotency key is required for betting funding",
+                    status=400, code="idempotency_key_required")
+    key = spend_key(raw_key, user, "betting", platform.code, user_id, amount)
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+    if not platform.active:
+        return fail("Betting platform not found", status=404)
+
+    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
+
     # Funding an external betting account moves spendable cash out of the wallet,
     # so it must respect the same KYC tier ceiling + large-transfer face check the
     # transfer/bill flows enforce — otherwise it's a tier/AML bypass by category.
     limit_err = check_send_limits(user, amount)
     if limit_err:
         return limit_err
-
-    # Idempotency: a retried / double-tapped request must not debit twice — fall
-    # back to a deterministic server key when the client omits one.
-    key = spend_key(data.get("idempotency_key"), user, "betting", platform.code, user_id, amount)
-    replay = idempotent_replay(existing_for_key(user, key))
-    if replay:
-        return replay
 
     # Daily aggregate cap (shared "non-transfer spend" bucket) — after the replay
     # check so a deduped retry isn't re-counted. The "Betting" label prefix is what

@@ -3,6 +3,8 @@ import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
+import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
+import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
 import { loansService } from '@/lib/services/loans';
 import { Screen, Header, Btn, Sheet, PinPad, Field, money, Naira } from '@/components/design/ui';
@@ -38,8 +40,11 @@ const GetLoan = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState('');
+  const [recovered, setRecovered] = useState(false);
+  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
-
   useEffect(() => {
     getToken().then((t) => {
       if (!t) return;
@@ -62,22 +67,47 @@ const GetLoan = () => {
   const overLimit = amount > available;
 
   const request = async (pin: string) => {
+    const fingerprint = [String(amount), String(tenure)].join('|');
+    let deliveryStarted = false;
     setBusy(true);
     try {
-      const res = await loansService.request(amount, tenure, pin);
-      if (res.success) {
+      const requestKey = await acquireSpendAttempt('loan-request', fingerprint);
+      deliveryStarted = true;
+      const res = await loansService.request(amount, tenure, pin, requestKey);
+      const outcome = classifySpendResponse(res);
+      if (outcome === 'success') {
+        await clearSpendAttempt('loan-request', fingerprint, requestKey);
+        setRecovered(isRecoveredSpendResponse(res));
+        setTxnRef(String(res.reference || ''));
+        setStep(null);
+        setDone(true);
+        reload();
+      } else if (outcome === 'pending' || outcome === 'unknown') {
+        setPending(true);
+        setPendingMessage(outcome === 'pending'
+          ? (res.message || 'Your loan request is processing. Its final status will update only after provider confirmation.')
+          : 'We could not confirm this loan request. Check your Loans page before trying again.');
+        setTxnRef(String(res.reference || ''));
         setStep(null);
         setDone(true);
         reload();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
+        await clearSpendAttempt('loan-request', fingerprint, requestKey);
         notify('Error', res.message || 'Loan request failed');
         setStep(null);
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
-      setStep(null);
+      if (deliveryStarted) {
+        setPending(true);
+        setPendingMessage('We could not confirm this loan request. Check your Loans page before trying again.');
+        setStep(null);
+        setDone(true);
+        reload();
+      } else {
+        notify('Unable to start loan request', 'Could not safely prepare this request. Please try again.');
+      }
     } finally {
       setBusy(false);
     }
@@ -87,9 +117,15 @@ const GetLoan = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title="Loan disbursed"
-          message={`${money(amount)} has been added to your wallet. Repay by the due date to boost your limit.`}
+          title={pending ? 'Loan request processing' : recovered ? 'Earlier attempt confirmed' : 'Loan disbursed'}
+          message={pending
+            ? pendingMessage
+            : recovered
+              ? 'This confirms your earlier loan request. No new loan was issued. Authorize a new request to borrow again.'
+            : `${money(amount)} has been added to your wallet. Repay by the due date to boost your limit.`}
           rows={[['Loan amount', money(amount)], ['Interest', money(interest)], ['Tenure', `${tenure} days`], ['Repayment', money(repay), true]]}
+          reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>

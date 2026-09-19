@@ -40,4 +40,6 @@ Never use real customer credentials or production money to exercise failure path
 
 ## Play Store builds
 
-A production AAB needs a persistent upload keystore configured in Codemagic and a separate signed workflow. Do not reuse the preview key. Store the keystore and passwords in Codemagic encrypted variables or its Android signing integration, then add `bundleRelease` only after the signing reference is known.
+A production AAB is handled by the separate `android-production-aab` workflow. It is tag-triggered (`v*`) and uses the Codemagic Android signing reference `zitch-production-upload`; it fails before Gradle if that reference does not provide `CM_KEYSTORE_PATH`, `CM_KEYSTORE_PASSWORD`, `CM_KEY_ALIAS`, and `CM_KEY_PASSWORD`. The workflow runs `bundleRelease` with `ZITCH_REQUIRE_UPLOAD_KEY=true`, verifies the AAB with `jarsigner`, and publishes only the AAB artifact.
+
+The Codemagic signing reference and the corresponding Play App Signing/upload-key relationship must still be created and verified by an owner in Codemagic/Play Console. Never reuse the preview/debug key. The Expo signing plugin now leaves EAS-managed signing untouched unless `ZITCH_CONFIGURE_UPLOAD_SIGNING=true`; the explicit production workflows set that flag and fail closed when the upload keystore is absent.

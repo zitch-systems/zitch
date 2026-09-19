@@ -46,6 +46,7 @@ from wallet.services import (
     LimitExceeded,
     attach_existing_bank_account,
     customer_safe_failure,
+    customer_visible_transactions,
     get_or_create_wallet,
     run_provider_purchase,
 )
@@ -2395,7 +2396,7 @@ def _find_txns(user, *, amount=None, days_ago=None, kind=None, recipient=None,
 
     from wallet.models import Transaction
 
-    qs = Transaction.objects.filter(user=user)
+    qs = customer_visible_transactions(Transaction.objects.filter(user=user))
     if reference:
         # An exact reference is the customer quoting our own receipt back at us:
         # it identifies one row, so nothing else may narrow it further.
@@ -2496,7 +2497,8 @@ def _do_history(user, msisdn: str, count=None, *, amount=None, days_ago=None,
         count = max(1, min(int(count), 20))
     except (TypeError, ValueError):
         count = 8
-    rows = list(Transaction.objects.filter(user=user).order_by("-created")[:count])
+    rows = list(customer_visible_transactions(
+        Transaction.objects.filter(user=user)).order_by("-created")[:count])
     if not rows:
         return reply(msisdn, "🧾 No transactions yet. Reply *6* to add money and get started.")
 
@@ -2590,7 +2592,8 @@ def _start_problem_report(user, msisdn: str) -> None:
     this one has no message to read, so it asks."""
     from wallet.models import Transaction
 
-    rows = list(Transaction.objects.filter(user=user).order_by("-created")[:5])
+    rows = list(customer_visible_transactions(
+        Transaction.objects.filter(user=user)).order_by("-created")[:5])
     if not rows:
         return reply(msisdn, "You don't have any transactions yet, so there's nothing to raise "
                              "a case about.\n\nIf you need help with something else:\n"

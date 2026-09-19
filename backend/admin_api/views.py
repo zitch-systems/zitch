@@ -7,7 +7,7 @@ served same-origin from `/portal/`, so these are plain bearer-token JSON calls
 (no cookies / CSRF).
 """
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.contrib.auth.hashers import make_password
 from django.db.models import Q, Sum
@@ -187,9 +187,35 @@ def _txn_type(service: str) -> str:
 _STATUS_MAP = {"Successful": "success", "Pending": "pending", "Failed": "failed"}
 
 
-def _txn_row(t, name_by_id) -> dict:
+_REVIEW_UNSET = object()
+
+
+def _transaction_review(t) -> tuple[bool, str, str]:
+    """Return the customer-safe review state for one ledger row.
+
+    A provider conflict is not a terminal success merely because the original
+    ledger status predates the conflicting evidence.  Keep the public/operator
+    row conservative while exposing only a short reason code -- never provider
+    payloads or credentials.
+    """
+    from wallet.review_state import transaction_review_map
+
+    review = transaction_review_map([t]).get(t.pk)
+    return (True, review[0], review[1]) if review else (False, "", "")
+
+
+def _txn_row(t, name_by_id, review=_REVIEW_UNSET) -> dict:
+    from wallet.services import is_bank_payout, is_vas_purchase
+
     meta = t.meta or {}
-    status = "flagged" if meta.get("flagged") else _STATUS_MAP.get(t.transaction_status, "pending")
+    if review is _REVIEW_UNSET:
+        under_review, review_kind, review_reason = _transaction_review(t)
+    else:
+        under_review = review is not None
+        review_kind, review_reason = review if review else ("", "")
+    status = ("under_review" if under_review else
+              "flagged" if meta.get("flagged") else
+              _STATUS_MAP.get(t.transaction_status, "pending"))
     signed = _num(t.amount) if t.direction == t.IN else -_num(t.amount)
     return {
         "id": t.reference,
@@ -202,12 +228,30 @@ def _txn_row(t, name_by_id) -> dict:
         "cur": t.currency or "NGN",
         "fee": _num(meta.get("fee", 0)),
         "status": status,
+        "underReview": under_review,
+        "reviewKind": review_kind,
+        "reviewReason": review_reason,
         "time": _ms(t.created),
         # Only provider-timeout PENDING purchases can be requeried (same rule
         # as the reconcile cron / the ops portal).
-        "canRequery": bool(t.transaction_status == t.PENDING and meta.get("reconcile")),
+        "canRequery": bool(
+            t.transaction_status == t.PENDING
+            and meta.get("reconcile")
+            and not under_review
+            and is_vas_purchase(t)
+            and not is_bank_payout(t)
+        ),
         "flagged": bool(meta.get("flagged")),
     }
+
+
+def _txn_rows(rows, name_by_id) -> list[dict]:
+    from wallet.review_state import transaction_review_map
+
+    materialized = list(rows)
+    reviews = transaction_review_map(materialized)
+    return [_txn_row(row, name_by_id, reviews.get(row.pk))
+            for row in materialized]
 
 
 def _corridor_enabled(ccy: str) -> bool:
@@ -242,10 +286,26 @@ def _saving_row(s, name) -> dict:
     }
 
 
+def _issued_card_provider(card) -> str:
+    """Bind card controls to the backend that issued this exact card."""
+    from cards.models import CardIssuance
+    from utility.providers import card_provider
+
+    try:
+        provider = card.issuance.provider
+    except (CardIssuance.DoesNotExist, AttributeError):
+        provider = ""
+    return provider if provider in {"wema", "issuer"} else card_provider()
+
+
 def _card_row(c, name) -> dict:
+    from utility.providers import card_capabilities
+
+    provider = _issued_card_provider(c)
     return {
         "id": f"cd_{c.id}", "cid": c.id, "user": name, "last4": c.last4,
         "cur": "NGN", "bal": _num(c.balance), "status": c.status, "spend30": 0,
+        "provider": provider, "capabilities": card_capabilities(provider),
     }
 
 
@@ -400,7 +460,7 @@ def bootstrap(request):
     users = [_user_row(u, wallets, wa) for u in users_qs]
 
     txns_qs = list(Transaction.objects.select_related(None).all()[:150])
-    txns = [_txn_row(t, name_by_id) for t in txns_qs]
+    txns = _txn_rows(txns_qs, name_by_id)
 
     # --- KYC queue: users mid-verification (a started-but-incomplete tier path) ---
     kycq = []
@@ -444,7 +504,8 @@ def bootstrap(request):
     loans = [_loan_row(l, name_by_id.get(l.user_id, "—")) for l in Loan.objects.all()[:80]]
     savings = [_saving_row(s, name_by_id.get(s.user_id, "—")) for s in FixedSave.objects.all()[:80]]
     # Cards are funded from the NGN wallet (see cards.models.VirtualCard).
-    cards = [_card_row(c, name_by_id.get(c.user_id, "—")) for c in VirtualCard.objects.all()[:80]]
+    cards = [_card_row(c, name_by_id.get(c.user_id, "—"))
+             for c in VirtualCard.objects.select_related("issuance").all()[:80]]
 
     # --- Overview KPIs (real aggregates) ---
     now = timezone.now()
@@ -642,20 +703,18 @@ def txn_flag(request):
     Flagging is an annotation in ``meta`` (the amount/direction/status of a
     settled ledger row stay immutable)."""
     from wallet.models import Transaction
+    from wallet.services import merge_transaction_meta
 
     ref = (request.data.get("ref") or "").strip()
     flagged = bool(request.data.get("flagged", True))
     t = Transaction.objects.filter(reference=ref).first()
     if t is None:
         return fail("Transaction not found", status=404)
-    meta = dict(t.meta or {})
-    before = bool(meta.get("flagged"))
+    before = bool((t.meta or {}).get("flagged"))
     if flagged:
-        meta["flagged"] = True
+        merge_transaction_meta(t, {"flagged": True})
     else:
-        meta.pop("flagged", None)
-    t.meta = meta
-    t.save(update_fields=["meta"])
+        merge_transaction_meta(t, {}, remove=("flagged",))
     audit(request, "txn.flag" if flagged else "txn.unflag", target=ref,
           before={"flagged": before}, after={"flagged": flagged})
     # status = what the row should now display (the underlying ledger status
@@ -743,7 +802,7 @@ def txn_requery(request):
     settle vs refund, idempotently. Anything not provider-pending is a 409."""
     from utility.providers import vtu_requery
     from wallet.models import Transaction
-    from wallet.services import is_bank_payout, settle_or_refund
+    from wallet.services import is_bank_payout, is_vas_purchase, settle_or_refund
 
     ref = (request.data.get("ref") or "").strip()
     txn = Transaction.objects.filter(reference=ref).first()
@@ -755,6 +814,12 @@ def txn_requery(request):
         # A bank transfer settles via the reconcile_wema poller, not a partner-bank VAS
         # requery — don't query the wrong provider for a reference it never saw.
         return fail("Bank transfers reconcile via the disbursement webhook, not partner-bank VAS requery", status=409)
+    if not is_vas_purchase(txn):
+        return fail(
+            "This transaction belongs to a different provider rail and cannot use VAS requery",
+            status=409,
+            code="wrong_reconciliation_rail",
+        )
     status = settle_or_refund(txn, vtu_requery(txn.reference))
     audit(request, "txn.requery", target=ref, before={"status": "pending"}, after={"status": status})
     return ok(success=True, ref=ref, status=status)
@@ -925,7 +990,7 @@ def user_detail(request):
     wallets = _wallets_by_user(user_ids=[u.id])
     wa = _wa_by_user(user_ids=[u.id])
     link = WhatsAppLink.objects.filter(user=u, status=WhatsAppLink.ACTIVE).first()
-    txns = [_txn_row(t, {u.id: name}) for t in Transaction.objects.filter(user=u)[:25]]
+    txns = _txn_rows(Transaction.objects.filter(user=u)[:25], {u.id: name})
     # Audit rows that touched THIS user. Targets are written as "u_<id>",
     # "u_<id> (…)" (admin_api) or "user:<id>" (ops portal); the old
     # `target__contains="u_<id>"` cross-matched u_1 against u_12/u_103 and
@@ -937,7 +1002,8 @@ def user_detail(request):
         txns=txns,
         loans=[_loan_row(l, name) for l in Loan.objects.filter(user=u)[:20]],
         savings=[_saving_row(s, name) for s in FixedSave.objects.filter(user=u)[:20]],
-        cards=[_card_row(c, name) for c in VirtualCard.objects.filter(user=u)[:20]],
+        cards=[_card_row(c, name) for c in
+               VirtualCard.objects.select_related("issuance").filter(user=u)[:20]],
         wa_msisdn=(link.wa_msisdn if link else ""),
         pin_locked=bool(u.pin_locked_until and u.pin_locked_until > timezone.now()),
         audit=[_audit_row(a) for a in AuditLog.objects.filter(target_q)[:20]],
@@ -993,7 +1059,7 @@ def txn_search(request):
     rows = list(qs.select_related("user")[:200])
     name_by_id = {t.user_id: (t.user.get_full_name() or t.user.username or t.user.phone or "—").strip()
                   for t in rows}
-    return ok(rows=[_txn_row(t, name_by_id) for t in rows])
+    return ok(rows=_txn_rows(rows, name_by_id))
 
 
 @staff_endpoint(methods=("POST",))
@@ -1247,22 +1313,582 @@ def _execute_approved_credit(payload, approver, approval_request=None):
     return body
 
 
+@staff_endpoint(methods=("POST",), perm="money")
+def reversal_resolution(request):
+    """Submit a quarantined payout resolution for a second operator.
+
+    POST ``{reference?, evidence_reference, disposition, reason,
+    confirmed_amount?}``. This endpoint never moves money; every disposition is
+    unconditionally held for maker/checker execution. ``reference`` may be blank
+    for a bank-return case that has not yet been attached to a payout.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    from wallet.models import Transaction
+    from wallet.services import (REVERSAL_RESOLUTION_DISPOSITIONS,
+                                 is_bank_payout,
+                                 reversal_quarantine_evidence)
+    from whatsapp.models import ApprovalRequest
+
+    reference = str(request.data.get("reference") or "").strip()
+    evidence_reference = str(request.data.get("evidence_reference") or "").strip()
+    disposition = str(request.data.get("disposition") or "").strip()
+    reason = str(request.data.get("reason") or "").strip()
+    if disposition not in REVERSAL_RESOLUTION_DISPOSITIONS:
+        return fail("Choose a valid reversal-resolution disposition")
+    if len(reason) < 12:
+        return fail("A resolution reason (min 12 characters) is required")
+    payout = None
+    if reference:
+        payout = (Transaction.objects.filter(reference=reference,
+                                             direction=Transaction.OUT).first())
+        if payout is None or not is_bank_payout(payout):
+            return fail("Active reversal quarantine not found", status=404)
+    elif not evidence_reference:
+        return fail("Choose an evidence reference", status=400)
+    try:
+        evidence_snapshot = reversal_quarantine_evidence(
+            payout, evidence_reference)
+    except ValueError as exc:
+        return fail(str(exc), status=409, code="evidence_selection_required")
+
+    confirmed_amount = request.data.get("confirmed_amount")
+    if evidence_snapshot.get("state") == "conflict":
+        try:
+            confirmed = Decimal(str(confirmed_amount))
+            observed = {Decimal(str(value)) for value in
+                        evidence_snapshot.get("observed_amounts", [])}
+        except (InvalidOperation, TypeError, ValueError):
+            return fail("Choose one of the observed bank amounts", status=409,
+                        code="confirmed_amount_required")
+        if not confirmed.is_finite() or confirmed <= 0 or confirmed not in observed:
+            return fail("Choose one of the observed bank amounts", status=409,
+                        code="confirmed_amount_required")
+        confirmed_amount = str(confirmed)
+    else:
+        confirmed_amount = ""
+
+    existing = (ApprovalRequest.objects
+                .filter(action="wallet.reversal_quarantine_resolution",
+                        status=ApprovalRequest.PENDING,
+                        payload__evidence_snapshot__evidence_id=
+                            evidence_snapshot["evidence_id"])
+                .first())
+    if existing is not None:
+        expected = {
+            "reference": reference,
+            "disposition": disposition,
+            "reason": reason,
+            "evidence_snapshot": evidence_snapshot,
+            "confirmed_amount": confirmed_amount,
+        }
+        if existing.payload == expected:
+            return ok(success=True, pending_approval=True, approval_id=existing.pk,
+                      message="This payout already has a pending resolution request.")
+        return fail(
+            "This payout already has a different pending resolution request",
+            status=409, code="approval_pending",
+        )
+
+    approval = _approvals.submit(
+        "wallet.reversal_quarantine_resolution",
+        payload={"reference": reference, "disposition": disposition,
+                 "reason": reason, "evidence_snapshot": evidence_snapshot,
+                 "confirmed_amount": confirmed_amount},
+        requested_by=request.staff,
+        reason=reason,
+    )
+    audit(request, "wallet.reversal_resolution_requested", target=reference,
+          after={"disposition": disposition, "reason": reason,
+                 "approval_id": approval.pk})
+    return ok(success=True, pending_approval=True, approval_id=approval.pk,
+              message="A second finance operator must approve this resolution.")
+
+
+@_approvals.register("wallet.reversal_quarantine_resolution",
+                     capability="money", always=True)
+def _execute_reversal_resolution(payload, approver, approval_request=None):
+    from wallet.services import resolve_reversal_quarantine
+
+    if approval_request is None:
+        raise ValueError("Approval context is required")
+    return resolve_reversal_quarantine(
+        payload.get("reference", ""),
+        disposition=payload.get("disposition", ""),
+        reason=payload.get("reason", ""),
+        evidence_snapshot=payload.get("evidence_snapshot") or {},
+        actor=approver,
+        approval_id=approval_request.pk,
+        confirmed_amount=payload.get("confirmed_amount"),
+    )
+
+
+@staff_endpoint(methods=("GET", "POST"), perm="money")
+def reversal_cases(request):
+    """List the ordinary finance queue for matched and unmatched bank returns."""
+    from wallet.models import ReversalEvidence
+    from wallet.services import REVERSAL_RESOLUTION_DISPOSITIONS
+
+    cases = (ReversalEvidence.objects
+             .filter(state__in=(ReversalEvidence.ACTIVE, ReversalEvidence.CONFLICT))
+             .select_related("user", "payout", "ledger_transaction")
+             .prefetch_related("observations", "associated_payouts")
+             .order_by("first_seen", "pk")[:200])
+    rendered = []
+    for case in cases:
+        payout_references = {
+            row.reference for row in case.associated_payouts.all()
+        }
+        if case.payout_id:
+            payout_references.add(case.payout.reference)
+        payout_references = sorted(payout_references)
+        rendered.append({
+            "id": case.pk,
+            "state": case.state,
+            "reason": case.reason,
+            "provider": case.provider,
+            "provider_reference": case.provider_reference,
+            "ledger_reference": case.ledger_reference,
+            # Keep the singular field for existing clients while giving the
+            # portal every durable association when one bank row implicates
+            # more than one payout.
+            "payout_reference": (case.payout.reference if case.payout_id
+                                 else (payout_references[0]
+                                       if len(payout_references) == 1 else "")),
+            "payout_references": payout_references,
+            "user_id": case.user_id,
+            "customer": (getattr(case.user, "email", "")
+                         or getattr(case.user, "phone", "") or str(case.user_id)),
+            "original_amount": str(case.amount),
+            "observed_amounts": [
+                str(row.amount) for row in case.observations.all()
+            ],
+            "version": case.version,
+            "first_seen": case.first_seen.isoformat(),
+            "last_seen": case.last_seen.isoformat(),
+        })
+    return ok(success=True,
+              dispositions=sorted(REVERSAL_RESOLUTION_DISPOSITIONS),
+              cases=rendered)
+
+
+@staff_endpoint(methods=("GET", "POST"), perm="money")
+def card_funding_cases(request):
+    """List card loads whose issuer outcome/projection needs finance review.
+
+    The response is deliberately an allowlist. Provider response bodies and
+    card tokens never cross into the operator browser.
+    """
+    from cards.models import VirtualCard
+    from cards.services import CARD_FUNDING_DISPOSITIONS
+    from wallet.models import Transaction
+
+    rows = list(
+        Transaction.objects.filter(
+            direction=Transaction.OUT, meta__card_funding=True,
+        ).filter(
+            Q(transaction_status=Transaction.PENDING, meta__reconcile=True)
+            | Q(transaction_status=Transaction.SUCCESS,
+                meta__card_balance_review=True)
+        ).select_related("user").order_by("created", "pk")[:200]
+    )
+    card_ids = []
+    for txn in rows:
+        try:
+            card_ids.append(int((txn.meta or {}).get("card") or 0))
+        except (TypeError, ValueError):
+            continue
+    last4_by_id = dict(VirtualCard.objects.filter(pk__in=card_ids)
+                       .values_list("pk", "last4"))
+    cases = []
+    for txn in rows:
+        meta = txn.meta if isinstance(txn.meta, dict) else {}
+        if (txn.transaction_status == Transaction.SUCCESS
+                and meta.get("card_balance_applied") is True):
+            # A stale review flag cannot make a fully resolved projection
+            # actionable again.
+            continue
+        try:
+            card_id = int(meta.get("card") or 0)
+        except (TypeError, ValueError):
+            card_id = 0
+        cases.append({
+            "reference": txn.reference,
+            "user_id": txn.user_id,
+            "customer": (txn.user.email or txn.user.phone or str(txn.user_id)),
+            "amount": str(txn.amount),
+            "currency": txn.currency,
+            "ledger_status": txn.transaction_status,
+            "review_type": ("projection" if meta.get("card_balance_review") is True
+                            else "issuer_outcome"),
+            "dispositions": ([
+                choice for choice in sorted(CARD_FUNDING_DISPOSITIONS)
+                if choice in {"confirm_projection_applied", "apply_missing_projection"}
+            ] if meta.get("card_balance_review") is True else [
+                choice for choice in sorted(CARD_FUNDING_DISPOSITIONS)
+                if choice in {"confirm_loaded", "confirm_failed"}
+            ]),
+            "card_last4": str(last4_by_id.get(card_id) or "")[-4:],
+            "created": txn.created.isoformat(),
+        })
+    return ok(success=True, dispositions=sorted(CARD_FUNDING_DISPOSITIONS),
+              cases=cases)
+
+
+@staff_endpoint(methods=("GET", "POST"), perm="money")
+def funding_review_cases(request):
+    """List active wallet-funding holds using bounded correlation fields."""
+    from wallet.models import FundingIntent
+    from wallet.services import FUNDING_REVIEW_DISPOSITIONS
+
+    intents = (FundingIntent.objects.filter(
+        meta__funding_review__active=True,
+    ).select_related("user").order_by("updated", "pk")[:200])
+    cases = []
+    for intent in intents:
+        meta = intent.meta if isinstance(intent.meta, dict) else {}
+        review = meta.get("funding_review")
+        review = review if isinstance(review, dict) else {}
+        evidence = review.get("evidence")
+        evidence = evidence if isinstance(evidence, dict) else {}
+        cases.append({
+            "reference": intent.reference,
+            "user_id": intent.user_id,
+            "customer": (intent.user.email or intent.user.phone
+                         or str(intent.user_id)),
+            "amount": str(intent.amount),
+            "status": intent.status,
+            "credited": bool(intent.credited),
+            "dispositions": ([
+                choice for choice in sorted(FUNDING_REVIEW_DISPOSITIONS)
+                if choice == "confirm_existing_credit"
+            ] if intent.credited or intent.status == FundingIntent.PAID else [
+                choice for choice in sorted(FUNDING_REVIEW_DISPOSITIONS)
+                if choice != "confirm_existing_credit"
+            ]),
+            "provider": str(meta.get("provider") or "")[:40],
+            "provider_reference": str(
+                evidence.get("provider_reference")
+                or meta.get("provider_reference") or ""
+            )[:160],
+            "review_reason": str(review.get("reason") or "")[:80],
+            "observed_amount": str(review.get("observed_amount") or "")[:80],
+            "observed_currency": str(review.get("currency") or "")[:12],
+            "evidence_reference": str(
+                evidence.get("evidence_reference")
+                or evidence.get("event_id") or ""
+            )[:160],
+            "updated": intent.updated.isoformat(),
+        })
+    return ok(success=True, dispositions=sorted(FUNDING_REVIEW_DISPOSITIONS),
+              cases=cases)
+
+
+@staff_endpoint(methods=("POST",), perm="money")
+def card_funding_resolution(request):
+    """Submit a stuck card load for mandatory maker/checker resolution.
+
+    The finance operator must first verify issuer-side evidence.  This endpoint
+    only records that proposed accounting treatment; a different finance
+    operator executes it through the common approval queue.
+    """
+    from cards.services import CARD_FUNDING_DISPOSITIONS
+    from wallet.models import Transaction
+    from whatsapp.models import ApprovalRequest
+
+    reference = str(request.data.get("reference") or "").strip()
+    disposition = str(request.data.get("disposition") or "").strip()
+    reason = str(request.data.get("reason") or "").strip()
+    evidence_reference = str(
+        request.data.get("evidence_reference") or ""
+    ).strip()[:160]
+    if disposition not in CARD_FUNDING_DISPOSITIONS:
+        return fail("Choose a valid card-funding disposition")
+    if len(reason) < 12:
+        return fail("A resolution reason (min 12 characters) is required")
+    if len(evidence_reference) < 4:
+        return fail("An issuer evidence reference is required")
+    txn = (Transaction.objects.filter(reference=reference,
+                                      direction=Transaction.OUT).first())
+    meta = txn.meta if txn is not None and isinstance(txn.meta, dict) else {}
+    pending_load = (txn is not None
+                    and txn.transaction_status == Transaction.PENDING
+                    and bool(meta.get("reconcile")))
+    projection_review = (txn is not None
+                         and txn.transaction_status == Transaction.SUCCESS
+                         and meta.get("card_balance_review") is True
+                         and meta.get("card_balance_applied") is not True)
+    if (txn is None or not meta.get("card_funding")
+            or not (pending_load or projection_review)):
+        return fail("Unresolved card funding not found", status=404)
+    try:
+        confirmed_amount = Decimal(str(request.data.get("confirmed_amount")))
+    except (InvalidOperation, TypeError, ValueError):
+        return fail("Confirmed amount must exactly match the card-funding request")
+    if not confirmed_amount.is_finite() or confirmed_amount != txn.amount:
+        return fail("Confirmed amount must exactly match the card-funding request")
+    snapshot = {
+        "reference": txn.reference,
+        "amount": str(txn.amount),
+        "card": str(meta.get("card") or ""),
+        "created": txn.created.isoformat(),
+        "status": txn.transaction_status,
+        "card_balance_applied": meta.get("card_balance_applied"),
+        "card_balance_review": bool(meta.get("card_balance_review")),
+    }
+    payload = {
+        "reference": reference,
+        "disposition": disposition,
+        "reason": reason,
+        "evidence_reference": evidence_reference,
+        "confirmed_amount": str(confirmed_amount),
+        "snapshot": snapshot,
+    }
+    existing = (ApprovalRequest.objects
+                .filter(action="wallet.card_funding_resolution",
+                        status=ApprovalRequest.PENDING,
+                        payload__reference=reference)
+                .first())
+    if existing is not None:
+        if existing.payload == payload:
+            return ok(success=True, pending_approval=True, approval_id=existing.pk,
+                      message="This card funding already has a pending resolution request.")
+        return fail("This card funding already has a different pending resolution request",
+                    status=409, code="approval_pending")
+    approval = _approvals.submit(
+        "wallet.card_funding_resolution", payload=payload,
+        requested_by=request.staff, reason=reason,
+    )
+    audit(request, "wallet.card_funding_resolution_requested", target=reference,
+          after={"disposition": disposition, "reason": reason,
+                 "evidence_reference": evidence_reference,
+                 "confirmed_amount": str(confirmed_amount),
+                 "approval_id": approval.pk})
+    return ok(success=True, pending_approval=True, approval_id=approval.pk,
+              message="A second finance operator must approve this resolution.")
+
+
+@_approvals.register("wallet.card_funding_resolution",
+                     capability="money", always=True)
+def _execute_card_funding_resolution(payload, approver, approval_request=None):
+    from cards.services import resolve_card_funding
+    from wallet.models import Transaction
+
+    if approval_request is None:
+        raise ValueError("Approval context is required")
+    txn = Transaction.objects.filter(reference=payload.get("reference", "")).first()
+    meta = txn.meta if txn is not None and isinstance(txn.meta, dict) else {}
+    current_snapshot = ({
+        "reference": txn.reference,
+        "amount": str(txn.amount),
+        "card": str(meta.get("card") or ""),
+        "created": txn.created.isoformat(),
+        "status": txn.transaction_status,
+        "card_balance_applied": meta.get("card_balance_applied"),
+        "card_balance_review": bool(meta.get("card_balance_review")),
+    } if txn is not None else {})
+    if current_snapshot != (payload.get("snapshot") or {}):
+        raise ValueError(
+            "Card-funding evidence changed after submission; create a new approval"
+        )
+    return resolve_card_funding(
+        payload.get("reference", ""),
+        disposition=payload.get("disposition", ""),
+        reason=payload.get("reason", ""),
+        actor=approver,
+        approval_id=approval_request.pk,
+    )
+
+
+@staff_endpoint(methods=("POST",), perm="money")
+def funding_resolution(request):
+    """Submit an ambiguous wallet top-up for mandatory maker/checker review."""
+    from wallet.models import FundingIntent
+    from wallet.services import (FUNDING_REVIEW_DISPOSITIONS,
+                                 funding_review_evidence,
+                                 hold_funding_review)
+    from whatsapp.models import ApprovalRequest
+
+    reference = str(request.data.get("reference") or "").strip()
+    disposition = str(request.data.get("disposition") or "").strip()
+    reason = str(request.data.get("reason") or "").strip()
+    evidence_reference = str(
+        request.data.get("evidence_reference") or ""
+    ).strip()[:160]
+    if disposition not in FUNDING_REVIEW_DISPOSITIONS:
+        return fail("Choose a valid funding-resolution disposition")
+    if len(reason) < 12:
+        return fail("A resolution reason (min 12 characters) is required")
+    if len(evidence_reference) < 4:
+        return fail("A provider evidence reference is required")
+
+    intent = FundingIntent.objects.filter(reference=reference).first()
+    review = ((intent.meta or {}).get("funding_review") or {}) if intent else {}
+    if intent is None:
+        return fail("Active funding review not found", status=404)
+    active_review = isinstance(review, dict) and review.get("active") is True
+    if (intent.credited or intent.status == FundingIntent.PAID) and not active_review:
+        return fail("Active funding review not found", status=404)
+    if not active_review:
+        # Ambiguous provider POSTs can remain pending without ever receiving a
+        # webhook.  Let a finance maker explicitly place that exact intent on a
+        # durable hold before requesting resolution; the checker still owns all
+        # money movement and late callbacks cannot bypass the new hold.
+        hold_funding_review(
+            reference, reason="operator_resolution_requested",
+            observed_currency="NGN",
+            evidence={"source": "operator_request",
+                      "evidence_reference": evidence_reference},
+        )
+        intent.refresh_from_db()
+
+    confirmed_amount = ""
+    if disposition in {"confirm_paid", "confirm_existing_credit"}:
+        try:
+            amount = Decimal(str(request.data.get("confirmed_amount")))
+        except (InvalidOperation, TypeError, ValueError):
+            return fail("Confirmed amount must exactly match the funding request")
+        if not amount.is_finite() or amount != intent.amount:
+            return fail("Confirmed amount must exactly match the funding request")
+        confirmed_amount = str(amount)
+
+    payload = {
+        "reference": reference,
+        "disposition": disposition,
+        "reason": reason,
+        "confirmed_amount": confirmed_amount,
+        "evidence_reference": evidence_reference,
+        "evidence_snapshot": funding_review_evidence(intent),
+    }
+    existing = (ApprovalRequest.objects
+                .filter(action="wallet.funding_review_resolution",
+                        status=ApprovalRequest.PENDING,
+                        payload__reference=reference)
+                .first())
+    if existing is not None:
+        if existing.payload == payload:
+            return ok(
+                success=True, pending_approval=True, approval_id=existing.pk,
+                message="This funding review already has a pending resolution request.",
+            )
+        return fail(
+            "This funding review already has a different pending resolution request",
+            status=409, code="approval_pending",
+        )
+
+    approval = _approvals.submit(
+        "wallet.funding_review_resolution", payload=payload,
+        requested_by=request.staff, reason=reason,
+    )
+    audit(
+        request, "wallet.funding_resolution_requested", target=reference,
+        after={"disposition": disposition, "reason": reason,
+               "evidence_reference": evidence_reference,
+               "approval_id": approval.pk},
+    )
+    return ok(
+        success=True, pending_approval=True, approval_id=approval.pk,
+        message="A second finance operator must approve this resolution.",
+    )
+
+
+@_approvals.register("wallet.funding_review_resolution",
+                     capability="money", always=True)
+def _execute_funding_resolution(payload, approver, approval_request=None):
+    from wallet.services import resolve_funding_review
+
+    if approval_request is None:
+        raise ValueError("Approval context is required")
+    return resolve_funding_review(
+        payload.get("reference", ""),
+        disposition=payload.get("disposition", ""),
+        reason=payload.get("reason", ""),
+        confirmed_amount=payload.get("confirmed_amount"),
+        evidence_reference=payload.get("evidence_reference", ""),
+        evidence_snapshot=payload.get("evidence_snapshot") or {},
+        actor=approver,
+        approval_id=approval_request.pk,
+    )
+
+
+def _approval_payload_for_portal(action: str, payload) -> dict:
+    """Allowlist the small fields the queue needs to render.
+
+    Approval payloads are durable server-side evidence snapshots.  The generic
+    browser queue must not become a way to dump arbitrary provider responses or
+    future secrets merely because a new approval action stores them.
+    """
+    value = payload if isinstance(payload, dict) else {}
+    fields = {
+        "whatsapp.broadcast": ("template_name", "category"),
+        "wallet.credit": ("uid", "amount", "reason"),
+        "wallet.reversal_quarantine_resolution": (
+            "reference", "disposition", "reason", "confirmed_amount",
+        ),
+        "wallet.card_funding_resolution": (
+            "reference", "disposition", "reason", "confirmed_amount",
+            "evidence_reference",
+        ),
+        "wallet.funding_review_resolution": (
+            "reference", "disposition", "reason", "confirmed_amount",
+            "evidence_reference",
+        ),
+    }.get(action, ())
+    clean = {key: value.get(key) for key in fields if value.get(key) is not None}
+    if action == "wallet.reversal_quarantine_resolution":
+        evidence = value.get("evidence_snapshot")
+        if isinstance(evidence, dict):
+            clean["evidence_reference"] = str(
+                evidence.get("provider_reference")
+                or evidence.get("inbound_reference")
+                or evidence.get("ledger_reference")
+                or evidence.get("evidence_id") or ""
+            )[:160]
+            clean["amount"] = str(
+                value.get("confirmed_amount")
+                or evidence.get("received_amount") or ""
+            )[:40]
+    elif action == "wallet.card_funding_resolution":
+        snapshot = value.get("snapshot")
+        if isinstance(snapshot, dict):
+            clean["amount"] = str(snapshot.get("amount") or "")[:40]
+    elif action == "wallet.funding_review_resolution":
+        evidence = value.get("evidence_snapshot")
+        if isinstance(evidence, dict):
+            clean["amount"] = str(evidence.get("amount") or "")[:40]
+    return clean
+
+
+def _approval_result_for_portal(result) -> dict:
+    value = result if isinstance(result, dict) else {}
+    allowed = (
+        "success", "status", "reference", "disposition", "error",
+        "broadcast_id", "queued", "movement", "card_balance_movement",
+    )
+    return {key: value.get(key) for key in allowed if value.get(key) is not None}
+
+
 @staff_endpoint(methods=("POST",))
 def approvals_list(request):
     """POST {status?} — the approval queue. Defaults to pending."""
     from whatsapp.models import ApprovalRequest
 
-    status = (request.data.get("status") or ApprovalRequest.PENDING).strip()
+    raw_status = request.data.get("status") or ApprovalRequest.PENDING
+    status = (raw_status.strip() if isinstance(raw_status, str)
+              else ApprovalRequest.PENDING)
     rows = list(ApprovalRequest.objects.filter(status=status)[:PAGE_APPROVALS])
     rows = [r for r in rows
             if (_approvals.capability_for(r.action)
                 and _approvals.capability_for(r.action) in CAN.get(request.role, set()))]
     return ok(rows=[{
-        "id": r.pk, "action": r.action, "payload": r.payload, "reason": r.reason,
+        "id": r.pk, "action": r.action,
+        "payload": _approval_payload_for_portal(r.action, r.payload),
+        "reason": r.reason,
         "status": r.status,
         "requested_by": (r.requested_by.email or r.requested_by.username),
         "decided_by": (r.decided_by.email or r.decided_by.username) if r.decided_by else "",
-        "created": _ms(r.created), "decided": _ms(r.decided), "result": r.result,
+        "created": _ms(r.created), "decided": _ms(r.decided),
+        "result": _approval_result_for_portal(r.result),
         # So the UI can grey out a request the viewer is not allowed to decide, instead
         # of offering a button that always fails.
         "is_own_request": r.requested_by_id == request.staff.id,
@@ -1286,10 +1912,16 @@ def approvals_decide(request):
     capability = _approvals.capability_for(req.action)
     if not capability or capability not in CAN.get(request.role, set()):
         return fail("Insufficient privileges for this action", status=403, code="forbidden")
-    approve = bool(request.data.get("approve"))
+    approve = request.data.get("approve")
+    if not isinstance(approve, bool):
+        return fail("approve must be true or false", status=400,
+                    code="invalid_decision")
+    note = request.data.get("note") or ""
+    if not isinstance(note, str):
+        return fail("note must be text", status=400, code="invalid_decision")
     try:
         decided = decide(req, approver=request.staff, approve=approve,
-                         note=(request.data.get("note") or ""))
+                         note=note)
     except ApprovalError as exc:
         return fail(str(exc), status=409, code="approval_conflict")
     return ok(success=True, id=decided.pk, status=decided.status, result=decided.result)

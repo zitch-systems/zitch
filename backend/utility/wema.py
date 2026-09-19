@@ -254,15 +254,74 @@ def _url_for_base(product: str, base: str, path: str) -> str:
     return f"{base.rstrip('/')}{_PATH[product]}{path}"
 
 
-def _ok(data: dict) -> bool:
-    """Success across both ALAT envelope shapes."""
+_NEGATIVE_STATUS_RE = re.compile(
+    r"\b(?:false|fail(?:ed|ure)?|rejected|declined|denied|unsuccessful|error)\b",
+    re.I,
+)
+
+
+def _envelope_outcome(data: dict) -> bool | None:
+    """Return explicit ALAT envelope success/failure, else ``None``.
+
+    The gateway has several envelope shapes, but their success flags are JSON
+    booleans. Python's ordinary truth coercion turns the strings ``"false"`` and
+    ``"failed"`` into True, which can settle money or accept invalid customer
+    details. Only literal booleans are evidence. Contradictory flags, non-boolean
+    values in boolean fields, pending/error evidence, and absent evidence are all
+    unknown so money paths can hold rather than guess.
+
+    ``status`` is also used by some products for a textual transaction status.
+    Explicit negative words are therefore rejection evidence, while positive
+    words are deliberately left to the product-specific status classifier.
+    """
     if not isinstance(data, dict):
+        return None
+
+    signals = []
+    invalid = False
+    for key in ("success", "successful"):
+        if key not in data:
+            continue
+        value = data.get(key)
+        if type(value) is bool:
+            signals.append(value)
+        else:
+            invalid = True
+
+    if "hasError" in data:
+        value = data.get("hasError")
+        if type(value) is bool:
+            signals.append(not value)
+        else:
+            invalid = True
+
+    if "status" in data:
+        value = data.get("status")
+        if type(value) is bool:
+            signals.append(value)
+        elif isinstance(value, str) and _NEGATIVE_STATUS_RE.search(value):
+            signals.append(False)
+
+    if data.get("pending") is True:
+        invalid = True
+    elif "pending" in data and data.get("pending") not in (None, False):
+        invalid = True
+
+    if any(data.get(key) for key in ("errors", "error", "errorMessage", "errorMessages")):
+        signals.append(False)
+
+    if invalid or (True in signals and False in signals):
+        return None
+    if False in signals:
         return False
-    if data.get("status") is True:               # creation / acct-mgt envelope
+    if True in signals:
         return True
-    if "hasError" in data:                        # credit / debit envelope
-        return not data.get("hasError")
-    return False
+    return None
+
+
+def _ok(data: dict) -> bool:
+    """Strict success across ALAT envelope shapes."""
+    return _envelope_outcome(data) is True
 
 
 # Zitch is white-labelled: the customer must never see the upstream bank's brand.
@@ -369,7 +428,8 @@ def _naira(v) -> Decimal | None:
         return None
 
 
-#: HTTP statuses where the gateway itself failed or shed load, so the body says
+#: HTTP statuses where the gateway itself failed, shed load, or could not safely
+#: tell us whether a non-idempotent POST was accepted, so the body says
 #: NOTHING about what the transfer processor behind it did. 429 and 5xx bodies are
 #: APIM's own (`{"statusCode":429,"message":"Rate limit is exceeded..."}`), not
 #: ALAT's envelope, so `_ok()` reads them as a negative envelope and every caller
@@ -378,11 +438,13 @@ def _naira(v) -> Decimal | None:
 #:
 #: Raised as HTTPError (a RequestException) so they land in the same handler as a
 #: timeout, which every call site in this module already has and which the money
-#: paths already resolve to PENDING. 4xx codes NOT listed here are deliberate
+#: paths already resolve to PENDING. HTTP 409 can mean a duplicate reference whose
+#: first request already ran, and 425 explicitly says the request may be replayed;
+#: neither is safe evidence for an automatic refund. Other 4xx codes are deliberate
 #: exclusions: 400/401/403/404/422 mean the gateway understood the request and
 #: refused it, so nothing was executed and a definitive failure is correct.
 def _raise_if_ambiguous(resp: requests.Response) -> requests.Response:
-    if resp.status_code in (408, 429) or resp.status_code >= 500:
+    if resp.status_code in (408, 409, 425, 429) or resp.status_code >= 500:
         raise requests.HTTPError(
             f"bank gateway returned HTTP {resp.status_code}", response=resp)
     return resp
@@ -543,15 +605,25 @@ def _kyc_ok(data, *, allow_pending: bool = False) -> bool:
     containers = [data]
     while containers:
         item = containers.pop()
-        values = [_ci_get(item, key, default=None) for key in ("status", "success", "successful")]
-        if any(value is False or isinstance(value, str) and re.search(
-                r"\b(?:false|fail(?:ed|ure)?|rejected|declined|denied|unsuccessful|error|not[ _-]verified)\b", value, re.I)
-               for value in values):
-            return False
-        if not allow_pending and any(isinstance(value, str) and re.search(
-                r"\b(?:pending|processing|queued|accepted|in[ _-]?progress)\b", value, re.I)
-                for value in values):
-            return False
+        values = []
+        for key in ("status", "success", "successful"):
+            value = _ci_get(item, key, default=None)
+            values.append(value)
+            if value is False:
+                return False
+            if value is not None and type(value) is not bool:
+                is_pending_status = (
+                    allow_pending
+                    and key == "status"
+                    and isinstance(value, str)
+                    and re.search(
+                        r"\b(?:pending|processing|queued|accepted|in[ _-]?progress)\b",
+                        value,
+                        re.I,
+                    )
+                )
+                if not is_pending_status:
+                    return False
         if any(_ci_get(item, key) for key in ("errors", "error", "errorMessage", "errorMessages")):
             return False
         for key in ("hasError", "pending"):
@@ -563,8 +635,7 @@ def _kyc_ok(data, *, allow_pending: bool = False) -> bool:
         containers.extend(value for key in ("data", "result", "response")
                           if isinstance(value := _ci_get(item, key), dict))
     values = [_ci_get(data, key, default=None) for key in ("status", "success", "successful")]
-    return (any(value is True or isinstance(value, str) and value.casefold() == "true"
-                for value in values)
+    return (any(value is True for value in values)
             or _ci_get(data, "hasError", default=None) is False)
 
 
@@ -1228,7 +1299,7 @@ def get_balance(account_number: str) -> dict:
         # GetAccountV2 uses the account-maintenance envelope {result, successful,
         # message} — no status/hasError — so _ok() alone would report every valid
         # read as a failure (same envelope handled in get_transactions).
-        ok = bool(data.get("successful")) or _ok(data)
+        ok = _ok(data)
         return {"success": ok, "balance_naira": _naira(r.get("availableBalance")),
                 "wallet_status": r.get("walletStatus", ""), "message": _msg(data),
                 "diagnostic": _response_meta(resp, data), "raw": data}
@@ -1256,7 +1327,7 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
                     "message": "No transactions found",
                     "diagnostic": _response_meta(resp, data), "raw": data}
         # This envelope uses {successful, result[], message} rather than status/hasError.
-        ok = bool(data.get("successful")) or _ok(data)
+        ok = _ok(data)
         rows = data.get("result", data.get("data", []))
         # Account-Maintenance deployments have returned both result[] and
         # data:{result[]} / data:{transactions[]} envelopes. Accept all documented
@@ -1273,14 +1344,13 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
 
 # transhistoryV2 `status` legend (documented in the Account-Maintenance OpenAPI:
 # TransactionHistoryModel.status enum = Default | Successfull | Failed | Pending;
-# note ALAT's "Successfull" spelling). Only a genuinely SETTLED credit is funding —
-# a Failed row never arrived and a Pending one hasn't yet, so both are held back
-# from the funding sweep (a Pending deposit is credited on a later run once it
-# flips to Successfull, idempotent on referenceId). An absent/Default status
-# carries no negative signal, so it stays creditable (never regress a deposit whose
-# gateway omits the field).
-_TX_UNSETTLED = {"failed", "reversed", "declined", "returned", "cancelled",
-                 "pending", "processing", "inprogress", "in_progress"}
+# note ALAT's "Successfull" spelling). Funding is fail-closed: only the explicit
+# terminal-success enum proves that money landed. Live responses have used both the
+# documented misspelling ``Successfull`` and the conventional ``Successful``; those
+# are the only accepted spellings. Default, blank, unknown, Failed, and Pending rows
+# remain uncredited until a later authenticated history response reports one of
+# them; the referenceId guard makes that later credit idempotent.
+_TX_SETTLED = {"successfull", "successful"}
 
 
 def normalize_transaction(tx: dict) -> dict:
@@ -1296,16 +1366,16 @@ def normalize_transaction(tx: dict) -> dict:
         return {"reference": "", "amount_naira": None, "is_credit": False,
                 "settled": False, "status": "", "narration": "", "sender": ""}
     ref = str(tx.get("referenceId") or tx.get("tranId") or "").strip()
-    # ALAT TransactionStatus enum is {Default, Successfull(sic), Failed, Pending}
-    # (confirmed against wallet-services-account-maintenance-api). Only a SETTLED
-    # credit is fundable, so `settled` blocks clearly-non-final rows; unknown /
-    # blank / Successfull / Default still count, so a live gateway that omits or
-    # re-spells the field can't strand real money — a Pending row simply credits on
-    # a later sweep once it settles. apply_wema_credit gates on `settled`.
+    # ALAT documents {Default, Successfull(sic), Failed, Pending}; live history has
+    # also used the conventional Successful spelling. Only those explicit terminal
+    # success values are fundable. Treating an omitted, Default, or newly
+    # introduced value as success would mint spendable wallet money without proof
+    # of settlement. apply_wema_credit gates on `settled` and a later Successfull
+    # observation credits the same reference exactly once.
     is_credit = str(tx.get("creditType") or "").strip().lower() == "credit"
     status = str(tx.get("status") or "").strip().lower()
     return {"reference": ref, "amount_naira": _naira(tx.get("amount")),
-            "is_credit": is_credit, "settled": status not in _TX_UNSETTLED,
+            "is_credit": is_credit, "settled": status in _TX_SETTLED,
             "status": status, "narration": tx.get("narration") or "",
             "sender": tx.get("sender") or tx.get("senderAccountNumber") or ""}
 
@@ -1413,9 +1483,11 @@ TRANSFER_FAILED_STATUSES = {
     "REJECTED", "RETURNED", "NOT_PROCESSED", "EXPIRED", "TIMED_OUT",
     "TIMEDOUT", "TIMEOUT", "REFUNDED", "BLOCKED", "INSUFFICIENT_FUNDS",
     "INSUFFICIENT FUNDS", "INVALID_ACCOUNT", "INVALID ACCOUNT",
-    # Wema confirmed 400 as terminal failed. Authentication/API statuses such as
-    # 401 still stay pending because they prove the lookup failed, not the transfer.
-    "400",
+    # Wema confirmed the same payment legend used by VAS: 400 is a terminal
+    # business failure and 401 is an authentication/API refusal. A 401 returned by
+    # a *status lookup* is handled contextually below and remains pending, because
+    # failure to ask the question is not evidence that the original payment failed.
+    "400", "401",
 }
 
 
@@ -1486,11 +1558,17 @@ def _transfer_result(data: dict, reference: str, result: dict, *,
     function's caller has always claimed to do on the transport-error path.
     """
     status = str(_transfer_value(result, "status", "transactionStatus", "transferStatus")).strip().upper()
-    envelope_ok = _ok(data)
-    if lookup and not envelope_ok:
+    envelope = _envelope_outcome(data)
+    if lookup and (envelope is not True or status == "401"):
+        outcome = "pending"
+    elif envelope is None:
+        outcome = "pending"
+    elif envelope is False and status in TRANSFER_SETTLED_STATUSES:
+        # A negative envelope and a success status contradict one another. A
+        # direct payout may already have executed, so never refund this shape.
         outcome = "pending"
     else:
-        outcome = classify_transfer_status(status, envelope_ok=envelope_ok)
+        outcome = classify_transfer_status(status, envelope_ok=envelope is True)
     return {
         "success": outcome == "success",
         "pending": outcome == "pending",
@@ -1563,8 +1641,11 @@ def confirm_transfer_status(reference: str, *, platform_reference: str = "") -> 
     ProcessClientTransfer returns our transactionReference and Wema's
     platformTransactionReference. In production ALAT has indexed some payouts
     under only one of them. Query the client reference first, then the platform
-    reference when available; a terminal result from either is authoritative.
-    Unknown or unreachable lookups remain PENDING and are never refunded.
+    reference when available. Every distinct reference is queried even after a
+    terminal answer: contradictory terminal answers are not safe evidence for
+    either settlement or refund. A terminal answer is authoritative only when its
+    response carries one of the transaction's known references. Unknown,
+    unbound, conflicting, or unreachable lookups remain PENDING.
     """
     if not wema_live():
         return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS",
@@ -1576,7 +1657,9 @@ def confirm_transfer_status(reference: str, *, platform_reference: str = "") -> 
         if value and value not in candidates:
             candidates.append(value)
 
-    first_result = None
+    known_references = set(candidates)
+    results = []
+    terminal_results = []
     for lookup_reference in candidates:
         try:
             resp = _get(
@@ -1584,25 +1667,105 @@ def confirm_transfer_status(reference: str, *, platform_reference: str = "") -> 
                 f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{lookup_reference}",
             )
             data = resp.json()
+            payload = _transfer_payload(data)
             result = _transfer_result(
-                data, reference, _transfer_payload(data), lookup=True)
+                data, reference, payload, lookup=True)
             result["lookup_reference"] = lookup_reference
-            if first_result is None:
-                first_result = result
-            # A named terminal status from either reference settles or reverses.
-            if result.get("success") or (
-                    result.get("status")
-                    and classify_transfer_status(
-                        result["status"], envelope_ok=True) == "failed"):
-                return result
+            results.append(result)
+
+            # Preserve the lookup-aware classification from _transfer_result.
+            # Reclassifying the raw status here would turn a numeric 401 lookup
+            # failure back into a terminal payment failure and could manufacture a
+            # false conflict against a successful fallback reference.
+            outcome = ("success" if result.get("success")
+                       else "pending" if result.get("pending")
+                       else "failed")
+            response_references = {
+                str(value).strip()
+                for value in (
+                    _transfer_value(payload, "transactionReference", "reference"),
+                    _transfer_value(
+                        payload, "platformTransactionReference", "platformReference"),
+                )
+                if str(value or "").strip()
+            }
+            reference_bound = bool(response_references & known_references)
+            lookup_ok = 200 <= resp.status_code < 300 and _ok(data)
+
+            # A status-query error describes the lookup, not the transfer. Likewise,
+            # a terminal answer for an unrelated (or unidentified) transaction must
+            # never settle/refund the row whose reference was in the URL.
+            if not lookup_ok:
+                result.update({
+                    "success": False,
+                    "pending": True,
+                    "lookup_error": True,
+                })
+            elif outcome in {"success", "failed"} and not reference_bound:
+                result.update({
+                    "success": False,
+                    "pending": True,
+                    "reference_mismatch": True,
+                    "message": "Bank status response did not identify this transfer",
+                })
+                log.error(
+                    "wema_transfer_status_reference_mismatch ref=%s platform_ref=%s "
+                    "lookup_ref=%s response_refs=%s status=%s",
+                    _fingerprint(reference),
+                    _fingerprint(str(platform_reference or "")),
+                    _fingerprint(lookup_reference),
+                    ",".join(sorted(_fingerprint(value) for value in response_references)),
+                    _log_safe(result.get("status", "")),
+                )
+            elif outcome in {"success", "failed"}:
+                terminal_results.append((outcome, result))
         except (requests.RequestException, ValueError) as exc:
             result = _unreachable(exc, pending=True)
             result.update({"reference": reference,
                            "lookup_reference": lookup_reference})
-            if first_result is None:
-                first_result = result
+            results.append(result)
 
-    result = first_result or {
+    terminal_outcomes = {outcome for outcome, _result in terminal_results}
+    if len(terminal_outcomes) > 1:
+        conflict_details = [
+            {
+                "lookup_reference": item.get("lookup_reference", ""),
+                "status": item.get("status", ""),
+                "outcome": outcome,
+            }
+            for outcome, item in terminal_results
+        ]
+        log.error(
+            "wema_transfer_status_conflict ref=%s platform_ref=%s outcomes=%s",
+            _fingerprint(reference),
+            _fingerprint(str(platform_reference or "")),
+            ",".join(
+                f"{_fingerprint(item['lookup_reference'])}:{item['outcome']}:"
+                f"{_log_safe(item['status'])}"
+                for item in conflict_details
+            ),
+        )
+        return {
+            "success": False,
+            "pending": True,
+            "status": "CONFLICT",
+            "reference": reference,
+            "conflict": True,
+            "conflict_type": "transfer_status",
+            "message": "Bank returned conflicting terminal transfer statuses",
+            "lookup_results": conflict_details,
+        }
+
+    if terminal_results:
+        return terminal_results[0][1]
+
+    # Prefer an identified in-flight answer to an earlier lookup error or
+    # reference mismatch when all lookups remain non-terminal.
+    result = next((item for item in results
+                   if item.get("status")
+                   and not item.get("lookup_error")
+                   and not item.get("reference_mismatch")), None)
+    result = result or (results[0] if results else None) or {
         "success": False,
         "pending": True,
         "status": "",
@@ -1750,7 +1913,7 @@ def get_data_plans(network: str = "") -> dict:
         return {"success": True, "mock": True, "plans": []}
     try:
         data = _get("airtime", "/api/Data/GetDataPlans").json()
-        ok = _ok(data) or bool(data.get("successful"))
+        ok = _ok(data)
         return {"success": ok,
                 "plans": _flatten_data_plans(data.get("result", []) or [], network),
                 "raw": data}
@@ -1820,7 +1983,7 @@ def get_bills() -> dict:
         return {"success": True, "mock": True, "bills": []}
     try:
         data = _get("bills", "/api/BillsPayment/GetAllBills").json()
-        ok = _ok(data) or bool(data.get("successful"))
+        ok = _ok(data)
         return {"success": ok, "bills": _flatten_bills(data.get("result", []) or []), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
@@ -1850,7 +2013,7 @@ def validate_bill_customer(identifier: str, package_id: str) -> dict:
                 "packageId": _as_int(package_id)}
         data = _post("bills", "/api/BillsPayment/ValidateCustomer", body).json()
         r = data.get("result", {}) or {}
-        return {"success": _ok(data) or bool(data.get("successful")),
+        return {"success": _ok(data),
                 "name": r.get("customerName") or r.get("name", ""),
                 # customerAddress is the spelling ALAT uses elsewhere in its contract
                 # (the card-issue body), so it is tried first.
@@ -1922,9 +2085,9 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
     """Requery a VAS purchase by our transactionReference (settle/refund helper).
 
     The airtime/data status check takes an INTEGER ``transactionType`` (1 = airtime,
-    2 = data); the bills check takes only the reference. Both return an integer
-    ``transactionStatus`` whose legend ALAT doesn't publish — see _parse_vas for how
-    that is handled money-safely."""
+    2 = data); the bills check takes only the reference. Both return the confirmed
+    payment ``transactionStatus`` legend (200 success, 400 failure, 401 API/auth
+    failure), decoded through a product-scoped configured map. See _parse_vas."""
     if txn_type == "remita":
         # ProcessRemitaPayment is synchronous and ALAT exposes NO Remita status
         # endpoint, so a timed-out Remita payment can't be auto-requeried — leave it
@@ -1949,9 +2112,9 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
                          {"transactionReference": reference,
                           "transactionType": 2 if txn_type == "data" else 1})
         data = resp.json()
-        # The two status endpoints answer with DIFFERENT integer enums (1..11 vs 1..9),
-        # so the legend must be picked per product or a code would be decoded against
-        # the wrong ladder.
+        # Keep the legend product-scoped even though the current confirmed payment
+        # values are the same (200/400/401); a future product-specific bank change
+        # must not silently reinterpret another rail's in-flight rows.
         res = _parse_vas(data, reference, product=product,
                          http_status=resp.status_code, requery=True)
         # A bill that settles on REQUERY rather than synchronously must still carry
@@ -2006,19 +2169,23 @@ def vas_status_entitlement(product: str = "airtime") -> tuple[bool, str]:
 
 _VAS_OUTCOMES = ("success", "pending", "failed")
 _VAS_OUTCOME_ALIASES = {
-    # Wema's current VAS legend says 200 means either successful or pending. On a
-    # status requery that ambiguity cannot settle safely, so keep it pending until a
-    # purchase response carries an explicit SUCCESS status.
+    # Backward-compatible parsing for an obsolete ambiguous label. Wema has since
+    # confirmed 200=success; current configuration must use `200=success`. If an old
+    # deployment still says success_or_pending, fail safe instead of silently
+    # reinterpreting its configuration as terminal success.
     "success_or_pending": "pending",
     "pending_or_success": "pending",
     # A timeout cannot prove non-delivery. This deployed label combines a
     # terminal refusal with an ambiguous timeout; never refund from it.
     "failed_insufficient_funds_or_network_timeout": "pending",
-    "unauthorized_authentication_failed_or_invalid_api": "pending",
+    # On the original purchase this is a terminal refusal (the instruction was not
+    # authenticated). _parse_vas overrides it to PENDING on a status requery, where
+    # 401 only proves that the lookup itself failed.
+    "unauthorized_authentication_failed_or_invalid_api": "failed",
 }
 
 # Which env-backed legend decodes each product's integer transactionStatus. Remita
-# has its own: it is a DIFFERENT ALAT product with its own status enum, and it used
+# has its own: it is a DIFFERENT ALAT product with its own contract, and it used
 # to fall through to the airtime legend by way of _parse_vas's default argument. On a
 # deploy that buys Remita but not Airtime/Data — which is the shape of our
 # subscription — that meant the airtime legend was never set, so every integer-shaped
@@ -2033,11 +2200,10 @@ _LEGEND_SETTING = {
 def _vas_legend(product: str) -> dict[str, str]:
     """The configured integer→outcome map for a VAS status check, or {} when unset.
 
-    ALAT's PartnerPayment status endpoints answer with a bare integer
-    ``transactionStatus`` (1..11 airtime/data, 1..9 bills) and publish no legend, so
-    the code cannot know what any value means. This reads the legend from
-    configuration instead of hardcoding a guess — the day Wema supplies it, it is a
-    Render env var rather than a deploy.
+    The live integration's confirmed payment legend is 200=success, 400=failed and
+    401=unauthorized/authentication-failed/invalid-API. This still reads a separate
+    map per product from configuration: contract changes then fail closed instead of
+    silently reclassifying in-flight money.
 
     Parsing is strict on purpose. An entry that isn't a known ``<int>=outcome`` pair
     is DROPPED with an error, not defaulted, because the fallback for an unknown code
@@ -2108,9 +2274,10 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
     settle_or_refund expects.
 
     Two response shapes: a purchase carries a STRING ``result.status``
-    (SUCCESS/PROCESSING/…), while the PartnerPayment status-check carries only an
-    INTEGER ``result.transactionStatus`` (enum 1..11) whose meaning ALAT doesn't
-    document. On the integer-only shape the outcome is decided by the configured
+    (SUCCESS/PROCESSING/…), while the PartnerPayment status-check may carry only an
+    INTEGER ``result.transactionStatus``. The confirmed payment legend is 200
+    success, 400 failure and 401 API/auth failure. On the integer-only shape the
+    outcome is still decided by the configured
     legend (``WEMA_VAS_STATUS_LEGEND`` / ``WEMA_BILLS_STATUS_LEGEND``); with no
     legend, or for a code the legend doesn't cover, we report ``pending`` — never
     auto-settle (which would strand a failed purchase debited) or auto-refund (which
@@ -2122,8 +2289,10 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
     below swallowed the refusal and the debit hung forever: production sat on six
     airtime rows the gateway was answering "You've not been profiled to use this
     service" — requeried every ten minutes, never settling, never refunding, the
-    customer debited the whole time. A 4xx is the gateway saying it understood and
-    refused, so nothing was executed and a definitive failure is the truthful answer.
+    customer debited the whole time. A non-ambiguous 4xx is the gateway saying it
+    understood and refused, so nothing was executed and a definitive failure is the
+    truthful answer. Transport-ambiguous 408/409/425/429/5xx responses are raised
+    before parsing and remain pending.
 
     On REQUERY, every HTTP/envelope error is a failure of the lookup, NOT a
     verdict on the earlier purchase. It must stay pending, even if an error body
@@ -2139,6 +2308,7 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
         raw_status = data.get("status")
     # Envelope booleans describe the API call, never the purchase outcome.
     status = raw_status.strip().upper() if isinstance(raw_status, str) else ""
+    envelope_outcome = _envelope_outcome(data)
     # A refusal is settled FIRST, ahead of every branch below, because a request the
     # gateway declined to execute has no outcome for them to read: no status string to
     # trust, and no transactionStatus worth decoding against a legend.
@@ -2166,7 +2336,7 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
     # un-entitled product with HTTP *200*, hasError true and the refusal in the body,
     # which a status-code check cannot see. Requires the error envelope as well as the
     # wording, so a delivered purchase that merely mentions authorisation is untouched.
-    refused_body = (not (_ok(data) or bool(data.get("successful")))
+    refused_body = (_envelope_outcome(data) is False
                     and bool(_VAS_NOT_ENTITLED_RE.search(refused_message)))
     if requery:
         # 401/403 (no entitlement for the status product) and the body-borne form of
@@ -2180,9 +2350,7 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
                     "status": "", "reference": r.get("transactionReference", reference),
                     "message": refused_message, "raw": data}
         if ((http_status is not None and not 200 <= http_status < 300)
-                or data.get("hasError") not in (None, False)
-                or data.get("successful") is False
-                or data.get("status") is False):
+                or envelope_outcome is not True):
             return {"success": False, "pending": True, "status": "LOOKUP_ERROR",
                     "reference": reference, "message": refused_message, "raw": data}
         returned_reference = str(r.get("transactionReference") or "").strip()
@@ -2208,11 +2376,19 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
                 "message": refused_message, "raw": data}
     if not status and "transactionStatus" in r:
         code = r.get("transactionStatus")
-        if requery and not (data.get("hasError") is False
-                            or data.get("successful") is True or data.get("status") is True):
-            return {"success": False, "pending": True, "status": "LOOKUP_UNCONFIRMED",
-                    "reference": reference, "raw": data}
         outcome = _vas_legend(product).get(str(code).strip())
+        # The same 401 legend has opposite evidentiary value depending on which
+        # request returned it: direct purchase => refused; status query => lookup
+        # failed, original delivery unknown. Never refund from a failed lookup.
+        if requery and str(code).strip() == "401":
+            outcome = "pending"
+        if envelope_outcome is None:
+            outcome = "pending"
+        elif envelope_outcome is False and outcome != "failed":
+            # A direct/requery response that simultaneously says the envelope
+            # failed and the payment succeeded is contradictory. Hold it rather
+            # than settling or refunding from field precedence.
+            outcome = "pending"
         # `code` is the gateway's, not ours: it is whatever JSON arrived in
         # transactionStatus, so it is sanitised alongside the reference rather than
         # trusted to be the small integer the enum documents.
@@ -2227,7 +2403,7 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
                 "status": f"CODE_{code}",
                 "reference": r.get("transactionReference", reference),
                 "message": _msg(data), "raw": data}
-    ok = _ok(data) or bool(data.get("successful"))
+    ok = envelope_outcome is True
     ref = r.get("transactionReference", reference)
     msg = r.get("message") or _msg(data)
     # hasError=false is NOT itself a delivery confirmation. A purchase — or a requery
@@ -2241,8 +2417,14 @@ def _parse_vas(data: dict, reference: str, product: str = "airtime", *,
     # An explicit failure string must refund, not settle — previously any non-pending
     # status with hasError=false was treated as success, so a FAILED/DECLINED buy left
     # the customer debited for nothing.
+    if envelope_outcome is None:
+        return {"success": False, "pending": True, "status": status,
+                "reference": ref, "message": msg, "raw": data}
     if status in ("FAILED", "FAILURE", "DECLINED", "REJECTED", "REVERSED", "NOT_PROCESSED"):
         return {"success": False, "pending": False, "status": status,
+                "reference": ref, "message": msg, "raw": data}
+    if envelope_outcome is False:
+        return {"success": False, "pending": True, "status": "CONFLICTING_ENVELOPE",
                 "reference": ref, "message": msg, "raw": data}
     success = ok and status in ("SUCCESS", "SUCCESSFUL", "SUCCESSFULL", "COMPLETED")
     return {"success": success, "pending": not success, "status": status,
@@ -2268,7 +2450,21 @@ def validate_rrr(rrr: str) -> dict:
         r = data.get("result") or data.get("data") or {}
         if not isinstance(r, dict):
             r = {}
-        return {"success": _ok(data) or bool(data.get("successful") or r.get("isValidated")),
+        envelope = _envelope_outcome(data)
+        envelope_present = any(
+            key in data
+            for key in (
+                "status", "success", "successful", "hasError", "pending",
+                "errors", "error", "errorMessage", "errorMessages",
+            )
+        )
+        validated = r.get("isValidated") if "isValidated" in r else None
+        validation_ok = validated is True if "isValidated" in r else None
+        success = (
+            envelope is True and validation_ok is not False
+            or validation_ok is True and not envelope_present
+        )
+        return {"success": success,
                 "name": r.get("name") or r.get("customerName", ""), "amount": _naira(r.get("amount")),
                 "message": r.get("message") or _msg(data), "raw": data}
     except requests.RequestException as exc:
@@ -2308,7 +2504,7 @@ def remita_receipt(rrr: str) -> dict:
         return {"success": not _mock_blocked(), "mock": True, "receipt": None}
     try:
         data = _get("remita", f"/api/RemitaPayment/PrintRemitaReceipt/{rrr}").json()
-        return {"success": _ok(data) or bool(data.get("successful")),
+        return {"success": _ok(data),
                 "receipt": data.get("result") or data.get("data"), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
@@ -2368,7 +2564,7 @@ def bnpl_consent(account_number: str, product_amount, tenor: int, customer_refer
         r = data.get("response", {}) or {}
         if not isinstance(r, dict):
             r = {}
-        return {"success": bool(data.get("successful")) or _ok(data),
+        return {"success": _ok(data),
                 "eligibility_id": r.get("eligibilityId") or data.get("eligibilityId", ""),
                 "account_name": r.get("accountName", ""),
                 "message": data.get("message") or _msg(data), "raw": data}
@@ -2389,7 +2585,7 @@ def bnpl_accept_terms(eligibility_id: str, accepted: bool = True) -> dict:
             data = resp.json()
         except ValueError:
             return {"success": resp.status_code < 300}
-        return {"success": bool(data.get("successful")) or _ok(data), "message": _msg(data), "raw": data}
+        return {"success": _ok(data), "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
@@ -2404,7 +2600,7 @@ def bnpl_status(customer_reference: str) -> dict:
                     {"customeReference": customer_reference}).json()
         r = data.get("result") or data.get("data") or data
         status = (r.get("status") if isinstance(r, dict) else "") or ""
-        return {"success": bool(data.get("successful")) or _ok(data), "status": str(status), "raw": data}
+        return {"success": _ok(data), "status": str(status), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
@@ -2418,7 +2614,7 @@ def bnpl_liquidate(customer_reference: str, *, amount=None) -> dict:
         if amount is not None:
             body["amount"] = float(amount)
         data = _post("bnpl", "/api/LoanApplication/loan-liquidation", body).json()
-        return {"success": bool(data.get("successful")) or _ok(data), "message": _msg(data), "raw": data}
+        return {"success": _ok(data), "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
@@ -2501,7 +2697,12 @@ def card_issue(holder: str, customer_ref: str, *, account_number: str = "", emai
                 "accountNo": account_number, "customerAddress": address,
                 "cardKey": settings.WEMA.get("CARD_PRODUCT_KEY", ""), "currency": "NGN"}
         data = _post("card", "/api/Partner/partnerCard/virtualCard", body).json()
-        ok = bool(data.get("status")) or _ok(data)
+        # Do not coerce gateway strings: ``"false"`` and ``"failed"`` are
+        # truthy in Python but are explicit negative evidence, not success.
+        # One strict decision across the whole envelope. Checking one positive
+        # field first would let ``successful: true`` override a simultaneous
+        # ``hasError: true`` / ``status: false`` and falsely claim issuance.
+        ok = _envelope_outcome(data) is True
         d = _card_data(data)
         pan = str(d.get("maskedPan") or d.get("cardPan") or d.get("cardNumber") or "")
         return {"success": ok, "card_token": account_number,
@@ -2510,7 +2711,9 @@ def card_issue(holder: str, customer_ref: str, *, account_number: str = "", emai
                 "expiry": d.get("expiryDate") or d.get("expiry") or "",
                 "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
-        return _unreachable(exc)
+        # Issuance is a non-idempotent POST.  A lost response cannot prove that
+        # no card was created, so callers must hold the durable intent for review.
+        return _unreachable(exc, pending=True)
 
 
 def card_set_status(card_token: str, active: bool, *, masked_pan: str = "") -> dict:
@@ -2519,30 +2722,43 @@ def card_set_status(card_token: str, active: bool, *, masked_pan: str = "") -> d
     ALAT has no reversible freeze, so unfreezing (active=True) is reported
     unsupported rather than faked; blocking (active=False) hotlists the card
     permanently (also passes the masked PAN when the caller has it)."""
+    # This is a provider capability, not a live-credentials condition. Never let
+    # simulation/mock mode teach a direct or admin caller that a permanent Wema
+    # hotlist can be reversed.
+    if active:
+        return {"success": False, "unsupported": True, "permanent_block": True,
+                "message": "This card was blocked and can't be reactivated — request a new card."}
     if not _card_live():
         if _mock_blocked():
             return {"success": False, "message": "Card issuing is not configured"}
-        return {"success": True, "mock": True}
-    if active:
-        return {"success": False,
-                "message": "This card was blocked and can't be reactivated — request a new card."}
+        return {"success": True, "mock": True, "permanent_block": True}
     try:
         data = _post("card", "/api/Partner/partnerCard/hotlistCard", {},
                      params={"maskedPan": masked_pan, "accountNumber": card_token}).json()
-        return {"success": bool(data.get("successful")) or _ok(data), "message": _msg(data), "raw": data}
+        outcome = _envelope_outcome(data)
+        return {
+            "success": outcome is True,
+            "pending": outcome is None,
+            "permanent_block": True,
+            "message": _msg(data),
+            "raw": data,
+        }
     except requests.RequestException as exc:
-        return _unreachable(exc)
+        # Hotlisting is an irreversible POST. A lost response may mean the card
+        # is already permanently blocked, so local state must not guess either
+        # success or failure until a reload/requery confirms it.
+        return {**_unreachable(exc, pending=True), "permanent_block": True}
 
 
 def card_fund(card_token: str, amount) -> dict:
     """Incremental top-up. ALAT's virtual card is funded at issue and exposes no
     top-up endpoint, so a live call reports unsupported (the caller refunds the
     debit) rather than faking a success against a card it can't move."""
-    if not _card_live():
-        if _mock_blocked():
-            return {"success": False, "message": "Card issuing is not configured"}
-        return {"success": True, "mock": True}
-    return {"success": False, "message": "Top-up isn't supported for this card"}
+    # Unsupported by the product in every environment. Returning mock success in
+    # development would hide integration bugs and advertise a capability that can
+    # never work after go-live.
+    return {"success": False, "unsupported": True,
+            "message": "Top-up isn't supported for this card"}
 
 
 def card_reveal(card_token: str) -> dict:
@@ -2557,7 +2773,10 @@ def card_reveal(card_token: str) -> dict:
     try:
         data = _get("card", f"/api/Partner/partnerCard/virtual-card-details/{card_token}").json()
         d = _card_data(data)
-        ok = bool(data.get("status")) or bool(data.get("successful")) or _ok(data)
+        # Contradictory flags are unknown, not success; a reveal response must
+        # not expose card details unless its complete envelope is explicitly
+        # positive.
+        ok = _envelope_outcome(data) is True
         return {"success": ok and bool(d),
                 "pan": d.get("cardPan") or d.get("cardNumber") or d.get("pan", ""),
                 "cvv": d.get("cvv") or d.get("cvv2", ""), "raw": data}

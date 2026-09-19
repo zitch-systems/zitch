@@ -1,8 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
-import { apiPost, newIdempotencyKey } from '@/lib/api';
+import { apiPost } from '@/lib/api';
+import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
+import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, ProviderGrid, QuickAmounts, QUICK_AMOUNTS, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
@@ -31,9 +33,11 @@ const BuyAirtime = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState('');
+  const [recovered, setRecovered] = useState(false);
+  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
-  const idemKey = useRef('');  // stable across retries of one purchase attempt
-
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
 
   const network = NETWORKS.find((n) => n.id === net)!;
@@ -41,33 +45,57 @@ const BuyAirtime = () => {
   const valid = phone.length >= 10 && amount >= 100 && amount <= balance;
 
   const purchase = async (enteredPin: string) => {
-    if (!idemKey.current) idemKey.current = newIdempotencyKey();
+    const fingerprint = [net, phone.trim(), String(amount)].join('|');
+    let deliveryStarted = false;
     setBusy(true);
     try {
+      const requestKey = await acquireSpendAttempt('airtime', fingerprint);
+      deliveryStarted = true;
       const response = await apiPost(EP.utility.buyAirtime, {
         network: net,
         phone,
         amount: amt,
         transaction_pin: enteredPin,
-        idempotency_key: idemKey.current,
+        idempotency_key: requestKey,
       });
       const result = await response.json();
-      if (response.ok) {
-        idemKey.current = '';
+      const outcome = classifySpendResponse(result, response.status);
+      if (outcome === 'success') {
+        await clearSpendAttempt('airtime', fingerprint, requestKey);
+        setRecovered(isRecoveredSpendResponse(result, response.status));
+        setTxnRef(String(result.reference || ''));
+        setStep(null);
+        setDone(true);
+        reload();
+      } else if (outcome === 'pending' || outcome === 'unknown') {
+        // Retain the key: this is still the same unresolved attempt, and the
+        // processing receipt prevents another authorization on this screen.
+        setPending(true);
+        setPendingMessage(outcome === 'pending'
+          ? (result.message || 'Your airtime purchase is processing. Its final status will update only after provider confirmation.')
+          : 'We could not confirm this airtime purchase. Check History before trying again.');
+        setTxnRef(String(result.reference || ''));
         setStep(null);
         setDone(true);
         reload();
       } else if (result.code === 'pin_incorrect' || result.code === 'pin_locked') {
         setPinError(result.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
-        idemKey.current = '';  // definitive server failure — a retry is a fresh attempt
+        await clearSpendAttempt('airtime', fingerprint, requestKey);
         notify('Error', result.message || 'Transaction failed');
         setStep(null);
       }
     } catch {
-      // network/unknown outcome — keep the key so a retry replays, never double-debits
-      notify('Error', 'Something went wrong. Please try again later.');
-      setStep(null);
+      if (deliveryStarted) {
+        // Delivery is unknown: hold the key and stop a fresh authorization.
+        setPending(true);
+        setPendingMessage('We could not confirm this airtime purchase. Check History before trying again.');
+        setStep(null);
+        setDone(true);
+        reload();
+      } else {
+        notify('Unable to start purchase', 'Could not safely prepare this request. Please try again.');
+      }
     } finally {
       setBusy(false);
     }
@@ -77,9 +105,15 @@ const BuyAirtime = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title="Successful"
-          message={`Your airtime purchase to ${phone} was successful.`}
+          title={pending ? 'Purchase processing' : recovered ? 'Earlier attempt confirmed' : 'Successful'}
+          message={pending
+            ? pendingMessage
+            : recovered
+              ? 'This confirms your earlier airtime purchase. No new airtime was bought. Start a new purchase to buy again.'
+            : `Your airtime purchase to ${phone} was successful.`}
           rows={[['Type', 'Airtime top-up'], ['Network', network.name], ['Phone', phone], ['Amount', money(amount)], ['Fee', '₦0'], ['Total', money(amount), true]]}
+          reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>

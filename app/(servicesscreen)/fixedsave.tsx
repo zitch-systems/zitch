@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { newIdempotencyKey } from '@/lib/api';
+import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
+import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { savingsService } from '@/lib/services/savings';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira, NText } from '@/components/design/ui';
 import { Label, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
@@ -40,6 +41,10 @@ const FixedSave = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState('');
+  const [recovered, setRecovered] = useState(false);
+  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
   const [rates, setRates] = useState<Record<number, number>>(FALLBACK_RATES);
   const [periods, setPeriods] = useState<number[]>(FALLBACK_PERIODS);
@@ -73,28 +78,48 @@ const FixedSave = () => {
   const maturity = amount + interest;
   const valid = amount >= minAmt && amount <= balance;
 
-  const idemKey = useRef('');  // stable across retries of one lock attempt
-
   const create = async (pin: string) => {
-    if (!idemKey.current) idemKey.current = newIdempotencyKey();
+    const fingerprint = [String(amount), String(days)].join('|');
+    let deliveryStarted = false;
     setBusy(true);
     try {
-      const res = await savingsService.create(amt, days, pin, idemKey.current);
-      if (res.success) {
-        idemKey.current = '';
+      const requestKey = await acquireSpendAttempt('fixed-save', fingerprint);
+      deliveryStarted = true;
+      const res = await savingsService.create(amt, days, pin, requestKey);
+      const outcome = classifySpendResponse(res);
+      if (outcome === 'success') {
+        await clearSpendAttempt('fixed-save', fingerprint, requestKey);
+        setRecovered(isRecoveredSpendResponse(res));
+        setTxnRef(String(res.reference || ''));
+        setStep(null);
+        setDone(true);
+        reload();
+      } else if (outcome === 'pending' || outcome === 'unknown') {
+        setPending(true);
+        setPendingMessage(outcome === 'pending'
+          ? (res.message || 'Your savings request is processing. Its final status will update only after provider confirmation.')
+          : 'We could not confirm this savings request. Check History before trying again.');
+        setTxnRef(String(res.reference || ''));
         setStep(null);
         setDone(true);
         reload();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
-        idemKey.current = '';  // definitive server failure — retry is a fresh attempt
+        await clearSpendAttempt('fixed-save', fingerprint, requestKey);
         notify('Error', res.message || 'Could not lock savings');
         setStep(null);
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
-      setStep(null);
+      if (deliveryStarted) {
+        setPending(true);
+        setPendingMessage('We could not confirm this savings request. Check History before trying again.');
+        setStep(null);
+        setDone(true);
+        reload();
+      } else {
+        notify('Unable to start savings', 'Could not safely prepare this request. Please try again.');
+      }
     } finally {
       setBusy(false);
     }
@@ -104,9 +129,15 @@ const FixedSave = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title="Savings locked 🔒"
-          message={`${money(amount)} locked for ${days} days at ${(rate * 100).toFixed(0)}% p.a. You can't withdraw until maturity.`}
+          title={pending ? 'Savings request processing' : recovered ? 'Earlier attempt confirmed' : 'Savings locked 🔒'}
+          message={pending
+            ? pendingMessage
+            : recovered
+              ? 'This confirms your earlier savings request. No new funds were locked. Authorize a new request to save again.'
+            : `${money(amount)} locked for ${days} days at ${(rate * 100).toFixed(0)}% p.a. You can't withdraw until maturity.`}
           rows={[['Principal', money(amount)], ['Rate', `${(rate * 100).toFixed(0)}% p.a`], ['Duration', `${days} days`], ['Interest earned', money(interest)], ['Maturity value', money(maturity), true]]}
+          reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/savings')}
         />
       </Screen>

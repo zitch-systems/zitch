@@ -58,7 +58,7 @@ const Settings = () => {
   const version = Constants.expoConfig?.version ?? '1.0.0';
 
   const security = [
-    { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 4-digit PIN', go: () => router.push('/resetpin') },
+    { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 6-digit PIN', go: () => router.push('/resetpin') },
     { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
     { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & limits', go: () => router.push('/kyc') },
   ];
