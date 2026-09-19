@@ -112,14 +112,14 @@ class ReconcileBalancesTests(TestCase):
             _out, _err, _alert, code = self._run("--fail-over")
         self.assertEqual(code, 1)
 
-    def test_fail_over_escalates_under_without_changing_exit_contract(self):
-        # --fail-over retains its historical exit contract, but an under must
-        # still reach the operator review path.
+    def test_fail_over_fails_under_without_changing_money(self):
+        # Legacy production cron flags must hold on a bank-ahead discrepancy as
+        # well as ledger-over-bank; the escalation remains strictly read-only.
         with mock.patch("utility.wema.get_balance", return_value=_bank("6000")):
             out, _err, alert_mock, code = self._run("--fail-over")
         self.assertIn("1 under", out)
         alert_mock.assert_called_once()
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
 
     def test_fail_over_fails_when_all_bank_reads_are_unreachable(self):
         with mock.patch("utility.wema.get_balance",

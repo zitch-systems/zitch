@@ -38,8 +38,11 @@ retained Oregon resources instead of the `-ry6y` Frankfurt services.
    any secret during this repair.
 4. Configure the **Frankfurt balance reconciliation cron** to use the Frankfurt
    shared cache and run `python manage.py reconcile_balances --fail-nonzero`.
-   The command remains read-only: a discrepancy emits an audited alert and a
-   non-zero exit status; it never corrects a balance or changes a transaction.
+   Until the dashboard command can be updated, the existing
+   `reconcile_balances --fail-over` invocation is a compatibility alias that
+   also exits non-zero for either discrepancy direction. The command remains
+   read-only: a discrepancy emits an audited alert and a non-zero exit status;
+   it never corrects a balance or changes a transaction.
 5. Run one controlled Wema reconciliation and one balance reconciliation.
    Confirm that notification delivery works and that discrepancy records are
    visible to an operator.  A non-zero balance-reconciliation exit is expected

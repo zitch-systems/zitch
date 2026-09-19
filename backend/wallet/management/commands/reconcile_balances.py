@@ -45,9 +45,9 @@ class Command(BaseCommand):
                  "bank read — for CI/manual audit.")
         parser.add_argument(
             "--fail-over", action="store_true",
-            help="Exit 1 on the dangerous ledger>bank direction or an incomplete bank read. "
-                 "Bank>ledger discrepancies are still escalated for review but do not by "
-                 "themselves select a customer balance or payment outcome.")
+            help="Legacy alias for the non-zero reconciliation gate: exit 1 on either "
+                 "discrepancy direction or an incomplete bank read. It never changes a "
+                 "customer balance or payment outcome.")
 
     def handle(self, *args, **options):
         from utility.alerts import alert
@@ -125,6 +125,6 @@ class Command(BaseCommand):
             f"Balance recon: {checked} wallet(s), {len(over)} over / {len(under)} under / "
             f"{unreachable} unreachable (tolerance {tolerance})")
         incomplete = unreachable > 0
-        if ((incomplete or over) and options["fail_over"]
-                or (incomplete or over or under) and options["fail_nonzero"]):
+        if ((incomplete or over or under)
+                and (options["fail_over"] or options["fail_nonzero"])):
             raise SystemExit(1)
