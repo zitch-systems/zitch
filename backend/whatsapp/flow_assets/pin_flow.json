@@ -85,11 +85,6 @@
       "RESULT",
       "SUCCESS"
     ],
-    "SIGNUP_EMAIL_CODE": [
-      "SIGNUP_PHONE",
-      "RESULT",
-      "SUCCESS"
-    ],
     "SIGNUP_PHONE": [
       "SIGNUP_PHONE_CODE",
       "PIN_CHAIN",
