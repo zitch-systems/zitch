@@ -25,10 +25,10 @@ VAS_ENABLED = os.environ.get("WEMA_VAS_ENABLED", "false").lower() == "true" if V
 VAS_TOKEN = os.environ.get("WEMA_VAS_BANK_TOKEN", "") if VAS_MODE == "validation" else os.environ.get("WEMA_VAS_DEV_TOKEN", "")
 VAS_IDENTITY_KEYS = os.environ.get("WEMA_VAS_IDENTITY_KEYS", "")
 if VAS_MODE == "validation":
-    if len(VAS_TOKEN) < 48 or not VAS_IDENTITY_KEYS:
-        raise ImproperlyConfigured("Validation requires a distinct bank token and identity encryption keys.")
+    if VAS_ENABLED and (len(VAS_TOKEN) < 48 or not VAS_IDENTITY_KEYS.strip(", ")):
+        raise ImproperlyConfigured("Enabled validation requires a distinct bank token and identity encryption keys.")
     try:
-        for key in VAS_IDENTITY_KEYS.split(","):
+        for key in filter(None, VAS_IDENTITY_KEYS.split(",")):
             Fernet(key.strip().encode("ascii"))
     except (ValueError, TypeError) as exc:
         raise ImproperlyConfigured("Invalid VAS identity key") from exc

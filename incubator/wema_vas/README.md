@@ -163,8 +163,9 @@ Baseline inspected: `f5d8e84a13e90637a1cc047dcfcc95510526c83d`.
 The optional `incubator/wema_vas/render.yaml` describes a new Frankfurt web
 service and a **new database**. It does not change the root `render.yaml` and has
 `autoDeployTrigger: off` and `WEMA_VAS_ENABLED=false`. Applying this Blueprint
-would create separately billed infrastructure; review it and supply its secrets
-before provisioning. No real customer should be enrolled until Zitch approves a
+would create separately billed infrastructure. The disabled service can start
+before bank token and identity keys are supplied; enabling the bank endpoints
+requires both valid secrets and a restart. No real customer should be enrolled until Zitch approves a
 BVN/NIN verification source, consent, retention and access-audit procedure.
 If provisioning is approved, select the custom Blueprint Path
 `incubator/wema_vas/render.yaml` on branch `codex/vas-isolated-e2e` in Render.

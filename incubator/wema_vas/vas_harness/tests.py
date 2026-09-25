@@ -373,6 +373,23 @@ class IsolationTests(SimpleTestCase):
             with self.assertRaises(ImproperlyConfigured):
                 spec.loader.exec_module(module)
 
+    def test_disabled_validation_boots_without_bank_secrets_but_cannot_enable(self):
+        env = {"WEMA_VAS_MODE": "validation", "WEMA_VAS_ENABLED": "false",
+               "WEMA_VAS_DJANGO_SECRET": "s" * 48,
+               "WEMA_VAS_ALLOWED_HOSTS": "vas.example.test",
+               "WEMA_VAS_DB_NAME": "zitch_vas_validation",
+               "WEMA_VAS_DB_USER": "vas", "WEMA_VAS_DB_PASSWORD": "test-only",
+               "WEMA_VAS_DB_HOST": "db.example.test", "WEMA_VAS_DB_PORT": "5432"}
+        spec = importlib.util.find_spec("vas_harness.settings")
+        with patch.dict(os.environ, env, clear=True):
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            self.assertFalse(module.VAS_ENABLED)
+            self.assertEqual(module.VAS_TOKEN, "")
+            os.environ["WEMA_VAS_ENABLED"] = "true"
+            with self.assertRaises(ImproperlyConfigured):
+                spec.loader.exec_module(importlib.util.module_from_spec(spec))
+
 
 KEY = Fernet.generate_key().decode()
 OTHER_KEY = Fernet.generate_key().decode()

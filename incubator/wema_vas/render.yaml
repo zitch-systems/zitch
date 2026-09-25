@@ -4,7 +4,7 @@ databases:
   - name: zitch-vas-validation-db
     databaseName: zitch_vas_validation
     user: zitch_vas_validation
-    plan: starter
+    plan: basic_256mb
     region: frankfurt
 
 services:
