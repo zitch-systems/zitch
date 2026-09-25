@@ -37,7 +37,7 @@ class SignupSessionHardeningTests(TestCase):
                 "email": "ngozi@example.com",
             },
         })
-        self.assertEqual(response["screen"], "SIGNUP_SCREEN")
+        self.assertEqual(response["screen"], "SIGNUP_PHONE")
         ob.refresh_from_db()
         self.assertGreater(ob.expires_at, before + timedelta(minutes=10))
 
