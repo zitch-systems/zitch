@@ -23,10 +23,8 @@ ROUTES = FLOW["routing_model"]
 #: Every (from, to) move a server handler can answer with. Same-screen
 #: re-renders are always legal; anything else must be a declared route.
 SERVER_TRANSITIONS = [
-    ("SIGNUP_SCREEN", "SIGNUP_SCREEN"), ("SIGNUP_SCREEN", "SIGNUP_EMAIL_CODE"),
+    ("SIGNUP_SCREEN", "SIGNUP_SCREEN"),
     ("SIGNUP_SCREEN", "SIGNUP_PHONE"), ("SIGNUP_SCREEN", "SUCCESS"),
-    ("SIGNUP_EMAIL_CODE", "SIGNUP_EMAIL_CODE"), ("SIGNUP_EMAIL_CODE", "SIGNUP_PHONE"),
-    ("SIGNUP_EMAIL_CODE", "SUCCESS"),
     ("SIGNUP_PHONE", "SIGNUP_PHONE"), ("SIGNUP_PHONE", "PIN_CHAIN"), ("SIGNUP_PHONE", "SUCCESS"),
     ("EMAIL_SCREEN", "EMAIL_SCREEN"), ("EMAIL_SCREEN", "IDENTITY_CHAIN"), ("EMAIL_SCREEN", "SUCCESS"),
     ("TRANSFER_FORM", "TRANSFER_FORM"), ("TRANSFER_FORM", "PIN_CHAIN"), ("TRANSFER_FORM", "SUCCESS"),
@@ -227,13 +225,8 @@ class BuildersMatchDeclaredKeysTests(TestCase):
 
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058",
                             color="#e30613", active=True)
-        import types
-
-        ob = types.SimpleNamespace(payload={"email": "a@b.test"})
         for resp in (
             F._signup_screen(),
-            F._signup_email_code_screen(ob),
-            F._signup_email_code_screen(ob, error="wrong"),
             F._signup_phone_screen(),
             F._signup_phone_screen(error="taken"),
             F._email_screen(),
