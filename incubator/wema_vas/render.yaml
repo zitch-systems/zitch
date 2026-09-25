@@ -1,0 +1,59 @@
+# Standalone Blueprint. Never sync this into the repository's root Blueprint.
+# Activation requires separately supplied secret values and a bank-approved KYC path.
+databases:
+  - name: zitch-vas-validation-db
+    databaseName: zitch_vas_validation
+    user: zitch_vas_validation
+    plan: starter
+    region: frankfurt
+
+services:
+  - type: web
+    name: zitch-vas-validation-api
+    runtime: python
+    region: frankfurt
+    plan: starter
+    branch: codex/vas-isolated-e2e
+    rootDir: incubator/wema_vas
+    autoDeployTrigger: 'off'
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: python manage.py migrate --noinput
+    startCommand: gunicorn vas_harness.wsgi:application --bind 0.0.0.0:${PORT:-10000} --workers 2 --timeout 30
+    healthCheckPath: /healthz
+    envVars:
+      - key: WEMA_VAS_MODE
+        value: validation
+      - key: WEMA_VAS_ENABLED
+        value: 'false'
+      - key: WEMA_VAS_PREFIX
+        value: '711'
+      - key: WEMA_VAS_BANK_TOKEN
+        sync: false
+      - key: WEMA_VAS_IDENTITY_KEYS
+        sync: false
+      - key: WEMA_VAS_ALLOWED_HOSTS
+        sync: false
+      - key: WEMA_VAS_TRUST_TLS_PROXY
+        sync: false
+      - key: WEMA_VAS_DJANGO_SECRET
+        generateValue: true
+      - key: WEMA_VAS_DB_NAME
+        fromDatabase:
+          name: zitch-vas-validation-db
+          property: database
+      - key: WEMA_VAS_DB_USER
+        fromDatabase:
+          name: zitch-vas-validation-db
+          property: user
+      - key: WEMA_VAS_DB_PASSWORD
+        fromDatabase:
+          name: zitch-vas-validation-db
+          property: password
+      - key: WEMA_VAS_DB_HOST
+        fromDatabase:
+          name: zitch-vas-validation-db
+          property: host
+      - key: WEMA_VAS_DB_PORT
+        fromDatabase:
+          name: zitch-vas-validation-db
+          property: port
