@@ -37,9 +37,9 @@ SIGNUP_SCREEN = "SIGNUP_SCREEN"
 #: disqualify it as an opening screen and break the ungated path the privacy
 #: gate exists to preserve. Same trick, same reason, as PIN_CHAIN.
 SIGNUP_CHAIN = "SIGNUP_CHAIN"
-#: The signup ladder's middle pages: the email code (sent when the details are
-#: accepted, entered on the SAME open session) and the account phone number.
-SIGNUP_EMAIL_CODE = "SIGNUP_EMAIL_CODE"
+#: The signup ladder's next page after the details form: the account phone
+#: number. Email is collected but not verified inline - the KYC ladder's OTP
+#: proves it later, same as the chat signup path.
 SIGNUP_PHONE = "SIGNUP_PHONE"
 SIGNUP_PHONE_CODE = "SIGNUP_PHONE_CODE"
 #: Chained twins of PIN_SCREEN and IDENTITY_SCREEN. Meta forbids ONE screen being
@@ -120,7 +120,6 @@ RESULT_SCREEN = "RESULT"
 FLOW_PIN_STATE = "flow_pin"   # PendingAction.state (and WaOnboarding.step) while a secure Flow is armed
 FLOW_PRIVACY_STATE = "flow_privacy"  # ...while the privacy notice is awaiting consent
 FLOW_SIGNUP_STATE = "flow_signup"   # WaOnboarding.step while the signup form is open
-FLOW_EMAIL_CODE_STATE = "flow_email_code"   # ...while the signup email code is pending
 FLOW_PHONE_STATE = "flow_phone"             # ...while the signup phone page is open
 FLOW_PHONE_CODE_STATE = "flow_phone_code"   # ...while the signup phone SMS code is pending
 FLOW_PASSWORD_STATE = "flow_password"       # ...while the app-password page is open
@@ -188,7 +187,7 @@ def resolve_onboarding_token(token: str):
     ob = WaOnboarding.objects.filter(id=int(pid)).first()
     if ob is None or ob.expired or ob.step not in (
             FLOW_PRIVACY_STATE,
-            FLOW_SIGNUP_STATE, FLOW_EMAIL_CODE_STATE, FLOW_PHONE_STATE,
+            FLOW_SIGNUP_STATE, FLOW_PHONE_STATE,
             FLOW_PHONE_CODE_STATE, FLOW_PASSWORD_STATE, FLOW_PIN_STATE):
         return None
     if not hmac.compare_digest(sig, _sig(f"{_OB_PREFIX}{ob.id}:{ob.msisdn}")):
@@ -783,8 +782,6 @@ def _handle_flow_request(payload: dict) -> dict:
                 return _submit_privacy_consent(ob, data)
             if ob.step == FLOW_SIGNUP_STATE:
                 return _submit_signup_details(ob, data)
-            if ob.step == FLOW_EMAIL_CODE_STATE:
-                return _submit_signup_email_code(ob, data)
             if ob.step == FLOW_PHONE_STATE:
                 return _submit_signup_phone(ob, data)
             if ob.step == FLOW_PHONE_CODE_STATE:
@@ -796,8 +793,6 @@ def _handle_flow_request(payload: dict) -> dict:
             return _privacy_screen()
         if ob.step == FLOW_SIGNUP_STATE:
             return _signup_screen(screen=_flow_screen(ob, SIGNUP_SCREEN))
-        if ob.step == FLOW_EMAIL_CODE_STATE:
-            return _signup_email_code_screen(ob)
         if ob.step == FLOW_PHONE_STATE:
             return _signup_phone_screen()
         if ob.step == FLOW_PHONE_CODE_STATE:
@@ -986,10 +981,11 @@ def _submit_privacy_consent(ob, data: dict) -> dict:
 
 def _submit_signup_details(ob, data: dict) -> dict:
     """The signup form: names + email in ONE private screen, then straight into
-    the PIN pair on the same open Flow - the whole signup with zero chat
+    the phone page on the same open Flow - the whole signup with zero chat
     round-trips. The same validation the chat path applies, because two entry
     points must not disagree on what a valid signup is. The email is only
-    COLLECTED here; the OTP round-trip still verifies it afterwards.
+    COLLECTED here, unverified, exactly like the chat path - the KYC ladder's
+    OTP proves it later.
     """
     import re
 
@@ -1010,51 +1006,15 @@ def _submit_signup_details(ob, data: dict) -> dict:
         return _signup_screen(error="That email is already on a Zitch account - use a different one.",
                               screen=_flow_screen(ob, SIGNUP_SCREEN))
     ob.payload.update({"first_name": first, "last_name": last, "email": email})
-    from .router import _onboard_to, send_onboarding_email_code
+    from .router import _onboard_to
 
-    if send_onboarding_email_code(ob):
-        _onboard_to(ob, FLOW_EMAIL_CODE_STATE)
-        return _signup_email_code_screen(ob)
-    # Email is the credential used to sign in to the app and to recover the
-    # account. Continuing after a delivery failure used to reserve an address
-    # nobody had proved they owned, while creating an account they could not
-    # reliably recover. Keep the form open instead; a retry may use the same or
-    # a corrected address and no User row has been created yet.
-    return _signup_screen(
-        error="We couldn't send the email code. Check the address and try again.",
-        screen=_flow_screen(ob, SIGNUP_SCREEN))
-
-
-def _signup_email_code_screen(ob, error: str = "") -> dict:
-    return {"screen": SIGNUP_EMAIL_CODE,
-            "data": {"summary": f"We sent a 6-digit code to {ob.payload.get('email', 'your email')}.",
-                     "error": f"⚠️ {error}" if error else ""}}
+    _onboard_to(ob, FLOW_PHONE_STATE)
+    return _signup_phone_screen()
 
 
 def _signup_phone_screen(error: str = "") -> dict:
     return {"screen": SIGNUP_PHONE,
             "data": {"error": f"⚠️ {error}" if error else ""}}
-
-
-def _submit_signup_email_code(ob, data: dict) -> dict:
-    """The email code, on the same open session that collected the address."""
-    from .router import check_onboarding_email_code
-
-    status, message = check_onboarding_email_code(ob, str(data.get("email_code", "")))
-    if status == "retry":
-        return _signup_email_code_screen(ob, error=message)
-    if status != "ok":
-        # Do not create an account whose sign-in/recovery address was never
-        # proved. End this Flow cleanly because re-rendering the same masked
-        # code screen would retain the rejected digits on the device.
-        from .router import _clear_onboarding
-        _clear_onboarding(ob.msisdn)
-        return _success_screen(
-            "We couldn't verify that email. Start Create account again for a new code.",
-            status="failed")
-    from .router import _onboard_to
-    _onboard_to(ob, FLOW_PHONE_STATE)
-    return _signup_phone_screen()
 
 
 def _submit_signup_phone(ob, data: dict) -> dict:

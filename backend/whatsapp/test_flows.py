@@ -1214,9 +1214,10 @@ class KeyMismatchLoggingTests(TestCase):
 
 class SignupFormFlowTests(TestCase):
     """The template-gallery pattern, on our own flow: names + email in ONE
-    private form, chained straight into the PIN pair — the whole signup with
-    zero chat round-trips. The email is only COLLECTED here; the OTP round-trip
-    still verifies it afterwards."""
+    private form, chained straight into the phone/PIN pages — the whole signup
+    with zero chat round-trips and SMS-only inline verification. The email is
+    only COLLECTED here, unverified; the KYC ladder's OTP verifies it later,
+    exactly like the chat signup path."""
 
     def _ob(self, step=None):
         from datetime import timedelta as td
@@ -1236,17 +1237,11 @@ class SignupFormFlowTests(TestCase):
                                     "data": data})
 
     def _verify_details(self, ob, email):
-        from .flows import SIGNUP_EMAIL_CODE, SIGNUP_PHONE
+        from .flows import SIGNUP_PHONE
 
-        with patch("whatsapp.router.email_live", return_value=True), \
-             patch("whatsapp.router.send_email", return_value={"success": True}) as mail:
-            opened = self._submit(
-                ob, first_name="Ngozi", last_name="Ade", email=email)
-        self.assertEqual(opened["screen"], SIGNUP_EMAIL_CODE)
-        code = mail.call_args[0][2].split("code is ")[1][:6]
-        verified = self._submit(ob, email_code=code)
-        self.assertEqual(verified["screen"], SIGNUP_PHONE)
-        return verified
+        opened = self._submit(ob, first_name="Ngozi", last_name="Ade", email=email)
+        self.assertEqual(opened["screen"], SIGNUP_PHONE)
+        return opened
 
     def test_init_opens_the_signup_form(self):
         from .flows import SIGNUP_SCREEN, handle_flow_request, sign_onboarding_token
@@ -1254,52 +1249,15 @@ class SignupFormFlowTests(TestCase):
         resp = handle_flow_request({"action": "INIT", "flow_token": sign_onboarding_token(self._ob())})
         self.assertEqual(resp["screen"], SIGNUP_SCREEN)
 
-    def test_no_email_delivery_keeps_signup_open_without_creating_an_identity(self):
-        from .flows import FLOW_SIGNUP_STATE, SIGNUP_SCREEN
+    def test_submitting_details_chains_straight_into_the_phone_page(self):
+        from .flows import FLOW_PHONE_STATE, SIGNUP_PHONE
 
         ob = self._ob()
-        resp = self._submit(ob, first_name="Ngozi", last_name="Ade", email="Ngozi@Example.com")
-        self.assertEqual(resp["screen"], SIGNUP_SCREEN)
-        self.assertIn("couldn't send the email code", resp["data"]["error"])
+        resp = self._submit(ob, first_name="Ngozi", last_name="Ade", email="n1@example.com")
+        self.assertEqual(resp["screen"], SIGNUP_PHONE)
         ob.refresh_from_db()
-        self.assertEqual(ob.step, FLOW_SIGNUP_STATE)
-        self.assertFalse(User.objects.filter(email__iexact="ngozi@example.com").exists())
-
-    def test_with_an_email_rail_the_code_page_comes_first_and_verifies(self):
-        from .flows import SIGNUP_EMAIL_CODE, SIGNUP_PHONE
-
-        ob = self._ob()
-        with patch("whatsapp.router.email_live", return_value=True), \
-             patch("whatsapp.router.send_email", return_value={"success": True}) as mail:
-            resp = self._submit(ob, first_name="Ngozi", last_name="Ade", email="n1@example.com")
-            self.assertEqual(resp["screen"], SIGNUP_EMAIL_CODE)
-            self.assertIn("n1@example.com", resp["data"]["summary"])
-            code = mail.call_args[0][2].split("code is ")[1][:6]
-        # Wrong code: a prompt with the reason, on the same page.
-        wrong = self._submit(ob, email_code="000000")
-        self.assertEqual(wrong["screen"], SIGNUP_EMAIL_CODE)
-        self.assertIn("⚠️", wrong["data"]["error"])
-        # Right code: verified, on to the phone page.
-        ok = self._submit(ob, email_code=code)
-        self.assertEqual(ok["screen"], SIGNUP_PHONE)
-        ob.refresh_from_db()
-        self.assertTrue(ob.payload["email_verified_flow"])
-
-    def test_three_wrong_email_codes_abort_without_reserving_the_address(self):
-        from .flows import RESULT_SCREEN, SIGNUP_EMAIL_CODE
-        from .models import WaOnboarding
-
-        ob = self._ob()
-        with patch("whatsapp.router.email_live", return_value=True), \
-             patch("whatsapp.router.send_email", return_value={"success": True}):
-            self._submit(ob, first_name="Ngozi", last_name="Ade", email="n2@example.com")
-        for _ in range(2):
-            self.assertEqual(self._submit(ob, email_code="000000")["screen"], SIGNUP_EMAIL_CODE)
-        third = self._submit(ob, email_code="000000")
-        self.assertEqual(third["screen"], RESULT_SCREEN)
-        self.assertEqual(third["data"]["status"], "❌ Not completed")
-        self.assertFalse(WaOnboarding.objects.filter(pk=ob.pk).exists())
-        self.assertFalse(User.objects.filter(email__iexact="n2@example.com").exists())
+        self.assertEqual(ob.step, FLOW_PHONE_STATE)
+        self.assertEqual(ob.payload["email"], "n1@example.com")
 
     def test_a_taken_or_malformed_phone_is_refused_with_the_reason(self):
         from .flows import FLOW_PHONE_STATE, SIGNUP_PHONE
@@ -1336,7 +1294,7 @@ class SignupFormFlowTests(TestCase):
         self.assertEqual(done["screen"], RESULT_SCREEN)
         u = User.objects.get(phone="08099990001")
         self.assertEqual(u.email, "ngozi1@example.com")
-        self.assertTrue(u.email_verified)                     # proved in the Flow
+        self.assertFalse(u.email_verified)                    # the KYC ladder proves it later
         self.assertTrue(u.phone_verified)                     # same number as the chat
         self.assertTrue(u.check_transaction_pin("246810"))
 

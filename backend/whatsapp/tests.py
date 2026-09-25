@@ -2579,8 +2579,8 @@ class ChatSignupEntryTests(TestCase):
     def test_a_stalled_signup_is_told_where_it_is_not_just_to_tap_the_form(self):
         """The identity ladder has always shown a ✅/⬜ card; signup answered a
         customer who tapped away with "fill the form above" and nothing else, so
-        there was no way to see how much was left or that the email code already
-        round-tripped was still held."""
+        there was no way to see how much was left or that the details already
+        entered were still held."""
         from datetime import timedelta as td
 
         from .flows import FLOW_PHONE_STATE
@@ -2590,7 +2590,7 @@ class ChatSignupEntryTests(TestCase):
         WaOnboarding.objects.create(
             msisdn=m, step=FLOW_PHONE_STATE,
             payload={"first_name": "Ngozi", "last_name": "Ade",
-                     "email": "ngozi@example.com", "email_verified_flow": True},
+                     "email": "ngozi@example.com"},
             expires_at=timezone.now() + td(minutes=15))
 
         self.inbound("what now?", "nudge-1", msisdn=m)
@@ -2610,12 +2610,12 @@ class ChatSignupEntryTests(TestCase):
         the one message where acting fast actually matters."""
         from datetime import timedelta as td
 
-        from .flows import FLOW_EMAIL_CODE_STATE
+        from .flows import FLOW_PHONE_CODE_STATE
         from .models import WaOnboarding
 
         m = "2349090000093"
         WaOnboarding.objects.create(
-            msisdn=m, step=FLOW_EMAIL_CODE_STATE,
+            msisdn=m, step=FLOW_PHONE_CODE_STATE,
             payload={"first_name": "Ngozi", "last_name": "Ade"},
             expires_at=timezone.now() + td(minutes=15))
 
@@ -2675,22 +2675,14 @@ class SignupPinPrivacyTests(TestCase):
         self.inbound("1", f"p1-{m}", msisdn=m)
         ob = WaOnboarding.objects.get(msisdn=m)
         if ob.step == "flow_signup":
-            # Flows live: details, email proof and phone go through the private
-            # form, not the chat. The test captures the real generated email
-            # code so its fixtures exercise the same verified ladder as live.
-            with patch("whatsapp.router.email_live", return_value=True), \
-                 patch("whatsapp.router.send_email",
-                       return_value={"success": True}) as mail:
-                handle_flow_request({
-                    "action": "data_exchange",
-                    "flow_token": sign_onboarding_token(ob),
-                    "data": {"first_name": "Chidi", "last_name": "Obi",
-                             "email": f"chidi{m[-4:]}@zitch.test"},
-                })
-            code = mail.call_args[0][2].split("code is ")[1][:6]
-            handle_flow_request({"action": "data_exchange",
-                                 "flow_token": sign_onboarding_token(ob),
-                                 "data": {"email_code": code}})
+            # Flows live: details and phone go through the private form, not
+            # the chat.
+            handle_flow_request({
+                "action": "data_exchange",
+                "flow_token": sign_onboarding_token(ob),
+                "data": {"first_name": "Chidi", "last_name": "Obi",
+                         "email": f"chidi{m[-4:]}@zitch.test"},
+            })
             handle_flow_request({"action": "data_exchange",
                                  "flow_token": sign_onboarding_token(ob),
                                  "data": {"phone": _local_phone(m)}})
