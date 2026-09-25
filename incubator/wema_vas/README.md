@@ -206,7 +206,10 @@ Test bank validation with three **approved** `711` accounts, confirm TLS/Bearer,
 the five endpoints, duplicate inflow acknowledgement, blocked accounts and
 settlement. `python manage.py bank_handoff --base-url https://vas.example.test`
 prints the five URLs and three approved sample account numbers without printing
-the secret token. Then send the five production URLs and token via Wema's prescribed
+the secret token. It refuses to export samples unless the service still uses
+the `711` test prefix, the accounts are active with verification and consent
+references, and their encrypted BVN/NIN can be read with the current key. Then
+send the five production URLs and token via Wema's prescribed
 official secure onboarding channel. Only enable the bank endpoints after
 configuration and approved controlled testing. When Wema assigns a live prefix,
 configure that prefix before enrolling any live accounts; existing `711` test
@@ -295,7 +298,35 @@ remain bound to its original provider; a timeout is not permission to reroute.
 - Owner explicitly approves migration/activation. No production migration or
   activation is authorized by this preparation branch.
 
+## Supplied PDF contract review - 25 September 2026
+
+Reviewed all 14 newly supplied PDFs, including the 22 September printouts of
+*VAS Integration Endpoints* and *Transaction Process Flow*. The duplicate
+Account Lookup PDFs are byte-identical. The documents describe vendor-managed
+static virtual accounts: Zitch generates ten-digit numbers under Wema's
+three-digit prefix. The test prefix `711` is temporarily used for validation;
+Wema assigns the live prefix only after validating the five vendor endpoints
+and profiling the collection account.
+
+| Documented bank interaction | Implementation in this isolated service | Remaining dependency |
+| --- | --- | --- |
+| Account Lookup, Notification, Mini Statement, KYC Details, Block Account | Five authenticated POST routes and contract tests | Bank acceptance against approved test accounts and live TLS URL |
+| Inbound Transaction Search | Request/response parsing and read-only comparison; no bank network client | Wema supplies production URL and authentication after go-live readiness |
+| Payout from the Collections Account | No transfer initiation or bank client | Wema's outward initiation contract, credentials, debit source and limit/fee rules |
+| Outward TSQ for pending payouts | No bank network client | Wema's Outward TSQ URL, request/response/auth and status/reversal rules |
+
+The process flow says Wema performs its own NIBSS transaction-status query
+before notifying the vendor and crediting the collection/suspense account.
+The Fintech Hub FAQ describes outward payouts and pending confirmation, but
+provides no outward API specification. Neither document establishes that the
+customer's virtual account itself can be debited; payouts shown there are from
+the collection account. A successful local callback is not a reconciled bank
+statement. There is no bank-connected end-to-end inflow or outward transfer
+test yet.
+
 Sources reviewed: the supplied Account Lookup, Transaction Notification, Mini
 Statement, KYC Details, Block Account, Transaction Search, VAS Onboarding and
-Fintech Hub PDF documents. Source PDFs and private Slack messages are not copied
+Fintech Hub PDF documents, plus Introduction & Scope, VAS Integration Endpoints,
+Transaction Process Flow, Fraud Management and the version 2.0 cover page.
+Source PDFs and private Slack messages are not copied
 into this repository.

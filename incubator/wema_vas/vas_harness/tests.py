@@ -528,6 +528,17 @@ class ValidationContractTests(TestCase):
                     encrypted_identity=existing.encrypted_identity, verified_at=timezone.now(),
                     verification_reference="test-proof-00" + suffix,
                     consent_reference="test-consent-00" + suffix)
+            with override_settings(VAS_PREFIX="999"):
+                with self.assertRaisesMessage(Exception, "711 test prefix"):
+                    call_command("bank_handoff", base_url="https://vas.example.test")
+            VirtualAccount.objects.filter(pk=existing.pk).update(encrypted_identity="corrupted")
+            with self.assertRaisesMessage(Exception, "encrypted identity is unavailable"):
+                call_command("bank_handoff", base_url="https://vas.example.test")
+            VirtualAccount.objects.filter(pk=existing.pk).update(encrypted_identity=existing.encrypted_identity,
+                                                                  consent_reference="")
+            with self.assertRaisesMessage(Exception, "lacks verification or consent"):
+                call_command("bank_handoff", base_url="https://vas.example.test")
+            VirtualAccount.objects.filter(pk=existing.pk).update(consent_reference=existing.consent_reference)
             output = io.StringIO()
             call_command("bank_handoff", base_url="https://vas.example.test", stdout=output)
         checklist = json.loads(output.getvalue())
