@@ -4,8 +4,10 @@ databases:
   - name: zitch-vas-validation-db
     databaseName: zitch_vas_validation
     user: zitch_vas_validation
-    plan: basic_256mb
+    plan: 0.1c-256mb
+    diskSizeGB: 1
     region: frankfurt
+    ipAllowList: []
 
 services:
   - type: web
@@ -27,33 +29,13 @@ services:
         value: 'false'
       - key: WEMA_VAS_PREFIX
         value: '711'
-      - key: WEMA_VAS_BANK_TOKEN
-        sync: false
-      - key: WEMA_VAS_IDENTITY_KEYS
-        sync: false
       - key: WEMA_VAS_ALLOWED_HOSTS
-        sync: false
+        value: zitch-vas-validation-api.onrender.com
       - key: WEMA_VAS_TRUST_TLS_PROXY
-        sync: false
+        value: 'true'
       - key: WEMA_VAS_DJANGO_SECRET
         generateValue: true
-      - key: WEMA_VAS_DB_NAME
+      - key: WEMA_VAS_DB_CONNECTION
         fromDatabase:
           name: zitch-vas-validation-db
-          property: database
-      - key: WEMA_VAS_DB_USER
-        fromDatabase:
-          name: zitch-vas-validation-db
-          property: user
-      - key: WEMA_VAS_DB_PASSWORD
-        fromDatabase:
-          name: zitch-vas-validation-db
-          property: password
-      - key: WEMA_VAS_DB_HOST
-        fromDatabase:
-          name: zitch-vas-validation-db
-          property: host
-      - key: WEMA_VAS_DB_PORT
-        fromDatabase:
-          name: zitch-vas-validation-db
-          property: port
+          property: connectionString

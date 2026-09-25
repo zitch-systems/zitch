@@ -3,6 +3,7 @@ import re
 import secrets
 import sys
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from cryptography.fernet import Fernet
 from django.core.exceptions import ImproperlyConfigured
@@ -52,7 +53,22 @@ TIME_ZONE = "Africa/Lagos"  # Explicit simulation assumption for naive bank time
 APPEND_SLASH = False
 DATA_UPLOAD_MAX_MEMORY_SIZE = 16 * 1024
 if VAS_MODE == "validation":
+    connection = os.environ.get("WEMA_VAS_DB_CONNECTION", "")
     db_parts = {name: os.environ.get("WEMA_VAS_DB_" + name, "") for name in ("NAME", "USER", "PASSWORD", "HOST", "PORT")}
+    if connection:
+        if any(db_parts.values()):
+            raise ImproperlyConfigured("Specify one dedicated VAS database connection method.")
+        try:
+            parsed = urlsplit(connection)
+            if (parsed.scheme not in ("postgresql", "postgres") or parsed.query or parsed.fragment
+                    or parsed.path.count("/") != 1 or not parsed.hostname or not parsed.port
+                    or not parsed.username or not parsed.password):
+                raise ValueError("Invalid dedicated VAS connection string")
+            db_parts = {"NAME": unquote(parsed.path[1:]), "USER": unquote(parsed.username),
+                        "PASSWORD": unquote(parsed.password), "HOST": parsed.hostname,
+                        "PORT": str(parsed.port)}
+        except ValueError as exc:
+            raise ImproperlyConfigured("Invalid dedicated VAS database connection") from exc
     if (any(not value for value in db_parts.values()) or not db_parts["PORT"].isdigit()
             or not db_parts["NAME"].startswith("zitch_vas_")):
         raise ImproperlyConfigured("A dedicated VAS PostgreSQL database is required.")

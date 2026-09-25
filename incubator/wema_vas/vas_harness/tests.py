@@ -390,6 +390,26 @@ class IsolationTests(SimpleTestCase):
             with self.assertRaises(ImproperlyConfigured):
                 spec.loader.exec_module(importlib.util.module_from_spec(spec))
 
+    def test_render_connection_is_isolated_and_rejects_existing_database(self):
+        env = {"WEMA_VAS_MODE": "validation", "WEMA_VAS_DJANGO_SECRET": "s" * 48,
+               "WEMA_VAS_ALLOWED_HOSTS": "vas.example.test",
+               "WEMA_VAS_DB_CONNECTION": "postgresql://vas:test%2Fpass@private.example.test:5432/zitch_vas_validation"}
+        spec = importlib.util.find_spec("vas_harness.settings")
+        with patch.dict(os.environ, env, clear=True):
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            db = module.DATABASES["default"]
+            self.assertEqual(db["NAME"], "zitch_vas_validation")
+            self.assertEqual(db["PASSWORD"], "test/pass")
+            self.assertEqual(db["OPTIONS"]["sslmode"], "require")
+            for connection in ["postgresql://vas:pass@private.example.test:5432/zitch_db_ry6y",
+                               "postgresql://vas:pass@private.example.test:5432/zitch_vas_validation?sslmode=disable",
+                               "postgresql://vas:pass@private.example.test:5432/zitch_vas_validation/more"]:
+                with self.subTest(connection=connection):
+                    os.environ["WEMA_VAS_DB_CONNECTION"] = connection
+                    with self.assertRaises(ImproperlyConfigured):
+                        spec.loader.exec_module(importlib.util.module_from_spec(spec))
+
 
 KEY = Fernet.generate_key().decode()
 OTHER_KEY = Fernet.generate_key().decode()

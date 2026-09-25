@@ -1,6 +1,6 @@
 # Wema VAS isolated development service
 
-Status: **isolated synthetic testing plus a separately configured bank-validation service. Neither is deployed or bank-connected.**
+Status: **isolated synthetic testing plus a separately configured bank-validation service. Neither is bank-connected.**
 
 This directory is independent of the existing Zitch backend. It is not installed
 in `backend/zitch_api/settings.py`, mounted in existing URLs, included in a
@@ -161,11 +161,12 @@ Baseline inspected: `f5d8e84a13e90637a1cc047dcfcc95510526c83d`.
 ## Validation environment (separate resource; deployment not performed)
 
 The optional `incubator/wema_vas/render.yaml` describes a new Frankfurt web
-service and a **new database**. It does not change the root `render.yaml` and has
+service and a **new 1 GB database** with external database access denied. It does not change the root `render.yaml` and has
 `autoDeployTrigger: off` and `WEMA_VAS_ENABLED=false`. Applying this Blueprint
 would create separately billed infrastructure. The disabled service can start
 before bank token and identity keys are supplied; enabling the bank endpoints
-requires both valid secrets and a restart. No real customer should be enrolled until Zitch approves a
+requires both valid secrets and a restart. Add both manually to the isolated
+service's Render environment. No real customer should be enrolled until Zitch approves a
 BVN/NIN verification source, consent, retention and access-audit procedure.
 If provisioning is approved, select the custom Blueprint Path
 `incubator/wema_vas/render.yaml` on branch `codex/vas-isolated-e2e` in Render.
@@ -174,8 +175,10 @@ For validation mode, set `WEMA_VAS_MODE=validation`, `WEMA_VAS_ENABLED=false`,
 `WEMA_VAS_BANK_TOKEN` (new random >=48 characters), `WEMA_VAS_IDENTITY_KEYS`
 (comma-separated Fernet keys with the newest first), `WEMA_VAS_DJANGO_SECRET`
 (new random >=44 characters), `WEMA_VAS_ALLOWED_HOSTS` (explicit service DNS),
-`WEMA_VAS_PREFIX=711`, and dedicated `WEMA_VAS_DB_NAME`, `_USER`, `_PASSWORD`,
-`_HOST`, `_PORT`. The database name must start with `zitch_vas_`; its connection
+`WEMA_VAS_PREFIX=711`, and a dedicated `WEMA_VAS_DB_CONNECTION` from the isolated
+database's internal `connectionString` property. Manual provisioning can use
+`WEMA_VAS_DB_NAME`, `_USER`, `_PASSWORD`, `_HOST`, `_PORT` instead; do not use
+both methods. The database name must start with `zitch_vas_`; its connection
 requires SSL mode `require` or
 `verify-full`. Set `WEMA_VAS_TRUST_TLS_PROXY=true` only behind a trusted reverse
 proxy that strips untrusted forwarded protocol headers. Do not reuse existing
