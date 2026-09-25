@@ -125,6 +125,11 @@ class Command(BaseCommand):
                 if db_cursor is not None:
                     db_cursor.execute(
                         "SELECT pg_advisory_unlock(hashtext(%s))", [lock_key])
+                    # Close the cursor the advisory lock was taken on. Without
+                    # this the cron leaks one cursor per run, and a long-lived
+                    # caller (the worker, if WHATSAPP_WORKER_RECONCILE is ever
+                    # turned back on) leaks one every reconciliation.
+                    db_cursor.close()
                 elif lock_token is not None and cache.get(lock_key) == lock_token:
                     # The cache fallback is used by local/test databases. Keep
                     # ownership checking on release to reduce accidental removal
