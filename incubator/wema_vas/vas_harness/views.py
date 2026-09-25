@@ -5,7 +5,7 @@ from functools import wraps
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
-from django.db import OperationalError, transaction
+from django.db import DatabaseError, InterfaceError, OperationalError, connections, transaction
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -37,6 +37,19 @@ def health(request):
         return response({"error": "GET required"}, 405)
     # Liveness alone does not mean the bank integration has been enabled.
     return response({"alive": True, "bank_enabled": settings.VAS_ENABLED})
+
+
+def ready(request):
+    if request.method != "GET":
+        return response({"error": "GET required"}, 405)
+    try:
+        with connections["default"].cursor() as cursor:
+            cursor.execute("SELECT 1")
+            if cursor.fetchone()[0] != 1:
+                raise OperationalError("Database readiness check failed")
+    except (DatabaseError, InterfaceError):
+        return response({"ready": False}, 503)
+    return response({"ready": True, "bank_enabled": settings.VAS_ENABLED})
 
 
 def endpoint(view):

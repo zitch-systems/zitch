@@ -20,9 +20,11 @@ services:
     autoDeployTrigger: 'off'
     buildCommand: pip install -r requirements.txt
     preDeployCommand: python manage.py migrate --noinput
-    startCommand: gunicorn vas_harness.wsgi:application --bind 0.0.0.0:${PORT:-10000} --workers 2 --timeout 30
-    healthCheckPath: /healthz
+    startCommand: gunicorn vas_harness.wsgi:application --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 4 --timeout 30
+    healthCheckPath: /readyz
     envVars:
+      - key: PYTHON_VERSION
+        value: '3.12.14'
       - key: WEMA_VAS_MODE
         value: validation
       - key: WEMA_VAS_ENABLED

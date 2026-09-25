@@ -52,6 +52,19 @@ class ContractTests(APIHelpers, TestCase):
     def setUpTestData(cls):
         seed_customers()
 
+    def test_readiness_checks_database_while_bank_routes_are_disabled(self):
+        with override_settings(VAS_ENABLED=False):
+            self.assertEqual(self.client.get("/healthz").status_code, 200)
+            result = self.client.get("/readyz")
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual(result.json(), {"ready": True, "bank_enabled": False})
+            with patch.object(connection, "cursor", side_effect=OperationalError("down")):
+                unavailable = self.client.get("/readyz")
+                self.assertEqual(unavailable.status_code, 503)
+                self.assertEqual(unavailable.json(), {"ready": False})
+                self.assertEqual(self.client.get("/healthz").status_code, 200)
+        self.assertEqual(self.client.post("/readyz").status_code, 405)
+
     def test_all_three_static_accounts_return_identity_and_vendor_prefix(self):
         for number, expected in CUSTOMERS.items():
             with self.subTest(number=number):

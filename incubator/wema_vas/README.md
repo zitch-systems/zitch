@@ -25,6 +25,9 @@ It does not replace the existing bill-payment code that also uses the name VAS.
 - The process refuses the existing `DATABASE_URL`, does not load `.env`, and
   cannot select existing Zitch settings through its entry points.
 - Tests use a disposable database and block socket connections.
+- Render probes `/readyz`; it returns 503 when the dedicated database cannot be
+  queried. `/healthz` remains a process liveness check and does not assert
+  successful bank validation.
 
 Never expose synthetic mode through a proxy/tunnel or use its fake accounts in
 bank transfers. The standalone validation service must be provisioned only with
@@ -269,6 +272,17 @@ remain bound to its original provider; a timeout is not permission to reroute.
 - No PostgreSQL instance or authenticated Wema Transaction Search/Outward TSQ
   endpoint was available to exercise. No real identity, callback, transfer,
   settlement, refund or provider migration was attempted.
+- Current isolated suite: **64 tests pass**, including disabled validation
+  startup with Render's internal database connection reference and an HTTP
+  readiness check that returns 503 when database connectivity is lost.
+- Render's preview of the `codex/vas-isolated-e2e` branch and custom Blueprint
+  Path `incubator/wema_vas/render.yaml` was blocked before resource creation:
+  **"Additional services & databases will exceed limit of 25"**. The same
+  workspace displays **"Payment failed"**. No VAS service/database has been
+  created, and existing 25 resources were not changed or deleted.
+- Separate capacity for two new resources and a resolved payment method are
+  required before provisioning paid staging. Do not remove the Oregon rollback
+  copies or repurpose the existing partnership PostgreSQL instance to make room.
 
 ## Acceptance gates (not completed)
 

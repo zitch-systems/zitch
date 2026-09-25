@@ -2,7 +2,7 @@ from django.urls import path
 
 from . import views
 
-urlpatterns = [path("healthz", views.health)]
+urlpatterns = [path("healthz", views.health), path("readyz", views.ready)]
 for fragment, view in {
     "account-lookup": views.lookup,
     "transaction-notification": views.notify,
