@@ -27,7 +27,10 @@ def _balances(mapping):
     """A get_balance stub keyed by account number; anything unmapped is unreadable."""
     def _get(account_number):
         if account_number in mapping:
-            return {"success": True, "balance_naira": Decimal(mapping[account_number])}
+            value = mapping[account_number]
+            if isinstance(value, dict):
+                return value
+            return {"success": True, "balance_naira": Decimal(value)}
         return {"success": False, "message": "unreachable"}
     return _get
 
@@ -131,6 +134,22 @@ class SettlementReportTests(TestCase):
         self.assertTrue(any("unreadable rail" in m for m in messages))
         # and it must NOT have paged a shortfall off the back of the missing rail
         self.assertFalse(any("SHORTFALL" in m for m in messages))
+
+    def test_pool_failure_exposes_safe_http_status_without_bank_message(self):
+        from django.conf import settings as dj_settings
+        rejected = {"success": False,
+                    "message": "Bank rejected sensitive account details",
+                    "diagnostic": {"http_status": 403}}
+        with mock.patch.dict(dj_settings.WEMA, {"SOURCE_ACCOUNT": POOL}):
+            out, alert_mock, code = self._run(
+                "--fail-on-breach", bank={NUBAN: "5000", POOL: rejected})
+        self.assertEqual(code, 1)
+        self.assertIn("pool read   http_error (HTTP 403)", out)
+        self.assertNotIn(rejected["message"], out)
+        kwargs = alert_mock.call_args.kwargs
+        self.assertEqual(kwargs["pool_failure"], "http_error")
+        self.assertEqual(kwargs["pool_http_status"], 403)
+        self.assertNotIn(rejected["message"], str(kwargs))
 
     def test_unreachable_nuban_is_flagged(self):
         out, alert_mock, code = self._run(bank={})  # NUBAN itself unreadable
