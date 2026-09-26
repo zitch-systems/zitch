@@ -1,3 +1,7 @@
+# DO NOT MANUALLY SYNC THIS FILE. Render preview on 2026-09-26 proposed
+# duplicate -ry6y-ry6y resources even though the declarations below use -ry6y.
+# Existing Frankfurt services were not adopted by this Blueprint. Determine
+# Render's resource ownership mapping before using this candidate.
 # Frankfurt production Blueprint. This file names the existing -ry6y resources.
 # Review any changes against live Render settings before a manual sync.
 # The standalone Meta connector is managed separately.
