@@ -1,0 +1,944 @@
+# Frankfurt production Blueprint. This file names the existing -ry6y resources.
+# Review any changes against live Render settings before a manual sync.
+# The standalone Meta connector is managed separately.
+services:
+  - type: web
+    name: zitch-api-ry6y
+    region: frankfurt
+    runtime: python
+    rootDir: backend
+    # Money movement must not run on a sleeping/free instance. This takes effect
+    # only when an operator deliberately syncs the Blueprint.
+    plan: starter
+    autoDeployTrigger: checksPass
+    buildCommand: "./build.sh"
+    # Bind to 0.0.0.0:$PORT so Render's port scan can detect the service. Without
+    # an explicit --bind, gunicorn listens on 127.0.0.1:8000 (loopback only), which
+    # Render can't see -> "no open ports detected" and the deploy times out. Render
+    # injects PORT (default 10000, which the health check targets).
+    # ONE worker x 8 threads. Threads still absorb slow provider calls (partner-bank do
+    # network I/O in-request) so one can't stall every other request; --timeout
+    # bounds a hung worker.
+    #
+    # One worker, not two, for two independent reasons:
+    #   * MEMORY. Two workers each load Django plus the whole provider stack and
+    #     then hold provider payloads (the bank list alone is ~499 entries). On the
+    #     512MB free/starter tiers that OOMs — observed 2026-07-28, "Worker was sent
+    #     SIGKILL! Perhaps out of memory?", which returns 503 to live callers.
+    #   * CORRECTNESS. Without REDIS_URL the cache is per-process LocMem, and the
+    #     BVN KYC handshake stores its pending code there — so with 2 workers the
+    #     confirm request lands on the wrong process about half the time. Rate
+    #     limits and login lockouts are likewise per-worker, doubling every cap.
+    #
+    # To go back to multiple workers: provision a Render Key Value instance, set
+    # REDIS_URL, and raise this — in that order. REQUIRE_SHARED_CACHE exists to
+    # enforce exactly that ordering.
+    startCommand: "gunicorn zitch_api.wsgi:application --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 8 --timeout 60"
+    # Readiness includes PostgreSQL and the required shared Redis cache. Liveness
+    # remains available at /healthz for diagnostics without making provider calls.
+    healthCheckPath: /readyz
+    envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: ".onrender.com,api.zitch.ng"
+      # Render's own hostname remains reachable for health checks only. All
+      # customer, webhook and operator traffic must pass through api.zitch.ng
+      # so callers cannot bypass the Cloudflare edge by using the origin URL.
+      - key: DJANGO_BLOCK_RENDER_ORIGIN
+        value: "true"
+      - key: DJANGO_PUBLIC_HEALTH_DETAILS
+        value: "false"
+      - key: CSRF_TRUSTED_ORIGINS
+        value: "https://api.zitch.ng"
+      # Bootstrap the back-office super admin. The free tier has no shell, so
+      # build.sh running seed_ops on each deploy is the ONLY way in — and it is
+      # gated on PASSWORD being non-empty, so leaving this blank means /portal/
+      # has no operator account and every login is refused. Declared here (rather
+      # than only in build.sh) so the fields are visible in the Render dashboard
+      # instead of being invisible unless you read the build script.
+      # Sign in at /portal/ with the USERNAME below, or with the EMAIL — both work.
+      # Re-deploying with a new PASSWORD resets it, which is the recovery path
+      # if it is ever lost.
+      - key: DJANGO_SUPERUSER_USERNAME
+        value: "admin"
+      - key: DJANGO_SUPERUSER_EMAIL
+        sync: false
+      - key: DJANGO_SUPERUSER_PASSWORD
+        sync: false
+      # One-deploy recovery switch. Leave false; set true only to apply the
+      # bootstrap password to an existing operator, then immediately restore.
+      - key: DJANGO_SUPERUSER_RESET_PASSWORD
+        value: "false"
+      - key: TOKEN_TTL_HOURS
+        value: "24"
+      - key: ADMIN_TOKEN_TTL_HOURS
+        value: "2"
+      - key: DJANGO_SESSION_COOKIE_AGE
+        value: "7200"
+      - key: DJANGO_SESSION_EXPIRE_AT_BROWSER_CLOSE
+        value: "true"
+      # Declared explicitly (it matches the code default) so the session-purge
+      # cron can read it with fromService and derive the same cutoff this
+      # service issues refresh families under.
+      - key: REFRESH_ABSOLUTE_DAYS
+        value: "90"
+      - key: ALLOW_BODY_ACCESS_TOKEN
+        value: "false"
+      - key: API_MAX_BODY_BYTES
+        value: "4194304"
+      - key: LLM_ALLOW_CUSTOM_ENDPOINT
+        value: "false"
+      - key: DJANGO_ADMIN_ENABLED
+        value: "true"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "true"
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: zitch-cache-ry6y
+          property: connectionString
+      # Enrol super-admin/finance authenticators first, then set this true in the
+      # dashboard. It is dashboard-owned so a Blueprint sync cannot lock every
+      # operator out before the two-step enrolment is complete.
+      - key: OPS_REQUIRE_MFA
+        sync: false
+      # Optional dedicated application-layer encryption key for operator TOTP
+      # seeds. Blank falls back to DJANGO_SECRET_KEY; rotation accepts NEW,OLD.
+      - key: TOTP_ENCRYPTION_KEYS
+        sync: false
+      - key: OPS_REQUIRE_DUAL_APPROVAL
+        value: "true"
+      # Origins allowed to call the API cross-origin (Expo web build /
+      # browser-based dashboards). Native React Native does not enforce CORS,
+      # so the mobile app is unaffected. Add new origins here as needed.
+      - key: CORS_ALLOWED_ORIGINS
+        value: "https://zitch.ng,https://www.zitch.ng,http://localhost:8081,http://localhost:19006,http://localhost:19000"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db-ry6y
+          property: connectionString
+      # Fill these in the Render dashboard (kept out of source):
+      # Money rail is Wema / ALAT (see the WEMA_* block below) — funding (dedicated
+      # NUBANs via BVN/NIN + OTP), payouts + name enquiry + balance, and BVN/NIN/vNIN
+      # identity (Full KYC). Selfie/liveness + address + ID-document stay on Prembly;
+      # cards on CARD_ISSUER (Wema card issuing not wired yet).
+      # Optional diagnostics. WEMA_DIAG_TOKEN enables POST /wema-diagnose with a
+      # Bearer token and JSON test input (never put BVN/NIN/OTP in a URL).
+      # DIAG_TOKEN protects the VAS, SMS and callback diagnostics. All use bearer
+      # headers; SMS and Wema identity inputs are POST JSON, never URL parameters.
+      - key: DIAG_TOKEN
+        sync: false
+      - key: WEMA_DIAG_TOKEN
+        sync: false
+      # Virtual-card backend: "issuer" (generic CARD_ISSUER) — the sole backend; blank => issuer.
+      - key: CARD_PROVIDER
+        sync: false
+      # Generic card issuance is provider-TBD and stays fail-closed even when a
+      # credential is staged. Enable only after the live contract is verified.
+      - key: CARD_ISSUER_LIVE_ENABLED
+        value: "false"
+      - key: CARD_ISSUER_API_KEY
+        sync: false
+      - key: CARD_ISSUER_BASE_URL
+        sync: false
+      - key: CARD_ISSUER_BRAND
+        value: "Verve"
+      # Wallet FUND-IN rail: "wema" (the sole rail); blank => wema.
+      - key: PAYMENT_PROVIDER
+        sync: false
+      # Bank-PAYOUT + recipient name-enquiry rail: "wema" (the sole rail); blank => wema.
+      - key: PAYOUT_PROVIDER
+        sync: false
+      # BVN/NIN/vNIN KYC rail: "wema" (Wema Full KYC, the sole rail); blank => wema.
+      # Selfie/liveness + address + ID-document are on Prembly.
+      - key: KYC_PROVIDER
+        sync: false
+      - key: VAS_PROVIDER
+        sync: false
+      # ---------------------------------------------------------------------
+      # Wema / ALAT — the SOLE money-movement + Nigeria-KYC rail. Wallet Services,
+      # Card, Airtime, Account Upgrade, Remita and BNPL are distinct subscriptions;
+      # set only the product keys the deployed features use, plus WEMA_SOURCE_ACCOUNT
+      # (the pool NUBAN that funds payouts) and the live WEMA_BASE_URL,
+      # and the WEMA_SECURITY_INFO scheme. Blank keys => mock; WEMA_SIMULATION=true
+      # tests the flow without live keys (no real money). There is NO inbound-credit
+      # webhook — deposits AND payout settlement are polled by the zitch-reconcile-wema
+      # cron. See docs/wema-migration.md and utility/wema.py.
+      # ---------------------------------------------------------------------
+      - key: WEMA_CHANNEL_ID
+        sync: false
+      - key: WEMA_WALLET_KEY
+        sync: false
+      - key: WEMA_ACCOUNT_CREATION_KEY
+        sync: false
+      # Used only by the API callback after Wema hosted face verification. Leave
+      # blank to reuse WEMA_ACCOUNT_CREATION_KEY and WEMA_BASE_URL.
+      - key: WEMA_FACE_ACCOUNT_KEY
+        sync: false
+      - key: WEMA_FACE_ACCOUNT_BASE_URL
+        sync: false
+      - key: WEMA_CARD_KEY
+        sync: false
+      - key: WEMA_AIRTIME_KEY
+        sync: false
+      - key: WEMA_BILLS_KEY
+        sync: false
+      - key: WEMA_UPGRADE_KEY
+        sync: false
+      - key: WEMA_UPGRADE_BASE_URL
+        sync: false
+      - key: WEMA_ACCT_MGT_KEY
+        sync: false
+      - key: WEMA_ACCT_MGT_BASE_URL
+        sync: false
+      - key: WEMA_KYC_KEY
+        sync: false
+      - key: WEMA_REMITA_KEY
+        sync: false
+      - key: WEMA_BNPL_KEY
+        sync: false
+      - key: WEMA_CARD_PRODUCT_KEY
+        sync: false
+      - key: WEMA_BNPL_MERCHANT_ID
+        sync: false
+      - key: WEMA_BNPL_AUTH_KEY
+        sync: false
+      - key: WEMA_SOURCE_ACCOUNT
+        sync: false
+      - key: WEMA_SECURITY_INFO
+        sync: false
+      - key: WEMA_BASE_URL
+        sync: false
+      - key: WEMA_SIMULATION
+        sync: false
+      # Explicit second switch required by production_checks for a deliberately
+      # isolated pre-launch environment. Remove/disable both before go-live.
+      - key: ALLOW_PRODUCTION_SIMULATION
+        sync: false
+      # Bank-called callbacks. Wema PROFILES these URLs and the rails do not work
+      # until it has them (account creation is refused without the Account Creation
+      # URL; transactions fail auth without the Authentication URL). The token is the
+      # shared secret in the URL path — the bank signs nothing.
+      #   https://api.zitch.ng/webhooks/wema/{account,authorize,transaction,notification}/<TOKEN>
+      - key: WEMA_CALLBACK_TOKEN
+        sync: false
+      - key: WEMA_CALLBACK_TOKEN_PREV
+        sync: false
+      - key: WEMA_CALLBACK_ENFORCE_IPS
+        sync: false
+      - key: WEMA_CALLBACK_IPS
+        sync: false
+      - key: WEMA_AUTH_MAX_AGE
+        sync: false
+      - key: WEMA_AUTH_REQUIRE_SECURITY_INFO
+        sync: false
+      - key: WEMA_VAS_STATUS_LEGEND
+        sync: false
+      - key: WEMA_BILLS_STATUS_LEGEND
+        sync: false
+      - key: WEMA_REMITA_STATUS_LEGEND
+        sync: false
+      # ALAT's face-biometric web app. There is deliberately NO default: unset, the
+      # face rail reports itself unavailable and the flow falls back to SMS OTP or
+      # the document rail. wema_preflight FAILS go-live while this points at any
+      # non-production verifier (-dev, -pilot, -uat, ...), which answer happily and
+      # prove nothing about a real person.
+      - key: WEMA_FACE_VERIFY_URL
+        sync: false
+      # The face callback carries no shared token (its URL is shown to the customer),
+      # so this allowlist IS its authentication. Unset, the face rail refuses to run.
+      # Wema gave the face app's egress on 2026-09-02 as the same two addresses as the
+      # transaction gateway: "135.236.18.76,74.178.162.156". Set on this service, which
+      # receives the callback, AND on whatsapp-worker, which will not offer the face
+      # step at all while its own copy is empty.
+      - key: WEMA_FACE_CALLBACK_IPS
+        sync: false
+      # What we put in the verifier's cb_uri. "registered" (default) sends exactly the
+      # URL whitelisted with Wema; "session" appends ?s=<state>. ALAT match the
+      # whitelist as an EXACT STRING, so "session" is refused by their page and every
+      # face check fails before it reaches us — leave this unset unless a verifier
+      # tolerates a query string. Registered mode has no per-verification state, so it
+      # leans entirely on WEMA_FACE_CALLBACK_IPS above — set those first.
+      - key: WEMA_FACE_CB_MODE
+        sync: false
+      # Keep deterministic identity/OTP hashes stable independently of ordinary
+      # Django secret-key rotation. Generate once; never rotate KYC_HASH_KEY unless
+      # stored identity hashes are deliberately migrated at the same time.
+      - key: DJANGO_KYC_HASH_KEY
+        generateValue: true
+      - key: DJANGO_OTP_HASH_KEY
+        generateValue: true
+      # Open banking — Mono (link bank, balance/transactions, DirectPay funding).
+      # Blank SECRET_KEY => mock. Webhook: /api/banklink/webhook/. BASE_URL
+      # defaults to https://api.withmono.com in code.
+      - key: MONO_SECRET_KEY
+        sync: false
+      - key: MONO_PUBLIC_KEY
+        sync: false
+      - key: MONO_WEBHOOK_SECRET
+        sync: false
+      # DEMO/PILOT ONLY — serves the SIMULATED bank-link flow (the app's
+      # "Simulate" sheet) while no Mono keys are set: no real bank is contacted
+      # and no real money moves, but the link flow is testable in a production
+      # build. !! Set to "false" (or delete) the moment MONO_SECRET_KEY goes
+      # live — leaving it on would keep serving fake links to real users.
+      #
+      # Dashboard-owned (sync: false), NOT a literal `value:`. A literal here is
+      # Blueprint-owned, so every Blueprint sync force-restores it — and since
+      # production_checks rejects any simulation flag without
+      # ALLOW_PRODUCTION_SIMULATION, a committed "true" re-breaks the boot after
+      # an operator has already turned it off in the dashboard. That failure
+      # looks like the fix "not sticking", with nothing in the diff to explain
+      # it. Every other provider flag is sync: false for the same reason.
+      - key: MONO_SIMULATION
+        sync: false
+      # Optional pre-launch sign-in bypass. wema_preflight remains red until all
+      # three are removed, so these cannot accidentally qualify as launch-ready.
+      - key: TEST_OTP_PHONE
+        sync: false
+      - key: TEST_OTP_CODE
+        sync: false
+      - key: ALLOW_PRODUCTION_TEST_OTP
+        sync: false
+      - key: SIMULATE_DEPOSIT_TOKEN
+        sync: false
+
+      # The credentialed WhatsApp worker is the only process that delivers
+      # terminal transaction alerts. Declare its source values here so the
+      # worker can inherit them without duplicating Meta credentials elsewhere.
+      - key: TXN_ALERTS_WHATSAPP
+        sync: false
+      - key: WHATSAPP_TXN_ALERT_TEMPLATE
+        sync: false
+      - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: TERMII_API_KEY
+        sync: false
+      - key: TERMII_SENDER_ID
+        sync: false
+      - key: TERMII_CHANNEL
+        sync: false
+      - key: TERMII_BASE_URL
+        sync: false
+      - key: WHATSAPP_MODE
+        sync: false
+      - key: WHATSAPP_BASE_URL
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_BUSINESS_NUMBER
+        sync: false
+      - key: WHATSAPP_QUEUE_KEY
+        sync: false
+      - key: WHATSAPP_QUEUE_KEY_PREV
+        value: ""
+
+  - type: worker
+    name: zitch-whatsapp-worker-ry6y
+    region: frankfurt
+    runtime: python
+    rootDir: backend
+    plan: starter
+    autoDeployTrigger: checksPass
+    # Build-time schema gate: a failed candidate is never promoted, so the prior
+    # healthy worker keeps running until zitch-api has applied shared migrations.
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
+    startCommand: "python manage.py whatsapp_worker --batch-size 50 --poll-seconds 0.5"
+    maxShutdownDelaySeconds: 60
+    envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
+      - key: DJANGO_SECRET_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: WHATSAPP_WORKER_RECONCILE
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "false"
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: zitch-cache-ry6y
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db-ry6y
+          property: connectionString
+      # Keep deterministic identity/OTP hashes identical to the API service so
+      # WhatsApp and app verification read and write the same masked identity state.
+      - key: DJANGO_KYC_HASH_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_KYC_HASH_KEY}
+      - key: DJANGO_OTP_HASH_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_OTP_HASH_KEY}
+      - key: WEMA_CHANNEL_ID
+        sync: false
+      - key: WEMA_WALLET_KEY
+        sync: false
+      - key: WEMA_ACCOUNT_CREATION_KEY
+        sync: false
+      - key: WEMA_CARD_KEY
+        sync: false
+      - key: WEMA_AIRTIME_KEY
+        sync: false
+      - key: WEMA_BILLS_KEY
+        sync: false
+      - key: WEMA_UPGRADE_KEY
+        sync: false
+      - key: WEMA_UPGRADE_BASE_URL
+        sync: false
+      - key: WEMA_ACCT_MGT_KEY
+        sync: false
+      - key: WEMA_ACCT_MGT_BASE_URL
+        sync: false
+      - key: WEMA_KYC_KEY
+        sync: false
+      - key: WEMA_REMITA_KEY
+        sync: false
+      - key: WEMA_BNPL_KEY
+        sync: false
+      - key: WEMA_CARD_PRODUCT_KEY
+        sync: false
+      - key: WEMA_BNPL_MERCHANT_ID
+        sync: false
+      - key: WEMA_BNPL_AUTH_KEY
+        sync: false
+      - key: WEMA_SOURCE_ACCOUNT
+        sync: false
+      - key: WEMA_SECURITY_INFO
+        sync: false
+      - key: WEMA_BASE_URL
+        sync: false
+      - key: WEMA_SIMULATION
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SIMULATION}
+      - key: WEMA_VAS_STATUS_LEGEND
+        sync: false
+      - key: WEMA_BILLS_STATUS_LEGEND
+        sync: false
+      - key: WEMA_REMITA_STATUS_LEGEND
+        sync: false
+      - key: WEMA_FACE_VERIFY_URL
+        sync: false
+      - key: WEMA_FACE_CALLBACK_IPS
+        sync: false
+      # Must match zitch-api: this worker builds the same face URLs for WhatsApp
+      # onboarding, and a split setting would send chat and app customers to two
+      # different shapes.
+      - key: WEMA_FACE_CB_MODE
+        sync: false
+      - key: ALLOW_PRODUCTION_SIMULATION
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: ALLOW_PRODUCTION_SIMULATION}
+      - key: TERMII_BASE_URL
+        sync: false
+      - key: TERMII_API_KEY
+        sync: false
+      - key: TERMII_SENDER_ID
+        sync: false
+      - key: TERMII_CHANNEL
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      # This worker owns durable chat execution and terminal WhatsApp-alert
+      # retries. Production money reconciliation remains cron-only; do not set
+      # WHATSAPP_WORKER_RECONCILE merely to compensate for a missing cron.
+      - key: TXN_ALERTS_SMS
+        sync: false
+      - key: TXN_ALERTS_WHATSAPP
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_WHATSAPP}
+      - key: PREMBLY_API_KEY
+        sync: false
+      - key: PREMBLY_APP_ID
+        sync: false
+      - key: CARD_ISSUER_API_KEY
+        sync: false
+      - key: CARD_ISSUER_BASE_URL
+        sync: false
+      - key: CARD_ISSUER_BRAND
+        sync: false
+      - key: FINCRA_SECRET_KEY
+        sync: false
+      - key: FINCRA_BUSINESS_ID
+        sync: false
+      - key: WHATSAPP_MODE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_MODE}
+      - key: WHATSAPP_BASE_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_BASE_URL}
+      - key: WHATSAPP_TOKEN
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_TOKEN}
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
+      - key: WHATSAPP_VERIFY_TOKEN
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_VERIFY_TOKEN}
+      - key: WHATSAPP_APP_SECRET
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_APP_SECRET}
+      - key: WHATSAPP_BUSINESS_NUMBER
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_BUSINESS_NUMBER}
+      - key: WHATSAPP_TXN_ALERT_TEMPLATE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE}
+      - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE_LANG}
+      - key: WHATSAPP_QUEUE_KEY
+        sync: false
+      - key: WHATSAPP_QUEUE_KEY_PREV
+        sync: false
+      - key: WHATSAPP_ALLOW_CHAT_SIGNUP
+        sync: false
+      - key: WHATSAPP_FLOW_ID
+        sync: false
+      - key: WHATSAPP_FLOW_PRIVATE_KEY
+        sync: false
+      - key: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE
+        sync: false
+      - key: WHATSAPP_FLOW_CTA
+        sync: false
+      - key: WHATSAPP_FLOW_PASSWORD_SCREEN
+        value: "true"
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+  # Daily Fixed Save maturity sweep — pays out matured plans, including for
+  # users who never open the app. REQUIRES A PAID RENDER PLAN: the cron service
+  # type has no free tier, so on a free plan this block fails the Blueprint sync.
+  # (Maturities also settle on access via /api/savings/list/, so the app stays
+  # correct even without this cron.)
+  - type: cron
+    name: zitch-maturities-ry6y
+    region: frankfurt
+    runtime: python
+    rootDir: backend
+    plan: starter
+    # Never deploy scheduled money/compliance jobs before repository CI passes.
+    autoDeployTrigger: checksPass
+    schedule: "0 1 * * *"   # 01:00 UTC daily
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
+    startCommand: "python manage.py run_maturities"
+    envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
+      - key: DJANGO_SECRET_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "false"   # single-process management command; no rate-limit state
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db-ry6y
+          property: connectionString
+      # Email/SMS/push remain best-effort at the ledger writer. Terminal
+      # WhatsApp alerts are deliberately deferred to zitch-whatsapp-worker,
+      # which owns the Meta credentials and durable retry sweep. Do not copy
+      # Meta secrets into this scheduled money process.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: TERMII_API_KEY
+        sync: false
+      - key: TERMII_SENDER_ID
+        sync: false
+      - key: TERMII_CHANNEL
+        sync: false
+      - key: TERMII_BASE_URL
+        sync: false
+      - key: TXN_ALERTS_WHATSAPP
+        value: "false"
+
+  # Session hygiene — delete access/refresh tokens that can no longer
+  # authenticate anything. Nothing removed these before: an AccessToken is
+  # dropped only if someone PRESENTS it after expiry, which almost none are, and
+  # a spent RefreshToken is kept on purpose for reuse detection but stops proving
+  # anything once its family is past REFRESH_ABSOLUTE_DAYS. Both tables therefore
+  # grew forever at roughly a row per token per user per day, which is index and
+  # backup weight on the lookup that fronts every authenticated request — and
+  # months-dead auth artefacts kept for no reason that survives the retention
+  # question. Daily is ample; the rows are already refused by the time it runs.
+  # No notification credentials here: this command touches no ledger row, so the
+  # post_save alert signal never fires.
+  - type: cron
+    name: zitch-purge-sessions-ry6y
+    region: frankfurt
+    runtime: python
+    rootDir: backend
+    plan: starter
+    # Never deploy scheduled money/compliance jobs before repository CI passes.
+    autoDeployTrigger: checksPass
+    schedule: "45 3 * * *"   # 03:45 UTC daily, off the hour the other jobs use
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
+    startCommand: "python manage.py purge_expired_sessions"
+    envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
+      - key: DJANGO_SECRET_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "false"   # single-process management command; no rate-limit state
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db-ry6y
+          property: connectionString
+      # The cutoffs are derived from these, so the cron must read the SAME values
+      # the web service issues tokens under — otherwise it deletes live sessions
+      # or keeps dead ones.
+      - key: TOKEN_TTL_HOURS
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TOKEN_TTL_HOURS}
+      - key: ADMIN_TOKEN_TTL_HOURS
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: ADMIN_TOKEN_TTL_HOURS}
+      - key: REFRESH_ABSOLUTE_DAYS
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: REFRESH_ABSOLUTE_DAYS}
+
+  # Partner-bank biller reconciliation — settle purchases left PENDING by a provider timeout:
+  # requery the aggregator by reference, then mark Successful (delivered) or
+  # refund (definitively failed). Also requires a paid plan (cron has no free
+  # tier). Runs every 10 minutes, matching the live Oregon cadence used by the
+  # migration runbook so cutover does not increase bank/API pressure.
+  - type: cron
+    name: zitch-reconcile-wema-ry6y
+    region: frankfurt
+    runtime: python
+    rootDir: backend
+    plan: starter
+    # Never deploy scheduled money/compliance jobs before repository CI passes.
+    autoDeployTrigger: checksPass
+    schedule: "*/10 * * * *"
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
+    startCommand: "python manage.py reconcile_wema"
+    envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
+      - key: DJANGO_SECRET_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
+      - key: DJANGO_DEBUG
+        value: "false"
+      # reconcile_wema uses cache-backed recovery throttles across cron runs;
+      # keep those keys shared and durable rather than per-process LocMem.
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "true"
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: zitch-cache-ry6y
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db-ry6y
+          property: connectionString
+      - key: DJANGO_KYC_HASH_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_KYC_HASH_KEY}
+      - key: DJANGO_OTP_HASH_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_OTP_HASH_KEY}
+      - key: WEMA_CHANNEL_ID
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CHANNEL_ID}
+      - key: WEMA_WALLET_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_WALLET_KEY}
+      - key: WEMA_ACCOUNT_CREATION_KEY
+        # Optional override; utility.wema falls back to the Wallet Services key.
+        sync: false
+      - key: WEMA_ACCT_MGT_KEY
+        # Optional override; utility.wema falls back to WEMA_WALLET_KEY when blank.
+        sync: false
+      - key: WEMA_ACCT_MGT_BASE_URL
+        # Optional override; utility.wema falls back to WEMA_BASE_URL when blank.
+        sync: false
+      - key: WEMA_SOURCE_ACCOUNT
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SOURCE_ACCOUNT}
+      - key: WEMA_SECURITY_INFO
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SECURITY_INFO}
+      - key: WEMA_BASE_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BASE_URL}
+      - key: WEMA_AIRTIME_KEY
+        # Optional override; airtime/data are covered by Wallet Services here.
+        sync: false
+      - key: WEMA_BILLS_KEY
+        # Optional override; Wallet Services covers bills here.
+        sync: false
+      - key: WEMA_VAS_STATUS_LEGEND
+        sync: false
+      - key: WEMA_BILLS_STATUS_LEGEND
+        sync: false
+      # Rail safety mode is sourced from the web service so a cron cannot call
+      # ALAT while customer-facing requests are deliberately simulated.
+      - key: WEMA_SIMULATION
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SIMULATION}
+      - key: ALLOW_PRODUCTION_SIMULATION
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: ALLOW_PRODUCTION_SIMULATION}
+      # Paging: reconcile_wema calls utility.alerts.alert on a crashed run or a
+      # systemic gateway outage. That reaches Sentry only when SENTRY_DSN is set
+      # in THIS cron's env (crons are separate processes from the web service).
+      - key: SENTRY_DSN
+        sync: false
+      # Email/SMS/push remain best-effort at the ledger writer. Terminal
+      # WhatsApp alerts are deliberately deferred to zitch-whatsapp-worker,
+      # which owns the Meta credentials and durable retry sweep. Do not copy
+      # Meta secrets into this scheduled money process.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: TERMII_API_KEY
+        sync: false
+      - key: TERMII_SENDER_ID
+        sync: false
+      - key: TERMII_CHANNEL
+        sync: false
+      - key: TERMII_BASE_URL
+        sync: false
+      - key: TXN_ALERTS_WHATSAPP
+        value: "false"
+
+  # Ledger <-> balance integrity check — recomputes every wallet from the
+  # append-only ledger and fails (alerting via cron failure + AuditLog snapshot)
+  # on any drift. Read-only apart from one AuditLog row per run. Also requires a
+  # paid plan (cron has no free tier).
+  - type: cron
+    name: zitch-integrity-check-ry6y
+    region: frankfurt
+    runtime: python
+    rootDir: backend
+    plan: starter
+    # Never deploy scheduled money/compliance jobs before repository CI passes.
+    autoDeployTrigger: checksPass
+    schedule: "30 2 * * *"   # 02:30 UTC daily, after the maturity sweep
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
+    startCommand: "python manage.py integrity_check --fail-nonzero"
+    envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
+      - key: DJANGO_SECRET_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db-ry6y
+          property: connectionString
+      # Paging: integrity_check calls utility.alerts.alert on a mismatch, which
+      # reaches Sentry only when SENTRY_DSN is set in this cron's env.
+      - key: SENTRY_DSN
+        sync: false
+
+  # Ledger <-> BANK (Wema NUBAN) reconciliation — the EXTERNAL integrity check.
+  # integrity_check compares the ledger to our own stored balance; this compares
+  # the ledger to the real balance ALAT holds in each user's NUBAN, and pages
+  # (Sentry) for either direction of ledger/bank divergence. --fail-nonzero
+  # makes every non-zero discrepancy visible as a Render cron failure while
+  # preserving a strictly read-only workflow: neither a ledger-over-bank nor a
+  # bank-over-ledger result may change balances, refunds, or payment states.
+  # Needs the WEMA_* balance-read keys + SENTRY_DSN. Only acts when Wema is live
+  # (no-ops in sandbox/sim). Every 6 hours; tune as needed.
+  - type: cron
+    name: zitch-reconcile-balances-ry6y
+    region: frankfurt
+    runtime: python
+    rootDir: backend
+    plan: starter
+    # Never deploy scheduled money/compliance jobs before repository CI passes.
+    autoDeployTrigger: checksPass
+    schedule: "0 */6 * * *"
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
+    # Every non-zero ledger/bank divergence is a finance-review incident. The
+    # command remains read-only: this only makes the platform surface it until
+    # authenticated bank evidence resolves the case.
+    startCommand: "python manage.py reconcile_balances --fail-nonzero"
+    envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
+      - key: DJANGO_SECRET_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "true"
+      # Persist discrepancy-alert fingerprints across ephemeral cron runs so a
+      # stable case is reminded at a controlled cadence rather than re-alerted
+      # as a brand-new incident every time this process starts.
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: zitch-cache-ry6y
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db-ry6y
+          property: connectionString
+      - key: DJANGO_KYC_HASH_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_KYC_HASH_KEY}
+      - key: DJANGO_OTP_HASH_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_OTP_HASH_KEY}
+      - key: WEMA_CHANNEL_ID
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CHANNEL_ID}
+      - key: WEMA_WALLET_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_WALLET_KEY}
+      - key: WEMA_ACCOUNT_CREATION_KEY
+        sync: false
+      - key: WEMA_ACCT_MGT_KEY
+        # Optional override; utility.wema falls back to WEMA_WALLET_KEY when blank.
+        sync: false
+      - key: WEMA_ACCT_MGT_BASE_URL
+        # Optional override; utility.wema falls back to WEMA_BASE_URL when blank.
+        sync: false
+      - key: WEMA_BASE_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BASE_URL}
+      # Rail safety mode is sourced from the web service so a cron cannot call
+      # ALAT while customer-facing requests are deliberately simulated.
+      - key: WEMA_SIMULATION
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SIMULATION}
+      - key: ALLOW_PRODUCTION_SIMULATION
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: ALLOW_PRODUCTION_SIMULATION}
+      - key: SENTRY_DSN
+        sync: false
+
+  # DAILY SETTLEMENT STATEMENT — the whole float position, not per-wallet drift.
+  # integrity_check and reconcile_balances both compare ONE wallet against ONE
+  # counterpart. Neither can see the two pots that hold customer money but belong
+  # to no user: the pool account (WEMA_SOURCE_ACCOUNT) and our partner-bank VAS provider
+  # wallet. A VAS purchase debits the customer's ledger and OUR VAS wallet while
+  # their NUBAN keeps the cash — per-wallet checks stay green while the VAS rail
+  # drains. This command sums everything owed against everything held on every
+  # rail and pages on a shortfall. Needs the VAS credentials as well as the WEMA
+  # balance-read keys, or it reports an unreadable rail (which is itself an alert,
+  # never a silent zero). Read-only. See docs/settlement-operating-model.md for
+  # the thresholds and who owns the response.
+  - type: cron
+    name: zitch-settlement-report-ry6y
+    region: frankfurt
+    runtime: python
+    rootDir: backend
+    plan: starter
+    # Never deploy scheduled money/compliance jobs before repository CI passes.
+    autoDeployTrigger: checksPass
+    schedule: "0 6 * * *"   # 06:00 UTC = 07:00 Lagos, before the business day
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
+    startCommand: "python manage.py settlement_report --fail-on-breach"
+    envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
+      - key: DJANGO_SECRET_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db-ry6y
+          property: connectionString
+      - key: DJANGO_KYC_HASH_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_KYC_HASH_KEY}
+      - key: DJANGO_OTP_HASH_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_OTP_HASH_KEY}
+      - key: WEMA_CHANNEL_ID
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CHANNEL_ID}
+      - key: WEMA_WALLET_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_WALLET_KEY}
+      - key: WEMA_ACCOUNT_CREATION_KEY
+        sync: false
+      - key: WEMA_ACCT_MGT_KEY
+        # Optional override; utility.wema falls back to WEMA_WALLET_KEY when blank.
+        sync: false
+      - key: WEMA_ACCT_MGT_BASE_URL
+        # Optional override; utility.wema falls back to WEMA_BASE_URL when blank.
+        sync: false
+      - key: WEMA_BASE_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BASE_URL}
+      # Rail safety mode is sourced from the web service so a cron cannot call
+      # ALAT while customer-facing requests are deliberately simulated.
+      - key: WEMA_SIMULATION
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SIMULATION}
+      - key: ALLOW_PRODUCTION_SIMULATION
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: ALLOW_PRODUCTION_SIMULATION}
+      - key: WEMA_SOURCE_ACCOUNT
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SOURCE_ACCOUNT}
+      # The VAS asset rail. Without these the provider wallet reads as UNREADABLE
+      # and the position is reported advisory rather than authoritative.
+      - key: SENTRY_DSN
+        sync: false
+
+  # AML TRANSACTION MONITORING. The compliance QA response tells a regulator we monitor
+  # for "threshold breaches (₦5M+), rapid velocity, structuring" and file SARs with NFIU
+  # "within 30 days of detection". This is the code behind that: it opens cases for those
+  # patterns and — the part that matters — goes RED when an open case passes its 30-day
+  # deadline, because an unfiled SAR past its deadline is a regulatory breach and is
+  # otherwise invisible. Read-only over the ledger; it never blocks a transaction (see
+  # docs/compliance-operations.md for why, and for where the code and the policy wording
+  # differ). Needs only the database and SENTRY_DSN.
+  - type: cron
+    name: zitch-aml-scan-ry6y
+    region: frankfurt
+    runtime: python
+    rootDir: backend
+    plan: starter
+    # Never deploy scheduled money/compliance jobs before repository CI passes.
+    autoDeployTrigger: checksPass
+    schedule: "0 5 * * *"   # 05:00 UTC = 06:00 Lagos, before the settlement report
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
+    startCommand: "python manage.py aml_scan --fail-on-overdue"
+    envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
+      - key: DJANGO_SECRET_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db-ry6y
+          property: connectionString
+      - key: SENTRY_DSN
+        sync: false
+
+  - type: keyvalue
+    name: zitch-cache-ry6y
+    region: frankfurt
+    plan: starter
+    # Match the existing Frankfurt cache; changing eviction needs separate review.
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+databases:
+  # Existing Frankfurt database. Keep the Oregon database as retained evidence.
+  - name: zitch-db-ry6y
+    region: frankfurt
+    plan: basic-256mb
+    postgresMajorVersion: 18
+    storageAutoscalingEnabled: true
+    # Application services use the private connection string above. Refuse every
+    # public Postgres source; the current live database still needs this applied
+    # manually or by an explicitly reviewed Blueprint sync.
+    ipAllowList: []
