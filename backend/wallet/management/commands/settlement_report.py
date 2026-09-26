@@ -125,13 +125,29 @@ class Command(BaseCommand):
 
         pool_account = str(dj_settings.WEMA.get("SOURCE_ACCOUNT") or "").strip()
         pool = None
+        pool_failure = None
+        pool_http_status = None
         if pool_account:
             res = wema.get_balance(pool_account)
             pool = res.get("balance_naira") if res.get("success") else None
+            if pool is None:
+                diagnostic = res.get("diagnostic") or {}
+                status = diagnostic.get("http_status")
+                if type(status) is int and 100 <= status <= 599:
+                    pool_http_status = status
+                if diagnostic.get("error_type"):
+                    pool_failure = "connection_error"
+                elif pool_http_status is not None and pool_http_status >= 400:
+                    pool_failure = "http_error"
+                elif res.get("success") is False:
+                    pool_failure = "bank_rejected"
+                else:
+                    pool_failure = "missing_balance"
 
         return {"nuban_total": nuban_total, "nuban_wallets": wallets,
                 "nuban_unreachable": unreachable,
-                "pool_account_set": bool(pool_account), "pool_balance": pool}
+                "pool_account_set": bool(pool_account), "pool_balance": pool,
+                "pool_failure": pool_failure, "pool_http_status": pool_http_status}
 
     def _day_movement(self) -> dict:
         """Today's outflow split by what it was spent ON — the explanation for a
@@ -220,6 +236,10 @@ class Command(BaseCommand):
             "        pool        " + (f"₦{held['pool_balance']:,.2f}" if held["pool_balance"] is not None
                                       else ("UNREADABLE" if held["pool_account_set"]
                                             else "not configured (WEMA_SOURCE_ACCOUNT)")))
+        if held["pool_failure"]:
+            self.stdout.write("        pool read   " + held["pool_failure"]
+                              + (f" (HTTP {held['pool_http_status']})"
+                                 if held["pool_http_status"] is not None else ""))
         self.stdout.write(f"        total       ₦{held_total:,.2f}")
         self.stdout.write(
             f"POSITION {'+' if position >= 0 else '-'}₦{abs(position):,.2f} "
@@ -231,7 +251,9 @@ class Command(BaseCommand):
             alert("settlement_report: position computed with an unreadable rail — treat it as "
                   "advisory until every rail reads", level="warning",
                   nuban_unreachable=held["nuban_unreachable"],
-                  pool_readable=held["pool_balance"] is not None)
+                  pool_readable=held["pool_balance"] is not None,
+                  pool_failure=held["pool_failure"],
+                  pool_http_status=held["pool_http_status"])
             breached = True
 
         if position < 0 and -position > max_shortfall:
