@@ -172,7 +172,11 @@ requires both valid secrets and a restart. Add both manually to the isolated
 service's Render environment. No real customer should be enrolled until Zitch approves a
 BVN/NIN verification source, consent, retention and access-audit procedure.
 If provisioning is approved, select the custom Blueprint Path
-`incubator/wema_vas/render.yaml` on branch `codex/vas-isolated-e2e` in Render.
+`incubator/wema_vas/render.yaml` on branch `main` in Render. The configured
+`zitch-vas-validation-api.onrender.com` host is a proposed service name, not a
+verified assigned URL. Before enabling bank callbacks, check the actual Render
+service URL and set `WEMA_VAS_ALLOWED_HOSTS` to its exact hostname. Never send
+the proposed hostname to Wema as a working endpoint before deployment and tests.
 
 For validation mode, set `WEMA_VAS_MODE=validation`, `WEMA_VAS_ENABLED=false`,
 `WEMA_VAS_BANK_TOKEN` (new random >=48 characters), `WEMA_VAS_IDENTITY_KEYS`
