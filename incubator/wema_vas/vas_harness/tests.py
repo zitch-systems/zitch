@@ -432,6 +432,19 @@ VALIDATION_NUMBER = "7113000001"
 
 
 class EnrollmentValidationTests(SimpleTestCase):
+    def test_duplicate_identity_field_is_rejected_before_write(self):
+        raw = ('{"customer_reference":"TEST-ONLY-001","customer_name":"FIRST",'
+               '"customer_name":"SECOND","bvn":"11111111111","nin":"",'
+               '"phone":"08000000000","verification_reference":"test-proof-001",'
+               '"consent_reference":"test-consent-001"}')
+        with (override_settings(VAS_MODE="validation"),
+              patch.object(settings, "DATABASES", {"default": {"ENGINE": "django.db.backends.postgresql"}}),
+              patch("sys.stdin", io.StringIO(raw)),
+              patch("vas_harness.management.commands.enroll_verified.VirtualAccount.objects.create") as create):
+            with self.assertRaisesMessage(CommandError, "Invalid or unverified enrollment payload"):
+                call_command("enroll_verified")
+            create.assert_not_called()
+
     def test_customer_reference_over_database_limit_is_rejected_before_write(self):
         data = {
             "customer_reference": "x" * 129, "customer_name": "TEST CUSTOMER",
