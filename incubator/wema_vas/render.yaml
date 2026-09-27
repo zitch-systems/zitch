@@ -15,7 +15,7 @@ services:
     runtime: python
     region: frankfurt
     plan: starter
-    branch: codex/vas-isolated-e2e
+    branch: main
     rootDir: incubator/wema_vas
     autoDeployTrigger: 'off'
     buildCommand: pip install -r requirements.txt
@@ -32,6 +32,7 @@ services:
       - key: WEMA_VAS_PREFIX
         value: '711'
       - key: WEMA_VAS_ALLOWED_HOSTS
+        # Proposed Render hostname; verify the assigned URL before enabling callbacks.
         value: zitch-vas-validation-api.onrender.com
       - key: WEMA_VAS_TRUST_TLS_PROXY
         value: 'true'
