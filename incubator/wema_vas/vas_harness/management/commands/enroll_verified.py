@@ -34,6 +34,8 @@ class Command(BaseCommand):
             for key in required:
                 if not isinstance(data[key], str) or len(data[key]) > 160 or any(ord(c) < 32 for c in data[key]):
                     raise ValueError("Invalid field")
+            if len(data["customer_reference"]) > 128:
+                raise ValueError("Customer reference exceeds database field")
             if not all(data[key].strip() for key in ("customer_reference", "customer_name", "verification_reference", "consent_reference")):
                 raise ValueError("Verification and consent evidence are required")
             if not re.fullmatch(r"[A-Za-z0-9._:/-]{8,128}", data["verification_reference"]):
