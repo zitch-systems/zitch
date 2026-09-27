@@ -14,6 +14,15 @@ from ...fixtures import CUSTOMERS
 from ...models import VirtualAccount
 
 
+def _unique_fields(pairs):
+    data = {}
+    for key, value in pairs:
+        if key in data:
+            raise ValueError("Duplicate enrollment field")
+        data[key] = value
+    return data
+
+
 class Command(BaseCommand):
     help = "Read a single verified KYC JSON object on stdin; print only the allocated account number."
 
@@ -26,7 +35,7 @@ class Command(BaseCommand):
         if len(raw) > 4096:
             raise CommandError("Enrollment input is too large")
         try:
-            data = json.loads(raw)
+            data = json.loads(raw, object_pairs_hook=_unique_fields)
             required = {"customer_reference", "customer_name", "bvn", "nin", "phone",
                         "verification_reference", "consent_reference"}
             if not isinstance(data, dict) or set(data) != required:
