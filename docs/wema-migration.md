@@ -237,13 +237,12 @@ new Remita / pay-with-bank / BNPL products). Summary:
 | **Virtual cards** | ⚠️ wired, live-shape check required | The real card-management issue/reveal/block paths are wired; Wema must supply `cardKey` and confirm the opaque response shape before production. |
 | **KYC (BVN/NIN/vNIN)** | ✅ corrected model | Wema has no standalone identity lookup; Zitch verifies and name-matches identity through the wallet-provisioning OTP flow. |
 
-**Funding-correctness fix (landed):** `normalize_transaction` now treats an inbound
-`creditType=='Credit'` row as fundable only when its `status` is settled. The ALAT
-`TransactionStatus` enum is `{Default, Successfull(sic), Failed, Pending}`; live history
-has also used the conventional `Successful` spelling. Only those two explicit terminal
-success spellings are fundable. **Pending**, **Failed**, unknown and blank rows are skipped,
-so a deposit is never credited before it settles; a later authenticated settled observation
-credits the same reference exactly once.
+**Funding confirmation:** Wema's supplied `transhistoryV2` example shows a posted
+`Credit` with `status: Default`, a transaction ID, matching RRN and resulting account
+balance in a successful history response. Live `Default` rows can persist for days.
+The funding sweep accepts this complete posted-bank-record shape, or an explicit
+`Successfull`/`Successful` status. Bare `Default`, **Pending**, **Failed**, unknown and
+blank rows stay uncredited. Provider references remain idempotent across sweeps.
 
 ### `securityInfo` — dynamic per transaction
 
@@ -364,8 +363,8 @@ The follow-up rails from the bundle are wired (mock-first, fail-closed):
 2. ~~**`securityInfo` construction.**~~ **CLOSED 2026-07-27** — there is no construction. It
    is a value we pick that the bank echoes back to our Authentication Callback.
 3. ~~**Transaction-status legends.**~~ **CLOSED for VAS/bills.** `transhistoryV2`
-   history status is honored (`Successfull` and observed `Successful` settle; Default,
-   blank, unknown, Failed and Pending do not). VAS/bills `transactionStatus` is confirmed
+   history status is honored (`Successfull`, `Successful`, or a complete posted `Default`
+   bank record settle; bare Default, blank, unknown, Failed and Pending do not). VAS/bills `transactionStatus` is confirmed
    as 200 success / 400 failure / 401 authentication-or-API failure and remains configured
    per product. Bank-payout STRING statuses remain matched defensively via
    `_SETTLED`/`_REVERSED`, including the `SUCCESSFULL` spelling.

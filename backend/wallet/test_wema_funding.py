@@ -588,6 +588,15 @@ class WemaReconcileTests(TestCase):
         self._run([_tx("WEMA-LATE", 1500, status="Successfull")])
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("1500.00"))
 
+    def test_posted_default_credit_from_bank_history_funds_once(self):
+        row = {"referenceId": "BANK-POSTED-1", "tranId": "S42026066",
+               "rrn": " BANK-POSTED-1", "amount": 500, "balance": "500.00",
+               "creditType": "Credit", "status": "Default"}
+        self._run([row])
+        self._run([row])
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("500.00"))
+        self.assertEqual(Transaction.objects.filter(reference="WEMA-CR-BANK-POSTED-1").count(), 1)
+
     def test_reversed_credit_row_not_funded(self):
         # Defense-in-depth beyond the documented enum: the explicit allowlist also
         # keeps a re-spelled non-final status (e.g. Reversed) unsettled.
@@ -642,6 +651,15 @@ class WemaReversalGuardTests(TestCase):
         # is a no-op on the already-FAILED payout.
         self._run([self._bounce()])
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000.00"))
+
+    def test_posted_default_reversal_refunds_without_funding_credit(self):
+        row = {**self._bounce(), "status": "Default", "tranId": "S42026067",
+               "rrn": " ALAT-REV-77", "balance": "5000.00"}
+        self._run([row])
+        self._run([row])
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000.00"))
+        self.assertEqual(Transaction.objects.get(
+            reference="WEMA-CR-ALAT-REV-77").transaction_status, Transaction.FAILED)
 
     def test_already_reversed_payout_not_credited_again(self):
         # Phase 2 (payout poller) reversed it in an earlier run…

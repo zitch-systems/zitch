@@ -1342,14 +1342,11 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
         return _unreachable(exc)
 
 
-# transhistoryV2 `status` legend (documented in the Account-Maintenance OpenAPI:
-# TransactionHistoryModel.status enum = Default | Successfull | Failed | Pending;
-# note ALAT's "Successfull" spelling). Funding is fail-closed: only the explicit
-# terminal-success enum proves that money landed. Live responses have used both the
-# documented misspelling ``Successfull`` and the conventional ``Successful``; those
-# are the only accepted spellings. Default, blank, unknown, Failed, and Pending rows
-# remain uncredited until a later authenticated history response reports one of
-# them; the referenceId guard makes that later credit idempotent.
+# transhistoryV2 `status` is not a settlement-status field in every bank response.
+# Wema supplied a successful statement containing a posted Credit with status=Default,
+# a bank transaction ID, matching RRN and a resulting account balance. Live rows
+# also remain Default across repeated polls. Accept that *complete posted-history
+# shape* as bank evidence; do not accept a bare Default, Pending or Failed row.
 _TX_SETTLED = {"successfull", "successful"}
 
 
@@ -1366,16 +1363,23 @@ def normalize_transaction(tx: dict) -> dict:
         return {"reference": "", "amount_naira": None, "is_credit": False,
                 "settled": False, "status": "", "narration": "", "sender": ""}
     ref = str(tx.get("referenceId") or tx.get("tranId") or "").strip()
-    # ALAT documents {Default, Successfull(sic), Failed, Pending}; live history has
-    # also used the conventional Successful spelling. Only those explicit terminal
-    # success values are fundable. Treating an omitted, Default, or newly
-    # introduced value as success would mint spendable wallet money without proof
-    # of settlement. apply_wema_credit gates on `settled` and a later Successfull
-    # observation credits the same reference exactly once.
+    # A Default row is fundable only when the authenticated history has the
+    # independent posted-record fields in Wema's own sample: a transaction ID,
+    # matching retrieval reference and resulting balance. The caller also requires
+    # a successful API envelope. A receipt or an unconfirmed/incomplete row alone
+    # never creates spendable Zitch funds.
     is_credit = str(tx.get("creditType") or "").strip().lower() == "credit"
     status = str(tx.get("status") or "").strip().lower()
+    rrn = str(tx.get("rrn") or "").strip()
+    posted_default = (
+        status == "default" and is_credit
+        and bool(str(tx.get("referenceId") or "").strip())
+        and bool(str(tx.get("tranId") or "").strip())
+        and rrn == ref
+        and _naira(tx.get("balance")) is not None
+    )
     return {"reference": ref, "amount_naira": _naira(tx.get("amount")),
-            "is_credit": is_credit, "settled": status in _TX_SETTLED,
+            "is_credit": is_credit, "settled": status in _TX_SETTLED or posted_default,
             "status": status, "narration": tx.get("narration") or "",
             "sender": tx.get("sender") or tx.get("senderAccountNumber") or ""}
 
