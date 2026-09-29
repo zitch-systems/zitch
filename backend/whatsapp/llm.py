@@ -300,7 +300,7 @@ def _call_anthropic(system: str, user_text: str, tools: list, cfg: dict) -> dict
         kwargs["base_url"] = cfg["base_url"]
     client = anthropic.Anthropic(**kwargs)
     resp = client.messages.create(
-        model=cfg["model"], max_tokens=512, temperature=0,
+        model=cfg["model"], max_tokens=512,
         system=system, tools=tools, tool_choice={"type": "any"},
         messages=[{"role": "user", "content": user_text}],
     )
@@ -459,7 +459,7 @@ def describe_image(data: bytes, mime: str, cfg: dict | None = None) -> str:
             if cfg["base_url"]:
                 kwargs["base_url"] = cfg["base_url"]
             resp = anthropic.Anthropic(**kwargs).messages.create(
-                model=cfg["model"], max_tokens=300, temperature=0,
+                model=cfg["model"], max_tokens=300,
                 messages=[{"role": "user", "content": [
                     {"type": "image",
                      "source": {"type": "base64", "media_type": media_type, "data": b64}},
