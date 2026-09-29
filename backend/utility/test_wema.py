@@ -1063,6 +1063,17 @@ class WemaStatusLegendTests(SimpleTestCase):
                                             "creditType": "Credit", "status": st})
             self.assertFalse(n["settled"], repr(st))
 
+    def test_wema_posted_default_credit_is_settled_only_with_complete_bank_record(self):
+        row = {"referenceId": "338135484403", "tranId": "S42026066",
+               "rrn": " 338135484403", "amount": 100, "balance": "100.00",
+               "creditType": "Credit", "status": "Default"}
+        self.assertTrue(wema.normalize_transaction(row)["settled"])
+        for field, value in (("tranId", ""), ("rrn", "other"),
+                             ("balance", "N/A"), ("referenceId", ""),
+                             ("creditType", "Debit")):
+            with self.subTest(field=field):
+                self.assertFalse(wema.normalize_transaction({**row, field: value})["settled"])
+
 
 WEMA_CARD = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "card": "cardkey"},
              "CARD_PRODUCT_KEY": "cardprod"}
