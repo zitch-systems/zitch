@@ -2188,11 +2188,19 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
     if not norm["is_credit"] or not norm["reference"]:
         return None
     if not norm["settled"]:
-        # A Failed/Pending inbound row per Wema's status legend: the money hasn't
-        # actually landed. Crediting a Pending row now (before it settles) would
-        # leak float if it later fails; a Failed row must never credit. A Pending
-        # deposit is picked up on a later sweep once it flips to Successfull
-        # (idempotent on referenceId), so holding it back loses nothing.
+        # Incomplete Default rows have no posted-bank-record proof; Pending,
+        # Failed and unknown statuses likewise cannot release customer funds.
+        # Record only evidence-presence flags so an operator can distinguish a
+        # bank status issue from a missing reference/balance without logging PII.
+        if norm["status"] == "default":
+            log.warning(
+                "wema_credit_default_missing_evidence ref=%s tran_id=%s rrn_matches=%s "
+                "posted_balance=%s account=%s",
+                norm["reference"], bool(str(tx.get("tranId") or "").strip()),
+                str(tx.get("rrn") or "").strip() == norm["reference"],
+                wema._naira(tx.get("balance")) is not None,
+                _masked_account(wallet.account_number),
+            )
         log.info("wema_credit_unsettled ref=%s status=%s account=%s",
                  norm["reference"], norm["status"], _masked_account(wallet.account_number))
         return None
