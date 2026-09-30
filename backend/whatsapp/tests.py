@@ -398,7 +398,8 @@ class ChannelTests(TestCase):
     def test_production_style_channel_never_collects_a_pin_in_chat(self):
         m = "2349090000999"
         self.inbound("1", "secure-o1", msisdn=m)
-        self.assertIn("zitch app", self.last_reply(m).lower())
+        self.assertNotIn("zitch app", self.last_reply(m).lower())
+        self.assertIn("try again", self.last_reply(m).lower())
         self.assertFalse(User.objects.filter(phone="09090000999").exists())
 
     # --- onboarding (create an account from WhatsApp) ---
@@ -3961,7 +3962,8 @@ class PinResetTests(TestCase):
         the customer's history forever."""
         with patch("whatsapp.router.flows_live", return_value=False):
             out = self._say("reset pin")
-        self.assertIn("Zitch app", out)
+        self.assertNotIn("Zitch app", out)
+        self.assertIn("Reply *reset pin*", out)
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="setpin").exists())
 
     def _armed(self):

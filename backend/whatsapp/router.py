@@ -196,9 +196,10 @@ UNLINKED = (
     "👋 Welcome to *Zitch* - banking right here on WhatsApp.\n\n"
     "Reply *1* to create a new account, or *2* if you already have one."
 )
-UNLINKED_APP_ONLY = (
-    "👋 Welcome to *Zitch*. For your security, create your account and payment PIN "
-    "in the Zitch app, then open *Settings -> Link WhatsApp* to connect it here."
+UNLINKED_SIGNUP_UNAVAILABLE = (
+    "👋 Welcome to *Zitch*. Secure account creation is unavailable here right now. "
+    "Please try again later or contact Zitch support. If you already have an "
+    "account, reply *2* to sign in securely here."
 )
 ONBOARD_TTL = timedelta(minutes=15)  # window to finish a WhatsApp signup
 
@@ -1739,7 +1740,7 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
         return _start_onboarding(msisdn)
 
     # 4. Default welcome (with the create/link choices).
-    intro = UNLINKED if _chat_signup_allowed() else UNLINKED_APP_ONLY
+    intro = UNLINKED if _chat_signup_allowed() else UNLINKED_SIGNUP_UNAVAILABLE
     block = _more_info_block()
     return reply(msisdn, intro + (f"\n\n{block}" if block else ""))
 
@@ -1752,7 +1753,7 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
 def _start_onboarding(msisdn: str) -> None:
     if not _chat_signup_allowed():
         _clear_onboarding(msisdn)
-        return reply(msisdn, UNLINKED_APP_ONLY)
+        return reply(msisdn, UNLINKED_SIGNUP_UNAVAILABLE)
     if User.objects.filter(phone=_local_phone(msisdn)).exists():
         from .login_flow import start_login
         return start_login(msisdn)
@@ -1799,7 +1800,7 @@ def _start_onboarding(msisdn: str) -> None:
     if not (getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False)):
         _clear_onboarding(msisdn)
         return reply(msisdn, "Secure signup is temporarily unavailable. Please try again "
-                             "shortly, or create your account in the Zitch app.")
+                             "shortly, or contact Zitch support if it continues.")
     WaOnboarding.objects.update_or_create(
         msisdn=msisdn,
         defaults={"step": "first_name", "payload": {}, "expires_at": timezone.now() + ONBOARD_TTL},
@@ -1862,7 +1863,7 @@ def _arm_onboarding_pin(ob: WaOnboarding, msisdn: str) -> None:
     # customer retry or use the app.
     _clear_onboarding(msisdn)
     return reply(msisdn, "Secure signup is temporarily unavailable. Please try again "
-                         "shortly, or create your account in the Zitch app.")
+                         "shortly, or contact Zitch support if it continues.")
 
 
 def _onboard_to(ob: WaOnboarding, step: str) -> None:
@@ -1881,7 +1882,7 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
                      "Never send them in chat. Reply *cancel* to restart.")
     if not _chat_signup_allowed():
         _clear_onboarding(msisdn)
-        return reply(msisdn, UNLINKED_APP_ONLY)
+        return reply(msisdn, UNLINKED_SIGNUP_UNAVAILABLE)
     val = text.strip()
     if val.lower() in ("cancel", "quit", "stop"):
         _clear_onboarding(msisdn)
@@ -2198,19 +2199,18 @@ def _start_pin_reset(user, msisdn: str) -> None:
     if not skip_otp:
         code = _kyc_test_code(user) or f"{secrets.randbelow(10**6):06d}"
         if not sms_live() and not _kyc_test_code(user):
-            # "Must" means must: no deliverable code, no chat reset. The app has
-            # its own authentication and stays available.
+            # No deliverable SMS means no PIN reset. Keep the secure retry route.
             return reply(msisdn, "🔐 We couldn't send the confirmation SMS just now, so the "
-                                 "PIN can't be reset here. Please try again shortly, or set "
-                                 "your PIN in the Zitch app (Me -> Security).")
+                                 "PIN can't be reset yet. Reply *reset pin* to try again "
+                                 "shortly, or contact Zitch support.")
         if not _kyc_test_code(user):
             sent = send_sms(user.phone or "",
                             f"Zitch: {code} is your PIN reset code. It expires in 10 minutes. "
                             "Never share it.")
             if not sent.get("success"):
                 return reply(msisdn, "🔐 We couldn't send the confirmation SMS just now, so the "
-                                     "PIN can't be reset here. Please try again shortly, or set "
-                                     "your PIN in the Zitch app (Me -> Security).")
+                                     "PIN can't be reset yet. Reply *reset pin* to try again "
+                                     "shortly, or contact Zitch support.")
         payload.update({
             "pin_reset_otp_hash": make_password(code),
             "pin_reset_otp_exp": (timezone.now() + timedelta(minutes=10)).isoformat(),
@@ -2232,7 +2232,7 @@ def _start_pin_reset(user, msisdn: str) -> None:
                                  "then choose your new *6-digit PIN*.")
         _clear_actions(msisdn)
         return reply(msisdn, "🔐 Secure PIN entry isn't available right now. "
-                             "Please set your PIN in the Zitch app (Me -> Security).")
+                             "Reply *reset pin* to try again shortly, or contact Zitch support.")
     if flows_live() and send_flow(
             msisdn, sign_flow_token(pa),
             header="Set your PIN", body="Choose the 6-digit PIN you'll use to authorise payments.",
@@ -2246,7 +2246,7 @@ def _start_pin_reset(user, msisdn: str) -> None:
     # credential itself sitting in the customer's history forever.
     _clear_actions(msisdn)
     return reply(msisdn, "🔐 Secure PIN entry isn't available right now. "
-                         "Please set your PIN in the Zitch app (Me -> Security).")
+                         "Reply *reset pin* to try again shortly, or contact Zitch support.")
 
 
 def _do_ai_consent(link: WhatsAppLink, msisdn: str, low: str) -> None:
@@ -4185,7 +4185,7 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
             _clear_actions(msisdn)
             return reply(msisdn, "⚠️ The secure entry screen didn't go through, so I won't ask for "
                                  "your ID number here in the chat. Reply *6* to try again in a "
-                                 "moment, or finish setup in the Zitch app.")
+                                 "moment, or contact Zitch support if it continues.")
         return reply(msisdn, f"Enter your 11-digit *{kind.upper()}*. It is used only to open your "
                              "account.\n\n_Delete your message afterwards (press and hold -> Delete -> "
                              "Delete for everyone) - WhatsApp only lets the sender do this._")
