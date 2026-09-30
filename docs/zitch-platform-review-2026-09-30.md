@@ -4,6 +4,8 @@ A bank OTP can succeed before account details become readable. Previously, Zitch
 
 OTP acceptance is now saved before account retrieval. The callback and reconciliation finish the authenticated bank holder-name check and save durable proof. Repeated confirmation does not resubmit a spent OTP. App and WhatsApp show processing instead of requesting the number/code again. Account existence alone cannot produce verified identity; ownership conflicts and name mismatches remain blocked.
 
+An additional deadline regression covers an OTP submitted while valid whose successful bank response arrives after local expiry. Submission time is retained only after bank acceptance, so response latency cannot strand an accepted code as an invalid timestamp. Expired submissions and unsuccessful bank responses remain blocked.
+
 The existing-account hosted BVN face route remains available when no accepted OTP proof exists. Secure-form failures keep the customer on WhatsApp. Email/SMS delivery settings are inherited from the API by the notification-writing worker and money jobs; the reconciliation job also inherits bank KYC product settings.
 
 PR #523 was merged to main at `f307f5513335e3b003f7f9ea627963ca604db30c`. Its complete CI passed: 2,785 backend tests, 256 app tests, and 159 connector tests. The merged main revision also passed CI and CodeQL. This verifies the code, not production deployment.

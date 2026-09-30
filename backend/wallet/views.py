@@ -687,7 +687,8 @@ def complete_wema_provisioning(user, otp: str, tracking_id: str,
     attempt = WemaProvisioningAttempt.objects.filter(
         user=user, tracking_id=tracking_id, status=WemaProvisioningAttempt.PENDING,
     ).first()
-    if attempt is None or (attempt.expired and attempt.otp_verified_at is None):
+    submitted_at = timezone.now()
+    if attempt is None or (attempt.expires_at <= submitted_at and attempt.otp_verified_at is None):
         return {"success": False, "message": "This verification request has expired. Start account setup again."}, 400
     using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
     # Older clients echo the raw value. It is not required, but if present it must
@@ -699,11 +700,14 @@ def complete_wema_provisioning(user, otp: str, tracking_id: str,
         val = wema_provider.validate_wallet_otp(user.phone or "", otp, tracking_id, bvn=using_bvn)
         if not val.get("success"):
             return {"success": False, "message": val.get("message", "OTP verification failed")}, 502
-        # Persist consumed-code evidence before the asynchronous account read.
+        # Record submission time only after the bank accepts the code. Its
+        # successful response can arrive after our local submission deadline;
+        # stamping response time would strand that valid code as expired.
+        # Persist this evidence before the asynchronous account read.
         WemaProvisioningAttempt.objects.filter(
             pk=attempt.pk, status=WemaProvisioningAttempt.PENDING,
             otp_verified_at__isnull=True,
-        ).update(otp_verified_at=timezone.now())
+        ).update(otp_verified_at=submitted_at)
         attempt.refresh_from_db()
     if already:
         # Provisioned already (by an earlier verify, or by the bank's Account Creation

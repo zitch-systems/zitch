@@ -413,7 +413,9 @@ class PinResetOtpTests(TestCase):
              patch("whatsapp.router.sms_live", return_value=False):
             _start_pin_reset(self.user, MSISDN)
         flow.assert_not_called()                              # no pad without the code
-        self.assertIn("can't be reset here", "\n".join(replies))
+        self.assertIn("can't be reset yet", "\n".join(replies))
+        self.assertIn("Reply *reset pin*", "\n".join(replies))
+        self.assertNotIn("Zitch app", "\n".join(replies))
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN,
                                                       action_type="setpin").exists())
 

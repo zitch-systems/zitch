@@ -2654,10 +2654,12 @@ class ChatSignupEntryTests(TestCase):
             self.assertFalse(WaOnboarding.objects.filter(msisdn=m).exists())
 
     @override_settings(WHATSAPP={**WA, "ALLOW_CHAT_SIGNUP": False})
-    def test_a_deploy_can_still_send_new_numbers_to_the_app(self):
+    def test_signup_disabled_offers_retry_support_and_existing_account_signin(self):
         m = "2349090000070"
         self.inbound("i want to open account here", "e4", msisdn=m)
-        self.assertIn("zitch app", self.last_reply(m).lower())
+        self.assertNotIn("zitch app", self.last_reply(m).lower())
+        self.assertIn("try again", self.last_reply(m).lower())
+        self.assertIn("reply *2*", self.last_reply(m).lower())
         self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
 
 
