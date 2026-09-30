@@ -371,10 +371,9 @@ def wema_account_callback(request):
     Payload: {title, message, data: {email, nuban, nubanName, phoneNumber,
     nubanStatus, type}, requestType: 2}.
 
-    Provisions the wallet idempotently. It deliberately does NOT lift the user's KYC
-    tier: that requires the name-match control in the OTP flow, which runs when the
-    user completes verification. Always answers 200 — a non-2xx invites the bank to
-    retry an event we have already recorded.
+    Provisions idempotently, then completes any saved bank-accepted OTP through
+    the authenticated holder-name check. The callback alone cannot lift KYC.
+    Always answers 200 — a non-2xx invites a retry of an already recorded event.
     """
     body = request.wema_body
     # Treat a malformed ``data`` value as an empty object.  The callback is an
@@ -453,6 +452,14 @@ def wema_account_callback(request):
         else:
             log.warning("wema_pnd_lift_failed_cb user=%s account=%s",
                         user.id, mask_pii(nuban))
+
+    # OTP acceptance can precede the account callback; no code replay is needed.
+    try:
+        from .identity import finish_pending_identities
+
+        finish_pending_identities(user)
+    except Exception:  # noqa: BLE001 — the durable attempt remains retryable
+        log.exception("wema_callback_identity_completion_failed user=%s", user.id)
 
     log.info("wema_account_cb user=%s nuban=%s outcome=%s bank_status=%s",
              user.id, mask_pii(nuban), outcome, status)

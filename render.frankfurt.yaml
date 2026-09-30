@@ -450,17 +450,17 @@ services:
       - key: ALLOW_PRODUCTION_SIMULATION
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: TERMII_BASE_URL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_BASE_URL}
       - key: TERMII_API_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_API_KEY}
       - key: TERMII_SENDER_ID
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_SENDER_ID}
       - key: TERMII_CHANNEL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_CHANNEL}
       - key: RESEND_API_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_API_KEY}
       - key: RESEND_FROM_EMAIL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_FROM_EMAIL}
       # This worker owns durable chat execution and terminal WhatsApp-alert
       # retries. Production money reconciliation remains cron-only; do not set
       # WHATSAPP_WORKER_RECONCILE merely to compensate for a missing cron.
@@ -558,17 +558,17 @@ services:
       # which owns the Meta credentials and durable retry sweep. Do not copy
       # Meta secrets into this scheduled money process.
       - key: RESEND_API_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_API_KEY}
       - key: RESEND_FROM_EMAIL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_FROM_EMAIL}
       - key: TERMII_API_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_API_KEY}
       - key: TERMII_SENDER_ID
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_SENDER_ID}
       - key: TERMII_CHANNEL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_CHANNEL}
       - key: TERMII_BASE_URL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_BASE_URL}
       - key: TXN_ALERTS_WHATSAPP
         value: "false"
 
@@ -663,6 +663,11 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CHANNEL_ID}
       - key: WEMA_WALLET_KEY
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_WALLET_KEY}
+      # Deferred OTP completion uses the API KYC credentials.
+      - key: WEMA_UPGRADE_KEY
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_UPGRADE_KEY}
+      - key: WEMA_UPGRADE_BASE_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_UPGRADE_BASE_URL}
       - key: WEMA_ACCOUNT_CREATION_KEY
         # Optional override; utility.wema falls back to the Wallet Services key.
         sync: false
@@ -704,17 +709,17 @@ services:
       # which owns the Meta credentials and durable retry sweep. Do not copy
       # Meta secrets into this scheduled money process.
       - key: RESEND_API_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_API_KEY}
       - key: RESEND_FROM_EMAIL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_FROM_EMAIL}
       - key: TERMII_API_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_API_KEY}
       - key: TERMII_SENDER_ID
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_SENDER_ID}
       - key: TERMII_CHANNEL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_CHANNEL}
       - key: TERMII_BASE_URL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_BASE_URL}
       - key: TXN_ALERTS_WHATSAPP
         value: "false"
 

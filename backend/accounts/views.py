@@ -1042,6 +1042,9 @@ def _repair_unbacked_wema_identity_flags(user) -> None:
 
 def _kyc_state(user) -> dict:
     _repair_unbacked_wema_identity_flags(user)
+    from wallet.identity import accepted_identity_pending
+
+    identity_processing = accepted_identity_pending(user)
     wallet = Wallet.objects.filter(user=user).only(
         "bank_tier", "account_number", "identity_upgrade_required").first()
     bank_tier = wallet.bank_tier if wallet else 0
@@ -1057,6 +1060,9 @@ def _kyc_state(user) -> dict:
         for value in [wema.bank_tier_limit(bank_tier, key)]
     }
     return {
+        "identity_processing": identity_processing,
+        **({"pending": True, "account_setup_state": "processing", "otp_required": False}
+           if identity_processing else {}),
         "tier": user.tier,
         "tier_name": _TIER_NAMES.get(user.tier, "Unverified"),
         "transaction_limit": str(user.transaction_limit),

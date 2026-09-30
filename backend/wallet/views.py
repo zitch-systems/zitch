@@ -136,6 +136,11 @@ def _active_wema_attempt(user, *, identity_type: str | None = None,
 
 
 def _account_setup_state(user, wallet) -> dict:
+    from .identity import accepted_identity_pending
+
+    if accepted_identity_pending(user):
+        return {"account_setup_state": "processing", "pending": True,
+                "otp_required": False, "identity_verified": False}
     if wallet.account_number:
         return {
             "account_setup_state": "ready",
@@ -188,6 +193,10 @@ def wallet_account_create(request):
     """
     user = request.user_obj
     wallet = get_or_create_wallet(user)
+    if _account_setup_state(user, wallet)["account_setup_state"] == "processing":
+        return ok(success=False, pending=True, otp_required=False,
+                  account_setup_state="processing",
+                  message="Your bank accepted the code. Your identity check is still processing.")
     bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
 
@@ -363,6 +372,7 @@ def _record_wema_attempt(user, tracking_id: str, identity_type: str,
             "identity_hash": hash_identifier(raw_identity),
             "identity_last4": raw_identity[-4:],
             "status": WemaProvisioningAttempt.PENDING,
+            "otp_verified_at": None,
             "expires_at": now + WEMA_ATTEMPT_TTL,
         },
     )
@@ -557,6 +567,10 @@ def start_wema_identity(user, *, bvn="", nin=""):
     if not _wema_funding_enabled():
         return fail("Bank account creation is not available right now")
     wallet = get_or_create_wallet(user)
+    if _account_setup_state(user, wallet)["account_setup_state"] == "processing":
+        return ok(success=False, pending=True, otp_required=False,
+                  account_setup_state="processing",
+                  message="Your bank accepted the code. Your identity check is still processing.")
     if not isinstance(bvn or "", str) or not isinstance(nin or "", str):
         return fail("Enter your 11-digit BVN or NIN")
     bvn, nin = (bvn or "").strip(), (nin or "").strip()
@@ -673,7 +687,7 @@ def complete_wema_provisioning(user, otp: str, tracking_id: str,
     attempt = WemaProvisioningAttempt.objects.filter(
         user=user, tracking_id=tracking_id, status=WemaProvisioningAttempt.PENDING,
     ).first()
-    if attempt is None or attempt.expired:
+    if attempt is None or (attempt.expired and attempt.otp_verified_at is None):
         return {"success": False, "message": "This verification request has expired. Start account setup again."}, 400
     using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
     # Older clients echo the raw value. It is not required, but if present it must
@@ -681,9 +695,16 @@ def complete_wema_provisioning(user, otp: str, tracking_id: str,
     echoed = "".join(ch for ch in (echoed_identity or "") if ch.isdigit())
     if echoed and not hmac.compare_digest(hash_identifier(echoed), attempt.identity_hash):
         return {"success": False, "message": "Identity details do not match this verification request."}, 400
-    val = wema_provider.validate_wallet_otp(user.phone or "", otp, tracking_id, bvn=using_bvn)
-    if not val.get("success"):
-        return {"success": False, "message": val.get("message", "OTP verification failed")}, 502
+    if attempt.otp_verified_at is None:
+        val = wema_provider.validate_wallet_otp(user.phone or "", otp, tracking_id, bvn=using_bvn)
+        if not val.get("success"):
+            return {"success": False, "message": val.get("message", "OTP verification failed")}, 502
+        # Persist consumed-code evidence before the asynchronous account read.
+        WemaProvisioningAttempt.objects.filter(
+            pk=attempt.pk, status=WemaProvisioningAttempt.PENDING,
+            otp_verified_at__isnull=True,
+        ).update(otp_verified_at=timezone.now())
+        attempt.refresh_from_db()
     if already:
         # Provisioned already (by an earlier verify, or by the bank's Account Creation
         # callback). Skip the provisioning write. The holder name is NOT read back from
@@ -724,78 +745,18 @@ def complete_wema_provisioning(user, otp: str, tracking_id: str,
             log.warning("wema_pnd_lift_failed user=%s account=%s msg=%s",
                         user.id, acct["account_number"], pnd.get("message", ""))
         holder_name = acct.get("account_name", "")
-    # Best-effort KYC / tier lift from the server-bound identifier. ALAT has no
-    # standalone BVN/NIN lookup, so this account-creation round-trip IS the identity
-    # check: the tier is only lifted when the holder name ALAT returned name-matches
-    # the user's registered name (tolerant of order/middle names), so a BVN/NIN that
-    # demonstrably belongs to someone else can't lift this user's tier. The match runs
-    # only against a real gateway (wema_live); a clear mismatch still provisions the
-    # NUBAN (funding works) but holds the tier for review.
-    name_ok = True
-    if wema_provider.wema_live():
-        if holder_name is None:
-            # Ask the bank what name it holds against this NUBAN.
-            #
-            # wallet.account_name cannot answer that question, though it looks like it
-            # can. provision_wema_account substitutes the user's OWN registered name
-            # whenever the bank hands over a blank one — deliberately, because a
-            # funding account with no name can't be safely paid into — and the Account
-            # Creation callback's nubanName is routinely blank. Matching that stored
-            # value against the registered name compares it to itself and passes every
-            # single time. For every account the bank's callback provisioned before the
-            # customer reached this step (the common ordering, which is why the early
-            # return above was removed), the only identity check in the ALAT flow was a
-            # rubber stamp: submit anyone's BVN, get the tier.
-            #
-            # The account number is the discriminator; the name we happen to have
-            # stored is not. get_kyc_status is keyed by NUBAN and returns the bank's
-            # own accountName, which is real evidence.
-            status = wema_provider.get_kyc_status(wallet.account_number)
-            holder_name = str(status.get("name") or "") if status.get("success") else ""
-            if not holder_name:
-                # Unreadable bank data cannot prove identity. Provisioning may still
-                # complete, but the KYC tier stays held for review.
-                log.warning("wema_holder_name_unavailable user=%s account=%s",
-                            user.id, wallet.account_number)
-        name_ok = not wema_provider.holder_name_mismatch(
-            user.get_full_name() or "", holder_name)
-    fields: list[str] = []
-    if not name_ok:
-        log.warning("wema_provision_name_mismatch user=%s account=%s wema_name=%r",
-                    user.id, wallet.account_number, holder_name)
-    elif using_bvn and not user.bvn_verified:
-        user.bvn_hash = attempt.identity_hash
-        user.bvn_last4 = attempt.identity_last4
-        user.bvn_verified = True
-        fields += ["bvn_hash", "bvn_last4", "bvn_verified"]
-    elif not using_bvn and not user.nin_verified:
-        user.nin_hash = attempt.identity_hash
-        user.nin_last4 = attempt.identity_last4
-        user.nin_verified = True
-        fields += ["nin_hash", "nin_last4", "nin_verified"]
-    if fields:
-        user.recompute_tier()
-        try:
-            with db_transaction.atomic():
-                user.save(update_fields=fields + ["tier"])
-                record_identity_proof(
-                    user,
-                    IdentityProof.BVN if using_bvn else IdentityProof.NIN,
-                    attempt.identity_hash,
-                    source=IdentityProof.WEMA_WALLET_OTP,
-                    provider_reference=attempt.tracking_id,
-                    prehashed=True,
-                )
-        except IntegrityError:
-            attempt.status = WemaProvisioningAttempt.FAILED
-            attempt.save(update_fields=["status", "updated"])
-            return {"success": False,
-                    "message": "This identity is already linked to another account. Contact support."}, 409
-    # VERIFIED is durable identity evidence consumed by status/rehydration reads.
-    # A successful OTP with a mismatched/unreadable bank name must never create it.
-    attempt.status = (WemaProvisioningAttempt.VERIFIED if name_ok
-                      else WemaProvisioningAttempt.FAILED)
-    attempt.save(update_fields=["status", "updated"])
+    from .identity import finish_accepted_identity
+
+    identity_outcome = finish_accepted_identity(attempt, holder_name=holder_name)
+    user.refresh_from_db()
+    if identity_outcome == "conflict":
+        return {"success": False,
+                "message": "This identity is already linked to another account. Contact support."}, 409
+    if identity_outcome in ("pending", "ignored"):
+        return {"success": False, "pending": True, "otp_required": False,
+                "account_setup_state": "processing",
+                "message": "Your bank accepted the code. Your identity check is still processing."}, 202
+    name_ok = identity_outcome == "verified"
     # Read back the tier the BANK holds the NUBAN at. It runs its own ladder with its
     # own caps and enforces them regardless of ours, so knowing the real value lets us
     # refuse an over-limit transfer with a clear message instead of a failed payout.

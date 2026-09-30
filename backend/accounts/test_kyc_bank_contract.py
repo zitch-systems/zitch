@@ -133,10 +133,16 @@ class BankIdentityRoutingTests(TestCase):
                 self.assertFalse(response.json()["success"])
                 self.assertTrue(response.json()["pending"])
                 self.assertFalse(response.json()["otp_required"])
-                bank.assert_called_once_with(self.user.phone, "123456", attempt.tracking_id, bvn=False)
+                if path == "/api/kyc/nin/confirm/":
+                    bank.assert_called_once_with(self.user.phone, "123456", attempt.tracking_id, bvn=False)
+                else:
+                    # The first route already consumed this one-time code.
+                    bank.assert_not_called()
                 self.user.refresh_from_db()
                 self.assertFalse(self.user.nin_verified)
                 self.assertFalse(IdentityProof.objects.filter(user=self.user).exists())
+                attempt.refresh_from_db()
+                self.assertIsNotNone(attempt.otp_verified_at)
 
     def test_confirm_records_only_the_server_bound_identity(self):
         attempt = self.attempt()

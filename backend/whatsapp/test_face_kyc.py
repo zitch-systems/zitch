@@ -49,6 +49,48 @@ def _user(**flags):
 
 @override_settings(WEMA=FACE_ON)
 class FaceStepLadderTests(TestCase):
+    def test_funded_account_without_identity_proof_offers_tier1_bvn_face(self):
+        # An account callback may arrive before the OTP is completed. Its NUBAN
+        # is a funding route, not proof of BVN ownership.
+        u = _user()
+        u.bvn_verified = u.nin_verified = False
+        u.bvn_hash = ""
+        u.tier = 0
+        u.save(update_fields=["bvn_verified", "nin_verified", "bvn_hash", "tier"])
+        wallet = get_or_create_wallet(u)
+        wallet.account_number = "0100000456"
+        wallet.save(update_fields=["account_number", "updated"])
+
+        with patch.object(router, "_face_step_available", return_value=True), \
+                patch.object(router, "reply"), \
+                patch.object(router, "reply_buttons") as buttons:
+            router._start_kyc(u, MSISDN)
+            pa = PendingAction.objects.get(user=u, action_type="kyc")
+            self.assertEqual(pa.state, router.BVN_METHOD_STATE)
+            self.assertEqual(buttons.call_args.args[2],
+                             [("bvn_face", "Verify BVN with face")])
+            with patch.object(router, "_send_identity_flow", return_value=True) as flow:
+                router._advance_kyc(pa, u, MSISDN, "bvn_face")
+            flow.assert_called_once_with(pa, "bvn", fallback_state=router.FACE_ID_STATE)
+        u.refresh_from_db()
+        self.assertFalse(u.bvn_verified)
+        self.assertEqual(u.tier, 0)
+
+    @override_settings(WEMA=FACE_OFF)
+    def test_funded_account_without_face_rail_does_not_offer_tier2(self):
+        u = _user()
+        u.bvn_verified = u.nin_verified = False
+        u.bvn_hash = ""
+        u.tier = 0
+        u.save(update_fields=["bvn_verified", "nin_verified", "bvn_hash", "tier"])
+        wallet = get_or_create_wallet(u)
+        wallet.account_number = "0100000456"
+        wallet.save(update_fields=["account_number", "updated"])
+        with patch.object(router, "reply") as reply:
+            router._start_kyc(u, MSISDN)
+        self.assertIn("contact Zitch support", reply.call_args.args[1])
+        self.assertNotIn("Tier 2", reply.call_args.args[1])
+
     def test_tier2_nin_face_uses_nin_without_restarting_bvn(self):
         u = _user()
         u.nin_verified = False
