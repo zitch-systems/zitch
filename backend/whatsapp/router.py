@@ -2678,6 +2678,24 @@ def _face_step_available() -> bool:
 def _offer_bvn_verification_method(pa: PendingAction, msisdn: str, kind="bvn") -> None:
     """Tier 1 accepts either bank-verified identity, by SMS or hosted face."""
     kind = "nin" if kind == "nin" else "bvn"
+    # A callback can attach the NUBAN before the bank's OTP identity round-trip
+    # completes. The account-creation OTP cannot be started again against that
+    # NUBAN, but the hosted face check can still prove its owner's BVN. Offer
+    # only that working route so a funded Tier-0 customer is not stranded.
+    wallet = get_or_create_wallet(pa.user)
+    if wallet.account_number and not pa.user.bvn_verified:
+        kind = "bvn"
+        pa.payload["id_kind"] = kind
+        pa.payload.pop("id_purpose", None)
+        _touch(pa, state=BVN_METHOD_STATE, payload=pa.payload)
+        return reply_buttons(
+            msisdn,
+            "🪪 *Verify your BVN*\n\nYour funding account is open, but BVN "
+            "verification is not confirmed yet. Use our partner bank's secure "
+            "face check to finish Tier 1. Your funds remain available once the "
+            "bank confirms the check.",
+            [("bvn_face", "Verify BVN with face")],
+        )
     other = "bvn" if kind == "nin" else "nin"
     pa.payload["id_kind"] = kind
     pa.payload.pop("id_purpose", None)
@@ -2833,6 +2851,11 @@ def _bank_upgrade_blocks(user, step: str) -> bool:
     if step not in _UPGRADE_STEPS:
         return False
     wallet = get_or_create_wallet(user)
+    if step == "bvn" and not user.bvn_verified and _face_step_available():
+        # An existing NUBAN bars a second account-creation OTP, not the bank's
+        # independent hosted BVN face check. The latter records durable proof
+        # only after its authenticated callback succeeds.
+        return False
     # The existing-account product does not accept a second identity OTP. Treat
     # the account itself as authoritative, not only a flag written after one
     # failed submission, so a restored/adopted account can never prompt for NIN
@@ -2879,6 +2902,12 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
 
 def _kyc_bank_upgrade_notice(user, msisdn: str) -> None:
     """Keep verified checks and show the account upgrade requirements."""
+    if get_or_create_wallet(user).account_number and not user.bvn_verified:
+        _clear_actions(msisdn)
+        return reply(msisdn, "Your funding account is open, but BVN verification "
+                     "is not confirmed. The secure bank face check is temporarily "
+                     "unavailable. Your funds are safe; contact Zitch support to "
+                     "complete Tier 1. Please do not submit another account request.")
     return _offer_tier_upgrade(user, msisdn)
 
 
@@ -3218,9 +3247,13 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
     if state == BVN_METHOD_STATE:
         if low in ("use_nin", "use_bvn"):
+            if get_or_create_wallet(user).account_number and not user.bvn_verified:
+                return _offer_bvn_verification_method(pa, msisdn, "bvn")
             return _offer_bvn_verification_method(pa, msisdn, low[4:])
         kind = "nin" if pa.payload.get("id_kind") == "nin" else "bvn"
         if low in (f"{kind}_sms", "sms", "sms otp", "1"):
+            if get_or_create_wallet(user).account_number and not user.bvn_verified:
+                return _offer_bvn_verification_method(pa, msisdn, "bvn")
             pa.payload["id_method"] = "sms_otp"
             pa.payload.pop("id_purpose", None)
             if _send_identity_flow(pa, kind, fallback_state=kind):
