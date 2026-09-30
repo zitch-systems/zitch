@@ -216,14 +216,8 @@ def daily_kind_for(service: str) -> str:
 #: a customer completes them. Spelled out rather than expressed as a tier so the
 #: refusal can name the specific step that is missing, not a tier number.
 #:
-#: NIN is deliberately NOT here. It is still collected, still hashed, still
-#: reviewed, and still required for Tier 1 by `recompute_tier` — so it governs
-#: how MUCH a customer may move. It just no longer decides whether they may move
-#: anything at all. Until the Prembly NIN lookup is confirmed against a live
-#: dashboard (see utility.providers.prembly_verify_nin), the only route to
-#: nin_verified is an operator clearing the review queue by hand, and gating
-#: every first spend on that means one unattended day strands every new customer
-#: with a funded wallet they cannot spend from.
+#: NIN belongs to Tier 2, together with provider-verified liveness. Tier 1 and
+#: the first-spend floor both require BVN plus verified contact details.
 #:
 #: BVN stays: the bank name-matches it while opening the account, so it is
 #: verified in the ordinary course of signup with nobody in the loop.

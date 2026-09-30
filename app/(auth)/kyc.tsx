@@ -531,7 +531,7 @@ const Kyc = () => {
           ) : (
             <>
               <MethodCard id="bvn" icon="insurance" color={C_BVN} title="BVN verification" sub="Fastest · Bank Verification Number" badge="Recommended" done={!!status?.bvn_verified} />
-              <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="Tier 1: National Identification Number" done={!!status?.nin_verified} />
+              <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="Tier 2: National Identification Number" done={!!status?.nin_verified} />
             </>
           )}
           {status?.bvn_verified && status?.nin_verified && (

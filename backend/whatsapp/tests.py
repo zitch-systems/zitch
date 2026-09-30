@@ -1526,7 +1526,8 @@ class ProductionConfirmSafetyTests(TestCase):
         self.assertFalse(_arm_confirm(action, user))
         self.assertFalse(PendingAction.objects.filter(pk=action.pk).exists())
         self.assertNotIn("your PIN", _confirm_prompt(action))
-        self.assertIn("Zitch app", _confirm_prompt(action))
+        self.assertNotIn("Zitch app", _confirm_prompt(action))
+        self.assertIn("try this payment again", _confirm_prompt(action))
 
 
     @override_settings(

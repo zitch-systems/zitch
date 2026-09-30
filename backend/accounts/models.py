@@ -113,9 +113,9 @@ class User(AbstractUser):
 
     # KYC tiers (CBN-style; adjust to your licence). Tier requirements ascend:
     #   Tier 0 — Unverified: email + phone only (sign-up).
-    #   Tier 1 — Verified:   + BVN OR NIN verified.
-    #   Tier 2 — Enhanced:   + BVN AND NIN plus facial/liveness and address.
-    #   Tier 3 — Premium:    + a government-issued ID document verified.
+    #   Tier 1 — Verified:   + BVN verified.
+    #   Tier 2 — Enhanced:   + NIN and provider-verified facial/liveness.
+    #   Tier 3 — Premium:    + residential address verified.
     # See recompute_tier(). The per-tier caps below live on the user, so they apply
     # identically in the app and on WhatsApp.
     TIER_LIMITS = {0: Decimal("20000"), 1: Decimal("50000"),
@@ -199,7 +199,7 @@ class User(AbstractUser):
     nin_last4 = models.CharField(max_length=4, blank=True, default="")
     nin_verified = models.BooleanField(default=False)
     face_verified = models.BooleanField(default=False)
-    # Tier 2: a verified residential address. We keep the (non-sensitive) address
+    # Tier 3: a verified residential address. We keep the (non-sensitive) address
     # string for support/records and a verified flag the tier logic reads.
     address = models.CharField(max_length=255, blank=True, default="")
     address_verified = models.BooleanField(default=False)
@@ -333,7 +333,7 @@ class User(AbstractUser):
 
     def recompute_tier(self) -> None:
         """Derive the KYC tier from the verifications completed (ascending):
-        Tier 1 needs verified contact details and either BVN or NIN; Tier 2
+        Tier 1 needs verified contact details and BVN; Tier 2
         needs both identities and liveness; Tier 3 adds address verification.
 
         Both contact requirements apply to every account, however it signed up.
@@ -341,7 +341,6 @@ class User(AbstractUser):
         WhatsApp signup earns it in the chat KYC flow, because a messenger
         session outlives a SIM swap and so is not by itself proof of the
         number."""
-        has_identity = self.bvn_verified or self.nin_verified
         has_both_identities = self.bvn_verified and self.nin_verified
 
         # Both contact channels must be proven before any tier above the floor.
@@ -352,7 +351,7 @@ class User(AbstractUser):
             self.tier = 3
         elif has_both_identities and self.face_verified:
             self.tier = 2
-        elif has_identity:
+        elif self.bvn_verified:
             self.tier = 1
         else:
             self.tier = 0
@@ -448,14 +447,28 @@ def identity_has_proof(user: User, identity_type: str, identity_hash: str = "") 
 
 
 def rehydrate_verified_identity_flags(user: User) -> list[str]:
-    """Restore BVN/NIN flags from durable proof rows or verified Wema attempts.
+    """Restore BVN/NIN flags from durable ownership proof.
 
     This is deliberately one-way. A read path may repair a missing flag, but it
     must never clear a verified identity and send the customer back to BVN/NIN.
-    Older successful Wema OTP flows predate IdentityProof, so the verified
-    WemaProvisioningAttempt row is also accepted as durable evidence.
+    Historical reconciliation marked attempts verified when an account was
+    attached, without proving OTP ownership. Attempt status alone cannot restore
+    identity. Completed OTP flows now write IdentityProof atomically.
     """
-    from wallet.models import WemaFaceSession, WemaProvisioningAttempt
+    # A status request can race with a callback completing verification. Derive
+    # the tier from the locked, current row, never an earlier request's flags.
+    with transaction.atomic():
+        current = User.objects.select_for_update().get(pk=user.pk)
+        fields = _rehydrate_locked_identity_flags(current)
+        for field in ("phone_verified", "email_verified", "bvn_verified", "nin_verified",
+                      "bvn_hash", "nin_hash", "bvn_last4", "nin_last4", "face_verified",
+                      "address_verified", "tier"):
+            setattr(user, field, getattr(current, field))
+        return fields
+
+
+def _rehydrate_locked_identity_flags(user: User) -> list[str]:
+    from wallet.models import WemaFaceSession
 
     fields: list[str] = []
     for identity_type, flag, hash_field, last4_field in (
@@ -471,18 +484,6 @@ def rehydrate_verified_identity_flags(user: User) -> list[str]:
         )
         source_hash = proof.identity_hash if proof else ""
         source_last4 = proof.identity_last4 if proof else ""
-        if not source_hash:
-            attempt = (
-                WemaProvisioningAttempt.objects.filter(
-                    user=user,
-                    identity_type=identity_type,
-                    status=WemaProvisioningAttempt.VERIFIED,
-                )
-                .order_by("-updated")
-                .first()
-            )
-            source_hash = attempt.identity_hash if attempt else ""
-            source_last4 = attempt.identity_last4 if attempt else ""
         # A NUBAN can arrive before ownership is proved. Neither an account
         # number nor a pending OTP attempt is evidence that its owner passed KYC.
         # A successful Wema face callback is also durable identity proof. This
@@ -512,12 +513,15 @@ def rehydrate_verified_identity_flags(user: User) -> list[str]:
         setattr(user, last4_field, getattr(user, last4_field) or source_last4)
         setattr(user, flag, True)
         fields.extend([hash_field, last4_field, flag])
+    previous_tier = user.tier
+    user.recompute_tier()
+    if user.tier != previous_tier:
+        fields.append("tier")
     if not fields:
         return []
-    user.recompute_tier()
     try:
         with transaction.atomic():
-            user.save(update_fields=fields + ["tier"])
+            user.save(update_fields=fields)
     except IntegrityError:
         # Do not return a verified in-memory user after the ownership constraint
         # rejected the write. Keep both the DB and the response unverified.
