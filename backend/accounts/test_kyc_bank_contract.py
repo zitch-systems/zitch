@@ -28,6 +28,14 @@ PILOT = {
 BVN, NIN = "22222222222", "33333333333"
 
 
+def prembly_liveness_pass():
+    return {"status": True, "detail": "Liveliness Detected", "response_code": "00",
+            "data": {"confidence": 0.9999910736083985,
+                     "confidence_in_percentage": 99.99910736083984},
+            "verification": {"status": "VERIFIED", "reference": "661", "verification_id": 661},
+            "endpoint_name": "Face Liveliness"}
+
+
 @override_settings(WEMA=PILOT, KYC_PROVIDER="wema", PAYMENT_PROVIDER="wema")
 class BankIdentityRoutingTests(TestCase):
     def setUp(self):
@@ -303,6 +311,48 @@ class BankUpgradeContractsTests(TestCase):
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.bank_tier, 2)
 
+    @override_settings(PREMBLY={"BASE_URL": "https://kyc.example.test", "API_KEY": "test-key", "APP_ID": "test-app"})
+    def test_native_upgrade_runs_real_liveness_adapter_before_bank_and_only_then_lifts_tier(self):
+        self.user.face_verified, self.user.tier = False, 1
+        self.user.save(update_fields=["face_verified", "tier"])
+        self.wallet.bank_tier = 1
+        self.wallet.save(update_fields=["bank_tier"])
+        with patch("utility.providers.requests.post", return_value=Mock(
+                status_code=200, json=Mock(return_value=prembly_liveness_pass()))) as biometric, \
+                patch("utility.wema.upgrade_tier2", return_value={"success": True}) as bank:
+            response = self.client.post("/api/wallet/wema/upgrade-tier2/", {
+                "access_token": self.token, "bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="},
+                content_type="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        biometric.assert_called_once()
+        bank.assert_called_once_with(self.wallet.account_number, bvn=BVN, nin=NIN, live_image="ZmFrZQ==")
+        self.user.refresh_from_db()
+        self.wallet.refresh_from_db()
+        self.assertTrue(self.user.face_verified)
+        self.assertEqual(self.user.tier, 2)
+        self.assertEqual(self.wallet.bank_tier, 2)
+
+    @override_settings(PREMBLY={"BASE_URL": "https://kyc.example.test", "API_KEY": "test-key", "APP_ID": "test-app"})
+    def test_native_upgrade_rejected_liveness_never_reaches_bank_or_changes_tier(self):
+        self.user.face_verified, self.user.tier = False, 1
+        self.user.save(update_fields=["face_verified", "tier"])
+        self.wallet.bank_tier = 1
+        self.wallet.save(update_fields=["bank_tier"])
+        payload = prembly_liveness_pass()
+        payload["verification"]["status"] = "PENDING"
+        with patch("utility.providers.requests.post", return_value=Mock(
+                status_code=200, json=Mock(return_value=payload))), patch("utility.wema.upgrade_tier2") as bank:
+            response = self.client.post("/api/wallet/wema/upgrade-tier2/", {
+                "access_token": self.token, "bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="},
+                content_type="application/json")
+        self.assertEqual(response.status_code, 400, response.content)
+        bank.assert_not_called()
+        self.user.refresh_from_db()
+        self.wallet.refresh_from_db()
+        self.assertFalse(self.user.face_verified)
+        self.assertEqual(self.user.tier, 1)
+        self.assertEqual(self.wallet.bank_tier, 1)
+
     def test_tier2_pending_cannot_grant_identity_or_liveness(self):
         self.user.nin_verified = self.user.face_verified = False
         self.user.save(update_fields=["nin_verified", "face_verified"])
@@ -515,32 +565,78 @@ class BankKycEnvelopeTests(SimpleTestCase):
 @override_settings(PREMBLY={"BASE_URL": "https://kyc.example.test", "API_KEY": "test-key", "APP_ID": "test-app"},
                    WEMA={"SIMULATION": False})
 class ProviderLivenessContractTests(SimpleTestCase):
+    def passed(self):
+        return prembly_liveness_pass()
+
     def check(self, payload, status=200):
         with patch("utility.providers.requests.post", return_value=Mock(
                 status_code=status, json=Mock(return_value=payload))):
             return kyc_verify_face("ZmFrZQ==")
 
-    def test_explicit_boolean_liveness_pass_is_required(self):
-        self.assertTrue(self.check({"status": True, "data": {"liveness": True}})["success"])
-        for value in (False, "false", "true", 0, 1, None, [], {"status": True}):
-            with self.subTest(value=value):
-                self.assertFalse(self.check({"status": True, "data": {
-                    "liveness": value, "face_match": True}})["success"])
+    def test_documented_liveness_pass_uses_documented_endpoint_without_redirects(self):
+        payload = self.passed()
+        with patch("utility.providers.requests.post", return_value=Mock(
+                status_code=200, json=Mock(return_value=payload))) as provider:
+            self.assertTrue(kyc_verify_face("ZmFrZQ==")["success"])
+        self.assertEqual(provider.call_args.args[0],
+                         "https://kyc.example.test/verification/biometrics/face/liveliness_check")
+        self.assertEqual(provider.call_args.kwargs["json"], {"image": "ZmFrZQ=="})
+        self.assertEqual(provider.call_args.kwargs["headers"]["x-api-key"], "test-key")
+        self.assertIs(provider.call_args.kwargs["allow_redirects"], False)
+
+    def test_legacy_invented_schema_cannot_prove_liveness(self):
+        self.assertFalse(self.check({"status": True, "data": {"liveness": True}})["success"])
+
+    def test_confidence_requires_finite_numbers_consistent_units_and_policy_threshold(self):
+        for score, percentage in ((True, 100), (1, True), ("1", 100), (1, "100"),
+                                  (None, 100), ([], 100), (float("nan"), 100),
+                                  (1, float("inf")), (1.01, 101), (-1, -100),
+                                  (10**400, 100), (1, 10**400),
+                                  (0.989, 98.9), (1, 99), (0.99, 100)):
+            with self.subTest(score=score, percentage=percentage):
+                payload = self.passed()
+                payload["data"] = {"confidence": score, "confidence_in_percentage": percentage}
+                self.assertFalse(self.check(payload)["success"])
+        for score, percentage in ((0.99, 99), (1, 100), (0.99999, 100)):
+            with self.subTest(score=score, percentage=percentage):
+                payload = self.passed()
+                payload["data"] = {"confidence": score, "confidence_in_percentage": percentage}
+                self.assertTrue(self.check(payload)["success"])
+
+    def test_completed_specific_provider_verification_is_required(self):
+        for key, value in (("response_code", "01"), ("response_code", 0),
+                           ("endpoint_name", "Face Comparison"), ("detail", "Face Matched"),
+                           ("verification", {"status": "PENDING", "reference": "661"}),
+                           ("verification", {"status": True, "reference": "661"}),
+                           ("verification", {"status": "VERIFIED", "reference": ""}),
+                           ("verification", {"status": "VERIFIED", "reference": 661})):
+            with self.subTest(key=key, value=value):
+                payload = self.passed()
+                payload[key] = value
+                self.assertFalse(self.check(payload)["success"])
+        for key in self.passed():
+            with self.subTest(missing=key):
+                payload = self.passed()
+                del payload[key]
+                self.assertFalse(self.check(payload)["success"])
 
     def test_face_match_alone_cannot_prove_liveness(self):
         self.assertFalse(self.check({"status": True, "data": {"face_match": True}})["success"])
 
-    def test_liveness_true_cannot_override_failed_or_pending_envelope(self):
+    def test_confidence_cannot_override_failed_or_pending_envelope(self):
         for detail in ({"failed": True}, {"pending": "true"}, {"status": "Pending"},
                        {"verification": {"status": "Rejected"}}, {"errors": ["unverified"]}):
             with self.subTest(detail=detail):
-                self.assertFalse(self.check({"status": True,
-                                            "data": {"liveness": True, **detail}})["success"])
+                payload = self.passed()
+                payload["data"].update(detail)
+                self.assertFalse(self.check(payload)["success"])
 
     def test_truthy_top_level_status_cannot_pass(self):
         for value in (False, "false", "true", 0, 1, None, {"status": True}):
             with self.subTest(value=value):
-                self.assertFalse(self.check({"status": value, "data": {"liveness": True}})["success"])
+                payload = self.passed()
+                payload["status"] = value
+                self.assertFalse(self.check(payload)["success"])
 
     def test_malformed_or_incomplete_envelopes_fail_closed(self):
         for value in (None, [], "success", {}, {"status": True},
@@ -548,11 +644,13 @@ class ProviderLivenessContractTests(SimpleTestCase):
             with self.subTest(value=value):
                 self.assertFalse(self.check(value)["success"])
 
-    def test_http_failure_and_pending_cannot_pass_even_with_liveness_true(self):
-        for code in (202, 302, 400, 500):
+    def test_http_failure_and_pending_cannot_pass_even_with_confidence(self):
+        for code in (201, 202, 204, 302, 400, 500):
             with self.subTest(code=code):
-                self.assertFalse(self.check({"status": True, "data": {"liveness": True}}, code)["success"])
-        self.assertFalse(self.check({"status": True, "pending": True, "data": {"liveness": True}})["success"])
+                self.assertFalse(self.check(self.passed(), code)["success"])
+        payload = self.passed()
+        payload["pending"] = True
+        self.assertFalse(self.check(payload)["success"])
 
     def test_invalid_json_and_timeout_fail_without_leaking_request_details(self):
         import requests
