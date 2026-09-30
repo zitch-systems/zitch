@@ -156,8 +156,8 @@ class BankIdentityRoutingTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.nin_verified)
         self.assertFalse(self.user.bvn_verified)
-        self.assertEqual(self.user.tier, 1)
-        self.assertEqual(response.json()["tier"], 1)
+        self.assertEqual(self.user.tier, 0)
+        self.assertEqual(response.json()["tier"], 0)
         self.assertEqual(self.user.nin_hash, hash_identifier(NIN))
         proof = IdentityProof.objects.get(user=self.user)
         self.assertEqual(proof.source, IdentityProof.WEMA_WALLET_OTP)
@@ -642,13 +642,13 @@ class ProviderDocumentEnvelopeTests(SimpleTestCase):
 
 
 class IdentityTierModelTests(SimpleTestCase):
-    def test_either_identity_earns_tier_one_but_both_are_needed_for_tier_two(self):
+    def test_bvn_earns_tier_one_and_nin_plus_liveness_earn_tier_two(self):
         for bvn, nin, face, address, expected in (
                 (False, False, False, False, 0),
                 (True, False, False, False, 1),
-                (False, True, False, False, 1),
+                (False, True, False, False, 0),
                 (True, False, True, True, 1),
-                (False, True, True, True, 1),
+                (False, True, True, True, 0),
                 (True, True, False, True, 1),
                 (True, True, True, False, 2),
                 (True, True, True, True, 3)):
@@ -672,11 +672,12 @@ class TrustedIdentityRehydrationTests(TestCase):
         self.wallet.account_number = "0123456789"
         self.wallet.save(update_fields=["account_number"])
 
-    def test_pending_or_failed_attempt_with_existing_nuban_cannot_verify_either_identity(self):
+    def test_attempt_status_with_existing_nuban_cannot_replace_ownership_proof(self):
         from accounts.views import _kyc_state
 
         for kind, raw in (("bvn", BVN), ("nin", NIN)):
-            for status in (WemaProvisioningAttempt.PENDING, WemaProvisioningAttempt.FAILED):
+            for status in (WemaProvisioningAttempt.PENDING, WemaProvisioningAttempt.FAILED,
+                           WemaProvisioningAttempt.VERIFIED):
                 WemaProvisioningAttempt.objects.create(user=self.user, identity_type=kind,
                     identity_hash=hash_identifier(raw), identity_last4=raw[-4:],
                     tracking_id=f"{kind}-{status}", status=status,
@@ -697,7 +698,7 @@ class TrustedIdentityRehydrationTests(TestCase):
         self.assertTrue(self.user.nin_verified)
         self.assertFalse(self.user.bvn_verified)
         self.assertEqual(self.user.nin_hash, hash_identifier(NIN))
-        self.assertEqual(self.user.tier, 1)
+        self.assertEqual(self.user.tier, 0)
 
     def test_verified_face_session_remains_valid_identity_evidence(self):
         WemaFaceSession.objects.create(user=self.user, state="verified-face", identity_type="nin",
@@ -706,6 +707,31 @@ class TrustedIdentityRehydrationTests(TestCase):
         rehydrate_verified_identity_flags(self.user)
         self.assertTrue(self.user.nin_verified)
         self.assertFalse(self.user.face_verified)
+        self.assertEqual(self.user.tier, 0)
+
+    def test_stale_tier_is_recomputed_without_repeating_verified_bvn(self):
+        self.user.bvn_verified = True
+        self.user.tier = 0
+        self.user.save(update_fields=["bvn_verified", "tier"])
+        rehydrate_verified_identity_flags(self.user)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertEqual(self.user.tier, 1)
+
+    def test_stale_nin_only_tier_is_recomputed_without_clearing_nin(self):
+        self.user.nin_verified = True
+        self.user.tier = 1
+        self.user.save(update_fields=["nin_verified", "tier"])
+        rehydrate_verified_identity_flags(self.user)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.nin_verified)
+        self.assertFalse(self.user.bvn_verified)
+        self.assertEqual(self.user.tier, 0)
+
+    def test_stale_request_observes_verification_committed_by_callback(self):
+        User.objects.filter(pk=self.user.pk).update(bvn_verified=True, tier=1)
+        rehydrate_verified_identity_flags(self.user)
+        self.assertTrue(self.user.bvn_verified)
         self.assertEqual(self.user.tier, 1)
 
     def test_unfinished_face_session_is_not_identity_evidence(self):

@@ -398,7 +398,8 @@ class ChannelTests(TestCase):
     def test_production_style_channel_never_collects_a_pin_in_chat(self):
         m = "2349090000999"
         self.inbound("1", "secure-o1", msisdn=m)
-        self.assertIn("zitch app", self.last_reply(m).lower())
+        self.assertNotIn("zitch app", self.last_reply(m).lower())
+        self.assertIn("try again", self.last_reply(m).lower())
         self.assertFalse(User.objects.filter(phone="09090000999").exists())
 
     # --- onboarding (create an account from WhatsApp) ---
@@ -1056,10 +1057,9 @@ class AiIntentTests(TestCase):
             self.inbound("load 200 mtn airtime for 08099998888", "a1")
         self.assertIn("Confirm airtime", self.last_reply())
 
-    def test_freeform_airtime_fast_path_enforces_face_gate(self):
-        # Regression: the AI-prefilled airtime fast-path skipped the >=₦100k face
-        # step-up that the guided flow enforces. _run_vtu now gates every path, so a
-        # Tier-3-without-face user can't buy >=₦100k airtime by going through the AI.
+    def test_freeform_airtime_fast_path_rejects_stale_tier_without_liveness(self):
+        # A stored Tier 3 must not bypass the completed-verification ceiling.
+        # Without liveness the user derives Tier 1 and cannot buy >=₦100k airtime.
         self.user.tier = 3
         self.user.face_verified = False
         self.user.save(update_fields=["tier", "face_verified"])
@@ -1071,7 +1071,9 @@ class AiIntentTests(TestCase):
             self.inbound("load 120k mtn airtime for 08099998888", "fg1")
         self.assertIn("Confirm airtime", self.last_reply())  # fast-path jumps to confirm
         self.inbound("1234", "fg2")                          # PIN -> reaches _run_vtu
-        self.assertIn("Face verification", self.last_reply())
+        self.assertIn("Tier 1 limit", self.last_reply())
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 1)
         self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("300000"))  # not debited
 
     def test_clarify_shows_menu(self):
@@ -1270,7 +1272,8 @@ class ForexServiceTests(TestCase):
         from wallet.models import Transaction
         from wallet.services import get_or_create_wallet
         self.user.tier = 2  # per-txn ₦200k, daily transfer ₦1,000,000
-        self.user.save(update_fields=["tier"])
+        self.user.face_verified = True
+        self.user.save(update_fields=["tier", "face_verified"])
         w = get_or_create_wallet(self.user)
         w.balance = Decimal("2000000")
         w.save(update_fields=["balance"])
@@ -1526,7 +1529,8 @@ class ProductionConfirmSafetyTests(TestCase):
         self.assertFalse(_arm_confirm(action, user))
         self.assertFalse(PendingAction.objects.filter(pk=action.pk).exists())
         self.assertNotIn("your PIN", _confirm_prompt(action))
-        self.assertIn("Zitch app", _confirm_prompt(action))
+        self.assertNotIn("Zitch app", _confirm_prompt(action))
+        self.assertIn("try this payment again", _confirm_prompt(action))
 
 
     @override_settings(
@@ -2650,10 +2654,12 @@ class ChatSignupEntryTests(TestCase):
             self.assertFalse(WaOnboarding.objects.filter(msisdn=m).exists())
 
     @override_settings(WHATSAPP={**WA, "ALLOW_CHAT_SIGNUP": False})
-    def test_a_deploy_can_still_send_new_numbers_to_the_app(self):
+    def test_signup_disabled_offers_retry_support_and_existing_account_signin(self):
         m = "2349090000070"
         self.inbound("i want to open account here", "e4", msisdn=m)
-        self.assertIn("zitch app", self.last_reply(m).lower())
+        self.assertNotIn("zitch app", self.last_reply(m).lower())
+        self.assertIn("try again", self.last_reply(m).lower())
+        self.assertIn("reply *2*", self.last_reply(m).lower())
         self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
 
 
@@ -3960,7 +3966,8 @@ class PinResetTests(TestCase):
         the customer's history forever."""
         with patch("whatsapp.router.flows_live", return_value=False):
             out = self._say("reset pin")
-        self.assertIn("Zitch app", out)
+        self.assertNotIn("Zitch app", out)
+        self.assertIn("Reply *reset pin*", out)
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="setpin").exists())
 
     def _armed(self):

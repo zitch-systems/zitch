@@ -977,7 +977,7 @@ class KycStatusRepairTests(TestCase):
 
     @override_settings(WEMA={"BASE_URL": "https://alat.test", "CHANNEL_ID": "chan",
                              "KEYS": {"wallet": "wallet-key"}, "SIMULATION": False})
-    def test_kyc_status_rehydrates_flags_from_verified_wema_attempt(self):
+    def test_kyc_status_does_not_trust_legacy_verified_attempt_without_proof(self):
         from accounts.views import _kyc_state
         from wallet.models import WemaProvisioningAttempt
 
@@ -999,10 +999,10 @@ class KycStatusRepairTests(TestCase):
         state = _kyc_state(self.user)
         self.user.refresh_from_db()
 
-        self.assertTrue(state["bvn_verified"])
-        self.assertTrue(self.user.bvn_verified)
-        self.assertEqual(self.user.bvn_hash, "a" * 64)
-        self.assertEqual(self.user.bvn_last4, "8901")
+        self.assertFalse(state["bvn_verified"])
+        self.assertFalse(self.user.bvn_verified)
+        self.assertEqual(self.user.bvn_hash, "")
+        self.assertEqual(self.user.bvn_last4, "")
 
 
 class TransactionPinLockoutTests(TestCase):

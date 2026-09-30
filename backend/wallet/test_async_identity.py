@@ -144,6 +144,27 @@ class AsyncIdentityTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
 
+    def test_successful_bank_response_after_deadline_preserves_valid_submission(self):
+        submitted_at = self.attempt.expires_at - timedelta(seconds=1)
+        with patch("django.utils.timezone.now", return_value=submitted_at) as clock:
+            def delayed_accept(*args, **kwargs):
+                clock.return_value = self.attempt.expires_at + timedelta(seconds=1)
+                return {"success": True}
+
+            with patch("utility.wema.validate_wallet_otp", side_effect=delayed_accept) as bank, \
+                    patch("utility.wema.get_account_details", return_value={"success": False}):
+                response = self.client.post("/api/kyc/bvn/confirm/", {
+                    "access_token": self.token, "otp": "123456",
+                    "tracking_id": self.attempt.tracking_id}, content_type="application/json")
+            self.assertEqual(response.status_code, 202)
+            self.attempt.refresh_from_db()
+            self.assertEqual(self.attempt.otp_verified_at, submitted_at)
+            bank.assert_called_once()
+            self.callback()
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertTrue(IdentityProof.objects.filter(user=self.user, identity_type="bvn").exists())
+
     def test_invalid_acceptance_time_cannot_verify(self):
         self.attach()
         self.attempt.otp_verified_at = self.attempt.expires_at + timedelta(seconds=1)
