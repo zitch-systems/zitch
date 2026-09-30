@@ -26,6 +26,7 @@ sweep recovers missed notifications and unresolved provider results:
 Schedule frequently (see render.yaml); each phase only does work when Wema
 is the relevant rail, so it's harmless otherwise.
 """
+import logging
 import secrets
 from datetime import timedelta
 
@@ -46,6 +47,8 @@ from wallet.services import (
     self_payout_references, settle_or_refund, settle_payout,
     unmatched_reversal_evidence, wema_provisioned_wallets,
 )
+
+log = logging.getLogger("wallet")
 
 class Command(BaseCommand):
     help = "Reconcile Wema inbound deposits and unresolved payout/VAS settlement."
@@ -217,12 +220,7 @@ class Command(BaseCommand):
             if recovered is not None and recovered.account_number:
                 cache.delete(recovery_key)
                 recovered_accounts += 1
-                # This is operational completion of the account-creation request,
-                # not a new KYC assertion. User BVN/NIN flags are untouched.
-                WemaProvisioningAttempt.objects.filter(
-                    user=user, identity_type=identity_type,
-                    status=WemaProvisioningAttempt.PENDING,
-                ).update(status=WemaProvisioningAttempt.VERIFIED)
+                # Attaching an account is not evidence of OTP or identity verification.
                 self.stdout.write(
                     f"wema_account_recovered user={user.id} source={source}")
             else:
@@ -230,6 +228,19 @@ class Command(BaseCommand):
                 self.stderr.write(
                     f"wema_account_recovery_pending user={user.id} source={source} "
                     f"detail={detail}")
+
+        # Include accounts already attached by a callback whose name lookup failed.
+        from wallet.identity import finish_accepted_identity
+
+        for attempt in (WemaProvisioningAttempt.objects.filter(
+                status=WemaProvisioningAttempt.PENDING,
+                otp_verified_at__isnull=False,
+                user__wallet__account_number__gt="")
+                .order_by("otp_verified_at")[:recovery_limit]):
+            try:
+                finish_accepted_identity(attempt)
+            except Exception:  # noqa: BLE001 — one identity must not stop credits
+                log.exception("wema_identity_completion_retry_failed attempt=%s", attempt.pk)
 
         # Phase 1 — inbound funding credits.
         scanned = 0

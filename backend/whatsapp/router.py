@@ -2815,6 +2815,13 @@ def _signup_nudge(ob, message: str) -> str:
 
 def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
     outstanding = _kyc_outstanding(user)
+    from wallet.identity import accepted_identity_pending
+
+    if accepted_identity_pending(user):
+        _clear_actions(msisdn)
+        return reply(msisdn, "Your bank accepted the verification code. Your identity "
+                     "check is still processing. You do not need to submit your BVN "
+                     "or the code again. Reply *8* to check your status shortly.")
     if not outstanding:
         return _offer_tier_upgrade(user, msisdn)
     # "Let's do the rest now" is a promise, so it must not be made when every
@@ -2970,7 +2977,7 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
         _clear_actions(msisdn)
         return reply(msisdn, "⚠️ The secure entry screen didn't go through, so I won't ask for "
                              "your ID number here in the chat. Reply *8* to try again in a "
-                             "moment, or verify in the Zitch app.")
+                             "moment. You can complete verification here on WhatsApp.")
     which = step.upper()
     _touch(pa, state=step, payload=pa.payload)
     # Fallback only for deploys with NO Flows configured (dev/preview). We store

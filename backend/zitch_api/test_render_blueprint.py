@@ -70,3 +70,16 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
             for key in keys[1:] + ("WHATSAPP_QUEUE_KEY", "WHATSAPP_QUEUE_KEY_PREV"):
                 self.assertNotIn(f"- key: {key}", block,
                                  f"{service} must not carry WhatsApp credentials")
+
+    def test_notification_writers_inherit_delivery_credentials_on_both_blueprints(self):
+        for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
+            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
+            for name in ("zitch-whatsapp-worker", "zitch-maturities", "zitch-reconcile-wema"):
+                block = re.search(rf"^    name: {name}{suffix}$.*?(?=^  - type:|\Z)",
+                                  text, re.MULTILINE | re.DOTALL).group(0)
+                for key in ("RESEND_API_KEY", "RESEND_FROM_EMAIL", "TERMII_API_KEY",
+                            "TERMII_SENDER_ID", "TERMII_CHANNEL", "TERMII_BASE_URL"):
+                    self.assertIn(f"fromService: {{type: web, name: zitch-api{suffix}, envVarKey: {key}}}", block)
+                if name == "zitch-reconcile-wema":
+                    for key in ("WEMA_UPGRADE_KEY", "WEMA_UPGRADE_BASE_URL"):
+                        self.assertIn(f"fromService: {{type: web, name: zitch-api{suffix}, envVarKey: {key}}}", block)

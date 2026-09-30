@@ -98,6 +98,8 @@ class WemaProvisioningAttempt(models.Model):
     identity_hash = models.CharField(max_length=64)
     identity_last4 = models.CharField(max_length=4)
     status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
+    # OTP acceptance is separate from account issuance and identity proof.
+    otp_verified_at = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField()
     created = models.DateTimeField(auto_now_add=True)
     updated = models.DateTimeField(auto_now=True)

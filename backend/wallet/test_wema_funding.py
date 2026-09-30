@@ -261,9 +261,11 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertFalse(self.user.bvn_verified)
         self.assertEqual(self.user.tier, 1)       # unchanged, held for review
 
-    def test_unreadable_bank_name_holds_kyc_for_review(self):
+    def test_unreadable_bank_name_keeps_accepted_otp_processing(self):
         r = self._verify_after_callback({"success": False})
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.status_code, 202)
+        self.assertTrue(r.json()["pending"])
+        self.assertFalse(r.json()["otp_required"])
         self.user.refresh_from_db()
         self.assertFalse(self.user.bvn_verified)
 
