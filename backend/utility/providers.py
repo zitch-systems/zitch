@@ -9,6 +9,7 @@ movement.
 """
 import hashlib
 import logging
+import math
 import secrets
 
 import requests
@@ -704,11 +705,11 @@ def kyc_verify_nin_document(image: str) -> dict:
 
 
 def kyc_verify_face(selfie: str = "") -> dict:
-    """Require an explicit provider liveness pass for the captured image.
+    """Check a captured image with Prembly's documented liveness endpoint.
 
-    Face similarity alone is not liveness. Only JSON booleans are accepted;
-    unknown response schemas fail closed until the provider contract is verified.
-    A local camera capture or a client-supplied success flag is never evidence.
+    This is the existing native capture rail, not an interactive browser session.
+    WhatsApp must still use a provider-attested live camera workflow. Face
+    similarity and client success flags cannot substitute for a provider result.
     MOCK remains confined to the existing development/simulation policy.
     """
     if not _prembly_live():
@@ -719,20 +720,45 @@ def kyc_verify_face(selfie: str = "") -> dict:
         return {"success": False, "message": "Selfie is too large. Retake it at a lower resolution."}
     try:
         resp = requests.post(
-            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/biometrics/face",
+            f"{settings.PREMBLY['BASE_URL'].rstrip('/')}/verification/biometrics/face/liveliness_check",
             json={"image": selfie}, headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
+            allow_redirects=False,
         )
         data = resp.json()
-        detail = data.get("data") if isinstance(data, dict) else None
-        passed = (_kyc_document_response_passed(data, resp.status_code)
-                  and isinstance(detail, dict) and detail.get("liveness") is True
-                  and data.get("pending") is not True and detail.get("pending") is not True)
+        passed = _prembly_liveness_response_passed(data, resp.status_code)
         return {"success": passed, "raw": data,
                 "message": "Liveness verified" if passed else
                            "We could not confirm a live face. Please take a new live selfie."}
     except (requests.RequestException, ValueError):
         return {"success": False,
                 "message": "Face verification is temporarily unavailable. Please try again later."}
+
+
+def _prembly_liveness_response_passed(data, status_code: int) -> bool:
+    """Validate the published Face Liveliness response, never a generic pass.
+
+    Require a completed verification plus consistent numeric confidence in both
+    published units. 99% is Zitch's conservative acceptance policy, not a
+    provider-recommended threshold. Unknown/incomplete schemas fail closed.
+    """
+    if status_code != 200 or not _kyc_document_response_passed(data, status_code):
+        return False
+    detail, verification = data.get("data"), data.get("verification")
+    if (data.get("response_code") != "00"
+            or data.get("endpoint_name") != "Face Liveliness"
+            or data.get("detail") != "Liveliness Detected"
+            or not isinstance(detail, dict) or not isinstance(verification, dict)
+            or verification.get("status") != "VERIFIED"
+            or not isinstance(verification.get("reference"), str)
+            or not verification["reference"].strip()):
+        return False
+    confidence = detail.get("confidence")
+    percentage = detail.get("confidence_in_percentage")
+    # bool is an int in Python; truthy strings and non-finite JSON floats must
+    # never become verification. Both units must agree within rounding error.
+    return bool(type(confidence) in (int, float) and type(percentage) in (int, float)
+                and 0.99 <= confidence <= 1 and 99 <= percentage <= 100
+                and math.isclose(confidence * 100, percentage, rel_tol=0, abs_tol=0.01))
 
 
 def _kyc_document_response_passed(data, status_code: int) -> bool:
