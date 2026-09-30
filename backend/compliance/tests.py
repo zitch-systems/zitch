@@ -34,7 +34,8 @@ class AmlMonitoringTests(TestCase):
         # ≥₦100,000 face gate refuses outright — so the subject has to be past it for the
         # monitoring to have anything to see.
         self.user.face_verified = True
-        self.user.save(update_fields=["face_verified"])
+        self.user.address_verified = True
+        self.user.save(update_fields=["face_verified", "address_verified"])
 
     def test_a_threshold_breach_opens_a_case_with_a_30_day_deadline(self):
         # The policy: SARs filed with NFIU "within 30 days of detection".

@@ -12,7 +12,7 @@ The follow-up review found a separate mismatch: NIN alone completed the Tier-1 c
 
 Status recovery now reads the current user under a row lock and recalculates stale tiers. Historical attempts marked verified by account reconciliation cannot substitute for actual ownership proof. Completed identity flags remain saved; missing flags are restored only from durable identity proof or a successfully verified bank face session. Secure payment/form failures offer WhatsApp retry or support instead of mandatory app installation. The app labels NIN as a Tier-2 check.
 
-Follow-up targeted verification: 121 backend tests and the app typecheck passed. Full backend regression verification is in progress; this follow-up must pass the complete required CI before merging.
+Follow-up targeted verification: 121 identity/payment backend checks and 66 secure-handoff checks passed. App typecheck and 256 app tests passed in CI. Full regression testing exposed higher-tier fixtures without the required address or liveness proof; those fixtures were corrected, and the stale-tier airtime regression now asserts rejection at the derived Tier-1 ceiling. The final complete CI must pass before merging; its results and release decision are recorded in [PR #524](https://github.com/zitch-systems/zitch/pull/524).
 
 Render still reports billing suspension on API, worker, connector, databases, and jobs in the follow-up session. The latest retained API deployment is `c00466d940425599452cced0715b291f1a466940`, before PR #523. Resolve billing before deployment and live customer/payment verification. A retained deployment labeled live does not mean its suspended service is operating.
 
