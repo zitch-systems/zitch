@@ -68,6 +68,16 @@ jobs:
       - run: pip install -r requirements.txt
       - name: System check
         run: python manage.py check
+      # Exercise Django's static production-setting checks with production-shaped
+      # backends. These URLs are never contacted by `check`; live DB/Redis reachability
+      # remains the deployed /readyz gate.
+      - name: Production deployment setting checks
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+          REDIS_URL: redis://localhost:6379/0
+          DJANGO_REQUIRE_SHARED_CACHE: "true"
+          DJANGO_ALLOWED_HOSTS: api.zitch.ng
+        run: python manage.py check --deploy --fail-level WARNING
       - name: Migrations are complete
         run: python manage.py makemigrations --check --dry-run
       - name: Migrate + seed (SQLite)
@@ -75,6 +85,58 @@ jobs:
           python manage.py migrate --no-input
           python manage.py seed_plans
       - name: Tests
+        run: python manage.py test
+
+  backend-postgres:
+    name: Backend (PostgreSQL)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: zitch_ci
+          POSTGRES_PASSWORD: zitch-ci-local-password
+          POSTGRES_DB: zitch_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zitch_ci -d zitch_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Deliberately local, non-production credentials. Unlike the SQLite lane,
+      # this job boots with the production database engine so PostgreSQL locks,
+      # constraints and transaction behavior are actually exercised.
+      DJANGO_SECRET_KEY: "ci-only-postgres-secret-not-used-in-production-000"
+      DJANGO_DEBUG: "false"
+      DJANGO_ALLOWED_HOSTS: "testserver,localhost"
+      DJANGO_REQUIRE_SHARED_CACHE: "false"
+      # The job's loopback-only service container does not offer TLS. Production
+      # keeps settings.py's secure default (SSL required when DEBUG is false).
+      DJANGO_DB_SSL: "false"
+      DATABASE_URL: "postgresql://zitch_ci:zitch-ci-local-password@127.0.0.1:5432/zitch_ci"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Migration consistency (PostgreSQL)
+        run: |
+          python manage.py makemigrations --check --dry-run
+          python manage.py migrate --no-input
+          python manage.py migrate --check
+      - name: Tests (PostgreSQL)
         run: python manage.py test
 
   app:

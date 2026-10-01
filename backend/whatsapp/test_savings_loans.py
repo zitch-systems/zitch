@@ -400,3 +400,70 @@ class SavingsLoanFlowTests(FlowContractMixin, TestCase):
             self.assertIn("cannot", self.message())
             self.assertNotIn("Zitch app", self.message())
             self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+
+    @override_settings(DEBUG=False, TESTING=False, WEMA={"SIMULATION": False})
+    def test_live_deploy_refuses_new_local_products_before_collecting_details(self):
+        for command, product in (("new savings", "Fixed savings"),
+                                 ("repay loan", "Loans"),
+                                 ("convert", "Currency exchange")):
+            with self.subTest(command=command):
+                router._clear_actions(MSISDN)
+                self.send_flow.reset_mock()
+                self.say(command)
+                self.assertIn("not available yet", self.message())
+                self.assertIn(product, self.message())
+                self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+                self.send_flow.assert_not_called()
+
+    @override_settings(DEBUG=False, TESTING=False, WEMA={"SIMULATION": False})
+    def test_live_deploy_preserves_existing_obligation_status_without_claiming_a_write(self):
+        plan = FixedSave.objects.create(
+            user=self.user, principal=Decimal("1000"), interest=Decimal("10"),
+            duration_days=30, rate=Decimal("0.12"), reference="SAVE-EXISTING",
+            matures_at=timezone.now() - timedelta(days=1),
+        )
+        loan = self.loan()
+
+        with patch.object(savings_loans, "settle_user_maturities") as settle:
+            self.say("savings")
+        settle.assert_not_called()
+        self.assertIn("payout status unconfirmed", self.message().lower())
+        self.assertIn("contact support", self.message().lower())
+        self.assertFalse(Transaction.objects.filter(reference=f"{plan.reference}-M").exists())
+
+        self.say(f"savings plan {plan.pk}")
+        self.assertIn("payout status unconfirmed", self.message().lower())
+        self.assertIn("support@zitch.ng", self.message())
+
+        self.say("my loan")
+        self.assertIn(loan.reference, self.message())
+        self.assertIn("contact support", self.message().lower())
+        self.assertNotIn("confirm privately with your PIN", self.message())
+
+    def test_product_disabled_after_quote_ends_stale_card_before_pin(self):
+        pa = self.savings()
+        token = flows.sign_flow_token(pa)
+        with override_settings(DEBUG=False, TESTING=False, WEMA={"SIMULATION": False}):
+            opened = flows.handle_flow_request({"action": "INIT", "flow_token": token})
+        self.assertIn("not available yet", opened["data"]["message"])
+        self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
+
+        direct = self.savings()
+        with override_settings(DEBUG=False, TESTING=False, WEMA={"SIMULATION": False}), \
+             patch("common.http.evaluate_transaction_pin") as pin:
+            submitted = flows.handle_flow_request({
+                "action": "data_exchange", "flow_token": flows.sign_flow_token(direct),
+                "data": {"pin": "123456"},
+            })
+        pin.assert_not_called()
+        self.assertIn("not available yet", submitted["data"]["message"])
+        self.assertFalse(PendingAction.objects.filter(pk=direct.pk).exists())
+        self.assertFalse(FixedSave.objects.exists())
+
+    @override_settings(DEBUG=False, TESTING=False, WEMA={"SIMULATION": False})
+    def test_live_menu_does_not_advertise_new_unavailable_products(self):
+        menu = router.menu_text()
+        self.assertNotIn("Convert currency", menu)
+        self.assertIn("Existing savings", menu)
+        self.assertIn("Existing loan", menu)
+        self.assertNotIn("loan / repayment", menu)

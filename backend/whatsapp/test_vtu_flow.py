@@ -145,6 +145,25 @@ class TheLadderIsOneSessionTests(TestCase):
         self.assertEqual(resp["screen"], VTU_AIRTIME)
         self.assertIn("phone number", resp["data"]["error"])
 
+    def test_flow_rejects_destinations_the_app_endpoint_rejects(self):
+        for phone in ("+447911123456", "0801abc0672", "080312345678"):
+            with self.subTest(phone=phone):
+                pa = _vtu_action(
+                    self.user, vtu_kind="airtime", vtu_step="details", net="1")
+                resp = _submit(pa, {"amount": "500", "phone": phone})
+                self.assertEqual(resp["screen"], VTU_AIRTIME)
+                self.assertIn("phone number", resp["data"]["error"])
+                pa.refresh_from_db()
+                self.assertEqual(pa.state, FLOW_VTU_STATE)
+                pa.delete()
+
+    def test_flow_normalizes_supported_nigerian_formats(self):
+        pa = _vtu_action(self.user, vtu_kind="airtime", vtu_step="details", net="1")
+        resp = _submit(pa, {"amount": "500", "phone": "+234 (803) 123-4567"})
+        self.assertEqual(resp["screen"], PIN_CHAIN)
+        pa.refresh_from_db()
+        self.assertEqual(pa.payload["phone"], "08031234567")
+
     def test_an_account_with_no_pin_is_told_before_the_pad_appears(self):
         self.user.transaction_pin = ""
         self.user.save(update_fields=["transaction_pin"])
@@ -178,6 +197,56 @@ class ChatKeepsGoingThroughTheAiTests(TestCase):
         self.assertTrue(handled)
         form.assert_not_called()
         self.assertEqual(PendingAction.objects.get(msisdn=MSISDN).state, "pin")
+
+    def test_chat_rejects_invalid_destination_before_confirmation(self):
+        for phone in ("+447911123456", "0801abc0672", "080312345678"):
+            with self.subTest(phone=phone), patch.object(router, "_arm_confirm") as arm, \
+                    patch.object(router, "reply"):
+                router._begin_airtime(self.user, MSISDN, 2000, phone, "MTN")
+                arm.assert_not_called()
+                pa = PendingAction.objects.get(msisdn=MSISDN)
+                self.assertEqual(pa.state, "phone")
+                self.assertNotIn("phone", pa.payload)
+                pa.delete()
+
+    def test_chat_normalizes_supported_nigerian_formats(self):
+        with patch.object(router, "_arm_confirm", return_value=True), \
+                patch.object(router, "_send_confirm"):
+            router._begin_airtime(
+                self.user, MSISDN, 2000, "+234 (803) 123-4567", "Airtel")
+        pa = PendingAction.objects.get(msisdn=MSISDN)
+        self.assertEqual(pa.payload["phone"], "08031234567")
+        # The explicit choice remains authoritative for ported numbers.
+        self.assertEqual(pa.payload["net"], "3")
+
+    def test_stale_invalid_confirm_cannot_debit_or_call_provider(self):
+        cases = (
+            ("airtime", router._exec_airtime, {
+                "amount": "500", "net": "1", "phone": "+447911123456",
+                "meta": {"phone": "+447911123456", "network": "1"},
+            }),
+            ("data", router._exec_data, {
+                "net": "1", "phone": "0801abc0672", "plan_code": "mtn-1gb",
+                "plan_name": "1GB", "price": "500",
+                "meta": {"phone": "0801abc0672", "network": "1"},
+            }),
+        )
+        for action_type, executor, payload in cases:
+            with self.subTest(action_type=action_type):
+                pa = PendingAction.objects.create(
+                    user=self.user, msisdn=MSISDN, action_type=action_type,
+                    state=FLOW_PIN_STATE, payload=payload,
+                    expires_at=timezone.now() + timedelta(minutes=2),
+                )
+                with patch.object(router, "run_provider_purchase") as purchase, \
+                        patch.object(router, "vtu_purchase") as provider, \
+                        patch.object(router, "reply"):
+                    outcome = executor(pa, self.user, MSISDN)
+                self.assertEqual(outcome.status, router.OUTCOME_FAILED)
+                self.assertIn("No money was taken", outcome)
+                purchase.assert_not_called()
+                provider.assert_not_called()
+                self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
 
     def test_recharging_a_named_person_asks_for_the_number(self):
         """"recharge tobi 2k" used to top up the SENDER's own line: the name was

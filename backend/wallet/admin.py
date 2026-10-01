@@ -6,6 +6,7 @@ from .models import (
     ReversalEvidenceObservation,
     ReversalEvidenceResolution,
     Transaction,
+    TransactionAlertDelivery,
     Wallet,
 )
 from .services import attach_existing_bank_account, is_demo_account
@@ -115,6 +116,21 @@ class _ReadOnlyMoneyAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(TransactionAlertDelivery)
+class TransactionAlertDeliveryAdmin(_ReadOnlyMoneyAdmin):
+    """Delivery evidence and stuck work, without message/contact payloads."""
+
+    list_display = ("id", "ledger_reference", "channel", "reversal", "state", "attempts",
+                    "error_code", "next_attempt_at", "updated")
+    list_filter = ("state", "channel", "reversal")
+    search_fields = ("transaction__reference",)
+    readonly_fields = [field.name for field in TransactionAlertDelivery._meta.fields]
+
+    @admin.display(description="Reference")
+    def ledger_reference(self, obj):
+        return obj.transaction.reference
 
 
 @admin.register(ReversalEvidence)

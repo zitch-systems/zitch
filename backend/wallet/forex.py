@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 
 from common.http import (daily_limit_error, send_limit_error, unverified_error,
                          velocity_exceeded)
+from common.products import MESSAGES, product_available
 
 from django.db import transaction as db_transaction
 from django.utils import timezone
@@ -112,6 +113,8 @@ def _assert_conversion_allowed(user, frm: str, sell: Decimal, ngn_equiv=None) ->
 def create_fx_quote(user, frm: str, to: str, sell_amount) -> FxQuote:
     """Validate the pair + funds, get a provider rate, apply the margin, and
     persist a time-boxed quote. Raises FxError on anything the user must fix."""
+    if not product_available("fx"):
+        raise FxError(MESSAGES["fx"])
     frm, to = frm.upper(), to.upper()
     if frm not in SUPPORTED or to not in SUPPORTED or frm == to:
         raise FxError("Pick two different supported currencies (NGN, USD, GBP, CAD).")
@@ -180,6 +183,7 @@ def _ngn_equivalent(currency: str, amount: Decimal):
         return None
 
 
+@db_transaction.atomic
 def execute_fx(user, quote_ref: str, idempotency_key: str = "", channel: str = "") -> FxQuote:
     """Settle a quote within its TTL: debit source, credit target, write the
     ledger pair. The quote is locked + single-use, so a retry/race can't convert
@@ -190,6 +194,11 @@ def execute_fx(user, quote_ref: str, idempotency_key: str = "", channel: str = "
     contract execute_payout and run_provider_purchase use. Without it a chat
     conversion sends the in-thread "✅ Converted…" line AND a separate debit
     alert (and a credit alert) for one movement the customer already saw."""
+    if not product_available("fx"):
+        raise FxError(MESSAGES["fx"])
+    # Only the deliberate simulation rail is available. Serialize source-wallet
+    # funds and daily caps across all quotes, not just each quote independently.
+    Wallet.objects.select_for_update().get(user=user)
     quote = FxQuote.objects.select_for_update().filter(quote_ref=quote_ref, user=user).first()
     if quote is None:
         raise FxError("Quote not found — please request a fresh one.")

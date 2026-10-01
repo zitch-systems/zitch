@@ -9,6 +9,7 @@ from decimal import Decimal
 from django.db import IntegrityError, transaction as db_transaction
 from django.utils import timezone
 
+from common.products import require_product
 from wallet.models import Transaction, Wallet
 from wallet.services import (DuplicateTransaction, InsufficientFunds, credit,
                              make_reference, with_idempotency_fingerprint)
@@ -23,6 +24,7 @@ def lock(user, principal, days: int, idempotency_key: str = "") -> FixedSave:
     With an `idempotency_key`, a duplicate request raises DuplicateTransaction
     (nothing locked), so a retry/race can't lock twice or create two plans.
     """
+    require_product("savings")
     principal = Decimal(str(principal))
     interest = FixedSave.quote(principal, days)
     rate = FixedSave.RATES.get(days, Decimal("0"))
@@ -62,6 +64,7 @@ def pay_out(plan: FixedSave) -> FixedSave | None:
     (e.g. the cron job overlapping) can't pay twice. Returns the plan if this
     call performed the payout, else None.
     """
+    require_product("savings")
     plan = FixedSave.objects.select_for_update().get(pk=plan.pk)
     if plan.paid_out:
         return None

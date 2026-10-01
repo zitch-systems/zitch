@@ -372,7 +372,9 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         raise PayoutError("limit_exceeded", str(exc))
 
     # Wema per-user-balance model: debit the sender's own NUBAN.
-    sender_source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
+    # Use the same freshly read account that passed the source-readiness checks.
+    # user.wallet may be a cached copy from before provisioning/account repair.
+    sender_source = wallet.account_number or ""
     result = payout_send(amount, txn.reference, narration,
                          bank.bank_code, account_number, name, bank_name=bank.name,
                          source_account=sender_source)

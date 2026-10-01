@@ -2762,10 +2762,76 @@ def resolve_reversal_quarantine(reference: str, *, disposition: str, reason: str
     }
 
 
-@db_transaction.atomic
 def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "",
-             channel: str = "") -> tuple[Transaction, Transaction]:
-    """Move funds between two Zitch wallets atomically.
+             channel: str = "") -> tuple[Transaction, Transaction | None]:
+    """Send to an owned partner-bank account; credit it only from bank evidence.
+
+    Live customer balances are held in individual NUBANs. Moving two local
+    balances alone would leave the recipient with no bank cash to spend, so the
+    live path uses the same durable payout as an ordinary bank transfer. The
+    recipient's authenticated deposit callback/history posts the inbound row.
+    Local wallet transfers are restricted to the existing fake-money policy.
+    """
+    from utility import wema
+    from utility.providers import mock_disabled_in_prod, payout_resolve_account
+    from transfers.models import Bank
+    from transfers.services import PayoutError, execute_payout
+
+    if not wema.wema_live():
+        if mock_disabled_in_prod():
+            raise PayoutError(
+                "rail_unavailable", "Transfers are temporarily unavailable. No money was taken.")
+        return _local_transfer(sender, recipient, amount, note=note,
+                               idempotency_key=idempotency_key, channel=channel)
+
+    # Re-read mutable identity/account state, rather than a reverse relation
+    # cached before a callback finished account setup in this request.
+    from django.contrib.auth import get_user_model
+
+    recipient = get_user_model().objects.get(pk=recipient.pk)
+    recipient_wallet = Wallet.objects.filter(user_id=recipient.pk).first()
+    source = Wallet.objects.filter(user_id=sender.pk).first()
+    if source is None or not re.fullmatch(r"\d{10}", source.account_number or "") or is_demo_account(source):
+        raise PayoutError(
+            "source_missing", "Finish your account setup before sending money. No money was taken.")
+    if (not recipient.is_active or not recipient.bvn_verified
+            or not recipient.phone_verified or not recipient.email_verified
+            or recipient_wallet is None
+            or not re.fullmatch(r"\d{10}", recipient_wallet.account_number or "")
+            or is_demo_account(recipient_wallet)):
+        raise PayoutError(
+            "recipient_unavailable", "This recipient's Zitch account is not ready to receive this transfer. No money was taken.")
+    bank = Bank.objects.filter(code="wema", active=True).exclude(bank_code="").first()
+    if bank is None:
+        raise PayoutError(
+            "rail_unavailable", "Transfers are temporarily unavailable. No money was taken.")
+    resolved = payout_resolve_account(recipient_wallet.account_number, bank.bank_code)
+    resolved_name = str(resolved.get("name") or "").strip()
+    if (not resolved.get("success") or resolved.get("mock")
+            or str(resolved.get("bank_code") or bank.bank_code).strip() != bank.bank_code.strip()
+            or wema.holder_name_mismatch(recipient.get_full_name(), resolved_name)):
+        raise PayoutError(
+            "recipient_unavailable", "We could not confirm this recipient's account with our partner bank. No money was taken.")
+    # Account setup may have changed while name enquiry was in flight. Never
+    # send to an account that is no longer attached to the confirmed recipient.
+    if not Wallet.objects.filter(
+            pk=recipient_wallet.pk, user_id=recipient.pk,
+            account_number=recipient_wallet.account_number,
+            user__is_active=True, user__bvn_verified=True,
+            user__phone_verified=True, user__email_verified=True).exists():
+        raise PayoutError(
+            "recipient_unavailable", "This recipient's account changed. Review it again before sending. No money was taken.")
+    outgoing = execute_payout(
+        sender, Decimal(str(amount)), recipient_wallet.account_number, bank,
+        resolved_name, note=note, idempotency_key=idempotency_key, channel=channel,
+    )
+    return outgoing, None
+
+
+@db_transaction.atomic
+def _local_transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "",
+                    channel: str = "") -> tuple[Transaction, Transaction]:
+    """Move simulated funds between two Zitch wallets atomically.
 
     Both wallet rows are locked (in a stable order to avoid deadlocks) so the
     debit and credit either both happen or neither does. Raises InsufficientFunds
@@ -2887,6 +2953,14 @@ def provision_wema_account(user, *, account_number: str, account_name: str = "",
             log.warning("wema_account_persist_conflict user=%s account=%s source=%s",
                         user.id, number, source)
             return wallet, "conflict:owned"
+        # A new bank-issued account begins recovery at this wallet's creation;
+        # pre-existing/imported attachments must retain an opening review flag.
+        from .models import BankHistoryCheckpoint
+
+        BankHistoryCheckpoint.objects.get_or_create(
+            wallet=wallet, account_number=number,
+            defaults={"opening_review_required": source not in {"otp", "callback"}},
+        )
     log.info("wema_account_provisioned user=%s account=%s source=%s", user.id, number, source)
     return wallet, "provisioned"
 
@@ -2920,10 +2994,10 @@ def sync_bank_tier(wallet) -> int:
 def bank_spent_today(user) -> Decimal:
     """Total already sent OUT of the NUBAN today, against the bank's daily cap.
 
-    Counts bank payouts only (``meta.bank``, the same predicate the authorisation
-    callback uses) — a VTU purchase settles with the VAS provider and never debits
-    the NUBAN, so counting it would restrict the customer for spend the bank never
-    saw.
+    Counts payouts and partner-bank VAS purchases: both debit the customer's
+    NUBAN. Retired provider purchases and internal evidence do not consume that
+    bank limit. Each original outbound ledger row is counted once; inbound bank
+    history used to confirm it cannot add a second spend.
 
     PENDING rows count: a payout in flight can still settle, and excluding it would
     let a burst of concurrent transfers each see an empty day. FAILED rows do not —
@@ -2933,10 +3007,20 @@ def bank_spent_today(user) -> Decimal:
     """
     start = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
     rows = Transaction.objects.filter(
-        user=user, direction=Transaction.OUT, created__gte=start,
+        user=user, direction=Transaction.OUT, currency="NGN", created__gte=start,
         transaction_status__in=(Transaction.PENDING, Transaction.SUCCESS),
     ).only("amount", "meta")
-    return sum((r.amount for r in rows if is_bank_payout(r)), Decimal("0"))
+    def debits_bank(row):
+        meta = row.meta if isinstance(row.meta, dict) else {}
+        if meta.get("internal_evidence") or meta.get("internal_movement"):
+            return False
+        partner_vas = (is_vas_purchase(row)
+                       and (meta.get("vas_rail") == "wema"
+                            or (meta.get("provider_purchase") is True
+                                and not meta.get("vas_rail"))))
+        return is_bank_payout(row) or partner_vas
+
+    return sum((r.amount for r in rows if debits_bank(r)), Decimal("0"))
 
 
 def bank_spend_error(user, amount) -> str | None:
@@ -2956,6 +3040,16 @@ def bank_spend_error(user, amount) -> str | None:
     wallet = Wallet.objects.filter(user=user).only("bank_tier", "account_number").first()
     if wallet is None or not wallet.account_number:
         return None
+    if wema_provider.wema_live():
+        from .models import BankHistoryCheckpoint
+
+        checkpoint, _ = BankHistoryCheckpoint.objects.get_or_create(
+            wallet=wallet, account_number=wallet.account_number)
+        if checkpoint.opening_review_required:
+            return (
+                "Your bank account balance needs review before you can spend. "
+                "Please contact Zitch Support. Incoming transfers and refunds "
+                "can still reach your account.")
     bank_tier = wallet.bank_tier or 1
     cap = wema_provider.bank_tier_limit(bank_tier, "daily_spend")
     if cap is None:

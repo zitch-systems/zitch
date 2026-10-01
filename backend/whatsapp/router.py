@@ -22,10 +22,13 @@ from django.core.cache import cache
 from django.db import transaction as db_transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from django.utils.crypto import salted_hmac
 
 from common.http import (MIN_AIRTIME, MIN_ELECTRICITY, MIN_TRANSFER, daily_limit_error,
                          evaluate_transaction_pin, mask_pii, send_limit_error,
                          velocity_exceeded)
+from common.phones import normalize_nigerian_mobile
+from common.products import MESSAGES as PRODUCT_MESSAGES, product_available
 from transfers.bank_aliases import aliases_for, slug_for_alias
 from transfers.models import Bank
 from transfers.views import _names_match, clean_nickname
@@ -110,6 +113,16 @@ def _more_info_block() -> str:
         lines.append(f"🌐 More information: {L['WEBSITE']}")
     if L.get("APP"):
         lines.append(f"📲 Get the Zitch app: {L['APP']}")
+    support = _support_block()
+    if support:
+        lines.extend(support.splitlines())
+    return "\n".join(lines)
+
+
+def _support_block() -> str:
+    """Configured human recovery routes, without sending someone to another product."""
+    L = _links()
+    lines = []
     wa = _support_wa_link()
     if wa:
         lines.append(f"💬 Customer care: {wa}")
@@ -190,8 +203,15 @@ MENU_BODY = (
 def menu_text() -> str:
     """The menu plus the links footer. Built per call, not frozen at import, so
     the links follow settings (which deployments and tests both override)."""
+    body = MENU_BODY
+    if not product_available("fx"):
+        body = body.replace("5️⃣  💱 Convert currency\n", "")
+    if not product_available("savings"):
+        body = body.replace("1️⃣3️⃣  🏦 Savings\n", "1️⃣3️⃣  🏦 Existing savings\n")
+    if not product_available("loans"):
+        body = body.replace("1️⃣4️⃣  💳 My loan / repayment\n", "1️⃣4️⃣  💳 Existing loan\n")
     block = _more_info_block()
-    return MENU_BODY + (f"\n\n{block}" if block else "")
+    return body + (f"\n\n{block}" if block else "")
 UNLINKED = (
     "👋 Welcome to *Zitch* - banking right here on WhatsApp.\n\n"
     "Reply *1* to create a new account, or *2* if you already have one."
@@ -817,8 +837,9 @@ def _send_email_flow(pa: PendingAction, step: str) -> bool:
                                       "label": "Email address", "error": ""}
         body = "Enter your email privately - it never appears in this chat."
     else:
+        destination = pa.payload.get("code_target_label") or "your email address"
         screen, data = CODE_SCREEN, {
-            "summary": f"Enter the 6-digit code we sent to {pa.user.email}",
+            "summary": f"Enter the 6-digit code we sent to {destination}",
             "label": "Email code", "error": ""}
         body = "Enter the code privately - it never appears in this chat."
     res = send_flow(
@@ -928,6 +949,19 @@ def _has_live_funds(pa: PendingAction, user, *, notify: bool = True) -> bool:
     return False
 
 
+_ACTION_PRODUCTS = {
+    "convert": "fx",
+    "savings_create": "savings",
+    "loan_repay": "loans",
+}
+
+
+def _unavailable_product_for_action(pa: PendingAction) -> str:
+    """Customer message when an old action belongs to a disabled local product."""
+    product = _ACTION_PRODUCTS.get(pa.action_type, "")
+    return PRODUCT_MESSAGES[product] if product and not product_available(product) else ""
+
+
 def _arm_confirm(pa: PendingAction, user) -> bool:
     """Move a money flow to its confirm step. Preference, most-secure first:
 
@@ -941,6 +975,11 @@ def _arm_confirm(pa: PendingAction, user) -> bool:
 
     Whichever rung is armed, the deep-link approval (biometric in the app) is
     offered alongside it - see _approve_link_line."""
+    unavailable = _unavailable_product_for_action(pa)
+    if unavailable:
+        _clear_actions(pa.msisdn)
+        reply(pa.msisdn, unavailable)
+        return False
     if not _has_live_funds(pa, user):
         return False
 
@@ -1188,7 +1227,7 @@ def _flow_deadline(state: str, payload: dict | None = None):
     grace to actually type it; once it is consumed and popped from the payload, the
     ordinary clocks resume for the PIN pair that follows.
     """
-    for key in ("pin_reset_otp_exp", "id_otp_exp"):
+    for key in ("pin_reset_otp_exp", "id_otp_exp", "code_exp"):
         raw = (payload or {}).get(key)
         if not raw:
             continue
@@ -1516,6 +1555,10 @@ def handle_inbound(msisdn: str, text: str) -> None:
             return savings_loans.show_plan(user, msisdn, number)
         return savings_loans.show_savings(user, msisdn, page=number, history=kind == "history")
     if low in ("withdraw savings", "cancel savings", "top up savings", "change savings"):
+        if not product_available("savings"):
+            support = _support_block()
+            return reply(msisdn, PRODUCT_MESSAGES["savings"]
+                         + (f"\n\n{support}" if support else ""))
         return reply(msisdn, "Fixed Save plans cannot be withdrawn early, topped up or changed. "
                      "Matured plans pay into your wallet automatically. Reply savings to check your plans "
                      "or new savings to create a separate plan.")
@@ -1704,11 +1747,15 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
             # Burn it. A code arriving from a number that is not the account's is
             # the exact shape of a leaked or shoulder-surfed code being tried from
             # an attacker's WhatsApp; leaving it live would let them keep trying
-            # from other numbers. The owner can mint a fresh one in the app.
+            # from other numbers. The owner can start the private sign-in flow
+            # from the registered number without installing another product.
             link.link_code = ""
             link.save(update_fields=["link_code"])
-            return reply(msisdn, "For your security, send this code from the phone number on your Zitch account. "
-                                 "That code has now expired - generate a new one in the Zitch app.")
+            support = _support_block()
+            message = ("For your security, send this code from the phone number on your Zitch account. "
+                       "That code has now expired. From the registered number, reply *2* to sign in "
+                       "securely here. If you no longer use that number, contact support.")
+            return reply(msisdn, message + (f"\n\n{support}" if support else ""))
         # Re-linking is a sign-in to this banking channel, not permission to
         # leave an older phone connected forever. Retire the user's previous
         # active channel before activating the freshly proved one.
@@ -3048,6 +3095,31 @@ def _kyc_email_rail_error(user) -> str:
             "Please contact support - this is on our side, not yours.")
 
 
+def _email_challenge_target(user) -> str:
+    """Keyed binding between an email challenge and the inbox it reached.
+
+    An email code proves control of one address, not of whichever address happens
+    to be on the account when the code is later entered.  Keep only a keyed digest
+    in the action payload so the binding does not add another plaintext copy of the
+    customer's email to the flow state.
+    """
+    email = str(user.email or "").strip().lower()
+    return salted_hmac(
+        "whatsapp.kyc.email-target.v1",
+        f"{user.pk}:{email}",
+        algorithm="sha256",
+    ).hexdigest()
+
+
+def _masked_email(email: str) -> str:
+    """A useful destination hint without copying the full address into state."""
+    local, sep, domain = str(email or "").strip().partition("@")
+    if not sep:
+        return "your email address"
+    shown = local[:1] + ("•••" if len(local) > 1 else "")
+    return f"{shown}@{domain}"
+
+
 def _kyc_mail_code(pa: PendingAction, user) -> bool:
     """Mint, send and arm a fresh email code. False if the provider refused it.
 
@@ -3075,6 +3147,8 @@ def _kyc_mail_code(pa: PendingAction, user) -> bool:
     pa.payload["code_hash"] = make_password(code)
     pa.payload["code_exp"] = (timezone.now() + timedelta(minutes=10)).isoformat()
     pa.payload["code_attempts"] = 0
+    pa.payload["code_target"] = _email_challenge_target(user)
+    pa.payload["code_target_label"] = _masked_email(user.email)
     return True
 
 
@@ -3125,8 +3199,14 @@ def kyc_flow_email_address(pa: PendingAction, email: str) -> tuple[str, str]:
         _clear_actions(pa.msisdn)
         reply(pa.msisdn, rail_error)
         return "stop", "Email verification is unavailable right now - see the chat."
+    changed = str(user.email or "").strip().lower() != email
     user.email = email
-    user.save(update_fields=["email"])
+    if changed:
+        # A previously verified flag belongs to the previous inbox.  This path is
+        # normally reached only for an unverified user, but keeping the invariant
+        # here prevents a stale Flow or support edit from carrying proof across.
+        user.email_verified = False
+    user.save(update_fields=["email", "email_verified"] if changed else ["email"])
     if not _kyc_mail_code(pa, user):
         _clear_actions(pa.msisdn)
         reply(pa.msisdn, "⚠️ We couldn't send the email just now. Please try again shortly.")
@@ -3143,11 +3223,53 @@ def kyc_flow_email_address(pa: PendingAction, email: str) -> tuple[str, str]:
 
 
 def kyc_flow_email_code(pa: PendingAction, code: str) -> tuple[str, str]:
-    user, msisdn = pa.user, pa.msisdn
+    msisdn = pa.msisdn
     code = "".join(ch for ch in str(code) if ch.isdigit())
     if not re.fullmatch(r"\d{6}", code):
         return "retry", "That should be exactly 6 digits."
-    verdict = _kyc_code_check(pa, code)
+
+    # Flow exchanges can overlap (a double tap, a retry from Meta, or the same
+    # card open on two devices).  Consume the attempt and apply the verified flag
+    # under one action -> user lock, so stale in-memory payloads cannot lose an
+    # attempt and one code cannot prove a different address.
+    with db_transaction.atomic():
+        locked = PendingAction.objects.select_for_update().filter(
+            pk=pa.pk, action_type="kyc"
+        ).first()
+        if locked is None or locked.expired:
+            return "stop", "This verification has ended. Reply 8 in the chat to start again."
+        user = User.objects.select_for_update().get(pk=locked.user_id)
+        target = str(locked.payload.get("code_target") or "")
+        if (not target
+                or not secrets.compare_digest(target, _email_challenge_target(user))):
+            for key in ("code_hash", "code_exp", "code_attempts", "code_target",
+                        "code_target_label"):
+                locked.payload.pop(key, None)
+            locked.save(update_fields=["payload"])
+            changed = True
+            verdict = "changed"
+        elif not locked.payload.get("code_hash"):
+            # A concurrent exchange already consumed this bearer credential.
+            changed = False
+            verdict = "used"
+        else:
+            changed = False
+            verdict = _kyc_code_check(locked, code)
+            locked.save(update_fields=["payload"])
+            if verdict == "ok":
+                user.email_verified = True
+                user.save(update_fields=["email_verified"])
+
+    # Keep callers that render a retry from the object they already hold in sync
+    # with the row-locked attempt count.
+    pa.payload = locked.payload
+    if changed:
+        _clear_actions(msisdn)
+        reply(msisdn, "Your email address changed after this code was sent, so the code was cancelled. "
+                     "Reply *8* to verify the current address.")
+        return "stop", "Your email address changed. Reply 8 in the chat to verify the current address."
+    if verdict == "used":
+        return "stop", "That code has already been used. Return to the chat for your current status."
     if verdict == "expired":
         return "stop", "That code has expired. Reply 8 in the chat to start again."
     if verdict == "locked":
@@ -3156,12 +3278,9 @@ def kyc_flow_email_code(pa: PendingAction, code: str) -> tuple[str, str]:
         return "stop", "Too many incorrect codes - see the chat."
     if verdict != "ok":
         left = 3 - int(pa.payload.get("code_attempts", 0))
-        _touch(pa, payload=pa.payload)
         return "retry", f"That code isn't right. {left} attempt(s) left."
-    user.email_verified = True
-    user.save(update_fields=["email_verified"])
     reply(msisdn, "✅ Email address verified.")
-    _kyc_next(pa, user, msisdn)
+    _kyc_next(locked, user, msisdn)
     return "ok", ""
 
 
@@ -3304,13 +3423,10 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return reply(msisdn, "What's the correct *email address*?")
         if not re.fullmatch(r"\d{6}", val):
             return reply(msisdn, "Enter the 6-digit code from the email, or reply *resend*.")
-        ok = _kyc_code_ok(pa, msisdn, val)
-        if ok is not True:
-            return
-        user.email_verified = True
-        user.save(update_fields=["email_verified"])
-        reply(msisdn, "✅ Email address verified.")
-        return _kyc_next(pa, user, msisdn)
+        status, message = kyc_flow_email_code(pa, val)
+        if status == "retry":
+            return reply(msisdn, message + " Reply *resend* for a new code.")
+        return None
 
     if state == "nin":
         # Legacy actions from older deploys may still be parked here. NIN is not

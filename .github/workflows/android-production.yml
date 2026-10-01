@@ -6,13 +6,7 @@
 name: Android production AAB
 
 on:
-  workflow_dispatch:
-    inputs:
-      release_ref:
-        description: "Commit, tag, or branch to build"
-        required: true
-        default: "main"
-        type: string
+  workflow_dispatch: {}
 
 concurrency:
   group: android-production-aab
@@ -20,10 +14,12 @@ concurrency:
 
 permissions:
   contents: read
+  checks: read
 
 jobs:
   build:
     name: Build signed production AAB
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -36,8 +32,30 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_ref }}
+          # Production signing secrets must never be exposed to code from an
+          # operator-supplied branch/tag. A release is built only from main;
+          # the checkout SHA is recorded below and in the uploaded artifact.
+          ref: refs/heads/main
           persist-credentials: false
+
+      - name: Record release revision
+        run: |
+          release_sha="$(git rev-parse HEAD)"
+          printf '%s\n' "$release_sha" | tee "$RUNNER_TEMP/zitch-release-sha.txt"
+          echo "RELEASE_SHA=$release_sha" >> "$GITHUB_ENV"
+
+      - name: Require successful release CI for checked-out commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for check in 'Backend (Django)' 'Backend (PostgreSQL)' 'App (Expo)' 'Meta connector'; do
+            conclusion="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/check-runs?per_page=100" \
+              --jq "[.check_runs[] | select(.name == \"$check\")] | sort_by(.started_at) | last | .conclusion // \"missing\"")"
+            if [ "$conclusion" != "success" ]; then
+              echo "Required check '$check' is $conclusion for $RELEASE_SHA" >&2
+              exit 1
+            fi
+          done
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -71,19 +89,13 @@ jobs:
       - name: Build production bundle
         working-directory: android
         run: ./gradlew bundleRelease --no-daemon -PZITCH_UPLOAD_STORE_FILE="$ZITCH_UPLOAD_STORE_FILE" -PZITCH_UPLOAD_STORE_PASSWORD="$ZITCH_UPLOAD_STORE_PASSWORD" -PZITCH_UPLOAD_KEY_ALIAS="$ZITCH_UPLOAD_KEY_ALIAS" -PZITCH_UPLOAD_KEY_PASSWORD="$ZITCH_UPLOAD_KEY_PASSWORD" -PZITCH_REQUIRE_UPLOAD_KEY=true
-      - name: Verify AAB is signed by the configured upload key
-        env:
-          KEYSTORE: ${{ env.ZITCH_UPLOAD_STORE_FILE }}
-        run: |
-          AAB="android/app/build/outputs/bundle/release/app-release.aab"
-          test -s "$AAB"
-          jarsigner -verify -verbose -certs "$AAB" >/tmp/zitch-jarsigner.txt
-          ! grep -q 'CN=Android Debug' /tmp/zitch-jarsigner.txt
-          keytool -list -v -keystore "$KEYSTORE" -storepass "$ZITCH_UPLOAD_STORE_PASSWORD" -alias "$ZITCH_UPLOAD_KEY_ALIAS" >/tmp/zitch-key.txt
-          grep -q 'Alias name: ' /tmp/zitch-key.txt
+      - name: Verify AAB signer matches the configured upload key
+        run: scripts/verify-android-signing.sh android/app/build/outputs/bundle/release/app-release.aab "$ZITCH_UPLOAD_STORE_FILE"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: zitch-production-aab
-          path: android/app/build/outputs/bundle/release/app-release.aab
+          path: |
+            android/app/build/outputs/bundle/release/app-release.aab
+            ${{ runner.temp }}/zitch-release-sha.txt
           if-no-files-found: error
           retention-days: 14

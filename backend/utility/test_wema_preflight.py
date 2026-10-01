@@ -100,11 +100,10 @@ class PreflightGoTests(TestCase):
         with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
             out, code = _run()
         self.assertIn("RESULT: GO", out)
-        # Asserted line by line because "RESULT: GO" is also a prefix of the degraded
-        # "GO for money rails — N soft warning(s)" summary: a soft check silently
-        # flipping to WARN would not move it. The SMS rail is named because the class
-        # keys it above, and an override for a setting that no longer exists is a
-        # no-op Django does not complain about.
+        # Asserted line by line because a scope-qualified GO may still include soft
+        # warnings: a soft check silently flipping to WARN must not pass unnoticed.
+        # The SMS rail is named because the class keys it above, and an override for
+        # a setting that no longer exists is a no-op Django does not complain about.
         self.assertIn("SMS (termii): keyed", out)
         self.assertNotIn("NOT READY", out)
         self.assertEqual(code, 0)
@@ -112,7 +111,7 @@ class PreflightGoTests(TestCase):
     def test_soft_warn_alone_is_go_without_strict(self):
         with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_EMPTY):
             out, code = _run()
-        self.assertIn("GO for money rails", out)
+        self.assertIn("RESULT: GO — launch_scope=full", out)
         self.assertEqual(code, 0)
 
     def test_strict_fails_on_soft_warn(self):
@@ -120,6 +119,49 @@ class PreflightGoTests(TestCase):
             out, code = _run("--strict")
         self.assertIn("NOT READY (strict)", out)
         self.assertEqual(code, 1)
+
+
+@override_settings(RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
+                   TERMII={"API_KEY": "tk_x"}, CARD_ISSUER={"API_KEY": "ci_x"},
+                   WEMA=_SAFE_CALLBACKS)
+class PreflightLaunchScopeTests(TestCase):
+    def run_with_capabilities(self, available, *args):
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), \
+             mock.patch(_PROBE, return_value=_VTU_OK), \
+             mock.patch("common.products.product_available", return_value=available):
+            return _run(*args)
+
+    def test_default_full_scope_fails_when_products_are_unavailable(self):
+        out, code = self.run_with_capabilities(False)
+
+        self.assertEqual(code, 1)
+        self.assertIn("launch_scope: full", out)
+        self.assertIn("Full launch product capabilities", out)
+        for capability in ("fixed savings", "loans", "FX conversion",
+                           "airtime-to-cash", "card top-ups"):
+            self.assertIn(capability, out)
+        self.assertIn("RESULT: NOT READY — launch_scope=full", out)
+        self.assertNotIn("RESULT: GO", out)
+
+    def test_core_scope_reports_exclusions_and_qualifies_go(self):
+        out, code = self.run_with_capabilities(False, "--launch-scope", "core")
+
+        self.assertEqual(code, 0)
+        self.assertIn("launch_scope: core", out)
+        self.assertIn("[INFO] SCOPE Core launch exclusions", out)
+        for capability in ("fixed savings", "loans", "FX conversion",
+                           "airtime-to-cash", "card top-ups"):
+            self.assertIn(capability, out)
+        self.assertIn("must remain disabled", out)
+        self.assertIn("RESULT: GO — launch_scope=core", out)
+        self.assertNotIn("Full launch product capabilities", out)
+
+    def test_full_scope_can_pass_capability_gate_only_when_all_are_available(self):
+        out, code = self.run_with_capabilities(True)
+
+        self.assertEqual(code, 0)
+        self.assertIn("[PASS] GATE Full launch product capabilities", out)
+        self.assertIn("RESULT: GO — launch_scope=full", out)
 
 
 @override_settings(
@@ -320,6 +362,25 @@ class PreflightOverHttpTests(TestCase):
         body = res.json()["preflight"]
         self.assertFalse(body["ready"])
         self.assertIn("RuntimeError", body["error"])
+
+    def test_launch_scope_is_validated_and_passed_through(self):
+        with mock.patch("django.core.management.call_command") as command:
+            res = self._get("?launch_scope=core")
+
+        self.assertEqual(res.status_code, 200)
+        body = res.json()["preflight"]
+        self.assertTrue(body["ready"])
+        self.assertEqual(body["launch_scope"], "core")
+        self.assertEqual(command.call_args.kwargs["launch_scope"], "core")
+
+    def test_invalid_launch_scope_is_a_non_cacheable_bad_request(self):
+        with mock.patch("django.core.management.call_command") as command:
+            res = self._get("?launch_scope=everything")
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("no-store", res["Cache-Control"])
+        self.assertIn("launch_scope", res.json()["detail"])
+        command.assert_not_called()
 
 
 @override_settings(RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},

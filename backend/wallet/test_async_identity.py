@@ -99,6 +99,24 @@ class AsyncIdentityTests(TestCase):
         self.assertEqual(status, 202)
         self.assertFalse(result["otp_required"])
 
+    def test_confirmation_reloads_acceptance_after_attempt_lock(self):
+        # Model the waiting request acquiring its lock after another request
+        # accepted the credential. The locked read, not an earlier snapshot,
+        # decides whether the bank OTP needs to be submitted.
+        select_for_update = WemaProvisioningAttempt.objects.select_for_update
+
+        def acceptance_before_lock(*args, **kwargs):
+            WemaProvisioningAttempt.objects.filter(pk=self.attempt.pk).update(otp_verified_at=timezone.now())
+            return select_for_update(*args, **kwargs)
+
+        with patch.object(WemaProvisioningAttempt.objects, "select_for_update", side_effect=acceptance_before_lock), \
+                patch("utility.wema.validate_wallet_otp") as bank, \
+                patch("utility.wema.get_account_details", return_value={"success": False}):
+            result, status = complete_wema_provisioning(self.user, "123456", self.attempt.tracking_id)
+        bank.assert_not_called()
+        self.assertEqual(status, 202)
+        self.assertFalse(result["otp_required"])
+
     def test_account_callback_alone_never_grants_identity(self):
         self.callback()
         self.user.refresh_from_db()

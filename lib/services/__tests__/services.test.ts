@@ -20,6 +20,12 @@ describe('kycService', () => {
     await kycService.getStatus();
     expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.status);
   });
+  it('starts and confirms the authenticated email challenge', async () => {
+    await kycService.startEmail('ada@example.com');
+    expect(mockApiJson).toHaveBeenLastCalledWith(EP.auth.emailVerifyStart, { email: 'ada@example.com' });
+    await kycService.confirmEmail('123456');
+    expect(mockApiJson).toHaveBeenLastCalledWith(EP.auth.emailVerifyConfirm, { otp: '123456' });
+  });
   it('startBvn posts the bvn', async () => {
     mockApiJson.mockResolvedValueOnce({ success: true, otp_required: true, tracking_id: 'bvn-track-1' });
     await kycService.startBvn('22222222222');

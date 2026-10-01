@@ -394,17 +394,8 @@ class VtuReconciliationTests(TestCase):
         self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="20000")
         self._key_seq = 0
 
-    def _reconcile(self, requery_result, *, age=timedelta(minutes=1), reference=None):
-        """Age the pending purchase past the sweep's cutoff and run the VAS sweep.
-
-        ``age`` stays well under VTU_PURCHASE_STUCK_HOURS by default, so the
-        stuck-purchase alert does not fire for the ordinary settlement cases.
-        """
-        qs = Transaction.objects.filter(direction=Transaction.OUT,
-                                        transaction_status=Transaction.PENDING)
-        if reference:
-            qs = qs.filter(reference=reference)
-        qs.update(created=timezone.now() - age)
+    def _reconcile(self, requery_result):
+        """Run the VAS sweep for a fixture inserted past its age cutoff."""
         with patch("utility.management.commands.reconcile_wema.vas_requery",
                    return_value=requery_result), \
              patch("utility.management.commands.reconcile_wema.wema_provisioned_wallets",
@@ -422,9 +413,10 @@ class VtuReconciliationTests(TestCase):
     def balance(self):
         return get_or_create_wallet(self.user).balance
 
-    def _buy_airtime_timed_out(self):
+    def _buy_airtime_timed_out(self, *, age=timedelta(minutes=1)):
         """Buy airtime where the provider call times out (pending). Returns the ref."""
-        with patch("utility.views.vtu_purchase",
+        with patch("django.utils.timezone.now", return_value=timezone.now() - age), \
+             patch("utility.views.vtu_purchase",
                    return_value={"success": False, "pending": True, "message": "Aggregator unreachable"}):
             res, body = self.post("/api/utility/buyairtime/", {
                 "access_token": self.token, "amount": "1000", "network": "1",
@@ -475,10 +467,9 @@ class VtuReconciliationTests(TestCase):
     def test_a_purchase_stuck_for_hours_pages(self):
         """After hours the sweep will not resolve it on its own, and nothing else
         reports that the customer paid for a service never delivered."""
-        _, body = self._buy_airtime_timed_out()
-        # created is auto_now_add, so it has to be back-dated after the fact.
+        _, body = self._buy_airtime_timed_out(age=timedelta(hours=6))
         with patch("utility.alerts.alert") as alerted:
-            self._reconcile({"success": False, "pending": True}, age=timedelta(hours=6))
+            self._reconcile({"success": False, "pending": True})
         stuck = [c for c in alerted.call_args_list if "still PENDING" in str(c)]
         self.assertTrue(stuck, "a purchase stuck for hours must page")
         self.assertIn(body["reference"], str(stuck[0]))
@@ -493,7 +484,9 @@ class VtuReconciliationTests(TestCase):
         # vtu_purchase raising simulates the worker being killed during the
         # provider HTTP call — after run_provider_purchase's debit() has committed,
         # before settle_or_refund() can run.
-        with patch("utility.views.vtu_purchase", side_effect=RuntimeError("worker killed mid-call")):
+        with patch("django.utils.timezone.now",
+                   return_value=timezone.now() - timedelta(minutes=1)), \
+             patch("utility.views.vtu_purchase", side_effect=RuntimeError("worker killed mid-call")):
             with self.assertRaises(RuntimeError):
                 self.post("/api/utility/buyairtime/", {
                     "access_token": self.token, "amount": "1000", "network": "1",

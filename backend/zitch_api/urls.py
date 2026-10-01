@@ -531,10 +531,17 @@ def preflight_diagnose(request):
 
     `ready` is the machine-readable answer (exit 0); `report` is the operator-readable
     one. `?strict=1` also gates on the soft checks, exactly as `--strict` does.
+    `?launch_scope=core|full` selects the decision scope; it defaults to `full`.
     """
     denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
     if denied:
         return denied
+    launch_scope = request.GET.get("launch_scope", "full").strip().lower()
+    if launch_scope not in {"core", "full"}:
+        response = JsonResponse(
+            {"detail": "launch_scope must be 'core' or 'full'"}, status=400)
+        response["Cache-Control"] = "no-store"
+        return response
     import io
 
     from django.core.management import call_command
@@ -543,6 +550,7 @@ def preflight_diagnose(request):
     ready, error = True, ""
     try:
         call_command("wema_preflight", stdout=buf, stderr=buf,
+                     launch_scope=launch_scope,
                      **({"strict": True} if request.GET.get("strict") else {}))
     except SystemExit:
         # How the command reports "not ready" — a failing gate, not a crash.
@@ -551,6 +559,7 @@ def preflight_diagnose(request):
         # A preflight that cannot run is not a passing preflight.
         ready, error = False, f"{type(exc).__name__}: {exc}"
     body = {"ready": ready, "strict": bool(request.GET.get("strict")),
+            "launch_scope": launch_scope,
             "report": buf.getvalue().splitlines()}
     if error:
         body["error"] = error

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Share } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
@@ -7,13 +7,34 @@ import { Monogram } from '@/components/design/flowkit';
 import { useTheme, font } from '@/lib/theme';
 import { apiJson } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
+import { clearSpendAttempt } from '@/lib/pendingSpend';
 import {
   shouldContinueTransactionPolling,
   transactionStatusPresentation,
+  txnState,
 } from '@/lib/transactionStatus';
 
 const STATUS_POLL_INTERVAL_MS = 4000;
 const MAX_STATUS_POLLS = 5;
+const TRANSFER_SPEND_SCOPES = new Set(['bank-transfer', 'zitch-transfer']);
+
+type TransactionStatusRow = {
+  service?: string;
+  amount?: string | number;
+  transaction_status?: string;
+  under_review?: boolean;
+  review_kind?: string;
+  status_message?: string;
+  date?: string;
+  reference?: string;
+  direction?: string;
+};
+
+type TransactionStatusResult = {
+  success?: boolean;
+  transaction?: TransactionStatusRow;
+  message?: string;
+};
 
 const Row2 = ({ k, v }: { k: string; v: string }) => {
   const { c } = useTheme();
@@ -30,22 +51,64 @@ const TxnDetail = () => {
   const p = useLocalSearchParams<{
     type?: string; amount?: string; status?: string; dir?: string; detail?: string; reference?: string; icon?: string;
     underReview?: string; statusMessage?: string; reviewKind?: string;
+    spendScope?: string; spendFingerprint?: string; spendKey?: string;
   }>();
 
-  const [liveTxn, setLiveTxn] = useState<any | null>(null);
+  const [liveTxn, setLiveTxn] = useState<TransactionStatusRow | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState('');
+  const refreshInFlight = useRef(false);
+  const requestGeneration = useRef(0);
+  const appliedGeneration = useRef(0);
+  const displayedState = useRef(txnState(p.status));
 
   const referenceParam = String(p.reference || '').trim();
+  const currentReference = useRef(referenceParam);
+  currentReference.current = referenceParam;
+  const spendAttempt = {
+    scope: String(p.spendScope || ''),
+    fingerprint: String(p.spendFingerprint || ''),
+    key: String(p.spendKey || ''),
+  };
 
-  const refreshStatus = useCallback(async () => {
+  useEffect(() => {
+    requestGeneration.current += 1;
+    appliedGeneration.current = 0;
+    displayedState.current = txnState(p.status);
+    setLiveTxn(null);
+    setRefreshError('');
+  }, [p.status, referenceParam]);
+
+  const clearSettledAttempt = useCallback(async (transaction: TransactionStatusRow) => {
+    const returnedReference = String(transaction.reference || '').trim();
+    if (!referenceParam || returnedReference !== referenceParam
+      || txnState(transaction.transaction_status) === 'pending'
+      || !TRANSFER_SPEND_SCOPES.has(spendAttempt.scope)
+      || !spendAttempt.scope || !spendAttempt.fingerprint || !spendAttempt.key) return;
+    await clearSpendAttempt(spendAttempt.scope, spendAttempt.fingerprint, spendAttempt.key);
+  }, [referenceParam, spendAttempt.fingerprint, spendAttempt.key, spendAttempt.scope]);
+
+  const requestStatus = useCallback(async (isActive: () => boolean = () => true) => {
     if (!referenceParam) return null;
-    const res = await apiJson<any>(EP.wallet.transactionStatus, { reference: referenceParam });
-    if (res?.success && res.transaction) {
-      setLiveTxn(res.transaction);
-      return res.transaction;
+    const generation = ++requestGeneration.current;
+    const res = await apiJson<TransactionStatusResult>(EP.wallet.transactionStatus, { reference: referenceParam });
+    if (!isActive() || currentReference.current !== referenceParam) return null;
+    const transaction = res?.success ? res.transaction : undefined;
+    if (!transaction) return null;
+    if (String(transaction.reference || '').trim() !== referenceParam) return null;
+
+    const nextState = txnState(transaction.transaction_status);
+    await clearSettledAttempt(transaction);
+    // A terminal outcome is monotonic in the customer UI. An older pending
+    // response must never overwrite a newer success/failure response.
+    if (nextState !== 'pending'
+      || (displayedState.current === 'pending' && generation >= appliedGeneration.current)) {
+      displayedState.current = nextState;
+      appliedGeneration.current = Math.max(appliedGeneration.current, generation);
+      setLiveTxn(transaction);
     }
-    return null;
-  }, [referenceParam]);
+    return displayedState.current;
+  }, [clearSettledAttempt, referenceParam]);
 
   useFocusEffect(useCallback(() => {
     let alive = true;
@@ -56,12 +119,9 @@ const TxnDetail = () => {
     const poll = async () => {
       let nextStatus: unknown = p.status;
       try {
-        const res = await apiJson<any>(EP.wallet.transactionStatus, { reference: referenceParam });
+        const next = await requestStatus(() => alive);
         if (!alive) return;
-        if (res?.success && res.transaction) {
-          setLiveTxn(res.transaction);
-          nextStatus = res.transaction.transaction_status;
-        }
+        if (next) nextStatus = next;
       } catch {
         if (!alive) return;
       }
@@ -76,7 +136,23 @@ const TxnDetail = () => {
       alive = false;
       if (timer) clearTimeout(timer);
     };
-  }, [p.status, referenceParam]));
+  }, [p.status, referenceParam, requestStatus]));
+
+  const refreshStatus = useCallback(async () => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    setRefreshing(true);
+    setRefreshError('');
+    try {
+      const next = await requestStatus();
+      if (!next) setRefreshError('We could not verify this transaction status. Please try again.');
+    } catch {
+      setRefreshError('Could not refresh the status. Check your connection and try again.');
+    } finally {
+      refreshInFlight.current = false;
+      setRefreshing(false);
+    }
+  }, [requestStatus]);
 
   const inflow = (liveTxn?.direction || p.dir) === 'in';
   const amount = Number(liveTxn?.amount ?? p.amount ?? 0);
@@ -140,13 +216,17 @@ const TxnDetail = () => {
               label={refreshing ? 'Refreshing status…' : 'Refresh status'}
               icon="history"
               disabled={refreshing}
-              onPress={() => {
-                setRefreshing(true);
-                refreshStatus()
-                  .catch(() => {})
-                  .finally(() => setRefreshing(false));
-              }}
+              onPress={() => void refreshStatus()}
             />
+            {refreshError ? (
+              <Text
+                accessibilityRole="alert"
+                accessibilityLiveRegion="polite"
+                style={{ color: c.red, fontFamily: font.semibold, fontSize: 12.5, lineHeight: 18, marginTop: 8 }}
+              >
+                {refreshError}
+              </Text>
+            ) : null}
           </View>
         ) : null}
         <Btn

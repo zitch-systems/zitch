@@ -33,6 +33,10 @@ const OTPVerification = () => {
 
   const submittedRef = useRef('');
   const handleCheckOtp = useCallback(async () => {
+    // SMS autofill can finish before AsyncStorage has restored the phone. Keep
+    // the complete code on screen; the effect retries automatically when the
+    // phone arrives because this callback depends on userPhone.
+    if (!userPhone) return;
     // Verify each complete code at most once. Without this, the auto-submit
     // effect re-fires after isCheckingOtp resets and re-sends the (now-consumed)
     // code, producing a false "invalid OTP" right after a successful verify.

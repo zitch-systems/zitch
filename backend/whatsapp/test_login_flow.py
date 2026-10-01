@@ -88,6 +88,18 @@ class WhatsAppLoginTests(TestCase):
             start_login(self.msisdn)
         self.assertFalse(WaOnboarding.objects.exists())
 
+    @override_settings(ZITCH_LINKS={"SUPPORT_WA": "2349012345678",
+                                    "SUPPORT_EMAIL": "help@zitch.test"})
+    def test_failed_signin_gives_actionable_recovery_contacts_without_requiring_the_app(self):
+        with patch("whatsapp.providers.flows_live", return_value=True), \
+             patch("whatsapp.router.reply") as reply:
+            start_login("2348011110000")
+        message = reply.call_args.args[1]
+        self.assertIn("https://wa.me/2349012345678", message)
+        self.assertIn("help@zitch.test", message)
+        self.assertNotIn("zitch app", message.lower())
+        self.assertNotIn("install", message.lower())
+
     def test_successful_login_retires_previous_active_link(self):
         old = WhatsAppLink.objects.create(user=self.user, wa_msisdn="2348088880001", status="active")
         token = self.start()

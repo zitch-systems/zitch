@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
@@ -32,12 +32,19 @@ const Loans = () => {
   const [busy, setBusy] = useState(false);
   const [pinError, setPinError] = useState('');
   const [repaymentPending, setRepaymentPending] = useState(false);
+  const [productAvailable, setProductAvailable] = useState(false);
+  const [repaymentAvailable, setRepaymentAvailable] = useState(false);
+  const [unavailableMessage, setUnavailableMessage] = useState('Loans are not available right now.');
+  const repayInFlight = useRef(false);
 
   const load = useCallback(async () => {
     const t = await getToken();
     if (!t) return;
     try {
       const res = await loansService.getStatus();
+      setProductAvailable(res?.product_available === true);
+      setRepaymentAvailable(res?.repayment_available === true);
+      setUnavailableMessage(res?.unavailable_message || 'Loans are not available right now.');
       if (res.limit != null) setLimit(Number(res.limit));
       if (res.available != null) setAvailable(Number(res.available));
       setActive(res.active_loan ?? null);
@@ -51,7 +58,8 @@ const Loans = () => {
   const usedPct = limit > 0 ? Math.min(100, Math.round(((limit - available) / limit) * 100)) : 0;
 
   const repay = async (pin: string) => {
-    if (!active) return;
+    if (!active || !repaymentAvailable || repayInFlight.current) return;
+    repayInFlight.current = true;
     // The repayment endpoint binds idempotency to the amount. Persisting the key
     // under the same fingerprint makes an app-restart retry replay that request.
     const fingerprint = String(Number(active.outstanding));
@@ -108,6 +116,7 @@ const Loans = () => {
         notify('Unable to start repayment', 'Could not safely prepare this request. Please try again.');
       }
     } finally {
+      repayInFlight.current = false;
       setBusy(false);
     }
   };
@@ -116,7 +125,7 @@ const Loans = () => {
     <Screen pad={false} tab>
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Loans</Text>
 
-      <Hero style={{ margin: 16 }}>
+      {productAvailable ? <Hero style={{ margin: 16 }}>
         <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>Available credit</Text>
         <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(available)}</Text>
         <View style={{ height: 6, borderRadius: 4, backgroundColor: 'rgba(255,255,255,.25)', marginTop: 14, overflow: 'hidden' }}>
@@ -125,9 +134,15 @@ const Loans = () => {
         <Text style={{ fontSize: 12, color: 'rgba(255,255,255,.85)', marginTop: 8, fontFamily: font.regular }}>
           {money(limit - available)} of {money(limit)} limit used
         </Text>
-      </Hero>
+      </Hero> : (
+        <View style={{ margin: 16, borderRadius: 18, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 18 }}>
+          <Text style={{ fontSize: 16, fontFamily: font.bold, color: c.ink1 }}>New loans are unavailable</Text>
+          <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 7 }}>{unavailableMessage}</Text>
+          {active ? <Text style={{ fontSize: 12.5, color: c.ink2, fontFamily: font.semibold, lineHeight: 18, marginTop: 10 }}>Your existing loan details remain available below.</Text> : null}
+        </View>
+      )}
 
-      {!active && (
+      {!active && productAvailable && (
         <View style={{ marginHorizontal: 16 }}>
           <Card>
             <Btn label="Get a new loan" icon="loan" onPress={() => router.push('/getloan')} />
@@ -147,9 +162,14 @@ const Loans = () => {
               <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{money(Number(active.outstanding))}</Text>
             </View>
             <View style={{ marginTop: 14 }}>
+              {!repaymentAvailable && (
+                <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular, lineHeight: 18, marginBottom: 10 }}>
+                  In-app repayment is unavailable. Contact support for help with this loan.
+                </Text>
+              )}
               <Btn
-                label={repaymentPending ? 'Repayment processing' : `Repay ${money(Number(active.outstanding))}`}
-                disabled={repaymentPending}
+                label={repaymentPending ? 'Repayment processing' : repaymentAvailable ? `Repay ${money(Number(active.outstanding))}` : 'Repayment unavailable'}
+                disabled={repaymentPending || !repaymentAvailable}
                 onPress={() => { setPinError(''); setPinOpen(true); }}
               />
             </View>

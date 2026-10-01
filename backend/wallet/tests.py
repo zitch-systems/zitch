@@ -1363,7 +1363,9 @@ class SmsAlertFormatTests(TestCase):
         from wallet.alerts import _sms_alert
 
         with self.captureOnCommitCallbacks(execute=True):
-            credit(self.user, Decimal("100"), "x" * 300)
+            # Long counterparty descriptions are valid JSON metadata; the
+            # service column itself remains bounded by its database contract.
+            credit(self.user, Decimal("100"), "Transfer", meta={"counterparty": "x" * 300})
         txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
         body = _sms_alert(txn)
         self.assertLessEqual(len(body), 160)

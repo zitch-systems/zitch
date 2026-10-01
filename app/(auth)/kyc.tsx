@@ -19,6 +19,9 @@ type Status = {
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean;
   message?: string;
   address_verified?: boolean;
+  email?: string;
+  email_verified?: boolean;
+  phone_verified?: boolean;
   pending?: boolean;
   identity_review_required?: boolean;
   id_document_verified?: boolean;
@@ -33,7 +36,7 @@ type Status = {
   identity_upgrade_required?: boolean;
 };
 
-type Method = 'menu' | 'bvn' | 'nin' | 'selfie' | 'upgrade' | 'address';
+type Method = 'menu' | 'email' | 'bvn' | 'nin' | 'selfie' | 'upgrade' | 'address';
 
 // Method accent colours — EXACT per the design handoff.
 const C_BVN = '#0FA295';
@@ -65,6 +68,9 @@ const Kyc = () => {
   const [status, setStatus] = useState<Status | null>(null);
   const [method, setMethod] = useState<Method>('menu');
   const [bvn, setBvn] = useState('');
+  const [email, setEmail] = useState('');
+  const [emailOtp, setEmailOtp] = useState('');
+  const [emailSent, setEmailSent] = useState(false);
   const [bvnOtp, setBvnOtp] = useState('');
   const [bvnSent, setBvnSent] = useState(false);
   const [bvnTrackingId, setBvnTrackingId] = useState('');
@@ -87,6 +93,31 @@ const Kyc = () => {
   const [upgradeCameraOpen, setUpgradeCameraOpen] = useState(false);
   const [scanning, setScanning] = useState(false); // camera guide animation running
   const spin = useRef(new Animated.Value(0)).current;
+  const actionInFlight = useRef(false);
+  const facePollGeneration = useRef(0);
+  const mounted = useRef(true);
+  const selfieTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const beginAction = () => {
+    if (actionInFlight.current) return false;
+    actionInFlight.current = true;
+    setBusy(true);
+    return true;
+  };
+  const endAction = () => {
+    actionInFlight.current = false;
+    if (mounted.current) setBusy(false);
+  };
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      facePollGeneration.current += 1;
+      if (selfieTimer.current) clearTimeout(selfieTimer.current);
+      spin.stopAnimation();
+    };
+  }, [spin]);
 
   // Add-money can discover that the bank's pending attempt belongs to NIN
   // rather than the BVN form that started face verification. Resume that exact
@@ -127,12 +158,21 @@ const Kyc = () => {
     } catch { /* keep */ }
     return null;
   }, []);
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    void load();
+    return () => { facePollGeneration.current += 1; };
+  }, [load]));
 
   // Return to the method menu and clear any in-flight sub-flow state.
   const goMenu = () => {
+    facePollGeneration.current += 1;
+    if (selfieTimer.current) {
+      clearTimeout(selfieTimer.current);
+      selfieTimer.current = null;
+    }
     setMethod('menu');
     setBvnSent(false);
+    setEmail(''); setEmailOtp(''); setEmailSent(false);
     setBvnTrackingId(''); setBvnOtpDestination('');
     setNinSent(false);
     setNinTrackingId(''); setNinOtpDestination('');
@@ -152,10 +192,38 @@ const Kyc = () => {
   const setAddressField = (field: keyof ResidentialAddress, value: string) =>
     setAddress((current) => ({ ...current, [field]: value }));
 
+  const startEmail = async () => {
+    const target = (email || status?.email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target) || !beginAction()) return;
+    try {
+      const res = await kycService.startEmail(target);
+      if (res.success) {
+        setEmail(target);
+        setEmailOtp('');
+        setEmailSent(true);
+        notify('Email code sent', res.message || `Enter the code sent to ${target}.`, 'success');
+      } else notify('Could not send code', res.message || 'Check the email address and try again.');
+    } catch { notify('Could not send code', 'Check your connection and try again.'); }
+    finally { endAction(); }
+  };
+
+  const confirmEmail = async () => {
+    if (emailOtp.length !== 6 || !beginAction()) return;
+    try {
+      const res = await kycService.confirmEmail(emailOtp);
+      if (res.success && res.email_verified) {
+        notify('Email verified', 'You can now continue with BVN verification.', 'success');
+        setEmail(''); setEmailOtp(''); setEmailSent(false); setMethod('menu');
+        await load();
+      } else notify('Verification failed', res.message || 'Check the code and try again.');
+    } catch { notify('Verification failed', 'Check your connection and try again.'); }
+    finally { endAction(); }
+  };
+
   // Shared submit: on success update tier status, toast the design copy, reset
   // the sub-flow fields and bounce back to the menu.
   const submit = async (call: () => Promise<KycStatus | VirtualAccount>, successTitle: string, requiredFlags: KycVerificationFlag[] = []) => {
-    setBusy(true);
+    if (!beginAction()) return;
     try {
       const res = await call();
       const outcome = classifyKycResponse(res, requiredFlags);
@@ -196,12 +264,12 @@ const Kyc = () => {
         await load();
       } else notify('Error', res.message || 'Verification failed');
     } catch { notify('Error', 'Something went wrong.'); }
-    finally { setBusy(false); }
+    finally { endAction(); }
   };
 
   // --- BVN: enter number -> we send a one-time code -> confirm it ---
   const startBvn = async () => {
-    setBusy(true);
+    if (!beginAction()) return;
     try {
       const res = await kycService.startBvn(bvn);
       if (res.pending) {
@@ -237,11 +305,10 @@ const Kyc = () => {
       }
       else notify('Error', res.message || 'Could not start BVN verification');
     } catch { notify('Error', 'Something went wrong.'); }
-    finally { setBusy(false); }
+    finally { endAction(); }
   };
   const resendBvn = async () => {
-    if (!bvnTrackingId) return;
-    setBusy(true);
+    if (!bvnTrackingId || !beginAction()) return;
     try {
       const res = await kycService.resendBvn(bvnTrackingId);
       if (res.success) {
@@ -251,14 +318,17 @@ const Kyc = () => {
         notify('Verification processing', res.message || 'Your BVN verification is still processing. Check your status again shortly.', 'info');
       } else notify('Error', res.message || 'Could not resend the BVN code');
     } catch { notify('Error', 'Something went wrong.'); }
-    finally { setBusy(false); }
+    finally { endAction(); }
   };
   const confirmBvn = () => submit(() => kycService.confirmBvn(bvnTrackingId, bvnOtp), 'BVN verified — tier upgraded', ['bvn_verified']);
 
   const startIdentityFaceVerification = async (identity: { bvn?: string; nin?: string }) => {
-    setBusy(true);
+    if (!beginAction()) return;
+    const generation = ++facePollGeneration.current;
+    const isCurrent = () => mounted.current && facePollGeneration.current === generation;
     try {
       const started = await kycService.startIdentityFace(identity);
+      if (!isCurrent()) return;
       const otpRoute = resolveIdentityOtpRoute(started, identity.bvn ? 'bvn' : 'nin');
       if (otpRoute) {
         // Face-start can return the existing bank OTP attempt instead of a URL.
@@ -299,8 +369,10 @@ const Kyc = () => {
       beginExternalActivity();
       try { await WebBrowser.openBrowserAsync(started.url); }
       finally { endExternalActivity(); }
+      if (!isCurrent()) return;
       for (let attempt = 0; attempt < 15; attempt += 1) {
         const result = await kycService.getIdentityFaceStatus(started.session);
+        if (!isCurrent()) return;
         if (result.status === 'verified') {
           setStatus(result);
           setBvn(''); setBvnOtp(''); setBvnSent(false); setBvnTrackingId(''); setBvnOtpDestination('');
@@ -314,16 +386,17 @@ const Kyc = () => {
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (!isCurrent()) return;
       }
       notify('Still processing', 'Your bank is still confirming the check. This page will refresh when you return.');
       await load();
-    } catch { notify('Error', 'Could not complete face verification. Please use the SMS code or try again.'); }
-    finally { setBusy(false); }
+    } catch { if (isCurrent()) notify('Error', 'Could not complete face verification. Please use the SMS code or try again.'); }
+    finally { endAction(); }
   };
 
-  // --- NIN: enter number -> Wema sends a one-time code -> confirm it ---
+  // --- NIN: enter number -> partner bank sends a one-time code -> confirm it ---
   const startNin = async () => {
-    setBusy(true);
+    if (!beginAction()) return;
     try {
       const res = await kycService.startNin(nin);
       if (res.pending) {
@@ -361,7 +434,7 @@ const Kyc = () => {
         setMethod('menu');
       } else notify('Error', res.message || 'Could not start NIN verification');
     } catch { notify('Error', 'Something went wrong.'); }
-    finally { setBusy(false); }
+    finally { endAction(); }
   };
   const confirmNin = () => submit(
     () => kycService.confirmNin(ninTrackingId, ninOtp, nin),
@@ -369,8 +442,7 @@ const Kyc = () => {
     ['nin_verified'],
   );
   const resendNin = async () => {
-    if (!ninTrackingId) return;
-    setBusy(true);
+    if (!ninTrackingId || !beginAction()) return;
     try {
       const res = await kycService.resendNin(ninTrackingId);
       if (res.success) {
@@ -380,7 +452,7 @@ const Kyc = () => {
         notify('Verification processing', res.message || 'Your NIN verification is still processing. Check your status again shortly.', 'info');
       } else notify('Error', res.message || 'Could not resend the NIN code');
     } catch { notify('Error', 'Something went wrong.'); }
-    finally { setBusy(false); }
+    finally { endAction(); }
   };
 
   // Optional document upload remains available for providers that require a slip.
@@ -420,7 +492,8 @@ const Kyc = () => {
     setScanning(true);
     spin.setValue(0);
     Animated.loop(Animated.timing(spin, { toValue: 1, duration: 1000, easing: Easing.linear, useNativeDriver: true })).start();
-    setTimeout(() => {
+    selfieTimer.current = setTimeout(() => {
+      selfieTimer.current = null;
       spin.stopAnimation();
       setScanning(false);
       captureSelfie();
@@ -516,7 +589,9 @@ const Kyc = () => {
             </View>
           )}
 
-          {needsUpgrade ? (
+          {!status?.email_verified ? (
+            <MethodCard id="email" icon="remita" color={C_NIN} title="Verify email" sub="Required before Tier 1" badge="First" />
+          ) : needsUpgrade ? (
             <>
               <View style={{ flexDirection: 'row', gap: 10, padding: 14, borderRadius: 14, backgroundColor: 'rgba(45,127,249,.10)', marginTop: 14 }}>
                 <ZIcon name="help" size={16} color={C_NIN} />
@@ -530,8 +605,8 @@ const Kyc = () => {
             </>
           ) : (
             <>
-              <MethodCard id="bvn" icon="insurance" color={C_BVN} title="BVN verification" sub="Fastest · Bank Verification Number" badge="Recommended" done={!!status?.bvn_verified} />
-              <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="Tier 2: National Identification Number" done={!!status?.nin_verified} />
+              <MethodCard id="bvn" icon="insurance" color={C_BVN} title="BVN verification" sub="Tier 1 · Bank Verification Number" badge="Recommended" done={!!status?.bvn_verified} />
+              {status?.bvn_verified ? <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="Tier 2: NIN and live selfie" done={!!status?.nin_verified} /> : null}
             </>
           )}
           {status?.bvn_verified && status?.nin_verified && (
@@ -541,6 +616,37 @@ const Kyc = () => {
             <MethodCard id="address" icon="home" color={C_BVN} title="Address verification" sub="Tier 3" done={!!status?.address_verified} />
           )}
           <Footer />
+        </View>
+      )}
+
+      {method === 'email' && (
+        <View>
+          <Hero icon="remita" color={C_NIN} title="Verify your email" sub="Tier 1 requires a verified phone number and email address. We’ll send a 6-digit code to your inbox." />
+          <View style={{ marginTop: 22 }}>
+            {!emailSent ? (
+              <>
+                <Field label="Email address" placeholder="you@example.com" keyboardType="email-address" autoCapitalize="none"
+                  value={email || status?.email || ''} onChangeText={setEmail} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
+                <View style={{ height: 22 }} />
+                <Btn label={busy ? 'Sending…' : 'Send email code'} disabled={busy || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((email || status?.email || '').trim())} onPress={startEmail} />
+              </>
+            ) : (
+              <>
+                <Field label="Email verification code" placeholder="6-digit code" keyboardType="number-pad" value={emailOtp}
+                  onChangeText={(value) => setEmailOtp(value.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
+                <Tap
+                  onPress={() => { setEmailSent(false); setEmailOtp(''); }}
+                  accessibilityLabel="Change email or resend code"
+                  hitSlop={8}
+                  style={{ alignSelf: 'flex-start', marginTop: 10 }}
+                >
+                  <Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Change email or resend code</Text>
+                </Tap>
+                <View style={{ height: 22 }} />
+                <Btn label={busy ? 'Confirming…' : 'Confirm email'} disabled={busy || emailOtp.length !== 6} onPress={confirmEmail} />
+              </>
+            )}
+          </View>
         </View>
       )}
 
@@ -583,7 +689,7 @@ const Kyc = () => {
 
       {method === 'nin' && !ninSent && (
         <View>
-          <Hero icon="card" color={C_NIN} title="NIN verification" sub="Enter your 11-digit NIN. Wema will send a code to the phone number registered on your NIN." />
+          <Hero icon="card" color={C_NIN} title="NIN verification" sub="Enter your 11-digit NIN. Our partner bank will send a code to the phone number registered on your NIN." />
           <View style={{ marginTop: 22 }}>
             <Field label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad" value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
             <View style={{ height: 12 }} />

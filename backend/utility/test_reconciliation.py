@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from django.core.cache import cache
 from django.core.management import CommandError, call_command
+from django.db import connection
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -19,8 +20,14 @@ class ReconciliationSchedulingTests(TestCase):
     def setUp(self):
         cache.clear()
         self.user, _ = make_user("08033331234", "retry@zitch.app", balance="5000")
-        self.txn = debit(self.user, Decimal("55"), "airtime",
-                         meta={"vas_type": "airtime", "reconcile": True})
+        ages = {
+            "test_sweep_replays_success_even_during_lookup_backoff": timedelta(minutes=10),
+            "test_repeated_sweeps_query_and_alert_once_without_refunding": timedelta(hours=3),
+        }
+        created_at = timezone.now() - ages.get(self._testMethodName, timedelta())
+        with patch("django.utils.timezone.now", return_value=created_at):
+            self.txn = debit(self.user, Decimal("55"), "airtime",
+                             meta={"vas_type": "airtime", "reconcile": True})
 
     def callback(self, status=None, ip="135.236.18.76", **extra):
         from whatsapp.models import WebhookEvent
@@ -69,7 +76,6 @@ class ReconciliationSchedulingTests(TestCase):
     @patch("utility.management.commands.reconcile_wema.vas_requery")
     @patch("wallet.alerts.retry_pending_whatsapp_alerts")
     def test_sweep_replays_success_even_during_lookup_backoff(self, retry_alerts, query, wallets):
-        Transaction.objects.filter(pk=self.txn.pk).update(created=timezone.now() - timedelta(minutes=10))
         claim_status_lookup(self.txn)
         self.callback("Successful")
         call_command("reconcile_wema", account_recovery_limit=0, stdout=StringIO())
@@ -103,18 +109,21 @@ class ReconciliationSchedulingTests(TestCase):
         run.assert_called_once()
 
     @patch("utility.management.commands.reconcile_wema.Command._run_unlocked")
-    @patch("utility.management.commands.reconcile_wema.cache.add",
-           side_effect=RuntimeError("cache unavailable"))
     @patch("utility.alerts.alert")
-    def test_lock_backend_failure_fails_command_without_reconciling(self, alert, add, run):
+    def test_lock_backend_failure_fails_command_without_reconciling(self, alert, run):
+        lock_backend = (
+            "utility.management.commands.reconcile_wema.connection.cursor"
+            if connection.vendor == "postgresql"
+            else "utility.management.commands.reconcile_wema.cache.add"
+        )
 
-        with self.assertRaises(CommandError) as raised:
-            call_command("reconcile_wema", account_recovery_limit=0,
-                         stderr=StringIO())
+        with patch(lock_backend, side_effect=RuntimeError("lock backend unavailable")) as lock, \
+             self.assertRaises(CommandError) as raised:
+            call_command("reconcile_wema", account_recovery_limit=0, stderr=StringIO())
 
         self.assertEqual(str(raised.exception),
                          "reconcile_wema: distributed lock unavailable")
-        add.assert_called_once()
+        lock.assert_called_once()
         run.assert_not_called()
         alert.assert_called_once_with("reconcile_wema: run crashed", level="fatal", exc=True)
 
@@ -150,8 +159,6 @@ class ReconciliationSchedulingTests(TestCase):
            return_value={"pending": True, "lookup_refused": True, "status": "LOOKUP_REFUSED_401"})
     @patch("utility.alerts.alert")
     def test_repeated_sweeps_query_and_alert_once_without_refunding(self, alert, query, wallets):
-        Transaction.objects.filter(pk=self.txn.pk).update(
-            created=timezone.now() - timedelta(hours=3))
         for _ in range(3):
             call_command("reconcile_wema", account_recovery_limit=0, stdout=StringIO())
         query.assert_called_once()

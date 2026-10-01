@@ -22,7 +22,7 @@ const AccountDetails = () => {
   const [avatar, setAvatar] = useState('');
   const [token, setToken] = useState<string | null>(null);
   const [current, setCurrent] = useState({ firstName: '', lastName: '', email: '', phone: '' });
-  const [form, setForm] = useState({ firstName: '', lastName: '', email: '', phone: '' });
+  const [form, setForm] = useState({ firstName: '', lastName: '', email: '' });
 
   useEffect(() => {
     getToken().then(setToken);
@@ -83,34 +83,26 @@ const AccountDetails = () => {
     }
   };
 
-  // Gate "Save changes": only enable once something changed and what's entered
-  // is valid (email well-formed, phone 11 digits).
+  // Gate "Save changes": only enable once something changed and the email is valid.
   const emailOk = !form.email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email);
-  const phoneOk = !form.phone || form.phone.length === 11;
-  const dirty = !!(form.firstName || form.lastName || form.email || form.phone);
-  const canSave = dirty && emailOk && phoneOk;
+  const dirty = !!(form.firstName || form.lastName || form.email);
+  const canSave = dirty && emailOk;
 
   const handleUpdate = async () => {
     if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
       notify('Invalid email', 'Enter a valid email address.');
       return;
     }
-    if (form.phone && form.phone.length !== 11) {
-      notify('Invalid phone', 'Enter a valid 11-digit phone number.');
-      return;
-    }
     setIsUpdating(true);
     try {
       const response = await apiPost(EP.auth.updateInfo, {
         email: form.email || current.email,
-        phone: form.phone || current.phone,
         first_name: form.firstName || current.firstName,
         last_name: form.lastName || current.lastName,
       });
       const result = await response.json();
       if (response.ok) {
         if (form.email) await AsyncStorage.setItem('UserEmail', form.email);
-        if (form.phone) await AsyncStorage.setItem('UserPhone', form.phone);
         notify('Profile updated');
       } else {
         notify('Error', result.message || 'Failed to update account');
@@ -144,7 +136,20 @@ const AccountDetails = () => {
         <Field label="First name" value={form.firstName} onChangeText={(e) => setForm({ ...form, firstName: e })} placeholder={current.firstName || 'First name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
         <Field label="Last name" value={form.lastName} onChangeText={(e) => setForm({ ...form, lastName: e })} placeholder={current.lastName || 'Last name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
         <Field label="Email" value={form.email} onChangeText={(e) => setForm({ ...form, email: e })} keyboardType="email-address" placeholder={current.email || 'you@email.com'} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
-        <Field label="Phone" value={form.phone} onChangeText={(e) => setForm({ ...form, phone: e.replace(/\D/g, '').slice(0, 11) })} keyboardType="number-pad" placeholder={current.phone || '0801 234 5678'} prefix={<ZIcon name="airtime" size={18} color={c.ink3} />} />
+        <View>
+          <Field label="Verified phone" value={current.phone} editable={false} prefix={<ZIcon name="airtime" size={18} color={c.ink3} />} />
+          <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular, lineHeight: 18, marginTop: 7 }}>
+            To change your verified phone number, contact support so we can protect account recovery and transfers.
+          </Text>
+          <Tap
+            onPress={() => router.push('/support')}
+            accessibilityLabel="Contact support to change verified phone"
+            hitSlop={8}
+            style={{ alignSelf: 'flex-start', marginTop: 6 }}
+          >
+            <Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Contact support</Text>
+          </Tap>
+        </View>
       </View>
 
       <View style={{ marginTop: 26 }}>

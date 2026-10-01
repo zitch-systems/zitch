@@ -35,6 +35,7 @@ from .services import (
     ensure_reserved_account,
     existing_for_key,
     hold_funding_review,
+    customer_safe_failure,
     customer_visible_transactions,
     get_or_create_wallet,
     make_reference,
@@ -684,31 +685,28 @@ def complete_wema_provisioning(user, otp: str, tracking_id: str,
     already = bool(wallet.account_number)
     if not otp or not tracking_id:
         return {"success": False, "message": "Enter the OTP sent to your phone"}, 400
-    attempt = WemaProvisioningAttempt.objects.filter(
-        user=user, tracking_id=tracking_id, status=WemaProvisioningAttempt.PENDING,
-    ).first()
     submitted_at = timezone.now()
-    if attempt is None or (attempt.expires_at <= submitted_at and attempt.otp_verified_at is None):
-        return {"success": False, "message": "This verification request has expired. Start account setup again."}, 400
-    using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
-    # Older clients echo the raw value. It is not required, but if present it must
-    # match the initiation record so tampering is rejected loudly rather than ignored.
-    echoed = "".join(ch for ch in (echoed_identity or "") if ch.isdigit())
-    if echoed and not hmac.compare_digest(hash_identifier(echoed), attempt.identity_hash):
-        return {"success": False, "message": "Identity details do not match this verification request."}, 400
-    if attempt.otp_verified_at is None:
-        val = wema_provider.validate_wallet_otp(user.phone or "", otp, tracking_id, bvn=using_bvn)
-        if not val.get("success"):
-            return {"success": False, "message": val.get("message", "OTP verification failed")}, 502
-        # Record submission time only after the bank accepts the code. Its
-        # successful response can arrive after our local submission deadline;
-        # stamping response time would strand that valid code as expired.
-        # Persist this evidence before the asynchronous account read.
-        WemaProvisioningAttempt.objects.filter(
-            pk=attempt.pk, status=WemaProvisioningAttempt.PENDING,
-            otp_verified_at__isnull=True,
-        ).update(otp_verified_at=submitted_at)
-        attempt.refresh_from_db()
+    # Hold only this attempt while consuming the bank's one-time credential.
+    # A conditional timestamp update AFTER two concurrent provider calls cannot
+    # protect the OTP: the second bank call would already have replayed it.
+    with db_transaction.atomic():
+        attempt = WemaProvisioningAttempt.objects.select_for_update().filter(
+            user=user, tracking_id=tracking_id, status=WemaProvisioningAttempt.PENDING,
+        ).first()
+        if attempt is None or (attempt.expires_at <= submitted_at and attempt.otp_verified_at is None):
+            return {"success": False, "message": "This verification request has expired. Start account setup again."}, 400
+        using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
+        # Older clients may echo the identity; the initiation record is binding.
+        echoed = "".join(ch for ch in (echoed_identity or "") if ch.isdigit())
+        if echoed and not hmac.compare_digest(hash_identifier(echoed), attempt.identity_hash):
+            return {"success": False, "message": "Identity details do not match this verification request."}, 400
+        if attempt.otp_verified_at is None:
+            val = wema_provider.validate_wallet_otp(user.phone or "", otp, tracking_id, bvn=using_bvn)
+            if not val.get("success"):
+                return {"success": False, "message": val.get("message", "OTP verification failed")}, 502
+            # A slow accepted response retains the valid submission timestamp.
+            attempt.otp_verified_at = submitted_at
+            attempt.save(update_fields=["otp_verified_at"])
     if already:
         # Provisioned already (by an earlier verify, or by the bank's Account Creation
         # callback). Skip the provisioning write. The holder name is NOT read back from
@@ -1798,6 +1796,8 @@ def transfer_send(request):
     if daily_err:
         return daily_err
 
+    from transfers.services import PayoutError
+
     try:
         debit_txn, _ = transfer(sender, recipient, amount, note=data.get("note", ""),
                                 idempotency_key=key, channel="app")
@@ -1807,7 +1807,38 @@ def transfer_send(request):
         return fail("Insufficient wallet balance", status=402)
     except LimitExceeded as exc:
         return fail(str(exc), status=403, code="limit_exceeded")
+    except PayoutError as exc:
+        if exc.kind == "duplicate":
+            return idempotent_replay(existing_for_key(sender, key)) or fail(
+                "This transfer was already submitted. Check your transaction history.",
+                status=409, code="duplicate", duplicate=True,
+            )
+        if exc.kind == "insufficient":
+            return fail("Insufficient wallet balance", status=402)
+        if exc.kind == "limit_exceeded":
+            return fail(exc.message, status=403, code="limit_exceeded")
+        prior = existing_for_key(sender, key)
+        if exc.kind == "state_conflict":
+            return ok(pending=True, under_review=True,
+                      reference=prior.reference if prior else "",
+                      message="Your transfer is under review. Do not send it again; we will update its final status.")
+        return fail(
+            (customer_safe_failure({"message": exc.message}, service="Transfer")
+             if exc.kind == "provider" else exc.message),
+            status=422, code=f"transfer_{exc.kind}",
+            reference=prior.reference if prior else "",
+            **({"refunded": True} if exc.kind == "provider" else {"not_charged": True}),
+        )
 
     wallet = get_or_create_wallet(sender)
+    quarantine = (debit_txn.meta or {}).get("wema_reversal_quarantine") or {}
+    under_review = isinstance(quarantine, dict) and quarantine.get("active") is True
+    if debit_txn.transaction_status == Transaction.PENDING or under_review:
+        return ok(pending=True, under_review=under_review, wallet=str(wallet.balance),
+                  reference=debit_txn.reference,
+                  narration=(debit_txn.meta or {}).get("narration", ""),
+                  message=("Your transfer is under review. Do not send it again."
+                           if under_review else
+                           "Your transfer is processing. We will update its final status after the bank confirms it."))
     return ok(success=True, wallet=str(wallet.balance), reference=debit_txn.reference,
               narration=(debit_txn.meta or {}).get("narration", ""), message="Money sent")

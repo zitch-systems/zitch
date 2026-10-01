@@ -71,6 +71,32 @@ class Wallet(models.Model):
         return f"{self.user} · ₦{self.balance}"
 
 
+class BankHistoryCheckpoint(models.Model):
+    """Successful statement coverage for one attached partner-bank account.
+
+    A replacement NUBAN starts its own coverage; a cron outage never moves the
+    start date forward until every fetched credit is applied or durably claimed.
+    """
+
+    wallet = models.ForeignKey(
+        Wallet, on_delete=models.PROTECT, related_name="bank_history_checkpoints")
+    account_number = models.CharField(max_length=20)
+    # Legacy/imported attachments have no proven opening balance. New bank
+    # issuance explicitly clears this; reconciliation alone never clears it.
+    opening_review_required = models.BooleanField(default=True)
+    covered_through = models.DateField(null=True, blank=True)
+    last_completed_at = models.DateTimeField(null=True, blank=True)
+    last_error_code = models.CharField(max_length=64, blank=True, default="")
+    created = models.DateTimeField(auto_now_add=True)
+    updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["wallet", "account_number"], name="uniq_wallet_history_account"),
+        ]
+
+
 class WemaProvisioningAttempt(models.Model):
     """Server-side binding for the two-step Wema identity/OTP flow.
 
@@ -198,6 +224,45 @@ class Transaction(models.Model):
     def __str__(self):
         sign = "+" if self.direction == self.IN else "-"
         return f"{self.service} {sign}₦{self.amount} ({self.transaction_status})"
+
+
+class TransactionAlertDelivery(models.Model):
+    """One durable notification attempt per movement, outcome and channel.
+
+    The outbox is separate from mutable ledger metadata. It retains no message
+    body, contact address, token or provider response. A dispatch whose outcome
+    is unknown requires review; it is never automatically replayed.
+    """
+
+    READY, PREPARING, DISPATCHING = "ready", "preparing", "dispatching"
+    ACCEPTED, RETRY, REVIEW, EXHAUSTED, SKIPPED = (
+        "accepted", "retry", "review", "exhausted", "skipped"
+    )
+    STATES = [(state, state) for state in (
+        READY, PREPARING, DISPATCHING, ACCEPTED, RETRY, REVIEW, EXHAUSTED, SKIPPED
+    )]
+    CHANNELS = [(channel, channel) for channel in ("email", "sms", "whatsapp", "push")]
+
+    transaction = models.ForeignKey(
+        Transaction, on_delete=models.PROTECT, related_name="alert_deliveries",
+    )
+    reversal = models.BooleanField(default=False)
+    channel = models.CharField(max_length=12, choices=CHANNELS)
+    state = models.CharField(max_length=12, choices=STATES, default=READY)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    claim_token = models.CharField(max_length=64, blank=True, default="", editable=False)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    next_attempt_at = models.DateTimeField(null=True, blank=True)
+    provider_reference = models.CharField(max_length=128, blank=True, default="")
+    error_code = models.CharField(max_length=64, blank=True, default="")
+    created = models.DateTimeField(auto_now_add=True)
+    updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["transaction", "reversal", "channel"], name="uniq_txn_alert_channel",
+        )]
+        indexes = [models.Index(fields=["state", "next_attempt_at"], name="txn_alert_ready_idx")]
 
 
 class ReversalEvidence(models.Model):

@@ -4,14 +4,16 @@ Each purchase: verify PIN -> atomically debit wallet (PENDING row) -> call the
 aggregator -> mark the row Successful, or refund on failure.
 """
 from decimal import Decimal, InvalidOperation
+import re
 
 from common.http import (
     MIN_AIRTIME, MIN_ELECTRICITY, api, check_daily_limit, check_send_limits, fail,
     idempotent_replay, ok, parse_amount, provider_purchase_response, require_user,
     spend_key, verify_transaction_pin,
 )
+from common.phones import normalize_nigerian_mobile
 from common.ratelimit import ratelimit
-from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key, run_provider_purchase
+from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key, get_or_create_wallet, run_provider_purchase
 
 from .models import CablePlan, DataPlan
 from .providers import (
@@ -33,6 +35,13 @@ DISCO_NAMES = {
 def _amount(value):
     # Finite, positive, 2dp (rejects Infinity/1e500/junk; quantizes sub-kobo).
     return parse_amount(value)
+
+
+def _identifier(value, *, minimum=6, maximum=20):
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value if re.fullmatch(rf"[0-9]{{{minimum},{maximum}}}", value) else None
 
 
 def _check_pin(user, data):
@@ -92,7 +101,11 @@ def buyairtime(request):
     if amount is None or amount < 50:
         return fail("Enter a valid amount")
     net = str(data.get("network", ""))
-    phone = data.get("phone", "")
+    if net not in NETWORK_NAMES:
+        return fail("Select a valid mobile network")
+    phone = normalize_nigerian_mobile(data.get("phone", ""))
+    if phone is None:
+        return fail("Enter a valid Nigerian mobile number")
     key, key_error = _required_spend_key(
         data, user, "airtime", net, phone, amount)
     if key_error:
@@ -106,11 +119,11 @@ def buyairtime(request):
     # Sender's own NUBAN — the source account a Wema airtime buy debits (per-user
     # money-flow model). Blank only when the buyer has no NUBAN yet, in which case
     # the rail falls back to the pool account.
-    source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
+    source = get_or_create_wallet(user).account_number or ""
     outcome = _run_purchase(
         user, amount, f"Airtime — {NETWORK_NAMES.get(net, net)}",
         {"phone": phone, "network": net},
-        lambda ref: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-airtime",
+        lambda ref: vtu_purchase(f"{NETWORK_NAMES[net].lower()}-airtime",
                                  {"amount": str(amount), "phone": phone, "source_account": source},
                                  reference=ref),
         idempotency_key=key,
@@ -145,8 +158,12 @@ def get_data_plans_price(request):
 def buydata(request):
     user, data = request.user_obj, request.data
     net = str(data.get("datanetwork", ""))
+    if net not in NETWORK_NAMES:
+        return fail("Select a valid mobile network")
     plan_code = str(data.get("selectedDataPlan", ""))
-    phone = data.get("phone", "")
+    phone = normalize_nigerian_mobile(data.get("phone", ""))
+    if phone is None:
+        return fail("Enter a valid Nigerian mobile number")
     key, key_error = _required_spend_key(
         data, user, "data", net, phone, plan_code)
     if key_error:
@@ -163,7 +180,7 @@ def buydata(request):
     outcome = _run_purchase(
         user, plan.price, f"Data — {NETWORK_NAMES.get(net, net)} {plan.name}",
         {"phone": phone, "network": net, "plan_code": plan.plan_code},
-        lambda ref: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-data",
+        lambda ref: vtu_purchase(f"{NETWORK_NAMES[net].lower()}-data",
                                  {"billersCode": phone, "variation_code": plan.plan_code, "phone": phone}, reference=ref),
         idempotency_key=key,
     )
@@ -201,8 +218,12 @@ def get_cable_plans_price(request):
 @require_user
 def validate_iuc(request):
     prov = str(request.data.get("cablenetwork", ""))
-    iuc = request.data.get("iuc", "")
-    res = vtu_verify_customer(CABLE_NAMES.get(prov, "dstv").lower(), iuc)
+    if prov not in CABLE_NAMES:
+        return fail("Select a valid cable provider")
+    iuc = _identifier(request.data.get("iuc", ""))
+    if iuc is None:
+        return fail("Enter a valid smartcard number")
+    res = vtu_verify_customer(CABLE_NAMES[prov].lower(), iuc)
     if res.get("success"):
         return ok(customer_name=res.get("customer_name", ""), name=res.get("customer_name", ""))
     return fail(res.get("message", "Could not verify IUC number"), status=400)
@@ -213,8 +234,12 @@ def validate_iuc(request):
 def buycable(request):
     user, data = request.user_obj, request.data
     prov = str(data.get("cablenetwork", ""))
+    if prov not in CABLE_NAMES:
+        return fail("Select a valid cable provider")
     plan_code = str(data.get("selectedcablePlan", ""))
-    iuc = data.get("iuc", "")
+    iuc = _identifier(data.get("iuc", ""))
+    if iuc is None:
+        return fail("Enter a valid smartcard number")
     key, key_error = _required_spend_key(
         data, user, "cable", prov, iuc, plan_code)
     if key_error:
@@ -228,14 +253,14 @@ def buycable(request):
     err = _check_pin(user, data)
     if err:
         return err
-    verified = vtu_verify_customer(CABLE_NAMES.get(prov, "dstv").lower(), iuc)
+    verified = vtu_verify_customer(CABLE_NAMES[prov].lower(), iuc)
     if not verified.get("success"):
         return fail(verified.get("message", "Could not verify IUC number"), status=400)
     outcome = _run_purchase(
         user, plan.price, f"Cable — {CABLE_NAMES.get(prov, prov)} {plan.name}",
         {"iuc": iuc, "provider": prov, "plan_code": plan.cable_plan_code,
          "customer_name": str(verified.get("customer_name") or "")},
-        lambda ref: vtu_purchase(CABLE_NAMES.get(prov, "dstv").lower(),
+        lambda ref: vtu_purchase(CABLE_NAMES[prov].lower(),
                                  {"billersCode": iuc, "variation_code": plan.cable_plan_code}, reference=ref),
         idempotency_key=key,
     )
@@ -250,9 +275,15 @@ def buycable(request):
 @require_user
 def validate_meter(request):
     disco = str(request.data.get("disco", ""))
-    meter = request.data.get("meter", "")
+    if disco not in DISCO_NAMES:
+        return fail("Select a valid electricity provider")
+    meter = _identifier(request.data.get("meter", ""))
+    if meter is None:
+        return fail("Enter a valid meter number")
     meter_type = request.data.get("meter_type", "prepaid")
-    res = vtu_verify_customer(f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric", meter, meter_type)
+    if meter_type not in ("prepaid", "postpaid"):
+        return fail("Select prepaid or postpaid")
+    res = vtu_verify_customer(f"{DISCO_NAMES[disco].lower()}-electric", meter, meter_type)
     if res.get("success"):
         address = res.get("customer_address", "")
         return ok(customer_name=res.get("customer_name", ""), name=res.get("customer_name", ""),
@@ -268,8 +299,14 @@ def buyelectricity(request):
     if amount is None or amount < MIN_ELECTRICITY:
         return fail(f"Minimum amount is ₦{MIN_ELECTRICITY:,.0f}")
     disco = str(data.get("disco", ""))
-    meter = str(data.get("meter", "") or "").strip()
+    if disco not in DISCO_NAMES:
+        return fail("Select a valid electricity provider")
+    meter = _identifier(data.get("meter", ""))
+    if meter is None:
+        return fail("Enter a valid meter number")
     meter_type = data.get("meter_type", "prepaid")
+    if meter_type not in ("prepaid", "postpaid"):
+        return fail("Select prepaid or postpaid")
     disco_name = DISCO_NAMES.get(disco, disco)
     idempotency_key, key_error = _required_spend_key(
         data, user, "electricity", disco, meter, meter_type, amount)
@@ -286,7 +323,7 @@ def buyelectricity(request):
     if err:
         return err
     verified = vtu_verify_customer(
-        f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric", meter, meter_type)
+        f"{DISCO_NAMES[disco].lower()}-electric", meter, meter_type)
     if not verified.get("success"):
         return fail(verified.get("message", "Could not verify meter number"), status=400)
     customer_name = str(verified.get("customer_name", "") or "").strip()
@@ -297,7 +334,7 @@ def buyelectricity(request):
          "customer_name": customer_name, "customer": customer_name,
          "customer_address": customer_address, "address": customer_address,
          "channel": "app"},
-        lambda ref: vtu_purchase(f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric",
+        lambda ref: vtu_purchase(f"{DISCO_NAMES[disco].lower()}-electric",
                                  {"billersCode": meter, "variation_code": meter_type, "amount": str(amount)}, reference=ref),
         idempotency_key=idempotency_key,
     )
@@ -373,7 +410,7 @@ def payremita(request):
             code="rrr_amount_changed",
             amount=str(authoritative_amount),
         )
-    source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
+    source = get_or_create_wallet(user).account_number or ""
     name = user.get_full_name() or user.phone or "Zitch User"
     outcome = _run_purchase(
         user, amount, f"Remita — {rrr}",

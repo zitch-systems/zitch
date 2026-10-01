@@ -20,6 +20,7 @@ from django.db import transaction as db_transaction
 from common.http import (
     api, fail, idempotent_replay, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
 )
+from common.products import product_available, product_state, unavailable_response
 from wallet.services import DuplicateTransaction, credit, existing_for_key, make_reference
 
 from .models import ConversionRequest
@@ -116,7 +117,9 @@ def rates(request):
         {"network": net, "name": NETWORK_NAMES.get(net, net), "rate": str(RATES.get(net, DEFAULT_RATE)),
          "percent": int(RATES.get(net, DEFAULT_RATE) * 100)}
         for net in NETWORK_NAMES
-    ], min_amount=str(MIN_AIRTIME), max_amount=str(MAX_AIRTIME))
+    ] if product_available("airtime_cash") else [],
+        min_amount=str(MIN_AIRTIME), max_amount=str(MAX_AIRTIME),
+        **product_state("airtime_cash"))
 
 
 @api
@@ -152,6 +155,8 @@ def convert_airtime(request):
     if replay:
         return replay
 
+    if not product_available("airtime_cash"):
+        return unavailable_response("airtime_cash")
     pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
     if pin_err:
         return pin_err

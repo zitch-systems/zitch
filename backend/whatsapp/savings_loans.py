@@ -15,6 +15,7 @@ from django.utils import timezone
 from django.utils.crypto import constant_time_compare, salted_hmac
 
 from common.http import parse_amount, stale_pin_error
+from common.products import MESSAGES as PRODUCT_MESSAGES, product_available
 from loans.models import Loan
 from loans.services import repay
 from savings.models import FixedSave
@@ -56,6 +57,14 @@ def _read_allowed(user, msisdn, resume):
     return True
 
 
+def _unavailable(msisdn, product):
+    """Name the unavailable product and give a usable support route when set."""
+    r = _router()
+    support = r._support_block()
+    message = PRODUCT_MESSAGES[product]
+    return r.reply(msisdn, message + (f"\n\n{support}" if support else ""))
+
+
 def _amount(text):
     """Bounded shorthand, rejecting negatives, sub-kobo and oversized values."""
     raw = str(text).strip().lower()
@@ -78,11 +87,13 @@ def show_savings(user, msisdn, *, page=1, history=False):
     command = f"savings {'history' if history else 'page'} {page}"
     if not _read_allowed(user, msisdn, command):
         return
-    try:
-        settle_user_maturities(user)
-    except Exception:
-        r.log.exception("wa_savings_maturity_read_failed user=%s", user.pk)
-        return r.reply(msisdn, "I couldn't confirm your savings payouts right now. Please try savings again shortly.")
+    available = product_available("savings")
+    if available:
+        try:
+            settle_user_maturities(user)
+        except Exception:
+            r.log.exception("wa_savings_maturity_read_failed user=%s", user.pk)
+            return r.reply(msisdn, "I couldn't confirm your savings payouts right now. Please try savings again shortly.")
     rows = user.savings.all()
     if not history:
         rows = rows.filter(status=FixedSave.ACTIVE)
@@ -95,12 +106,23 @@ def show_savings(user, msisdn, *, page=1, history=False):
     if not count:
         lines.append("You don't have any saved plans yet." if history else "You don't have any active Zitch savings right now.")
     for plan in rows[(page - 1) * 5:page * 5]:
-        state = "paid out" if plan.paid_out else f"matures {timezone.localtime(plan.matures_at):%d %b %Y}"
+        if plan.paid_out:
+            state = "paid out"
+        elif not available and plan.matures_at <= timezone.now():
+            state = "payout status unconfirmed — contact support"
+        else:
+            state = f"matures {timezone.localtime(plan.matures_at):%d %b %Y}"
         lines.append(f"• {r._money(plan.principal)} — {state}\n  Details: savings plan {plan.pk}")
     if count > page * 5:
         lines.append(f"Next page: savings {'history' if history else 'page'} {page + 1}")
-    lines.append("Reply *new savings* to create a Fixed Save, *savings rates* for terms, "
-                 "or *savings history* for all plans. Matured plans pay into your wallet automatically.")
+    if available:
+        lines.append("Reply *new savings* to create a Fixed Save, *savings rates* for terms, "
+                     "or *savings history* for all plans. Matured plans pay into your wallet automatically.")
+    else:
+        lines.append(PRODUCT_MESSAGES["savings"])
+        support = r._support_block()
+        if support:
+            lines.append(support)
     return r.reply(msisdn, "\n\n".join(lines))
 
 
@@ -112,24 +134,36 @@ def show_plan(user, msisdn, plan_id):
     plan = user.savings.filter(pk=plan_id).first()
     if plan is None:
         return r.reply(msisdn, "That plan isn't available on your account. Reply savings to see your plans.")
-    try:
-        settle_user_maturities(user)
-    except Exception:
-        r.log.exception("wa_savings_plan_payout_failed user=%s", user.pk)
-        return r.reply(msisdn, "I couldn't confirm this plan's payout. Please check savings again shortly.")
+    available = product_available("savings")
+    if available:
+        try:
+            settle_user_maturities(user)
+        except Exception:
+            r.log.exception("wa_savings_plan_payout_failed user=%s", user.pk)
+            return r.reply(msisdn, "I couldn't confirm this plan's payout. Please check savings again shortly.")
     plan.refresh_from_db()
-    state = "Paid into your wallet" if plan.paid_out else "Locked until maturity"
+    if plan.paid_out:
+        state = "Paid into your wallet"
+    elif not available and plan.matures_at <= timezone.now():
+        state = "Payout status unconfirmed — contact support"
+    else:
+        state = "Locked until maturity"
+    support = r._support_block()
+    tail = ("Reply new savings for a separate plan, or savings history for past plans."
+            if available else PRODUCT_MESSAGES["savings"]
+            + (("\n\n" + support) if support else ""))
     return r.reply(msisdn,
         f"🏦 *Fixed Save*\nRef {plan.reference}\nPrincipal: {r._money(plan.principal)}\n"
         f"Annual rate: {plan.rate * 100:g}%\nInterest: {r._money(plan.interest)}\n"
         f"Maturity value: {r._money(plan.maturity_value)}\n"
         f"Matures: {timezone.localtime(plan.matures_at):%d %b %Y}\nStatus: {state}\n\n"
-        "Existing plans cannot be topped up, changed or withdrawn early. "
-        "Reply new savings for a separate plan, or savings history for past plans.")
+        "Existing plans cannot be topped up, changed or withdrawn early. " + tail)
 
 
 def show_rates(msisdn):
     r = _router()
+    if not product_available("savings"):
+        return _unavailable(msisdn, "savings")
     lines = [f"• {days} days: {rate * 100:g}% per year" for days, rate in sorted(FixedSave.RATES.items())]
     return r.reply(msisdn, "🏦 *Fixed Save terms*\n" + "\n".join(lines)
         + f"\nMinimum: {r._money(FixedSave.MIN_PRINCIPAL)}. Interest is prorated for the lock period. "
@@ -139,6 +173,8 @@ def show_rates(msisdn):
 
 def start_savings(user, msisdn):
     r = _router()
+    if not product_available("savings"):
+        return _unavailable(msisdn, "savings")
     r._new_flow(user, msisdn, "savings_create", "amount", {})
     return r.reply(msisdn, f"How much would you like to lock in Fixed Save? Minimum {r._money(FixedSave.MIN_PRINCIPAL)}. "
                    "For example, 5k. Funds cannot be withdrawn early. Reply cancel to stop.")
@@ -150,20 +186,29 @@ def show_loan(user, msisdn):
         return
     loan = user.loans.filter(status=Loan.ACTIVE).first()
     if loan is None:
+        if not product_available("loans"):
+            return _unavailable(msisdn, "loans")
         return r.reply(msisdn, "You don't have an active Zitch loan right now. "
                        "New loan applications aren't available in this WhatsApp flow.")
     overdue = " — *overdue*" if loan.due_date < timezone.now() else ""
+    available = product_available("loans")
+    support = r._support_block()
+    tail = ("Reply *repay loan* to repay from your wallet here. You'll confirm privately with your PIN."
+            if available else PRODUCT_MESSAGES["loans"] +
+            (("\n\n" + support) if support else ""))
     return r.reply(msisdn,
         f"💳 *Your Zitch loan*\nOutstanding: {r._money(loan.outstanding)}\n"
         f"Borrowed: {r._money(loan.principal)} · repaid {r._money(loan.amount_repaid)}\n"
         f"Due: {timezone.localtime(loan.due_date):%d %b %Y}{overdue}\nRef {loan.reference}\n\n"
-        "Reply *repay loan* to repay from your wallet here. You'll confirm privately with your PIN.")
+        + tail)
 
 
 def start_repayment(user, msisdn):
     r = _router()
     if not _read_allowed(user, msisdn, "repay loan"):
         return
+    if not product_available("loans"):
+        return show_loan(user, msisdn)
     loan = user.loans.filter(status=Loan.ACTIVE).first()
     if loan is None:
         return show_loan(user, msisdn)
@@ -176,6 +221,10 @@ def start_repayment(user, msisdn):
 def _confirm(pa, user):
     """These new routes require a private Flow; never fall back to a chat PIN."""
     r = _router()
+    product = "savings" if pa.action_type == "savings_create" else "loans"
+    if not product_available(product):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return _unavailable(pa.msisdn, product)
     user.refresh_from_db()
     if not user.transaction_pin or user.pin_reset_required:
         PendingAction.objects.filter(pk=pa.pk).delete()
@@ -197,6 +246,10 @@ def _confirm(pa, user):
 
 def advance_product(pa, user, msisdn, text):
     r = _router()
+    product = "savings" if pa.action_type == "savings_create" else "loans"
+    if not product_available(product):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return _unavailable(msisdn, product)
     if pa.action_type == "savings_create" and pa.state == "days":
         raw = text.strip()
         days = int(raw) if re.fullmatch(r"\d{1,3}", raw) else None
@@ -279,6 +332,9 @@ def _execute(pa, user):
             # A replay never falls through to a new debit, even when the loan
             # was fully repaid or the wallet can no longer cover the old amount.
             return f"Already completed: {r._money(prior.amount)}. Ref {prior.reference}. Reply savings or my loan for details.", r.OUTCOME_SUCCESS
+        product = "savings" if pa.action_type == "savings_create" else "loans"
+        if not product_available(product):
+            return PRODUCT_MESSAGES[product], r.OUTCOME_FAILED
         if pa.expired:
             return "This request expired before it could execute. Start a fresh request in the chat.", r.OUTCOME_FAILED
         if (not owner.transaction_pin or owner.pin_locked or stale_pin_error(owner)

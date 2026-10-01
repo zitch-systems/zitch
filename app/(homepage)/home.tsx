@@ -2,7 +2,6 @@ import React, { useCallback, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
-import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
@@ -18,7 +17,7 @@ const GRID = [
   { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
   { label: 'Save', icon: 'fixed', go: () => router.push('/savings') },
-  { label: 'Loan', icon: 'loan', badge: 'Hot', hot: true, go: () => router.push('/getloan') },
+  { label: 'Loan', icon: 'loan', go: () => router.push('/loan') },
   { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
   { label: 'More', icon: 'more', more: true },
 ];
@@ -39,7 +38,7 @@ const MORE = [
 ];
 
 const Home = () => {
-  const { c, theme } = useTheme();
+  const { c } = useTheme();
   const { balance, firstName, fullName, avatar, accountNumber, bankName, txns, showBal, setShowBal, reload } = useWallet();
   const [more, setMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -189,27 +188,11 @@ const Home = () => {
         <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
           {GRID.map((s) => (
             <View key={s.label} style={{ width: '25%', alignItems: 'center', marginBottom: 18 }}>
-              <ServiceTile icon={s.icon} label={s.label} badge={s.badge} hot={s.hot} onPress={() => (s.more ? setMore(true) : s.go && s.go())} />
+              <ServiceTile icon={s.icon} label={s.label} badge={s.badge} onPress={() => (s.more ? setMore(true) : s.go && s.go())} />
             </View>
           ))}
         </View>
       </Card>
-
-      {/* promo */}
-      <Pressable onPress={() => router.push('/savings')} style={{ marginHorizontal: 16, marginTop: 14 }}>
-        <View style={{ borderRadius: 20, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14, borderWidth: 1, borderColor: c.line, backgroundColor: c.surface2 }}>
-          <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: 'rgba(15,162,149,.16)', alignItems: 'center', justifyContent: 'center' }}>
-            <ZIcon name="fixed" size={23} color={c.brand} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontFamily: font.bold, fontSize: 14, color: c.ink1 }}>Fixed Save · 22% p.a</Text>
-            <Text style={{ fontSize: 12, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>Grow your savings, locked & safe</Text>
-          </View>
-          <View style={{ paddingVertical: 9, paddingHorizontal: 18, borderRadius: 999, backgroundColor: c.brand }}>
-            <Text style={{ color: '#fff', fontSize: 13, fontFamily: font.bold }}>Save</Text>
-          </View>
-        </View>
-      </Pressable>
 
       {/* linked banks summary — live count of Mono-connected accounts; tap to the
           wallet (where they're managed) or the link flow when none are connected */}

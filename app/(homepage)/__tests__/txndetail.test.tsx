@@ -4,6 +4,7 @@ import renderer, { act } from 'react-test-renderer';
 import TxnDetail from '@/app/(homepage)/txndetail';
 
 const mockApiJson = jest.fn();
+const mockClearSpendAttempt = jest.fn();
 const mockParams = {
   type: 'Transfer',
   amount: '1000',
@@ -14,6 +15,9 @@ const mockParams = {
   underReview: '',
   statusMessage: '',
   reviewKind: '',
+  spendScope: 'zitch-transfer',
+  spendFingerprint: 'recipient-key|1000',
+  spendKey: 'durable-key',
 };
 
 jest.mock('@/lib/api', () => ({
@@ -21,6 +25,9 @@ jest.mock('@/lib/api', () => ({
 }));
 jest.mock('@/lib/endpoints', () => ({
   EP: { wallet: { transactionStatus: '/api/wallet/transaction/status/' } },
+}));
+jest.mock('@/lib/pendingSpend', () => ({
+  clearSpendAttempt: (...args: unknown[]) => mockClearSpendAttempt(...args),
 }));
 jest.mock('expo-router', () => {
   const ReactActual = jest.requireActual<typeof import('react')>('react');
@@ -57,13 +64,13 @@ jest.mock('@/components/design/ui', () => {
   };
 });
 
-const transaction = (status: string) => ({
+const transaction = (status: string, reference = 'ZTC-POLL-1') => ({
   success: true,
   transaction: {
     amount: '1000',
     date: 'Today',
     direction: 'out',
-    reference: 'ZTC-POLL-1',
+    reference,
     service: 'Transfer',
     transaction_status: status,
   },
@@ -73,6 +80,7 @@ describe('transaction-detail pending refresh', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     mockApiJson.mockReset();
+    mockClearSpendAttempt.mockReset();
     mockParams.status = 'PENDING';
     mockParams.underReview = '';
     mockParams.statusMessage = '';
@@ -101,6 +109,11 @@ describe('transaction-detail pending refresh', () => {
       });
 
       expect(mockApiJson).toHaveBeenCalledTimes(2);
+      expect(mockClearSpendAttempt).toHaveBeenCalledWith(
+        'zitch-transfer',
+        'recipient-key|1000',
+        'durable-key',
+      );
       expect(JSON.stringify(tree.toJSON())).toContain(terminalStatus);
       act(() => tree.unmount());
       jest.advanceTimersByTime(20000);
@@ -114,6 +127,7 @@ describe('transaction-detail pending refresh', () => {
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<TxnDetail />); });
     expect(mockApiJson).toHaveBeenCalledTimes(1);
+    expect(mockClearSpendAttempt).not.toHaveBeenCalled();
 
     act(() => tree.unmount());
     jest.advanceTimersByTime(20000);
@@ -140,6 +154,62 @@ describe('transaction-detail pending refresh', () => {
     expect(rendered).toContain('Do not retry');
     expect(tree.root.findByProps({ accessibilityLabel: 'Share status' })).toBeTruthy();
     expect(tree.root.findAllByProps({ accessibilityLabel: 'Share receipt' })).toHaveLength(0);
+    act(() => tree.unmount());
+  });
+
+  it('does not clear an attempt for a terminal response with a different reference', async () => {
+    mockApiJson.mockResolvedValue(transaction('SUCCESSFUL', 'ZTC-DIFFERENT'));
+
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+
+    expect(mockClearSpendAttempt).not.toHaveBeenCalled();
+    expect(JSON.stringify(tree.toJSON())).toContain('PENDING');
+    expect(JSON.stringify(tree.toJSON())).not.toContain('SUCCESSFUL');
+    act(() => tree.unmount());
+  });
+
+  it('does not let an older pending response overwrite a newer terminal refresh', async () => {
+    let resolveInitial!: (value: unknown) => void;
+    mockApiJson
+      .mockReturnValueOnce(new Promise((resolve) => { resolveInitial = resolve; }))
+      .mockResolvedValueOnce(transaction('SUCCESSFUL'));
+
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<TxnDetail />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await tree.root.findByProps({ accessibilityLabel: 'Refresh status' }).props.onPress();
+    });
+    expect(JSON.stringify(tree.toJSON())).toContain('SUCCESSFUL');
+
+    await act(async () => {
+      resolveInitial(transaction('PENDING'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(JSON.stringify(tree.toJSON())).toContain('SUCCESSFUL');
+    expect(JSON.stringify(tree.toJSON())).not.toContain('PENDING');
+    expect(mockClearSpendAttempt).toHaveBeenCalledTimes(1);
+    act(() => tree.unmount());
+  });
+
+  it('announces a manual refresh failure inline', async () => {
+    mockApiJson
+      .mockResolvedValueOnce(transaction('PENDING'))
+      .mockRejectedValueOnce(new Error('offline'));
+
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+    await act(async () => {
+      await tree.root.findByProps({ accessibilityLabel: 'Refresh status' }).props.onPress();
+    });
+
+    const alert = tree.root.findByProps({ accessibilityRole: 'alert' });
+    expect(alert.props.children).toContain('Check your connection');
     act(() => tree.unmount());
   });
 });

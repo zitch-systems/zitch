@@ -10,6 +10,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction as db_transaction
 from django.utils import timezone
 
+from common.products import require_product
 from wallet.models import Wallet
 from wallet.services import InsufficientFunds, credit, make_reference
 
@@ -69,6 +70,7 @@ def disburse(user, principal, tenure_days: int, idempotency_key: str = "") -> Lo
     DuplicateTransaction on a reused key and the whole disbursement (loan row +
     credit) rolls back, so a replayed request never double-disburses.
     """
+    require_product("loans")
     principal = Decimal(str(principal))
     # Serialise concurrent loan_requests for this user on the user row.
     User.objects.select_for_update().get(pk=user.pk)
@@ -102,6 +104,7 @@ def repay(user, loan: Loan, amount, idempotency_key: str = "") -> Loan:
     retry would debit the wallet a second time (the reference is random per
     call, so it can't dedupe on its own).
     """
+    require_product("loans")
     from django.db import IntegrityError
 
     from wallet.models import Transaction

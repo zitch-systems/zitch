@@ -14,7 +14,7 @@ from django.test import TestCase
 from common.http import send_limit_error
 from utility import wema
 from wallet.models import Transaction, Wallet
-from wallet.services import bank_spend_error, sync_bank_tier
+from wallet.services import bank_spend_error, bank_spent_today, sync_bank_tier
 from wallet.tests import make_user
 
 
@@ -90,10 +90,51 @@ class BankSpendErrorTests(TestCase):
         self.assertIsNone(bank_spend_error(self.user, Decimal("1000")))
 
     def test_non_bank_spend_does_not_count(self):
-        # A VTU purchase settles with the VAS provider and never debits the NUBAN.
+        # An explicitly retired provider purchase is not a partner-bank debit.
         self._set_bank_tier(1)
         self._payout("29000", bank=False)
         self.assertIsNone(bank_spend_error(self.user, Decimal("1000")))
+
+    def test_partner_bank_vas_and_payouts_share_the_bank_daily_cap(self):
+        self._set_bank_tier(1)
+        self._payout("20000")
+        for service, amount, status, rail in (
+                ("Airtime — MTN", "5000", Transaction.SUCCESS, "wema"),
+                ("Data — MTN", "4000", Transaction.PENDING, "wema"),
+                ("Electricity — Ikeja", "10000", Transaction.FAILED, "wema"),
+                ("Airtime — MTN", "10000", Transaction.SUCCESS, "retired")):
+            Transaction.objects.create(
+                user=self.user, service=service, amount=Decimal(amount),
+                direction=Transaction.OUT, transaction_status=status,
+                reference=f"VAS-CAP-{Transaction.objects.count()}",
+                meta={"provider_purchase": True, "vas_rail": rail},
+            )
+        self.assertEqual(bank_spent_today(self.user), Decimal("29000"))
+        self.assertIsNone(bank_spend_error(self.user, Decimal("1000")))
+        self.assertIsNotNone(bank_spend_error(self.user, Decimal("1001")))
+
+    def test_new_vas_hold_counts_before_the_provider_response(self):
+        self._set_bank_tier(1)
+        Transaction.objects.create(
+            user=self.user, service="Airtime — MTN", amount=Decimal("29000"),
+            direction=Transaction.OUT, transaction_status=Transaction.PENDING,
+            reference="VAS-ORPHAN-CAP", meta={"provider_purchase": True, "reconcile": True},
+        )
+        self.assertIsNotNone(bank_spend_error(self.user, Decimal("1001")))
+
+    def test_bank_credit_and_internal_evidence_cannot_count_twice_as_spend(self):
+        self._set_bank_tier(1)
+        self._payout("1000")
+        for direction, meta in (
+                (Transaction.IN, {"bank": "Wema Bank"}),
+                (Transaction.OUT, {"bank": "Wema Bank", "internal_movement": True}),
+                (Transaction.OUT, {"bank": "Wema Bank", "internal_evidence": True})):
+            Transaction.objects.create(
+                user=self.user, service="Bank evidence", amount=Decimal("1000"),
+                direction=direction, transaction_status=Transaction.SUCCESS,
+                reference=f"BANK-EVIDENCE-{Transaction.objects.count()}", meta=meta,
+            )
+        self.assertEqual(bank_spent_today(self.user), Decimal("1000"))
 
     def test_exhausted_day_says_so_plainly(self):
         self._set_bank_tier(1)

@@ -451,11 +451,16 @@ def _send_sms_termii(phone: str, message: str, timeout: float = REQUEST_TIMEOUT)
             log.warning("sms_rejected status=%s reason=%s",
                         resp.status_code, str(data.get("message") or data)[:200])
         return {"success": ok,
-                "message_id": str(data.get("message_id") or ""), "raw": data}
+                "message_id": str(data.get("message_id") or ""), "raw": data,
+                "http_status": resp.status_code,
+                "uncertain": not ok and (resp.status_code >= 500 or resp.ok),
+                "retryable": not ok and 400 <= resp.status_code < 500}
     except requests.RequestException as exc:
-        return {"success": False, "message": f"SMS provider unreachable: {exc}"}
+        return {"success": False, "uncertain": True,
+                "message": f"SMS provider unreachable: {exc}"}
     except ValueError as exc:                       # non-JSON body (HTML error page)
-        return {"success": False, "message": f"SMS provider returned non-JSON: {exc}"}
+        return {"success": False, "uncertain": True,
+                "message": f"SMS provider returned non-JSON: {exc}"}
 
 
 def send_sms(phone: str, message: str, timeout: float = REQUEST_TIMEOUT) -> dict:
@@ -523,10 +528,17 @@ def send_email(to: str, subject: str, message: str, html: str | None = None,
             log.warning("email_rejected status=%s from=%s reason=%s",
                         resp.status_code, cfg["FROM_EMAIL"],
                         str(data.get("message") or data.get("error") or data)[:200])
-        return {"success": ok, "raw": data}
+        return {"success": ok, "raw": data,
+                "http_status": resp.status_code,
+                "uncertain": not ok and (resp.status_code >= 500 or resp.ok),
+                "retryable": not ok and 400 <= resp.status_code < 500}
     except requests.RequestException as exc:
         log.warning("email_unreachable error=%s", str(exc)[:200])
-        return {"success": False, "message": f"Email provider unreachable: {exc}"}
+        return {"success": False, "uncertain": True,
+                "message": f"Email provider unreachable: {exc}"}
+    except (TypeError, ValueError):
+        return {"success": False, "uncertain": True,
+                "message": "Email provider returned an unreadable response"}
 
 
 def sms_probe(phone: str = "") -> dict:
@@ -690,18 +702,10 @@ def kyc_verify_nin_document(image: str) -> dict:
     the Prembly dashboard before relying on this."""
     if not _prembly_live():
         return _kyc_mock_or_unavailable()
-    if not isinstance(image, str) or not image.strip() or len(image) > 2_800_000:
-        return {"success": False, "message": "Upload your NIN slip to continue"}
-    try:
-        resp = requests.post(
-            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/document/analysis",
-            json={"doc_type": "nin", "image": image},
-            headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        return {"success": _kyc_document_response_passed(data, resp.status_code), "raw": data}
-    except (requests.RequestException, ValueError):
-        return {"success": False, "message": "Document verification is temporarily unavailable. Please try again later."}
+    # No confirmed completed-check/identity-binding contract exists for this
+    # legacy OCR adapter. Credentials and an accepted request cannot attest NIN
+    # ownership. Do not send the document to a guessed endpoint or lift KYC.
+    return _kyc_unconfirmed_contract()
 
 
 def kyc_verify_face(selfie: str = "") -> dict:
@@ -741,7 +745,7 @@ def _prembly_liveness_response_passed(data, status_code: int) -> bool:
     published units. 99% is Zitch's conservative acceptance policy, not a
     provider-recommended threshold. Unknown/incomplete schemas fail closed.
     """
-    if status_code != 200 or not _kyc_document_response_passed(data, status_code):
+    if status_code != 200 or not _prembly_response_has_no_failure(data, status_code):
         return False
     detail, verification = data.get("data"), data.get("verification")
     if (data.get("response_code") != "00"
@@ -761,10 +765,11 @@ def _prembly_liveness_response_passed(data, status_code: int) -> bool:
                 and math.isclose(confidence * 100, percentage, rel_tol=0, abs_tol=0.01))
 
 
-def _kyc_document_response_passed(data, status_code: int) -> bool:
+def _prembly_response_has_no_failure(data, status_code: int) -> bool:
     """Reject failed/pending transport and envelope signals, without asserting a
-    provider-specific verification schema. Address/document contracts remain
-    unconfirmed; this guard alone does not certify either live integration.
+    provider-specific verification schema. This predicate only screens failures;
+    it cannot authorize KYC. Native liveness also requires its explicit completed
+    evidence. Address/document adapters have no confirmed completion contract.
     """
     import re
 
@@ -799,6 +804,19 @@ def _kyc_document_response_passed(data, status_code: int) -> bool:
     return True
 
 
+def _kyc_unconfirmed_contract() -> dict:
+    """A live, unconfirmed proof adapter stays unavailable even with keys set.
+
+    Prembly's published address initiation can return status=true and
+    verification.status=VERIFIED while the address job is still unassigned.
+    Generic transport/envelope success must never become a Tier 3 grant. The
+    supported partner-bank address rail is selected separately by the caller.
+    """
+    return {"success": False, "unavailable": True,
+            "code": "verification_contract_unconfirmed",
+            "message": "This verification option is temporarily unavailable. Please try again later."}
+
+
 def kyc_verify_address(address: str, document: str = "") -> dict:
     """Verify a residential address (Tier 3). MOCK accepts offline.
 
@@ -807,19 +825,7 @@ def kyc_verify_address(address: str, document: str = "") -> dict:
     """
     if not _prembly_live():
         return _kyc_mock_or_unavailable()
-    if (not isinstance(address, str) or not isinstance(document, str)
-            or not (address.strip() or document.strip())):
-        return {"success": False, "message": "Enter your residential address"}
-    try:
-        resp = requests.post(
-            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/address",
-            json={"address": address, "document": document},
-            headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        return {"success": _kyc_document_response_passed(data, resp.status_code), "raw": data}
-    except (requests.RequestException, ValueError):
-        return {"success": False, "message": "Address verification is temporarily unavailable. Please try again later."}
+    return _kyc_unconfirmed_contract()
 
 
 def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
@@ -831,18 +837,7 @@ def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
     """
     if not _prembly_live():
         return _kyc_mock_or_unavailable()
-    if not isinstance(image, str) or not image.strip() or not isinstance(doc_type, str):
-        return {"success": False, "message": "Upload a clear photo of your ID document"}
-    try:
-        resp = requests.post(
-            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/document/analysis",
-            json={"doc_type": doc_type or "generic", "image": image},
-            headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        return {"success": _kyc_document_response_passed(data, resp.status_code), "raw": data}
-    except (requests.RequestException, ValueError):
-        return {"success": False, "message": "Document verification is temporarily unavailable. Please try again later."}
+    return _kyc_unconfirmed_contract()
 
 
 # ---------------------------------------------------------------------------
@@ -1261,6 +1256,10 @@ def card_secure_details(card_token: str) -> dict:
 
 def fund_card(card_token: str, amount) -> dict:
     """Top up an issued card from the funding source. MOCK succeeds."""
+    from common.products import MESSAGES, product_available
+    if not product_available("card_funding"):
+        return {"success": False, "message": MESSAGES["card_funding"],
+                "code": "product_unavailable"}
     if not _card_issuer_live():
         if mock_disabled_in_prod():
             # Fail closed: a fake success here would debit the real wallet to a
@@ -1441,8 +1440,9 @@ def card_capabilities(provider: str = "") -> dict:
             "can_unfreeze": False,
             "permanent_block": True,
         }
+    from common.products import product_available
     return {
-        "can_fund": True,
+        "can_fund": product_available("card_funding"),
         "can_unfreeze": True,
         "permanent_block": False,
     }

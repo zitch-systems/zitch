@@ -165,6 +165,14 @@ services:
         sync: false
       - key: VAS_PROVIDER
         sync: false
+      # Prembly carries selfie/liveness, address and ID-document checks.
+      # Consumers inherit these values so app and WhatsApp cannot drift.
+      - key: PREMBLY_BASE_URL
+        sync: false
+      - key: PREMBLY_API_KEY
+        sync: false
+      - key: PREMBLY_APP_ID
+        sync: false
       # ---------------------------------------------------------------------
       # Wema / ALAT — the SOLE money-movement + Nigeria-KYC rail. Wallet Services,
       # Card, Airtime, Account Upgrade, Remita and BNPL are distinct subscriptions;
@@ -316,6 +324,12 @@ services:
       # The credentialed WhatsApp worker is the only process that delivers
       # terminal transaction alerts. Declare its source values here so the
       # worker can inherit them without duplicating Meta credentials elsewhere.
+      - key: TXN_ALERTS_EMAIL
+        sync: false
+      - key: TXN_ALERTS_SMS
+        sync: false
+      - key: TXN_ALERTS_PUSH
+        sync: false
       - key: TXN_ALERTS_WHATSAPP
         sync: false
       - key: WHATSAPP_TXN_ALERT_TEMPLATE
@@ -334,6 +348,11 @@ services:
         sync: false
       - key: TERMII_BASE_URL
         sync: false
+      # Canonical observability/compliance settings inherited by consumers.
+      - key: SENTRY_DSN
+        sync: false
+      - key: COMPLIANCE_EXPORT_EMAIL
+        sync: false
       - key: WHATSAPP_MODE
         sync: false
       - key: WHATSAPP_BASE_URL
@@ -351,7 +370,7 @@ services:
       - key: WHATSAPP_QUEUE_KEY
         sync: false
       - key: WHATSAPP_QUEUE_KEY_PREV
-        value: ""
+        sync: false
 
   - type: worker
     name: zitch-whatsapp-worker-ry6y
@@ -376,7 +395,7 @@ services:
       - key: WHATSAPP_WORKER_RECONCILE
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
-        value: "false"
+        value: "true"
       - key: REDIS_URL
         fromService:
           type: keyvalue
@@ -393,60 +412,60 @@ services:
       - key: DJANGO_OTP_HASH_KEY
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_OTP_HASH_KEY}
       - key: WEMA_CHANNEL_ID
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CHANNEL_ID}
       - key: WEMA_WALLET_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_WALLET_KEY}
       - key: WEMA_ACCOUNT_CREATION_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_ACCOUNT_CREATION_KEY}
       - key: WEMA_CARD_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CARD_KEY}
       - key: WEMA_AIRTIME_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_AIRTIME_KEY}
       - key: WEMA_BILLS_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLS_KEY}
       - key: WEMA_UPGRADE_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_UPGRADE_KEY}
       - key: WEMA_UPGRADE_BASE_URL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_UPGRADE_BASE_URL}
       - key: WEMA_ACCT_MGT_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_ACCT_MGT_KEY}
       - key: WEMA_ACCT_MGT_BASE_URL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_ACCT_MGT_BASE_URL}
       - key: WEMA_KYC_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_KYC_KEY}
       - key: WEMA_REMITA_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_REMITA_KEY}
       - key: WEMA_BNPL_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BNPL_KEY}
       - key: WEMA_CARD_PRODUCT_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CARD_PRODUCT_KEY}
       - key: WEMA_BNPL_MERCHANT_ID
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BNPL_MERCHANT_ID}
       - key: WEMA_BNPL_AUTH_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BNPL_AUTH_KEY}
       - key: WEMA_SOURCE_ACCOUNT
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SOURCE_ACCOUNT}
       - key: WEMA_SECURITY_INFO
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SECURITY_INFO}
       - key: WEMA_BASE_URL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BASE_URL}
       - key: WEMA_SIMULATION
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SIMULATION}
       - key: WEMA_VAS_STATUS_LEGEND
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_STATUS_LEGEND}
       - key: WEMA_BILLS_STATUS_LEGEND
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLS_STATUS_LEGEND}
       - key: WEMA_REMITA_STATUS_LEGEND
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_REMITA_STATUS_LEGEND}
       - key: WEMA_FACE_VERIFY_URL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_FACE_VERIFY_URL}
       - key: WEMA_FACE_CALLBACK_IPS
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_FACE_CALLBACK_IPS}
       # Must match zitch-api: this worker builds the same face URLs for WhatsApp
       # onboarding, and a split setting would send chat and app customers to two
       # different shapes.
       - key: WEMA_FACE_CB_MODE
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_FACE_CB_MODE}
       - key: ALLOW_PRODUCTION_SIMULATION
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: TERMII_BASE_URL
@@ -464,20 +483,26 @@ services:
       # This worker owns durable chat execution and terminal WhatsApp-alert
       # retries. Production money reconciliation remains cron-only; do not set
       # WHATSAPP_WORKER_RECONCILE merely to compensate for a missing cron.
+      - key: TXN_ALERTS_EMAIL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_EMAIL}
       - key: TXN_ALERTS_SMS
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_SMS}
+      - key: TXN_ALERTS_PUSH
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_PUSH}
       - key: TXN_ALERTS_WHATSAPP
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_WHATSAPP}
+      - key: PREMBLY_BASE_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: PREMBLY_BASE_URL}
       - key: PREMBLY_API_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: PREMBLY_API_KEY}
       - key: PREMBLY_APP_ID
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: PREMBLY_APP_ID}
       - key: CARD_ISSUER_API_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: CARD_ISSUER_API_KEY}
       - key: CARD_ISSUER_BASE_URL
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: CARD_ISSUER_BASE_URL}
       - key: CARD_ISSUER_BRAND
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: CARD_ISSUER_BRAND}
       - key: FINCRA_SECRET_KEY
         sync: false
       - key: FINCRA_BUSINESS_ID
@@ -501,9 +526,9 @@ services:
       - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE_LANG}
       - key: WHATSAPP_QUEUE_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_QUEUE_KEY}
       - key: WHATSAPP_QUEUE_KEY_PREV
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_QUEUE_KEY_PREV}
       - key: WHATSAPP_ALLOW_CHAT_SIGNUP
         sync: false
       - key: WHATSAPP_FLOW_ID
@@ -521,7 +546,7 @@ services:
       - key: LLM_MODEL
         sync: false
       - key: SENTRY_DSN
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
 
   # Daily Fixed Save maturity sweep — pays out matured plans, including for
   # users who never open the app. REQUIRES A PAID RENDER PLAN: the cron service
@@ -536,7 +561,7 @@ services:
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
-    schedule: "0 1 * * *"   # 01:00 UTC daily
+    schedule: "5 1 * * *"   # 01:05 UTC daily, after the :00 reconciliation
     buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py run_maturities"
     envVars:
@@ -553,6 +578,8 @@ services:
         fromDatabase:
           name: zitch-db-ry6y
           property: connectionString
+      - key: SENTRY_DSN
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
       # Email/SMS/push remain best-effort at the ledger writer. Terminal
       # WhatsApp alerts are deliberately deferred to zitch-whatsapp-worker,
       # which owns the Meta credentials and durable retry sweep. Do not copy
@@ -569,6 +596,12 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_CHANNEL}
       - key: TERMII_BASE_URL
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_BASE_URL}
+      - key: TXN_ALERTS_EMAIL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_EMAIL}
+      - key: TXN_ALERTS_SMS
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_SMS}
+      - key: TXN_ALERTS_PUSH
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_PUSH}
       - key: TXN_ALERTS_WHATSAPP
         value: "false"
 
@@ -608,6 +641,8 @@ services:
         fromDatabase:
           name: zitch-db-ry6y
           property: connectionString
+      - key: SENTRY_DSN
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
       # The cutoffs are derived from these, so the cron must read the SAME values
       # the web service issues tokens under — otherwise it deletes live sessions
       # or keeps dead ones.
@@ -670,13 +705,13 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_UPGRADE_BASE_URL}
       - key: WEMA_ACCOUNT_CREATION_KEY
         # Optional override; utility.wema falls back to the Wallet Services key.
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_ACCOUNT_CREATION_KEY}
       - key: WEMA_ACCT_MGT_KEY
         # Optional override; utility.wema falls back to WEMA_WALLET_KEY when blank.
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_ACCT_MGT_KEY}
       - key: WEMA_ACCT_MGT_BASE_URL
         # Optional override; utility.wema falls back to WEMA_BASE_URL when blank.
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_ACCT_MGT_BASE_URL}
       - key: WEMA_SOURCE_ACCOUNT
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SOURCE_ACCOUNT}
       - key: WEMA_SECURITY_INFO
@@ -685,14 +720,14 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BASE_URL}
       - key: WEMA_AIRTIME_KEY
         # Optional override; airtime/data are covered by Wallet Services here.
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_AIRTIME_KEY}
       - key: WEMA_BILLS_KEY
         # Optional override; Wallet Services covers bills here.
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLS_KEY}
       - key: WEMA_VAS_STATUS_LEGEND
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_STATUS_LEGEND}
       - key: WEMA_BILLS_STATUS_LEGEND
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLS_STATUS_LEGEND}
       # Rail safety mode is sourced from the web service so a cron cannot call
       # ALAT while customer-facing requests are deliberately simulated.
       - key: WEMA_SIMULATION
@@ -703,7 +738,7 @@ services:
       # systemic gateway outage. That reaches Sentry only when SENTRY_DSN is set
       # in THIS cron's env (crons are separate processes from the web service).
       - key: SENTRY_DSN
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
       # Email/SMS/push remain best-effort at the ledger writer. Terminal
       # WhatsApp alerts are deliberately deferred to zitch-whatsapp-worker,
       # which owns the Meta credentials and durable retry sweep. Do not copy
@@ -720,6 +755,12 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_CHANNEL}
       - key: TERMII_BASE_URL
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_BASE_URL}
+      - key: TXN_ALERTS_EMAIL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_EMAIL}
+      - key: TXN_ALERTS_SMS
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_SMS}
+      - key: TXN_ALERTS_PUSH
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_PUSH}
       - key: TXN_ALERTS_WHATSAPP
         value: "false"
 
@@ -735,7 +776,7 @@ services:
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
-    schedule: "30 2 * * *"   # 02:30 UTC daily, after the maturity sweep
+    schedule: "35 2 * * *"   # 02:35 UTC daily, off the reconciliation boundary
     buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py integrity_check --fail-nonzero"
     envVars:
@@ -755,7 +796,7 @@ services:
       # Paging: integrity_check calls utility.alerts.alert on a mismatch, which
       # reaches Sentry only when SENTRY_DSN is set in this cron's env.
       - key: SENTRY_DSN
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
 
   # Ledger <-> BANK (Wema NUBAN) reconciliation — the EXTERNAL integrity check.
   # integrity_check compares the ledger to our own stored balance; this compares
@@ -774,7 +815,7 @@ services:
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
-    schedule: "0 */6 * * *"
+    schedule: "5 */6 * * *"
     buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     # Every non-zero ledger/bank divergence is a finance-review incident. The
     # command remains read-only: this only makes the platform surface it until
@@ -827,7 +868,7 @@ services:
       - key: ALLOW_PRODUCTION_SIMULATION
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: SENTRY_DSN
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
 
   # DAILY SETTLEMENT STATEMENT — the whole float position, not per-wallet drift.
   # integrity_check and reconcile_balances both compare ONE wallet against ONE
@@ -848,7 +889,7 @@ services:
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
-    schedule: "0 6 * * *"   # 06:00 UTC = 07:00 Lagos, before the business day
+    schedule: "15 6 * * *"   # 06:15 UTC = 07:15 Lagos, after the balance snapshot
     buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py settlement_report --fail-on-breach"
     envVars:
@@ -894,7 +935,7 @@ services:
       # The VAS asset rail. Without these the provider wallet reads as UNREADABLE
       # and the position is reported advisory rather than authoritative.
       - key: SENTRY_DSN
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
 
   # AML TRANSACTION MONITORING. The compliance QA response tells a regulator we monitor
   # for "threshold breaches (₦5M+), rapid velocity, structuring" and file SARs with NFIU
@@ -912,7 +953,7 @@ services:
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
-    schedule: "0 5 * * *"   # 05:00 UTC = 06:00 Lagos, before the settlement report
+    schedule: "5 5 * * *"   # 05:05 UTC = 06:05 Lagos, before the settlement report
     buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py aml_scan --fail-on-overdue"
     envVars:
@@ -930,7 +971,7 @@ services:
           name: zitch-db-ry6y
           property: connectionString
       - key: SENTRY_DSN
-        sync: false
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
 
   - type: keyvalue
     name: zitch-cache-ry6y
