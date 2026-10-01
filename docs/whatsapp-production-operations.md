@@ -251,16 +251,24 @@ hears that their money moved.
 - `TXN_ALERTS_SMS` defaults **off**. At Nigerian per-message rates one SMS per
   transaction is a real recurring cost — set it to `true` deliberately.
 
-Alerts fire only on `Successful` (a PENDING debit that later fails is never
-announced), exactly once per row, and only after the database transaction
-commits. A settled debit that is later reversed sends a reversal notice, because
-`refund` flips the existing row rather than writing a new one — without it the
-customer would be told money left and never told it came back. A provider outage
-is logged and swallowed: an alert must never fail a payment that succeeded.
+Successful movements queue a durable outbox row for each enabled channel inside
+the ledger transaction. Production payment responses do not wait for email,
+SMS, push or WhatsApp alert providers: the existing WhatsApp worker delivers
+those rows in its separate background sweep after commit. The interactive chat
+loop continues while that sweep runs. Local/test delivery still runs after
+commit for development feedback.
+
+A settled debit that is later reversed queues a distinct reversal notice.
+Accepted channels are never automatically resent; explicit refusals retry with
+backoff, while ambiguous dispatches require review. Check
+`python manage.py transaction_alerts_status` and the readonly delivery admin for
+review/exhausted rows. Legacy alert flags are not proof of provider acceptance
+and are not mass replayed.
 
 #### The WhatsApp leg needs a template (the 24-hour window)
 
-The email/SMS/push legs reach anyone. The **WhatsApp** leg carries a real
+Email/SMS use verified contacts, push uses registered devices, and WhatsApp uses
+an active account link. The **WhatsApp** leg carries a real
 platform constraint: Meta delivers a free-form text message only inside the
 customer's **24-hour customer-service window** — the 24 hours after their last
 inbound message to the business number. The two cases this alert exists for are

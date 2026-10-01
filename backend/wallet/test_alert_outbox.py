@@ -63,6 +63,26 @@ class TransactionAlertOutboxTests(TestCase):
         self.whatsapp.assert_called_once()
         self.assertEqual(retry_pending_whatsapp_alerts(limit=10), 0)
 
+    @override_settings(DEBUG=False, TESTING=False)
+    def test_production_commit_queues_alerts_without_sending_then_worker_delivers(self):
+        committed = []
+        with self.captureOnCommitCallbacks(execute=True):
+            txn = self.movement()
+            transaction.on_commit(lambda: committed.append(True))
+        self.assertEqual(committed, [True])
+        self.assertEqual(txn.alert_deliveries.filter(state=Delivery.READY).count(), 3)
+        self.email.assert_not_called()
+        self.sms.assert_not_called()
+        self.whatsapp.assert_not_called()
+        with (patch("utility.providers.email_live", return_value=True),
+              patch("utility.providers.sms_live", return_value=True),
+              patch("whatsapp.providers.wa_live", return_value=True)):
+            self.assertEqual(retry_pending_whatsapp_alerts(limit=10), 3)
+        self.assertEqual(txn.alert_deliveries.filter(state=Delivery.ACCEPTED).count(), 3)
+        self.email.assert_called_once()
+        self.sms.assert_called_once()
+        self.whatsapp.assert_called_once()
+
     def test_one_refused_channel_retries_without_repeating_accepted_channels(self):
         txn = self.movement()
         self.email.return_value = {"success": False, "uncertain": False, "retryable": True, "http_status": 429}

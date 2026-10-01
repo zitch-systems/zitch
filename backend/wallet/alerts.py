@@ -14,10 +14,11 @@ Three properties this has to hold:
   reverse.
 * **Only once.** The signal fires on every save of the row — the status flip is
   itself a save, and later saves (settlement, reconciliation) touch it again.
-* **Never on a rolled-back transaction, and never fatal.** Sends are deferred to
-  `on_commit` so an alert cannot describe a movement the database threw away, and
-  every failure is swallowed and logged: a mail outage must not fail a payment
-  that already succeeded.
+* **Never on a rolled-back transaction, and never hold up a payment response.**
+  Outbox rows persist with the ledger. Production sends run in the existing
+  worker's background alert sweep, so slow notification providers cannot keep
+  the payment response open after its money committed. Local/test callbacks
+  run after commit for synchronous development feedback.
 """
 import logging
 from html import escape
@@ -774,6 +775,13 @@ def _defer(txn, flag: str, *, reversal: bool, requires: str = "",
     """
 
     deliveries = _enqueue_alert(txn.pk, reversal=reversal, requires=requires, whatsapp_only=whatsapp_only)
+
+    # The durable outbox is already part of the ledger commit. An on_commit
+    # callback still executes on the request/interactive WhatsApp thread; serial
+    # email/SMS/Meta timeouts there could hide a committed payment from its user.
+    # Production delivery belongs to the existing background worker sweep.
+    if not settings.DEBUG and not getattr(settings, "TESTING", False):
+        return
 
     def _fire():
         try:

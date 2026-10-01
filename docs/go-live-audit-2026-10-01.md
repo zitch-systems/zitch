@@ -255,9 +255,13 @@ Local integration evidence before release:
   **84 passed**. Full backend and PostgreSQL release results are recorded by the
   release PR's CI checks and must pass on the exact source revision.
 
-- Reviewed release SHA and PR: **TBD by release owner**
-- Full SQLite backend, PostgreSQL 18 backend, app and connector checks and links:
-  **TBD by release owner**
+- Local full backend: **2,948 tests passed (one PostgreSQL-only test skipped)**.
+  The final production notification-dispatch correction then passed **51 focused
+  tests**. Production payments enqueue notifications without waiting for external
+  email/SMS/WhatsApp providers; the existing background worker owns dispatch.
+- Reviewed release SHA, final full PostgreSQL/SQLite evidence and security checks:
+  [PR #528](https://github.com/zitch-systems/zitch/pull/528), on its exact final head.
+  The release owner must merge only after every required check passes.
 - Render deployment IDs and deployed SHA per service: **TBD after restoration**
 - Migration output and schema version: **TBD after API deployment**
 - Scoped strict preflight report: **TBD after deployment**
