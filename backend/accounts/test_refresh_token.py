@@ -310,7 +310,7 @@ class EndpointTests(TestCase):
         from accounts.models import OTP
 
         code = "123456"
-        OTP.issue(phone=self.user.phone, code=code, purpose=OTP.RESET)
+        OTP.issue(phone=self.user.phone, code=code, email=self.user.email, purpose=OTP.RESET)
         res = self.client.post(
             "/api/password/reset/",
             {"email_or_phone": self.user.phone, "otp": code, "password": "An0ther-Secret-2"},

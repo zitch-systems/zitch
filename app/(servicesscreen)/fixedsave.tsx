@@ -1,8 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
-import { getToken } from '@/lib/secureStore';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { savingsService } from '@/lib/services/savings';
@@ -14,12 +12,9 @@ import ZIcon from '@/components/design/ZIcon';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { Loading } from '@/components/design/Loading';
 
 const AMOUNTS = [5000, 10000, 20000, 50000, 100000, 200000];
-// Bundled fallbacks — overridden at runtime by /api/savings/rates/ so the app
-// never drifts from the backend's source-of-truth rate table.
-const FALLBACK_PERIODS = [30, 90, 180, 365];
-const FALLBACK_RATES: Record<number, number> = { 30: 0.12, 90: 0.15, 180: 0.18, 365: 0.22 };
 type Step = null | 'confirm' | 'pin';
 
 const Row2 = ({ k, v, strong }: { k: string; v: string; strong?: boolean }) => {
@@ -35,7 +30,6 @@ const Row2 = ({ k, v, strong }: { k: string; v: string; strong?: boolean }) => {
 const FixedSave = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
-  const [token, setToken] = useState('');
   const [amt, setAmt] = useState('');
   const [days, setDays] = useState(90);
   const [step, setStep] = useState<Step>(null);
@@ -46,39 +40,45 @@ const FixedSave = () => {
   const [recovered, setRecovered] = useState(false);
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
-  const [rates, setRates] = useState<Record<number, number>>(FALLBACK_RATES);
-  const [periods, setPeriods] = useState<number[]>(FALLBACK_PERIODS);
+  const [rates, setRates] = useState<Record<number, number>>({});
+  const [periods, setPeriods] = useState<number[]>([]);
   const [minAmt, setMinAmt] = useState(1000);
+  const [availabilityLoading, setAvailabilityLoading] = useState(true);
+  const [productAvailable, setProductAvailable] = useState(false);
+  const [unavailableMessage, setUnavailableMessage] = useState('Fixed savings is not available right now.');
+  const createInFlight = useRef(false);
 
-  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
-
-  // Pull the live rate table; fall back to the bundled defaults on any failure.
+  // Fail closed until the backend explicitly enables the product and supplies
+  // rates. Showing bundled rates could invite a real wallet debit for a product
+  // whose funds are not held by a live savings provider.
   useEffect(() => {
-    fetch(`${baseUrl}/api/savings/rates/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}',
-    })
-      .then((r) => r.json())
+    savingsService.getRates()
       .then((res) => {
-        if (Array.isArray(res?.rates) && res.rates.length) {
+        const available = res?.product_available === true;
+        setProductAvailable(available);
+        setUnavailableMessage(res?.unavailable_message || 'Fixed savings is not available right now.');
+        if (available && Array.isArray(res?.rates) && res.rates.length) {
           const map: Record<number, number> = {};
           res.rates.forEach((x: any) => { map[Number(x.days)] = Number(x.rate); });
           setRates(map);
           setPeriods(res.rates.map((x: any) => Number(x.days)).sort((a: number, b: number) => a - b));
+          setDays(Number(res.rates[0].days));
         }
         if (res?.min != null) setMinAmt(Number(res.min));
       })
-      .catch(() => { /* keep bundled fallbacks */ });
+      .catch(() => setUnavailableMessage('We could not confirm whether fixed savings is available. Please try again later.'))
+      .finally(() => setAvailabilityLoading(false));
   }, []);
 
   const amount = Number(amt || 0);
   const rate = rates[days] ?? 0;
   const interest = Math.round(amount * rate * (days / 365));
   const maturity = amount + interest;
-  const valid = amount >= minAmt && amount <= balance;
+  const valid = productAvailable && amount >= minAmt && amount <= balance && rate > 0;
 
   const create = async (pin: string) => {
+    if (!productAvailable || createInFlight.current) return;
+    createInFlight.current = true;
     const fingerprint = [String(amount), String(days)].join('|');
     let deliveryStarted = false;
     setBusy(true);
@@ -121,6 +121,7 @@ const FixedSave = () => {
         notify('Unable to start savings', 'Could not safely prepare this request. Please try again.');
       }
     } finally {
+      createInFlight.current = false;
       setBusy(false);
     }
   };
@@ -144,11 +145,38 @@ const FixedSave = () => {
     );
   }
 
+  if (availabilityLoading) {
+    return (
+      <Screen scroll={false}>
+        <Header title="Fixed Save" onBack={() => router.back()} />
+        <Loading label="Checking availability…" />
+      </Screen>
+    );
+  }
+
+  if (!productAvailable) {
+    return (
+      <Screen>
+        <Header title="Fixed Save" onBack={() => router.back()} />
+        <View style={{ alignItems: 'center', paddingHorizontal: 18, paddingTop: 46 }}>
+          <View style={{ width: 72, height: 72, borderRadius: 24, backgroundColor: c.surface3, alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="fixed" size={30} color={c.ink3} />
+          </View>
+          <Text style={{ fontSize: 18, fontFamily: font.bold, color: c.ink1, marginTop: 18 }}>Fixed savings unavailable</Text>
+          <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, lineHeight: 20, textAlign: 'center', marginTop: 8 }}>{unavailableMessage}</Text>
+          <View style={{ width: '100%', marginTop: 22 }}>
+            <Btn label="View existing saves" variant="outline" onPress={() => router.replace('/savings')} />
+          </View>
+        </View>
+      </Screen>
+    );
+  }
+
   return (
     <Screen>
       <Header
         title="Fixed Save"
-        sub="Lock funds, earn up to 22% p.a"
+        sub="Choose an amount and lock period"
         onBack={() => router.back()}
         right={
           <Pressable

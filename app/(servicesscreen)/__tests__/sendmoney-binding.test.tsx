@@ -7,25 +7,29 @@ const mockResolveLegacy = jest.fn();
 const mockResolveBank = jest.fn();
 const mockNotify = jest.fn();
 const mockAcquireSpendAttempt = jest.fn();
+const mockClearSpendAttempt = jest.fn();
+const mockClassifySpendResponse = jest.fn();
 const mockSendLegacy = jest.fn();
 const mockBiometricAvailable = jest.fn();
 const mockAuthenticate = jest.fn();
 const mockGetToken = jest.fn();
 const mockApiPost = jest.fn();
+const mockRouterPush = jest.fn();
+const mockReloadWallet = jest.fn();
 const originalFetch = global.fetch;
 
 jest.mock('expo-router', () => ({
-  router: { back: jest.fn(), push: jest.fn(), replace: jest.fn() },
+  router: { back: jest.fn(), push: (...args: unknown[]) => mockRouterPush(...args), replace: jest.fn() },
   useLocalSearchParams: () => ({}),
 }));
 jest.mock('@/lib/secureStore', () => ({ getToken: (...args: unknown[]) => mockGetToken(...args) }));
 jest.mock('@/lib/api', () => ({ apiPost: (...args: unknown[]) => mockApiPost(...args) }));
 jest.mock('@/lib/pendingSpend', () => ({
   acquireSpendAttempt: (...args: unknown[]) => mockAcquireSpendAttempt(...args),
-  clearSpendAttempt: jest.fn(),
+  clearSpendAttempt: (...args: unknown[]) => mockClearSpendAttempt(...args),
 }));
 jest.mock('@/lib/spendOutcome', () => ({
-  classifySpendResponse: jest.fn(),
+  classifySpendResponse: (...args: unknown[]) => mockClassifySpendResponse(...args),
   isRecoveredSpendResponse: jest.fn(),
 }));
 jest.mock('@/lib/services/transfers', () => ({
@@ -41,11 +45,27 @@ jest.mock('@/lib/biometrics', () => ({
   authenticate: (...args: unknown[]) => mockAuthenticate(...args),
 }));
 jest.mock('@/lib/wallet', () => ({
-  useWallet: () => ({ balance: 200000, reload: jest.fn() }),
+  useWallet: () => ({ balance: 200000, reload: (...args: unknown[]) => mockReloadWallet(...args) }),
 }));
 jest.mock('@/components/design/Notify', () => ({ notify: (...args: unknown[]) => mockNotify(...args) }));
 jest.mock('@/components/design/ZIcon', () => () => null);
-jest.mock('@/components/design/Receipt', () => ({ __esModule: true, default: () => null }));
+jest.mock('@/components/design/Receipt', () => {
+  const ReactActual = jest.requireActual<typeof import('react')>('react');
+  const { Text: NativeText, View } = jest.requireActual<typeof import('react-native')>('react-native');
+  return {
+    __esModule: true,
+    default: ({ title, message, status, footer }: {
+      title: string; message: string; status: string; footer?: ReactNode;
+    }) => ReactActual.createElement(
+      View,
+      null,
+      ReactActual.createElement(NativeText, null, title),
+      ReactActual.createElement(NativeText, null, message),
+      ReactActual.createElement(NativeText, null, status),
+      footer,
+    ),
+  };
+});
 jest.mock('@/lib/theme', () => ({
   useTheme: () => ({ c: {
     brand: '#0FA295', brandDeep: '#08766d', red: '#c00', ink1: '#111', ink2: '#222',
@@ -148,11 +168,15 @@ describe('SendMoney recipient response binding', () => {
     mockResolveBank.mockReset();
     mockNotify.mockReset();
     mockAcquireSpendAttempt.mockReset();
+    mockClearSpendAttempt.mockReset();
+    mockClassifySpendResponse.mockReset();
     mockSendLegacy.mockReset();
     mockBiometricAvailable.mockReset().mockResolvedValue(false);
     mockAuthenticate.mockReset().mockResolvedValue(false);
     mockGetToken.mockReset().mockResolvedValue(null);
     mockApiPost.mockReset();
+    mockRouterPush.mockReset();
+    mockReloadWallet.mockReset();
     global.fetch = originalFetch;
   });
 
@@ -342,6 +366,110 @@ describe('SendMoney recipient response binding', () => {
       'Could not safely prepare or authorize this request. Please try again.',
     );
     expect(control(tree, 'Continue')).toBeTruthy();
+    act(() => tree.unmount());
+  });
+
+  it('keeps an under-review P2P attempt durable and opens live status by reference', async () => {
+    jest.useFakeTimers();
+    mockResolveLegacy.mockResolvedValueOnce({
+      success: true,
+      name: 'Review Recipient',
+      recipient_key: 'recipient-key-review',
+    });
+    mockAcquireSpendAttempt.mockResolvedValueOnce('durable-transfer-key');
+    mockSendLegacy.mockResolvedValueOnce({
+      pending: true,
+      under_review: true,
+      reference: 'P2P-REVIEW-1',
+      message: 'We are confirming the final outcome. Do not send this transfer again.',
+    });
+    mockClassifySpendResponse.mockReturnValueOnce('pending');
+
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<SendMoney />); });
+    await act(async () => { control(tree, 'To Zitch').props.onPress(); });
+    await act(async () => {
+      control(tree, 'Zitch tag or phone').props.onChangeText('08020000002');
+      control(tree, 'Enter amount').props.onChangeText('1000');
+    });
+    await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
+    await act(async () => { control(tree, 'Continue').props.onPress(); });
+    await act(async () => {
+      control(tree, 'Confirm transfer').props.onPress();
+      jest.advanceTimersByTime(320);
+    });
+    await act(async () => { await control(tree, 'Submit PIN').props.onPress(); });
+
+    expect(mockAcquireSpendAttempt).toHaveBeenCalledWith(
+      'zitch-transfer',
+      'recipient-key-review|1000',
+    );
+    expect(mockSendLegacy).toHaveBeenCalledWith(expect.objectContaining({
+      recipient_key: 'recipient-key-review',
+      idempotency_key: 'durable-transfer-key',
+    }));
+    expect(mockClearSpendAttempt).not.toHaveBeenCalled();
+    expect(mockReloadWallet).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(tree.toJSON())).toContain('Transfer under review');
+    expect(JSON.stringify(tree.toJSON())).toContain('Do not send this transfer again');
+
+    await act(async () => { control(tree, 'View transfer status').props.onPress(); });
+    expect(mockRouterPush).toHaveBeenCalledWith({
+      pathname: '/txndetail',
+      params: expect.objectContaining({
+        reference: 'P2P-REVIEW-1',
+        status: 'Under review',
+        underReview: '1',
+        spendScope: 'zitch-transfer',
+        spendFingerprint: 'recipient-key-review|1000',
+        spendKey: 'durable-transfer-key',
+      }),
+    });
+    act(() => tree.unmount());
+  });
+
+  it('dispatches only once when the PIN completion callback fires twice', async () => {
+    jest.useFakeTimers();
+    mockResolveLegacy.mockResolvedValueOnce({
+      success: true,
+      name: 'One Recipient',
+      recipient_key: 'recipient-key-once',
+    });
+    mockAcquireSpendAttempt.mockResolvedValue('same-durable-key');
+    let finishSend!: (value: unknown) => void;
+    mockSendLegacy.mockReturnValue(new Promise((resolve) => { finishSend = resolve; }));
+    mockClassifySpendResponse.mockReturnValue('pending');
+
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<SendMoney />); });
+    await act(async () => { control(tree, 'To Zitch').props.onPress(); });
+    await act(async () => {
+      control(tree, 'Zitch tag or phone').props.onChangeText('08020000002');
+      control(tree, 'Enter amount').props.onChangeText('1000');
+    });
+    await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
+    await act(async () => { control(tree, 'Continue').props.onPress(); });
+    await act(async () => {
+      control(tree, 'Confirm transfer').props.onPress();
+      jest.advanceTimersByTime(320);
+    });
+
+    await act(async () => {
+      const submit = control(tree, 'Submit PIN');
+      void submit.props.onPress();
+      void submit.props.onPress();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockAcquireSpendAttempt).toHaveBeenCalledTimes(1);
+    expect(mockSendLegacy).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      finishSend({ pending: true, reference: 'P2P-PENDING-1' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockClearSpendAttempt).not.toHaveBeenCalled();
     act(() => tree.unmount());
   });
 });

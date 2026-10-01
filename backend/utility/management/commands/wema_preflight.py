@@ -7,6 +7,7 @@ read-only and moves no money: the same live self-tests as /wema-diagnose and
 /vas-diagnose (no purchases, no transfers).
 
 HARD gates block real money and cause a nonzero exit:
+  * full-scope customer products have bank-backed settlement
   * partner bank live keys present (channel id + wallet + per-product keys)
   * pointed at the LIVE host, not apiplayground (the sandbox)
   * simulation off, test-OTP bypass off, simulated-deposit token unset
@@ -15,6 +16,9 @@ HARD gates block real money and cause a nonzero exit:
 SOFT checks are features that degrade without putting money at risk:
 VTU wallet balance, email, SMS, card issuer). They print WARN and only fail the run
 under --strict.
+
+The default scope is ``full``. ``--launch-scope core`` deliberately excludes and
+reports products without bank-backed settlement; every result line names its scope.
 
 partner bank clarified on 2026-07-27 that securityInfo is a private value Zitch chooses and
 the bank echoes to the authentication callback. It is therefore a hard, inexpensive
@@ -25,6 +29,7 @@ import os
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from common import products as product_capabilities
 from utility import wema
 from utility.providers import (card_issuer_live, card_provider, kyc_provider,
                                payment_provider, payout_provider, vas_provider)
@@ -36,19 +41,57 @@ def _face_host() -> str:
 
     return urlparse(settings.WEMA.get("FACE_VERIFY_URL", "") or "").hostname or "unset"
 
-PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
+PASS, WARN, FAIL, INFO = "PASS", "WARN", "FAIL", "INFO"
+
+_LAUNCH_CAPABILITY_LABELS = {
+    "savings": "fixed savings",
+    "loans": "loans",
+    "fx": "FX conversion",
+    "airtime_cash": "airtime-to-cash",
+    "card_funding": "card top-ups",
+}
 
 
 class Command(BaseCommand):
-    help = ("Go-live readiness preflight for the partner bank money rails (+ VAS/email/SMS). "
-            "Exits 1 if any hard gate fails.")
+    help = ("Scope-aware go-live readiness preflight for Zitch and its partner-bank "
+            "money rails. Exits 1 if any in-scope hard gate fails.")
 
     def add_arguments(self, parser):
         parser.add_argument("--strict", action="store_true",
                             help="Treat soft-check WARNs as failures too (exit 1).")
+        parser.add_argument(
+            "--launch-scope", choices=("core", "full"), default="full",
+            help=("Scope the decision: full requires every advertised product; core "
+                  "excludes products without bank-backed settlement (default: full)."),
+        )
 
     def handle(self, *args, **options):
         checks = []  # (is_hard_gate, name, status, detail)
+        launch_scope = options["launch_scope"]
+        launch_capabilities = [
+            (product, _LAUNCH_CAPABILITY_LABELS.get(product,
+                                                    product.replace("_", " ")))
+            for product in product_capabilities.MESSAGES
+        ]
+
+        unavailable = [
+            label for product, label in launch_capabilities
+            if not product_capabilities.product_available(product)
+        ]
+        if launch_scope == "full":
+            checks.append((
+                True, "Full launch product capabilities",
+                FAIL if unavailable else PASS,
+                ("available: all declared customer products have production settlement"
+                 if not unavailable else
+                 "unavailable pending bank-backed settlement: " + ", ".join(unavailable)),
+            ))
+        else:
+            checks.append((
+                False, "Core launch exclusions", INFO,
+                (", ".join(label for _product, label in launch_capabilities) +
+                 " are outside this launch scope and must remain disabled"),
+            ))
 
         d = wema.wema_diagnostics()
         checks.append((
@@ -424,26 +467,31 @@ class Command(BaseCommand):
 
         self.stdout.write("Zitch go-live preflight")
         self.stdout.write("=======================")
+        self.stdout.write(f"launch_scope: {launch_scope}")
         self.stdout.write(f"rails: funding={payment_provider()} payout={payout_provider()} "
                           f"vas={vas_provider()} kyc={kyc_provider()}")
         self.stdout.write("")
         for is_hard, name, status, detail in checks:
-            tag = "GATE" if is_hard else "    "
+            tag = "GATE" if is_hard else ("SCOPE" if status == INFO else "    ")
             self.stdout.write(f"  [{status}] {tag} {name}: {detail}")
 
         hard_fail = [c for c in checks if c[0] and c[2] == FAIL]
         soft_warn = [c for c in checks if not c[0] and c[2] in (WARN, FAIL)]
         self.stdout.write("")
         if hard_fail:
-            self.stdout.write(f"RESULT: NOT READY — {len(hard_fail)} hard gate(s) failing. "
+            self.stdout.write(f"RESULT: NOT READY — launch_scope={launch_scope}; "
+                              f"{len(hard_fail)} hard gate(s) failing. "
                               f"Real money is blocked.")
         elif soft_warn and options["strict"]:
-            self.stdout.write(f"RESULT: NOT READY (strict) — {len(soft_warn)} soft check(s) warning.")
+            self.stdout.write(f"RESULT: NOT READY (strict) — launch_scope={launch_scope}; "
+                              f"{len(soft_warn)} soft check(s) warning.")
         elif soft_warn:
-            self.stdout.write(f"RESULT: GO for money rails — {len(soft_warn)} soft warning(s) "
-                              f"(non-money features degraded).")
+            self.stdout.write(f"RESULT: GO — launch_scope={launch_scope}; in-scope money rails "
+                              f"pass with {len(soft_warn)} soft warning(s) "
+                              "(non-money features degraded).")
         else:
-            self.stdout.write("RESULT: GO — all checks pass.")
+            self.stdout.write(f"RESULT: GO — launch_scope={launch_scope}; "
+                              "all in-scope checks pass.")
 
         if hard_fail or (soft_warn and options["strict"]):
             raise SystemExit(1)

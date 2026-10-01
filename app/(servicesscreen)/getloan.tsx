@@ -1,11 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
-import { getToken } from '@/lib/secureStore';
-import { apiPost } from '@/lib/api';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
-import { EP } from '@/lib/endpoints';
 import { loansService } from '@/lib/services/loans';
 import { Screen, Header, Btn, Sheet, PinPad, Field, money, Naira } from '@/components/design/ui';
 import { Label, ConfirmSheet } from '@/components/design/flowkit';
@@ -32,11 +29,10 @@ const Row2 = ({ k, v, strong }: { k: string; v: string; strong?: boolean }) => {
 const GetLoan = () => {
   const { c } = useTheme();
   const { reload } = useWallet();
-  const [token, setToken] = useState('');
-  const [available, setAvailable] = useState(500000);
+  const [available, setAvailable] = useState(0);
   const [amount, setAmount] = useState(100000);
   const [tenure, setTenure] = useState(30);
-  const [rate, setRate] = useState(0.045);
+  const [rate, setRate] = useState(0);
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -45,21 +41,25 @@ const GetLoan = () => {
   const [recovered, setRecovered] = useState(false);
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
+  const [loadingStatus, setLoadingStatus] = useState(true);
+  const [productAvailable, setProductAvailable] = useState(false);
+  const [unavailableMessage, setUnavailableMessage] = useState('Loans are not available right now.');
+  const [hasActiveLoan, setHasActiveLoan] = useState(false);
+  const requestInFlight = useRef(false);
   useEffect(() => {
-    getToken().then((t) => {
-      if (!t) return;
-      setToken(t);
-      apiPost(EP.loans.status)
-        .then((r) => r.json())
+    loansService.getStatus()
         .then((res) => {
+          setProductAvailable(res?.product_available === true);
+          setUnavailableMessage(res?.unavailable_message || 'Loans are not available right now.');
           if (res.available != null) setAvailable(Number(res.available));
           if (res.quote_rate) setRate(Number(res.quote_rate));
           if (res.active_loan) {
+            setHasActiveLoan(true);
             notify('Active loan', 'You already have an active loan. Repay it from the Loans tab before taking another.');
           }
         })
-        .catch(() => {});
-    });
+        .catch(() => setUnavailableMessage('We could not confirm whether loans are available. Please try again later.'))
+        .finally(() => setLoadingStatus(false));
   }, []);
 
   const interest = Math.round(amount * rate * (tenure / 30));
@@ -67,6 +67,8 @@ const GetLoan = () => {
   const overLimit = amount > available;
 
   const request = async (pin: string) => {
+    if (!productAvailable || hasActiveLoan || requestInFlight.current) return;
+    requestInFlight.current = true;
     const fingerprint = [String(amount), String(tenure)].join('|');
     let deliveryStarted = false;
     setBusy(true);
@@ -109,6 +111,7 @@ const GetLoan = () => {
         notify('Unable to start loan request', 'Could not safely prepare this request. Please try again.');
       }
     } finally {
+      requestInFlight.current = false;
       setBusy(false);
     }
   };
@@ -128,6 +131,37 @@ const GetLoan = () => {
           status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
+      </Screen>
+    );
+  }
+
+  if (loadingStatus) {
+    return (
+      <Screen scroll={false}>
+        <Header title="Get Loan" onBack={() => router.back()} />
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <Text style={{ color: c.ink3, fontFamily: font.regular }}>Checking loan availability…</Text>
+        </View>
+      </Screen>
+    );
+  }
+
+  if (!productAvailable || hasActiveLoan) {
+    return (
+      <Screen>
+        <Header title="Get Loan" onBack={() => router.back()} />
+        <View style={{ alignItems: 'center', paddingHorizontal: 18, paddingTop: 46 }}>
+          <View style={{ width: 72, height: 72, borderRadius: 24, backgroundColor: c.surface3, alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 28 }}>₦</Text>
+          </View>
+          <Text style={{ fontSize: 18, fontFamily: font.bold, color: c.ink1, marginTop: 18 }}>{hasActiveLoan ? 'You already have an active loan' : 'New loans unavailable'}</Text>
+          <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, lineHeight: 20, textAlign: 'center', marginTop: 8 }}>
+            {hasActiveLoan ? 'View your loan status and repayment options from the Loans tab.' : unavailableMessage}
+          </Text>
+          <View style={{ width: '100%', marginTop: 22 }}>
+            <Btn label="View loans" variant="outline" onPress={() => router.replace('/loan')} />
+          </View>
+        </View>
       </Screen>
     );
   }

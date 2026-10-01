@@ -288,7 +288,8 @@ export async function clearSession(): Promise<void> {
   // SPEND_ACCOUNT_NAMESPACE_KEY also remains. It is a pseudonymous pointer to
   // that account's unresolved idempotency records, not an authentication secret.
   await Promise.all([
-    'userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt',
+    'userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'UserFirstName',
+    'UserLastName', 'otpPending', 'lastActiveAt',
     'z-locked', 'z-has-pin', DISPLAY_NAME_KEY,
   ].map((key) => AsyncStorage.removeItem(key)));
 }

@@ -3107,7 +3107,10 @@ class LinkCodeTests(TestCase):
         _, body = self.start()
         code = body["code"]
         self.inbound(f"LINK {code}", "lk3", msisdn="2349088888888")
-        self.assertIn("send this code from the phone number", self.last_reply("2349088888888"))
+        reply = self.last_reply("2349088888888")
+        self.assertIn("send this code from the phone number", reply)
+        self.assertIn("reply *2* to sign in securely here", reply)
+        self.assertNotIn("Zitch app", reply)
         link = WhatsAppLink.objects.get(user=self.user, status=WhatsAppLink.PENDING)
         self.assertEqual(link.link_code, "")
         # Even the rightful owner cannot use it now — a fresh code is required.

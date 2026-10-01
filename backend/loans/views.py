@@ -8,6 +8,7 @@ from common.http import (
     api, fail, idempotent_replay, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
+from common.products import product_available, product_state, unavailable_response
 from utility.providers import bnpl_offers as provider_bnpl_offers
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, get_or_create_wallet
 
@@ -69,11 +70,14 @@ def loan_status(request):
     """
     user = request.user_obj
     active = user.loans.filter(status=Loan.ACTIVE).first()
+    available = product_available("loans")
     return ok(
-        limit=str(Loan.DEFAULT_LIMIT),
-        available=str(credit_limit(user)),
-        quote_rate=str(Loan.RATE),
+        limit=str(Loan.DEFAULT_LIMIT) if available else "0.00",
+        available=str(credit_limit(user)) if available else "0.00",
+        quote_rate=str(Loan.RATE) if available else "0.00",
         active_loan=_loan_dict(active) if active else None,
+        repayment_available=available,
+        **product_state("loans"),
     )
 
 
@@ -83,6 +87,8 @@ def loan_quote(request):
     """POST /api/loans/quote/ {access_token, amount, tenure_days}
     -> {principal, interest, total_repayment, tenure_days}
     """
+    if not product_available("loans"):
+        return unavailable_response("loans")
     principal = parse_amount(request.data.get("amount"))
     if principal is None:
         return fail("Enter a valid amount")
@@ -127,6 +133,8 @@ def loan_request(request):
     if replay:
         return replay
 
+    if not product_available("loans"):
+        return unavailable_response("loans")
     pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
     if pin_err:
         return pin_err
@@ -191,6 +199,8 @@ def loan_repay(request):
     if replay:
         return replay
 
+    if not product_available("loans"):
+        return unavailable_response("loans")
     if active is None:
         return fail("You have no active loan", status=404)
 

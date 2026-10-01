@@ -4,6 +4,7 @@ from decimal import Decimal
 from common.http import (
     api, fail, idempotent_replay, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
 )
+from common.products import product_available, product_state, unavailable_response
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, get_or_create_wallet
 
 from .models import FixedSave
@@ -37,8 +38,10 @@ def _plan_dict(p: FixedSave) -> dict:
 def savings_rates(request):
     """POST /api/savings/rates/ -> {rates: [{days, rate}], min}"""
     return ok(
-        rates=[{"days": d, "rate": str(r)} for d, r in sorted(FixedSave.RATES.items())],
+        rates=([{"days": d, "rate": str(r)} for d, r in sorted(FixedSave.RATES.items())]
+               if product_available("savings") else []),
         min=str(FixedSave.MIN_PRINCIPAL),
+        **product_state("savings"),
     )
 
 
@@ -48,6 +51,8 @@ def savings_quote(request):
     """POST /api/savings/quote/ {access_token, amount, days}
     -> {principal, interest, maturity_value, rate, days}
     """
+    if not product_available("savings"):
+        return unavailable_response("savings")
     principal = parse_amount(request.data.get("amount"))
     if principal is None:
         return fail("Enter a valid amount")
@@ -89,6 +94,8 @@ def savings_create(request):
     if replay:
         return replay
 
+    if not product_available("savings"):
+        return unavailable_response("savings")
     pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
     if pin_err:
         return pin_err
@@ -112,7 +119,9 @@ def savings_list(request):
     -> {total_locked, plans: [...]}
     """
     user = request.user_obj
-    settle_user_maturities(user)  # pay out anything that matured since the last visit
+    if product_available("savings"):
+        settle_user_maturities(user)
     plans = user.savings.all()
     total = sum((p.principal for p in plans if p.status == FixedSave.ACTIVE), Decimal("0"))
-    return ok(total_locked=str(total), plans=[_plan_dict(p) for p in plans])
+    return ok(total_locked=str(total), plans=[_plan_dict(p) for p in plans],
+              **product_state("savings"))

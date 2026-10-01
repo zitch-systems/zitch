@@ -18,6 +18,8 @@ export const EP = {
     logout: '/api/logout/',
     updateInfo: '/api/update_info/',
     avatar: '/api/profile/avatar/',
+    emailVerifyStart: '/api/email/verify/start/',
+    emailVerifyConfirm: '/api/email/verify/confirm/',
   },
   wallet: {
     balance: '/api/wallet_balance/',
@@ -69,6 +71,7 @@ export const EP = {
     freeze: '/api/cards/freeze/',
   },
   savings: {
+    rates: '/api/savings/rates/',
     list: '/api/savings/list/',
     create: '/api/savings/create/',
   },

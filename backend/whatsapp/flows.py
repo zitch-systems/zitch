@@ -893,7 +893,13 @@ def _open_pin_screen(pa) -> dict:
     which on a card tapped an hour later was simply a stale number on the screen
     the customer checks before spending.
     """
-    from .router import _flow_fields, _has_live_funds
+    from .router import (_clear_actions, _flow_fields, _has_live_funds,
+                         _unavailable_product_for_action)
+
+    unavailable = _unavailable_product_for_action(pa)
+    if unavailable:
+        _clear_actions(pa.msisdn)
+        return _success_screen(unavailable, status="failed")
 
     if not _has_live_funds(pa, pa.user, notify=False):
         return _success_screen(
@@ -1540,8 +1546,11 @@ def _email_code_screen(pa, error: str = "") -> dict:
         screen = IDENTITY_CHAIN
     else:
         screen = CODE_SCREEN
+    # Legacy in-flight actions predate the masked destination field; keep their
+    # screen useful while all newly minted challenges use the bound hint.
+    destination = pa.payload.get("code_target_label") or pa.user.email or "your email address"
     return _identity_screen("email", error=error, label="Email code",
-                            summary=f"Enter the 6-digit code we sent to {pa.user.email}",
+                            summary=f"Enter the 6-digit code we sent to {destination}",
                             screen=screen)
 
 
@@ -1660,7 +1669,7 @@ def _submit_pin(token: str, data: dict) -> dict:
     from common.http import evaluate_transaction_pin
 
     from .router import (PIN_FLOW_ATTEMPTS, _clear_actions, _has_live_funds,
-                         authorise_flow_execution)
+                         _unavailable_product_for_action, authorise_flow_execution)
 
     pa = resolve_flow_token(token)
     if pa is None:
@@ -1679,6 +1688,11 @@ def _submit_pin(token: str, data: dict) -> dict:
                                "in the chat.", status="failed")
 
     user = pa.user
+    unavailable = _unavailable_product_for_action(pa)
+    if unavailable:
+        _clear_actions(pa.msisdn)
+        _close_in_chat(pa.msisdn, unavailable)
+        return _result_screen(unavailable, status="failed")
     if not _has_live_funds(pa, user, notify=False):
         return _success_screen(
             "Insufficient balance for this payment now. You were not charged. Check your balance in the chat, then start again.",

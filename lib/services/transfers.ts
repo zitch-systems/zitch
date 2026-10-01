@@ -19,7 +19,12 @@ export type ResolveResult = ApiResult<{
   matches?: { bank: string; bank_name: string; name: string }[];
 }>;
 
-export type SendResult = ApiResult<{ reference?: string }>;
+export type SendResult = ApiResult<{
+  reference?: string;
+  under_review?: boolean;
+  review_kind?: string;
+  status_message?: string;
+}>;
 
 export type SendBody = {
   account_number: string;

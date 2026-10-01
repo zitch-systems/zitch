@@ -4,6 +4,8 @@ from decimal import Decimal
 from django.db import transaction as db_transaction
 from django.db.models import Q
 
+from common.products import require_product
+
 from wallet.models import Transaction, Wallet
 from wallet.services import debit
 
@@ -27,6 +29,7 @@ class CardFundingPending(Exception):
 @db_transaction.atomic
 def claim_card_funding(user, card: VirtualCard, amount: Decimal, key) -> Transaction:
     """Serialize different-key loads per card and create one pending debit."""
+    require_product("card_funding")
     locked_card = (VirtualCard.objects.select_for_update()
                    .get(pk=card.pk, user=user))
     unresolved = (Transaction.objects

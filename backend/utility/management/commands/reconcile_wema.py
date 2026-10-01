@@ -40,11 +40,12 @@ from utility import wema
 from utility.providers import payout_provider, vas_requery
 from utility.reconciliation import alert_due, claim_status_lookup, recorded_vas_outcome
 from wallet.models import Wallet, WemaFaceSession, WemaProvisioningAttempt
+from wallet.reconciliation import reconcile_account_history
 from wallet.services import (
-    apply_wema_credit, attach_existing_bank_account, pending_bank_payouts,
+    attach_existing_bank_account, pending_bank_payouts,
     pending_card_fundings,
     pending_vas_purchases, quarantined_bank_payouts, reverse_transfer,
-    self_payout_references, settle_or_refund, settle_payout,
+    settle_or_refund, settle_payout,
     unmatched_reversal_evidence, wema_provisioned_wallets,
 )
 
@@ -56,7 +57,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             "--lookback-days", type=int, default=2,
-            help="Days of history to scan per wallet (default: 2). Idempotent, so overlap is safe.",
+            help="Overlap days after durable statement coverage (default: 2). Missing older days are recovered.",
         )
         parser.add_argument(
             "--payout-older-than-minutes", type=int, default=2,
@@ -151,9 +152,7 @@ class Command(BaseCommand):
                         pass
 
     def _run_unlocked(self, **options):
-        today = timezone.now().date()
-        date_to = today.strftime("%Y-%m-%d")
-        date_from = (today - timedelta(days=max(0, options["lookback_days"]))).strftime("%Y-%m-%d")
+        today = timezone.localdate()
 
         # Phase 0 — recover NUBANs whose asynchronous Account Creation callback
         # was delayed or missed. Wema's OTP and face endpoints can return PENDING:
@@ -246,18 +245,20 @@ class Command(BaseCommand):
         scanned = 0
         credited = 0
         fetch_failures = 0
+        history_blocked = 0
+        history_backlog = 0
+        history_windows = 0
         pnd_lifted = 0
         pnd_failures = 0
-        # date_from/date_to are sent in the format the spec EXAMPLES show, never
-        # confirmed against a live response: apply_wema_credit matches rows by
-        # referenceId, not by date, so nothing here has ever needed to read a date
-        # back off a row. A wrong format guess would not error either — it would
-        # silently ask for the wrong window and quietly credit nothing (or too
-        # much). Logging the field NAMES of one real row, once per run, turns that
-        # from a question for Wema into something confirmed by our own log the
-        # first time this runs for real, rather than a guess that could misparse a
-        # genuine value.
         shape_logged = False
+
+        def log_history_shape(row):
+            nonlocal shape_logged
+            if not shape_logged:
+                self.stdout.write(f"transhistoryV2 row shape (field names only, "
+                                  f"once per run): {sorted(row.keys())}")
+                shape_logged = True
+
         for wallet in wema_provisioned_wallets():
             scanned += 1
             # Account creation and PND lifting are separate bank calls. A transient
@@ -274,8 +275,14 @@ class Command(BaseCommand):
                         f"wema_pnd_lift_retry_failed account={wallet.account_number} "
                         f"message={pnd.get('message', '')}"
                     )
-            res = wema.get_transactions(wallet.account_number, date_from, date_to)
-            if not res.get("success"):
+            res = reconcile_account_history(
+                wallet, today=today, overlap_days=options["lookback_days"],
+                on_shape=log_history_shape)
+            credited += res["credited"]
+            history_windows += res["windows"]
+            if res["backlog"]:
+                history_backlog += 1
+            if res["fetch_failed"]:
                 fetch_failures += 1
                 diag = res.get("diagnostic") or {}
                 self.stderr.write(
@@ -285,21 +292,14 @@ class Command(BaseCommand):
                     f"gateway_status_code={diag.get('gateway_status_code')} "
                     f"gateway_code={diag.get('gateway_code')} "
                     f"gateway_successful={diag.get('gateway_successful')} "
-                    f"message={res.get('message')}"
+                    f"error_code={res['error_code']}"
                 )
                 continue
-            # The user's own payout references, fetched once per wallet: a credit
-            # row matching one is a payout REVERSAL (routed through
-            # reverse_transfer inside apply_wema_credit), never a funding credit.
-            self_refs = self_payout_references(wallet.user)
-            rows = res.get("transactions", []) or []
-            if rows and not shape_logged:
-                self.stdout.write(f"transhistoryV2 row shape (field names only, "
-                                  f"once per run): {sorted(rows[0].keys())}")
-                shape_logged = True
-            for tx in rows:
-                if apply_wema_credit(wallet, tx, self_refs=self_refs) is not None:
-                    credited += 1
+            if res["error_code"]:
+                history_blocked += 1
+                self.stderr.write(
+                    f"wema_history_coverage_blocked wallet={wallet.pk} "
+                    f"error_code={res['error_code']}")
 
         # Phase 3 - settle PENDING partner-bank VAS purchases. These are customer
         # debits whose provider response timed out or returned "processing"; the
@@ -382,6 +382,9 @@ class Command(BaseCommand):
                             "vas_refunded": vas_refunded,
                             "vas_pending": vas_still_pending,
                             "fetch_failures": fetch_failures, "status_failures": status_failures,
+                            "history_windows": history_windows,
+                            "history_blocked": history_blocked,
+                            "history_backlog": history_backlog,
                             "pnd_lifted": pnd_lifted, "pnd_failures": pnd_failures})
 
         # Systemic-outage signal: individual transient failures are expected and
@@ -389,6 +392,13 @@ class Command(BaseCommand):
         # gateway call failed, that's an auth/connectivity outage (not a quiet
         # no-op) — page it so "nothing is crediting" doesn't go unnoticed.
         from utility.alerts import alert
+        if history_blocked:
+            alert(
+                "reconcile_wema: bank statement coverage or opening balance "
+                "requires review; confirmed rows were applied, unresolved windows "
+                "will be retried, and unknown opening balances cannot be spent",
+                level="error", wallets=history_blocked,
+            )
         if scanned and fetch_failures == scanned:
             alert(f"reconcile_wema: all {scanned} wallet history fetches failed — Wema "
                   f"unreachable or auth rejected; no deposits can be detected",
@@ -493,6 +503,8 @@ class Command(BaseCommand):
             f"{recovery_checked} checked ({recovery_failures} still pending, "
             f"{recovery_skipped} rate-limited); "
             f"{credited} credit(s) / {scanned} wallet(s); "
+            f"history windows {history_windows}, review {history_blocked}, "
+            f"backlog {history_backlog}; "
             f"PND lifted {pnd_lifted}, retry failures {pnd_failures}; "
             f"payouts checked {payouts_seen}, settled {settled}, reversed {reversed_}; "
             f"VAS checked {vas_seen}, settled {vas_settled}, refunded {vas_refunded}, "

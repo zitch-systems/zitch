@@ -855,20 +855,14 @@ def _new_flow(user, msisdn: str, action_type: str, state: str, payload: dict | N
 
 def _own_phone(user) -> str | None:
     """The linked account phone in the familiar local form VTU inputs show."""
-    digits = re.sub(r"\D", "", str(getattr(user, "phone", "") or ""))
-    if len(digits) == 13 and digits.startswith("234"):
-        digits = "0" + digits[3:]
-    elif len(digits) == 10:
-        digits = "0" + digits
-    return digits if len(digits) >= 10 else None
+    return normalize_nigerian_mobile(getattr(user, "phone", "") or "")
 
 
 def _phone_from(text: str, user) -> str | None:
-    """'me' -> the user's own number; else the digits typed (>= 10)."""
+    """Resolve ``me`` or validate a Nigerian mobile destination."""
     if text.strip().lower() in ("me", "self", "mine"):
         return _own_phone(user)
-    digits = re.sub(r"\D", "", text)
-    return digits if len(digits) >= 10 else None
+    return normalize_nigerian_mobile(text)
 
 
 def _insufficient(user, amount: Decimal) -> bool:
@@ -1169,7 +1163,14 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
 def _exec_airtime(pa: PendingAction, user, msisdn: str) -> str:
     amount = Decimal(pa.payload["amount"])
     net = NETWORK_NAMES[pa.payload["net"]]
-    phone = pa.payload["phone"]
+    phone = normalize_nigerian_mobile(pa.payload.get("phone"))
+    if not phone:
+        _clear_actions(msisdn)
+        line = "That airtime destination is invalid, so the purchase was cancelled. No money was taken."
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_FAILED)
+    pa.payload["phone"] = phone
+    pa.payload.setdefault("meta", {})["phone"] = phone
     return _run_vtu(
         pa, user, msisdn, amount, f"Airtime - {net}",
         lambda ref: vtu_purchase(f"{net.lower()}-airtime",
@@ -1259,7 +1260,15 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
 def _exec_data(pa: PendingAction, user, msisdn: str) -> str:
     net = NETWORK_NAMES[pa.payload["net"]]
-    phone, plan_code, price = pa.payload["phone"], pa.payload["plan_code"], Decimal(pa.payload["price"])
+    phone = normalize_nigerian_mobile(pa.payload.get("phone"))
+    if not phone:
+        _clear_actions(msisdn)
+        line = "That data destination is invalid, so the purchase was cancelled. No money was taken."
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_FAILED)
+    pa.payload["phone"] = phone
+    pa.payload.setdefault("meta", {})["phone"] = phone
+    plan_code, price = pa.payload["plan_code"], Decimal(pa.payload["price"])
     return _run_vtu(
         pa, user, msisdn, price, f"Data - {net} {pa.payload['plan_name']}",
         lambda ref: vtu_purchase(f"{net.lower()}-data",
@@ -2042,6 +2051,19 @@ def _begin_airtime(user, msisdn: str, amount, phone, network, recipient_ref=None
     # prefix names its network. Neither guess moves money; the confirm screen
     # still shows what was inferred and still needs biometrics or the PIN.
     ph = _phone_from(str(phone), user) if phone else _own_phone(user)
+    if phone and not ph:
+        payload = {"pin_attempts": 0}
+        try:
+            if amount is not None:
+                payload["amount"] = str(Decimal(str(amount)))
+        except (InvalidOperation, TypeError):
+            pass
+        netid = _network_id(network)
+        if netid:
+            payload["net"] = netid
+        _new_flow(user, msisdn, "airtime", "phone", payload)
+        reply(msisdn, "That isn't a valid Nigerian mobile number. What number should I recharge?")
+        return True
     netid = _network_id(network) or _network_from_prefix(ph)
     try:
         amt = Decimal(str(amount)) if amount is not None else None
@@ -2070,6 +2092,8 @@ CONVERT_CCYS = ["NGN", "USD", "GBP", "CAD"]  # settle-able; CNY is quote-only (b
 
 
 def _start_convert(user, msisdn: str) -> None:
+    if not product_available("fx"):
+        return reply(msisdn, PRODUCT_MESSAGES["fx"])
     if _blocked_from_spending(user, msisdn):
         return None
     _new_flow(user, msisdn, "convert", "from")
@@ -2077,6 +2101,9 @@ def _start_convert(user, msisdn: str) -> None:
 
 
 def _advance_convert(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    if not product_available("fx"):
+        _clear_actions(msisdn)
+        return reply(msisdn, PRODUCT_MESSAGES["fx"])
     st = pa.state
     if st == "from":
         c = text.strip().upper()

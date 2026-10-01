@@ -5,7 +5,15 @@ import { apiJson } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
 import type { ApiResult } from '@/lib/services/types';
 
-type LoanResult = ApiResult<Record<string, any>>;
+export type LoanResult = ApiResult<{
+  product_available?: boolean;
+  unavailable_message?: string;
+  repayment_available?: boolean;
+  limit?: number | string;
+  available?: number | string;
+  quote_rate?: number | string;
+  active_loan?: any;
+}>;
 
 export const loansService = {
   getStatus: () => apiJson<LoanResult>(EP.loans.status),

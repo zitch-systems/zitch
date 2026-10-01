@@ -44,6 +44,16 @@ class ProductionConfigurationTests(SimpleTestCase):
             ):
                 self.validate(**values)
 
+    def test_partial_test_otp_is_rejected_even_with_pre_launch_override(self):
+        for values in (
+            {"test_otp_phone": "08030000000"},
+            {"test_otp_code": "123456"},
+        ):
+            with self.subTest(values=values), self.assertRaisesRegex(
+                ImproperlyConfigured, "must either both be set or both be unset"
+            ):
+                self.validate(**values, allow_test_otp=True)
+
     def test_test_otp_requires_explicit_pre_launch_override(self):
         """The override names itself in the error, so the fix is discoverable from
         the crash alone — a boot failure is the worst place to have to go reading

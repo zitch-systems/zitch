@@ -10,9 +10,10 @@ from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
 
 from django.conf import settings
+from django.contrib.auth.hashers import make_password
 from django.core.cache import cache
 from django.db import IntegrityError, transaction as db_transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.http import JsonResponse
 from django.utils import timezone
 
@@ -187,6 +188,30 @@ def _weak_password(password: str, user=None) -> str | None:
     return password_rejection(password, user) or None
 
 
+def _signup_contacts(data):
+    """Validate untrusted contact input before creating a challenge or sending."""
+    raw_phone = data.get("phone")
+    raw_email = data.get("email", "")
+    if raw_email is None:
+        raw_email = ""
+    if not isinstance(raw_phone, str) or not isinstance(raw_email, str):
+        return "", "", fail("Enter a valid phone number and email address")
+    phone, email = raw_phone.strip(), raw_email.strip()
+    if not re.fullmatch(r"\+?[0-9]{8,15}", phone):
+        return "", "", fail("Enter a valid phone number")
+    if email:
+        from django.core.exceptions import ValidationError
+        from django.core.validators import validate_email
+
+        try:
+            validate_email(email)
+        except ValidationError:
+            return "", "", fail("Enter a valid email address")
+        if len(email) > 254:
+            return "", "", fail("Enter a valid email address")
+    return phone, email, None
+
+
 @ratelimit("signin", limit=10, window=300)
 @api
 def signin(request):
@@ -231,10 +256,9 @@ def phone_verification(request):
     cooldown; an already-registered owner is told to sign in via SMS to the
     number they control, not in the API response. Mirrors password_forgot below.
     """
-    phone = (request.data.get("phone") or "").strip()
-    email = (request.data.get("email") or "").strip()
-    if not phone:
-        return fail("Phone is required")
+    phone, email, contact_error = _signup_contacts(request.data)
+    if contact_error is not None:
+        return contact_error
     if _otp_undeliverable(phone):
         return fail("SMS verification is temporarily unavailable. Please try again later.",
                     status=503)
@@ -267,60 +291,80 @@ def phone_verification(request):
 @api
 def verify_otp(request):
     """POST /api/verify_otp/ {otp, phone} -> creates user + {access_token}"""
-    phone = (request.data.get("phone") or "").strip()
-    code = (request.data.get("otp") or "").strip()
+    raw_phone, raw_code = request.data.get("phone"), request.data.get("otp")
+    if not isinstance(raw_phone, str) or not isinstance(raw_code, str):
+        return fail("Phone and OTP are required")
+    phone, code = raw_phone.strip(), raw_code.strip()
     if not phone or not code:
         return fail("Phone and OTP are required")
-
-    otp = OTP.objects.filter(phone=phone, used=False, purpose=OTP.SIGNUP).order_by("-created").first()
-    if otp is None:
-        return fail("Invalid OTP", status=400)
-    if otp.is_expired:
-        return fail("OTP has expired", status=400)
-    if otp.too_many_attempts:
-        # Cap reached: refuse further guesses on this code until a new one is
-        # requested, bounding an attacker to MAX_ATTEMPTS tries per code.
-        return fail("Too many incorrect attempts. Request a new code.", status=429)
-    if not otp.verify_code(code):
-        otp.attempts += 1
-        otp.save(update_fields=["attempts"])
-        return fail("Invalid OTP", status=400)
-
-    otp.used = True
-    otp.save(update_fields=["used"])
-
     # The customer's legal name is captured at register (before this OTP round-trip)
     # and sent here so the account is created WITH a name. It matters beyond display:
     # the dedicated funding account (Wema NUBAN) is later opened in this name, and an
     # account with no holder name can't be safely funded by transfer — the payer has
     # no name to confirm against. Trim + length-cap to the User field width.
-    first_name = (request.data.get("first_name") or "").strip()[:150]
-    last_name = (request.data.get("last_name") or "").strip()[:150]
-    user, created = User.objects.get_or_create(
-        phone=phone,
-        defaults={"username": phone, "email": otp.email or "",
-                  "first_name": first_name, "last_name": last_name,
-                  # Reaching this line means the SMS code was correct, which is
-                  # precisely the proof phone_verified records.
-                  "phone_verified": True},
-    )
-    # Defense in depth: a SIGNUP OTP must never sign anyone into an already
-    # established account. A genuine new signup has no usable password at this
-    # point (set-password runs AFTER verify), so an existing user that already has
-    # a password is a pre-existing account — refuse rather than issue its session.
-    if not created and user.has_usable_password():
-        log.warning("signup_otp_for_existing_account phone=%r ip=%s",
-                    mask_pii(phone), client_ip(request))
-        return fail("Invalid OTP", status=400)
-    # Backfill the name onto a mid-signup account (created on a prior attempt, or
-    # before name capture existed) that has no name yet — so re-verifying still
-    # lands a named account. Never overwrite a name already on file.
-    if not created and (first_name or last_name) and not (user.first_name or user.last_name):
-        user.first_name = first_name or user.first_name
-        user.last_name = last_name or user.last_name
-        user.save(update_fields=["first_name", "last_name"])
-    get_or_create_wallet(user)
-    return ok(**_session_payload(user, request), message="Verified")
+    names = [request.data.get(field) or "" for field in ("first_name", "last_name")]
+    if not all(isinstance(value, str) for value in names):
+        return fail("Enter your first and last name")
+    first_name, last_name = (value.strip()[:150] for value in names)
+    with db_transaction.atomic():
+        # Existing accounts always lock before their challenge, matching contact
+        # verification/reset. The challenge itself serializes first-time signup.
+        user = User.objects.select_for_update().filter(phone=phone).first()
+        otp = (OTP.objects.select_for_update().filter(phone=phone, purpose=OTP.SIGNUP)
+               .order_by("-created", "-pk").first())
+        # Select the newest challenge including consumed ones: an old unused
+        # code must never reopen after a newer code has already been used.
+        if otp is None or otp.used:
+            return fail("Invalid OTP", status=400)
+        if otp.is_expired:
+            return fail("OTP has expired", status=400)
+        if otp.too_many_attempts:
+            return fail("Too many incorrect attempts. Request a new code.", status=429)
+        if not otp.verify_code(code):
+            OTP.objects.filter(pk=otp.pk, used=False, attempts__lt=OTP.MAX_ATTEMPTS).update(
+                attempts=F("attempts") + 1)
+            return fail("Invalid OTP", status=400)
+        if user is not None and (not user.is_active or user.has_usable_password()
+                                 or (user.email or "").strip().lower()
+                                 != (otp.email or "").strip().lower()):
+            log.warning("signup_otp_for_existing_account phone=%r ip=%s",
+                        mask_pii(phone), client_ip(request))
+            return fail("Invalid OTP", status=400)
+        if user is None and User.objects.filter(username=phone).exists():
+            # Older contact edits could leave a retired phone as another user's
+            # unique username. SMS proof never authorizes merging those accounts.
+            return fail("We need to review this phone number before registration. Contact Zitch Support.",
+                        status=409, code="registration_review_required")
+        if not OTP.objects.filter(pk=otp.pk, used=False,
+                                  attempts__lt=OTP.MAX_ATTEMPTS).update(used=True):
+            return fail("Invalid OTP", status=400)
+        if user is None:
+            try:
+                with db_transaction.atomic():
+                    user, created = User.objects.get_or_create(
+                        phone=phone,
+                        defaults={"username": phone, "email": otp.email or "",
+                                  "first_name": first_name, "last_name": last_name,
+                                  "password": make_password(None), "phone_verified": True},
+                    )
+            except IntegrityError:
+                return fail("We need to review this phone number before registration. Contact Zitch Support.",
+                            status=409, code="registration_review_required")
+            # Another onboarding channel can create this phone while signup was
+            # waiting. Require a fresh challenge against that current account,
+            # rather than edit a user that we could not lock before the OTP.
+            if not created:
+                return fail("Invalid OTP", status=400)
+        fields = ["phone_verified", "tier"]
+        user.phone_verified = True
+        if (first_name or last_name) and not (user.first_name or user.last_name):
+            user.first_name, user.last_name = first_name, last_name
+            fields.extend(["first_name", "last_name"])
+        user.recompute_tier()
+        user.save(update_fields=fields)
+        get_or_create_wallet(user)
+        payload = _session_payload(user, request)
+    return ok(**payload, message="Verified")
 
 
 @ratelimit("otp_send", limit=5, window=60)
@@ -332,9 +376,9 @@ def resend_verify_otp(request):
     verified user is created with the right email and set-password works.
     The client may also pass `email` explicitly to override.
     """
-    phone = (request.data.get("phone") or "").strip()
-    if not phone:
-        return fail("Phone is required")
+    phone, supplied_email, contact_error = _signup_contacts(request.data)
+    if contact_error is not None:
+        return contact_error
     if _otp_undeliverable(phone):
         return fail("SMS verification is temporarily unavailable. Please try again later.",
                     status=503)
@@ -354,9 +398,10 @@ def resend_verify_otp(request):
     if existing is not None:
         email = existing.email or ""
     else:
-        email = (request.data.get("email") or "").strip()
+        email = supplied_email
         if not email:
-            prior = OTP.objects.filter(phone=phone).order_by("-created").first()
+            prior = (OTP.objects.filter(phone=phone, purpose=OTP.SIGNUP)
+                     .order_by("-created", "-pk").first())
             email = prior.email if prior else ""
     code = _otp_code()
     OTP.issue(phone=phone, code=code, email=email)
@@ -379,11 +424,24 @@ def password_forgot(request):
     Always returns the same success message whether or not the account exists,
     so the endpoint can't be used to enumerate accounts.
     """
-    ident = (request.data.get("email_or_phone") or request.data.get("phone") or "").strip()
+    raw_ident = request.data.get("email_or_phone")
+    if raw_ident is None or raw_ident == "":
+        raw_ident = request.data.get("phone", "")
+    if not isinstance(raw_ident, str) or len(raw_ident) > 254:
+        return fail("Enter a valid phone number or email address")
+    ident = raw_ident.strip()
     if not ident:
         return fail("Phone or email is required")
+    if not re.fullmatch(r"\+?[0-9]{8,15}", ident):
+        from django.core.exceptions import ValidationError
+        from django.core.validators import validate_email
+
+        try:
+            validate_email(ident)
+        except ValidationError:
+            return fail("Enter a valid phone number or email address")
     user = User.objects.filter(phone=ident).first() or User.objects.filter(email__iexact=ident).first()
-    if user is not None and user.phone and not _otp_on_cooldown(user.phone):
+    if user is not None and user.is_active and user.phone and not _otp_on_cooldown(user.phone):
         code = _otp_code()
         OTP.issue(phone=user.phone, code=code, email=user.email or "", purpose=OTP.RESET)
         message = f"Your Zitch password reset code is {code}"
@@ -411,9 +469,12 @@ def password_reset(request):
     credential is gone) and returns a fresh token so the resetting device is
     signed in.
     """
-    ident = (request.data.get("email_or_phone") or request.data.get("phone") or "").strip()
-    code = (request.data.get("otp") or "").strip()
+    raw_ident = request.data.get("email_or_phone") or request.data.get("phone") or ""
+    raw_code = request.data.get("otp") or ""
     password = request.data.get("password") or ""
+    if not all(isinstance(value, str) for value in (raw_ident, raw_code, password)):
+        return fail("Phone/email, reset code and password are required")
+    ident, code = raw_ident.strip(), raw_code.strip()
     if not ident or not code:
         return fail("Phone/email and reset code are required")
     weak = _weak_password(password)
@@ -422,32 +483,35 @@ def password_reset(request):
 
     # Resolve the account first; a generic 400 if unknown so the endpoint can't
     # be used to tell a registered identifier from an unregistered one.
-    user = User.objects.filter(phone=ident).first() or User.objects.filter(email__iexact=ident).first()
-    if user is None:
-        return fail("Invalid reset code", status=400)
-
-    otp = OTP.objects.filter(phone=user.phone, used=False, purpose=OTP.RESET).order_by("-created").first()
-    if otp is None:
-        return fail("Invalid reset code", status=400)
-    if otp.is_expired:
-        return fail("Reset code has expired", status=400)
-    if otp.too_many_attempts:
-        return fail("Too many incorrect attempts. Request a new code.", status=429)
-    if not otp.verify_code(code):
-        otp.attempts += 1
-        otp.save(update_fields=["attempts"])
-        return fail("Invalid reset code", status=400)
-
-    otp.used = True
-    otp.save(update_fields=["used"])
-    user.set_password(password)
-    user.save(update_fields=["password"])
-    # A password reset invalidates every prior session — access tokens AND the
-    # refresh chains behind them, or a stolen refresh token would outlive the
-    # password change that was meant to end it.
-    user.tokens.all().delete()
-    user.refresh_tokens.all().update(revoked_at=timezone.now())
-    return ok(**_session_payload(user, request), message="Password reset")
+    with db_transaction.atomic():
+        user = (User.objects.select_for_update().filter(phone=ident).first()
+                or User.objects.select_for_update().filter(email__iexact=ident).first())
+        if user is None or not user.is_active or not user.phone:
+            return fail("Invalid reset code", status=400)
+        otp = (OTP.objects.select_for_update().filter(phone=user.phone, purpose=OTP.RESET)
+               .order_by("-created", "-pk").first())
+        if (otp is None or otp.used or (otp.email or "").strip().lower()
+                != (user.email or "").strip().lower()):
+            return fail("Invalid reset code", status=400)
+        if otp.is_expired:
+            return fail("Reset code has expired", status=400)
+        if otp.too_many_attempts:
+            return fail("Too many incorrect attempts. Request a new code.", status=429)
+        if not otp.verify_code(code):
+            OTP.objects.filter(pk=otp.pk, used=False, attempts__lt=OTP.MAX_ATTEMPTS).update(
+                attempts=F("attempts") + 1)
+            return fail("Invalid reset code", status=400)
+        if not OTP.objects.filter(pk=otp.pk, used=False,
+                                  attempts__lt=OTP.MAX_ATTEMPTS).update(used=True):
+            return fail("Invalid reset code", status=400)
+        user.set_password(password)
+        user.save(update_fields=["password"])
+        # Reset and session revocation share the challenge's transaction, so a
+        # duplicate request cannot change the password or revoke the winner.
+        user.tokens.all().delete()
+        user.refresh_tokens.all().update(revoked_at=timezone.now())
+        payload = _session_payload(user, request)
+    return ok(**payload, message="Password reset")
 
 
 @api
@@ -550,27 +614,17 @@ def set_password(request):
     by an email in the body with no auth, letting anyone overwrite any account's
     password (and an empty email matched an arbitrary blank-email account).
     """
-    user = request.user_obj
     password = request.data.get("password") or ""
+    current = request.data.get("current_password") or ""
+    if not isinstance(password, str) or not isinstance(current, str):
+        return fail("Enter a valid password")
     # Changing an EXISTING password requires the current one, so a stolen session
     # token alone can't overwrite it. First-time onboarding runs set-password
-    # before any real password exists — a freshly-created user's password hash is
-    # the empty string (has_usable_password() is True for ""), so gate on a
-    # NON-EMPTY usable hash to exempt the first set while covering every change.
-    if user.password and user.has_usable_password():
-        current = request.data.get("current_password") or ""
-        if not (current and user.check_password(current)):
-            return fail("Enter your current password to change it",
-                        status=403, code="current_password_required")
-    weak = _weak_password(password, user)
-    if weak:
-        return fail(weak)
-    user.set_password(password)
-    user.save(update_fields=["password"])
+    # before any real password exists. Legacy signup rows used an empty hash;
+    # current signups use an explicitly unusable password. Neither is a credential.
     # Revoke other sessions on a credential change: any token issued before this
     # change is now invalid. Keep the caller's current token so the onboarding
     # flow (set-password -> set-pin) and a change-password screen don't 401.
-    user.tokens.exclude(key=AccessToken._hash(resolve_token(request))).delete()
     # ...and the REFRESH chains behind them, exactly as password_reset does above
     # and for the same reason. Deleting only access tokens left a stolen refresh
     # family alive for up to REFRESH_ABSOLUTE_DAYS, so the victim performed the one
@@ -581,8 +635,22 @@ def set_password(request):
     # Every chain goes, the caller's included, and the caller is handed a new one in
     # the response: keeping theirs alive would mean deciding which chain is the
     # victim's on the strength of that same spoofable header.
-    user.refresh_tokens.all().update(revoked_at=timezone.now())
-    fresh = RefreshToken.issue(user, device_id=_session_device_id(request))
+    with db_transaction.atomic():
+        user = User.objects.select_for_update().get(pk=request.user_obj.pk)
+        if not user.is_active:
+            return fail("Your session has expired. Please sign in again.", status=401)
+        if user.password and user.has_usable_password():
+            if not (current and user.check_password(current)):
+                return fail("Enter your current password to change it",
+                            status=403, code="current_password_required")
+        weak = _weak_password(password, user)
+        if weak:
+            return fail(weak)
+        user.set_password(password)
+        user.save(update_fields=["password"])
+        user.tokens.exclude(key=AccessToken._hash(resolve_token(request))).delete()
+        user.refresh_tokens.all().update(revoked_at=timezone.now())
+        fresh = RefreshToken.issue(user, device_id=_session_device_id(request))
     return ok(message="Password set", refresh_token=fresh.key)
 
 
@@ -601,34 +669,40 @@ def set_transaction_pin(request):
     from accounts.models import transaction_pin_rejection
     from common.http import evaluate_transaction_pin
 
-    user = request.user_obj
-    pin = (request.data.get("pin") or "").strip()
+    raw_pin = request.data.get("pin") or ""
+    raw_old_pin = request.data.get("old_pin") or ""
+    password = request.data.get("password") or ""
+    if not all(isinstance(value, str) for value in (raw_pin, raw_old_pin, password)):
+        return fail("Enter a valid PIN", code="weak_pin")
+    pin, old_pin = raw_pin.strip(), raw_old_pin.strip()
     rejected = transaction_pin_rejection(pin)
     if rejected:
         return fail(rejected, code="weak_pin")
-    if user.transaction_pin:
-        old_pin = (request.data.get("old_pin") or "").strip()
-        password = request.data.get("password") or ""
+    with db_transaction.atomic():
+        user = User.objects.select_for_update().get(pk=request.user_obj.pk)
+        if not user.is_active:
+            return fail("Your session has expired. Please sign in again.", status=401)
         # old_pin MUST go through the brute-force-protected checker (lockout after
         # PIN_MAX_ATTEMPTS) — a raw check_transaction_pin here let a stolen token
         # guess the 4-digit PIN unlimited times and overwrite it. The password
         # fallback keeps forgot-PIN recovery working.
-        ok_pwd = bool(password) and user.check_password(password)
-        ok_old = False
-        if not ok_pwd and old_pin:
-            ok_old, code, message = evaluate_transaction_pin(user, old_pin)
-            if code == "pin_locked":
-                return fail(message, status=403, code="pin_locked")
-        if not (ok_old or ok_pwd):
-            return fail("Enter your current PIN to change it",
-                        status=403, code="current_pin_required")
-    # set_transaction_pin also clears pin_reset_required and the whole
-    # brute-force lockout (counter, deadline and escalation strikes), so a
-    # legitimate password-authenticated PIN change isn't blocked by a stale lock
-    # against the PIN it just replaced. Saving the named set rather than a
-    # hand-written list is what keeps this in step when that method grows.
-    user.set_transaction_pin(pin)
-    user.save(update_fields=list(User.PIN_UPDATE_FIELDS))
+        if user.transaction_pin:
+            ok_pwd = bool(password) and user.check_password(password)
+            ok_old = False
+            if not ok_pwd and old_pin:
+                ok_old, code, message = evaluate_transaction_pin(user, old_pin)
+                if code == "pin_locked":
+                    return fail(message, status=403, code="pin_locked")
+            if not (ok_old or ok_pwd):
+                return fail("Enter your current PIN to change it",
+                            status=403, code="current_pin_required")
+        # set_transaction_pin also clears pin_reset_required and the whole
+        # brute-force lockout (counter, deadline and escalation strikes), so a
+        # legitimate password-authenticated PIN change isn't blocked by a stale lock
+        # against the PIN it just replaced. Saving the named set rather than a
+        # hand-written list is what keeps this in step when that method grows.
+        user.set_transaction_pin(pin)
+        user.save(update_fields=list(User.PIN_UPDATE_FIELDS))
     return ok(message="Transaction PIN set")
 
 
@@ -664,8 +738,9 @@ def verify_pin(request):
 def update_info(request):
     """POST /api/update_info/ {first_name, last_name, email, phone, access_token}
 
-    Changing the EMAIL or PHONE additionally requires the current password (or the
-    transaction PIN), and drops that channel's verified flag.
+    Changing the email requires the current password (or transaction PIN), and
+    drops its verified flag. Phone replacement needs a Support review until an
+    authenticated replacement-number proof route is available.
 
     Both halves are load-bearing. password_forgot mails the reset code to whatever
     `user.email` currently holds, so without re-authentication a stolen session token
@@ -683,55 +758,97 @@ def update_info(request):
     """
     from common.http import evaluate_transaction_pin
 
-    user = request.user_obj
     data = request.data
-    new_email = (data.get("email") or "").strip()
-    new_phone = (data.get("phone") or "").strip()
+    values = [data.get(field) or "" for field in ("email", "phone", "first_name", "last_name")]
+    if not all(isinstance(value, str) for value in values):
+        return fail("Enter valid account details")
+    new_email, new_phone, first_name, last_name = (value.strip() for value in values)
+    from django.core.exceptions import ValidationError
+    from django.core.validators import validate_email
+
+    if new_email:
+        if len(new_email) > 254:
+            return fail("Enter a valid email address")
+        try:
+            validate_email(new_email)
+        except ValidationError:
+            return fail("Enter a valid email address")
+    if new_phone and not re.fullmatch(r"\+?[0-9]{8,15}", new_phone):
+        return fail("Enter a valid phone number")
+    if len(first_name) > 150 or len(last_name) > 150:
+        return fail("First and last names must each be 150 characters or fewer")
     # Only validate uniqueness when the value is actually changing, so a plain
     # name update never trips on the user's own (or a legacy duplicate) value.
     # phone is unique in the DB — the pre-check turns a clash into a clean error
     # instead of a 500; email isn't unique but a clash would make sign-in (which
     # matches by email) ambiguous, so we guard it too.
-    changing_phone = new_phone and new_phone != (user.phone or "")
-    changing_email = new_email and new_email.lower() != (user.email or "").lower()
-    if changing_phone and User.objects.filter(phone=new_phone).exclude(pk=user.pk).exists():
+    try:
+        with db_transaction.atomic():
+            # Authentication may have fetched this user before a KYC callback or
+            # credential reset committed. Re-authenticate and edit the current
+            # row; never write a full stale user over durable identity proof.
+            user = User.objects.select_for_update().get(pk=request.user_obj.pk)
+            if not user.is_active:
+                return fail("Your session has expired. Please sign in again.", status=401)
+            changing_phone = bool(new_phone and new_phone != (user.phone or ""))
+            changing_email = bool(new_email and new_email.lower() != (user.email or "").lower())
+            if changing_phone and User.objects.filter(phone=new_phone).exclude(pk=user.pk).exists():
+                return fail("That phone number is already in use")
+            if changing_phone:
+                # Signup OTP deliberately cannot authenticate an established
+                # account, and native KYC has no replacement-phone verifier.
+                # Keep the proven phone/username and recovery access intact.
+                return fail("To change your phone number, contact Zitch Support so we can verify the replacement safely.",
+                            status=403, code="phone_change_unavailable")
+            if changing_email and User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
+                return fail("That email is already in use")
+            if changing_email or changing_phone:
+                password = data.get("password") or data.get("current_password") or ""
+                raw_pin = data.get("transaction_pin") or data.get("pin") or ""
+                if not isinstance(password, str) or not isinstance(raw_pin, str):
+                    return fail("Enter your password to change your email or phone number",
+                                status=403, code="reauth_required")
+                pin = raw_pin.strip()
+                ok_pwd = bool(password) and user.check_password(password)
+                ok_pin = False
+                if not ok_pwd and pin:
+                    ok_pin, code, message = evaluate_transaction_pin(user, pin)
+                    if code == "pin_locked":
+                        return fail(message, status=403, code="pin_locked")
+                if not (ok_pwd or ok_pin):
+                    return fail("Enter your password to change your email or phone number",
+                                status=403, code="reauth_required")
+            fields = []
+            if first_name:
+                user.first_name = first_name
+                fields.append("first_name")
+            if last_name:
+                user.last_name = last_name
+                fields.append("last_name")
+            if new_email:
+                user.email = new_email
+                fields.append("email")
+                if changing_email:
+                    user.email_verified = False
+                    fields.append("email_verified")
+            old_phone = user.phone
+            if new_phone:
+                user.phone = new_phone
+                fields.append("phone")
+                if changing_phone:
+                    user.phone_verified = False
+                    fields.append("phone_verified")
+            if changing_email or changing_phone:
+                # Retire challenges for the previous contact snapshot, including
+                # reset codes that may have reached a now-retired inbox/phone.
+                OTP.objects.filter(phone=old_phone, used=False).update(used=True)
+                user.recompute_tier()
+                fields.append("tier")
+            if fields:
+                user.save(update_fields=fields)
+    except IntegrityError:
+        # The phone constraint can race the friendly pre-check on another user.
         return fail("That phone number is already in use")
-    if changing_email and User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
-        return fail("That email is already in use")
-    if changing_email or changing_phone:
-        password = data.get("password") or data.get("current_password") or ""
-        pin = (data.get("transaction_pin") or data.get("pin") or "").strip()
-        ok_pwd = bool(password) and user.check_password(password)
-        ok_pin = False
-        if not ok_pwd and pin:
-            # Through the brute-force-protected checker, never a raw compare — the
-            # same reasoning as set_transaction_pin: a stolen token must not get
-            # unlimited guesses at a short PIN.
-            ok_pin, code, message = evaluate_transaction_pin(user, pin)
-            if code == "pin_locked":
-                return fail(message, status=403, code="pin_locked")
-        if not (ok_pwd or ok_pin):
-            return fail("Enter your password to change your email or phone number",
-                        status=403, code="reauth_required")
-
-    if data.get("first_name"):
-        user.first_name = data["first_name"]
-    if data.get("last_name"):
-        user.last_name = data["last_name"]
-    if new_email:
-        user.email = new_email
-        if changing_email:
-            user.email_verified = False
-    if new_phone:
-        user.phone = new_phone
-        if changing_phone:
-            user.phone_verified = False
-    user.save()
-    if changing_email or changing_phone:
-        # The tier is derived from the verified flags, so it has to be re-derived
-        # after one is dropped — otherwise a Tier 1+ account keeps limits it no
-        # longer qualifies for.
-        user.recompute_tier()
     return ok(message="Account updated",
               email_verified=user.email_verified, phone_verified=user.phone_verified)
 
@@ -967,30 +1084,58 @@ def email_verify_start(request):
     """POST /api/email/verify/start/ {access_token} — email a code to the address
     on file. EMAIL ONLY, never SMS: this code proves control of the inbox, and
     delivering it to the phone would verify nothing."""
-    user = request.user_obj
-    if user.email_verified:
-        return ok(success=True, message="Email already verified", **_kyc_state(user))
-    # While unverified, the address may be set or corrected — an account with a
-    # blank or mistyped email would otherwise be locked out of Tier 1 for good.
-    new_email = (request.data.get("email") or "").strip().lower()
-    if new_email:
-        if len(new_email) > 254 or "@" not in new_email:
+    # The address and its challenge change together, under the same user lock
+    # confirmation takes. A resend cooldown must never quietly replace the
+    # inbox while an older inbox's code remains live.
+    with db_transaction.atomic():
+        user = User.objects.select_for_update().get(pk=request.user_obj.pk)
+        if not user.is_active:
+            return fail("Your session has expired. Please sign in again.", status=401)
+        if user.email_verified:
+            return ok(success=True, message="Email already verified", **_kyc_state(user))
+        supplied_email = request.data.get("email") or ""
+        if not isinstance(supplied_email, str):
             return fail("Enter a valid email address")
-        if User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
-            return fail("That email is already on another account")
-        user.email = new_email
-        user.save(update_fields=["email"])
-    if not user.email:
-        return fail("No email address on this account — include one in the request")
-    if not _otp_on_cooldown(user.phone):
+        new_email = supplied_email.strip().lower()
+        if new_email:
+            from django.core.exceptions import ValidationError
+            from django.core.validators import validate_email
+
+            try:
+                validate_email(new_email)
+            except ValidationError:
+                return fail("Enter a valid email address")
+            if len(new_email) > 254:
+                return fail("Enter a valid email address")
+            if User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
+                return fail("That email is already on another account")
+        target = new_email or (user.email or "").strip().lower()
+        if not target:
+            return fail("No email address on this account — include one in the request")
+        if _otp_on_cooldown(user.phone):
+            return fail("Wait a few seconds before requesting a new email code or changing the address.",
+                        status=429, code="otp_cooldown")
+        if user.email != target:
+            user.email = target
+            user.save(update_fields=["email"])
+        OTP.objects.filter(phone=user.phone, purpose=OTP.EMAIL, used=False).update(used=True)
         code = _otp_code()
-        OTP.issue(phone=user.phone, code=code, email=user.email, purpose=OTP.EMAIL)
-        send_email(user.email, "Confirm your email for Zitch",
-                   f"Your Zitch email confirmation code is {code}",
-                   html=_branded_email("Confirm your email",
-                                       "Enter this code in the Zitch app to confirm your email address.",
-                                       code=code,
-                                       note="If you didn't request this, you can ignore this email."))
+        challenge = OTP.issue(phone=user.phone, code=code, email=target, purpose=OTP.EMAIL)
+    # Keep the external delivery call outside the database locks. Its result
+    # does not authorize a different contact if another request changes it.
+    try:
+        delivery = send_email(target, "Confirm your email for Zitch",
+                              f"Your Zitch email confirmation code is {code}",
+                              html=_branded_email("Confirm your email",
+                                  "Enter this code in Zitch to confirm your email address.",
+                                  code=code,
+                                  note="If you didn't request this, you can ignore this email."))
+    except Exception:
+        delivery = {"success": False}
+    if (not isinstance(delivery, dict) or delivery.get("success") is not True
+            or (delivery.get("mock") and mock_disabled_in_prod())):
+        OTP.objects.filter(pk=challenge.pk, used=False).update(used=True)
+        return fail("We could not send your email code. Please try again shortly.", status=503)
     # success=True is load-bearing, not decoration: the app advances to the code
     # screen on this flag, and ok() deliberately does not default it (a queued
     # transfer answers 200 with success LEFT OUT so it reads as "processing").
@@ -1007,24 +1152,36 @@ def email_verify_confirm(request):
     """POST /api/email/verify/confirm/ {access_token, otp} — mark the email
     verified. Filtered to purpose=EMAIL so a signup or reset code can never
     stand in for inbox control."""
-    user = request.user_obj
-    code = (request.data.get("otp") or "").strip()
-    if not code:
+    raw_code = request.data.get("otp") or ""
+    if not isinstance(raw_code, str) or not raw_code.strip():
         return fail("Enter the code from the email")
-    otp = OTP.objects.filter(phone=user.phone, used=False, purpose=OTP.EMAIL).order_by("-created").first()
-    if otp is None or otp.is_expired:
-        return fail("Invalid or expired code", status=400)
-    if otp.too_many_attempts:
-        return fail("Too many incorrect attempts. Request a new code.", status=429)
-    if not otp.verify_code(code):
-        otp.attempts += 1
-        otp.save(update_fields=["attempts"])
-        return fail("Invalid code", status=400)
-    otp.used = True
-    otp.save(update_fields=["used"])
-    user.email_verified = True
-    user.recompute_tier()  # Tier 1 requires the verified email; it may be the last piece
-    user.save(update_fields=["email_verified", "tier"])
+    code = raw_code.strip()
+    with db_transaction.atomic():
+        # Consistent user -> OTP order serializes contact edits, guesses and
+        # single-use consumption. Derive the tier from the current KYC flags.
+        user = User.objects.select_for_update().get(pk=request.user_obj.pk)
+        if not user.is_active:
+            return fail("Your session has expired. Please sign in again.", status=401)
+        otp = (OTP.objects.select_for_update().filter(phone=user.phone, purpose=OTP.EMAIL)
+               .order_by("-created", "-pk").first())
+        target = (user.email or "").strip().lower()
+        if (otp is None or otp.used or otp.is_expired or not target
+                or (otp.email or "").strip().lower() != target):
+            return fail("Invalid or expired code. Request a new code for your current email address.",
+                        status=400)
+        if otp.too_many_attempts:
+            return fail("Too many incorrect attempts. Request a new code.", status=429)
+        if not otp.verify_code(code):
+            otp.attempts += 1
+            otp.save(update_fields=["attempts"])
+            return fail("Invalid code", status=400)
+        # The conditional claim additionally prevents a duplicate grant on
+        # databases without row locks; no older challenge can reopen afterward.
+        if not OTP.objects.filter(pk=otp.pk, used=False).update(used=True):
+            return fail("Invalid or expired code", status=400)
+        user.email_verified = True
+        user.recompute_tier()
+        user.save(update_fields=["email_verified", "tier"])
     return ok(success=True, message="Email verified", **_kyc_state(user))
 
 

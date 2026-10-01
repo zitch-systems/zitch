@@ -20,7 +20,11 @@ def validate_production_configuration(
         return
 
     problems: list[str] = []
-    if (test_otp_phone or test_otp_code) and not allow_test_otp:
+    if bool(test_otp_phone) != bool(test_otp_code):
+        problems.append(
+            "TEST_OTP_PHONE and TEST_OTP_CODE must either both be set or both be unset"
+        )
+    elif (test_otp_phone or test_otp_code) and not allow_test_otp:
         problems.append(
             "TEST_OTP_PHONE and TEST_OTP_CODE require "
             "ALLOW_PRODUCTION_TEST_OTP=true on a pre-launch deployment"

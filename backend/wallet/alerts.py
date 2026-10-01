@@ -20,6 +20,9 @@ Three properties this has to hold:
   that already succeeded.
 """
 import logging
+from html import escape
+import secrets
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
@@ -184,63 +187,12 @@ def _describe(txn, *, reversal: bool = False) -> tuple:
 
 
 def send_transaction_alert(txn, *, reversal: bool = False) -> None:
-    """Send the credit/debit alert for one settled ledger row.
-
-    Separate from the signal so it can be called directly — re-sending a single
-    alert from a shell or a management command needs the message, not the
-    dedupe."""
-    from utility.providers import send_email, send_sms
-
-    user = txn.user
-    subject, body = _describe(txn, reversal=reversal)
-    mocked = []
-    if _alerts_on("email") and getattr(user, "email", ""):
-        try:
-            res = send_email(user.email, subject, body,
-                             html=_email_alert_html(txn, reversal=reversal))
-            if (res or {}).get("mock"):
-                mocked.append("email")
-        except Exception:  # noqa: BLE001
-            log.exception("txn_alert_email_failed ref=%s", txn.reference)
-    if _alerts_on("sms") and getattr(user, "phone", ""):
-        try:
-            res = send_sms(user.phone, _sms_alert(txn, reversal=reversal))
-            if (res or {}).get("mock"):
-                mocked.append("sms")
-        except Exception:  # noqa: BLE001
-            log.exception("txn_alert_sms_failed ref=%s", txn.reference)
-    # send_email/send_sms return a silent MOCK SUCCESS when their provider is
-    # unkeyed, and the dedupe flag is claimed before this runs — so an unkeyed
-    # process announces nothing, records the row as announced, and never retries.
-    # That is exactly how every deposit alert went missing: the crons that credit
-    # deposits are separate processes from the web service and had no RESEND_* or
-    # TERMII_* keys of their own, so the failure was invisible on both sides.
-    # Never silent again: the process that is dropping alerts says so.
-    if mocked and not (settings.DEBUG or getattr(settings, "TESTING", False)):
-        log.warning("txn_alert_unkeyed_channels ref=%s channels=%s — this process has no "
-                    "credentials for them, so the customer was NOT notified",
-                    txn.reference, ",".join(mocked))
-    _push_alert(txn, subject)
-    # Claim the chat leg before calling Meta. A settlement signal and the
-    # WhatsApp-worker retry sweep can run at the same time; marking only after
-    # the send lets both processes deliver the same screenshot-worthy alert.
-    whatsapp_flag = _whatsapp_claim_flag(reversal)
-    row = _claim_alert_flag(txn.pk, whatsapp_flag)
-    if row is None:
-        return
-    try:
-        delivered = _deliver_claimed_whatsapp_alert(row, reversal=reversal)
-    except Exception:  # noqa: BLE001 - release this claim for a later retry
-        log.exception("txn_alert_whatsapp_failed ref=%s", row.reference)
-        delivered = False
-    if not delivered:
-        # A rejected send is retryable. The database claim stays present while
-        # the provider call is in flight, so concurrent workers cannot send a
-        # second copy.
-        _clear_flag(row.pk, whatsapp_flag)
+    """Resume due outbox channels; accepted channels are never sent again."""
+    for delivery_pk in _enqueue_alert(txn.pk, reversal=reversal):
+        _dispatch_alert(delivery_pk)
 
 
-def _push_alert(txn, subject: str) -> None:
+def _push_alert(txn, subject: str) -> dict:
     """Send a privacy-bounded native app notification to every live install.
 
     The lock-screen body carries the direction/amount but no recipient account,
@@ -249,14 +201,14 @@ def _push_alert(txn, subject: str) -> None:
     does not retry a handset that uninstalled the app.
     """
     if not _alerts_on("push"):
-        return
+        return {"success": False, "not_dispatched": True, "code": "channel_disabled"}
     try:
         import requests
         from accounts.models import PushDevice
 
         devices = list(txn.user.push_devices.filter(enabled=True).only("id", "token")[:100])
         if not devices:
-            return
+            return {"success": False, "not_dispatched": True, "code": "no_push_device"}
         payload = [{
             "to": device.token,
             "title": subject,
@@ -277,45 +229,39 @@ def _push_alert(txn, subject: str) -> None:
                        and (result.get("details") or {}).get("error") == "DeviceNotRegistered"]
         if invalid_ids:
             PushDevice.objects.filter(id__in=invalid_ids).delete()
+        # Partial acceptance cannot be retried as one batch without duplicating
+        # the devices that accepted it. Keep that case visible for review.
+        passed = (isinstance(results, list) and len(results) == len(devices)
+                  and all(isinstance(result, dict) and result.get("status") == "ok"
+                          for result in results))
+        return {"success": passed, "uncertain": not passed, "code": "push_partial_or_unknown"}
     except Exception:  # noqa: BLE001 — an alert can never fail a settled payment
-        log.exception("txn_alert_push_failed ref=%s", txn.reference)
+        log.warning("txn_alert_push_failed ref=%s", txn.reference)
+        return {"success": False, "uncertain": True, "code": "push_dispatch_unknown"}
 
 
 def send_whatsapp_transaction_alert(txn, *, reversal: bool = False) -> bool:
-    """Send only the WhatsApp leg of a transaction alert.
+    """Resume only the WhatsApp outbox channel; return provider acceptance.
 
-    The main ``alerted`` flag covers email/SMS/push. WhatsApp needs its own
-    retryable flag because app-originated transactions can settle while Meta is
-    briefly refusing sends, while the customer's WhatsApp link is being repaired,
-    or inside a process missing WhatsApp credentials. In those cases email must
-    not duplicate, but the chat alert is still owed on the next ledger save or
-    WhatsApp-worker retry sweep.
+    Independent state lets the worker retry an explicit refusal without
+    repeating any accepted email, SMS, push or WhatsApp delivery.
     """
-    whatsapp_flag = _whatsapp_claim_flag(reversal)
-    row = _claim_alert_flag(txn.pk, whatsapp_flag)
-    if row is None:
-        return False
-    try:
-        if _deliver_claimed_whatsapp_alert(row, reversal=reversal):
-            return True
-    except Exception:  # noqa: BLE001 - release this direct-call claim for retry
-        log.exception("txn_alert_whatsapp_failed ref=%s", row.reference)
-    _clear_flag(row.pk, whatsapp_flag)
-    return False
+    return any(_dispatch_alert(pk) for pk in _enqueue_alert(
+        txn.pk, reversal=reversal, whatsapp_only=True))
 
 
-def _deliver_claimed_whatsapp_alert(txn, *, reversal: bool = False) -> bool:
+def _deliver_claimed_whatsapp_alert(txn, *, reversal: bool = False):
     """Deliver a WhatsApp alert after its durable row claim was acquired."""
     subject, body = _describe(txn, reversal=reversal)
     return _whatsapp_alert(txn, subject, body, reversal=reversal)
 
 
 def _whatsapp_claim_flag(reversal: bool) -> str:
-    """Return the durable claim for the notification being delivered."""
+    """Return the legacy acceptance mirror; the outbox is authoritative."""
     return "whatsapp_reversal_alerted" if reversal else "whatsapp_alerted"
 
 
-def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> bool:
+def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False):
     """Alert the customer where they actually bank, for a WhatsApp customer.
 
     Costs nothing per message and lands in the thread they already use, which
@@ -346,11 +292,11 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> 
     proactive message the platform allows there.
     """
     if not _alerts_on("whatsapp"):
-        return False
+        return {"success": False, "not_dispatched": True, "code": "channel_disabled"}
     meta = _meta(txn)
     if (not reversal and meta.get("channel") == "whatsapp"
             and not meta.get("wa_awaiting_settlement")):
-        return False
+        return {"success": False, "not_dispatched": True, "code": "chat_already_announced"}
     try:
         from whatsapp.models import WhatsAppLink
         from whatsapp.router import reply
@@ -359,11 +305,11 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> 
         if link is None:
             log.info("txn_alert_whatsapp_no_active_link ref=%s user=%s",
                      txn.reference, txn.user_id)
-            return False
+            return {"success": False, "not_dispatched": True, "code": "no_active_link"}
         icon = "💰" if txn.direction == txn.IN else "💸"
         result = reply(link.wa_msisdn, f"{icon} *{subject}*\n\n{body}")
-        if (result or {}).get("success"):
-            return True
+        if isinstance(result, dict) and result.get("success") is True:
+            return result
         # Free-form text is delivered only INSIDE WhatsApp's 24-hour
         # customer-service window. Meta refuses it once that window closes
         # (re-engagement error 131047) — and that is the normal state for the
@@ -379,16 +325,15 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> 
         # template every time would be both wasteful and a duplicate once the text
         # goes through. The in-window path already returned above, so a template
         # is spent only when the text was genuinely refused for being out-of-window.
-        if _window_closed(result) and _whatsapp_alert_via_template(
-                txn, link.wa_msisdn, reversal=reversal):
-            return True
-        log.warning("txn_alert_whatsapp_not_delivered ref=%s user=%s code=%s detail=%r",
+        if _window_closed(result):
+            return _whatsapp_alert_via_template(txn, link.wa_msisdn, reversal=reversal)
+        log.warning("txn_alert_whatsapp_not_delivered ref=%s user=%s code=%s",
                     txn.reference, txn.user_id, (result or {}).get("error_code"),
-                    (result or {}).get("error_detail") or (result or {}).get("message"))
-        return False
+                    )
+        return result
     except Exception:  # noqa: BLE001
-        log.exception("txn_alert_whatsapp_failed ref=%s", txn.reference)
-        return False
+        log.warning("txn_alert_whatsapp_failed ref=%s", txn.reference)
+        return {"success": False, "uncertain": True, "code": "whatsapp_dispatch_unknown"}
 
 
 #: Meta error codes that mean WhatsApp's 24-hour customer-service window has
@@ -447,7 +392,7 @@ def _whatsapp_template_summary(txn, *, reversal: bool) -> str:
     return _oneline(summary)
 
 
-def _whatsapp_alert_via_template(txn, msisdn: str, *, reversal: bool = False) -> bool:
+def _whatsapp_alert_via_template(txn, msisdn: str, *, reversal: bool = False):
     """Deliver the alert through the pre-approved UTILITY template.
 
     A template is the only message WhatsApp will send outside the 24-hour window,
@@ -459,28 +404,27 @@ def _whatsapp_alert_via_template(txn, msisdn: str, *, reversal: bool = False) ->
 
     Best-effort, like every other leg: a refused or unconfigured template is
     logged with the fix and never raised, so it cannot break the ledger write
-    that triggered the alert. Returns True only when Meta accepted the template.
+    that triggered the alert. Returns the bounded provider outcome.
     """
     cfg = getattr(settings, "WHATSAPP", {}) or {}
     template = str(cfg.get("TXN_ALERT_TEMPLATE") or "").strip()
     if not template:
-        return False
+        return {"success": False, "not_dispatched": True, "code": "template_unconfigured"}
     lang = str(cfg.get("TXN_ALERT_TEMPLATE_LANG") or "en_US").strip() or "en_US"
     from whatsapp.router import reply_template
 
     summary = _whatsapp_template_summary(txn, reversal=reversal)
     result = reply_template(msisdn, template, [summary, txn.reference], lang=lang)
-    if (result or {}).get("success"):
+    if isinstance(result, dict) and result.get("success") is True:
         log.info("txn_alert_whatsapp_template_sent ref=%s template=%s", txn.reference, template)
-        return True
+        return result
     log.warning(
-        "txn_alert_whatsapp_template_not_delivered ref=%s template=%s code=%s detail=%r — the "
+        "txn_alert_whatsapp_template_not_delivered ref=%s template=%s code=%s — the "
         "out-of-window fallback needs a two-variable UTILITY template named %r, APPROVED in "
         "WhatsApp Manager (see docs/whatsapp-production-operations.md); set WHATSAPP_TXN_ALERT_TEMPLATE to "
         "rename it, or blank to disable the fallback",
-        txn.reference, template, (result or {}).get("error_code"),
-        (result or {}).get("error_detail") or (result or {}).get("message"), template)
-    return False
+        txn.reference, template, (result or {}).get("error_code"), template)
+    return result
 
 
 def mark_awaiting_settlement(txn) -> None:
@@ -558,11 +502,6 @@ def _alert_on_settled_transaction(sender, instance, **kwargs):
 
     if txn.transaction_status != txn.SUCCESS:
         return
-    meta = _meta(txn)
-    if meta.get("alerted"):
-        if not meta.get("whatsapp_alerted") and _whatsapp_retry_due(txn):
-            _defer(txn, "whatsapp_alerted", reversal=False, whatsapp_only=True)
-        return
     _defer(txn, "alerted", reversal=False)
 
 
@@ -579,110 +518,269 @@ def _whatsapp_retry_due(txn, *, reversal: bool = False) -> bool:
 
 
 def retry_pending_whatsapp_alerts(*, since=None, limit: int = 50) -> int:
-    """Best-effort sweep for terminal rows whose WhatsApp leg never landed.
+    """Resume the bounded notification outbox from the existing worker hook.
 
-    The post-save signal retries when a row is touched, but a completed transfer
-    or reversal can otherwise sit quiet forever after one Meta outage. The credentialed
-    WhatsApp worker sweeps a bounded recent window, so bank-reconciliation cron jobs
-    never need Meta credentials.
+    Every enabled channel now has independent durable state. Historical boolean
+    claims carry no acceptance evidence and are not replayed or marked delivered.
+    Expired preparation is safe to resume; expired dispatch needs review.
     """
-    from .models import Transaction
-    from django.db.models import Q
+    from .models import TransactionAlertDelivery
+    from django.db.models import F, Q
 
-    qs = (Transaction.objects
-          .filter(
-              Q(transaction_status=Transaction.SUCCESS, meta__alerted=True)
-              | Q(transaction_status=Transaction.FAILED, meta__reversal_alerted=True)
-          )
-          .select_related("user")
-          .order_by("-created"))
-    if since is not None:
-        qs = qs.filter(created__gte=since)
-
-    sent = 0
-    for txn in qs[:max(0, int(limit or 0))]:
-        if _silent_transaction(txn):
-            continue
-        reversal = txn.transaction_status == Transaction.FAILED
-        claim = _whatsapp_claim_flag(reversal)
-        if claim in _meta(txn):
-            continue
-        if not _whatsapp_retry_due(txn, reversal=reversal):
-            continue
-        if send_whatsapp_transaction_alert(txn, reversal=reversal):
-            sent += 1
-    return sent
+    now = timezone.now()
+    due = Q(state__in=(TransactionAlertDelivery.READY, TransactionAlertDelivery.RETRY)) & (
+        Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now))
+    stale = Q(state__in=(TransactionAlertDelivery.PREPARING, TransactionAlertDelivery.DISPATCHING),
+              lease_expires_at__lte=now)
+    # Fresh work has no next-attempt time and goes first. A long-lived missing
+    # contact/route must not monopolize each bounded sweep and starve new alerts.
+    qs = TransactionAlertDelivery.objects.filter(due | stale).order_by(
+        F("next_attempt_at").asc(nulls_first=True), "created", "pk")
+    # Enqueued jobs stay owed even when the transaction ages outside the worker's
+    # lookback. `since` is retained for API compatibility, not used to drop work.
+    return sum(_dispatch_alert(pk) for pk in qs.values_list("pk", flat=True)[:max(0, int(limit or 0))])
 
 
-def _claim_alert_flag(txn_pk, flag: str, *, requires: str = ""):
-    """Atomically claim an alert flag and return the current ledger row.
+MAX_ALERT_ATTEMPTS = 5
+ALERT_LEASE = timedelta(minutes=5)
 
-    The claim is durable in Transaction.meta. PostgreSQL row locking and the
-    conditional update cover both the signal/worker race and callers that
-    enter through separate processes. A failed provider call may release the
-    claim for a later retry; while the call is active, the flag stays present.
-    """
-    from .models import Transaction
+
+def _enqueue_alert(txn_pk, *, reversal=False, requires="", whatsapp_only=False):
+    """Persist channels inside the ledger transaction, before on_commit sends."""
+    from .models import Transaction, TransactionAlertDelivery
 
     with db_transaction.atomic():
-        row = (Transaction.objects.select_for_update()
-               .filter(pk=txn_pk).first())
-        if row is None:
-            return None
-        meta = _meta(row)
-        if flag in meta:
-            return None
-        if requires and not meta.get(requires):
-            return None
+        txn = Transaction.objects.select_for_update().filter(pk=txn_pk).first()
+        if txn is None or _silent_transaction(txn):
+            return []
+        meta = _meta(txn)
+        if requires and not meta.get(requires) and not txn.alert_deliveries.filter(reversal=False).exists():
+            return []
+        if ((reversal and txn.transaction_status != txn.FAILED)
+                or (not reversal and txn.transaction_status != txn.SUCCESS)):
+            return []
+        marker = "reversal_alerted" if reversal else "alerted"
+        legacy_event = bool(meta.get(marker)) and not txn.alert_deliveries.filter(reversal=reversal).exists()
+        channels = ("whatsapp",) if whatsapp_only else ("email", "sms", "push", "whatsapp")
+        ids = []
+        for channel in channels:
+            if not _alerts_on(channel) or (channel == "whatsapp" and not _whatsapp_retry_due(txn, reversal=reversal)):
+                continue
+            # An old pre-send flag cannot prove acceptance or non-delivery. Surface
+            # it for review rather than retroactively claiming a successful send.
+            legacy = legacy_event or bool(meta.get(_whatsapp_claim_flag(reversal)) if channel == "whatsapp"
+                                          else meta.get(marker))
+            delivery, _created = TransactionAlertDelivery.objects.get_or_create(
+                transaction=txn, reversal=reversal, channel=channel,
+                defaults={"state": TransactionAlertDelivery.REVIEW if legacy else TransactionAlertDelivery.READY,
+                          "error_code": "legacy_delivery_unknown" if legacy else ""},
+            )
+            ids.append(delivery.pk)
         merged = dict(meta)
-        merged[flag] = True
-        updated = (Transaction.objects.filter(pk=txn_pk)
-                   .exclude(meta__has_key=flag)
-                   .update(meta=merged))
-        return row if updated else None
+        merged[marker] = True  # Event queued, not proof any channel accepted it.
+        Transaction.objects.filter(pk=txn.pk).update(meta=merged)
+        return ids
 
 
-def _clear_flag(txn_pk, flag: str) -> None:
-    """Release a failed delivery claim so the WhatsApp worker can retry it."""
+def _channel_available(txn, channel, *, reversal=False):
+    """No dispatch/attempt is spent while a route or proved contact is absent."""
+    from utility.providers import email_live, sms_live
+    from whatsapp.models import WhatsAppLink
+    from whatsapp.providers import wa_live
+
+    local = settings.DEBUG or getattr(settings, "TESTING", False)
+    if not _alerts_on(channel):
+        return "channel_disabled"
+    if channel == "email" and (not txn.user.email or not txn.user.email_verified):
+        return "email_unverified"
+    if channel == "sms" and (not txn.user.phone or not txn.user.phone_verified):
+        return "phone_unverified"
+    if not local and channel == "email" and not email_live():
+        return "email_unconfigured"
+    if not local and channel == "sms" and not sms_live():
+        return "sms_unconfigured"
+    if channel == "whatsapp":
+        if not _whatsapp_retry_due(txn, reversal=reversal):
+            return "chat_already_announced"
+        if not WhatsAppLink.objects.filter(user_id=txn.user_id, status=WhatsAppLink.ACTIVE).exists():
+            return "no_active_link"
+        if not local and not wa_live():
+            return "whatsapp_unconfigured"
+    if channel == "push" and not txn.user.push_devices.filter(enabled=True).exists():
+        return "no_push_device"
+    return ""
+
+
+def _prepare_alert(pk):
+    from .models import TransactionAlertDelivery
+
+    now = timezone.now()
+    with db_transaction.atomic():
+        # Enqueue takes ledger -> outbox locks. Lock only this outbox row while
+        # reading the joined ledger/user, never acquire the inverse order.
+        row = (TransactionAlertDelivery.objects.select_for_update(of=("self",))
+               .select_related("transaction__user").filter(pk=pk).first())
+        if row is None or row.state in (row.ACCEPTED, row.REVIEW, row.EXHAUSTED, row.SKIPPED):
+            return None
+        if row.state == row.DISPATCHING:
+            if row.lease_expires_at and row.lease_expires_at <= now:
+                row.state, row.error_code = row.REVIEW, "dispatch_lease_expired"
+                row.save(update_fields=["state", "error_code", "updated"])
+                log.warning("txn_alert_review delivery=%s channel=%s reason=dispatch_lease_expired", row.pk, row.channel)
+            return None
+        if row.state == row.PREPARING and row.lease_expires_at and row.lease_expires_at > now:
+            return None
+        if row.next_attempt_at and row.next_attempt_at > now:
+            return None
+        txn = row.transaction
+        if (_silent_transaction(txn) or (row.reversal and txn.transaction_status != txn.FAILED)
+                or (not row.reversal and txn.transaction_status != txn.SUCCESS)):
+            row.state, row.error_code = row.SKIPPED, "outcome_changed"
+            row.save(update_fields=["state", "error_code", "updated"])
+            return None
+        reason = _channel_available(txn, row.channel, reversal=row.reversal)
+        if (row.channel == "whatsapp" and row.error_code == "template_unconfigured"
+                and not (getattr(settings, "WHATSAPP", {}) or {}).get("TXN_ALERT_TEMPLATE")):
+            reason = "template_unconfigured"
+        if reason:
+            row.state, row.error_code = row.READY, reason
+            row.next_attempt_at = now + timedelta(seconds=60)
+            row.save(update_fields=["state", "error_code", "next_attempt_at", "updated"])
+            return None
+        if row.attempts >= MAX_ALERT_ATTEMPTS:
+            row.state, row.error_code = row.EXHAUSTED, "retry_limit"
+            row.save(update_fields=["state", "error_code", "updated"])
+            return None
+        previous_state, previous_token = row.state, row.claim_token
+        token = secrets.token_hex(32)
+        # Conditional update closes the weaker-database race as well as the
+        # production row lock. Only this token can cross the dispatch boundary.
+        changed = TransactionAlertDelivery.objects.filter(
+            pk=row.pk, state=previous_state, claim_token=previous_token,
+        ).update(state=row.PREPARING, claim_token=token,
+                 lease_expires_at=now + ALERT_LEASE, updated=now)
+        if not changed:
+            return None
+        row.state, row.claim_token = row.PREPARING, token
+        return row
+
+
+def _send_alert_channel(row):
+    from utility.providers import send_email, send_sms
+
+    txn = row.transaction
+    subject, body = _describe(txn, reversal=row.reversal)
+    if row.channel == "email":
+        return send_email(txn.user.email, subject, body, html=_email_alert_html(txn, reversal=row.reversal))
+    if row.channel == "sms":
+        return send_sms(txn.user.phone, _sms_alert(txn, reversal=row.reversal))
+    if row.channel == "push":
+        return _push_alert(txn, subject)
+    return _deliver_claimed_whatsapp_alert(txn, reversal=row.reversal)
+
+
+def _dispatch_alert(pk):
+    from .models import TransactionAlertDelivery
+
+    row = _prepare_alert(pk)
+    if row is None:
+        return False
+    now = timezone.now()
+    if not TransactionAlertDelivery.objects.filter(
+            pk=row.pk, state=row.PREPARING, claim_token=row.claim_token,
+    ).update(state=row.DISPATCHING, attempts=row.attempts + 1,
+             lease_expires_at=now + ALERT_LEASE, updated=now):
+        return False
+    row.attempts += 1
+    try:
+        result = _send_alert_channel(row)
+    except Exception:
+        # An exception after the persisted boundary cannot prove non-delivery.
+        result = {"success": False, "uncertain": True, "code": "dispatch_exception"}
+    accepted = _finish_alert(row, result)
+    if accepted and row.channel == "whatsapp":
+        _set_accepted_whatsapp_flag(row.transaction_id, row.reversal)
+    return accepted
+
+
+def _finish_alert(row, result):
+    from .models import TransactionAlertDelivery
+
+    # bool results exist only in legacy test doubles. Real rails return bounded
+    # outcome dictionaries; unknown/malformed results require review.
+    if result is True:
+        result = {"success": True}
+    elif result is False:
+        result = {"success": False, "uncertain": False}
+    result = result if isinstance(result, dict) else {}
+    now = timezone.now()
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    reference = result.get("message_id") or raw.get("id", "")
+    if not isinstance(reference, str):
+        reference = ""
+    accepted = result.get("success") is True and result.get("uncertain") is not True
+    missing_acceptance_id = (accepted and row.channel in ("email", "sms", "whatsapp")
+                             and not reference.strip()
+                             and not (settings.DEBUG or getattr(settings, "TESTING", False)))
+    if missing_acceptance_id:
+        accepted = False
+    undispatched = result.get("not_dispatched") is True or (
+        result.get("mock") and not (settings.DEBUG or getattr(settings, "TESTING", False)))
+    if undispatched:
+        state, reason = row.READY, str(result.get("code") or "route_unavailable")[:64]
+        next_attempt = now + timedelta(seconds=60)
+    elif accepted:
+        state, reason, next_attempt = row.ACCEPTED, "", None
+    elif missing_acceptance_id or result.get("uncertain") is True:
+        state, reason, next_attempt = row.REVIEW, "dispatch_outcome_unknown", None
+    elif (result.get("uncertain") is False or result.get("retryable") is True
+          or (result.get("error_code") and result.get("uncertain") is not True)):
+        state = row.EXHAUSTED if row.attempts >= MAX_ALERT_ATTEMPTS else row.RETRY
+        reason = "retry_limit" if state == row.EXHAUSTED else "provider_refused"
+        next_attempt = None if state == row.EXHAUSTED else now + timedelta(seconds=min(60 * 2**(row.attempts - 1), 3600))
+    else:
+        state, reason, next_attempt = row.REVIEW, "dispatch_outcome_unknown", None
+    # A very slow accepted response can resolve our expired-dispatch review only
+    # while it still carries the exact winning token. No new sender can claim it.
+    changed = TransactionAlertDelivery.objects.filter(
+        pk=row.pk, claim_token=row.claim_token, state__in=(row.DISPATCHING, row.REVIEW),
+    ).update(state=state, error_code=reason, provider_reference=reference[:128],
+             next_attempt_at=next_attempt, lease_expires_at=None,
+             attempts=max(0, row.attempts - 1) if undispatched else row.attempts, updated=now)
+    if changed and state in (row.REVIEW, row.EXHAUSTED):
+        log.warning("txn_alert_attention delivery=%s channel=%s state=%s reason=%s", row.pk, row.channel, state, reason)
+    return bool(changed and state == row.ACCEPTED)
+
+
+def _set_accepted_whatsapp_flag(txn_pk, reversal):
     from .models import Transaction
 
+    # The outbox already committed acceptance. This compatibility mirror is
+    # deliberately separate: never take ledger -> outbox locks in reverse order.
     with db_transaction.atomic():
-        row = (Transaction.objects.select_for_update()
-               .filter(pk=txn_pk).first())
-        if row is None:
-            return
-        merged = dict(_meta(row))
-        merged.pop(flag, None)
-        Transaction.objects.filter(pk=txn_pk).update(meta=merged)
+        txn = Transaction.objects.select_for_update().filter(pk=txn_pk).first()
+        if txn:
+            merged = dict(_meta(txn))
+            merged[_whatsapp_claim_flag(reversal)] = True
+            Transaction.objects.filter(pk=txn.pk).update(meta=merged)
 
 
 def _defer(txn, flag: str, *, reversal: bool, requires: str = "",
            whatsapp_only: bool = False) -> None:
-    """Claim `flag` on the row and send once the surrounding transaction commits.
+    """Queue durable channels, then dispatch after the ledger commits.
 
-    `requires` names a flag that must ALREADY be set for this send to happen —
-    a reversal notice is only owed to someone who was told about the debit.
+    `requires` accepts prior queued debit state or its legacy marker so an
+    already announced debit can receive a distinct reversal notice.
     """
+
+    deliveries = _enqueue_alert(txn.pk, reversal=reversal, requires=requires, whatsapp_only=whatsapp_only)
 
     def _fire():
         try:
-            claim_flag = (_whatsapp_claim_flag(reversal)
-                          if whatsapp_only else flag)
-            row = _claim_alert_flag(txn.pk, claim_flag, requires=requires)
-            if row is None:
-                return
-            if whatsapp_only:
-                try:
-                    delivered = _deliver_claimed_whatsapp_alert(row, reversal=reversal)
-                except Exception:  # noqa: BLE001 - this callback must not break payment
-                    log.exception("txn_alert_whatsapp_failed ref=%s", row.reference)
-                    delivered = False
-                if not delivered:
-                    _clear_flag(row.pk, claim_flag)
-                return
-            send_transaction_alert(row, reversal=reversal)
+            for delivery_pk in deliveries:
+                _dispatch_alert(delivery_pk)
         except Exception:  # noqa: BLE001 — an alert must never break a payment
-            log.exception("txn_alert_failed ref=%s flag=%s", txn.reference, flag)
+            log.warning("txn_alert_callback_failed ref=%s flag=%s", txn.reference, flag)
 
     db_transaction.on_commit(_fire)
 
@@ -772,9 +870,9 @@ def _email_alert_html(txn, *, reversal: bool = False) -> str:
     def row(label, value, bold=False):
         weight = "600" if bold else "400"
         return (f'<tr><td style="padding:7px 0;color:#8fa3a0;font-size:13px;'
-                f'font-family:Arial,Helvetica,sans-serif">{label}</td>'
+                f'font-family:Arial,Helvetica,sans-serif">{escape(str(label))}</td>'
                 f'<td align="right" style="padding:7px 0;color:#12201f;font-size:13px;'
-                f'font-weight:{weight};font-family:Arial,Helvetica,sans-serif">{value}</td></tr>')
+                f'font-weight:{weight};font-family:Arial,Helvetica,sans-serif">{escape(str(value))}</td></tr>')
 
     content = f"""
   <tr><td style="padding:28px 28px 6px;font-family:Arial,Helvetica,sans-serif">
@@ -782,7 +880,7 @@ def _email_alert_html(txn, *, reversal: bool = False) -> str:
               text-transform:uppercase">{word} alert</p>
     <p style="margin:0;color:{colour};font-size:32px;font-weight:700">
       {sign}{_money(txn.amount, txn.currency)}</p>
-    <p style="margin:10px 0 0;color:#5f7370;font-size:14px">Hi {first}, here are the details:</p>
+    <p style="margin:10px 0 0;color:#5f7370;font-size:14px">Hi {escape(first)}, here are the details:</p>
   </td></tr>
   <tr><td style="padding:14px 28px 4px;font-family:Arial,Helvetica,sans-serif">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0"

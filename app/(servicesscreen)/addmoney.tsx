@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
@@ -15,29 +15,78 @@ import { useTheme, font } from '@/lib/theme';
 
 type DediAccount = { account_number: string; account_name: string; bank_name: string };
 
-// Funding is bank-transfer only. Wema creates the dedicated NUBAN asynchronously
+// Funding is bank-transfer only. The partner bank creates the dedicated NUBAN asynchronously
 // after BVN consent by SMS OTP or its hosted face-verification alternative.
 const AddMoney = () => {
   const { c } = useTheme();
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [account, setAccount] = useState<DediAccount | null>(null);
   const [bvn, setBvn] = useState('');
   const [creating, setCreating] = useState(false);
   const [trackingId, setTrackingId] = useState('');
   const [otp, setOtp] = useState('');
+  const loadGeneration = useRef(0);
+  const actionInFlight = useRef(false);
+  const facePollGeneration = useRef(0);
+  const mounted = useRef(true);
 
-  useEffect(() => {
-    let alive = true;
+  const beginAction = () => {
+    if (actionInFlight.current) return false;
+    actionInFlight.current = true;
+    setCreating(true);
+    return true;
+  };
+  const endAction = () => {
+    actionInFlight.current = false;
+    if (mounted.current) setCreating(false);
+  };
+
+  const loadAccount = useCallback(async () => {
+    const generation = ++loadGeneration.current;
+    setLoading(true);
+    setLoadError('');
     // Never let a slow/hanging backend (e.g. a slow Monnify call) leave the page
     // stuck on the spinner: show the screen within a few seconds no matter what.
-    // If the account lookup resolves later, it still fills in (account state).
-    const guard = setTimeout(() => { if (alive) setLoading(false); }, 8000);
-    walletService.getAccount()
-      .then((r) => { if (alive && r?.success && r.account_number) setAccount(r as DediAccount); })
-      .catch(() => {})
-      .finally(() => { if (alive) { clearTimeout(guard); setLoading(false); } });
-    return () => { alive = false; clearTimeout(guard); };
+    // Do not show the BVN setup form when the account state is unknown: that
+    // can make an existing customer start provisioning again while offline.
+    const guard = setTimeout(() => {
+      if (loadGeneration.current === generation) {
+        setLoading(false);
+        setLoadError('Your account details are taking longer than expected. Check your connection and try again.');
+      }
+    }, 8000);
+    try {
+      const r = await walletService.getAccount();
+      if (loadGeneration.current !== generation) return;
+      if (r?.success && r.account_number) {
+        setAccount(r as DediAccount);
+        setLoadError('');
+      } else if (r?.offline) {
+        setLoadError('We could not load your funding account. Check your connection and try again.');
+      } else {
+        setAccount(null);
+        setLoadError('');
+      }
+    } catch {
+      if (loadGeneration.current === generation) {
+        setLoadError('We could not load your funding account. Check your connection and try again.');
+      }
+    } finally {
+      clearTimeout(guard);
+      if (loadGeneration.current === generation) setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    mounted.current = true;
+    void loadAccount();
+    return () => {
+      mounted.current = false;
+      loadGeneration.current += 1;
+      facePollGeneration.current += 1;
+    };
+  }, [loadAccount]);
 
   const copyAccount = async () => {
     if (!account) return;
@@ -49,8 +98,7 @@ const AddMoney = () => {
   const grouped = (n: string) => n.replace(/^(\d{4})(\d{3})(\d{3}).*$/, '$1 $2 $3');
 
   const createAccount = async () => {
-    if (bvn.length !== 11) return;
-    setCreating(true);
+    if (bvn.length !== 11 || !beginAction()) return;
     try {
       const r = await walletService.createAccount(bvn);
       if (r?.success && r.account_number) {
@@ -59,20 +107,19 @@ const AddMoney = () => {
         setTrackingId(String(r.tracking_id));
         notify('Verification code sent', r.message || 'Enter the SMS code sent to the phone registered on your BVN.', 'success');
       } else if (r?.success) {
-        notify('Account creation in progress', r.message || 'Wema is creating your account number. We will update this page when it is ready.', 'success');
+        notify('Account creation in progress', r.message || 'Our partner bank is creating your account number. We will update this page when it is ready.', 'success');
       } else {
         notify('Error', r?.message || "We couldn't create your account. Please try again.");
       }
     } catch {
       notify('Error', 'Something went wrong. Please try again later.');
     } finally {
-      setCreating(false);
+      endAction();
     }
   };
 
   const confirmOtp = async () => {
-    if (!trackingId || otp.length !== 6) return;
-    setCreating(true);
+    if (!trackingId || otp.length !== 6 || !beginAction()) return;
     try {
       const r = await walletService.verifyWemaOtp(trackingId, otp, { bvn });
       if (r.success && r.account_number) setAccount(r as DediAccount);
@@ -81,24 +128,25 @@ const AddMoney = () => {
         notify('Identity accepted', r.message || 'Your account number is being created.', 'success');
       } else notify('Verification failed', r.message || 'Check the code and try again.');
     } catch { notify('Error', 'Could not confirm the code. Please try again.'); }
-    finally { setCreating(false); }
+    finally { endAction(); }
   };
 
   const resendOtp = async () => {
-    if (!trackingId) return;
-    setCreating(true);
+    if (!trackingId || !beginAction()) return;
     try {
       const r = await walletService.resendWemaOtp(trackingId);
       notify(r.success ? 'Code resent' : 'Could not resend code', r.message, r.success ? 'success' : undefined);
     } catch { notify('Error', 'Could not resend the code.'); }
-    finally { setCreating(false); }
+    finally { endAction(); }
   };
 
   const useFaceVerification = async () => {
-    if (bvn.length !== 11) return;
-    setCreating(true);
+    if (bvn.length !== 11 || !beginAction()) return;
+    const generation = ++facePollGeneration.current;
+    const isCurrent = () => mounted.current && facePollGeneration.current === generation;
     try {
       const started = await kycService.startIdentityFace({ bvn });
+      if (!isCurrent()) return;
       const otpRoute = resolveIdentityOtpRoute(started, 'bvn');
       if (otpRoute) {
         if (otpRoute.kind === 'nin') {
@@ -133,12 +181,15 @@ const AddMoney = () => {
       beginExternalActivity();
       try { await WebBrowser.openBrowserAsync(started.url); }
       finally { endExternalActivity(); }
+      if (!isCurrent()) return;
       for (let attempt = 0; attempt < 15; attempt += 1) {
         const state = await kycService.getIdentityFaceStatus(started.session);
+        if (!isCurrent()) return;
         if (state.status === 'verified') {
           const refreshed = await walletService.getAccount();
+          if (!isCurrent()) return;
           if (refreshed.success && refreshed.account_number) setAccount(refreshed as DediAccount);
-          else notify('Identity verified', 'Wema is creating your account number. We will update it automatically.', 'success');
+          else notify('Identity verified', 'Our partner bank is creating your account number. We will update it automatically.', 'success');
           setTrackingId(''); setOtp('');
           return;
         }
@@ -147,10 +198,11 @@ const AddMoney = () => {
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (!isCurrent()) return;
       }
-      notify('Still processing', 'Wema is still confirming your face check. Please return shortly.');
-    } catch { notify('Error', 'Could not complete face verification.'); }
-    finally { setCreating(false); }
+      notify('Still processing', 'Our partner bank is still confirming your face check. Please return shortly.');
+    } catch { if (isCurrent()) notify('Error', 'Could not complete face verification.'); }
+    finally { endAction(); }
   };
 
   if (loading) {
@@ -166,7 +218,18 @@ const AddMoney = () => {
     <Screen>
       <Header title="Add money" onBack={() => router.back()} />
 
-      {account ? (
+      {loadError ? (
+        <View style={{ alignItems: 'center', paddingTop: 42, paddingHorizontal: 16 }}>
+          <View style={{ width: 68, height: 68, borderRadius: 22, backgroundColor: c.surface, alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="help" size={30} color={c.ink3} />
+          </View>
+          <Text style={{ fontSize: 17, color: c.ink1, fontFamily: font.bold, marginTop: 18, textAlign: 'center' }}>Couldn&apos;t load funding details</Text>
+          <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 8, textAlign: 'center', lineHeight: 20 }}>{loadError}</Text>
+          <View style={{ width: '100%', marginTop: 22 }}>
+            <Btn label="Try again" onPress={() => void loadAccount()} />
+          </View>
+        </View>
+      ) : account ? (
         <>
           <Label>Fund by bank transfer</Label>
           <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18 }}>

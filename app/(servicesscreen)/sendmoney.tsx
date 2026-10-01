@@ -24,6 +24,7 @@ type Step = null | 'confirm' | 'pin';
 type Bank = { code: string; name: string; color: string };
 type Beneficiary = { id: number; name: string; account_number: string; bank_name: string; bank_code?: string; initials: string; color: string };
 type BankMatch = { bank: string; bank_name: string; name: string };
+type PendingAttempt = { scope: string; fingerprint: string; key: string };
 
 const SendMoney = () => {
   const { c } = useTheme();
@@ -54,10 +55,13 @@ const SendMoney = () => {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [pending, setPending] = useState(false);
+  const [underReview, setUnderReview] = useState(false);
   const [pendingMessage, setPendingMessage] = useState('');
+  const [pendingAttempt, setPendingAttempt] = useState<PendingAttempt | null>(null);
   const [recovered, setRecovered] = useState(false);
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
+  const sendInFlight = useRef(false);
 
   useEffect(() => {
     getToken().then((t) => {
@@ -236,6 +240,8 @@ const SendMoney = () => {
   };
 
   const send = async (pin: string) => {
+    if (sendInFlight.current) return;
+    sendInFlight.current = true;
     const attempt = transferAttempt();
     let requestKey = '';
     let deliveryStarted = false;
@@ -280,6 +286,8 @@ const SendMoney = () => {
       }
       else if (outcome === 'pending' || outcome === 'unknown') {
         setPending(true);
+        setUnderReview(outcome === 'pending' && res.under_review === true);
+        setPendingAttempt({ ...attempt, key: requestKey });
         setPendingMessage(outcome === 'pending'
           ? (res.message || 'Your transfer is processing. Its final status will update only after provider confirmation.')
           : 'We could not confirm this transfer. Check History before trying again.');
@@ -297,6 +305,8 @@ const SendMoney = () => {
     } catch {
       if (deliveryStarted) {
         setPending(true);
+        setUnderReview(false);
+        setPendingAttempt({ ...attempt, key: requestKey });
         setPendingMessage('We could not confirm this transfer. Check History before trying again.');
         setStep(null);
         setDone(true);
@@ -304,7 +314,10 @@ const SendMoney = () => {
       } else {
         notify('Unable to start transfer', 'Could not safely prepare or authorize this request. Please try again.');
       }
-    } finally { setBusy(false); }
+    } finally {
+      sendInFlight.current = false;
+      setBusy(false);
+    }
   };
 
   if (done) {
@@ -313,7 +326,7 @@ const SendMoney = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title={pending ? 'Transfer processing' : recovered ? 'Earlier attempt confirmed' : 'Money sent'}
+          title={pending ? (underReview ? 'Transfer under review' : 'Transfer processing') : recovered ? 'Earlier attempt confirmed' : 'Money sent'}
           message={pending
             ? pendingMessage
             : recovered
@@ -321,7 +334,27 @@ const SendMoney = () => {
             : `${money(amount)} sent to ${recipientName || 'recipient'}.`}
           rows={[['Recipient', recipientName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Fee', '₦0'], ['Total', money(amount), true]]}
           reference={txnRef}
-          status={pending ? 'Processing' : 'Successful'}
+          status={pending ? (underReview ? 'Under review' : 'Processing') : 'Successful'}
+          footer={pending ? (
+            <View style={{ marginTop: 12 }}>
+              <Btn
+                label={txnRef ? 'View transfer status' : 'Check transaction history'}
+                variant="outline"
+                icon="history"
+                onPress={() => txnRef
+                  ? router.push({
+                    pathname: '/txndetail',
+                    params: {
+                      type: 'Transfer', amount: String(amount), status: underReview ? 'Under review' : 'Pending',
+                      dir: 'out', reference: txnRef, underReview: underReview ? '1' : '0', statusMessage: pendingMessage,
+                      spendScope: pendingAttempt?.scope || '', spendFingerprint: pendingAttempt?.fingerprint || '',
+                      spendKey: pendingAttempt?.key || '',
+                    },
+                  })
+                  : router.push('/history')}
+              />
+            </View>
+          ) : undefined}
           onDone={() => router.replace('/home')}
         />
       </Screen>

@@ -78,8 +78,71 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
                 block = re.search(rf"^    name: {name}{suffix}$.*?(?=^  - type:|\Z)",
                                   text, re.MULTILINE | re.DOTALL).group(0)
                 for key in ("RESEND_API_KEY", "RESEND_FROM_EMAIL", "TERMII_API_KEY",
-                            "TERMII_SENDER_ID", "TERMII_CHANNEL", "TERMII_BASE_URL"):
+                            "TERMII_SENDER_ID", "TERMII_CHANNEL", "TERMII_BASE_URL",
+                            "TXN_ALERTS_EMAIL", "TXN_ALERTS_SMS", "TXN_ALERTS_PUSH"):
                     self.assertIn(f"fromService: {{type: web, name: zitch-api{suffix}, envVarKey: {key}}}", block)
                 if name == "zitch-reconcile-wema":
                     for key in ("WEMA_UPGRADE_KEY", "WEMA_UPGRADE_BASE_URL"):
                         self.assertIn(f"fromService: {{type: web, name: zitch-api{suffix}, envVarKey: {key}}}", block)
+
+    def test_worker_inherits_shared_runtime_configuration_on_both_blueprints(self):
+        """The API accepts/encrypts work that the worker later resumes.
+
+        Independent dashboard copies of these values can make app and WhatsApp
+        execute different bank/provider contracts or make queued messages
+        undecryptable after a rotation.
+        """
+        keys = (
+            "WEMA_CHANNEL_ID", "WEMA_WALLET_KEY", "WEMA_ACCOUNT_CREATION_KEY",
+            "WEMA_BASE_URL", "WEMA_SIMULATION", "WEMA_FACE_VERIFY_URL",
+            "WEMA_FACE_CALLBACK_IPS", "WEMA_FACE_CB_MODE", "PREMBLY_BASE_URL",
+            "PREMBLY_API_KEY", "PREMBLY_APP_ID", "WHATSAPP_QUEUE_KEY",
+            "WHATSAPP_QUEUE_KEY_PREV", "SENTRY_DSN",
+        )
+        for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
+            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
+            api_name = f"zitch-api{suffix}"
+            worker = re.search(
+                rf"^    name: zitch-whatsapp-worker{suffix}$.*?(?=^  - type:|\Z)",
+                text, re.MULTILINE | re.DOTALL,
+            )
+            self.assertIsNotNone(worker)
+            self.assertRegex(
+                worker.group(0),
+                r'- key: DJANGO_REQUIRE_SHARED_CACHE\n\s+value: "true"',
+            )
+            for key in keys:
+                self.assertIn(
+                    f"fromService: {{type: web, name: {api_name}, envVarKey: {key}}}",
+                    worker.group(0),
+                    f"{filename} worker must inherit {key}",
+                )
+
+    def test_queue_rotation_secret_is_dashboard_owned_on_both_blueprints(self):
+        for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
+            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
+            api = re.search(
+                rf"^    name: zitch-api{suffix}$.*?(?=^  - type:|\Z)",
+                text, re.MULTILINE | re.DOTALL,
+            ).group(0)
+            self.assertRegex(
+                api,
+                r"- key: WHATSAPP_QUEUE_KEY_PREV\n\s+sync: false",
+            )
+            self.assertNotRegex(
+                api,
+                r'- key: WHATSAPP_QUEUE_KEY_PREV\n\s+value: ""',
+            )
+
+    def test_scheduled_jobs_do_not_all_start_on_reconciliation_boundary(self):
+        """reconcile-wema runs at :00/:10/... and calls the bank.
+
+        Starting the other bank/ledger scans at :00 guaranteed avoidable DB and
+        provider bursts, including three jobs together at 06:00.
+        """
+        for filename in ("render.yaml", "render.frankfurt.yaml"):
+            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
+            schedules = re.findall(r'^    schedule: "([^"]+)"', text, re.MULTILINE)
+            self.assertIn("*/10 * * * *", schedules)
+            fixed_minutes = [value.split()[0] for value in schedules if not value.startswith("*/")]
+            self.assertNotIn("0", fixed_minutes, filename)

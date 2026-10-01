@@ -32,6 +32,18 @@ TTL = timedelta(minutes=10)
 log = logging.getLogger("zitch.security")
 
 
+def _support_suffix():
+    """Actionable recovery contacts without making app installation a prerequisite."""
+    links = getattr(settings, "ZITCH_LINKS", {}) or {}
+    lines = []
+    support_wa = re.sub(r"\D", "", links.get("SUPPORT_WA") or "")
+    if support_wa:
+        lines.append(f"WhatsApp support: https://wa.me/{support_wa}")
+    if links.get("SUPPORT_EMAIL"):
+        lines.append(f"Email support: {links['SUPPORT_EMAIL']}")
+    return ("\n\n" + "\n".join(lines)) if lines else ""
+
+
 def _credentials(user):
     """Revoke an unfinished login after any credential/contact change.
 
@@ -102,9 +114,11 @@ def start_login(msisdn):
                                is_active=True, phone_verified=True).first()
     if not user or not user.email_verified or not user.email or not user.transaction_pin:
         return reply(msisdn, "We couldn't start secure sign-in for this number. Use the WhatsApp number "
-                     "registered on your Zitch account, or contact support to recover access.")
+                     "registered on your Zitch account, or contact support to recover access."
+                     + _support_suffix())
     if user.pin_reset_required:
-        return reply(msisdn, "Your transaction PIN needs a reset. Recover it securely before signing in.")
+        return reply(msisdn, "Your transaction PIN needs a reset. Contact support to recover access securely."
+                     + _support_suffix())
     if not email_live() and not (settings.DEBUG or getattr(settings, "TESTING", False)):
         return reply(msisdn, "We couldn't send your sign-in code. Please try again shortly.")
     code = f"{secrets.randbelow(10**6):06d}"
@@ -199,7 +213,8 @@ def handle_login(token, action, data):
         # original WhatsApp number. It cannot choose a different destination.
         if WhatsAppLink.objects.filter(wa_msisdn=ob.msisdn, status=WhatsAppLink.ACTIVE).exclude(user=user).exists():
             ob.delete()
-            return _result_screen("This number is already connected. Contact support for recovery.", "failed")
+            return _result_screen("This number is already connected. Contact support for recovery."
+                                  + _support_suffix(), "failed")
         prior = list(WhatsAppLink.objects.select_for_update().filter(user=user).order_by("-created"))
         preferences = [link for link in prior if link.status == WhatsAppLink.ACTIVE] or prior[:1]
         preserved = ({

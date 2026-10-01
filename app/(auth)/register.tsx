@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, Link } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { notify } from '@/components/design/Notify';
+import { publicPost } from '@/lib/api';
+import { isCompleteRegistrationName, splitRegistrationName } from '@/lib/registration';
 import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
@@ -12,32 +13,39 @@ import { useTheme, font } from '@/lib/theme';
 const Register = () => {
   const { c } = useTheme();
   const [isRegistering, setIsRegistering] = useState(false);
+  const submitting = useRef(false);
   const [form, setForm] = useState({ name: '', email: '', phone: '' });
 
-  const nameOk = form.name.trim().length >= 3;
+  const nameOk = isCompleteRegistrationName(form.name);
   const phoneOk = /^0\d{10}$/.test(form.phone);
-  const emailOk = !form.email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email);
+  const emailValue = form.email.trim();
+  const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue);
   const valid = nameOk && phoneOk && emailOk;
 
   const handleSignup = async () => {
-    if (form.phone.trim() === '') {
-      notify('Error', 'Phone cannot be empty');
-      return;
-    }
+    if (!valid || submitting.current) return;
+    submitting.current = true;
     setIsRegistering(true);
     try {
-      const response = await fetch(`${baseUrl}/api/phone_verification/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: form.email, phone: form.phone }),
+      const { firstName, lastName } = splitRegistrationName(form.name);
+      const email = form.email.trim().toLowerCase();
+      const response = await publicPost('/api/phone_verification/', {
+        email,
+        phone: form.phone,
       });
-      const result = await response.json();
+      const result = await response.json().catch(() => ({}));
       if (response.ok) {
-        await AsyncStorage.setItem('UserEmail', form.email);
-        await AsyncStorage.setItem('UserPhone', form.phone);
+        // OTP verification creates the account and reads these exact fields.
+        // Persist them before navigating so SMS autofill cannot race the write.
+        await AsyncStorage.multiSet([
+          ['UserEmail', email],
+          ['UserPhone', form.phone],
+          ['UserFirstName', firstName],
+          ['UserLastName', lastName],
+          ['otpPending', Date.now().toString()],
+        ]);
         // Mark OTP as pending so reopening the app mid-verification resumes here
         // instead of dropping back to onboarding (cleared on verify / going back).
-        await AsyncStorage.setItem('otpPending', Date.now().toString());
         router.push('/otp');
       } else {
         notify('Error', result.message || 'Failed to register an account');
@@ -45,6 +53,7 @@ const Register = () => {
     } catch (error) {
       notify('Error', 'Something went wrong. Please try again later.');
     } finally {
+      submitting.current = false;
       setIsRegistering(false);
     }
   };
@@ -62,7 +71,7 @@ const Register = () => {
       <Header onBack={() => router.replace('/signin')} />
       <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Create your account</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 26, fontFamily: font.regular }}>
-        Join 5,000,000+ Nigerians on Zitch
+        Open your Zitch account in a few simple steps
       </Text>
 
       <View style={{ gap: 16 }}>
@@ -76,7 +85,7 @@ const Register = () => {
             prefix={<ZIcon name="user" size={18} color={c.ink3} />}
           />
           {form.name.length > 0 && !nameOk && (
-            <Text style={{ fontSize: 12, color: c.red, marginTop: 6, marginLeft: 2, fontFamily: font.regular }}>Enter your full name</Text>
+            <Text style={{ fontSize: 12, color: c.red, marginTop: 6, marginLeft: 2, fontFamily: font.regular }}>Enter your first and last name</Text>
           )}
         </View>
         <View>
@@ -94,7 +103,7 @@ const Register = () => {
         </View>
         <View>
           <Field
-            label="Email (optional)"
+            label="Email address"
             value={form.email}
             onChangeText={(e) => setForm({ ...form, email: e })}
             keyboardType="email-address"

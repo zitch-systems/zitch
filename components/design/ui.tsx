@@ -61,6 +61,7 @@ export const Tap = ({
     hitSlop={hitSlop}
     accessibilityRole="button"
     accessibilityLabel={accessibilityLabel}
+    accessibilityState={{ disabled: !!disabled }}
     style={({ pressed }) => [
       style,
       { opacity: disabled ? 0.5 : pressed ? 0.88 : 1, transform: [{ scale: pressed ? 0.98 : 1 }] },
@@ -624,6 +625,12 @@ export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = fal
   // second native prompt; keep one scan and one completion in flight per pad.
   const bioInFlight = React.useRef(false);
   const bioCompleted = React.useRef(false);
+  // React state does not update synchronously. Lock as soon as the final digit
+  // is accepted so two taps in the same frame cannot schedule two payment
+  // callbacks before the parent has time to render busy=true.
+  const pinCompleted = React.useRef(false);
+  const sawBusy = React.useRef(false);
+  const completionTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // Keep the latest onComplete/busy in refs so the biometric helpers stay STABLE
   // and the setup effect runs exactly once per mount — not on every render (an
   // inline onComplete in the parent would otherwise re-run the effect each render,
@@ -633,8 +640,39 @@ export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = fal
   useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
   useEffect(() => { busyRef.current = busy; }, [busy]);
   useEffect(() => {
-    if (error) bioCompleted.current = false;
+    if (busy) {
+      sawBusy.current = true;
+      if (completionTimer.current) {
+        clearTimeout(completionTimer.current);
+        completionTimer.current = null;
+      }
+    }
+    else if (sawBusy.current) {
+      sawBusy.current = false;
+      pinCompleted.current = false;
+    }
+  }, [busy]);
+  useEffect(() => {
+    if (error) {
+      if (completionTimer.current) {
+        clearTimeout(completionTimer.current);
+        completionTimer.current = null;
+      }
+      bioCompleted.current = false;
+      pinCompleted.current = false;
+    }
   }, [error]);
+  useEffect(() => () => {
+    if (completionTimer.current) clearTimeout(completionTimer.current);
+  }, []);
+  useEffect(() => {
+    if (completionTimer.current) {
+      clearTimeout(completionTimer.current);
+      completionTimer.current = null;
+    }
+    pinCompleted.current = false;
+    setPin('');
+  }, [length]);
   const handleBiometric = React.useCallback(async () => {
     if (busyRef.current || bioInFlight.current || bioCompleted.current) return;
     bioInFlight.current = true;
@@ -684,14 +722,29 @@ export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = fal
     return () => { alive = false; };
   }, [autoBiometric, handleBiometric]);
   const press = (d: string) => {
-    if (busy) return; // ignore input while a submission is in flight (prevents double-charge)
+    if (busy || pinCompleted.current) return; // ignore input while a submission is in flight (prevents double-charge)
     if (pin.length < length) {
       const np = pin + d;
       setPin(np);
-      if (np.length === length) setTimeout(() => { onComplete && onComplete(np, false); setPin(''); }, 120);
+      if (np.length === length) {
+        pinCompleted.current = true;
+        completionTimer.current = setTimeout(() => {
+          completionTimer.current = null;
+          onCompleteRef.current?.(np, false);
+          setPin('');
+        }, 120);
+      }
     }
   };
-  const del = () => { if (!busy) setPin((p) => p.slice(0, -1)); };
+  const del = () => {
+    if (busy) return;
+    if (completionTimer.current) {
+      clearTimeout(completionTimer.current);
+      completionTimer.current = null;
+    }
+    pinCompleted.current = false;
+    setPin((p) => p.slice(0, -1));
+  };
   // Row-based key layout: each row of three stretches edge-to-edge (with even
   // gaps) so the keypad lines up with the sheet's own padding instead of
   // floating on a fixed-width island with mismatched margins.
@@ -732,7 +785,7 @@ export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = fal
           Tap the icon to scan again
         </Text>
         {error ? (
-          <Text style={{ textAlign: 'center', color: c.red, fontSize: 13, fontFamily: font.semibold, marginTop: 10 }}>{error}</Text>
+          <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={{ textAlign: 'center', color: c.red, fontSize: 13, fontFamily: font.semibold, marginTop: 10 }}>{error}</Text>
         ) : null}
         <Pressable
           onPress={() => setShowBio(false)}
@@ -765,7 +818,7 @@ export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = fal
         ))}
       </View>
       {error ? (
-        <Text style={{ textAlign: 'center', color: c.red, fontSize: 13, fontFamily: font.semibold, marginBottom: 16 }}>
+        <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={{ textAlign: 'center', color: c.red, fontSize: 13, fontFamily: font.semibold, marginBottom: 16 }}>
           {error}
         </Text>
       ) : null}

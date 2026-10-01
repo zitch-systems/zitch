@@ -579,6 +579,28 @@ class PayoutSourceActivationTests(TestCase):
         self.assertFalse(Transaction.objects.filter(
             user=self.user, direction=Transaction.OUT).exists())
 
+    @patch("utility.providers.payout_live", return_value=True)
+    @patch("transfers.services.wema_provider.wema_live", return_value=True)
+    def test_send_uses_fresh_account_after_cached_wallet_was_replaced(
+            self, _wema_live, _payout_live):
+        from wallet.models import Wallet
+        from .services import execute_payout
+
+        # make_user touched the reverse relation before the NUBAN was attached.
+        self.assertEqual(self.user.wallet.account_number, "")
+        Wallet.objects.filter(user=self.user).update(
+            account_number="0452491369", pnd_lifted=True)
+        from wallet.models import BankHistoryCheckpoint
+
+        BankHistoryCheckpoint.objects.create(
+            wallet=get_or_create_wallet(self.user), account_number="0452491369",
+            opening_review_required=False)
+        with patch("transfers.services.payout_send",
+                   return_value={"success": True, "status": "success"}) as send:
+            execute_payout(self.user, Decimal("1000"), "0123456789",
+                           self.bank, "JOHN DOE", channel="app")
+        self.assertEqual(send.call_args.kwargs["source_account"], "0452491369")
+
 
 class SavedBeneficiaryTests(TestCase):
     """Keeping a recipient, naming them, and removing them.

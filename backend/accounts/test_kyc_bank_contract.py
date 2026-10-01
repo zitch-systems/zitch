@@ -673,7 +673,7 @@ class ProviderLivenessContractTests(SimpleTestCase):
 @override_settings(PREMBLY={"BASE_URL": "https://kyc.example.test", "API_KEY": "test-key", "APP_ID": "test-app"},
                    WEMA={"SIMULATION": False})
 class ProviderDocumentEnvelopeTests(SimpleTestCase):
-    """Generic safety boundaries, not certification of unconfirmed live contracts."""
+    """Unconfirmed live contracts cannot grant KYC from an accepted envelope."""
 
     def checks(self):
         return ((kyc_verify_address, ("12 Allen Avenue", "ZmFrZQ==")),
@@ -684,13 +684,26 @@ class ProviderDocumentEnvelopeTests(SimpleTestCase):
         for verify, args in self.checks():
             with self.subTest(adapter=verify.__name__, envelope=envelope, status=status), \
                     patch("utility.providers.requests.post", return_value=Mock(
-                        status_code=status, json=Mock(return_value=envelope))):
-                self.assertIs(verify(*args)["success"], success)
+                        status_code=status, json=Mock(return_value=envelope))) as provider:
+                result = verify(*args)
+                self.assertIs(result["success"], success)
+                self.assertTrue(result["unavailable"])
+                provider.assert_not_called()
 
-    def test_literal_boolean_success_is_required(self):
-        self.assert_envelope({"status": True, "data": {}}, success=True)
+    def test_literal_boolean_success_is_insufficient(self):
+        self.assert_envelope({"status": True, "data": {}})
         for value in (False, "false", "true", 0, 1, None, [], {"status": True}):
             self.assert_envelope({"status": value})
+
+    def test_published_address_initiation_cannot_be_completed_proof(self):
+        # Prembly documents both envelopes for accepted jobs, even while the
+        # address check takes at least 48 hours. The generic VERIFIED envelope
+        # is not the completed address result.
+        for detail in ({"addressStatus": "pending", "job_id": "job-1"},
+                       {"status": "unassigned", "_id": "job-2"},
+                       {"status": "queued", "_id": "job-3"}):
+            self.assert_envelope({"status": True, "response_code": "00", "data": detail,
+                                  "verification": {"status": "VERIFIED", "reference": "ref-1"}})
 
     def test_http_failure_or_accepted_pending_never_grants_verification(self):
         for status in (202, 302, 400, 500):

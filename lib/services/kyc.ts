@@ -22,6 +22,9 @@ export type KycStatus = ApiResult<{
   upgrade_required?: boolean;
   next_step?: string;
   address_verified?: boolean;
+  email?: string;
+  email_verified?: boolean;
+  phone_verified?: boolean;
   identity_face_available?: boolean;
   identity_upgrade_required?: boolean;
   bank_upgrade_required?: boolean;
@@ -91,6 +94,8 @@ export const classifyKycResponse = (response: {
 
 export const kycService = {
   getStatus: () => apiJson<KycStatus>(EP.kyc.status),
+  startEmail: (email: string) => apiJson<KycStatus>(EP.auth.emailVerifyStart, { email }),
+  confirmEmail: (otp: string) => apiJson<KycStatus>(EP.auth.emailVerifyConfirm, { otp }),
   startBvn: (bvn: string) => apiJson<KycStatus>(EP.kyc.bvnStart, { bvn }),
   confirmBvn: (trackingId: string, otp: string) =>
     apiJson<KycStatus>(EP.kyc.bvnConfirm, { tracking_id: trackingId, otp }),

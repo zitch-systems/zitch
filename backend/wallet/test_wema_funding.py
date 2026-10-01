@@ -32,6 +32,7 @@ from wallet.tests import make_user
 
 def _tx(ref, amount, credit=True, **extra):
     row = {"referenceId": ref, "amount": amount,
+           "date": timezone.now().isoformat(),
            "creditType": "Credit" if credit else "Debit",
            "status": extra.get("status", "Successfull"),
            "narration": extra.get("narration", "Transfer in"),
@@ -592,6 +593,7 @@ class WemaReconcileTests(TestCase):
 
     def test_posted_default_credit_from_bank_history_funds_once(self):
         row = {"referenceId": "BANK-POSTED-1", "tranId": "S42026066",
+               "date": timezone.now().isoformat(),
                "rrn": " BANK-POSTED-1", "amount": 500, "balance": "500.00",
                "creditType": "Credit", "status": "Default"}
         self._run([row])
@@ -1420,6 +1422,8 @@ class WemaPartialReversalTests(TestCase):
         self.payout.save(update_fields=["transaction_status", "meta"])
 
         with patch("utility.alerts.alert") as alerted, \
+             patch("utility.wema.get_transactions", return_value={
+                 "success": True, "complete": True, "transactions": []}), \
              patch("utility.management.commands.reconcile_wema.alert_due",
                    return_value=True):
             call_command("reconcile_wema", "--payout-older-than-minutes=0")

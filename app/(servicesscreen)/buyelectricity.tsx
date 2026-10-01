@@ -1,7 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
-import { getToken } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
@@ -32,13 +31,13 @@ type Step = null | 'confirm' | 'pin';
 const BuyElectricity = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
-  const [token, setToken] = useState('');
   const [disco, setDisco] = useState('1');
   const [meterType, setMeterType] = useState('prepaid');
   const [meter, setMeter] = useState('');
   const [amt, setAmt] = useState('');
   const [customerName, setCustomerName] = useState('');
   const [validating, setValidating] = useState(false);
+  const [validatedFor, setValidatedFor] = useState('');
   const [purchasedToken, setPurchasedToken] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
@@ -48,33 +47,71 @@ const BuyElectricity = () => {
   const [recovered, setRecovered] = useState(false);
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
-
-  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
-  useEffect(() => { setCustomerName(''); }, [disco, meterType, meter]);
+  const validationGeneration = useRef(0);
+  const purchaseInFlight = useRef(false);
 
   const provider = DISCOS.find((d) => d.id === disco)!;
   const amount = Number(amt || 0);
-  const valid = meter.length >= 8 && amount >= 500;
+  const validationKey = `${disco}|${meterType}|${meter.trim()}`;
+  const verifiedCustomer = validatedFor === validationKey ? customerName : '';
+  const valid = meter.length >= 8 && !!verifiedCustomer && amount >= 500 && amount <= balance;
 
   const validateMeter = async () => {
     if (meter.trim().length < 8) { notify('Error', 'Enter a valid meter number.'); return; }
+    const requestedMeter = meter.trim();
+    const requestedDisco = disco;
+    const requestedType = meterType;
+    const requestedFor = `${requestedDisco}|${requestedType}|${requestedMeter}`;
+    const generation = ++validationGeneration.current;
     setValidating(true);
     try {
-      const response = await apiPost(EP.utility.validateMeter, { meter, disco, meter_type: meterType });
+      const response = await apiPost(EP.utility.validateMeter, {
+        meter: requestedMeter,
+        disco: requestedDisco,
+        meter_type: requestedType,
+      });
       const result = await response.json();
+      if (generation !== validationGeneration.current) return;
       if (response.ok) {
         setCustomerName(result.customer_name || result.name || 'Verified');
+        setValidatedFor(requestedFor);
       } else {
         notify('Error', result.message || 'Could not verify meter number.');
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
+      if (generation === validationGeneration.current) {
+        notify('Error', 'Something went wrong. Please try again later.');
+      }
     } finally {
-      setValidating(false);
+      if (generation === validationGeneration.current) setValidating(false);
     }
   };
 
+  const invalidateMeter = () => {
+    validationGeneration.current += 1;
+    setValidating(false);
+    setCustomerName('');
+    setValidatedFor('');
+  };
+
+  const changeDisco = (value: string) => {
+    invalidateMeter();
+    setDisco(value);
+  };
+
+  const changeMeterType = (value: string) => {
+    invalidateMeter();
+    setMeterType(value);
+  };
+
+  const changeMeter = (value: string) => {
+    invalidateMeter();
+    setMeter(value.replace(/\D/g, '').slice(0, 13));
+  };
+
   const purchase = async (enteredPin: string) => {
+    if (purchaseInFlight.current) return;
+    purchaseInFlight.current = true;
     const fingerprint = [disco, meterType, meter.trim(), String(amount)].join('|');
     let deliveryStarted = false;
     setBusy(true);
@@ -126,6 +163,7 @@ const BuyElectricity = () => {
         notify('Unable to start payment', 'Could not safely prepare this request. Please try again.');
       }
     } finally {
+      purchaseInFlight.current = false;
       setBusy(false);
     }
   };
@@ -160,26 +198,26 @@ const BuyElectricity = () => {
       <Header title="Electricity" onBack={() => router.back()} />
 
       <Label>Select disco</Label>
-      <ProviderGrid items={DISCOS} value={disco} onPick={setDisco} cols={3} />
+      <ProviderGrid items={DISCOS} value={disco} onPick={changeDisco} cols={3} />
 
       <Segmented
         options={[{ v: 'prepaid', label: 'Prepaid' }, { v: 'postpaid', label: 'Postpaid' }]}
         value={meterType}
-        onChange={setMeterType}
+        onChange={changeMeterType}
       />
 
       <Field
         label="Meter number"
         value={meter}
-        onChangeText={(v) => setMeter(v.replace(/\D/g, '').slice(0, 13))}
+        onChangeText={changeMeter}
         keyboardType="number-pad"
         placeholder="01234567890"
       />
       <View style={{ marginTop: 8, marginBottom: 8 }}>
-        {customerName ? (
-          <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {customerName}</Text>
+        {verifiedCustomer ? (
+          <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {verifiedCustomer}</Text>
         ) : (
-          <Btn label="Validate meter" variant="outline" size="sm" full={false} onPress={validateMeter} disabled={validating} />
+          <Btn label={validating ? 'Checking…' : 'Validate meter'} variant="outline" size="sm" full={false} onPress={validateMeter} disabled={validating || meter.length < 8} />
         )}
       </View>
 

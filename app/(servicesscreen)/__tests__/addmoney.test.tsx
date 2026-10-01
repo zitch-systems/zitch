@@ -94,4 +94,15 @@ describe('AddMoney face fallback', () => {
     expect(mockApiJson).toHaveBeenCalledTimes(3);
     expect(findControl(tree, 'Use face verification instead')).toBeTruthy();
   });
+
+  it('does not offer new BVN provisioning when account lookup is offline', async () => {
+    mockApiJson.mockResolvedValueOnce({ success: false, offline: true });
+
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(findControl(tree, 'Try again')).toBeTruthy();
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+  });
 });

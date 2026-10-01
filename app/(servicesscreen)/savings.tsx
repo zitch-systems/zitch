@@ -87,6 +87,8 @@ const MySavings = () => {
   const [totalLocked, setTotalLocked] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [productAvailable, setProductAvailable] = useState(false);
+  const [unavailableMessage, setUnavailableMessage] = useState('Fixed savings is not available right now.');
 
   const load = useCallback(async () => {
     const token = await getToken();
@@ -96,6 +98,8 @@ const MySavings = () => {
     }
     try {
       const res = await savingsService.list();
+      setProductAvailable(res?.product_available === true);
+      setUnavailableMessage(res?.unavailable_message || 'Fixed savings is not available right now.');
       if (Array.isArray(res?.plans)) {
         setPlans(res.plans);
         setTotalLocked(Number(res.total_locked ?? 0));
@@ -118,16 +122,16 @@ const MySavings = () => {
   const header = (
     <Header
       title="My Fixed Saves"
-      sub="Locked & earning"
+      sub={productAvailable ? 'Locked & earning' : 'Existing plans and status'}
       onBack={() => router.back()}
-      right={
+      right={productAvailable ? (
         <Pressable
           onPress={() => router.push('/fixedsave')}
           style={{ width: 42, height: 42, borderRadius: 13, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}
         >
           <ZIcon name="plus" size={20} color="#fff" stroke={2.4} />
         </Pressable>
-      }
+      ) : undefined}
     />
   );
 
@@ -156,20 +160,29 @@ const MySavings = () => {
           <Text style={{ fontSize: 12.5, color: 'rgba(255,255,255,.85)', marginTop: 6, fontFamily: font.regular }}>
             {activeCount > 0
               ? `${activeCount} active plan${activeCount === 1 ? '' : 's'}${topRate > 0 ? ` · up to ${(topRate * 100).toFixed(0)}% p.a` : ''}`
-              : 'Lock funds to start earning up to 22% p.a'}
+              : productAvailable ? 'No funds currently locked' : 'Existing plans remain visible here'}
           </Text>
         </Hero>
+
+        {!productAvailable && (
+          <View style={{ borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 16, marginBottom: 18 }}>
+            <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>New fixed saves are unavailable</Text>
+            <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular, lineHeight: 19, marginTop: 6 }}>{unavailableMessage}</Text>
+          </View>
+        )}
 
         {plans.length === 0 ? (
           <View style={{ alignItems: 'center', paddingVertical: 40, paddingHorizontal: 24 }}>
             <View style={{ width: 64, height: 64, borderRadius: 20, backgroundColor: c.surface3, alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
               <ZIcon name="fixed" size={28} color={c.brand} />
             </View>
-            <Text style={{ fontSize: 16, fontFamily: font.bold, color: c.ink1, marginBottom: 6 }}>No savings yet</Text>
+            <Text style={{ fontSize: 16, fontFamily: font.bold, color: c.ink1, marginBottom: 6 }}>No existing saves</Text>
             <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, textAlign: 'center', marginBottom: 20 }}>
-              Lock funds for a fixed period and earn up to 22% p.a. Your money stays safe until it matures.
+              {productAvailable
+                ? 'Choose an amount and lock period to start a fixed save.'
+                : 'Any existing fixed saves would appear here.'}
             </Text>
-            <Btn label="Start saving" icon="fixed" onPress={() => router.push('/fixedsave')} full={false} />
+            {productAvailable ? <Btn label="Start saving" icon="fixed" onPress={() => router.push('/fixedsave')} full={false} /> : null}
           </View>
         ) : (
           <>

@@ -423,7 +423,8 @@ def _naira(v) -> Decimal | None:
     if not s:
         return None
     try:
-        return Decimal(s).quantize(Decimal("0.01"))
+        amount = Decimal(s).quantize(Decimal("0.01"))
+        return amount if amount.is_finite() else None
     except (TypeError, ValueError, InvalidOperation):
         return None
 
@@ -1307,6 +1308,37 @@ def get_balance(account_number: str) -> dict:
         return _unreachable(exc)
 
 
+def _history_is_incomplete(containers: list[dict], row_count: int) -> bool:
+    """Reject pagination/truncation that the duration-only contract cannot drain.
+
+    ALAT documents a complete result[] for the requested from/to interval, with
+    no page or cursor input. Never acknowledge just one page as full coverage.
+    """
+    for container in containers:
+        for key, value in container.items():
+            name = str(key).replace("_", "").replace("-", "").casefold()
+            if name in {"hasmore", "hasnextpage", "truncated", "istruncated"}:
+                if value is True or str(value).strip().casefold() in {"true", "1"}:
+                    return True
+            elif name in {"next", "nextpage", "nextcursor", "nextlink", "continuationtoken"}:
+                if value not in (None, "", False, 0):
+                    return True
+            elif name in {"total", "totalcount", "totalrecords", "totalitems", "totalpages", "pagecount"}:
+                try:
+                    total = int(value)
+                except (TypeError, ValueError):
+                    return True
+                limit = 1 if name in {"totalpages", "pagecount"} else row_count
+                if total > limit:
+                    return True
+            elif name == "complete" and value is False:
+                return True
+            elif name in {"pagination", "paging", "metadata", "meta"} and isinstance(value, dict):
+                if _history_is_incomplete([value], row_count):
+                    return True
+    return False
+
+
 def get_transactions(account_number: str, date_from: str, date_to: str, keyword: str = "") -> dict:
     """Transaction history — the source for detecting inbound credits (creditType=='Credit')."""
     if not _product_live("acct_mgt"):
@@ -1323,23 +1355,34 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
             return {"success": False, "transactions": [], "message": "Request failed",
                     "diagnostic": _response_meta(resp, data), "raw": data}
         if _is_empty_history_response(resp, data):
-            return {"success": True, "transactions": [], "empty": True,
+            return {"success": True, "transactions": [], "empty": True, "complete": True,
                     "message": "No transactions found",
                     "diagnostic": _response_meta(resp, data), "raw": data}
         # This envelope uses {successful, result[], message} rather than status/hasError.
         ok = _ok(data)
-        rows = data.get("result", data.get("data", []))
+        rows = data.get("result", data.get("data"))
+        containers = [data]
         # Account-Maintenance deployments have returned both result[] and
         # data:{result[]} / data:{transactions[]} envelopes. Accept all documented
         # shapes so a successful statement cannot be mistaken for an empty wallet.
         if isinstance(rows, dict):
-            rows = rows.get("result", rows.get("transactions", rows.get("data", [])))
-        if not isinstance(rows, list):
-            rows = []
-        return {"success": ok, "transactions": rows,
+            containers.append(rows)
+            rows = rows.get("result", rows.get("transactions", rows.get("data")))
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            return {"success": False, "transactions": [], "complete": False,
+                    "message": "Invalid bank transaction history", "error_code": "malformed_history",
+                    "diagnostic": _response_meta(resp, data), "raw": data}
+        if _history_is_incomplete(containers, len(rows)):
+            return {"success": False, "transactions": [], "complete": False,
+                    "message": "Incomplete bank transaction history", "error_code": "incomplete_history",
+                    "diagnostic": _response_meta(resp, data), "raw": data}
+        return {"success": ok, "transactions": rows, "complete": ok,
                 "message": _msg(data), "diagnostic": _response_meta(resp, data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
+    except ValueError:
+        return {"success": False, "transactions": [], "complete": False,
+                "message": "Invalid bank transaction history", "error_code": "malformed_history"}
 
 
 # transhistoryV2 `status` is not a settlement-status field in every bank response.
