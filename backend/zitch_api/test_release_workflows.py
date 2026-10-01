@@ -67,3 +67,8 @@ class BackendPostgreSQLWorkflowTests(SimpleTestCase):
 
     def test_postgresql_job_does_not_require_a_ci_redis_service(self):
         self.assertIn('DJANGO_REQUIRE_SHARED_CACHE: "false"', self.job)
+
+    def test_only_the_local_postgresql_service_disables_database_tls(self):
+        self.assertIn('DJANGO_DB_SSL: "false"', self.job)
+        outside_job = self.workflow.replace(self.job, "")
+        self.assertNotIn('DJANGO_DB_SSL: "false"', outside_job)

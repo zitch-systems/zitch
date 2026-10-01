@@ -114,6 +114,9 @@ jobs:
       DJANGO_DEBUG: "false"
       DJANGO_ALLOWED_HOSTS: "testserver,localhost"
       DJANGO_REQUIRE_SHARED_CACHE: "false"
+      # The job's loopback-only service container does not offer TLS. Production
+      # keeps settings.py's secure default (SSL required when DEBUG is false).
+      DJANGO_DB_SSL: "false"
       DATABASE_URL: "postgresql://zitch_ci:zitch-ci-local-password@127.0.0.1:5432/zitch_ci"
     defaults:
       run:
