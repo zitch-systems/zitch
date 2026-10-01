@@ -27,7 +27,7 @@ from wallet.models import (
     WemaProvisioningAttempt,
 )
 from wallet.services import apply_wema_credit, wema_account_reference
-from wallet.tests import make_user
+from wallet.tests import make_transaction_at, make_user
 
 
 def _tx(ref, amount, credit=True, **extra):
@@ -853,11 +853,12 @@ class WemaPayoutSettlementTests(TestCase):
         self.user, _ = make_user("08030000777", "p@zitch.app", balance="5000")
         self.wallet = Wallet.objects.get(user=self.user)
 
-    def _pending_payout(self, ref):
+    def _pending_payout(self, ref, *, created=None):
         # Mirrors execute_payout's PENDING row: OUT + reconcile + a bank in meta.
-        return Transaction.objects.create(
-            user=self.user, service="Transfer to ADA", amount=Decimal("1000"),
-            direction=Transaction.OUT, transaction_status=Transaction.PENDING,
+        return make_transaction_at(
+            self.user, created=created or timezone.now(),
+            service="Transfer to ADA", amount=Decimal("1000"),
+            direction=Transaction.OUT, status=Transaction.PENDING,
             reference=ref, meta={"reconcile": True, "bank": "Wema Bank"})
 
     def _run(self, status):
@@ -905,9 +906,9 @@ class WemaPayoutSettlementTests(TestCase):
         """
         from django.utils import timezone
 
-        txn = self._pending_payout("ZTRF-PAY-STUCK")
         old = timezone.now() - timedelta(hours=6)
-        Transaction.objects.filter(pk=txn.pk).update(created=old)   # auto_now_add
+        txn = self._pending_payout("ZTRF-PAY-STUCK", created=old)
+        self.assertEqual(Transaction.objects.get(pk=txn.pk).created, old)
 
         with patch("utility.alerts.alert") as alerted:
             self._run("IN_PROGRESS")
@@ -1678,14 +1679,11 @@ class ReversalLookbackTests(TestCase):
         self.user, _ = make_user("08030000557", "lookback@zitch.app", balance="1000")
 
     def _payout(self, ref, age_days, *, meta=None, amount="100"):
-        txn = Transaction.objects.create(
-            user=self.user, service="Transfer to ADA", amount=Decimal(amount),
-            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+        return make_transaction_at(
+            self.user, created=timezone.now() - timedelta(days=age_days),
+            service="Transfer to ADA", amount=Decimal(amount),
+            direction=Transaction.OUT, status=Transaction.SUCCESS,
             reference=ref, meta={"bank": "GTBank"} if meta is None else meta)
-        # created is auto_now_add, so it has to be back-dated after the fact.
-        Transaction.objects.filter(pk=txn.pk).update(
-            created=timezone.now() - timedelta(days=age_days))
-        return txn
 
     def test_recent_set_covers_every_bank_payout_metadata_shape(self):
         from wallet.services import self_payout_references

@@ -1924,7 +1924,14 @@ class WhatsAppWebDrainTests(TestCase):
         thread.assert_called_once()
         self.assertTrue(thread.call_args.kwargs["daemon"])
 
-        _drain_worker(5)
+        # _drain_worker normally runs in its own thread, where close_all() only
+        # reaps that thread's connection. Calling it synchronously here would
+        # close TestCase's outer PostgreSQL transaction and poison this test and
+        # every following test in the class. Cleanup itself is asserted by the
+        # dedicated failure-path test below; keep this test focused on draining.
+        with patch("django.db.connections.close_all") as close_all:
+            _drain_worker(5)
+        close_all.assert_called_once()
         row = WaMessageLog.objects.get(wa_message_id="drain-1")
         self.assertIsNotNone(row.processed_at)
         self.assertTrue(WaMessageLog.objects.filter(

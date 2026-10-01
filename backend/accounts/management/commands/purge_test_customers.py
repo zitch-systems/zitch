@@ -78,6 +78,11 @@ class Command(BaseCommand):
                     # deletes back, so the immutable-ledger trigger cannot be
                     # left disabled by a partial purge.
                     with connection.cursor() as cursor:
+                        # Django's foreign keys are deferred on PostgreSQL.
+                        # Finish their checks before ALTER TABLE: queued delete
+                        # checks otherwise prevent restoring the ledger trigger.
+                        # A failed check rolls the entire purge back as well.
+                        cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
                         cursor.execute(
                             "ALTER TABLE wallet_transaction "
                             "ENABLE TRIGGER wallet_transaction_immutable_guard"

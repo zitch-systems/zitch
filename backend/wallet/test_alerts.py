@@ -174,15 +174,16 @@ class FinancialAlertTimestampTests(TestCase):
     def test_financial_alert_timestamps_are_lagos_time_and_labelled(self):
         """An aware UTC ledger timestamp must match the Lagos receipt time."""
         from .alerts import _describe, _email_alert_html, _sms_alert
+        from .tests import make_transaction_at
 
-        txn = Transaction.objects.create(
-            user=self.user, amount=Decimal("1000"), direction=Transaction.OUT,
-            service="transfer", reference="TZ-1",
-            transaction_status=Transaction.SUCCESS,
-        )
         created = datetime(2026, 9, 14, 14, 14, tzinfo=dt_timezone.utc)
-        Transaction.objects.filter(pk=txn.pk).update(created=created)
+        txn = make_transaction_at(
+            self.user, created=created, amount=Decimal("1000"), direction=Transaction.OUT,
+            service="transfer", reference="TZ-1",
+            status=Transaction.SUCCESS,
+        )
         txn.refresh_from_db()
+        self.assertEqual(txn.created, created)
 
         _subject, body = _describe(txn)
         self.assertIn("14 Sep 2026, 03:14 PM WAT", body)

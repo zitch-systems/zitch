@@ -14,11 +14,13 @@ delivered, nothing refunded, and no job anywhere that can ever clear it. The onl
 safe answer is to refuse the purchase BEFORE the provider call, where the ordinary
 failure path refunds the debit in full — which is what these tests pin.
 """
+from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
 from unittest import mock
 
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 
 from utility import providers as P
 
@@ -170,7 +172,7 @@ class RefusalRefundsTests(TestCase):
 class RetiredRailRequeryTests(TestCase):
     """A pending row from the retired rail is not requeried against the partner bank."""
 
-    def _pending(self, vas_rail):
+    def _pending(self, vas_rail, *, age=timedelta()):
         from wallet.services import debit
         from wallet.tests import make_user
 
@@ -178,7 +180,8 @@ class RetiredRailRequeryTests(TestCase):
         meta = {"vas_type": "airtime", "reconcile": True}
         if vas_rail:
             meta["vas_rail"] = vas_rail
-        return debit(user, Decimal("300"), "Airtime MTN 300", meta=meta)
+        with mock.patch("django.utils.timezone.now", return_value=timezone.now() - age):
+            return debit(user, Decimal("300"), "Airtime MTN 300", meta=meta)
 
     def test_a_retired_rail_row_is_left_pending_and_paged(self):
         txn = self._pending("vtung")
@@ -205,18 +208,11 @@ class RetiredRailRequeryTests(TestCase):
         # wema.vas_status directly — so the guard has to sit on the route it takes.
         from django.core.management import call_command
 
-        from datetime import timedelta
-
-        from django.utils import timezone
-
         from wallet.models import Transaction
 
-        txn = self._pending("vtung")
+        txn = self._pending("vtung", age=timedelta(minutes=10))
         # Age it past the requery cutoff, or the sweep would skip it and this test
         # would pass without ever reaching the guard.
-        Transaction.objects.filter(pk=txn.pk).update(
-            created=timezone.now() - timedelta(minutes=10))
-
         out = StringIO()
         with mock.patch("utility.wema.vas_status") as status, \
              mock.patch(

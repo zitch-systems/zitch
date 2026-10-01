@@ -112,7 +112,10 @@ def _card_fields(result: dict) -> dict | None:
 @transaction.atomic
 def finalize_card_issuance(intent: CardIssuance, result: dict, holder: str) -> CardIssuance:
     """Persist the terminal or ambiguous provider outcome exactly once."""
-    current = (CardIssuance.objects.select_for_update().select_related("card")
+    # The card join is nullable while issuance is STARTING/PENDING. PostgreSQL
+    # cannot lock the nullable side of that outer join; only the intent is the
+    # state-transition lock. The customer lock below still guards card creation.
+    current = (CardIssuance.objects.select_for_update(of=("self",)).select_related("card")
                .get(pk=intent.pk))
     get_user_model().objects.select_for_update().get(pk=current.user_id)
     if current.state != CardIssuance.STARTING:

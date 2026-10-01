@@ -49,7 +49,9 @@ def claim_card_funding(user, card: VirtualCard, amount: Decimal, key) -> Transac
 
 
 def _card_funding_row(reference: str) -> Transaction:
-    txn = (Transaction.objects.select_for_update().select_related("user")
+    # Joined user data is read-only here. Lock the ledger row explicitly; Card
+    # or Wallet locks are acquired below only for the chosen outcome.
+    txn = (Transaction.objects.select_for_update(of=("self",)).select_related("user")
            .filter(reference=str(reference or "").strip(),
                    direction=Transaction.OUT)
            .first())

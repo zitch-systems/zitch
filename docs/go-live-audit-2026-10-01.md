@@ -41,6 +41,7 @@ evidence.
 | Transaction notifications | A per-channel durable outbox survives process crashes and metadata rewrites. Accepted channels do not repeat; uncertain dispatch needs review. Explicit refusals have bounded backoff. |
 | Outage recovery | Per-account statement checkpoints recover missing windows with overlap. Malformed/partial history cannot advance coverage. Unknown opening balances block new bank spending until audited. |
 | Release operations | API configuration is canonical for consumers. Production signing requires successful exact-SHA CI and an AAB signer matching the configured upload certificate. CI now includes PostgreSQL 18. |
+| PostgreSQL release review | Card issuance locks the owning intent without trying to lock a nullable outer-joined card. The explicitly gated test-data purge checks deferred constraints before restoring the ledger guard; rollback preserves customer data and the guard. Historical test fixtures are inserted at their intended time and retain production ledger immutability. |
 
 ## Launch scope
 
@@ -262,6 +263,12 @@ Local integration evidence before release:
 - Reviewed release SHA, final full PostgreSQL/SQLite evidence and security checks:
   [PR #528](https://github.com/zitch-systems/zitch/pull/528), on its exact final head.
   The release owner must merge only after every required check passes.
+- The first complete PostgreSQL run on audit head `37eecd0` ran **2,950 tests**
+  and exposed a real nullable-join card lock failure plus invalid database test
+  fixtures. SQLite passed **2,950 tests (one PostgreSQL-only test skipped)** on
+  that head. Those PostgreSQL findings were repaired; the subsequent exact-head
+  PR checks must pass before this release is merged. An earlier green SQLite run
+  does not replace that requirement.
 - Render deployment IDs and deployed SHA per service: **TBD after restoration**
 - Migration output and schema version: **TBD after API deployment**
 - Scoped strict preflight report: **TBD after deployment**

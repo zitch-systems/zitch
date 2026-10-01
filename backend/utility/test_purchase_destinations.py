@@ -13,7 +13,7 @@ from wallet.tests import make_user
 class PurchaseDestinationTests(TestCase):
     def setUp(self):
         self.user, self.token = make_user("08010000672", "destination@zitch.test", balance="20000")
-        DataPlan.objects.create(network="1", plan_type="sme", plan_code="mtn-valid", name="1GB", validity="30 days", price="1000")
+        DataPlan.objects.create(network="1", plan_type="1", plan_code="mtn-valid", name="1GB", validity="30 days", price="1000")
 
     def post(self, path, **data):
         return self.client.post("/api/utility/" + path + "/", json.dumps({"access_token": self.token, **data}),
