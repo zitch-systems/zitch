@@ -3,8 +3,8 @@
 # Produces an installable APK with no EAS/Expo build credits. The Expo project
 # lives at the repository root, so this file sits at the root too.
 #
-# Builds automatically when app code lands on main (see `triggering:` below), and
-# can be started anytime from the dashboard: "Start new build" → "android-apk".
+# The GitHub Actions Android APK workflow owns automatic preview builds. Keep
+# this Codemagic workflow as a manual fallback: "Start new build" → "android-apk".
 workflows:
   android-apk:
     name: Zitch Android APK (preview)
@@ -38,24 +38,9 @@ workflows:
           ./gradlew assembleRelease
     artifacts:
       - android/app/build/outputs/**/*.apk
-    # Auto-build when app code lands on main. Trigger manually anytime from the
-    # dashboard ("Start new build" → android-apk). The changeset filter that
-    # avoids burning free build minutes on irrelevant changes lives in the
-    # workflow-level `when:` below.
-    triggering:
-      events:
-        - push
-      branch_patterns:
-        - pattern: main
-          include: true
-        # Build the v2 design branch too, so the redesign produces a sideloadable
-        # APK before it merges to main.
-        - pattern: new-design-files-v2
-          include: true
-    # `when` is a workflow-level key (sibling of `triggering`, not a child of
-    # it). With a changeset filter it skips webhook-triggered builds whose
-    # changes don't touch any of these paths, so landing/docs/backend-only
-    # changes don't burn free build minutes.
+    # Manual fallback only. There is intentionally no `triggering:` block here,
+    # so a main-branch push cannot duplicate GitHub's automatic preview build.
+    # Keep the changeset scope as a guardrail if automation is restored later.
     when:
       changeset:
         includes:

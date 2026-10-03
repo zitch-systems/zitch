@@ -6,16 +6,16 @@ const DC = window.ZADM;
 function KycQueue({ toast, refresh }) {
   const { can } = useRole();
   const [items, setItems] = useStateC(DC.KYCQ);
-  const act = async (it, approve) => {
+  const act = async (it) => {
     try {
-      const r = await ZAPI.kycReview(it.id, approve);
-      setItems(items.filter((x) => x !== it));
-      toast((approve ? 'Approved ' + it.user + ' — now Tier ' + r.tier : 'Rejected ' + it.user) + ' (audit logged)');
+      await ZAPI.kycReview(it.id, false);
+      setItems((current) => current.filter((x) => x !== it));
+      toast('Cleared unverified submission for ' + it.user + ' (audit logged)');
     } catch (e) { toast('⚠ ' + e.message); }
   };
   return (
     <div>
-      <PageHead title="KYC queue" sub="Manual reviews — approve to bump the user's tier (caps at 3)." />
+      <PageHead title="KYC follow-up" sub="Verification must finish through the customer's secure flow. Staff can clear an unverified submission so the customer can retry." />
       <Card pad={false}>
         {items.length ? (
           <table className="tbl">
@@ -30,8 +30,7 @@ function KycQueue({ toast, refresh }) {
                   <td className="r dim num">{DC.fmtT(it.submitted)}</td>
                   <td className="r">
                     <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                      <button className="btn danger sm-btn" disabled={!can.users} onClick={() => act(it, false)}>Reject</button>
-                      <button className="btn primary sm-btn" disabled={!can.users} onClick={() => act(it, true)}>Approve</button>
+                      <button className="btn danger sm-btn" disabled={!can.users} onClick={() => act(it)}>Clear submission</button>
                     </div>
                   </td>
                 </tr>

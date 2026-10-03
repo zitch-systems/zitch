@@ -7,7 +7,7 @@ certify provider delivery, financial reconciliation, or a completed migration.
 > **Historical 17 September 2026 audit:** that audit found production routing to
 > Oregon and an earlier Frankfurt ledger. It is retained as migration evidence,
 > not as current routing status. Frankfurt is the active target now; use the
-> [current Frankfurt release control](frankfurt-release-control-2026-09-19.md)
+> [current Frankfurt billing restoration order](frankfurt-billing-restoration-2026-10-03.md)
 > for promotion and verification. Do not purge, overwrite, or adjust real
 > customer data merely to make a health check pass.
 

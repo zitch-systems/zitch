@@ -184,14 +184,38 @@ class AdminApiTests(TestCase):
         entry = AuditLog.objects.filter(action="user.pin_unlock").latest("id")
         self.assertEqual((entry.before or {}).get("strikes"), 2)
 
-    def test_kyc_review_approve(self):
-        res, body = self.post("kyc/review", self.finance_token,
-                              {"uid": self.customer.id, "decision": "approve", "type": "bvn"})
-        self.assertEqual(res.status_code, 200)
+    def test_manual_review_cannot_grant_identity_or_liveness_proof(self):
+        self.customer.set_bvn("12345678901")
+        self.customer.set_nin("98765432109")
+        self.customer.save()
+        original = (self.customer.bvn_hash, self.customer.nin_hash, self.customer.tier)
+        for token in (self.finance_token, self.admin_token):
+            for kind in ("bvn", "nin", "face"):
+                with self.subTest(role=token == self.admin_token, kind=kind):
+                    res, body = self.post("kyc/review", token,
+                        {"uid": self.customer.id, "decision": "approve", "type": kind})
+                    self.assertEqual(res.status_code, 409)
+                    self.assertEqual(body["code"], "verification_required")
         self.customer.refresh_from_db()
-        self.assertTrue(self.customer.bvn_verified)
-        self.assertEqual(body["tier"], self.customer.tier)
-        self.assertTrue(AuditLog.objects.filter(action="kyc.approve").exists())
+        self.assertFalse(self.customer.bvn_verified)
+        self.assertFalse(self.customer.nin_verified)
+        self.assertFalse(self.customer.face_verified)
+        self.assertEqual((self.customer.bvn_hash, self.customer.nin_hash, self.customer.tier), original)
+        self.assertEqual(AuditLog.objects.filter(action="kyc.approval_blocked").count(), 6)
+        self.assertFalse(AuditLog.objects.filter(action="kyc.approve").exists())
+
+    def test_invalid_kyc_decision_cannot_clear_a_submission(self):
+        self.customer.set_bvn("12345678901")
+        self.customer.save()
+        original = self.customer.bvn_hash
+        for decision in (None, "", "typo", False, []):
+            with self.subTest(decision=decision):
+                res, _ = self.post("kyc/review", self.finance_token,
+                    {"uid": self.customer.id, "decision": decision, "type": "bvn"})
+                self.assertEqual(res.status_code, 400)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.bvn_hash, original)
+        self.assertFalse(AuditLog.objects.filter(action="kyc.reject").exists())
 
     def test_txn_flag_and_unflag(self):
         t = Transaction.objects.create(user=self.customer, amount=Decimal("100"),

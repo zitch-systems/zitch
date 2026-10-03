@@ -3230,15 +3230,15 @@ def kyc_flow_email_code(pa: PendingAction, code: str) -> tuple[str, str]:
 
     # Flow exchanges can overlap (a double tap, a retry from Meta, or the same
     # card open on two devices).  Consume the attempt and apply the verified flag
-    # under one action -> user lock, so stale in-memory payloads cannot lose an
+    # under one user -> action lock, so stale in-memory payloads cannot lose an
     # attempt and one code cannot prove a different address.
     with db_transaction.atomic():
+        user = User.objects.select_for_update().get(pk=pa.user_id)
         locked = PendingAction.objects.select_for_update().filter(
-            pk=pa.pk, action_type="kyc"
+            pk=pa.pk, user_id=user.pk, action_type="kyc"
         ).first()
         if locked is None or locked.expired:
             return "stop", "This verification has ended. Reply 8 in the chat to start again."
-        user = User.objects.select_for_update().get(pk=locked.user_id)
         target = str(locked.payload.get("code_target") or "")
         if (not target
                 or not secrets.compare_digest(target, _email_challenge_target(user))):
@@ -3463,16 +3463,24 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
 
 def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits: str) -> None:
-    """Verify a BVN/NIN, or bank it for review when the rail cannot check it.
+    """Verify a BVN/NIN, leaving the step retryable when its rail is unavailable.
 
     Our bank has no standalone identity lookup: the real, name-matched check
     happens during account creation, and it verifies exactly ONE identity. The
-    second one therefore cannot be auto-verified - so rather than dead-ending
-    the customer, it is stored (hashed, never raw) and queued for the operator
-    KYC review that already exists in the portal.
+    second one therefore cannot be auto-verified. A provider outage supplies no
+    evidence for manual approval, so it never creates a review submission.
     """
     from accounts.models import hash_identifier
     from accounts.views import _identity_owned_by_another_user
+
+    verified_field = f"{kind}_verified"
+    fields = ["bvn_hash", "bvn_last4"] if kind == "bvn" else ["nin_hash", "nin_last4"]
+    # A completed proof is immutable here. Refresh first because an OTP or face
+    # callback may have verified it after this request loaded its User instance.
+    user.refresh_from_db(fields=[verified_field, *fields])
+    if getattr(user, verified_field):
+        reply(msisdn, f"✅ Your {kind.upper()} is already verified.")
+        return _kyc_next(pa, user, msisdn)
 
     simulation = _chat_simulation_allowed()
     # Real identities remain globally unique. Test digits deliberately do not:
@@ -3485,7 +3493,6 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
     checker = verify_bvn if kind == "bvn" else verify_nin
     result = checker(digits, name=user.get_full_name() or "")
     setter = user.set_bvn if kind == "bvn" else user.set_nin
-    fields = ["bvn_hash", "bvn_last4"] if kind == "bvn" else ["nin_hash", "nin_last4"]
 
     if simulation and result.get("success") and result.get("mock"):
         hash_field, last4_field = fields
@@ -3540,18 +3547,35 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
         return _account_submit_identity(pa, user, msisdn, digits)
 
     if not result.get("success"):
-        # Provider genuinely unreachable — queue for operator review.
-        setter(digits)
-        user.save(update_fields=fields)
-        _record_identity_review(kind, result.get("message", ""))
-        pa.payload["pending_review"] = kind
+        # An outage supplies no evidence an operator can use to verify ownership.
+        # Keep the step available for a later retry and do not attach even a hash
+        # that the generic KYC queue could mistake for a reviewable submission.
+        pa.payload.pop("pending_review", None)
         _touch(pa, payload=pa.payload)
-        reply(msisdn, f"📋 We couldn't reach the verification service just now - your "
-                      f"{kind.upper()} has been submitted for review.")
-        return _kyc_next(pa, user, msisdn)
+        reply(msisdn, f"⚠️ We couldn't reach the verification service just now. "
+                      f"Your {kind.upper()} was not verified or submitted for review. "
+                      "Reply *8* to try again shortly.")
+        return "fail"
 
+    previous_identity = {field: getattr(user, field) for field in fields}
     setter(digits)
-    user.save(update_fields=fields)
+    attempted_identity = {field: getattr(user, field) for field in fields}
+    # Compare-and-set prevents this request from replacing a proof completed by
+    # a concurrent OTP/face callback after the initial verified check.
+    identity_filter = {
+        "pk": user.pk,
+        verified_field: False,
+        **previous_identity,
+    }
+    if not User.objects.filter(**identity_filter).update(**attempted_identity):
+        user.refresh_from_db(fields=[verified_field, *fields])
+        if getattr(user, verified_field):
+            reply(msisdn, f"✅ Your {kind.upper()} is already verified.")
+            return _kyc_next(pa, user, msisdn)
+        reply(msisdn, f"⚠️ Your {kind.upper()} verification changed while this request "
+                      "was processing. Nothing was replaced. Reply *8* to check your "
+                      "status and continue.")
+        return "fail"
     # A name match proves someone knows a name. A code delivered to the line
     # registered against the identity proves the person asking controls it - so
     # the lookup passing is the START of verification here, not the end.
@@ -3564,12 +3588,26 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
         # - whichever proof the bank returns first completes the same step.
         _send_identity_face_option(pa, user, msisdn, kind, digits)
         return "otp"
-    if otp_error:                     # cannot run the challenge -> review, with the reason
-        _record_identity_review(kind, otp_error)
-        pa.payload["pending_review"] = kind
+    if otp_error:
+        # A successful lookup is not proof of ownership; the OTP is the proof.
+        # If that challenge cannot run, undo the newly stored identifier so it
+        # cannot enter the hash-based manual-review queue. Restore any value that
+        # predated this attempt rather than clearing an existing identity record.
+        User.objects.filter(
+            pk=user.pk,
+            **{verified_field: False},
+            **attempted_identity,
+        ).update(**previous_identity)
+        user.refresh_from_db(fields=[verified_field, *fields])
+        if getattr(user, verified_field):
+            reply(msisdn, f"✅ Your {kind.upper()} is already verified.")
+            return _kyc_next(pa, user, msisdn)
+        pa.payload.pop("pending_review", None)
         _touch(pa, payload=pa.payload)
-        reply(msisdn, f"📋 Your {kind.upper()} has been submitted for review.")
-        return _kyc_next(pa, user, msisdn)
+        reply(msisdn, f"⚠️ We couldn't complete the {kind.upper()} verification "
+                      "challenge just now. Your identity was not verified or submitted "
+                      "for review. Reply *8* to try again shortly.")
+        return "fail"
     # Dev/test deploys have no SMS and no Flow to collect a code in; the suite
     # and the simulation walkthrough still need the ladder to complete.
     setattr(user, f"{kind}_verified", True)
@@ -3702,8 +3740,8 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str):
     challenge, and a Zitch email code would create a false proof path.
 
     Returns None when the code is away (the caller chains to the code screen),
-    a string when the challenge cannot be run (the caller queues for review with
-    that reason), or "" when this deploy has no channel for it at all.
+    a string when the challenge cannot be run (the caller leaves verification
+    retryable), or "" when this deploy has no channel for it at all.
     """
     if getattr(settings, "TESTING", False) or settings.DEBUG:
         return ""
@@ -3715,6 +3753,15 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str):
         return "the identity record carried no phone number"
     if not sms_live():
         return "SMS delivery is not configured"
+    expected_state = pa.state
+    # A number typed while its secure form is open follows the legacy BVN
+    # handler, which parks the same action at 'bvn' before starting its SMS.
+    allowed_states = (FLOW_ID_STATE, "bvn") if kind == "bvn" else (FLOW_ID_STATE,)
+    if expected_state not in allowed_states:
+        return "the identity verification step changed"
+    identity_hash = getattr(user, f"{kind}_hash", "")
+    if not identity_hash:
+        return "the identity submission changed"
     code = f"{secrets.randbelow(10**6):06d}"
     message = (f"Zitch: {code} is your {kind.upper()} verification code. "
                "It expires in 10 minutes. Never share it.")
@@ -3722,56 +3769,103 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str):
     if not sent.get("success"):
         return "the verification code could not be delivered"
     masked_phone = f"•••••{phone[-4:]}"
-    pa.payload.update({
-        "id_otp_hash": make_password(code),
-        "id_otp_exp": (timezone.now() + timedelta(minutes=10)).isoformat(),
-        "id_otp_attempts": 0,
-        "id_otp_to": masked_phone,
-        "id_otp_kind": kind,
-    })
-    _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
+    # The SMS call runs outside locks. Its code proves only the exact identity
+    # looked up before delivery, even if another submission changes the user.
+    with db_transaction.atomic():
+        current = User.objects.select_for_update().get(pk=user.pk)
+        locked = PendingAction.objects.select_for_update().filter(
+            pk=pa.pk, user_id=current.pk, msisdn=pa.msisdn,
+            action_type="kyc", state=expected_state,
+        ).first()
+        if (locked is None or locked.expired or not current.is_active
+                or locked.payload.get("id_kind", kind) != kind
+                or getattr(current, f"{kind}_verified")
+                or not secrets.compare_digest(getattr(current, f"{kind}_hash", ""), identity_hash)):
+            return "the identity submission changed during SMS delivery"
+        locked.payload.update({
+            "id_otp_hash": make_password(code),
+            "id_otp_exp": (timezone.now() + timedelta(minutes=10)).isoformat(),
+            "id_otp_attempts": 0,
+            "id_otp_to": masked_phone,
+            "id_otp_kind": kind,
+            "id_otp_subject": current.pk,
+            "id_otp_identity_hash": identity_hash,
+        })
+        _touch(locked, state=FLOW_ID_STATE, payload=locked.payload)
+        pa.payload, pa.state, pa.expires_at = locked.payload, locked.state, locked.expires_at
     return None
 
 def kyc_flow_identity_otp(pa: PendingAction, code: str):
     """Check the identity challenge code. ("retry", msg) | ("stop", msg) | ("ok", msg)."""
     from accounts.models import IdentityProof, record_identity_proof
 
-    user = pa.user
-    kind = pa.payload.get("id_otp_kind", "bvn")
-    expires = pa.payload.get("id_otp_exp")
-    if not pa.payload.get("id_otp_hash") or not expires or timezone.now() > timezone.datetime.fromisoformat(expires):
-        _clear_actions(pa.msisdn)
-        return "stop", "That code expired. Reply 8 in the chat to try again."
     digits = "".join(ch for ch in str(code) if ch.isdigit())
     if len(digits) != 6:
         # A five-digit entry is a typo, not a guess - it must not spend one of
         # the three attempts the real challenge gets.
         return "retry", "The code is exactly 6 digits - check the SMS and try again."
-    attempts = int(pa.payload.get("id_otp_attempts") or 0) + 1
-    if not check_password(digits, pa.payload["id_otp_hash"]):
-        if attempts >= 3:
-            # Three wrong codes is not a typo. Queue it rather than letting the
-            # challenge be ground down.
-            _record_identity_review(kind, "three wrong verification codes")
-            _clear_actions(pa.msisdn)
-            return "stop", (f"That's 3 incorrect codes - your {kind.upper()} has been sent "
-                            "for manual review instead.")
-        pa.payload["id_otp_attempts"] = attempts
-        _touch(pa, payload=pa.payload)
-        return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
-    setattr(user, f"{kind}_verified", True)
-    user.recompute_tier()
-    hash_field = "bvn_hash" if kind == "bvn" else "nin_hash"
-    user.save(update_fields=[f"{kind}_verified", "tier"])
-    record_identity_proof(
-        user, kind, getattr(user, hash_field, ""),
-        source=IdentityProof.IDENTITY_PROVIDER_OTP,
-        provider_reference=f"wa:{pa.id}:{kind}",
-        prehashed=True,
-    )
-    for key in ("id_otp_hash", "id_otp_exp", "id_otp_attempts", "id_otp_to", "id_otp_kind"):
-        pa.payload.pop(key, None)
-    _touch(pa, payload=pa.payload)
+    challenge_keys = ("id_otp_hash", "id_otp_exp", "id_otp_attempts", "id_otp_to",
+                      "id_otp_kind", "id_otp_subject", "id_otp_identity_hash")
+    with db_transaction.atomic():
+        user = User.objects.select_for_update().get(pk=pa.user_id)
+        locked = PendingAction.objects.select_for_update().filter(
+            pk=pa.pk, user_id=user.pk, msisdn=pa.msisdn,
+            action_type="kyc", state=FLOW_ID_STATE,
+        ).first()
+        if locked is None or locked.expired or not user.is_active:
+            return "stop", "This verification has ended. Reply 8 in the chat to start again."
+        kind = locked.payload.get("id_otp_kind")
+        challenge_hash = locked.payload.get("id_otp_hash")
+        # A stale in-flight confirmation cannot consume a newly issued code.
+        if not challenge_hash or challenge_hash != pa.payload.get("id_otp_hash"):
+            return "stop", "That code has already been used or replaced. Return to the chat for your current status."
+        identity_hash = locked.payload.get("id_otp_identity_hash")
+        expires = parse_datetime(str(locked.payload.get("id_otp_exp") or ""))
+        matching = (kind in ("bvn", "nin")
+                    and locked.payload.get("id_otp_subject") == user.pk
+                    and isinstance(identity_hash, str) and bool(identity_hash)
+                    and secrets.compare_digest(identity_hash, getattr(user, f"{kind}_hash", "")))
+        if (not matching or not expires or timezone.is_naive(expires)
+                or timezone.now() >= expires):
+            for key in challenge_keys:
+                locked.payload.pop(key, None)
+            locked.save(update_fields=["payload"])
+            pa.payload = locked.payload
+            return "stop", "That code expired or the identity changed. Reply 8 in the chat to try again."
+        if getattr(user, f"{kind}_verified"):
+            for key in challenge_keys:
+                locked.payload.pop(key, None)
+            locked.save(update_fields=["payload"])
+            pa.payload, pa.user = locked.payload, user
+            return "stop", f"Your {kind.upper()} is already verified. Return to the chat for your current status."
+        attempts = int(locked.payload.get("id_otp_attempts") or 0)
+        if attempts >= 3 or not check_password(digits, challenge_hash):
+            attempts = min(3, attempts + 1)
+            locked.payload["id_otp_attempts"] = attempts
+            if attempts >= 3:
+                for key in challenge_keys:
+                    locked.payload.pop(key, None)
+                locked.save(update_fields=["payload"])
+                pa.payload = locked.payload
+                _record_identity_review(kind, "three wrong verification codes")
+                return "stop", "That's 3 incorrect codes. Reply 8 to start verification again or contact Support."
+            locked.save(update_fields=["payload"])
+            pa.payload = locked.payload
+            return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
+        # Consume this bound challenge in the same transaction as its durable
+        # proof and flag; duplicate requests observe a consumed code.
+        for key in challenge_keys:
+            locked.payload.pop(key, None)
+        locked.save(update_fields=["payload"])
+        setattr(user, f"{kind}_verified", True)
+        user.recompute_tier()
+        user.save(update_fields=[f"{kind}_verified", "tier"])
+        record_identity_proof(
+            user, kind, identity_hash,
+            source=IdentityProof.IDENTITY_PROVIDER_OTP,
+            provider_reference=f"wa:{locked.id}:{kind}", prehashed=True,
+        )
+        pa.payload, pa.user = locked.payload, user
     return "ok", f"✅ Your {kind.upper()} has been verified."
 
 
@@ -4713,7 +4807,7 @@ def _accept_identity_in_chat(pa: PendingAction, user, msisdn: str, text: str) ->
         if status == "retry":
             return reply(msisdn, "⚠️ " + message)
         reply(msisdn, message + (_DELETE_TIP if secret else ""))
-        return None if status == "stop" else _kyc_next(pa, user, msisdn)
+        return None if status == "stop" else _kyc_next(pa, pa.user, msisdn)
 
     _touch(pa, state=_identity_fallback_state(pa), payload=pa.payload)
     if secret:

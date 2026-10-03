@@ -135,6 +135,9 @@ class FaceOriginDefaultsTests(SimpleTestCase):
             if value is not None:
                 env["WEMA_FACE_VERIFY_URL"] = value
             env["DJANGO_DEBUG"] = "true"
+            # This subprocess is not the Django test runner. Opt into its local
+            # SQLite context explicitly instead of relying on inherited CI env.
+            env["DJANGO_ALLOW_SQLITE"] = "true"
             result = subprocess.run([sys.executable, "-c",
                 "from zitch_api import settings as s; "
                 "u=s.WEMA['FACE_VERIFY_URL']; "

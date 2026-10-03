@@ -33,7 +33,10 @@ npx eas-cli login && npx eas-cli init && npx eas-cli build -p android --profile 
 ```
 
 > Codespaces runs the **dev environment**, not production. Deploy the backend to
-> **Render** via `backend/render.yaml` (Render dashboard ▸ New ▸ Blueprint).
+> **Render** using the reviewed root `render.frankfurt.yaml` configuration. For the
+> existing workspace, follow the [billing restoration order](docs/frankfurt-billing-restoration-2026-10-03.md)
+> and update mapped services individually; an unreviewed Blueprint sync may create
+> duplicate resources. Keep worker and cron holds in place before billing restoration.
 
 ## Getting started (local)
 
