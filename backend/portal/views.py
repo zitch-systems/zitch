@@ -9,6 +9,7 @@ before/after (hard-rule #10).
 from datetime import timedelta
 from decimal import Decimal
 
+from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
@@ -345,13 +346,13 @@ def user_action(request):
 @require_cap()
 def kyc_queue(request):
     """Users whose submitted identity (BVN/NIN) hasn't verified, or who are
-    still below the tier their verified checks support — the manual-review pile.
+    still below the tier their verified checks support — a support follow-up list.
 
     Only ACTIONABLE rows: a bare Q(tier=0) (as before) also listed every fresh
     signup with nothing submitted — rows approve provably no-ops on and reject
     can't clear, so the queue grew forever. A tier-0 user belongs here only when
     their verified checks already support Tier 1 (a stale/derived-tier mismatch
-    an approve actually fixes)."""
+    a secure verification flow must resolve). No row authorizes manual proof."""
     qs = User.objects.filter(is_staff=False, is_active=True).filter(
         Q(bvn_hash__gt="", bvn_verified=False) | Q(nin_hash__gt="", nin_verified=False)
         | Q(tier=0, bvn_verified=True, nin_verified=True)
@@ -372,29 +373,27 @@ def kyc_queue(request):
 
 @api
 @require_cap("users")
+@transaction.atomic
 def kyc_review(request):
-    """Approve (bump tier, capped at 3) or reject a manual KYC review."""
-    user = User.objects.filter(id=request.data.get("user_id"), is_staff=False).first()
+    """Clear unverified submissions; manual approval cannot grant identity proof."""
+    approve = request.data.get("approve")
+    if not isinstance(approve, bool):
+        return fail("approve must be true or false")
+    try:
+        user_id = int(request.data.get("user_id"))
+    except (TypeError, ValueError):
+        return fail("User not found", status=404)
+    user = User.objects.select_for_update().filter(id=user_id, is_staff=False).first()
     if user is None:
         return fail("User not found", status=404)
-    approve = bool(request.data.get("approve"))
     before = {"tier": user.tier, "bvn_verified": user.bvn_verified, "nin_verified": user.nin_verified}
     if approve:
-        # Mark the SUBMITTED identity verified, then DERIVE the tier from the flags
-        # (recompute_tier) — the same path admin_api.kyc_review takes. Bumping
-        # user.tier directly (as this did) sets no flag, so the next recompute_tier
-        # silently reverts the approval while the user meanwhile holds transfer
-        # limits their verifications don't support (an AML/KYC control gap).
-        fields = []
-        if user.bvn_hash and not user.bvn_verified:
-            user.bvn_verified = True
-            fields.append("bvn_verified")
-        if user.nin_hash and not user.nin_verified:
-            user.nin_verified = True
-            fields.append("nin_verified")
-        user.recompute_tier()
-        fields.append("tier")
-        user.save(update_fields=fields)
+        record_audit("kyc.approval_blocked", actor=request.user_obj,
+                     target=f"user:{user.id}", before=before,
+                     after={"reason": "verification_required"})
+        return fail("Identity verification must complete through the customer's secure verification flow. "
+                    "Manual approval cannot verify BVN, NIN or liveness.",
+                    status=409, code="verification_required")
     else:
         # Reject clears the UNVERIFIED submitted identifier(s), so the user drops
         # out of the review queue and must resubmit correct details. It was a
@@ -411,7 +410,7 @@ def kyc_review(request):
         if fields:
             user.save(update_fields=fields)
     record_audit(
-        "kyc.approve" if approve else "kyc.reject",
+        "kyc.reject",
         actor=request.user_obj, target=f"user:{user.id}",
         before=before, after={"tier": user.tier, "bvn_verified": user.bvn_verified,
                               "nin_verified": user.nin_verified,

@@ -1,5 +1,9 @@
 # Zitch go-live audit — 2026-10-01
 
+> **Restoration update:** use the [3 October billing restoration order](frankfurt-billing-restoration-2026-10-03.md).
+> Establish a durable worker/cron hold before payment or restoration. The historical
+> source and deployment evidence below must be refreshed for the exact release.
+
 > **Release audit.** Evidence cutoff: 2026-10-01 UTC. Repository evidence is
 > recorded below and in the release PR checks; deployment IDs and live verification
 > remain outstanding while services are suspended. A passing repository check is not

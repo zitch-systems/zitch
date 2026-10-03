@@ -10,6 +10,7 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.contrib.auth.hashers import make_password
+from django.db import transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -655,32 +656,34 @@ def user_status(request):
 
 
 @staff_endpoint(methods=("POST",), perm="users")
+@transaction.atomic
 def kyc_review(request):
     """POST {uid, decision: approve|reject, type: bvn|nin|face}
 
-    Approving marks the relevant verification flag and recomputes the tier
-    (face also upgrades nothing but unlocks large transfers). Rejecting a
-    bvn/nin review clears the unverified submission (the user resubmits);
-    rejecting face is audit-only. Every decision is audited.
+    Manual approval cannot replace a bound provider/OTP/liveness proof.
+    Rejecting clears only an unverified submission; verified proof is retained.
     """
     u = _get_user(request.data.get("uid"))
     if u is None:
         return fail("User not found", status=404)
-    decision = (request.data.get("decision") or "approve").strip()
-    kind = (request.data.get("type") or "").strip()
+    decision = request.data.get("decision")
+    kind = request.data.get("type")
+    if decision not in ("approve", "reject"):
+        return fail("decision must be approve or reject")
     if kind not in ("bvn", "nin", "face"):
         return fail("type must be bvn, nin or face")
     before = {"tier": u.tier, "bvn": u.bvn_verified, "nin": u.nin_verified, "face": u.face_verified}
     if decision == "approve":
-        if kind == "bvn":
-            u.bvn_verified = True
-        elif kind == "nin":
-            u.nin_verified = True
-        else:
-            u.face_verified = True
-        u.recompute_tier()
-        u.save(update_fields=["bvn_verified", "nin_verified", "face_verified", "tier"])
-    elif kind in ("bvn", "nin"):
+        audit(request, "kyc.approval_blocked", target=f"u_{u.id} ({kind})",
+              before=before, after={"reason": "verification_required"})
+        return fail("Identity verification must complete through the customer's secure verification flow. "
+                    "Manual approval cannot verify BVN, NIN or liveness.",
+                    status=409, code="verification_required")
+    # Serialize rejection with the provider's identity completion so an old
+    # operator screen cannot erase the hash of an identity verified meanwhile.
+    u = u.__class__.objects.select_for_update().get(pk=u.pk)
+    before = {"tier": u.tier, "bvn": u.bvn_verified, "nin": u.nin_verified, "face": u.face_verified}
+    if kind in ("bvn", "nin"):
         # Reject clears the UNVERIFIED submitted identifier so the user leaves
         # the review queue and must resubmit — previously a pure-audit no-op, so
         # a rejected row reappeared on every queue load. A verified identity is

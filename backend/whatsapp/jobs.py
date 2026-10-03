@@ -126,9 +126,9 @@ def discard_inbound(*, message_id: str, msisdn: str, logged_text: str,
 def _page_dead_letter(row, reason: str) -> None:
     """Page when an inbound message is abandoned for good.
 
-    A dead letter is a customer command on a BANKING channel that will now never
-    run and will never be answered — the customer is left staring at a chat that
-    simply did not reply. Nothing reported that: `whatsapp_diagnostics` carries a
+    A dead letter has no confirmed processing outcome. A provider operation may
+    already have completed before a reply or final status write failed, so the
+    alert must never claim that no payment ran. `whatsapp_diagnostics` carries a
     cumulative `dead_lettered` count, but only for somebody who thinks to open the
     page, and a running total is not a signal that a NEW one just happened.
 
@@ -141,8 +141,8 @@ def _page_dead_letter(row, reason: str) -> None:
         from utility.alerts import alert
 
         alert("whatsapp dead letter: an inbound customer message was abandoned after "
-              "repeated failures - the command never ran and the chat was never "
-              "answered", level="error", message_id=row.pk,
+              "repeated failures; completion is unconfirmed. Check transaction and "
+              "verification status before retrying", level="error", message_id=row.pk,
               msisdn=mask_pii(getattr(row, "msisdn", "")), reason=reason[:64],
               attempts=getattr(row, "processing_attempts", None))
     except Exception:  # noqa: BLE001 — alerting must never break the worker

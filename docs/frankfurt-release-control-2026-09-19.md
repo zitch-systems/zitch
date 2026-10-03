@@ -1,5 +1,9 @@
 # Frankfurt release control — 2026-09-19
 
+> **Historical snapshot.** The active-state table and promotion order below
+> describe 19 September. Use the [current billing restoration order](frankfurt-billing-restoration-2026-10-03.md)
+> before restoring services: consumer holds must precede payment/restoration.
+
 ## Purpose
 
 This runbook promotes the audited Zitch release to Frankfurt without changing a

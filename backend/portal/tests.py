@@ -151,21 +151,20 @@ class MutationTests(PortalTestCase):
         entry = AuditLog.objects.filter(action="user.pin_unlock").latest("id")
         self.assertEqual((entry.before or {}).get("pin_lockout_strikes"), 2)
 
-    def test_kyc_approve_marks_flags_and_derives_tier(self):
-        # A user who submitted BVN + NIN (unverified): approval marks them verified
-        # and DERIVES the tier from the flags (BVN+NIN => Tier 1), never a blind
-        # +1. This is durable — the next recompute_tier keeps it.
+    def test_manual_kyc_approval_cannot_verify_hash_only_submissions(self):
         self.user.bvn_hash, self.user.nin_hash, self.user.tier = "bvnhash", "ninhash", 0
         self.user.save()
         res = self.post("kyc-review", {"user_id": self.user.id, "approve": True}, token=self.admin)
-        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.json()["code"], "verification_required")
         self.user.refresh_from_db()
-        self.assertTrue(self.user.bvn_verified and self.user.nin_verified)
-        self.assertEqual(self.user.tier, 1)
-        self.assertEqual(res.json()["tier"], 1)
-        self.user.recompute_tier()          # the grant survives a recompute
-        self.assertEqual(self.user.tier, 1)
-        self.assertTrue(AuditLog.objects.filter(action="kyc.approve").exists())
+        self.assertFalse(self.user.bvn_verified)
+        self.assertFalse(self.user.nin_verified)
+        self.assertFalse(self.user.face_verified)
+        self.assertEqual(self.user.tier, 0)
+        self.assertEqual((self.user.bvn_hash, self.user.nin_hash), ("bvnhash", "ninhash"))
+        self.assertTrue(AuditLog.objects.filter(action="kyc.approval_blocked").exists())
+        self.assertFalse(AuditLog.objects.filter(action="kyc.approve").exists())
 
     def test_kyc_approve_without_submitted_identity_grants_no_tier(self):
         # No identity on file: approval must NOT grant a tier the user hasn't
@@ -173,7 +172,32 @@ class MutationTests(PortalTestCase):
         self.user.bvn_hash, self.user.nin_hash, self.user.tier = "", "", 0
         self.user.save()
         res = self.post("kyc-review", {"user_id": self.user.id, "approve": True}, token=self.admin)
-        self.assertEqual(res.json()["tier"], 0)
+        self.assertEqual(res.status_code, 409)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 0)
+
+    def test_invalid_kyc_decision_preserves_submission(self):
+        self.user.bvn_hash = "existing-unverified-hash"
+        self.user.save(update_fields=["bvn_hash"])
+        for approve in (None, "false", 0, [], {}):
+            with self.subTest(approve=approve):
+                res = self.post("kyc-review", {"user_id": self.user.id, "approve": approve}, token=self.admin)
+                self.assertEqual(res.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.bvn_hash, "existing-unverified-hash")
+        self.assertFalse(AuditLog.objects.filter(action="kyc.reject").exists())
+
+    def test_clearing_a_submission_preserves_completed_identity_proof(self):
+        self.user.set_bvn("12345678901")
+        self.user.bvn_verified = True
+        self.user.recompute_tier()
+        self.user.save()
+        original = (self.user.bvn_hash, self.user.bvn_last4, self.user.tier)
+        res = self.post("kyc-review", {"user_id": self.user.id, "approve": False}, token=self.admin)
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertEqual((self.user.bvn_hash, self.user.bvn_last4, self.user.tier), original)
 
     def test_fx_margin_validates_and_audits(self):
         self.assertEqual(self.post("fx-margin", {"bps": 2000}, token=self.admin).status_code, 400)
