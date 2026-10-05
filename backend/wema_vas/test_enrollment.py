@@ -128,6 +128,21 @@ class EnrollmentTests(TestCase):
             self.enroll()
         self.assertFalse(VirtualAccount.objects.exists())
 
+    def test_zero_cached_balance_cannot_hide_a_nonzero_ledger_at_cutover(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        self.wallet.account_number = "1234567890"
+        self.wallet.save()
+        Transaction.objects.create(user=self.user, amount="7.00", service="funding",
+            reference="unreconciled-legacy", direction=Transaction.IN, transaction_status=Transaction.SUCCESS)
+        with self.assertRaises(ValidationError):
+            self.enroll()
+        with self.assertRaises(CommandError):
+            call_command("vas_approve_cutover", user_id=self.user.pk,
+                legacy_account=self.wallet.account_number, evidence_reference="bank-evidence",
+                reviewer_reference="reviewer")
+        self.assertFalse(MigrationApproval.objects.exists())
+
     def test_prefix_collisions_retry_without_duplicating_account(self):
         other = User.objects.create(username="old-collision")
         Wallet.objects.create(user=other, account_number="7120000001")

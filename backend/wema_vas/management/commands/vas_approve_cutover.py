@@ -2,8 +2,8 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from accounts.models import User
 from wallet.models import Transaction, Wallet
+from wallet.services import wallet_expected_balance
 from wema_vas.models import MigrationApproval, VirtualAccount
 
 
@@ -25,7 +25,8 @@ class Command(BaseCommand):
         wallet = Wallet.objects.select_for_update().filter(user_id=options["user_id"]).first()
         if not wallet or not wallet.account_number or wallet.account_number != options["legacy_account"]:
             raise CommandError("The reviewed legacy account does not match the retained wallet.")
-        if wallet.balance != 0 or Transaction.objects.filter(user_id=wallet.user_id, transaction_status=Transaction.PENDING).exists():
+        if (wallet.balance != 0 or wallet_expected_balance(wallet.user_id) != 0
+                or Transaction.objects.filter(user_id=wallet.user_id, transaction_status=Transaction.PENDING).exists()):
             raise CommandError("Reconcile the balance and pending transactions before recording approval.")
         if VirtualAccount.objects.filter(user_id=wallet.user_id).exists():
             raise CommandError("This user already has a VAS account; no retrospective approval is allowed.")

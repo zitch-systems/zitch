@@ -83,7 +83,9 @@ def _verified_proofs(user, bvn, nin):
 
 
 def _cutover_reference(user, wallet, *, validation):
-    if wallet.balance != 0 or Transaction.objects.filter(user=user, transaction_status=Transaction.PENDING).exists():
+    from wallet.services import wallet_expected_balance
+    if (wallet.balance != 0 or wallet_expected_balance(user.pk) != 0
+            or Transaction.objects.filter(user=user, transaction_status=Transaction.PENDING).exists()):
         raise ValidationError("Your existing balance or pending transactions need reconciliation before activation. Contact support.")
     if (WemaProvisioningAttempt.objects.filter(user=user, status=WemaProvisioningAttempt.PENDING).exists()
             or WemaFaceSession.objects.filter(user=user, account_state="awaiting_callback").exists()
