@@ -176,6 +176,14 @@ class PerCustomerMigrationBoundaryTests(TestCase):
         self.assertFalse(result["success"])
         purchase.assert_not_called()
 
+    def test_migrated_customer_legacy_nuban_cannot_reach_biller_without_a_reference(self):
+        Wallet.objects.filter(user=self.user).update(account_number="0459999102")
+        with patch("utility.wema.purchase_airtime") as purchase:
+            result = providers.vtu_purchase("mtn-airtime", {
+                "amount": "100", "phone": self.user.phone, "source_account": "0459999102"})
+        self.assertFalse(result["success"])
+        purchase.assert_not_called()
+
 
 class VASFinancialReportBoundaryTests(PerCustomerMigrationBoundaryTests):
     def test_migrated_balance_never_compared_against_old_nuban(self):

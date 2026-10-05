@@ -58,6 +58,10 @@ def _partnership_reference_blocked(reference: str | None = None, source_account:
     from wema_vas.models import VirtualAccount
     if source_account and VirtualAccount.objects.filter(number=source_account).exists():
         return True
+    if source_account:
+        from wallet.models import Wallet
+        if Wallet.objects.filter(account_number=source_account, user__vas_account__isnull=False).exists():
+            return True
     if reference:
         from wallet.models import Transaction
         user_id = Transaction.objects.filter(reference=reference).values_list("user_id", flat=True).first()

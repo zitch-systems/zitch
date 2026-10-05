@@ -999,6 +999,7 @@ def _identity_owned_by_another_user(user, identity_type: str, raw: str) -> bool:
     ).exists()
 
 
+@db_transaction.atomic
 def _save_verified_identity(user, identity_type: str, raw: str,
                             source: str = IdentityProof.IDENTITY_PROVIDER_OTP,
                             provider_reference: str = "", verified_name: str = "") -> bool:
@@ -1007,6 +1008,7 @@ def _save_verified_identity(user, identity_type: str, raw: str,
     The pre-check gives a clean response in the common case; the database unique
     constraint and inner savepoint close the concurrent-request race.
     """
+    User.objects.select_for_update().only("pk").get(pk=user.pk)
     user.refresh_from_db(fields=[f"{identity_type}_verified", f"{identity_type}_hash"])
     if (getattr(user, f"{identity_type}_verified") and not hmac.compare_digest(
             getattr(user, f"{identity_type}_hash"), hash_identifier(raw))):
