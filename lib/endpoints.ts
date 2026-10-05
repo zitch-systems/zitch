@@ -26,6 +26,8 @@ export const EP = {
     history: '/api/user-transaction-history/',
     transactionStatus: '/api/transaction/status/',
     account: '/api/wallet/account/',
+    vasStatus: '/api/wallet/vas/status/',
+    vasEnroll: '/api/wallet/vas/enroll/',
     createAccount: '/api/wallet/account/create/',
     wemaVerifyOtp: '/api/wallet/wema/verify-otp/',
     wemaResendOtp: '/api/wallet/wema/resend-otp/',

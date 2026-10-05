@@ -80,6 +80,8 @@ type WalletValue = {
    *  greeting; this is the legal name a receipt has to print. */
   accountName: string;
   bankName: string;
+  spendingAvailable: boolean;
+  fundingMessage: string;
   txns: Txn[];
   loading: boolean;
   /** True once the first load ATTEMPT has finished, success or not.
@@ -108,6 +110,8 @@ const WalletContext = createContext<WalletValue>({
   phoneNumber: '',
   accountName: '',
   bankName: '',
+  spendingAvailable: true,
+  fundingMessage: '',
   txns: [],
   loading: true,
   hydrated: false,
@@ -127,6 +131,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [accountName, setAccountName] = useState('');
   const [bankName, setBankName] = useState('');
+  const [spendingAvailable, setSpendingAvailable] = useState(true);
+  const [fundingMessage, setFundingMessage] = useState('');
   const [txns, setTxns] = useState<Txn[]>([]);
   const [loading, setLoading] = useState(true);
   const [hydrated, setHydrated] = useState(false);
@@ -188,7 +194,11 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
           setLastName(last);
           void saveDisplayName(named);
           setAvatar(String(value.user_avatar ?? ''));
-          setAccountNumber(String(value.account_number ?? ''));
+          const fundable = value.provider !== 'wema_vas' ||
+            (value.available === true && value.has_account === true && value.account_setup_state === 'ready');
+          setAccountNumber(fundable ? String(value.account_number ?? '') : '');
+          setSpendingAvailable(value.spending_available !== false);
+          setFundingMessage(String(value.migration_message ?? ''));
           setPhoneNumber(String(value.user_phone_number ?? ''));
           setAccountName(String(value.account_name ?? ''));
           setBankName(String(value.bank_name ?? ''));
@@ -229,8 +239,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   // wallet consumer (Home, Wallet, the tab bar, service screens) re-renders
   // whenever the provider renders, even when nothing it reads has changed.
   const value = useMemo(
-    () => ({ balance, firstName, fullName: accountName || `${firstName} ${lastName}`.trim(), avatar, accountNumber, phoneNumber, accountName, bankName, txns, loading, hydrated, showBal, setShowBal, reload: load, linked, reloadLinked }),
-    [balance, firstName, lastName, avatar, accountNumber, phoneNumber, accountName, bankName, txns, loading, hydrated, showBal, load, linked, reloadLinked],
+    () => ({ balance, firstName, fullName: accountName || `${firstName} ${lastName}`.trim(), avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, fundingMessage, txns, loading, hydrated, showBal, setShowBal, reload: load, linked, reloadLinked }),
+    [balance, firstName, lastName, avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, fundingMessage, txns, loading, hydrated, showBal, load, linked, reloadLinked],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;

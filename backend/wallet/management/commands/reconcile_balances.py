@@ -27,7 +27,7 @@ from decimal import Decimal, InvalidOperation
 from django.core.management.base import BaseCommand
 
 from utility import wema
-from wallet.services import wallet_expected_balance, wema_provisioned_wallets
+from wallet.services import wallet_expected_balance, wema_provisioned_wallets, vas_reconciliation_scope
 
 
 class Command(BaseCommand):
@@ -57,19 +57,34 @@ class Command(BaseCommand):
         except (InvalidOperation, TypeError):
             tolerance = Decimal("0.00")
 
+        vas_scope = vas_reconciliation_scope()
+        if vas_scope["vas_collection_required"]:
+            self.stdout.write(
+                "VAS collection reconciliation INCOMPLETE: bank collection balance and "
+                "transaction-search contract are unverified. Migrated wallets require "
+                "manual reconciliation; they are not compared with old individual NUBANs.")
+            alert("reconcile_balances: VAS collection reconciliation requires verified bank evidence",
+                  level="error", **vas_scope)
+
         # Only meaningful against live NUBANs. In simulation/mock, get_balance
         # returns 0.00 for everyone, which would mark every funded wallet as
         # diverging — so no-op with a clear message instead of paging noise.
         if not wema.wema_live():
             self.stdout.write("reconcile_balances: Wema not live (simulation/mock) — no real "
                               "NUBAN balances to compare. Skipping.")
+            if vas_scope["vas_collection_required"] and (options["fail_over"] or options["fail_nonzero"]):
+                raise SystemExit(1)
             return
 
         checked = 0
         unreachable = 0
         over = []   # ledger > bank  (dangerous — float risk)
         under = []  # bank > ledger  (operator review; no automatic correction)
-        for w in wema_provisioned_wallets():
+        # A migrated wallet can contain VAS credits and late legacy credits.
+        # Exact asset attribution is not established by its aggregate balance.
+        # Preserve the independent legacy history sweep; this comparison must
+        # fail as incomplete rather than invent a ledger-over-bank discrepancy.
+        for w in wema_provisioned_wallets().exclude(user__vas_account__mode="live"):
             checked += 1
             res = wema.get_balance(w.account_number)
             bank = res.get("balance_naira") if res.get("success") else None
@@ -86,7 +101,7 @@ class Command(BaseCommand):
 
         from whatsapp.ops import record_audit
         record_audit("recon.balance_check", actor_type="system",
-                     after={"wallets": checked, "unreachable": unreachable,
+                     after={**vas_scope, "wallets": checked, "unreachable": unreachable,
                             "ledger_over_bank": len(over), "bank_over_ledger": len(under),
                             "over_sample": over[:25], "under_sample": under[:25]})
 
@@ -124,7 +139,7 @@ class Command(BaseCommand):
         self.stdout.write(
             f"Balance recon: {checked} wallet(s), {len(over)} over / {len(under)} under / "
             f"{unreachable} unreachable (tolerance {tolerance})")
-        incomplete = unreachable > 0
+        incomplete = unreachable > 0 or vas_scope["vas_collection_required"]
         if ((incomplete or over or under)
                 and (options["fail_over"] or options["fail_nonzero"])):
             raise SystemExit(1)

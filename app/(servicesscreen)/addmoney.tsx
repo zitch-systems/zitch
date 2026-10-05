@@ -4,7 +4,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
 import { notify } from '@/components/design/Notify';
-import { walletService } from '@/lib/services/wallet';
+import { walletService, type VirtualAccount } from '@/lib/services/wallet';
 import { isAccountOtpPending, kycService, resolveIdentityOtpRoute } from '@/lib/services/kyc';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { Loading } from '@/components/design/Loading';
@@ -22,6 +22,10 @@ const AddMoney = () => {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [account, setAccount] = useState<DediAccount | null>(null);
+  const [fundingState, setFundingState] = useState<VirtualAccount | null>(null);
+  const [vasIdentityKind, setVasIdentityKind] = useState<'bvn' | 'nin'>('bvn');
+  const [vasIdentity, setVasIdentity] = useState('');
+  const [vasConsent, setVasConsent] = useState(false);
   const [bvn, setBvn] = useState('');
   const [creating, setCreating] = useState(false);
   const [trackingId, setTrackingId] = useState('');
@@ -59,7 +63,9 @@ const AddMoney = () => {
     try {
       const r = await walletService.getAccount();
       if (loadGeneration.current !== generation) return;
-      if (r?.success && r.account_number) {
+      setFundingState(r);
+      if (r?.success && r.account_number && (r.provider !== 'wema_vas' ||
+          (r.available === true && r.has_account === true && r.account_setup_state === 'ready'))) {
         setAccount(r as DediAccount);
         setLoadError('');
       } else if (r?.offline) {
@@ -96,6 +102,27 @@ const AddMoney = () => {
 
   // Display the NUBAN grouped 4-3-3 ("9012 345 678"); copy stays the raw digits.
   const grouped = (n: string) => n.replace(/^(\d{4})(\d{3})(\d{3}).*$/, '$1 $2 $3');
+
+  const enrollVas = async () => {
+    if (!vasConsent || vasIdentity.length !== 11 || !fundingState?.enrollment_available || !beginAction()) return;
+    try {
+      const result = await walletService.enrollVas(
+        vasIdentityKind === 'bvn' ? { bvn: vasIdentity } : { nin: vasIdentity },
+      );
+      if (!mounted.current) return;
+      if (result.success) {
+        setVasConsent(false);
+        await loadAccount();
+      } else {
+        notify('Account setup incomplete', result.message || 'Your verified identity could not be confirmed. Please check your verification status or contact support.');
+      }
+    } catch {
+      if (mounted.current) notify('Account setup incomplete', 'We could not confirm the result. Refresh your account status before trying again.');
+    } finally {
+      if (mounted.current) setVasIdentity('');
+      endAction();
+    }
+  };
 
   const createAccount = async () => {
     if (bvn.length !== 11 || !beginAction()) return;
@@ -229,14 +256,51 @@ const AddMoney = () => {
             <Btn label="Try again" onPress={() => void loadAccount()} />
           </View>
         </View>
+      ) : fundingState?.provider === 'wema_vas' && !account ? (
+        <View style={{ paddingTop: 12 }}>
+          <Label>{fundingState.account_setup_state === 'restricted' ? 'Account restricted' : 'Your new funding account'}</Label>
+          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>
+            {fundingState.migration_message || 'Your new funding account is not available yet. Please check again shortly.'}
+          </Text>
+          <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 12 }}>
+            Transfers and bill payments are unavailable until the bank integration is complete. Only send money when this page shows an active funding account.
+          </Text>
+          {fundingState.enrollment_available && fundingState.account_setup_state === 'vas_enrollment_required' ? (
+            <>
+              <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginVertical: 18 }}>
+                Re-enter the BVN or NIN you have already verified with Zitch. Your existing verification and balance are preserved.
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
+                {(['bvn', 'nin'] as const).map((kind) => (
+                  <Pressable key={kind} accessibilityRole="radio" accessibilityLabel={`Use ${kind.toUpperCase()}`} accessibilityState={{ selected: vasIdentityKind === kind }} disabled={creating} onPress={() => { setVasIdentityKind(kind); setVasIdentity(''); }}>
+                    <Text style={{ color: vasIdentityKind === kind ? c.brand : c.ink3, fontFamily: font.bold }}>{kind.toUpperCase()}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Field label={`Verified ${vasIdentityKind.toUpperCase()}`} value={vasIdentity} onChangeText={(value) => setVasIdentity(value.replace(/\D/g, '').slice(0, 11))} secureTextEntry keyboardType="number-pad" maxLength={11} autoComplete="off" autoCorrect={false} editable={!creating} placeholder={`Enter your verified ${vasIdentityKind.toUpperCase()}`} />
+              <Pressable accessibilityRole="checkbox" accessibilityLabel="Consent to VAS identity storage and sharing" accessibilityState={{ checked: vasConsent }} disabled={creating} onPress={() => setVasConsent(!vasConsent)} style={{ flexDirection: 'row', gap: 10, marginVertical: 18 }}>
+                <Text style={{ color: c.brand, fontFamily: font.bold }}>{vasConsent ? '☑' : '☐'}</Text>
+                <Text style={{ flex: 1, color: c.ink2, fontFamily: font.regular, lineHeight: 20 }}>I consent to Zitch securely storing my verified identity details in encrypted form and sharing them with Wema Bank to operate my virtual account.</Text>
+              </Pressable>
+              <Btn label={creating ? 'Please wait…' : 'Set up virtual account'} disabled={creating || !vasConsent || vasIdentity.length !== 11} onPress={enrollVas} />
+              <View style={{ marginTop: 14 }}>
+                <Btn label="Confirm my verified name" variant="ghost" disabled={creating} onPress={() => router.push({ pathname: '/(auth)/kyc', params: { verify_identity: vasIdentityKind } })} />
+                <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 8 }}>If your earlier verification did not retain your legal name, confirm it with a new identity SMS code, then return here.</Text>
+              </View>
+            </>
+          ) : null}
+          <View style={{ marginTop: 14 }}><Btn label="Refresh account status" variant="ghost" disabled={creating} onPress={() => void loadAccount()} /></View>
+        </View>
       ) : account ? (
         <>
           <Label>Fund by bank transfer</Label>
           <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18 }}>
             <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular }}>
-              Transfer any amount to this account from any bank app — your Zitch wallet is credited
-              automatically, usually within seconds.
+              {fundingState?.provider === 'wema_vas'
+                ? 'Bank transfers to this account appear in your Zitch wallet after Wema confirms the payment.'
+                : 'Transfer any amount to this account from any bank app — your Zitch wallet is credited automatically, usually within seconds.'}
             </Text>
+            {fundingState?.spending_available === false ? <Text style={{ color: c.ink2, fontFamily: font.semibold, lineHeight: 20, marginTop: 12 }}>Transfers and bill payments are currently unavailable. {fundingState.migration_message}</Text> : null}
             <View style={{ height: 1, backgroundColor: c.line, marginVertical: 14 }} />
             {/* Design order top-to-bottom: bank name, grouped number, account name */}
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
@@ -258,7 +322,7 @@ const AddMoney = () => {
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 18, paddingHorizontal: 4 }}>
             <ZIcon name="check" size={16} color={c.lime} stroke={2.6} />
             <Text style={{ flex: 1, fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
-              Save this account — it&apos;s permanently yours. Transfers reflect automatically, no need to confirm anything here.
+              {fundingState?.provider === 'wema_vas' ? 'Use the active account shown here for new bank transfers. Check this page for changes before funding.' : 'Save this account — it\'s permanently yours. Transfers reflect automatically, no need to confirm anything here.'}
             </Text>
           </View>
 

@@ -48,6 +48,8 @@ from wallet.services import (
     InsufficientFunds,
     LimitExceeded,
     attach_existing_bank_account,
+    bank_spend_error,
+    customer_funding_account,
     customer_safe_failure,
     customer_visible_transactions,
     get_or_create_wallet,
@@ -2170,28 +2172,62 @@ def finish_onboarding_from_flow(ob: WaOnboarding, pin: str) -> str:
 # --------------------------------------------------------------------------- #
 def _do_balance(user, msisdn: str) -> None:
     bals = all_balances(user)
+    funding = customer_funding_account(user)
+    notice = ("\n\nTransfers and bill payments are currently unavailable. "
+              + str(funding.get("migration_message") or "")
+              if funding.get("spending_available") is False else "")
     if len(bals) == 1:
-        return reply(msisdn, f"💰 Your Zitch balance is {_money(bals['NGN'])}.")
+        return reply(msisdn, f"💰 Your Zitch balance is {_money(bals['NGN'])}." + notice)
     lines = [(_money(bal) if ccy == "NGN" else f"{ccy} {bal:,.2f}") for ccy, bal in bals.items()]
-    reply(msisdn, "💰 Your balances:\n" + "\n".join(lines))
+    reply(msisdn, "💰 Your balances:\n" + "\n".join(lines) + notice)
 
 
 # --------------------------------------------------------------------------- #
 # add money - the user's dedicated (reserved) account for bank-transfer funding
 # --------------------------------------------------------------------------- #
+def _send_vas_setup(user, msisdn: str, funding: dict | None = None) -> None:
+    """VAS consent and identity re-entry happen in the authenticated app.
+
+    Do not start a chat/Flow BVN challenge for this migration. In particular a
+    stale Partnership action must not capture an identity for another purpose.
+    """
+    _clear_actions(msisdn)
+    funding = funding if funding is not None else customer_funding_account(user)
+    body = ("🏦 *Your Wema virtual account*\n\n"
+            + str(funding.get("migration_message") or "Your new funding account is not available yet.")
+            + "\n\nTransfers and bill payments are currently unavailable. "
+            "Only fund an active account shown in Add money. "
+            "Do not send your BVN or NIN in this chat.")
+    if funding.get("enrollment_available"):
+        body += "\n\nOpen the Zitch app, choose *Add money*, and consent to set up your virtual account using your already verified BVN or NIN."
+    app_url = str(getattr(settings, "ZITCH_LINKS", {}).get("APP") or "")
+    if urlparse(app_url).scheme == "https" and urlparse(app_url).netloc:
+        return send_cta_url(msisdn, body, app_url, cta="Open Zitch app")
+    return reply(msisdn, body + "\n\nOpen the Zitch app to check your account status.")
+
+
 def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to your wallet*") -> None:
-    accts = wallet.bank_accounts or []
+    funding = customer_funding_account(wallet.user)
+    is_vas = funding.get("provider") == "wema_vas"
+    if is_vas and (not funding.get("has_account") or not funding.get("available")
+                   or funding.get("account_setup_state") != "ready"):
+        return _send_vas_setup(wallet.user, msisdn, funding)
+    accts = funding.get("bank_accounts") or []
     if len(accts) > 1:
         body = "\n".join(f"🔢 *{a.get('account_number')}* - {a.get('bank_name')}" for a in accts)
     else:
-        body = f"🔢 *{wallet.account_number}*\n🏛️ {wallet.bank_name}"
+        body = f"🔢 *{funding.get('account_number', '')}*\n🏛️ {funding.get('bank_name', '')}"
+    timing = ("Your wallet is credited after Wema confirms the payment."
+              if is_vas else "Your wallet is credited automatically, usually within seconds.")
+    spending = ("\n\nTransfers and bill payments are currently unavailable. "
+                + str(funding.get("migration_message") or "")
+                if funding.get("spending_available") is False else "")
     reply(
         msisdn,
         f"{intro}\n\n"
-        "Transfer to your dedicated Zitch account from any bank - your wallet is "
-        "credited automatically, usually within seconds:\n\n"
+        f"Transfer to your dedicated Zitch account from any bank. {timing}\n\n"
         f"{body}\n"
-        f"👤 {wallet.account_name}\n\n"
+        f"👤 {funding.get('account_name', '')}{spending}\n\n"
         # The number on its own is not an instruction. This is the screen a new
         # customer reaches at the end of signup, so it should close on what to do
         # next and how they will know it worked, rather than leaving them to
@@ -2205,6 +2241,9 @@ def _do_add_money(user, msisdn: str) -> None:
     automatically by the reconcile_wema poller) - or, if it hasn't been minted
     yet, run the identity + OTP round-trip right here in the chat."""
     wallet = get_or_create_wallet(user)
+    funding = customer_funding_account(user)
+    if funding.get("provider") == "wema_vas":
+        return _send_account_details(msisdn, wallet)
     if wallet.account_number:
         return _send_account_details(msisdn, wallet)
     return _start_add_account(user, msisdn)
@@ -2722,6 +2761,9 @@ def _face_step_available() -> bool:
 
 def _offer_bvn_verification_method(pa: PendingAction, msisdn: str, kind="bvn") -> None:
     """Offer Tier-1 BVN verification by bank SMS or hosted face."""
+    funding = customer_funding_account(pa.user)
+    if funding.get("provider") == "wema_vas":
+        return _send_vas_setup(pa.user, msisdn, funding)
     kind = "bvn"
     # A callback can attach the NUBAN before the bank's OTP identity round-trip
     # completes. The account-creation OTP cannot be started again against that
@@ -2993,6 +3035,10 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
     if not outstanding:
         return _kyc_finish(pa, user, msisdn)
     step = outstanding[0]
+    if step in {"bvn", "nin", "face"}:
+        funding = customer_funding_account(user)
+        if funding.get("provider") == "wema_vas":
+            return _send_vas_setup(user, msisdn, funding)
     pa.payload["attempted"] = sorted(attempted | {step})
     # Check BEFORE the prompt goes out, not after the number comes back.
     if _bank_upgrade_blocks(user, step):
@@ -3473,6 +3519,10 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
     from accounts.models import hash_identifier
     from accounts.views import _identity_owned_by_another_user
 
+    funding = customer_funding_account(user)
+    if funding.get("provider") == "wema_vas":
+        return _send_vas_setup(user, msisdn, funding)
+
     verified_field = f"{kind}_verified"
     fields = ["bvn_hash", "bvn_last4"] if kind == "bvn" else ["nin_hash", "nin_last4"]
     # A completed proof is immutable here. Refresh first because an OTP or face
@@ -3882,7 +3932,7 @@ def _do_account_details(user, msisdn: str) -> None:
         lines.append(f"📧 {user.email}" + ("" if user.email_verified else " (unconfirmed)"))
     lines.append(f"⭐ Tier {user.tier} · up to ₦{user.transaction_limit:,.0f}/transaction")
     reply(msisdn, "\n".join(lines))
-    if wallet.account_number:
+    if customer_funding_account(user).get("provider") == "wema_vas" or wallet.account_number:
         return _send_account_details(msisdn, wallet, intro="🏦 *Your funding account*")
     return reply(msisdn, "You don't have a funding account number yet - reply *6* (Add money) to set one up in a minute.")
 
@@ -3894,6 +3944,9 @@ def _do_account_details(user, msisdn: str) -> None:
 # The BVN/NIN input state is masked out of the message log by is_awaiting_bvn.
 # --------------------------------------------------------------------------- #
 def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
+    funding = customer_funding_account(user)
+    if funding.get("provider") == "wema_vas":
+        return _send_account_details(msisdn, get_or_create_wallet(user))
     if not wallet_views._wema_funding_enabled():
         return reply(msisdn, "🏦 Account setup isn't available right now - please try again later.")
     _clear_actions(msisdn)
@@ -4025,6 +4078,10 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
                   self-contradiction this whole branch exists to remove.
       other     - the account was adopted/created successfully.
     """
+    funding = customer_funding_account(user)
+    if funding.get("provider") == "wema_vas":
+        _send_vas_setup(user, msisdn, funding)
+        return "fail"
     kind = "bvn" if pa.payload.get("id_type") == "bvn" else "nin"
     using_bvn = kind == "bvn"
     wallet = get_or_create_wallet(user)
@@ -4231,7 +4288,7 @@ def _send_identity_face_option(pa: PendingAction, user, msisdn: str,
     payload, never as message text. The callback owns the verdict and uses Wema's
     correlationId to start the matching without-OTP Tier-1 account creation.
     """
-    if not _face_step_available():
+    if customer_funding_account(user).get("provider") == "wema_vas" or not _face_step_available():
         return False
     from accounts.models import hash_identifier
     from accounts.views import (FACE_SESSION_TTL_MINUTES, _face_callback_url,
@@ -4288,6 +4345,10 @@ def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:
         user, code, pa.payload.get("tracking_id", ""))
     if payload.get("success"):
         attempted_identity = "bvn" if pa.payload.get("using_bvn") else "nin"
+        if customer_funding_account(user).get("provider") == "wema_vas":
+            _send_account_details(msisdn, get_or_create_wallet(user))
+            _clear_actions(msisdn)
+            return "done", "Identity confirmed. Open the Zitch app to check your current funding account."
         _send_account_details(msisdn, get_or_create_wallet(user),
                               intro="🎉 *Your Zitch account number is ready!*")
         # Wema Wallet Service OTP is phone-only. Account creation is complete
@@ -4460,7 +4521,7 @@ def _blocked_from_spending(user, msisdn: str) -> bool:
     """
     from common.http import unverified_error
 
-    message = unverified_error(user)
+    message = bank_spend_error(user, Decimal("0")) or unverified_error(user)
     if not message:
         return False
     _clear_actions(msisdn)

@@ -17,6 +17,13 @@ export type TransactionHistory = ApiResult<{
 }>;
 
 export type VirtualAccount = ApiResult<{
+  provider?: 'partnership' | 'wema_vas';
+  has_account?: boolean;
+  available?: boolean;
+  enrollment_available?: boolean;
+  spending_available?: boolean;
+  migration_message?: string;
+  account_setup_state?: string;
   account_number?: string;
   bank_name?: string;
   account_name?: string;
@@ -47,6 +54,9 @@ export const walletService = {
   getHistory: () => apiJson<TransactionHistory>(EP.wallet.history),
   // Dedicated (virtual) account: fetch the existing one, or start BVN/NIN OTP provisioning.
   getAccount: () => apiJson<VirtualAccount>(EP.wallet.account),
+  getVasStatus: () => apiJson<VirtualAccount>(EP.wallet.vasStatus),
+  enrollVas: (identity: { bvn: string; nin?: never } | { nin: string; bvn?: never }) =>
+    apiJson<VirtualAccount>(EP.wallet.vasEnroll, { ...identity, consent: true }),
   createAccount: (identity: { bvn?: string; nin?: string } | string) =>
     apiJson<VirtualAccount>(
       EP.wallet.createAccount,

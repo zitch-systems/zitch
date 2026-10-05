@@ -110,6 +110,29 @@ def get_or_create_wallet(user) -> Wallet:
     return wallet
 
 
+def customer_funding_account(user) -> dict:
+    """Customer-visible funding details without replacing legacy account records."""
+    from wema_vas.enrollment import customer_account_payload
+    from utility.providers import partnership_new_business_allowed
+
+    payload = customer_account_payload(user)
+    if payload is not None:
+        return payload
+    if not partnership_new_business_allowed(user):
+        return {"account_number": "", "account_name": "", "bank_name": "",
+                "bank_accounts": [], "bank_tier": 0, "has_account": False,
+                "account_setup_state": "migration_pending", "provider": "wema_vas",
+                "available": False, "spending_available": False,
+                "enrollment_available": True,
+                "migration_message": "Complete secure virtual-account enrollment to continue account setup."}
+    wallet = get_or_create_wallet(user)
+    return {"account_number": wallet.account_number, "account_name": wallet.account_name,
+            "bank_name": wallet.bank_name, "bank_accounts": wallet.bank_accounts or [],
+            "bank_tier": wallet.bank_tier, "has_account": bool(wallet.account_number),
+            "provider": "partnership", "available": bool(wallet.account_number),
+            "enrollment_available": False, "migration_message": "", "spending_available": True}
+
+
 def wallet_expected_balance(user_id) -> Decimal:
     """The balance implied by the append-only ledger for this user.
 
@@ -148,9 +171,13 @@ def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
     action. Wema needs a BVN/NIN to mint a dedicated account, so pass the raw value
     while it is still in hand at verification time.
     """
-    from utility.providers import funding_account_get, funding_account_reserve
+    from utility.providers import (funding_account_get, funding_account_reserve,
+                                   partnership_new_business_allowed)
 
     wallet = get_or_create_wallet(user)
+    if not partnership_new_business_allowed(user):
+        wallet.reserve_error = "Complete secure virtual-account enrollment to continue account setup."
+        return wallet
     if wallet.account_number:
         return wallet
 
@@ -204,6 +231,8 @@ def debit(user, amount, service: str, meta: dict | None = None, reference: str |
     """
     amount = Decimal(str(amount))
     wallet = Wallet.objects.select_for_update().get(user=user)
+    if enforce_limits:
+        assert_customer_spending_available(user)
     if wallet.balance < amount:
         raise InsufficientFunds("Insufficient wallet balance")
     if enforce_limits:
@@ -2777,6 +2806,10 @@ def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "
     from transfers.models import Bank
     from transfers.services import PayoutError, execute_payout
 
+    try:
+        assert_customer_spending_available(sender)
+    except LimitExceeded as exc:
+        raise PayoutError("rail_unavailable", str(exc)) from exc
     if not wema.wema_live():
         if mock_disabled_in_prod():
             raise PayoutError(
@@ -3023,6 +3056,38 @@ def bank_spent_today(user) -> Decimal:
     return sum((r.amount for r in rows if debits_bank(r)), Decimal("0"))
 
 
+def vas_reconciliation_scope() -> dict:
+    """Expose the missing VAS collection-bank evidence without inventing assets.
+
+    Account/receipt data is internal evidence. It cannot establish the bank's
+    collection balance or substitute for a production transaction search contract.
+    """
+    from wema_vas.models import VirtualAccount
+    from wema_vas.config import config
+
+    live_accounts = VirtualAccount.objects.filter(mode=VirtualAccount.LIVE).count()
+    values = config()
+    required = bool(live_accounts or (values.get("ENABLED") and values.get("MODE") == "live"))
+    return {"vas_live_accounts": live_accounts,
+            "vas_collection_required": required,
+            "vas_collection_balance": None,
+            "vas_collection_verified": False if required else None}
+
+
+def assert_customer_spending_available(user) -> None:
+    """Deny new spend across all customer channels before any ledger mutation.
+
+    Existing settlement/refund paths never call this guard. Keep the old account
+    and callback configuration available until its outstanding money is settled.
+    """
+    from utility.providers import partnership_new_business_allowed, PARTNERSHIP_ARCHIVED_MESSAGE
+    from wema_vas.services import assert_can_spend
+
+    assert_can_spend(user)
+    if not partnership_new_business_allowed(user):
+        raise LimitExceeded(PARTNERSHIP_ARCHIVED_MESSAGE)
+
+
 def bank_spend_error(user, amount) -> str | None:
     """The partner bank's own DAILY ceiling on outbound spend, or None.
 
@@ -3037,6 +3102,10 @@ def bank_spend_error(user, amount) -> str | None:
     reverse this check exists to prevent. So today's spend counts toward it.
     """
     from utility import wema as wema_provider
+    try:
+        assert_customer_spending_available(user)
+    except LimitExceeded as exc:
+        return str(exc)
     wallet = Wallet.objects.filter(user=user).only("bank_tier", "account_number").first()
     if wallet is None or not wallet.account_number:
         return None

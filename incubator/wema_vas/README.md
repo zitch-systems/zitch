@@ -1,5 +1,11 @@
 # Wema VAS isolated development service
 
+**Archived prototype:** the integrated implementation is now in
+`backend/wema_vas`. Use [the integrated rollout runbook](../../docs/wema-vas-rollout.md)
+for bank validation and customer migration. Do not create an additional permanent
+Render service/database for this prototype. The independent fixtures remain as
+historical contract tests and never receive real customer traffic.
+
 Status: **isolated synthetic testing plus a separately configured bank-validation service. Neither is bank-connected.**
 
 This directory is independent of the existing Zitch backend. It is not installed

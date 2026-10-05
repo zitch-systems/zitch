@@ -18,6 +18,53 @@ from django.conf import settings
 REQUEST_TIMEOUT = 30
 log = logging.getLogger("zitch")
 
+
+PARTNERSHIP_ARCHIVED_MESSAGE = (
+    "Account migration is in progress. New payments are temporarily unavailable; "
+    "your balance has not been debited."
+)
+
+
+def bank_account_provider() -> str:
+    """The explicitly selected new-account service; unknown values fail closed."""
+    return str(getattr(settings, "BANK_ACCOUNT_PROVIDER", "partnership") or "").strip().lower()
+
+
+def partnership_archived() -> bool:
+    """Archive disables new business while leaving historical settlement callable."""
+    return str(getattr(settings, "WEMA_PARTNERSHIP_MODE", "active") or "").strip().lower() != "active"
+
+
+def partnership_new_business_allowed(user=None) -> bool:
+    if partnership_archived() or bank_account_provider() != "partnership":
+        return False
+    if user is not None:
+        from wema_vas.models import VirtualAccount
+        if VirtualAccount.objects.filter(user=user).exists():
+            return False
+    return True
+
+
+def _archived_payment_result() -> dict:
+    return {"success": False, "message": PARTNERSHIP_ARCHIVED_MESSAGE,
+            "code": "partnership_archived", "not_charged": True}
+
+
+def _partnership_reference_blocked(reference: str | None = None, source_account: str = "") -> bool:
+    if not partnership_new_business_allowed():
+        return True
+    # A migrated customer must never spend a legacy NUBAN even if the global
+    # rollout is still serving other Partnership customers.
+    from wema_vas.models import VirtualAccount
+    if source_account and VirtualAccount.objects.filter(number=source_account).exists():
+        return True
+    if reference:
+        from wallet.models import Transaction
+        user_id = Transaction.objects.filter(reference=reference).values_list("user_id", flat=True).first()
+        if user_id and VirtualAccount.objects.filter(user_id=user_id).exists():
+            return True
+    return False
+
 # ---------------------------------------------------------------------------
 # VAS (airtime / data / cable / electricity / betting) - partner bank only.
 # ---------------------------------------------------------------------------
@@ -220,6 +267,8 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
     """
     from . import wema
 
+    if _partnership_reference_blocked(reference, str(payload.get("source_account") or "")):
+        return _archived_payment_result()
     route = _wema_vas_route(service_id, payload)
     if route is None:
         return {
@@ -855,8 +904,10 @@ def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
 def kyc_provider() -> str:
     """The BVN/NIN backend — 'wema' (the sole rail). Retained so any caller/diagnostic
     that reads the selector keeps working."""
+    if not partnership_new_business_allowed():
+        return "prembly"
     choice = (getattr(settings, "KYC_PROVIDER", "") or "").strip().lower()
-    return choice if choice == "wema" else "wema"
+    return choice if choice in {"wema", "prembly"} else "wema"
 
 
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
@@ -872,6 +923,9 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
     """
     if _prembly_live():
         return prembly_verify_bvn(bvn, name=name)
+    if not partnership_new_business_allowed():
+        return {"success": False, "message": "Identity verification is temporarily unavailable.",
+                "code": "identity_provider_unavailable"}
     from . import wema
     return wema.verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
 
@@ -956,7 +1010,7 @@ def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
     elif not resolved:
         return {"success": False, "invalid": True,
                 "message": f"That {kind.upper()} could not be confirmed.", "raw": data}
-    return {"success": True, "first_name": first, "last_name": last,
+    return {"success": True, "first_name": first, "middle_name": middle, "last_name": last,
             "phone": _record_phone(record), "email": _record_email(record), "raw": data}
 
 
@@ -1029,6 +1083,9 @@ def verify_nin(nin: str, name: str = "") -> dict:
     """
     if _prembly_live():
         return prembly_verify_nin(nin, name=name)
+    if not partnership_new_business_allowed():
+        return {"success": False, "message": "Identity verification is temporarily unavailable.",
+                "code": "identity_provider_unavailable"}
     from . import wema
     return wema.verify_nin(nin, name=name)
 
@@ -1398,20 +1455,20 @@ def payment_provider() -> str:
     to an OTP-provisioned NUBAN (no hosted checkout, no webhook — deposits are
     reconciled by the reconcile_wema poller). Retained as a selector so callers keep
     working."""
-    choice = (getattr(settings, "PAYMENT_PROVIDER", "") or "").strip().lower()
-    return choice if choice == "wema" else "wema"
+    if bank_account_provider() != "partnership":
+        return bank_account_provider()
+    return "wema"
 
 
 def payout_provider() -> str:
     """The bank-payout + recipient name-enquiry rail — 'wema' (the sole rail).
     Retained as a selector so callers keep working."""
-    choice = (getattr(settings, "PAYOUT_PROVIDER", "") or "").strip().lower()
-    return choice if choice == "wema" else "wema"
+    return "wema" if partnership_new_business_allowed() else "unavailable"
 
 
 def payout_live() -> bool:
     """Whether the partner bank payout rail has live keys (else MOCK)."""
-    return _wema_live()
+    return partnership_new_business_allowed() and _wema_live()
 
 
 def card_provider() -> str:
@@ -1517,6 +1574,8 @@ def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
     for a sender who has no partner bank NUBAN yet, and failing closed (refundable) on a live
     call with neither."""
     from . import wema
+    if _partnership_reference_blocked(reference, source_account):
+        return _archived_payment_result()
     src = source_account or settings.WEMA.get("SOURCE_ACCOUNT", "")
     if wema.wema_live() and not src:
         return {"success": False,
@@ -1598,6 +1657,8 @@ def remita_validate(rrr: str) -> dict:
 def remita_pay(amount_naira, reference: str, *, rrr: str, source_account: str = "", **kw) -> dict:
     """Pay a Remita RRR debiting the user's NUBAN."""
     from . import wema
+    if _partnership_reference_blocked(reference, source_account):
+        return _archived_payment_result()
     return wema.pay_remita(amount_naira, reference, rrr=rrr, source_account=source_account, **kw)
 
 

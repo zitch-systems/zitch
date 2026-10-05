@@ -970,6 +970,9 @@ def _sync_wema_tier3(user, address: dict) -> None:
     the address + account number (NOT BVN/NIN, which we don't retain — so the Tier-2
     face upgrade, which does require them, is intentionally not auto-synced). Never
     breaks the KYC response; a hiccup is logged and can be re-synced later."""
+    from utility.providers import partnership_new_business_allowed
+    if not partnership_new_business_allowed(user):
+        return
     acct = getattr(getattr(user, "wallet", None), "account_number", "") or ""
     if not acct:
         return
@@ -998,12 +1001,16 @@ def _identity_owned_by_another_user(user, identity_type: str, raw: str) -> bool:
 
 def _save_verified_identity(user, identity_type: str, raw: str,
                             source: str = IdentityProof.IDENTITY_PROVIDER_OTP,
-                            provider_reference: str = "") -> bool:
+                            provider_reference: str = "", verified_name: str = "") -> bool:
     """Atomically claim a verified BVN/NIN for exactly one Zitch user.
 
     The pre-check gives a clean response in the common case; the database unique
     constraint and inner savepoint close the concurrent-request race.
     """
+    user.refresh_from_db(fields=[f"{identity_type}_verified", f"{identity_type}_hash"])
+    if (getattr(user, f"{identity_type}_verified") and not hmac.compare_digest(
+            getattr(user, f"{identity_type}_hash"), hash_identifier(raw))):
+        return False
     if _identity_owned_by_another_user(user, identity_type, raw):
         return False
     if identity_type == "bvn":
@@ -1019,7 +1026,7 @@ def _save_verified_identity(user, identity_type: str, raw: str,
         with db_transaction.atomic():
             user.save(update_fields=fields + ["tier"])
             record_identity_proof(user, identity_type, raw, source=source,
-                                  provider_reference=provider_reference)
+                                  provider_reference=provider_reference, verified_name=verified_name)
     except IntegrityError:
         return False
     return True
@@ -1200,17 +1207,20 @@ def _repair_unbacked_wema_identity_flags(user) -> None:
 def _kyc_state(user) -> dict:
     _repair_unbacked_wema_identity_flags(user)
     from wallet.identity import accepted_identity_pending
+    from wallet.services import customer_funding_account
 
-    identity_processing = accepted_identity_pending(user)
+    funding = customer_funding_account(user)
+    migrating = funding.get("provider") != "partnership"
+    identity_processing = False if migrating else accepted_identity_pending(user)
     wallet = Wallet.objects.filter(user=user).only(
         "bank_tier", "account_number", "identity_upgrade_required").first()
-    bank_tier = wallet.bank_tier if wallet else 0
+    bank_tier = wallet.bank_tier if wallet and not migrating else 0
     # Surfaced so the app can offer the combined upgrade BEFORE the customer
     # types an identity that the bank will refuse. Learning this only from a
     # failed submission is what made both the app and WhatsApp ask for a number
     # they could not use.
     identity_upgrade_required = bool(
-        wallet and wallet.account_number and wallet.identity_upgrade_required)
+        not migrating and wallet and wallet.account_number and wallet.identity_upgrade_required)
     bank_limits = {
         key: (str(value) if value is not None else None)
         for key in ("single_inflow", "daily_spend", "max_balance")
@@ -1241,8 +1251,8 @@ def _kyc_state(user) -> dict:
         # Separate from Zitch's verification/spend ladder: these are enforced by
         # Wema on the dedicated NUBAN itself.
         "bank_tier": bank_tier,
-        "has_wema_account": bool(wallet and wallet.account_number),
-        "bank_upgrade_required": bool(wallet and wallet.account_number and (
+        "has_wema_account": bool(not migrating and wallet and wallet.account_number),
+        "bank_upgrade_required": bool(not migrating and wallet and wallet.account_number and (
             bank_tier < 2 or not (user.bvn_verified and user.nin_verified and user.face_verified)
         )),
         "bank_tier_limits": bank_limits,
@@ -1257,14 +1267,18 @@ def _kyc_state(user) -> dict:
         # Older app builds understand face_rail=document, which safely keeps the
         # generic Tier-2 face card on Prembly instead of mislabelling Wema identity
         # proof as a Tier-2 face pass.
-        "identity_face_available": wema.face_verify_live(),
+        "identity_face_available": not migrating and wema.face_verify_live(),
         "identity_verification_methods": (["sms_otp", "wema_face"]
-                                          if wema.face_verify_live()
+                                          if not migrating and wema.face_verify_live()
                                           else ["sms_otp"]),
         "face_rail": "document",
         "tier2_face_rail": "prembly",
-        "address_rail": ("wema" if (kyc_provider() == "wema" and wema.address_verify_live())
+        "address_rail": ("wema" if (not migrating and kyc_provider() == "wema" and wema.address_verify_live())
                          else "document"),
+        **({key: value for key, value in funding.items()
+            if key in {"provider", "has_account", "account_setup_state", "available",
+                       "spending_available", "enrollment_available", "migration_message"}}
+           if migrating else {}),
     }
 
 
@@ -1558,6 +1572,9 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict)
         {
             "code_hash": OTP.hash_code(code),
             "identity": _pending_identity_encrypt(kind, raw),
+            "verified_name": _pending_identity_encrypt("name", " ".join(
+                str(result.get(field) or "").strip() for field in ("first_name", "middle_name", "last_name")
+            ).strip()) if not simulated else "",
             "attempts": 0,
         },
         _KYC_BVN_TTL,
@@ -1584,13 +1601,17 @@ def _confirm_identity_ownership_challenge(user, kind: str, otp: str):
             status=400,
         )
     raw = _pending_identity_decrypt(kind, pending.get("identity", ""))
+    user._provider_verified_name = _pending_identity_decrypt("name", pending.get("verified_name", ""))
     cache.delete(cache_key)
     if not raw:
         return None, fail("This verification could not be recovered. Please start again.", status=400)
     return raw, None
 
 
-def _use_wema_identity_flow() -> bool:
+def _use_wema_identity_flow(user=None) -> bool:
+    from utility.providers import partnership_new_business_allowed
+    if not partnership_new_business_allowed(user):
+        return False
     # Unconfigured local tests retain their offline identity fixture. Configured,
     # simulated and production deployments all use the ownership-bound bank flow.
     return (kyc_provider() == "wema" and
@@ -1641,7 +1662,7 @@ def kyc_bvn_start(request):
     gate = _email_gate(user)
     if gate:
         return gate
-    if _use_wema_identity_flow():
+    if _use_wema_identity_flow(user):
         return _start_bank_identity(request, "bvn")
     bvn = (request.data.get("bvn") or "").strip()
     if _identity_owned_by_another_user(user, "bvn", bvn):
@@ -1662,14 +1683,14 @@ def kyc_bvn_confirm(request):
     gate = _email_gate(user)
     if gate:
         return gate
-    if request.data.get("tracking_id") or _use_wema_identity_flow():
+    if request.data.get("tracking_id") or _use_wema_identity_flow(user):
         return _confirm_bank_identity(request, "bvn")
     bvn, error = _confirm_identity_ownership_challenge(
         user, "bvn", (request.data.get("otp") or "").strip()
     )
     if error:
         return error
-    if not _save_verified_identity(user, "bvn", bvn):
+    if not _save_verified_identity(user, "bvn", bvn, verified_name=getattr(user, "_provider_verified_name", "")):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     _reserve_wallet_account(user, bvn=bvn)
     return ok(success=True, message="BVN verified", **_kyc_state(user))
@@ -1684,7 +1705,7 @@ def kyc_bvn(request):
     gate = _email_gate(user)
     if gate:
         return gate
-    if _use_wema_identity_flow():
+    if _use_wema_identity_flow(user):
         return _start_bank_identity(request, "bvn")
     if mock_disabled_in_prod():
         return fail(
@@ -1713,7 +1734,7 @@ def kyc_nin(request):
     gate = _email_gate(user)
     if gate:
         return gate
-    if _use_wema_identity_flow():
+    if _use_wema_identity_flow(user):
         return _start_bank_identity(request, "nin")
     nin = (request.data.get("nin") or "").strip()
     if _identity_owned_by_another_user(user, "nin", nin):
@@ -1737,7 +1758,7 @@ def kyc_nin(request):
     # state machine as live KYC, with the destination policy above.
     if not settings.DEBUG and not getattr(settings, "TESTING", False):
         return _start_identity_ownership_challenge(user, "nin", nin, result)
-    if not _save_verified_identity(user, "nin", nin):
+    if not _save_verified_identity(user, "nin", nin, verified_name=getattr(user, "_provider_verified_name", "")):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     _reserve_wallet_account(user, nin=nin)
     return ok(success=True, message="NIN verified", **_kyc_state(user))
@@ -1752,14 +1773,14 @@ def kyc_nin_confirm(request):
     gate = _email_gate(user)
     if gate:
         return gate
-    if request.data.get("tracking_id") or _use_wema_identity_flow():
+    if request.data.get("tracking_id") or _use_wema_identity_flow(user):
         return _confirm_bank_identity(request, "nin")
     nin, error = _confirm_identity_ownership_challenge(
         user, "nin", (request.data.get("otp") or "").strip()
     )
     if error:
         return error
-    if not _save_verified_identity(user, "nin", nin):
+    if not _save_verified_identity(user, "nin", nin, verified_name=getattr(user, "_provider_verified_name", "")):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     _reserve_wallet_account(user, nin=nin)
     return ok(success=True, message="NIN verified", **_kyc_state(user))
@@ -1838,7 +1859,11 @@ def kyc_face_start(request):
     attempt is left alive (either proof creates the same account, whichever the
     bank returns first) and a real face session is opened instead.
     """
+    from utility.providers import partnership_new_business_allowed
     user = request.user_obj
+    if not partnership_new_business_allowed(user):
+        return fail("Use SMS identity verification to continue account setup.", status=409,
+                    code="partnership_archived")
     gate = _email_gate(user)
     if gate:
         return gate
@@ -2062,7 +2087,8 @@ def verify_kyc_address(user, data):
         return fail("Enter a full residential address of at most 255 characters")
     address_fields["country"] = address_fields["country"] or "Nigeria"
     document = data.get("document") or data.get("image") or ""
-    bank_rail = kyc_provider() == "wema" and wema.address_verify_live()
+    from utility.providers import partnership_new_business_allowed
+    bank_rail = partnership_new_business_allowed(user) and kyc_provider() == "wema" and wema.address_verify_live()
     if bank_rail:
         # The BANK verifies the address and lifts the NUBAN to its Tier 3 on the
         # strength of it. That is a stronger control than a document we OCR, so the

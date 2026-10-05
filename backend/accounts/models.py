@@ -413,6 +413,9 @@ class IdentityProof(models.Model):
     identity_last4 = models.CharField(max_length=4, blank=True, default="")
     source = models.CharField(max_length=32, choices=SOURCE_CHOICES)
     provider_reference = models.CharField(max_length=128, blank=True, default="")
+    # Provider-returned legal name, retained only after ownership verification.
+    # Mutable profile names are never an authority for a bank account name.
+    verified_name = models.CharField(max_length=150, blank=True, default="")
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -426,15 +429,18 @@ class IdentityProof(models.Model):
 
 def record_identity_proof(user: User, identity_type: str, raw_or_hash: str, *,
                           source: str, provider_reference: str = "",
-                          prehashed: bool = False) -> IdentityProof:
+                          prehashed: bool = False, verified_name: str = "") -> IdentityProof:
     identity_hash = raw_or_hash if prehashed else hash_identifier(raw_or_hash)
     last4 = "" if prehashed else (raw_or_hash or "")[-4:]
+    defaults = {"identity_last4": last4, "provider_reference": provider_reference[:128]}
+    if verified_name:
+        defaults["verified_name"] = " ".join(verified_name.split())[:150]
     proof, _ = IdentityProof.objects.update_or_create(
         user=user,
         identity_type=identity_type,
         identity_hash=identity_hash,
         source=source,
-        defaults={"identity_last4": last4, "provider_reference": provider_reference[:128]},
+        defaults=defaults,
     )
     return proof
 

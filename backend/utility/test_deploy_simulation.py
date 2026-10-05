@@ -5,7 +5,7 @@ while the UI still says the deployment is simulated.
 """
 from unittest.mock import patch
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from . import mono, providers
 
@@ -41,7 +41,7 @@ _STAGED = {
     WEMA={"SIMULATION": True},
     **_STAGED,
 )
-class DeployWideSimulationTests(SimpleTestCase):
+class DeployWideSimulationTests(TestCase):
     def test_all_live_selectors_are_off_despite_staged_keys(self):
         self.assertFalse(providers._prembly_live())
         self.assertFalse(providers._card_issuer_live())
@@ -58,8 +58,7 @@ class DeployWideSimulationTests(SimpleTestCase):
             quote = providers.fx_quote("NGN", "USD", "1000")
             airtime = providers.vtu_purchase(
                 "mtn-airtime",
-                # source_account is supplied so this stays a SimpleTestCase: without it
-                # the buyer's NUBAN is resolved from the ledger row, which is a query.
+                # Source-account migration checks now consult the retained VAS ledger.
                 {"amount": "100", "phone": "08012345678", "source_account": "0100000001"},
                 "SIM-AIRTIME-1",
             )

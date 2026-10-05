@@ -747,6 +747,8 @@ def wema_callbacks_diagnose(request):
 
 
 urlpatterns = [
+    path("", include("wema_vas.urls")),
+    path("api/wallet/vas/", include("wema_vas.customer_urls")),
     # Canonical web surfaces: the marketing landing + operator portal (portal app).
     # The health probe keeps its JSON shape at /healthz; /readyz also round-trips
     # the DB. The parallel console/admin_api build coexists under /console/* and
