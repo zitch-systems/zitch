@@ -39,7 +39,7 @@ const MORE = [
 
 const Home = () => {
   const { c } = useTheme();
-  const { balance, firstName, fullName, avatar, accountNumber, bankName, txns, showBal, setShowBal, reload } = useWallet();
+  const { balance, firstName, fullName, avatar, accountNumber, bankName, spendingAvailable, fundingMessage, txns, showBal, setShowBal, reload } = useWallet();
   const [more, setMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -119,7 +119,7 @@ const Home = () => {
             <View style={{ width: 17, height: 17, borderRadius: 9, backgroundColor: 'rgba(255,255,255,.22)', alignItems: 'center', justifyContent: 'center' }}>
               <ZIcon name="check" size={11} color="#fff" stroke={2.6} />
             </View>
-            <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 13, fontFamily: font.medium }}>Available Balance</Text>
+            <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 13, fontFamily: font.medium }}>{spendingAvailable === false ? 'Wallet Balance' : 'Available Balance'}</Text>
           </View>
           <Pressable onPress={() => router.push('/history')} style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
             <Text style={{ color: '#fff', fontSize: 12.5, fontFamily: font.semibold }}>Transaction History</Text>
@@ -171,6 +171,12 @@ const Home = () => {
           </Pressable>
         </View>
       </Hero>
+
+      {spendingAvailable === false ? (
+        <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 20, marginHorizontal: 16, marginBottom: 16 }}>
+          Transfers and bill payments are unavailable. {fundingMessage}
+        </Text>
+      ) : null}
 
       {/* quick actions */}
       <Card style={{ margin: 16, marginBottom: 0, flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 16 }}>

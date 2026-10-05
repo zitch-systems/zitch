@@ -63,10 +63,16 @@ const Kyc = () => {
     pending_identity?: string;
     pending_tracking_id?: string;
     pending_otp_destination?: string;
+    verify_identity?: string;
   }>();
   const [, setToken] = useState('');
   const [status, setStatus] = useState<Status | null>(null);
   const [method, setMethod] = useState<Method>('menu');
+  useEffect(() => {
+    if (params.verify_identity === 'bvn' || params.verify_identity === 'nin') {
+      setMethod(params.verify_identity);
+    }
+  }, [params.verify_identity]);
   const [bvn, setBvn] = useState('');
   const [email, setEmail] = useState('');
   const [emailOtp, setEmailOtp] = useState('');

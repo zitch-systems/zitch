@@ -93,7 +93,7 @@ class CanSettleTests(SimpleTestCase):
         self.assertIn("no automated status/requery", why)
 
 
-class PurchaseRefusalTests(SimpleTestCase):
+class PurchaseRefusalTests(TestCase):
     @override_settings(WEMA=_KEYED)
     def test_an_unsettleable_airtime_purchase_never_reaches_the_bank(self):
         with mock.patch("utility.wema.purchase_airtime") as buy, \

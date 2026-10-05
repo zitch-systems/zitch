@@ -306,6 +306,11 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     # just been lifted still reads as placed. The PND branch then also SAVES this
     # object, which would write the stale copy back over the fresh row.
     wallet = get_or_create_wallet(user)
+    from wallet.services import assert_customer_spending_available
+    try:
+        assert_customer_spending_available(user)
+    except LimitExceeded as exc:
+        raise PayoutError("rail_unavailable", str(exc)) from exc
     if payout_live() and wallet is not None and is_demo_account(wallet):
         raise PayoutError(
             "source_unusable",

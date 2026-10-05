@@ -74,7 +74,7 @@ class FundingDispatchTests(SimpleTestCase):
         self.assertTrue(out["otp_required"])
 
 
-class PayoutDispatchTests(SimpleTestCase):
+class PayoutDispatchTests(TestCase):
     @override_settings(WEMA=WEMA_LIVE)
     def test_payout_send_routes_to_wema_with_source_and_bank_name(self):
         with patch("utility.wema.transfer",
@@ -139,7 +139,7 @@ class KycDispatchTests(SimpleTestCase):
         mk.assert_called_once_with("AB123456789CDEFG", name="Ada Eze")
 
 
-class VasDispatchTests(SimpleTestCase):
+class VasDispatchTests(TestCase):
     def test_vas_provider_defaults_to_wema(self):
         self.assertEqual(P.vas_provider(), "wema")
 

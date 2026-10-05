@@ -1,0 +1,158 @@
+# Wema Virtual Account Service rollout
+
+## Scope and release status
+
+The integrated Django application in `backend/wema_vas` implements the five
+vendor-hosted bank APIs, durable receipt processing, verified identity enrollment,
+app/WhatsApp funding instructions and Partnership archive controls. It reuses the
+existing PostgreSQL ledger and durable transaction-alert outbox. No new permanent
+web service, database or cache is needed. `incubator/wema_vas` is archived as an
+isolated prototype.
+
+This is a **collections implementation awaiting bank validation**, not approval
+to launch a complete banking product. Outgoing VAS transfers, bill payments,
+collection-bank balance reconciliation and automatic transaction search cannot
+be implemented from the supplied inbound contract. New VAS spending is therefore
+blocked in the locked wallet debit path and before Partnership provider calls.
+There is no switch that makes undocumented outgoing calls safe.
+
+The implementation follows Wema's [Third Party Virtual Account API documentation](https://wemabank-doc.notion.site/Wema-Bank-Third-Party-Virtual-Account-API-Integration-Documentation-31f13df490b68074aa99df46b1de9a4f),
+version 2.0. Static accounts are selected. Prefix `711` is for bank validation;
+only Wema's assigned non-711 prefix may be used for real collections.
+
+## Contracts
+
+Each bank route accepts POST JSON and a dedicated static Bearer token. A trailing
+slash is optional and never redirects the POST. These tokens are independent of
+customer session tokens and old Partnership APIM keys.
+
+| Endpoint | Implemented behavior |
+| --- | --- |
+| `/vas/account-lookup` | Exact 10-digit account lookup, `Zitch/` legal name, encrypted verified BVN/NIN, active/invalid responses |
+| `/vas/transaction-notification` | Validated decimal strings; atomic ledger credit, receipt and alert outbox; exact duplicates return the same acknowledgment; conflicting references reject |
+| `/vas/mini-statement` | VAS posted credits across ten Lagos calendar dates anchored to latest movement; no historical Partnership or held credits |
+| `/vas/kyc-details` | Verified identity and VAS-only posted balance, including inactive accounts |
+| `/vas/block-account` | Serialized restriction preserving original reason and timestamp; no new spendable credit or spend |
+| `/api/wallet/vas/enroll/` | Customer-authenticated POST with existing verified `bvn` or `nin` and literal `consent: true` |
+| `/api/wallet/vas/status/` | Customer-authenticated GET or POST; no sensitive identifiers |
+
+`711` notifications create validation receipts and simulated balances only. They
+never create customer ledger credits or alerts. Repeating a valid prior credit
+after an account block still returns its original successful acknowledgment.
+New notifications to a blocked account are retained as immutable held evidence
+and return non-success/retry; they require bank-assisted resolution. No unblock
+or held-receipt conversion API is assumed.
+
+## Identity and existing accounts
+
+Enrollment requires an active user, verified phone, exact identifier/hash match,
+trusted durable identity proof and provider-confirmed legal name. Profile-name
+changes cannot rename a bank account. Earlier proof records without a legal-name
+snapshot must complete provider lookup plus registered-phone SMS ownership again;
+they are never backfilled from mutable profile names. The app provides that path.
+
+Explicit enrollment consent records encrypted storage and disclosure to Wema.
+Raw IDs are encrypted with a separate rotating Fernet keyring; current keyed
+identity hashes and KYC flags are preserved. The current API and WhatsApp worker
+must share the keyring. Old keys remain until all ciphertext is rotated and
+verified; do not rotate the existing KYC hash key. Request bodies and local
+variables are excluded from Sentry capture.
+
+WhatsApp reads the same funding-account state as the app and hides legacy,
+validation and restricted funding details. VAS consent/enrollment opens the
+authenticated app; raw identity is never requested in the chat thread. A wholly
+in-WhatsApp enrollment screen would require a separately approved encrypted Flow.
+
+Existing non-zero balances or pending transactions block enrollment. A legacy
+bank number additionally requires a per-user immutable `MigrationApproval` with
+bank cutover evidence and reviewer reference. `vas_approve_cutover` records this
+evidence only after checking the exact retained account and zero balance. It
+does not contact Wema, settle pending transactions, reset balances or manufacture
+approval. Obtain the bank's actual closure/migration instructions first.
+
+Old account fields, ledger rows, callbacks, OTP completions and reconciliation
+history remain available. Late Partnership credits are retained in the aggregate
+historical wallet but excluded from Wema VAS balance/statement responses. No
+customer balance is copied to a new bank account.
+
+## Deployment sequence
+
+1. Finish hosting restoration and backup/restore verification using
+   `frankfurt-billing-restoration-2026-10-03.md`. Keep maintenance enabled and
+   consumers held until the documented restoration checks pass. Never resume
+   the retained old-region database as a second writer.
+2. Deploy code and all migrations with defaults: `BANK_ACCOUNT_PROVIDER=partnership`,
+   `WEMA_PARTNERSHIP_MODE=active`, `WEMA_VAS_ENABLED=false`, enrollment false.
+   Verify schema, PostgreSQL constraints, readiness and shared cache.
+3. Set `WEMA_PARTNERSHIP_MODE=archive` consistently on API, worker and all crons
+   when customer maintenance is active. This archives new business while
+   preserving outstanding settlement and historical evidence. Retain legacy
+   credentials while old work still needs requery. Do not delete them as cleanup.
+4. Stage a distinct strong random token and Fernet keyring through secret
+   management. Enable VAS validation with prefix `711`. Enable trusted proxy
+   handling only behind the controlled TLS-terminating proxy. Ensure the canonical
+   API host, edge rules and origin guard allow the five authenticated routes.
+5. Provision three dedicated, verified and consented validation users with no
+   legacy account or balance. `vas_provision_validation --user-id … --identity-type
+   bvn --consent-reference …` reads the matching ID from a hidden prompt; never
+   pass IDs as arguments. Do not reuse these users for production; account mode
+   and ownership are immutable.
+6. Generate the non-secret submission with `vas_onboarding_package --base-url
+   https://api.zitch.ng --service-email <approved-address> --account <711-account-1>
+   --account <711-account-2> --account <711-account-3>`. Deliver the bank token
+   separately through an approved secure channel. The command does not send email
+   or Slack messages and never prints the token or identifiers.
+7. Wema validates all five endpoints, profiles the collection account and supplies
+   the live prefix. Retain approval evidence. Complete bank-led real inflow,
+   notification and collection settlement tests before enabling customer funding.
+8. Select `BANK_ACCOUNT_PROVIDER=wema_vas`, live mode and the assigned prefix only
+   after sign-off. Configure `LIVE_APPROVAL_REFERENCE` and `COLLECTION_ACCOUNT`;
+   leave `ENABLE_ENROLLMENT=false` until reconciliation and product launch gates
+   are closed. Apply the same configuration to every Django runtime.
+
+Both provider selection and archive mode reject new Partnership initiation;
+neither reroutes VAS spending to the old products. Never flip an enrolled customer
+back to the old rail as an automatic fallback. After live receipts exist, preserve
+the VAS bank endpoints and ledger when rolling back customer UI. Stopping a receipt
+endpoint after acknowledgment is not a financial rollback.
+
+## Outstanding bank and operations evidence
+
+- Live prefix, collection account profiling and five-endpoint acceptance.
+- Production Transaction Search URL/authentication, access and retry/response
+  semantics. Pure request builders/classification exist, but make no network calls.
+- Collection-bank balance/statement access, fee and settlement rules, reconciliation
+  ownership, evidence of a real end-to-end credit and failure/re-push procedure.
+- Payout initiation, idempotency, status enquiry and reversal contracts; separate
+  bill-payment contracts. Inbound Search is never treated as outward TSQ.
+- Existing-account closure/conversion and balance migration instructions.
+- KYC operational acceptance, live SMS/liveness evidence and reviewed legal names.
+- Hosting restored, background consumers controlled, backups tested, deployment and
+  signed mobile builds verified against the same release.
+
+`reconcile_balances` excludes migrated wallets from obsolete per-NUBAN comparisons
+and flags collection reconciliation as incomplete. `settlement_report` exposes
+known legacy assets but refuses to state a complete solvency position when VAS
+bank assets are unverified. Both strict command gates fail in that state. Internal
+VAS receipts are never substituted for bank-held assets. No automatic balance
+correction is made.
+
+## Hosting decision
+
+Django is the application framework; Render is the hosting platform. Keep Django
+and reuse the existing Render services for this bank migration. A separate host
+migration would add database, secret, TLS, callback and worker changes at the same
+time as a financial integration change. The suspended services must be restored
+before a live deployment can be verified.
+
+If DigitalOcean is considered later, a 2 GB VM, weekly backup and basic managed
+PostgreSQL provide a lower infrastructure floor (about $31.70/month with 20 GB
+database storage and local cache, before taxes/other usage), but require operating
+system patching, process supervision, monitoring, restore drills and separate
+availability planning. This single-VM option is not highly available. Retire
+duplicate retained databases only after verified export and restoration.
+
+Pricing references: [Droplets](https://www.digitalocean.com/pricing/droplets),
+[managed databases](https://www.digitalocean.com/pricing/managed-databases),
+[backups](https://docs.digitalocean.com/products/backups/details/pricing/),
+[Render pricing](https://render.com/pricing). Recheck rates before provisioning.

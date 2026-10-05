@@ -52,6 +52,7 @@ import logging
 import re
 import secrets
 from decimal import Decimal, InvalidOperation
+from functools import wraps
 
 import requests
 from django.conf import settings
@@ -146,6 +147,32 @@ def wema_simulation() -> bool:
 
 def _mock_blocked() -> bool:
     return mock_disabled_in_prod() and not wema_simulation()
+
+
+def _partnership_archive_result() -> dict | None:
+    """Refuse a fresh legacy instruction before it reaches the bank or a mock.
+
+    Archive is deliberately independent of credentials and simulation. Status
+    queries, callbacks, existing OTP attempts and protective card blocks still
+    need their original credentials to finish historical work.
+    """
+    from .providers import partnership_new_business_allowed
+
+    if partnership_new_business_allowed():
+        return None
+    return {"success": False, "pending": False, "not_charged": True,
+            "code": "partnership_archived",
+            "message": "This service is unavailable during account migration."}
+
+
+def _new_partnership_instruction(function):
+    """Protect direct, admin and background callers as well as HTTP routes."""
+    @wraps(function)
+    def guarded(*args, **kwargs):
+        blocked = _partnership_archive_result()
+        return blocked if blocked is not None else function(*args, **kwargs)
+
+    return guarded
 
 
 # Products this module will let the Wallet Services key authenticate BY DEFAULT.
@@ -640,6 +667,7 @@ def _kyc_ok(data, *, allow_pending: bool = False) -> bool:
             or _ci_get(data, "hasError", default=None) is False)
 
 
+@_new_partnership_instruction
 def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "") -> dict:
     """Step 1 — request wallet creation; the bank validates the ID and sends its OTP.
 
@@ -978,6 +1006,7 @@ def _face_account_diagnostic(data, http_status: int) -> dict:
     return {"failure_category": category, "http_status": http_status}
 
 
+@_new_partnership_instruction
 def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
                             identity_value: str, correlation_id: str) -> dict:
     """Create a Tier-1 partnership NUBAN after Wema's hosted face check.
@@ -1241,6 +1270,7 @@ def _upgrade_response(resp) -> dict:
             "message": _msg(data), "raw": data}
 
 
+@_new_partnership_instruction
 def upgrade_tier2(account_number: str, *, bvn: str = "", nin: str = "", live_image: str = "") -> dict:
     """Upgrade a partnership NUBAN to Tier 2 at the bank (partner-account-upgrade-tier2
     {accountNumber, nin, bvn, liveImageOfFace}).
@@ -1262,6 +1292,7 @@ def upgrade_tier2(account_number: str, *, bvn: str = "", nin: str = "", live_ima
         return {"success": False, "message": "Invalid bank response"}
 
 
+@_new_partnership_instruction
 def upgrade_tier3(account_number: str, address) -> dict:
     """Upgrade a partnership NUBAN to Tier 3 at the bank via address verification
     (partner-account-upgrade-tier3 {residentialAddress{...}, accountNumber}). Best-effort
@@ -1633,6 +1664,7 @@ def _parse_transfer(data: dict, reference: str) -> dict:
     return _transfer_result(data, reference, _transfer_payload(data))
 
 
+@_new_partnership_instruction
 def transfer(amount_naira, reference: str, narration: str, *, source_account: str,
              destination_account: str, destination_bank_code: str, destination_bank_name: str,
              destination_name: str) -> dict:
@@ -1828,6 +1860,7 @@ def confirm_transfer_status(reference: str, *, platform_reference: str = "") -> 
     )
     return result
 
+@_new_partnership_instruction
 def credit_wallet(amount_naira, reference: str, narration: str, *, destination_account: str) -> dict:
     """FundWallet — push a credit into a wallet from the channel funding account.
 
@@ -1900,6 +1933,7 @@ def _vas_source() -> str:
     return settings.WEMA.get("SOURCE_ACCOUNT", "")
 
 
+@_new_partnership_instruction
 def purchase_airtime(amount_naira, reference: str, phone: str, network: str, *,
                      source_account: str = "") -> dict:
     """Airtime purchase debiting the user's NUBAN (Client single-account variant)."""
@@ -1968,6 +2002,7 @@ def get_data_plans(network: str = "") -> dict:
         return _unreachable(exc)
 
 
+@_new_partnership_instruction
 def purchase_data(amount_naira, reference: str, phone: str, network: str, package_code: str, *,
                   source_account: str = "") -> dict:
     """Data purchase (Client single-account). `package_code` is Wema's plan code."""
@@ -2095,6 +2130,7 @@ def _vas_token(data: dict) -> str:
     return ""
 
 
+@_new_partnership_instruction
 def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, source_account: str = "",
              email: str = "", phone: str = "", name: str = "", charge=0) -> dict:
     """Pay a bill debiting the user's NUBAN (Client PayBill variant).
@@ -2518,6 +2554,7 @@ def validate_rrr(rrr: str) -> dict:
         return _unreachable(exc)
 
 
+@_new_partnership_instruction
 def pay_remita(amount_naira, reference: str, *, rrr: str, source_account: str = "", charge=0,
                email: str = "", phone: str = "", name: str = "", payer_name: str = "",
                payer_email: str = "", payer_number: str = "", description: str = "") -> dict:
@@ -2595,6 +2632,7 @@ def bnpl_offers() -> dict:
         return _unreachable(exc)
 
 
+@_new_partnership_instruction
 def bnpl_consent(account_number: str, product_amount, tenor: int, customer_reference: str, *,
                  equity_amount=0) -> dict:
     """Request BNPL consent for a loan against the NUBAN (ConsentRequest)."""
@@ -2621,6 +2659,10 @@ def bnpl_consent(account_number: str, product_amount, tenor: int, customer_refer
 
 def bnpl_accept_terms(eligibility_id: str, accepted: bool = True) -> dict:
     """Accept (or decline) the BNPL loan terms (AcceptTerms — a 200 No-Content endpoint)."""
+    if accepted:
+        blocked = _partnership_archive_result()
+        if blocked is not None:
+            return blocked
     if not _bnpl_live():
         return {"success": not _mock_blocked(), "mock": True}
     try:
@@ -2652,6 +2694,7 @@ def bnpl_status(customer_reference: str) -> dict:
         return _unreachable(exc)
 
 
+@_new_partnership_instruction
 def bnpl_liquidate(customer_reference: str, *, amount=None) -> dict:
     """Liquidate (early-repay) a BNPL loan (loan-liquidation)."""
     if not _bnpl_live():
@@ -2720,6 +2763,7 @@ def _card_data(data: dict) -> dict:
     return d if isinstance(d, dict) else {}
 
 
+@_new_partnership_instruction
 def card_issue(holder: str, customer_ref: str, *, account_number: str = "", email: str = "",
                phone: str = "", amount=0, address: str = "") -> dict:
     """Issue a virtual Naira card against the customer's NUBAN.
@@ -2797,6 +2841,7 @@ def card_set_status(card_token: str, active: bool, *, masked_pan: str = "") -> d
         return {**_unreachable(exc, pending=True), "permanent_block": True}
 
 
+@_new_partnership_instruction
 def card_fund(card_token: str, amount) -> dict:
     """Incremental top-up. ALAT's virtual card is funded at issue and exposes no
     top-up endpoint, so a live call reports unsupported (the caller refunds the

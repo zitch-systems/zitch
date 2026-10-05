@@ -70,6 +70,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "accounts",
     "wallet",
+    "wema_vas",
     "utility",
     "exams",
     "loans",
@@ -85,6 +86,24 @@ INSTALLED_APPS = [
     "admin_api",
     "compliance",
 ]
+
+# VAS is a bank-to-Zitch collections contract, distinct from the retired
+# Partnership client. Roll out schema/code before selecting the new provider.
+BANK_ACCOUNT_PROVIDER = os.environ.get("BANK_ACCOUNT_PROVIDER", "partnership").strip().lower()
+WEMA_PARTNERSHIP_MODE = os.environ.get("WEMA_PARTNERSHIP_MODE", "active").strip().lower()
+WEMA_VAS = {
+    "ENABLED": env_bool("WEMA_VAS_ENABLED", False),
+    "MODE": os.environ.get("WEMA_VAS_MODE", "validation").strip(),
+    "PREFIX": os.environ.get("WEMA_VAS_PREFIX", "711").strip(),
+    "TOKEN": os.environ.get("WEMA_VAS_TOKEN", ""),
+    "IDENTITY_KEYS": [key.strip() for key in os.environ.get("WEMA_VAS_IDENTITY_KEYS", "").split(",") if key.strip()],
+    "REQUIRE_HTTPS": True,
+    # Enable only behind the controlled TLS-terminating Render proxy.
+    "TRUST_TLS_PROXY": env_bool("WEMA_VAS_TRUST_TLS_PROXY", False),
+    "ENABLE_ENROLLMENT": env_bool("WEMA_VAS_ENABLE_ENROLLMENT", False),
+    "LIVE_APPROVAL_REFERENCE": os.environ.get("WEMA_VAS_LIVE_APPROVAL_REFERENCE", "").strip(),
+    "COLLECTION_ACCOUNT": os.environ.get("WEMA_VAS_COLLECTION_ACCOUNT", "").strip(),
+}
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -1047,6 +1066,9 @@ if SENTRY_DSN and not TESTING:
             environment=os.environ.get("SENTRY_ENVIRONMENT", "production" if _PROD else "development"),
             traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0")),
             send_default_pii=False,
+            # Identity enrollment and bank callbacks must not enter error telemetry.
+            max_request_body_size="never",
+            include_local_variables=False,
         )
     except Exception:  # noqa: BLE001 — observability must never break boot
         pass

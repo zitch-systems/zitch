@@ -57,7 +57,7 @@ from django.utils import timezone
 
 from utility import wema
 from wallet.models import Transaction, Wallet
-from wallet.services import is_bank_payout, wema_provisioned_wallets
+from wallet.services import is_bank_payout, wema_provisioned_wallets, vas_reconciliation_scope
 
 # The label prefixes that identify which rail a day's movement went out on. These
 # mirror common.http's daily-cap buckets; kept separate because this command
@@ -199,6 +199,7 @@ class Command(BaseCommand):
 
         owed = self._owed()
         movement = self._day_movement()
+        vas_scope = vas_reconciliation_scope()
 
         if not wema.wema_live():
             # Mock get_balance returns 0.00 for every account, so a position computed
@@ -208,18 +209,30 @@ class Command(BaseCommand):
                 "settlement_report: Wema not live (simulation/mock) — no real balances to "
                 "hold against the ledger, so no position is computed.")
             self._print_owed(owed, movement)
+            if vas_scope["vas_collection_required"]:
+                snapshot = {**vas_scope,
+                            **{key: str(value) for key, value in owed.items()},
+                            "held_total": None, "position": None, "incomplete": True}
+                record_audit("recon.settlement_report", actor_type="system", after=snapshot)
+                self.stdout.write("VAS COLLECTION UNVERIFIED — complete position unavailable.")
+                alert("settlement_report: VAS collection bank balance and transaction search are "
+                      "unverified; no complete position can be stated", level="error", **vas_scope)
+                if options["fail_on_breach"]:
+                    raise SystemExit(1)
             return
 
         held = self._held()
         rails = [held["nuban_total"], held["pool_balance"]]
         # A rail we could not read makes the position unsound, not merely imprecise.
-        incomplete = (held["nuban_unreachable"] > 0
+        incomplete = (vas_scope["vas_collection_required"] or held["nuban_unreachable"] > 0
                       or (held["pool_account_set"] and held["pool_balance"] is None))
         held_total = sum((r for r in rails if r is not None), Decimal("0"))
-        position = held_total - owed["ledger_liability"]
+        position = None if vas_scope["vas_collection_required"] else held_total - owed["ledger_liability"]
 
-        snapshot = {**owed, **held, **movement,
-                    "held_total": held_total, "position": position,
+        snapshot = {**owed, **held, **movement, **vas_scope,
+                    "known_held_total": held_total,
+                    "held_total": None if vas_scope["vas_collection_required"] else held_total,
+                    "position": position,
                     "incomplete": incomplete}
         # Money is stored to a fixed 2dp so successive daily snapshots can be diffed
         # and compared directly; `5000 - 5000` would otherwise land as "0" one day
@@ -240,13 +253,22 @@ class Command(BaseCommand):
             self.stdout.write("        pool read   " + held["pool_failure"]
                               + (f" (HTTP {held['pool_http_status']})"
                                  if held["pool_http_status"] is not None else ""))
-        self.stdout.write(f"        total       ₦{held_total:,.2f}")
-        self.stdout.write(
-            f"POSITION {'+' if position >= 0 else '-'}₦{abs(position):,.2f} "
-            f"({'surplus' if position >= 0 else 'SHORTFALL'})")
+        if vas_scope["vas_collection_required"]:
+            self.stdout.write("        VAS collection UNVERIFIED (bank balance/search contract pending)")
+            self.stdout.write(f"        known assets ₦{held_total:,.2f} (incomplete)")
+            self.stdout.write("POSITION UNAVAILABLE — VAS collection balance is unverified.")
+        else:
+            self.stdout.write(f"        total       ₦{held_total:,.2f}")
+            self.stdout.write(
+                f"POSITION {'+' if position >= 0 else '-'}₦{abs(position):,.2f} "
+                f"({'surplus' if position >= 0 else 'SHORTFALL'})")
 
         breached = False
-        if incomplete:
+        if vas_scope["vas_collection_required"]:
+            alert("settlement_report: VAS collection bank balance and transaction search are "
+                  "unverified; no complete position can be stated", level="error", **vas_scope)
+            breached = True
+        elif incomplete:
             # Not a solvency alert — an observability one. Say which rail.
             alert("settlement_report: position computed with an unreadable rail — treat it as "
                   "advisory until every rail reads", level="warning",
@@ -256,13 +278,13 @@ class Command(BaseCommand):
                   pool_http_status=held["pool_http_status"])
             breached = True
 
-        if position < 0 and -position > max_shortfall:
+        if position is not None and position < 0 and -position > max_shortfall:
             alert("settlement_report: SHORTFALL — customer liability exceeds every asset rail "
                   "combined", level="error",
                   shortfall=str(-position), liability=str(owed["ledger_liability"]),
                   held=str(held_total), incomplete=incomplete)
             breached = True
-        elif max_surplus is not None and position > max_surplus:
+        elif position is not None and max_surplus is not None and position > max_surplus:
             alert("settlement_report: surplus above the configured ceiling — check for "
                   "debits that never reached a biller", level="warning",
                   surplus=str(position), ceiling=str(max_surplus),

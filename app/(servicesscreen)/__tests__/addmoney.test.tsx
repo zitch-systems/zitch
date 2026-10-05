@@ -38,11 +38,74 @@ jest.mock('@/components/design/ui', () => {
       { accessibilityLabel: label, onPress, disabled },
       ReactActual.createElement(Text, null, label),
     ),
-    Field: ({ value, onChangeText }: { value: string; onChangeText: (value: string) => void }) => ReactActual.createElement(
+    Field: ({ value, onChangeText, secureTextEntry }: { value: string; onChangeText: (value: string) => void; secureTextEntry?: boolean }) => ReactActual.createElement(
       TextInput,
-      { value, onChangeText },
+      { value, onChangeText, secureTextEntry },
     ),
   };
+});
+
+describe('AddMoney VAS migration', () => {
+  beforeEach(() => {
+    mockApiJson.mockReset();
+    mockPush.mockReset();
+  });
+
+  const enrollment = {
+    success: true, provider: 'wema_vas', has_account: false, available: false,
+    enrollment_available: true, spending_available: false,
+    account_setup_state: 'vas_enrollment_required', migration_message: 'Set up your new virtual account.',
+  };
+
+  it('requires explicit consent and sends the selected verified identity only to VAS', async () => {
+    mockApiJson.mockResolvedValueOnce(enrollment).mockResolvedValueOnce({ success: true })
+      .mockResolvedValueOnce({ ...enrollment, enrollment_available: false, account_setup_state: 'vas_validation' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(tree.root.findByType(TextInput).props.secureTextEntry).toBe(true);
+    await act(async () => { findControl(tree, 'Use NIN').props.onPress(); });
+    await act(async () => { tree.root.findByType(TextInput).props.onChangeText('11111111111'); });
+    expect(findControl(tree, 'Set up virtual account').props.disabled).toBe(true);
+    await act(async () => { await findControl(tree, 'Set up virtual account').props.onPress(); });
+    expect(mockApiJson).toHaveBeenCalledTimes(1);
+    await act(async () => { findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress(); });
+    await act(async () => { await findControl(tree, 'Set up virtual account').props.onPress(); });
+    expect(mockApiJson).toHaveBeenNthCalledWith(2, '/api/wallet/vas/enroll/', { nin: '11111111111', consent: true });
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+    expect(JSON.stringify(tree.toJSON())).not.toContain('11111111111');
+  });
+
+  it('clears the re-entered identity when enrollment fails', async () => {
+    mockApiJson.mockResolvedValueOnce(enrollment).mockResolvedValueOnce({ success: false, message: 'Identity could not be verified.' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    await act(async () => { tree.root.findByType(TextInput).props.onChangeText('22222222222'); });
+    await act(async () => { findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress(); });
+    await act(async () => { await findControl(tree, 'Set up virtual account').props.onPress(); });
+    expect(tree.root.findByType(TextInput).props.value).toBe('');
+    expect(findControl(tree, 'Set up virtual account').props.disabled).toBe(true);
+  });
+
+  it.each(['vas_validation', 'restricted'])('never exposes a %s account for funding', async (state) => {
+    mockApiJson.mockResolvedValueOnce({ ...enrollment, account_setup_state: state,
+      enrollment_available: false, has_account: true, account_number: '7111234567' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(JSON.stringify(tree.toJSON())).not.toContain('7111 234 567');
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' })).toHaveLength(0);
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+  });
+
+  it('shows a live VAS account with the spending limitation before funding', async () => {
+    mockApiJson.mockResolvedValueOnce({ ...enrollment, account_setup_state: 'ready',
+      available: true, has_account: true, enrollment_available: false,
+      account_number: '7121234567', account_name: 'Zitch/Ada', bank_name: 'Wema Bank' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(findControl(tree, 'Copy account number')).toBeTruthy();
+    expect(JSON.stringify(tree.toJSON())).toContain('Transfers and bill payments are currently unavailable.');
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+  });
 });
 
 const findControl = (tree: renderer.ReactTestRenderer, label: string) =>

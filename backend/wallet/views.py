@@ -23,7 +23,7 @@ from common.http import (
 )
 from common.ratelimit import ratelimit
 from utility.providers import (funding_initialize, funding_verify, kyc_verify_face,
-                               payment_provider)
+                               payment_provider, partnership_new_business_allowed)
 from utility import wema as wema_provider
 
 from .models import FundingIntent, Transaction, Wallet, WemaProvisioningAttempt
@@ -37,6 +37,7 @@ from .services import (
     hold_funding_review,
     customer_safe_failure,
     customer_visible_transactions,
+    customer_funding_account,
     get_or_create_wallet,
     make_reference,
     provision_wema_account,
@@ -64,11 +65,7 @@ def wallet_balance(request):
     return ok(
         success=True,
         wallet=str(wallet.balance),
-        account_number=wallet.account_number,
-        account_name=wallet.account_name,
-        bank_name=wallet.bank_name,
-        bank_accounts=wallet.bank_accounts or [],
-        bank_tier=wallet.bank_tier,
+        **customer_funding_account(user),
         account_namespace=spend_account_namespace(user),
         user_first_name=user.first_name or "",
         user_last_name=user.last_name or "",
@@ -94,32 +91,19 @@ def wallet_account(request):
     wallet = get_or_create_wallet(user)
     return ok(
         success=True,
-        account_number=wallet.account_number,
-        account_name=wallet.account_name,
-        bank_name=wallet.bank_name,
-        bank_accounts=wallet.bank_accounts or [],
-        bank_tier=wallet.bank_tier,
+        **{**customer_funding_account(user), **_account_setup_state(user, wallet)},
         bvn_verified=user.bvn_verified,
         nin_verified=user.nin_verified,
         # The customer's registered legal name, so the Add-money screen can always
         # show whose account this is — even before it's provisioned, or on the rare
         # provider response that omits the holder name (account_name is blank).
         holder_name=(user.get_full_name() or "").strip(),
-        **_account_setup_state(user, wallet),
     )
 
 
 def _account_payload(wallet, **extra) -> dict:
     """The dedicated-account fields every account endpoint returns, plus extras."""
-    return dict(
-        success=True,
-        account_number=wallet.account_number,
-        account_name=wallet.account_name,
-        bank_name=wallet.bank_name,
-        bank_accounts=wallet.bank_accounts or [],
-        bank_tier=wallet.bank_tier,
-        **extra,
-    )
+    return {"success": True, **customer_funding_account(wallet.user), **extra}
 
 
 def _active_wema_attempt(user, *, identity_type: str | None = None,
@@ -139,6 +123,11 @@ def _active_wema_attempt(user, *, identity_type: str | None = None,
 def _account_setup_state(user, wallet) -> dict:
     from .identity import accepted_identity_pending
 
+    funding = customer_funding_account(user)
+    if funding.get("provider") != "partnership":
+        return {"account_setup_state": funding.get("account_setup_state", "migration_pending"),
+                "otp_required": False,
+                "identity_verified": bool(user.bvn_verified or user.nin_verified)}
     if accepted_identity_pending(user):
         return {"account_setup_state": "processing", "pending": True,
                 "otp_required": False, "identity_verified": False}
@@ -193,6 +182,10 @@ def wallet_account_create(request):
     does its own BVN check.
     """
     user = request.user_obj
+    if not partnership_new_business_allowed(user):
+        return fail("Complete secure virtual-account enrollment to continue account setup.",
+                    status=409, code="vas_enrollment_required",
+                    enrollment_endpoint="/api/wallet/vas/enroll/")
     wallet = get_or_create_wallet(user)
     if _account_setup_state(user, wallet)["account_setup_state"] == "processing":
         return ok(success=False, pending=True, otp_required=False,
@@ -506,6 +499,8 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
 
 def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
     """Start and bind an OTP request, returning (provider_result, error)."""
+    if not partnership_new_business_allowed(user):
+        return None, "Use secure virtual-account enrollment to complete account setup."
     identity_type, raw_identity = _identity_for_attempt(bvn, nin)
     if not re.fullmatch(r"[0-9]{11}", raw_identity):
         return None, "Enter your 11-digit BVN or NIN"
@@ -565,6 +560,9 @@ def wema_wallet_create(request):
 
 def start_wema_identity(user, *, bvn="", nin=""):
     """Shared authenticated-user entry point for bank identity onboarding."""
+    if not partnership_new_business_allowed(user):
+        return fail("Use secure virtual-account enrollment to complete account setup.",
+                    status=409, code="partnership_archived", enrollment_endpoint="/api/wallet/vas/enroll/")
     if not _wema_funding_enabled():
         return fail("Bank account creation is not available right now")
     wallet = get_or_create_wallet(user)
@@ -790,6 +788,9 @@ def wema_wallet_upgrade_tier2(request):
 def upgrade_wema_identity(user, data):
     """Shared Tier 2 service for authenticated, rate-limited app/portal handlers.
     Account selection and identity ownership remain server-side."""
+    if not partnership_new_business_allowed(user):
+        return fail("Bank account upgrades are unavailable during migration.",
+                    status=409, code="partnership_archived")
     if not _wema_funding_enabled():
         return fail("Bank account upgrade is not available right now")
     wallet = get_or_create_wallet(user)
@@ -1525,6 +1526,11 @@ def wema_statement(request):
     from django.utils import timezone
 
     user = request.user_obj
+    funding = customer_funding_account(user)
+    if funding.get("provider") != "partnership":
+        return fail("Use your Zitch transaction history or request a wallet statement.",
+                    status=409, code="wallet_statement_required",
+                    statement_endpoint="/api/wallet/statement/request/")
     wallet = get_or_create_wallet(user)
     if not wallet.account_number:
         return fail("Set up your Zitch account to view your statement", status=404)
