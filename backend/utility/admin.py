@@ -75,8 +75,8 @@ class WemaBillerAdmin(_WemaCatalogueSyncMixin, admin.ModelAdmin):
     changes and the sync reports it unresolved. A service with no row here is simply
     not on sale — providers.vtu_purchase refuses it before any debit.
     """
-    list_display = ("service_id", "package_id", "biller_id", "name", "active", "updated")
-    list_filter = ("active",)
+    list_display = ("service_id", "meter_type", "package_id", "biller_id", "name", "active", "updated")
+    list_filter = ("meter_type", "active")
     search_fields = ("service_id", "package_id", "name")
     actions = ["preview_wema_codes", "apply_wema_codes"]
     wema_sync_only = "billers"

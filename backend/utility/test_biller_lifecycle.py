@@ -125,6 +125,7 @@ class RetainedBillerBoundaryTests(SimpleTestCase):
 
     def test_airtime_wrapper_passes_the_approved_source(self):
         with mock.patch(RESOLVER, return_value=APPROVED_SOURCE) as resolve, \
+                mock.patch.object(wema, "vas_status_entitlement", return_value=(True, "")) as entitlement, \
                 mock.patch.object(wema, "purchase_airtime", return_value={
                     "success": True, "status": "SUCCESS",
                 }) as purchase:
@@ -132,6 +133,7 @@ class RetainedBillerBoundaryTests(SimpleTestCase):
                 "amount": AMOUNT, "phone": "08000000000", "source_account": SUPPLIED_SOURCE,
             }, REFERENCE)
         self.assertTrue(result["success"])
+        entitlement.assert_called_once_with("airtime")
         resolve.assert_called_once_with(REFERENCE, amount=AMOUNT, source_account=SUPPLIED_SOURCE)
         purchase.assert_called_once_with(AMOUNT, REFERENCE, "08000000000", "MTN",
                                          source_account=APPROVED_SOURCE)

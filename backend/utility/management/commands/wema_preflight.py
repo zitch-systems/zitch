@@ -362,24 +362,28 @@ class Command(BaseCommand):
                             else "PREMBLY_API_KEY + PREMBLY_APP_ID unset — Tier 2/3 upgrades and "
                                  "the large-transfer selfie step-up fail closed"))
 
-        # SOFT — electricity/betting on the partner bank rail need a mapped packageId. Without
-        # one they silently stay on Partner-bank VAS, which is safe but is NOT what
-        # VAS_PROVIDER=wema was set to achieve, and nothing else would say so.
+        # SOFT — count only mappings that the purchase route can actually use.
+        # Historical unspecified electricity rows cannot select a meter type.
         if vas_provider() == "wema":
             from django.db import DatabaseError
+            from django.db.models import Q
 
             from utility.models import WemaBiller
             try:
-                mapped = WemaBiller.objects.filter(active=True).exclude(package_id="").count()
+                mapped = WemaBiller.objects.filter(
+                    Q(service_id__endswith="-electric", meter_type__in=("prepaid", "postpaid"))
+                    | Q(service_id__endswith="-betting", meter_type=""),
+                    active=True,
+                ).exclude(package_id="").count()
             except DatabaseError:
                 # Unmigrated database. A readiness check that dies on one unreadable
                 # counter reports nothing at all about the eleven gates above it.
                 mapped = 0
             checks.append((False, "partner bank biller catalogue (electricity / betting)",
                            PASS if mapped else WARN,
-                           f"{mapped} service(s) mapped" if mapped
-                           else "no packageIds mapped — electricity and betting stay on "
-                                "Partner-bank VAS; run `manage.py seed_wema_plans --only billers`"))
+                           f"{mapped} routable variant(s) mapped" if mapped
+                           else "no valid variant mappings — electricity and betting "
+                                "cannot route; review `manage.py seed_wema_plans --only billers --dry-run`"))
 
         # SOFT — the VAS status legends. This USED to be described here as money-safe
         # either way, on the grounds that an undecodable code leaves the purchase

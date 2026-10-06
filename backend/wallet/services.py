@@ -580,6 +580,21 @@ def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
     or refunded, stuck forever. Pre-flagging makes every orphan discoverable; the
     happy path clears the flag in ``settle_or_refund`` on a definite outcome.
     """
+    # Replay an existing request even if the bank's current entitlement is down.
+    # debit still arbitrates concurrent requests via its unique idempotency key.
+    if existing_for_key(user, idempotency_key) is not None:
+        raise DuplicateTransaction(idempotency_key)
+    if is_biller_service(service):
+        from utility.providers import _VAS_UNAVAILABLE, vas_can_settle
+
+        kind = re.match(r"[a-z]+", str(service).strip(), re.I).group().lower()
+        product = "airtime" if kind in {"airtime", "data"} else (
+            "remita" if kind == "remita" else "bills")
+        # A read-only status probe runs before any ledger mutation and outside
+        # wallet locks. The provider boundary checks again before sending money.
+        can_settle, _reason = vas_can_settle(product)
+        if not can_settle:
+            raise LimitExceeded(_VAS_UNAVAILABLE)
     reconcile_meta = {**(meta or {}), "reconcile": True,
                       "provider_purchase": True}
     txn = debit(user, amount, service, meta=reconcile_meta, idempotency_key=idempotency_key)

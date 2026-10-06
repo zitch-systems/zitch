@@ -1,9 +1,9 @@
 # Zitch VAS validation handoff
 
 Status: preparation pack, not a completed live-credentials submission or evidence
-of bank acceptance. The base collections application is on `main` in PR #530;
-the pilot/WhatsApp release preparation is merged in PR #531. Public access,
-credentials and provisioned sample accounts still need verification.
+of bank acceptance. The collections, pilot, WhatsApp and retained-billing work is
+merged through PR #532 and deployed. Validation credentials are configured;
+public access and three provisioned sample accounts still need verification.
 
 ## Submission fields
 
@@ -13,8 +13,8 @@ does not turn the simulated receipt balance into spendable customer money.
 
 | Field | Value or remaining action |
 | --- | --- |
-| Base URL | `https://api.zitch.ng` — configured target; verify reachability after deployment |
-| Authentication key | Dedicated static Bearer token; generate and configure through secret management; not included in this repository |
+| Base URL | `https://api.zitch.ng` — configured target; public maintenance still prevents bank access |
+| Authentication key | Dedicated static Bearer token configured in Render; not included in this repository |
 | Account Lookup | `POST https://api.zitch.ng/vas/account-lookup` |
 | Transaction Notification | `POST https://api.zitch.ng/vas/transaction-notification` |
 | Fetch Mini Statement | `POST https://api.zitch.ng/vas/mini-statement` |
@@ -173,3 +173,54 @@ is implemented as a read-only support tool, not automated bank reconciliation.
 
 Source contract: Wema's [Third Party Virtual Account API documentation, v2.0](https://wemabank-doc.notion.site/Wema-Bank-Third-Party-Virtual-Account-API-Integration-Documentation-31f13df490b68074aa99df46b1de9a4f),
 and the [5 October prefix/endpoint instruction](https://wemabankteam.slack.com/archives/C0C6PTZ4SK0/p1791197691968529).
+
+## Authenticated production checks — 6 October 2026
+
+The following supersedes the earlier operational snapshot above. These are
+observations, not bank acceptance or authority to enable customer enrollment.
+
+- All nine Django services and the Meta connector deployed release
+  `cd1dc60e5ed588d6d4213cb737597cb6049fd432`. Its PostgreSQL 18 CI passed 3,206
+  tests with zero skips. Internal API readiness was HTTP 200; public API and
+  Meta maintenance remained enabled.
+- Render completed a Frankfurt PostgreSQL logical export at 13:19 UTC. The
+  dashboard also advertised three-day point-in-time recovery. The export was
+  not restored into a separate database, so restore readiness is untested.
+- All nine Django services have Partnership mode `archive`, biller mode
+  `active`, Prembly selected, VAS validation mode with prefix `711`, dedicated
+  bearer/encryption credentials, enrollment disabled and release phase `closed`.
+  VAS-funded bills remain disabled. No existing customer balances were migrated.
+- `vas_preflight --stage validation` passed configuration, PostgreSQL, schema,
+  migration and immutable-ledger checks. The remaining failing validation gate
+  was three active, identity-verified sample accounts: the count was zero.
+- The read-only queue snapshot showed no pending provider transactions,
+  WhatsApp waiting/dead-letter jobs, active/conflicting reversals or VAS receipts.
+  Existing audit evidence still shows five blocked historical bank checkpoints,
+  two ledger-over-bank differences totalling NGN 77.75 and one bank-over-ledger
+  difference of NGN 166.50. No balance correction or checkpoint approval occurred.
+- Wema's status endpoint returned HTTP 400 / product-not-profiled for synthetic
+  airtime and bills references, and for an existing successful airtime reference.
+  Wema must enable the required status/requery entitlement. A catalogue response
+  or successful purchase response alone does not establish settlement readiness.
+- The live electricity catalogue has distinct prepaid/postpaid package IDs.
+  The accompanying fix stores and selects both meter types independently, reads
+  real nested package IDs and refuses ambiguous mappings. It also checks current
+  query access before a new wallet debit. Mapping changes still require a reviewed
+  production dry-run after deployment.
+- Meta's WABA and phone credential probes passed. Local connector endpoints
+  rejected unauthenticated requests; authenticated tooling was read-only with
+  zero registered write tools. The connector's canonical HTTPS origin was pinned
+  and read-only mode reverified after its 13:46 UTC deployment. No customer
+  messages were sent.
+- The configured WhatsApp Flow was published with no reported validation errors,
+  but its complete JSON contract did not match the released VAS Flow hash
+  `ae3cffd42084b4f5c973a04b4798203950b62f0ee6382c46b875abf690f6906f`.
+  No VAS Flow approval ID was configured. Prepare and independently validate a
+  replacement Flow before changing runtime IDs or enabling onboarding.
+
+Step 4 therefore still needs three dedicated consenting, verified `711` users,
+the monitored notification group mailbox, and authenticated public reachability
+under the maintenance plan. Live-money activation additionally needs Wema's
+acceptance, assigned production prefix, collection funding permission and real
+settlement evidence. Prembly credentials are configured, but no live identity/OTP
+verification was attempted without a consenting participant.

@@ -162,9 +162,8 @@ def vas_provider() -> str:
 _SETTLE_PRODUCT = {"airtime": "airtime", "data": "airtime", "bill": "bills"}
 
 #: Shown to the customer when a purchase is refused because this deploy could not
-#: settle it. It must say plainly that no money was taken: the refusal happens
-#: before the provider call, so run_provider_purchase's normal failure path refunds
-#: the debit in full.
+#: settle it. The shared purchase runner checks before debit; the provider boundary
+#: repeats the check and refunds a reservation if access has since disappeared.
 _VAS_UNAVAILABLE = ("This is temporarily unavailable on our side. You have not been "
                     "charged — please try again later.")
 
@@ -185,9 +184,9 @@ def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
     customer debited with nothing delivered and nothing refunded, permanently, and
     no cron can ever clear it.
 
-    Selling what cannot be reconciled is not an option, so ``vtu_purchase`` refuses
-    up front instead — before the debit reaches a provider, where the ordinary
-    failure path refunds it cleanly.
+    A legend alone is insufficient: the bank must also grant status-query access.
+    The shared purchase runner checks both before debit; ``vtu_purchase`` repeats
+    the check before sending a purchase, refunding if access has since disappeared.
 
     Scope is deliberately narrow: this gates only the case where REAL calls will be
     made. When ``_vas_live`` is false the rail already resolves itself safely — it
@@ -222,6 +221,9 @@ def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
         env = "WEMA_" + wema._LEGEND_SETTING.get(product, "VAS_STATUS_LEGEND")
         return False, (f"{env} must contain unambiguous success and failed outcomes, "
                        f"so every PROCESSING purchase can be settled or refunded")
+    entitled, reason = wema.vas_status_entitlement(product)
+    if not entitled:
+        return False, reason or "The bank status-query service is unavailable for this product"
     return True, ""
 
 
@@ -239,7 +241,10 @@ def _wema_vas_route(service_id: str, payload: dict):
         return {"type": "airtime", "code": "", "amount": payload.get("amount")}
     if service_id.endswith("-electric") or service_id.endswith("-betting"):
         from .models import WemaBiller
-        b = (WemaBiller.objects.filter(service_id=service_id, active=True)
+        meter_type = payload.get("variation_code") if service_id.endswith("-electric") else ""
+        if service_id.endswith("-electric") and meter_type not in ("prepaid", "postpaid"):
+            return None
+        b = (WemaBiller.objects.filter(service_id=service_id, meter_type=meter_type, active=True)
              .only("package_id").first())
         if not (b and b.package_id):
             return None

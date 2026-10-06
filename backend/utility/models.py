@@ -62,7 +62,11 @@ class WemaBiller(models.Model):
     synced from a live catalogue (`manage.py seed_wema_plans --only billers`) and a
     partial sync must degrade service-by-service rather than break what it did map.
     """
-    service_id = models.CharField(max_length=60, unique=True)
+    service_id = models.CharField(max_length=60)
+    # A historical blank electricity variant is retained for audit but cannot
+    # route either meter type. Bookmakers and other unvaried billers use blank.
+    meter_type = models.CharField(max_length=8, blank=True, default="",
+                                  choices=[("", "Not specified"), ("prepaid", "Prepaid"), ("postpaid", "Postpaid")])
     # ALAT's integer packageId — what ValidateCustomer and PayBill actually take.
     package_id = models.CharField(max_length=60)
     # The biller this package belongs to, kept for operator review of a synced
@@ -72,5 +76,12 @@ class WemaBiller(models.Model):
     active = models.BooleanField(default=True)
     updated = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["service_id", "meter_type"], name="uniq_wema_biller_variant"),
+            models.CheckConstraint(condition=models.Q(meter_type__in=["", "prepaid", "postpaid"]),
+                                   name="wema_biller_variant_valid"),
+        ]
+
     def __str__(self):
-        return f"{self.service_id} -> {self.package_id}"
+        return f"{self.service_id} {self.meter_type or '(unspecified)'} -> {self.package_id}"

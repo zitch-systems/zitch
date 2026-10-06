@@ -10,9 +10,8 @@ reports ``pending`` for every code it sees, forever. Nothing else can settle the
 either: the bank's own transaction callback routes back through ``vtu_requery``.
 
 So on a legend-less deploy, a PROCESSING purchase is a customer debited with nothing
-delivered, nothing refunded, and no job anywhere that can ever clear it. The only
-safe answer is to refuse the purchase BEFORE the provider call, where the ordinary
-failure path refunds the debit in full — which is what these tests pin.
+delivered, nothing refunded, and no job anywhere that can ever clear it. The safe answer is to refuse before debit when status access is unavailable. The
+provider boundary checks again, so any later refusal refunds the reservation.
 """
 from datetime import timedelta
 from decimal import Decimal
@@ -43,15 +42,32 @@ _AIRTIME = ("mtn-airtime", {"amount": "500", "phone": "08012345678",
 
 
 class CanSettleTests(SimpleTestCase):
+    def setUp(self):
+        self.entitlement_patch = mock.patch(
+            "utility.wema.vas_status_entitlement", return_value=(True, ""))
+        self.entitlement = self.entitlement_patch.start()
+        self.addCleanup(self.entitlement_patch.stop)
+
     @override_settings(WEMA=_KEYED)
     def test_live_without_a_legend_cannot_settle(self):
         ok, why = P.vas_can_settle("airtime")
         self.assertFalse(ok)
         self.assertIn("WEMA_VAS_STATUS_LEGEND", why)
+        self.entitlement.assert_not_called()
 
     @override_settings(WEMA=_AIRTIME_LEGEND)
     def test_live_with_a_legend_can_settle(self):
         self.assertEqual(P.vas_can_settle("airtime"), (True, ""))
+
+    @override_settings(WEMA={**_AIRTIME_LEGEND, "BILLS_STATUS_LEGEND": _BILLS_LEGEND["BILLS_STATUS_LEGEND"]})
+    def test_live_status_refusal_blocks_each_retained_product_despite_valid_legend(self):
+        self.entitlement.return_value = (False, "status-query subscription unavailable")
+        for product, status_product in (("airtime", "airtime"), ("data", "airtime"),
+                                        ("bill", "bills"), ("bills", "bills")):
+            with self.subTest(product=product):
+                self.assertEqual(P.vas_can_settle(product),
+                                 (False, "status-query subscription unavailable"))
+                self.entitlement.assert_called_with(status_product)
 
     def test_live_with_only_one_terminal_direction_cannot_settle(self):
         for legend in ("1=success 2=pending", "1=failed 2=pending"):
@@ -91,6 +107,7 @@ class CanSettleTests(SimpleTestCase):
         ok, why = P.vas_can_settle("remita")
         self.assertFalse(ok)
         self.assertIn("no automated status/requery", why)
+        self.entitlement.assert_not_called()
 
 
 class PurchaseRefusalTests(TestCase):
@@ -100,6 +117,9 @@ class PurchaseRefusalTests(TestCase):
                             return_value="0100000001")
         source.start()
         self.addCleanup(source.stop)
+        entitlement = mock.patch("utility.wema.vas_status_entitlement", return_value=(True, ""))
+        entitlement.start()
+        self.addCleanup(entitlement.stop)
 
     @override_settings(WEMA=_KEYED)
     def test_an_unsettleable_airtime_purchase_never_reaches_the_bank(self):
@@ -147,38 +167,121 @@ class PurchaseRefusalTests(TestCase):
 
 @override_settings(VELOCITY_MAX_OUT_10MIN=0, WEMA=_KEYED)
 class RefusalRefundsTests(TestCase):
-    """The money property: a refused purchase leaves the customer whole."""
+    """Unavailable status access must not create a new monetary reservation."""
 
-    def test_the_debit_is_refunded_not_left_pending(self):
+    def setUp(self):
         from wallet.models import BankHistoryCheckpoint, Transaction
-        from wallet.services import run_provider_purchase
         from wallet.tests import make_user
 
-        user, _ = make_user("08044440009", "settle@zitch.app", balance="5000", tier=3)
-        user.wallet.account_number = "0155500009"
-        user.wallet.save(update_fields=["account_number"])
+        self.user, _ = make_user("08044440009", "settle@zitch.app", balance="5000", tier=3)
+        self.user.wallet.account_number = "0155500009"
+        self.user.wallet.save(update_fields=["account_number"])
         BankHistoryCheckpoint.objects.create(
-            wallet=user.wallet, account_number="0155500009", opening_review_required=False)
+            wallet=self.user.wallet, account_number="0155500009", opening_review_required=False)
+        self.initial_transactions = list(Transaction.objects.filter(user=self.user).values())
+
+    def purchase(self, *, idempotency_key=""):
+        from wallet.services import run_provider_purchase
+
+        return run_provider_purchase(
+            self.user, Decimal("500"), "Airtime MTN 500", {},
+            lambda ref: P.vtu_purchase(
+                "mtn-airtime", {"amount": "500", "phone": "08012345678",
+                                "source_account": "0155500009"}, ref),
+            idempotency_key=idempotency_key,
+        )
+
+    def assert_no_debit(self):
+        from wallet.models import BillFundingBinding, Transaction
+
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal("5000"))
+        self.assertEqual(list(Transaction.objects.filter(user=self.user).values()), self.initial_transactions)
+        self.assertFalse(BillFundingBinding.objects.filter(transaction__user=self.user).exists())
+
+    def test_missing_legend_refuses_before_any_debit(self):
+        from wallet.services import LimitExceeded
 
         with mock.patch("utility.wema.purchase_airtime") as buy, \
-             mock.patch("utility.alerts.alert"):
-            status, txn, _res = run_provider_purchase(
-                user, Decimal("500"), "Airtime MTN 500", {},
-                lambda ref: P.vtu_purchase(
-                    "mtn-airtime",
-                    {"amount": "500", "phone": "08012345678",
-                     "source_account": "0155500009"}, ref),
-            )
+                mock.patch("utility.wema.vas_status_entitlement") as entitlement:
+            with self.assertRaisesMessage(LimitExceeded, "not been charged"):
+                self.purchase()
+        buy.assert_not_called()
+        entitlement.assert_not_called()
+        self.assert_no_debit()
 
+    @override_settings(WEMA=_AIRTIME_LEGEND)
+    def test_denied_entitlement_refuses_before_any_debit(self):
+        from wallet.services import LimitExceeded
+
+        with mock.patch("utility.wema.purchase_airtime") as buy, \
+                mock.patch("utility.wema.vas_status_entitlement", return_value=(False, "not profiled")):
+            with self.assertRaisesMessage(LimitExceeded, "not been charged"):
+                self.purchase()
+        buy.assert_not_called()
+        self.assert_no_debit()
+
+    def test_each_bill_label_uses_the_correct_product_before_debit(self):
+        from wallet.services import LimitExceeded, run_provider_purchase
+
+        for service, product in (("Airtime MTN 500", "airtime"), ("Data MTN", "airtime"),
+                                 ("Cable DSTV", "bills"), ("Electricity Ikeja", "bills"),
+                                 ("Betting funding", "bills"), ("Exam WAEC", "bills"),
+                                 ("Remita RRR", "remita")):
+            with self.subTest(service=service), \
+                    mock.patch("utility.providers.vas_can_settle", return_value=(False, "unavailable")) as gate:
+                provider_call = mock.Mock()
+                with self.assertRaises(LimitExceeded):
+                    run_provider_purchase(self.user, Decimal("500"), service, {}, provider_call)
+                gate.assert_called_once_with(product)
+                provider_call.assert_not_called()
+                self.assert_no_debit()
+
+    @override_settings(WEMA=_AIRTIME_LEGEND)
+    def test_second_guard_refunds_if_status_access_disappears_after_reservation(self):
+        from wallet.models import BillFundingRefund, Transaction
+
+        with mock.patch("utility.wema.purchase_airtime") as buy, \
+                mock.patch("utility.wema.vas_status_entitlement",
+                           side_effect=[(True, ""), (False, "not profiled")]), \
+                mock.patch("utility.alerts.alert"):
+            status, txn, result = self.purchase()
         buy.assert_not_called()
         self.assertEqual(status, "failed")
-        self.assertIn("WEMA_VAS_STATUS_LEGEND", _res["unsettleable"])
+        self.assertEqual(result["unsettleable"], "not profiled")
         txn.refresh_from_db()
         self.assertEqual(txn.transaction_status, Transaction.FAILED)
-        user.wallet.refresh_from_db()
-        self.assertEqual(user.wallet.balance, Decimal("5000"))
-        # …and it is NOT left flagged for a reconcile that could never resolve it.
         self.assertFalse((txn.meta or {}).get("reconcile"))
+        self.assertEqual(BillFundingRefund.objects.filter(binding__transaction=txn).count(), 1)
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal("5000"))
+
+    @override_settings(WEMA=_AIRTIME_LEGEND)
+    def test_existing_request_replays_without_current_entitlement(self):
+        from wallet.models import Transaction
+        from wallet.services import DuplicateTransaction, debit
+
+        original = debit(self.user, Decimal("500"), "Airtime MTN 500", idempotency_key="same-request")
+        with mock.patch("utility.wema.vas_status_entitlement") as entitlement, \
+                mock.patch("utility.wema.purchase_airtime") as buy:
+            with self.assertRaises(DuplicateTransaction):
+                self.purchase(idempotency_key="same-request")
+        entitlement.assert_not_called()
+        buy.assert_not_called()
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal("4500"))
+        original.refresh_from_db()
+        self.assertEqual(original.transaction_status, Transaction.PENDING)
+
+    @override_settings(WEMA=_AIRTIME_LEGEND)
+    def test_healthy_status_access_preserves_successful_purchase(self):
+        with mock.patch("utility.wema.vas_status_entitlement", return_value=(True, "")), \
+                mock.patch("utility.wema.purchase_airtime", return_value={"success": True}) as buy:
+            status, _txn, _result = self.purchase()
+        self.assertEqual(status, "success")
+        buy.assert_called_once()
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal("4500"))
 
 
 @override_settings(VELOCITY_MAX_OUT_10MIN=0)
