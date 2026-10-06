@@ -14,13 +14,15 @@ from django.utils import timezone
 from accounts.models import IdentityProof, User, hash_identifier
 from wallet.models import Transaction, Wallet, WemaFaceSession, WemaProvisioningAttempt
 
-from .config import approval_reference_present, config, enrollment_release_policy, validate_configuration
+from .config import (approval_reference_present, config, enrollment_release_policy,
+                     validate_configuration, validation_user_ids)
 from .identity import encrypt_identity
 from .models import MigrationApproval, VirtualAccount
 
 CONSENT_VERSION = "vas-identity-v1"
 PENDING_MESSAGE = "Your new funding account is being prepared. Please wait before sending money."
 SPENDING_MESSAGE = "Payments and transfers are unavailable while the new bank connection is completed."
+VALIDATION_MESSAGE = "This service is in validation testing. Do not send money; payments and transfers are unavailable."
 
 
 def enrollment_available(user=None):
@@ -47,14 +49,46 @@ def enrollment_available(user=None):
     return True
 
 
+def validation_enrollment_available(user=None):
+    """Allow invited, contact-verified testers without opening the live rail."""
+    values = config()
+    if (values.get("ENABLED") is not True
+            or values.get("ENABLE_VALIDATION_ENROLLMENT") is not True
+            or values.get("ENABLE_ENROLLMENT", False) is not False
+            or values.get("MODE") != "validation" or values.get("PREFIX") != "711"
+            or values.get("RELEASE_PHASE", "closed") != "closed"
+            or getattr(settings, "BANK_ACCOUNT_PROVIDER", "partnership") != "wema_vas"
+            or not getattr(user, "is_active", False) or not getattr(user, "pk", None)
+            or not getattr(user, "phone_verified", False) or not getattr(user, "email_verified", False)
+            or user.pk not in validation_user_ids(values)):
+        return False
+    try:
+        validate_configuration()
+    except (ImproperlyConfigured, TypeError, ValueError):
+        return False
+    return True
+
+
+def customer_enrollment_available(user=None):
+    """Customer contact verification and enrollment; never a spending gate."""
+    if (not getattr(user, "is_active", False) or not getattr(user, "pk", None)
+            or not getattr(user, "phone_verified", False) or not getattr(user, "email_verified", False)):
+        return False
+    return enrollment_available(user) or validation_enrollment_available(user)
+
+
 def customer_account_payload(user):
+    values = config()
     account = VirtualAccount.objects.filter(user=user).first()
     selected = getattr(settings, "BANK_ACCOUNT_PROVIDER", "partnership") == "wema_vas"
     if not selected and (account is None or account.mode != VirtualAccount.LIVE):
         return None
-    permitted = enrollment_available(user)
-    ready = bool(permitted and account and account.active and account.mode == VirtualAccount.LIVE
-                 and account.prefix == config().get("PREFIX"))
+    permitted = customer_enrollment_available(user)
+    ready = bool(enrollment_available(user) and account and account.active and account.mode == VirtualAccount.LIVE
+                 and account.prefix == values.get("PREFIX"))
+    test_mode = values.get("MODE") == "validation"
+    validation_visible = bool(validation_enrollment_available(user) and account and account.active
+                              and account.mode == VirtualAccount.VALIDATION and account.prefix == "711")
     state = "ready" if ready else "vas_enrollment_required"
     if account and not account.active:
         state = "restricted"
@@ -66,11 +100,32 @@ def customer_account_payload(user):
         "account_name": account.display_name if ready else "",
         "bank_name": "Wema Bank" if ready else "", "bank_accounts": [], "bank_tier": 0,
         "account_setup_state": state, "spending_available": False,
+        "test_mode": test_mode,
+        "validation_account_number": account.number if validation_visible else "",
+        "validation_account_name": account.display_name if validation_visible else "",
         "enrollment_available": bool(permitted and account is None),
         "migration_message": SPENDING_MESSAGE if ready else (
-            "Your account is restricted. Please contact support." if state == "restricted" else PENDING_MESSAGE),
+            "Your account is restricted. Please contact support." if state == "restricted" else
+            VALIDATION_MESSAGE if test_mode else PENDING_MESSAGE),
         "enrollment_endpoint": "/api/wallet/vas/enroll/", "consent_version": CONSENT_VERSION,
     }
+
+
+@transaction.atomic
+def enroll_customer(user, *, bvn="", nin="", consent=False, consent_reference=""):
+    """Derive the mode from server policy and recheck eligibility under locks."""
+    if not customer_enrollment_available(user):
+        raise ValidationError("New funding accounts are not available yet.")
+    # Match the allocator/notification lock order. Refresh durable contact and
+    # activity flags after waiting, so a stale request cannot undo revocation.
+    Wallet.objects.get_or_create(user=user)
+    Wallet.objects.select_for_update().get(user=user)
+    user = User.objects.select_for_update().get(pk=user.pk)
+    if not customer_enrollment_available(user):
+        raise ValidationError("New funding accounts are not available yet.")
+    return enroll_verified(user, bvn=bvn, nin=nin, consent=consent,
+                           validation=validation_enrollment_available(user),
+                           consent_reference=consent_reference)
 
 
 def _verified_proofs(user, bvn, nin):
@@ -118,7 +173,7 @@ def _cutover_reference(user, wallet, *, validation):
 
 @transaction.atomic
 def enroll_verified(user, *, bvn="", nin="", consent=False, validation=False, consent_reference=""):
-    """Allocate once. Validation is internal-only for dedicated consented users."""
+    """Allocate once for an operator or the gated customer enrollment wrapper."""
     values = validate_configuration()
     if not values.get("ENABLED"):
         raise ValidationError("New funding accounts are not available yet.")

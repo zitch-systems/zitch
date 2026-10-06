@@ -92,6 +92,7 @@ class VasFlowTests(TestCase):
         self.raw = "12345678901"
         self.msisdn = "2348012345678"
         self.user = User.objects.create(username="vas-private", phone="+" + self.msisdn,
+            email="signup@example.test", email_verified=True,
             first_name="Ada", last_name="Eze", phone_verified=True, bvn_verified=True,
             bvn_hash=hash_identifier(self.raw))
         Wallet.objects.create(user=self.user)
@@ -342,6 +343,100 @@ class VasFlowTests(TestCase):
         self.assertNotIn("id_otp_hash", PendingAction.objects.get().payload)
         self.user.refresh_from_db()
         self.assertEqual(self.user.bvn_hash, "")
+
+    def test_record_email_receives_same_code_and_only_masked_destinations_persist(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        with patch("utility.providers._prembly_identity_live", return_value=True), \
+                patch("utility.providers.prembly_verify_bvn", return_value={"success": True,
+                    "first_name": "Ada", "last_name": "Eze", "phone": "08077778888",
+                    "email": "holder@record.example"}), \
+                patch.object(router, "sms_live", return_value=True), \
+                patch.object(router, "email_live", return_value=True), \
+                patch.object(router, "send_sms", return_value={"success": True}) as sms, \
+                patch.object(router, "send_email", return_value={"success": True}) as email:
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        code = sms.call_args.args[1].split("Zitch: ")[1][:6]
+        self.assertEqual(email.call_args.args[0], "holder@record.example")
+        self.assertIn(code, email.call_args.args[2])
+        self.assertEqual(email.call_args.kwargs["timeout"].total, 2)
+        self.assertIn("SMS and email", response["data"]["summary"])
+        pa = PendingAction.objects.get()
+        self.assertEqual(pa.payload["id_otp_delivery"]["delivery_channels"], ["sms", "email"])
+        for value in (self.raw, code, "holder@record.example", self.user.email):
+            self.assertNotIn(value, json.dumps(pa.payload))
+        self.exchange(token, {"number": code}, vas_flow.CODE)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "signup@example.test")
+        self.assertTrue(self.user.bvn_verified)
+
+    def test_unaccepted_record_email_preserves_sms_without_claiming_email_delivery(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        with patch("utility.providers._prembly_identity_live", return_value=True), \
+                patch("utility.providers.prembly_verify_bvn", return_value={"success": True,
+                    "first_name": "Ada", "last_name": "Eze", "phone": "08077778888",
+                    "email": "holder@record.example"}), \
+                patch.object(router, "sms_live", return_value=True), \
+                patch.object(router, "email_live", return_value=True), \
+                patch.object(router, "send_sms", return_value={"success": True}) as sms, \
+                patch.object(router, "send_email", side_effect=RuntimeError("holder@record.example refused")):
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        self.assertEqual(response["screen"], vas_flow.CODE)
+        self.assertNotIn("SMS and email", response["data"]["summary"])
+        self.assertIn("Email delivery was unavailable", response["data"]["summary"])
+        self.assertNotIn("holder@record.example", json.dumps(response))
+        self.assertTrue(PendingAction.objects.get().payload["id_otp_delivery"]["delivery_partial"])
+        code = sms.call_args.args[1].split("Zitch: ")[1][:6]
+        self.assertEqual(self.exchange(token, {"number": code}, vas_flow.CODE)["screen"], vas_flow.REENTRY)
+
+    def test_absent_record_email_never_falls_back_to_signup_email(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        with patch.object(router, "email_live", return_value=True), patch.object(router, "send_email") as email:
+            self.provider_code(token)
+        email.assert_not_called()
+        self.assertEqual(PendingAction.objects.get().payload["id_otp_delivery"]["delivery_status"]["email"], "not_available")
+
+    def test_failed_sms_never_sends_email_or_arms_a_code(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        with patch("utility.providers._prembly_identity_live", return_value=True), \
+                patch("utility.providers.prembly_verify_bvn", return_value={"success": True,
+                    "first_name": "Ada", "last_name": "Eze", "phone": "08077778888",
+                    "email": "holder@record.example"}), \
+                patch.object(router, "sms_live", return_value=True), \
+                patch.object(router, "email_live", return_value=True), \
+                patch.object(router, "send_sms", return_value={"success": False}), \
+                patch.object(router, "send_email") as email:
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        email.assert_not_called()
+        self.assertEqual(response["data"]["status"], "Not completed")
+        self.assertNotIn("id_otp_hash", PendingAction.objects.get().payload)
+
+    def test_contact_email_change_revokes_open_setup(self):
+        token = self.start()
+        self.consent(token)
+        User.objects.filter(pk=self.user.pk).update(email="changed@example.test")
+        with patch("whatsapp.vas_flow.enroll_customer") as enroll:
+            self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        enroll.assert_not_called()
+
+    def test_validation_result_explicitly_marks_test_number_as_nonfundable(self):
+        from types import SimpleNamespace
+        token = self.start()
+        self.consent(token)
+        with patch("whatsapp.vas_flow.enroll_customer", return_value=SimpleNamespace(
+                mode="validation", number="7111234567")):
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        self.assertEqual(response["data"]["status"], "Test setup complete")
+        self.assertIn("7111234567", response["data"]["message"])
+        self.assertIn("DO NOT FUND", response["data"]["message"])
+        self.assertNotIn("funding account is ready", response["data"]["message"])
 
     def test_abandoned_or_expired_candidate_does_not_reserve_an_identity(self):
         from accounts.views import _identity_owned_by_another_user

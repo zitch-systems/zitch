@@ -44,6 +44,7 @@ from PIL import Image, UnidentifiedImageError
 
 from common.http import evaluate_transaction_pin
 from common.ratelimit import ratelimit
+from utility.providers import partnership_new_business_allowed
 
 from .models import PendingAction, WhatsAppLink
 
@@ -111,6 +112,8 @@ def start_verification(user, msisdn, tier):
             user_id=user.pk, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE).first()
         if current is None or link is None:
             raise ValueError("An active WhatsApp link is required")
+        if not partnership_new_business_allowed(current):
+            raise ValueError("This verification is unavailable for your account")
         PendingAction.objects.filter(
             user=current, msisdn=msisdn, action_type=ACTION_TYPE,
             state__in=(PIN, READY),
@@ -164,6 +167,12 @@ def _resolve(claims, *, lock=False):
             or pa.payload.get("link_stamp") != _link_stamp(link)
             or not hmac.compare_digest(pa.payload.get("credentials", ""), _credential_stamp(user))
             or not hmac.compare_digest(claims["b"], _binding(pa))):
+        return None, None
+    # Recheck existing, unsubmitted grants after a lifecycle switch or an
+    # individual migration. Retained credentials must not keep the old address
+    # form open. Submitted operations resolve outside this capability reader;
+    # their processing/review/completion records remain untouched.
+    if not partnership_new_business_allowed(user):
         return None, None
     return pa, user
 

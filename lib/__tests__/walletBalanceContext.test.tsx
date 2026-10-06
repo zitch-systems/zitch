@@ -34,4 +34,19 @@ describe('wallet context purchase balance', () => {
     expect(current.historicalBalance).toBe(5000);
     expect(current.transfersAvailable).toBe(false);
   });
+
+  it('keeps a test account out of ordinary funding and payment surfaces', async () => {
+    mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
+      ? { success: true, provider: 'wema_vas', test_mode: true, account_number: '7111234567',
+          available: true, has_account: true, account_setup_state: 'ready', spending_available: true,
+          wallet: '1000.00', available_balance: '1000.00', bill_payments_available: true, transfers_available: true }
+      : { status: true, all_site_transactions: [] } }));
+    act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
+    await act(async () => { await current.reload(); });
+    expect(current.accountNumber).toBe('');
+    expect(current.balance).toBe(0);
+    expect(current.spendingAvailable).toBe(false);
+    expect(current.billPaymentsAvailable).toBe(false);
+    expect(current.transfersAvailable).toBe(false);
+  });
 });

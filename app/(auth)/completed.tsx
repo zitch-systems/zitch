@@ -27,14 +27,14 @@ const Completed = () => {
           </View>
         </View>
         <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 24, textAlign: 'center' }}>
-          {firstName ? `You’re all set, ${firstName}!` : 'You’re all set!'}
+          {firstName ? `Welcome to Zitch, ${firstName}!` : 'Welcome to Zitch!'}
         </Text>
         <Text style={{ fontSize: 14, color: c.ink3, marginTop: 10, textAlign: 'center', maxWidth: 300, lineHeight: 21, fontFamily: font.regular }}>
-          Your Zitch account is ready. Add money to start paying bills, sending cash and buying airtime, data & more.
+          Your sign-up is complete. Verify your identity, then check your account status. Only add money when your account is enabled for funding.
         </Text>
       </View>
       <View style={{ paddingBottom: 24, gap: 12 }}>
-        <Btn label="Add money" icon="bank" onPress={() => router.replace('/addmoney')} />
+        <Btn label="Verify my identity" icon="insurance" onPress={() => router.replace('/kyc')} />
         <Btn label="Go to home" variant="outline" onPress={() => router.replace('/home')} />
       </View>
     </Screen>

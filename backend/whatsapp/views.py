@@ -455,10 +455,8 @@ def _process(msg: dict) -> None:
     # queue. The worker receives only a signal to explain private entry.
     private_setup_input = False
     if not is_flow_reply and (media_id or (is_text and len(re.sub(r"\D", "", body or "")) >= 4)):
-        from .models import PendingAction
-        private_setup_input = PendingAction.objects.filter(
-            msisdn=frm, action_type="vas_enroll", state="flow_vas",
-            expires_at__gt=timezone.now()).exists()
+        from .vas_flow import private_entry_active
+        private_setup_input = private_entry_active(frm)
         if private_setup_input:
             body, logged = "", "[private setup input]"
             # Images, captions and voice notes can contain identity details too.

@@ -15,7 +15,11 @@ export type KycStatus = ApiResult<{
   otp_required?: boolean;
   tracking_id?: string;
   identity_verification_provider?: 'prembly' | 'wema';
+  account_provider?: 'partnership' | 'wema_vas';
   delivery?: string;
+  delivery_channels?: ('sms' | 'email')[];
+  delivery_partial?: boolean;
+  delivery_notice?: string;
   otp_destination?: string;
   otp_destination_kind?: string;
   using_bvn?: boolean;
@@ -23,6 +27,7 @@ export type KycStatus = ApiResult<{
   upgrade_required?: boolean;
   next_step?: string;
   address_verified?: boolean;
+  address_verification_required?: boolean;
   email?: string;
   email_verified?: boolean;
   phone_verified?: boolean;
@@ -36,7 +41,7 @@ export type KycStatus = ApiResult<{
   id_document_verified?: boolean;
   face_rail?: 'document' | 'wema';
   tier2_face_rail?: 'prembly' | 'wema';
-  address_rail?: 'document' | 'wema';
+  address_rail?: 'document' | 'wema' | 'none';
 }>;
 
 export type ResidentialAddress = {

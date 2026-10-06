@@ -1,6 +1,15 @@
 # Frankfurt billing restoration — 3 October 2026
 
-**HOLD.** On 3 October, the API, WhatsApp worker, Meta connector and seven cron
+**Historical restoration procedure, superseded by the 6 October status below.**
+All ten Frankfurt services subsequently reached live deployment
+`05644cf330a66a8de2705103911b35b077878ac2`; PostgreSQL and cache were restored.
+Oregon was permanently retired on 6 October after explicit owner confirmation
+and a downloaded archive. The archive was inspected but has not been restore-tested.
+The old-region preservation steps below describe the earlier restoration window,
+not an instruction to recreate Oregon. Public testing and full banking launch
+remain separate gates; see the current VAS handoff.
+
+On 3 October, the API, WhatsApp worker, Meta connector and seven cron
 resources were still billing-suspended. API and Meta maintenance were enabled.
 The reviewed application release is `9e0023c7858877c4f6d72357ed07978c0d22035d`;
 the latest successful API artifact is still `c00466d`. A successful deployment

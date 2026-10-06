@@ -105,9 +105,11 @@ customer balance is copied to a new bank account.
    `frankfurt-billing-restoration-2026-10-03.md`. Keep maintenance enabled and
    consumers held until the documented restoration checks pass. Never resume
    the retained old-region database as a second writer.
-2. Deploy code and all migrations with defaults: `BANK_ACCOUNT_PROVIDER=partnership`,
+2. For an initial installation only, deploy code and all migrations with defaults: `BANK_ACCOUNT_PROVIDER=partnership`,
    `WEMA_PARTNERSHIP_MODE=active`, `WEMA_VAS_ENABLED=false`, enrollment false.
    Verify schema, PostgreSQL constraints, readiness and shared cache.
+   The existing Frankfurt installation has already passed that stage; preserve
+   its Partnership archive and configured VAS validation rail during upgrades.
 3. Set `WEMA_PARTNERSHIP_MODE=archive` consistently on API, worker and all crons
    when customer maintenance is active. This archives new account/transfer business while
    preserving outstanding settlement and historical evidence. Retain legacy

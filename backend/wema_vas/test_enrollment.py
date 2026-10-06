@@ -28,7 +28,7 @@ class EnrollmentTests(TestCase):
     def setUp(self):
         self.raw = "12345678901"
         self.user = User.objects.create(username="vas-enroll", phone="+2348012345678",
-            first_name="Ada", last_name="Eze", phone_verified=True, bvn_verified=True,
+            first_name="Ada", last_name="Eze", phone_verified=True, email_verified=True, bvn_verified=True,
             bvn_hash=hash_identifier(self.raw))
         self.wallet = Wallet.objects.create(user=self.user)
         self.proof = record_identity_proof(self.user, "bvn", self.raw,

@@ -230,9 +230,8 @@ def process_inbound_message(pk: int, *, raise_errors=False) -> str:
     try:
         payload = _decrypt(row.processing_payload)
         if payload.get("media_id"):
-            from .models import PendingAction
-            if PendingAction.objects.filter(msisdn=row.msisdn, action_type="vas_enroll",
-                    state="flow_vas", expires_at__gt=timezone.now()).exists():
+            from .vas_flow import private_entry_active
+            if private_entry_active(row.msisdn):
                 # A media job can arrive before setup starts, then be claimed
                 # after the private form opens. Recheck before any download or
                 # AI call, and replace the job before replying so even a retry

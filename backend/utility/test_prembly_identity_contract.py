@@ -22,6 +22,10 @@ class PremblyIdentityContractTests(SimpleTestCase):
         with patch("utility.providers.requests.post", return_value=response) as post:
             result = getattr(providers, "verify_" + kind)("12345678901", name="Ada Eze")
         post.assert_called_once()
+        self.assertEqual(post.call_args.args[0], "https://identity.example.test/verification/" +
+                         ("bvn" if kind == "bvn" else "vnin"))
+        self.assertEqual(post.call_args.kwargs["json"], {"number": "12345678901"})
+        self.assertEqual(post.call_args.kwargs["headers"]["x-api-key"], "test")
         self.assertFalse(post.call_args.kwargs["allow_redirects"])
         self.assertNotIn("app-id", post.call_args.kwargs["headers"])
         return result
@@ -34,6 +38,33 @@ class PremblyIdentityContractTests(SimpleTestCase):
                 result = self.lookup(self.payload(), kind=kind)
                 self.assertTrue(result["success"])
                 self.assertEqual(result["phone"], "2348012345678")
+                self.assertEqual(result["provider"], "prembly")
+
+    def test_contact_email_is_taken_only_from_verified_provider_record(self):
+        data = self.payload()
+        data["data"]["email"] = "HOLDER@Example.com"
+        self.assertEqual(self.lookup(data)["email"], "holder@example.com")
+        data["data"]["email"] = "holder@@example.com"
+        self.assertEqual(self.lookup(data)["email"], "")
+
+    def test_non_ascii_or_malformed_identifier_never_reaches_provider(self):
+        for number in (None, 12345678901, "１２３４５６７８９０１", "1234567890a", "123"):
+            for verify in (providers.prembly_verify_bvn, providers.prembly_verify_nin):
+                with self.subTest(number=number, verify=verify.__name__), \
+                        patch("utility.providers.requests.post") as post:
+                    self.assertFalse(verify(number, name="Ada Eze")["success"])
+                    post.assert_not_called()
+
+    def test_contradictory_record_or_failed_envelope_is_not_identity_proof(self):
+        for field, value in (("bvn", "99999999999"), ("watchListed", "YES"),
+                             ("watchListed", "UNKNOWN"), ("hasError", True),
+                             ("pending", True), ("error", "lookup failed")):
+            with self.subTest(field=field, value=value):
+                data = deepcopy(self.payload())
+                data["data"][field] = value
+                result = self.lookup(data)
+                self.assertFalse(result["success"])
+                self.assertNotIn("raw", result)
 
     def test_plausible_record_cannot_override_non_success_codes(self):
         for code in ("01", "02", "03", "07", "99", "", None, 0, ["00"]):

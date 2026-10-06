@@ -9,7 +9,7 @@ from common.ratelimit import ratelimit
 from wallet.services import customer_funding_account
 
 from .config import config
-from .enrollment import enroll_verified
+from .enrollment import enroll_customer
 from .views import _secure
 
 
@@ -27,7 +27,7 @@ def enroll(request):
         return _private(fail("HTTPS required", status=403))
     data = request.data
     try:
-        enroll_verified(request.user_obj, bvn=data.get("bvn", ""), nin=data.get("nin", ""), consent=data.get("consent", False))
+        enroll_customer(request.user_obj, bvn=data.get("bvn", ""), nin=data.get("nin", ""), consent=data.get("consent", False))
     except ValidationError as exc:
         return _private(fail(" ".join(exc.messages), status=409, code="vas_enrollment_pending"))
     except (DatabaseError, ImproperlyConfigured):

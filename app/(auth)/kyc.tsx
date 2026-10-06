@@ -19,6 +19,7 @@ type Status = {
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean;
   message?: string;
   address_verified?: boolean;
+  address_verification_required?: boolean;
   email?: string;
   email_verified?: boolean;
   phone_verified?: boolean;
@@ -28,9 +29,10 @@ type Status = {
   identity_face_available?: boolean;
   identity_verification_methods?: string[];
   identity_verification_provider?: 'prembly' | 'wema';
+  account_provider?: 'partnership' | 'wema_vas';
   face_rail?: 'document' | 'wema';
   tier2_face_rail?: 'prembly' | 'wema';
-  address_rail?: 'document' | 'wema';
+  address_rail?: 'document' | 'wema' | 'none';
   // Set once the bank has opened the account number: from then on it will not
   // accept a lone BVN or NIN, only all of it at once. Read here so the menu can
   // send the customer straight to the step that works.
@@ -82,10 +84,12 @@ const Kyc = () => {
   const [bvnSent, setBvnSent] = useState(false);
   const [bvnTrackingId, setBvnTrackingId] = useState('');
   const [bvnOtpDestination, setBvnOtpDestination] = useState('');
+  const [bvnDeliveryNotice, setBvnDeliveryNotice] = useState('');
   const [nin, setNin] = useState('');
   const [ninOtp, setNinOtp] = useState('');
   const [ninTrackingId, setNinTrackingId] = useState('');
   const [ninOtpDestination, setNinOtpDestination] = useState('');
+  const [ninDeliveryNotice, setNinDeliveryNotice] = useState('');
   const [ninSent, setNinSent] = useState(false);
   const [ninImage, setNinImage] = useState(''); // base64 of the NIN slip
   // Combined existing-account upgrade. The bank scores all three together, so
@@ -181,8 +185,10 @@ const Kyc = () => {
     setBvnSent(false);
     setEmail(''); setEmailOtp(''); setEmailSent(false);
     setBvnTrackingId(''); setBvnOtpDestination('');
+    setBvnDeliveryNotice('');
     setNinSent(false);
     setNinTrackingId(''); setNinOtpDestination('');
+    setNinDeliveryNotice('');
     setUpBvn(''); setUpNin(''); setUpSelfie('');
     setAddress(EMPTY_ADDRESS);
     setAddressDocument('');
@@ -196,6 +202,9 @@ const Kyc = () => {
   // one is verified with us, because the upgrade request carries both.
   const needsUpgrade = !!status?.identity_upgrade_required
     && !(status?.bvn_verified && status?.nin_verified);
+  const addressVerificationAvailable = status?.account_provider !== 'wema_vas'
+    && status?.address_verification_required !== false
+    && status?.address_rail !== 'none';
   const setAddressField = (field: keyof ResidentialAddress, value: string) =>
     setAddress((current) => ({ ...current, [field]: value }));
 
@@ -292,6 +301,7 @@ const Kyc = () => {
           setBvnTrackingId(challenge.trackingId);
           setBvnOtp('');
           setBvnOtpDestination(res.delivery || res.otp_destination || '');
+          setBvnDeliveryNotice(res.delivery_notice || '');
           setBvnSent(true);
           notify('BVN code requested', res.message || 'Enter the verification code to finish.', 'success');
         }
@@ -324,6 +334,7 @@ const Kyc = () => {
         if (!bvnTrackingId) setBvnTrackingId(resolveOwnershipOtpRoute(res)!.trackingId);
         setBvnOtp('');
         setBvnOtpDestination(res.delivery || res.otp_destination || '');
+        setBvnDeliveryNotice(res.delivery_notice || '');
         notify('BVN code resent', res.message || 'Enter the latest verification code.', 'success');
       } else if (res.pending) {
         notify('Verification processing', res.message || 'Your BVN verification is still processing. Check your status again shortly.', 'info');
@@ -349,12 +360,14 @@ const Kyc = () => {
         if (otpRoute.kind === 'bvn') {
           setBvnTrackingId(otpRoute.trackingId);
           setBvnOtpDestination(started.delivery || started.otp_destination || '');
+          setBvnDeliveryNotice(started.delivery_notice || '');
           setBvnOtp('');
           setBvnSent(true);
           setMethod('bvn');
         } else {
           setNinTrackingId(otpRoute.trackingId);
           setNinOtpDestination(started.delivery || started.otp_destination || '');
+          setNinDeliveryNotice(started.delivery_notice || '');
           setNinOtp('');
           setNinSent(true);
           setMethod('nin');
@@ -426,6 +439,7 @@ const Kyc = () => {
           setNinTrackingId(challenge.trackingId);
           setNinOtp('');
           setNinOtpDestination(res.delivery || res.otp_destination || '');
+          setNinDeliveryNotice(res.delivery_notice || '');
           setNinSent(true);
           notify('NIN code requested', res.message || 'Enter the verification code to finish.', 'success');
         }
@@ -462,6 +476,7 @@ const Kyc = () => {
         if (!ninTrackingId) setNinTrackingId(resolveOwnershipOtpRoute(res)!.trackingId);
         setNinOtp('');
         setNinOtpDestination(res.delivery || res.otp_destination || '');
+        setNinDeliveryNotice(res.delivery_notice || '');
         notify('NIN code resent', res.message || 'Enter the latest verification code.', 'success');
       } else if (res.pending) {
         notify('Verification processing', res.message || 'Your NIN verification is still processing. Check your status again shortly.', 'info');
@@ -553,7 +568,7 @@ const Kyc = () => {
   const Footer = () => (
     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 18 }}>
       <ZIcon name="lock" size={13} color={c.ink3} />
-      <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular }}>BVN/NIN are never stored in full.</Text>
+      <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular }}>Your identity details are protected.</Text>
     </View>
   );
 
@@ -588,7 +603,7 @@ const Kyc = () => {
       {method === 'menu' && (
         <View>
           <Text style={{ fontSize: 13.5, color: c.ink3, lineHeight: 20, marginBottom: 6, fontFamily: font.regular }}>
-            Verify your identity to raise your limits and unlock every Zitch feature.
+            Verify your identity and check the services available to your account.
           </Text>
 
           {status && (
@@ -627,7 +642,7 @@ const Kyc = () => {
           {status?.bvn_verified && status?.nin_verified && (
               <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Tier 2: verification service review" done={!!status?.face_verified} />
           )}
-          {status?.tier !== undefined && status.tier >= 2 && (
+          {addressVerificationAvailable && status?.tier !== undefined && status.tier >= 2 && (
             <MethodCard id="address" icon="home" color={C_BVN} title="Address verification" sub="Tier 3" done={!!status?.address_verified} />
           )}
           <Footer />
@@ -667,7 +682,9 @@ const Kyc = () => {
 
       {method === 'bvn' && !bvnSent && (
         <View>
-          <Hero icon="insurance" color={C_BVN} title="BVN verification" sub="Enter your 11-digit BVN. We'll send a code to the phone number linked to it." />
+          <Hero icon="insurance" color={C_BVN} title="BVN verification" sub={status?.identity_verification_provider === 'prembly'
+            ? 'Enter your 11-digit BVN. We’ll send a code by SMS and, where available, to the email linked to your BVN.'
+            : 'Enter your 11-digit BVN. We’ll send a code to the phone number linked to it.'} />
           <View style={{ marginTop: 22 }}>
             <Field label="Bank Verification Number (BVN)" placeholder="Enter your 11-digit BVN" keyboardType="number-pad" value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="insurance" size={18} color={c.ink3} />} />
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
@@ -684,6 +701,7 @@ const Kyc = () => {
       {method === 'bvn' && bvnSent && (
         <View>
           <Hero icon="insurance" color={C_BVN} title="Confirm your BVN" sub={`Enter the 6-digit code${bvnOtpDestination ? ` sent to ${bvnOtpDestination}` : ' sent for your BVN'}.`} />
+          {!!bvnDeliveryNotice && <Text accessibilityRole="alert" style={{ marginTop: 12, color: c.ink2, fontFamily: font.regular }}>{bvnDeliveryNotice}</Text>}
           <View style={{ marginTop: 22 }}>
             <Field label="Verification code" placeholder="6-digit code" keyboardType="number-pad" value={bvnOtp} onChangeText={(v) => setBvnOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
@@ -704,7 +722,9 @@ const Kyc = () => {
 
       {method === 'nin' && !ninSent && (
         <View>
-          <Hero icon="card" color={C_NIN} title="NIN verification" sub="Enter your 11-digit NIN. We'll send a code to the phone number registered on your NIN." />
+          <Hero icon="card" color={C_NIN} title="NIN verification" sub={status?.identity_verification_provider === 'prembly'
+            ? 'Enter your 11-digit NIN. We’ll send a code by SMS and, where available, to the email linked to your NIN.'
+            : 'Enter your 11-digit NIN. We’ll send a code to the phone number registered on your NIN.'} />
           <View style={{ marginTop: 22 }}>
             <Field label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad" value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
             <View style={{ height: 12 }} />
@@ -729,6 +749,7 @@ const Kyc = () => {
       {method === 'nin' && ninSent && (
         <View>
           <Hero icon="card" color={C_NIN} title="Confirm your NIN" sub={`Enter the 6-digit code${ninOtpDestination ? ` sent to ${ninOtpDestination}` : ' sent for your NIN'}.`} />
+          {!!ninDeliveryNotice && <Text accessibilityRole="alert" style={{ marginTop: 12, color: c.ink2, fontFamily: font.regular }}>{ninDeliveryNotice}</Text>}
           <View style={{ marginTop: 22 }}>
             <Field label="Verification code" placeholder="6-digit code" keyboardType="number-pad" value={ninOtp} onChangeText={(v) => setNinOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
@@ -786,7 +807,7 @@ const Kyc = () => {
         </View>
       )}
 
-      {method === 'address' && (
+      {method === 'address' && addressVerificationAvailable && (
         <View>
           <Hero icon="home" color={C_BVN} title="Address verification" sub="Tier 3" />
           <Field label="Building number" value={address.buildingNumber} onChangeText={(value) => setAddressField('buildingNumber', value)} />

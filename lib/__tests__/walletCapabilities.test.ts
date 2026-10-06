@@ -22,6 +22,14 @@ describe('wallet capability display', () => {
     expect(walletCapabilities({ provider: 'wema_vas', bill_payments_available: true }).transfersAvailable).toBe(false);
   });
 
+  it('never enables payments or spendable funds for a VAS validation account', () => {
+    const response = { provider: 'wema_vas' as const, test_mode: true,
+      bill_payments_available: true, transfers_available: true, spending_available: true,
+      wallet: '1000.00', available_balance: '1000.00' };
+    expect(walletCapabilities(response)).toEqual({ billPaymentsAvailable: false, transfersAvailable: false });
+    expect(walletBalances(response).availableBalance).toBe(0);
+  });
+
   it('preserves older Partnership responses while respecting explicit per-service restrictions', () => {
     expect(walletCapabilityMessage(walletCapabilities({ provider: 'partnership' }))).toBe('');
     expect(walletCapabilities({ spending_available: false })).toEqual({

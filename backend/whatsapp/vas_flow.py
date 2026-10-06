@@ -2,7 +2,7 @@
 
 Only a signed, linked customer session can reach enrollment. Identity digits are
 used in memory for lookup/enrollment and are never kept in PendingAction or a
-cache. When new ownership proof is needed, the existing provider/SMS challenge
+cache. When new ownership proof is needed, the provider-record contact challenge
 records it first; the customer then re-enters the identifier on a fresh screen.
 """
 import hmac
@@ -28,7 +28,7 @@ from urllib3.util import Timeout
 from accounts.models import IdentityProof, User, hash_identifier
 from common.ratelimit import opaque_cache_identifier
 from wallet.models import Wallet
-from wema_vas.enrollment import CONSENT_VERSION, enrollment_available, enroll_verified
+from wema_vas.enrollment import CONSENT_VERSION, customer_enrollment_available, enroll_customer
 from .models import PendingAction, WhatsAppLink
 
 PREFIX = "va"
@@ -41,8 +41,17 @@ REENTRY = "VAS_REENTRY"
 SCREENS = {SETUP, IDENTITY, CODE, CODE_RETRY, REENTRY, "RESULT"}
 TTL = timedelta(minutes=15)
 UNAVAILABLE = "Secure account setup is temporarily unavailable. Please try again here shortly."
-PRIVATE_ENTRY = "Use the private setup form above. Do not send your BVN, NIN or code in this chat. Reply cancel to stop."
+PRIVATE_ENTRY = "Use the private verification form above. Do not send your BVN, NIN or code in this chat. Reply cancel to stop."
 log = logging.getLogger("zitch.security")
+
+
+def private_entry_active(msisdn):
+    from django.db.models import Q
+    return PendingAction.objects.filter(msisdn=msisdn, expires_at__gt=timezone.now()).filter(
+        Q(action_type="vas_enroll", state=STATE)
+        | Q(action_type="kyc", state="flow_identity", payload__vas_contacts=True)
+        | Q(action_type="kyc", state="flow_identity", payload__vas_identity=True)
+    ).exists()
 
 
 def _configured():
@@ -73,7 +82,7 @@ def ready():
 
 def _credentials(user):
     return salted_hmac("whatsapp.vas.credentials.v1", ":".join(map(str, (
-        user.pk, user.phone, user.password, user.transaction_pin,
+        user.pk, user.phone, user.email, user.email_verified, user.password, user.transaction_pin,
     ))), algorithm="sha256").hexdigest()
 
 
@@ -100,7 +109,7 @@ def _resolve(token):
 
 
 def _bound(pa, user):
-    return bool(user.is_active and user.phone_verified
+    return bool(user.is_active and user.phone_verified and user.email and user.email_verified
                 and pa.payload.get("flow_id") == settings.WHATSAPP_FLOW.get("FLOW_ID")
                 and pa.payload.get("contract") == _contract_digest()
                 and hmac.compare_digest(_credentials(user), str(pa.payload.get("credentials") or ""))
@@ -149,13 +158,19 @@ def _screen(pa):
     kind = str(pa.payload.get("id_kind", "bvn")).upper()
     screen = pa.payload.get("screen", IDENTITY)
     if step == "code":
-        summary = f"Enter the SMS code sent to the phone on your {kind} record ({pa.payload.get('id_otp_to', '')})."
-        label = "SMS code"
+        delivery = pa.payload.get("id_otp_delivery") or {}
+        target = delivery.get("delivery") or pa.payload.get("id_otp_to", "")
+        channels = delivery.get("delivery_channels") or ["sms"]
+        via = "SMS and email" if "email" in channels else "SMS"
+        summary = f"Enter the code sent by {via} to your {kind} record contacts ({target})."
+        if delivery.get("delivery_notice"):
+            summary += " " + delivery["delivery_notice"]
+        label = "Verification code"
     elif step == "reentry":
         summary = f"Identity confirmed. Re-enter the same {kind} to finish. We did not retain your earlier entry."
         label = kind
     elif step == "processing":
-        summary, label = "Your identity is being checked. Please wait for the SMS code.", kind
+        summary, label = "Your identity is being checked. Please wait for your verification code.", kind
     else:
         summary, label = f"Enter your 11-digit {kind} privately to set up your account.", kind
     return {"screen": screen, "data": {"summary": summary, "label": label,
@@ -181,12 +196,14 @@ def _replay(pa, screen, digest):
 @sensitive_variables()
 def start(user, msisdn):
     from .providers import send_flow
-    from .router import EXECUTING_STATE, _clear_actions, reply
-    if not enrollment_available(user) or not ready():
+    from .router import EXECUTING_STATE, _clear_actions, _start_kyc, reply
+    if not customer_enrollment_available(user) or not ready():
         return reply(msisdn, UNAVAILABLE)
     link = WhatsAppLink.objects.filter(user=user, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE).first()
     if not link or not user.is_active or not user.phone_verified:
         return reply(msisdn, "Please sign in securely on WhatsApp before setting up your account.")
+    if not user.email or not user.email_verified:
+        return _start_kyc(user, msisdn)
     if not cache.add("wa-vas-start:" + opaque_cache_identifier("wa-vas-start", str(user.pk)), True, 60):
         return reply(msisdn, "Please wait a minute before opening another setup form.")
     with transaction.atomic():
@@ -233,7 +250,7 @@ def _identity(token, data, screen, request_digest):
             return replay
         if pa.payload.get("vas_step") not in {"identity", "reentry"}:
             return _screen(pa) if pa.payload.get("vas_step") == "done" else _result("This step is already processing. Return to the chat.")
-        if pa.payload.get("consent") is not True or not enrollment_available(user):
+        if pa.payload.get("consent") is not True or not customer_enrollment_available(user):
             return _finish(pa, UNAVAILABLE, "Not completed")
         kind = pa.payload["id_kind"]
         digest = hash_identifier(number)
@@ -243,12 +260,15 @@ def _identity(token, data, screen, request_digest):
             return _finish(pa, "Those details could not be confirmed. Start again with your own verified identity.", "Not completed")
         if _has_proof(user, kind, digest):
             try:
-                enroll_verified(user, **{kind: number}, consent=True,
+                account = enroll_customer(user, **{kind: number}, consent=True,
                     consent_reference=f"{CONSENT_VERSION}:whatsapp:{pa.pk}:{pa.payload['consent_at']}")
             except ValidationError:
                 return _finish(pa, "Your account setup needs review. Contact Zitch Support here; your existing balance is unchanged.", "Not completed")
             from wallet.services import customer_funding_account
             from .router import _funding_spending_notice
+            if account.mode == "validation":
+                return _finish(pa, f"Your test account is ready: {account.number}. TEST ONLY — DO NOT FUND. "
+                               "This number cannot receive real deposits or make payments.", "Test setup complete")
             notice = _funding_spending_notice(customer_funding_account(user)).strip()
             return _finish(pa, "Your funding account is ready. Close this form and reply 6 to view it. " + notice, "Successful")
         if pa.payload.get("vas_step") == "reentry":
@@ -259,17 +279,17 @@ def _identity(token, data, screen, request_digest):
         pa.save(update_fields=["payload"])
     # Reuse the same authoritative lookup and registered-phone ownership
     # challenge as KYC. No account creation / Partnership fallback is allowed.
-    from utility.providers import _prembly_identity_live, prembly_verify_bvn, prembly_verify_nin
+    from utility.providers import _prembly_identity_live, _record_email, prembly_verify_bvn, prembly_verify_nin
     from .router import _kyc_send_identity_otp
-    # Two sequential external calls share the encrypted exchange's short
-    # response window. Keep separate fresh three-second budgets so a slow
-    # identity provider or SMS service cannot inherit the ordinary 30s limit.
+    # Lookup and SMS use separate three-second budgets; optional record-email
+    # delivery below uses two seconds. None inherits the ordinary 30s limit.
     result = (prembly_verify_bvn if kind == "bvn" else prembly_verify_nin)(number,
         name=user.get_full_name() or "", timeout=Timeout(total=3, connect=1, read=2)) if _prembly_identity_live() else {}
     name = " ".join(str(result.get(key) or "").strip() for key in ("first_name", "middle_name", "last_name")).strip()
     error = "lookup unavailable"
     if result.get("success") is True and not result.get("mock") and name and result.get("phone"):
         error = _kyc_send_identity_otp(pa, user, kind, result["phone"], verified_name=name,
+            email=_record_email(result),
             timeout=Timeout(total=3, connect=1, read=2))
     with _locked(token) as (current, _user):
         if current is None:
@@ -293,7 +313,7 @@ def handle(token, action, data, screen=""):
         with _locked(token) as (pa, user):
             if pa is None:
                 return _close_flow(token)
-            if not enrollment_available(user):
+            if not customer_enrollment_available(user):
                 return _finish(pa, UNAVAILABLE, "Not completed")
             step = pa.payload.get("vas_step")
             if step == "done":
@@ -324,7 +344,7 @@ def handle(token, action, data, screen=""):
                 if outcome == "ok":
                     pa.payload.update({"vas_step": "reentry", "screen": REENTRY, "error": ""})
                 elif outcome == "retry" and pa.payload.get("screen") == CODE:
-                    pa.payload.update({"screen": CODE_RETRY, "error": "Check your SMS code and try once more."})
+                    pa.payload.update({"screen": CODE_RETRY, "error": "Check your verification code and try once more."})
                 else:
                     return _finish(pa, "The code could not be confirmed. Start again in the chat.", "Not completed")
                 pa.save(update_fields=["payload"])

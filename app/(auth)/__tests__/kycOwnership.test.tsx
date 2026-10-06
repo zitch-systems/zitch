@@ -42,7 +42,7 @@ jest.mock('@/components/design/ui', () => {
 const state = { success: true, tier: 0, transaction_limit: '0', bvn_verified: false, nin_verified: false,
   face_verified: false, identity_verification_provider: 'prembly' };
 
-beforeEach(() => mockApiJson.mockReset());
+beforeEach(() => { mockApiJson.mockReset(); mockParams.verify_identity = 'bvn'; });
 
 it.each(['bvn', 'nin'])('finishes a %s Prembly SMS challenge without bank tracking or account creation', async (kind) => {
   mockParams.verify_identity = kind;
@@ -67,5 +67,58 @@ it.each(['bvn', 'nin'])('finishes a %s Prembly SMS challenge without bank tracki
   expect(mockApiJson).toHaveBeenCalledWith(kind === 'bvn' ? EP.kyc.bvnConfirm : EP.kyc.ninConfirm, { otp: '123456' });
   expect(mockApiJson.mock.calls.map(([path]) => path)).not.toContain(EP.wallet.createAccount);
   expect(JSON.stringify(tree.toJSON())).not.toContain('12345678901');
+  await act(async () => tree.unmount());
+});
+
+it.each(['bvn', 'nin'])('shows accepted %s OTP destinations and refreshes partial delivery on resend', async (kind) => {
+  mockParams.verify_identity = kind;
+  let attempts = 0;
+  mockApiJson.mockImplementation(async (path: string) => {
+    if (path === EP.kyc.status) return state;
+    attempts += 1;
+    return {
+      success: true, otp_required: true, identity_verification_provider: 'prembly',
+      delivery: attempts === 1 ? 'registered phone •••••8888' : 'registered phone •••••8888 and email a***@example.com',
+      delivery_channels: attempts === 1 ? ['sms'] : ['sms', 'email'],
+      delivery_partial: attempts === 1,
+      delivery_notice: attempts === 1 ? 'Email delivery failed. Use the code sent by SMS.' : '',
+    };
+  });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  await act(async () => { tree.root.findByType(TextInput).props.onChangeText('12345678901'); });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: kind === 'bvn' ? 'Send verification code' : 'Send NIN verification code' }).props.onPress(); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Email delivery failed. Use the code sent by SMS.');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('a***@example.com');
+  const resend = tree.root.findAll((node) => node.props.children === 'Resend code' && typeof node.props.onPress === 'function')[0];
+  await act(async () => { await resend.props.onPress(); });
+  expect(JSON.stringify(tree.toJSON())).toContain('registered phone •••••8888 and email a***@example.com');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Email delivery failed. Use the code sent by SMS.');
+  await act(async () => tree.unmount());
+});
+
+it.each([
+  { account_provider: 'wema_vas' },
+  { address_verification_required: false },
+  { address_rail: 'none' },
+])('does not offer address verification when the server disables it: %j', async (providerPolicy) => {
+  mockParams.verify_identity = '';
+  mockApiJson.mockResolvedValue({ ...state, tier: 2, bvn_verified: true, nin_verified: true,
+    face_verified: true, email_verified: true, ...providerPolicy });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Address verification');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('BVN/NIN are never stored in full.');
+  await act(async () => tree.unmount());
+});
+
+it('preserves the server-required address step for legacy accounts', async () => {
+  mockParams.verify_identity = '';
+  mockApiJson.mockResolvedValue({ ...state, tier: 2, bvn_verified: true, nin_verified: true,
+    face_verified: true, email_verified: true, account_provider: 'partnership',
+    address_verification_required: true, address_rail: 'wema' });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Address verification');
   await act(async () => tree.unmount());
 });

@@ -10,6 +10,7 @@ movement.
 import hashlib
 import logging
 import math
+import re
 import secrets
 
 import requests
@@ -958,7 +959,7 @@ def prembly_verify_bvn(bvn: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> 
     Uses Prembly's BVN Advance product because the ownership challenge needs the
     identity-registered phone number as well as the holder's name.
     """
-    if len(bvn) != 11 or not bvn.isdigit():
+    if not isinstance(bvn, str) or not re.fullmatch(r"[0-9]{11}", bvn):
         return {"success": False, "invalid": True, "message": "BVN must be 11 digits"}
     return _prembly_identity_lookup("bvn", bvn, name, timeout=timeout)
 
@@ -1011,9 +1012,18 @@ def _prembly_identity_lookup(kind: str, number: str, name: str, *, timeout=REQUE
         return invalid
     if code != "00" or data["status"] is not True:
         return unavailable
+    if not _prembly_response_has_no_failure(data, resp.status_code):
+        return unavailable
     record = data.get("data") if "data" in data else data.get(f"{kind}_data")
     if not isinstance(record, dict) or not record:
         return unavailable
+    if kind in record and record[kind] != number:
+        return unavailable
+    if kind == "bvn" and "watchListed" in record:
+        watchlisted = record["watchListed"]
+        if watchlisted is not False and not (
+                isinstance(watchlisted, str) and watchlisted.strip().upper() == "NO"):
+            return unavailable
     # Some products also attach verification.status. A pending, failed or
     # malformed secondary signal cannot override the required completed result.
     for container in (data, record):
@@ -1056,7 +1066,7 @@ def _prembly_identity_lookup(kind: str, number: str, name: str, *, timeout=REQUE
                     "message": f"That {kind.upper()} does not match the name on this account."}
     elif not resolved:
         return unavailable
-    return {"success": True, "first_name": first, "middle_name": middle, "last_name": last,
+    return {"success": True, "provider": "prembly", "first_name": first, "middle_name": middle, "last_name": last,
             "phone": _record_phone(record), "email": _record_email(record), "raw": data}
 
 
@@ -1076,11 +1086,12 @@ def _record_phone(record: dict) -> str:
     name, while a code delivered to the line the bank or NIMC holds proves the
     person asking controls it.
     """
+    from common.phones import normalize_nigerian_mobile
+
     for field in _PHONE_FIELDS:
-        raw = str(record.get(field) or "").strip()
-        digits = "".join(ch for ch in raw if ch.isdigit())
-        if len(digits) >= 10:
-            return _ng_msisdn(digits)
+        local = normalize_nigerian_mobile(record.get(field))
+        if local:
+            return _ng_msisdn(local)
     return ""
 
 
@@ -1103,16 +1114,51 @@ def _record_email(record: dict) -> str:
     inconsistently. "" is the normal answer, not an error, and the caller falls
     back to SMS alone rather than to the account address.
     """
+    from django.core.exceptions import ValidationError
+    from django.core.validators import validate_email
+
     for field in _EMAIL_FIELDS:
-        value = str(record.get(field) or "").strip().lower()
-        # Deliberately shallow: this is a "did the provider give us something
-        # postable" check, not address validation. Resend is the authority on
-        # deliverability, and a stricter regex here would silently drop valid
-        # addresses rather than let it answer.
-        local, _, domain = value.partition("@")
-        if local and "." in domain and " " not in value and len(value) <= 254:
-            return value
+        raw = record.get(field)
+        if not isinstance(raw, str) or any(ord(char) < 32 for char in raw):
+            continue
+        value = raw.strip().lower()
+        if not value or len(value) > 254 or "." not in value.rpartition("@")[2]:
+            continue
+        try:
+            validate_email(value)
+        except ValidationError:
+            continue
+        return value
     return ""
+
+
+def identity_otp_delivery_payload(phone: str, *, email: str = "",
+                                  email_status: str = "not_available") -> dict:
+    """Public, masked delivery facts after a real identity SMS was accepted.
+
+    Callers own delivery and must never call this to fabricate acceptance. Email
+    is optional and must come from the identity record, not the account profile.
+    """
+    from common.http import mask_pii
+
+    email = _record_email({"email": email})
+    if not email:
+        email_status = "not_available"
+    elif email_status not in {"accepted", "failed", "unavailable"}:
+        email_status = "unavailable"
+    channels = ["sms"]
+    delivery = f"registered phone •••••{phone[-4:]}"
+    if email_status == "accepted":
+        channels.append("email")
+        delivery += f" and registered email {mask_pii(email)}"
+    partial = bool(email and email_status != "accepted")
+    out = {"delivery": delivery, "delivery_channels": channels,
+           "delivery_status": {"sms": "accepted", "email": email_status},
+           "delivery_partial": partial}
+    if partial:
+        out["delivery_notice"] = (
+            "Email delivery was unavailable. Use the code sent to your registered phone.")
+    return out
 
 
 def verify_nin(nin: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> dict:
@@ -1147,7 +1193,7 @@ def prembly_verify_nin(nin: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> 
     Uses Prembly's NIN Advance endpoint so the result contains sufficient
     holder information for name matching and the registered-line challenge.
     """
-    if len(nin) != 11 or not nin.isdigit():
+    if not isinstance(nin, str) or not re.fullmatch(r"[0-9]{11}", nin):
         return {"success": False, "invalid": True, "message": "NIN must be 11 digits"}
     return _prembly_identity_lookup("nin", nin, name, timeout=timeout)
 
