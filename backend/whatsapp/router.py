@@ -1448,6 +1448,11 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if _is_simulation_command(low):
         return _handle_simulation_command(user, msisdn, low)
 
+    # Existing customers restart setup on their current profile. This command
+    # can leave an unsubmitted form, but never a payment already being executed.
+    if low in _VAS_REGISTER_COMMANDS:
+        return _start_vas_reregistration(user, msisdn)
+
     pa = _current_action(msisdn)
     if pa is not None:
         return _advance(pa, user, msisdn, text)
@@ -1653,6 +1658,7 @@ _SENSITIVE_READS = {
     "14", "loan", "my loan", "loan balance", "my loan balance", "loans",
     "repay loan", "loan repayment", "repay my loan", "pay loan", "pay my loan",
 }
+_VAS_REGISTER_COMMANDS = {"register", "reregister", "re-register", "re register", "vas"}
 _REAUTH_SETTING = "wa_reauth_idle_minutes"
 
 
@@ -1706,6 +1712,8 @@ def _send_unlock(user, msisdn: str, resume: str) -> None:
 
 def _exec_unlock(pa: PendingAction, user, msisdn: str) -> str:
     """Identity proven: start the window and run the command that triggered it."""
+    if pa.payload.get("vas_reregister") is True:
+        return _finish_vas_reregistration(pa, user, msisdn)
     resume = str(pa.payload.get("resume") or "").strip()
     PendingAction.objects.filter(pk=pa.pk).delete()
     _mark_verified(msisdn)
@@ -1787,7 +1795,7 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
     # Link is tested first - "i already have an account" names an account but is
     # asking for the opposite of a signup.
     if low in ("2", "link", "link account", "i have an account", "sign in", "login", "log in") \
-            or LINK_INTENT.search(low):
+            or low in (_VAS_REGISTER_COMMANDS - {"register"}) or LINK_INTENT.search(low):
         from .login_flow import start_login
         return start_login(msisdn)
     if low in ("1", "create", "create account", "sign up", "signup", "register", "open account", "new", "get started") \
@@ -2226,6 +2234,24 @@ def _do_balance(user, msisdn: str) -> None:
 # --------------------------------------------------------------------------- #
 # add money - the user's dedicated (reserved) account for bank-transfer funding
 # --------------------------------------------------------------------------- #
+def _vas_identity_refresh_available(user, funding: dict) -> bool:
+    """Let a verified legacy identity obtain its missing durable name proof.
+
+    This opens verification only when it is the sole enrollment blocker. The
+    allocator still independently checks consent, proof and financial state.
+    """
+    from wema_vas.enrollment import customer_enrollment_available
+
+    return bool(funding.get("provider") == "wema_vas"
+        and funding.get("enrollment_status") == "verification_required"
+        and funding.get("enrollment_blockers") == ["identity_verification"]
+        and funding.get("account_setup_state") == "vas_enrollment_required"
+        and not funding.get("has_account") and not funding.get("available")
+        and not funding.get("validation_account_number")
+        and user.phone_verified and user.email_verified
+        and customer_enrollment_available(user))
+
+
 def _send_vas_setup(user, msisdn: str, funding: dict | None = None) -> None:
     """Offer the separately approved private setup contract, entirely in chat."""
     from .vas_flow import start
@@ -2233,17 +2259,88 @@ def _send_vas_setup(user, msisdn: str, funding: dict | None = None) -> None:
     funding = funding if funding is not None else customer_funding_account(user)
     if _kyc_outstanding(user):
         return _start_kyc(user, msisdn)
-    if funding.get("enrollment_available"):
+    sample = funding.get("validation_account_number")
+    if (funding.get("test_mode") is True and funding.get("account_setup_state") == "vas_validation"
+            and isinstance(sample, str) and re.fullmatch(r"711[0-9]{7}", sample)):
+        return reply(msisdn, "🏦 *Your Zitch test account*\n\n"
+                     f"🔢 *{sample}*\n\n"
+                     "*TEST ONLY — DO NOT FUND.* Share this sample number only for the approved bank integration tests. "
+                     "Your existing profile, verification and transaction history remain saved.")
+    if funding.get("enrollment_available") or _vas_identity_refresh_available(user, funding):
         return start(user, msisdn)
     return reply(msisdn, "🏦 *Your Zitch funding account*\n\n"
-                 + str(funding.get("migration_message") or "Account setup is not available yet.")
+                 + str(funding.get("enrollment_message") or funding.get("migration_message") or "Account setup is not available yet.")
                  + "\n\nPlease check again here later. Do not send your BVN or NIN in this chat.")
+
+
+def _vas_reregistration_busy(msisdn: str) -> bool:
+    return (PendingAction.objects.filter(msisdn=msisdn, state=EXECUTING_STATE)
+            .exclude(action_type="unlock").exists()
+            or PendingAction.objects.filter(msisdn=msisdn, action_type="verification_web",
+                state__in=("web_processing", "web_review")).exists())
+
+
+def _start_vas_reregistration(user, msisdn: str) -> None:
+    """Fresh private authentication before continuing the existing profile."""
+    from .vas_identity import credentials
+
+    user.refresh_from_db()
+    link = WhatsAppLink.objects.filter(user=user, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE).first()
+    if link is None or not user.is_active:
+        return reply(msisdn, "Please sign in securely to your existing Zitch account before restarting setup.")
+    if _vas_reregistration_busy(msisdn):
+        return reply(msisdn, "Your earlier payment or submitted verification is still being completed. "
+                     "Wait for its result, then reply *register* to continue account setup.")
+    funding = customer_funding_account(user)
+    if funding.get("provider") != "wema_vas":
+        return reply(msisdn, "Your Zitch profile already exists. Reply *8* to review your verification or *6* for account setup.")
+    pending = _current_action(msisdn)
+    stamp = credentials(user)
+    if (pending is not None and pending.action_type == "unlock"
+            and pending.payload.get("vas_reregister") is True
+            and pending.payload.get("vas_reregister_link_id") == link.pk
+            and secrets.compare_digest(str(pending.payload.get("vas_reregister_credentials") or ""), stamp)):
+        return reply(msisdn, "Confirm your identity on the secure form above to continue your existing account setup. "
+                     "Keep your PIN out of this chat.")
+    pa = _new_flow(user, msisdn, "unlock", "pin", {
+        "pin_attempts": 0, "resume": "vas", "vas_reregister": True,
+        "vas_reregister_link_id": link.pk, "vas_reregister_credentials": stamp,
+    })
+    if not _arm_confirm(pa, user):
+        return None
+    return _send_confirm(pa, msisdn, "Confirm it's you to continue setup on your existing Zitch profile. "
+                         "Your saved verification, balance and transaction history will stay in place.")
+
+
+def _finish_vas_reregistration(pa: PendingAction, user, msisdn: str) -> str:
+    from .vas_identity import credentials
+
+    user.refresh_from_db()
+    valid = (user.is_active and pa.user_id == user.pk and pa.msisdn == msisdn
+             and secrets.compare_digest(str(pa.payload.get("vas_reregister_credentials") or ""), credentials(user))
+             and WhatsAppLink.objects.filter(pk=pa.payload.get("vas_reregister_link_id"),
+                 user=user, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE).exists())
+    PendingAction.objects.filter(pk=pa.pk).delete()
+    if not valid:
+        return "This sign-in changed. Sign in again, then reply register to restart setup securely."
+    if _vas_reregistration_busy(msisdn):
+        return "Your earlier payment or submitted verification is still being completed. Wait for its result, then reply register."
+    funding = customer_funding_account(user)
+    if funding.get("provider") != "wema_vas":
+        return "Account setup changed. Reply 8 to review your verification."
+    _mark_verified(msisdn)
+    if (funding.get("test_mode") is not True and funding.get("has_account")
+            and funding.get("available") and funding.get("account_setup_state") == "ready"):
+        _send_account_details(msisdn, get_or_create_wallet(user))
+    else:
+        _send_vas_setup(user, msisdn, funding)
+    return "Identity confirmed. Continue your account setup in the chat."
 
 
 def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to your wallet*") -> None:
     funding = customer_funding_account(wallet.user)
     is_vas = funding.get("provider") == "wema_vas"
-    if is_vas and (not funding.get("has_account") or not funding.get("available")
+    if is_vas and (funding.get("test_mode") is True or not funding.get("has_account") or not funding.get("available")
                    or funding.get("account_setup_state") != "ready"):
         return _send_vas_setup(wallet.user, msisdn, funding)
     accts = funding.get("bank_accounts") or []
@@ -2975,7 +3072,7 @@ def _vas_verification_status(user, msisdn: str, funding: dict | None = None) -> 
     funding = funding if funding is not None else customer_funding_account(user)
     reply(msisdn, "🪪 *Your verification status*\n\n" + _kyc_status_lines(user)
           + "\n\nYour completed checks stay saved.")
-    if funding.get("enrollment_available"):
+    if funding.get("enrollment_available") or _vas_identity_refresh_available(user, funding):
         return _send_vas_setup(user, msisdn, funding)
     if funding.get("has_account") and funding.get("available"):
         return _send_account_details(msisdn, get_or_create_wallet(user))
@@ -4100,13 +4197,19 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
             locked.save(update_fields=["payload"])
             pa.payload = locked.payload
             return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
-        verified_name = str(locked.payload.get("id_otp_verified_name") or "") if is_prembly else ""
+        verified_name = " ".join(str(locked.payload.get("id_otp_verified_name") or "").split()) if is_prembly else ""
         if is_prembly and (not verified_name or locked.payload.get("vas_step") != "code"):
             return "stop", "This verification has ended. Start again in the chat."
-        if is_prembly and IdentityProof.objects.filter(
+        if is_prembly:
+            # Blank legacy names are missing evidence, not conflicting legal
+            # names. Compare normalized substantive names before adding the
+            # freshly verified Prembly proof; never clear an existing flag.
+            prior_names = IdentityProof.objects.filter(
                 user=user, identity_type=kind, identity_hash=identity_hash,
-            ).exclude(verified_name="").exclude(verified_name__iexact=verified_name).exists():
-            return "stop", "Your identity details need review. Contact Zitch Support."
+            ).values_list("verified_name", flat=True)
+            if any(name and name != verified_name.casefold()
+                   for name in (" ".join(value.split()).casefold() for value in prior_names)):
+                return "stop", "Your identity details need review. Contact Zitch Support."
         fields = [f"{kind}_verified", "tier"]
         if is_prembly:
             if (getattr(user, f"{kind}_verified")

@@ -10,7 +10,8 @@ from accounts.models import AccessToken, IdentityProof, User, hash_identifier, r
 from wallet.models import Transaction, Wallet
 from wallet.services import LimitExceeded, assert_customer_spending_available, biller_spending_available
 
-from .enrollment import (customer_account_payload, customer_enrollment_available, enroll_customer,
+from .enrollment import (CONSENT_VERSION, VALIDATION_CONSENT_VERSION,
+                         customer_account_payload, customer_enrollment_available, enroll_customer,
                          enrollment_available, enroll_verified, validation_enrollment_available)
 from .models import Receipt, VirtualAccount
 from .services import process_notification
@@ -129,13 +130,9 @@ class ValidationEnrollmentTests(TestCase):
                 self.enroll()
         self.assertFalse(VirtualAccount.objects.exists())
 
-    def test_legacy_number_or_balance_cannot_enter_validation(self):
+    def test_legacy_profile_with_nonzero_balance_cannot_enter_validation(self):
         with override_settings(WEMA_VAS=self.allowed):
             self.wallet.account_number = "1234567890"
-            self.wallet.save()
-            with self.assertRaises(ValidationError):
-                self.enroll()
-            self.wallet.account_number = ""
             self.wallet.balance = Decimal("1")
             self.wallet.save()
             with self.assertRaises(ValidationError):
@@ -184,7 +181,8 @@ class ValidationEnrollmentTests(TestCase):
             self.assertEqual(customer_account_payload(self.user)["validation_account_number"], "")
 
     def test_customer_endpoint_derives_mode_and_returns_private_test_details(self):
-        body = {"bvn": self.raw, "consent": True, "validation": False, "mode": "live"}
+        body = {"bvn": self.raw, "consent": True, "validation": False, "mode": "live",
+                "enrollment_mode": "validation", "consent_version": VALIDATION_CONSENT_VERSION}
         with override_settings(WEMA_VAS=self.allowed):
             result = self.client.post("/api/wallet/vas/enroll/", json.dumps(body),
                 content_type="application/json", secure=True, **self.headers)
@@ -205,8 +203,56 @@ class ValidationEnrollmentTests(TestCase):
         self.assertFalse(balance.json()["spending_available"])
 
     def test_client_cannot_opt_into_validation_without_an_invitation(self):
-        body = {"bvn": self.raw, "consent": True, "validation": True, "user_id": self.user.pk}
+        body = {"bvn": self.raw, "consent": True, "validation": True, "user_id": self.user.pk,
+                "enrollment_mode": "validation", "consent_version": VALIDATION_CONSENT_VERSION}
         result = self.client.post("/api/wallet/vas/enroll/", json.dumps(body),
             content_type="application/json", secure=True, **self.headers)
         self.assertEqual(result.status_code, 409)
         self.assertFalse(VirtualAccount.objects.exists())
+
+    def test_customer_endpoint_requires_exact_mode_and_consent_version_before_allocation(self):
+        base = {"bvn": self.raw, "consent": True, "enrollment_mode": "validation",
+                "consent_version": VALIDATION_CONSENT_VERSION}
+        cases = [{key: value for key, value in base.items() if key not in omitted}
+                 for omitted in (("enrollment_mode",), ("consent_version",),
+                                 ("enrollment_mode", "consent_version"))]
+        cases += [{**base, **change} for change in (
+            {"enrollment_mode": None}, {"consent_version": None},
+            {"enrollment_mode": "live"}, {"consent_version": CONSENT_VERSION},
+            {"enrollment_mode": True}, {"consent_version": True})]
+        with override_settings(WEMA_VAS=self.allowed):
+            for body in cases:
+                with self.subTest(mode=body.get("enrollment_mode"), version=body.get("consent_version")):
+                    result = self.client.post("/api/wallet/vas/enroll/", json.dumps(body),
+                        content_type="application/json", secure=True, **self.headers)
+                    self.assertEqual(result.status_code, 409)
+                    self.assertEqual(result.json()["code"], "vas_consent_refresh_required")
+                    self.assertIn("Refresh", result.json()["message"])
+                    self.assertEqual(result["Cache-Control"], "no-store")
+                    self.assertNotIn(self.raw, result.content.decode())
+                    self.assertFalse(VirtualAccount.objects.exists())
+        self.assertFalse(Transaction.objects.exists())
+
+    def test_validation_consent_cannot_be_reused_after_server_switches_to_live(self):
+        old_form = {"bvn": self.raw, "consent": True, "enrollment_mode": "validation",
+                    "consent_version": VALIDATION_CONSENT_VERSION}
+        live = {**self.allowed, "MODE": "live", "PREFIX": "712", "ENABLE_ENROLLMENT": True,
+                "ENABLE_VALIDATION_ENROLLMENT": False, "RELEASE_PHASE": "general",
+                "LIVE_APPROVAL_REFERENCE": "reviewed-bank-live-evidence",
+                "GENERAL_APPROVAL_REFERENCE": "reviewed-customer-launch-evidence",
+                "COLLECTION_ACCOUNT": "1234567890"}
+        with override_settings(WEMA_VAS=live):
+            stale = self.client.post("/api/wallet/vas/enroll/", json.dumps(old_form),
+                content_type="application/json", secure=True, **self.headers)
+            self.assertEqual(stale.status_code, 409)
+            self.assertEqual(stale.json()["code"], "vas_consent_refresh_required")
+            self.assertFalse(VirtualAccount.objects.exists())
+            current = {**old_form, "enrollment_mode": "live", "consent_version": CONSENT_VERSION}
+            no_consent = self.client.post("/api/wallet/vas/enroll/", json.dumps({**current, "consent": False}),
+                content_type="application/json", secure=True, **self.headers)
+            self.assertEqual(no_consent.status_code, 409)
+            self.assertFalse(VirtualAccount.objects.exists())
+            accepted = self.client.post("/api/wallet/vas/enroll/", json.dumps(current),
+                content_type="application/json", secure=True, **self.headers)
+            self.assertEqual(accepted.status_code, 200, accepted.content)
+            self.assertEqual(VirtualAccount.objects.get().mode, VirtualAccount.LIVE)

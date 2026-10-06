@@ -36,7 +36,9 @@ def sample_readiness(numbers, *, mode, prefix):
             )
             wallet = Wallet.objects.get(user_id=account.user_id)
             if mode == VirtualAccount.VALIDATION:
-                # Bank-only test accounts must remain financially isolated.
+                # Conservative sample readiness requires zero legacy liabilities
+                # now. A later legacy credit may make a sample unsuitable without
+                # changing its validation isolation or implying a live cutover.
                 _cutover_reference(account.user, wallet, validation=True)
             elif wallet.account_number:
                 evidence_valid = evidence_valid and bool(account.cutover_reference) and MigrationApproval.objects.filter(
@@ -157,7 +159,7 @@ def build_report(stage="validation", accounts=None):
         "sample_count": selected_count, "checks": checks,
         "bank_evidence": [{"code": item, "status": "pending_external_verification"} for item in external],
         "full_go_live_ready": False,
-        "scope": "Local inspection only; bank acceptance, settlement and production approval were not verified.",
+        "scope": "Local inspection only; bank acceptance, settlement and production approval were not verified. Validation samples also require zero current legacy liabilities; sample readiness does not establish live migration.",
     }
     return report
 

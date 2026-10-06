@@ -121,7 +121,7 @@ def customer_funding_account(user) -> dict:
     if payload is not None:
         payload["bill_payments_available"] = biller_spending_available(user)
         payload["transfers_available"] = False
-        if payload["bill_payments_available"]:
+        if payload["bill_payments_available"] and not payload.get("test_mode"):
             payload["migration_message"] = "Bill payments are available. Transfers are unavailable during the bank migration."
         return payload
     if not partnership_new_business_allowed(user):
@@ -183,7 +183,8 @@ def wallet_balance_payload(user, wallet=None) -> dict:
 
     wallet = wallet or get_or_create_wallet(user)
     total = wallet.balance
-    account = VirtualAccount.objects.filter(user_id=user.pk).first()
+    # A 711 test account never migrates or reclassifies real customer funds.
+    account = VirtualAccount.objects.filter(user_id=user.pk, mode=VirtualAccount.LIVE).first()
     if account is None:
         return {"balance": total, "available_balance": total,
                 "historical_balance": Decimal("0.00"), "vas_balance": Decimal("0.00")}
@@ -3195,7 +3196,8 @@ def _biller_funding_context(user, amount=Decimal("0"), *, wallet=None):
     if not user.is_active or not biller_enabled():
         raise LimitExceeded("Bill payments are temporarily unavailable.")
     wallet = wallet or Wallet.objects.get(user=user)
-    account = VirtualAccount.objects.filter(user=user).first()
+    # Retained validation records are not a live cutover or a funding source.
+    account = VirtualAccount.objects.filter(user=user, mode=VirtualAccount.LIVE).first()
     if account is not None:
         if not account.active or account.mode != VirtualAccount.LIVE or account.prefix == "711":
             raise LimitExceeded("Your account is restricted or unavailable for bill payments.")

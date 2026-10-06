@@ -9,7 +9,7 @@ from common.ratelimit import ratelimit
 from wallet.services import customer_funding_account
 
 from .config import config
-from .enrollment import enroll_customer
+from .enrollment import consent_version, enroll_customer, enrollment_eligibility
 from .views import _secure
 
 
@@ -26,10 +26,18 @@ def enroll(request):
     if config().get("REQUIRE_HTTPS", True) and not _secure(request, config()):
         return _private(fail("HTTPS required", status=403))
     data = request.data
+    mode = config().get("MODE", "validation")
+    if (data.get("enrollment_mode") != mode
+            or data.get("consent_version") != consent_version(mode)):
+        return _private(fail(
+            "Registration has changed. Refresh your account details and review the current account type and consent before continuing.",
+            status=409, code="vas_consent_refresh_required"))
     try:
-        enroll_customer(request.user_obj, bvn=data.get("bvn", ""), nin=data.get("nin", ""), consent=data.get("consent", False))
+        enroll_customer(request.user_obj, bvn=data.get("bvn", ""), nin=data.get("nin", ""), consent=data.get("consent", False),
+            expected_mode=data.get("enrollment_mode"), expected_consent_version=data.get("consent_version"))
     except ValidationError as exc:
-        return _private(fail(" ".join(exc.messages), status=409, code="vas_enrollment_pending"))
+        return _private(fail(" ".join(exc.messages), status=409, code="vas_enrollment_pending",
+            **enrollment_eligibility(request.user_obj)))
     except (DatabaseError, ImproperlyConfigured):
         return _private(fail("New funding accounts are temporarily unavailable. Please try again later.", status=503))
     return _private(ok(success=True, **customer_funding_account(request.user_obj)))

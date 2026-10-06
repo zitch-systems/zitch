@@ -9,6 +9,7 @@ import secrets
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from accounts.models import IdentityProof, User, hash_identifier
@@ -20,9 +21,14 @@ from .identity import encrypt_identity
 from .models import MigrationApproval, VirtualAccount
 
 CONSENT_VERSION = "vas-identity-v1"
+VALIDATION_CONSENT_VERSION = "vas-validation-identity-v1"
 PENDING_MESSAGE = "Your new funding account is being prepared. Please wait before sending money."
 SPENDING_MESSAGE = "Payments and transfers are unavailable while the new bank connection is completed."
-VALIDATION_MESSAGE = "This service is in validation testing. Do not send money; payments and transfers are unavailable."
+VALIDATION_MESSAGE = "Your 711 account is for validation testing only. Do not send real money to it; test funds cannot be spent."
+
+
+def consent_version(mode=None):
+    return VALIDATION_CONSENT_VERSION if (mode or config().get("MODE", "validation")) == VirtualAccount.VALIDATION else CONSENT_VERSION
 
 
 def enrollment_available(user=None):
@@ -49,9 +55,10 @@ def enrollment_available(user=None):
     return True
 
 
-def validation_enrollment_available(user=None):
-    """Allow invited, contact-verified testers without opening the live rail."""
+def _validation_policy_allows(user):
+    """Opt-in self-service expands the testers, never the live release policy."""
     values = config()
+    self_service = values.get("VALIDATION_SELF_SERVICE", False)
     if (values.get("ENABLED") is not True
             or values.get("ENABLE_VALIDATION_ENROLLMENT") is not True
             or values.get("ENABLE_ENROLLMENT", False) is not False
@@ -59,14 +66,20 @@ def validation_enrollment_available(user=None):
             or values.get("RELEASE_PHASE", "closed") != "closed"
             or getattr(settings, "BANK_ACCOUNT_PROVIDER", "partnership") != "wema_vas"
             or not getattr(user, "is_active", False) or not getattr(user, "pk", None)
-            or not getattr(user, "phone_verified", False) or not getattr(user, "email_verified", False)
-            or user.pk not in validation_user_ids(values)):
+            or type(self_service) is not bool
+            or (not self_service and user.pk not in validation_user_ids(values))):
         return False
     try:
         validate_configuration()
     except (ImproperlyConfigured, TypeError, ValueError):
         return False
     return True
+
+
+def validation_enrollment_available(user=None):
+    """Allow verified users to opt into the isolated 711 validation ledger."""
+    return bool(_validation_policy_allows(user)
+                and getattr(user, "phone_verified", False) and getattr(user, "email_verified", False))
 
 
 def customer_enrollment_available(user=None):
@@ -79,9 +92,10 @@ def customer_enrollment_available(user=None):
 
 def customer_account_payload(user):
     values = config()
-    account = VirtualAccount.objects.filter(user=user).first()
+    mode = values.get("MODE", "validation")
+    account = VirtualAccount.objects.filter(user=user, mode=mode).first()
     selected = getattr(settings, "BANK_ACCOUNT_PROVIDER", "partnership") == "wema_vas"
-    if not selected and (account is None or account.mode != VirtualAccount.LIVE):
+    if not selected and not VirtualAccount.objects.filter(user=user, mode=VirtualAccount.LIVE).exists():
         return None
     permitted = customer_enrollment_available(user)
     ready = bool(enrollment_available(user) and account and account.active and account.mode == VirtualAccount.LIVE
@@ -94,6 +108,7 @@ def customer_account_payload(user):
         state = "restricted"
     elif account and account.mode == VirtualAccount.VALIDATION:
         state = "vas_validation"
+    eligibility = enrollment_eligibility(user, account=account)
     return {
         "provider": "wema_vas", "has_account": ready, "available": ready,
         "account_number": account.number if ready else "",
@@ -103,24 +118,129 @@ def customer_account_payload(user):
         "test_mode": test_mode,
         "validation_account_number": account.number if validation_visible else "",
         "validation_account_name": account.display_name if validation_visible else "",
-        "enrollment_available": bool(permitted and account is None),
+        "enrollment_available": bool(permitted and account is None and eligibility["enrollment_status"] == "ready"),
         "migration_message": SPENDING_MESSAGE if ready else (
             "Your account is restricted. Please contact support." if state == "restricted" else
             VALIDATION_MESSAGE if test_mode else PENDING_MESSAGE),
-        "enrollment_endpoint": "/api/wallet/vas/enroll/", "consent_version": CONSENT_VERSION,
+        "enrollment_endpoint": "/api/wallet/vas/enroll/",
+        "consent_version": consent_version(mode),
+        **eligibility,
     }
 
 
+def named_identity_proof(user, kind, digest):
+    """Keep the first substantive trusted name; blank historical rows are not names."""
+    proofs = IdentityProof.objects.filter(user=user, identity_type=kind, identity_hash=digest,
+        source__in=[source for source, _ in IdentityProof.SOURCE_CHOICES]).exclude(
+            verified_name="").order_by("pk")
+    return next((proof for proof in proofs if " ".join(proof.verified_name.split())), None)
+
+
+def _identity_proof_ready(user):
+    for kind in ("bvn", "nin"):
+        digest = getattr(user, f"{kind}_hash", "")
+        if not getattr(user, f"{kind}_verified", False) or not digest:
+            continue
+        if named_identity_proof(user, kind, digest):
+            return True
+    return False
+
+
+def _allocation_blockers(user, wallet, *, validation):
+    """Read-only initial allocation checks; existing test accounts are not cutovers."""
+    from wallet.services import wallet_expected_balance
+    blockers = []
+    if (wallet is not None and wallet.balance != 0) or wallet_expected_balance(user.pk) != 0:
+        blockers.append("balance_review")
+    if Transaction.objects.filter(user=user, transaction_status=Transaction.PENDING).exists():
+        blockers.append("pending_transactions")
+    pending_issuance = WemaProvisioningAttempt.objects.filter(user=user, status=WemaProvisioningAttempt.PENDING)
+    if validation:
+        # An expired, unaccepted OTP cannot request bank issuance. Keep its
+        # history, while accepted attempts remain pending possible callbacks.
+        pending_issuance = pending_issuance.filter(
+            Q(expires_at__gt=timezone.now()) | Q(otp_verified_at__isnull=False))
+    if (pending_issuance.exists()
+            or WemaFaceSession.objects.filter(user=user, account_state="awaiting_callback").exists()
+            or WemaFaceSession.objects.filter(user=user, status=WemaFaceSession.PENDING, expires_at__gt=timezone.now()).exists()):
+        blockers.append("pending_bank_setup")
+    if (not validation and wallet is not None and wallet.account_number
+            and not MigrationApproval.objects.filter(user=user, legacy_account_number=wallet.account_number).exists()):
+        blockers.append("migration_review")
+    return blockers
+
+
+_BLOCKER_MESSAGES = {
+    "phone_verification": "Verify the phone number on your existing profile.",
+    "email_verification": "Verify the email address on your existing profile.",
+    "identity_verification": "Complete BVN or NIN verification to confirm your legal account name.",
+    "balance_review": "Your existing balance needs reconciliation before registration. Contact support; do not create another profile.",
+    "pending_transactions": "Your pending transactions must finish or be reviewed before registration.",
+    "pending_bank_setup": "Your earlier bank account setup must finish or be reviewed before registration.",
+    "migration_review": "Your existing bank account needs an approved migration review before live registration.",
+    "policy_unavailable": "Registration is not available for this profile yet. You can review your verification details.",
+    "account_restricted": "Your account is restricted. Please contact support.",
+}
+
+
+def enrollment_eligibility(user, *, account=None):
+    """Explain the current-mode requirements without allocating or exposing identity."""
+    values = config()
+    mode = values.get("MODE", "validation")
+    account = account or VirtualAccount.objects.filter(user=user, mode=mode).first()
+    wallet = Wallet.objects.filter(user=user).first()
+    blockers = []
+    policy = _validation_policy_allows(user) if mode == VirtualAccount.VALIDATION else enrollment_available(user)
+    if account and not account.active:
+        blockers.append("account_restricted")
+    elif account:
+        status = "enrolled"
+    else:
+        if not policy:
+            blockers.append("policy_unavailable")
+        if not user.phone_verified:
+            blockers.append("phone_verification")
+        if not user.email_verified:
+            blockers.append("email_verification")
+        if not _identity_proof_ready(user):
+            blockers.append("identity_verification")
+        blockers.extend(_allocation_blockers(user, wallet, validation=mode == VirtualAccount.VALIDATION))
+    if blockers:
+        status = ("restricted" if "account_restricted" in blockers else
+                  "not_available" if "policy_unavailable" in blockers else
+                  "review_required" if any(code in blockers for code in (
+                      "balance_review", "pending_transactions", "pending_bank_setup", "migration_review")) else
+                  "verification_required")
+    elif not account:
+        status = "ready"
+    message = " ".join(_BLOCKER_MESSAGES[code] for code in blockers)
+    if not message:
+        message = ("Your validation account is already registered. Do not send money to it." if account and mode == VirtualAccount.VALIDATION else
+                   "Your funding account is already registered." if account else
+                   "Use your existing profile to register for validation testing. Confirm your verified identity and test-only consent; no real funds or bank migration are involved." if mode == VirtualAccount.VALIDATION else
+                   "Confirm your verified identity and consent to register your new funding account.")
+    return {"enrollment_mode": mode, "enrollment_status": status,
+            "enrollment_blockers": blockers, "enrollment_message": message,
+            "re_registration_required": bool(wallet and wallet.account_number and account is None)}
+
+
 @transaction.atomic
-def enroll_customer(user, *, bvn="", nin="", consent=False, consent_reference=""):
+def enroll_customer(user, *, bvn="", nin="", consent=False, consent_reference="",
+                    expected_mode=None, expected_consent_version=None):
     """Derive the mode from server policy and recheck eligibility under locks."""
     if not customer_enrollment_available(user):
         raise ValidationError("New funding accounts are not available yet.")
+    if ((expected_mode is not None and expected_mode != config().get("MODE"))
+            or (expected_consent_version is not None and expected_consent_version != consent_version())):
+        raise ValidationError("Registration has changed. Review the current account type and consent before continuing.")
     # Match the allocator/notification lock order. Refresh durable contact and
     # activity flags after waiting, so a stale request cannot undo revocation.
     Wallet.objects.get_or_create(user=user)
     Wallet.objects.select_for_update().get(user=user)
     user = User.objects.select_for_update().get(pk=user.pk)
+    if ((expected_mode is not None and expected_mode != config().get("MODE"))
+            or (expected_consent_version is not None and expected_consent_version != consent_version())):
+        raise ValidationError("Registration has changed. Review the current account type and consent before continuing.")
     if not customer_enrollment_available(user):
         raise ValidationError("New funding accounts are not available yet.")
     return enroll_verified(user, bvn=bvn, nin=nin, consent=consent,
@@ -142,10 +262,7 @@ def _verified_proofs(user, bvn, nin):
         digest = hash_identifier(raw)
         if not getattr(user, f"{kind}_verified") or not secrets.compare_digest(digest, getattr(user, f"{kind}_hash") or ""):
             raise ValidationError("The identifier must match your verified identity.")
-        proof = IdentityProof.objects.filter(
-            user=user, identity_type=kind, identity_hash=digest,
-            source__in=[source for source, _ in IdentityProof.SOURCE_CHOICES],
-        ).exclude(verified_name="").order_by("pk").first()
+        proof = named_identity_proof(user, kind, digest)
         if proof is None:
             raise ValidationError("Verify your identity again to confirm your legal account name before activation.")
         proofs.append(proof)
@@ -153,18 +270,12 @@ def _verified_proofs(user, bvn, nin):
 
 
 def _cutover_reference(user, wallet, *, validation):
-    from wallet.services import wallet_expected_balance
-    if (wallet.balance != 0 or wallet_expected_balance(user.pk) != 0
-            or Transaction.objects.filter(user=user, transaction_status=Transaction.PENDING).exists()):
-        raise ValidationError("Your existing balance or pending transactions need reconciliation before activation. Contact support.")
-    if (WemaProvisioningAttempt.objects.filter(user=user, status=WemaProvisioningAttempt.PENDING).exists()
-            or WemaFaceSession.objects.filter(user=user, account_state="awaiting_callback").exists()
-            or WemaFaceSession.objects.filter(user=user, status=WemaFaceSession.PENDING, expires_at__gt=timezone.now()).exists()):
-        raise ValidationError("Your earlier bank account setup needs to finish or be reviewed before activation. Contact support.")
-    if not wallet.account_number:
+    blockers = _allocation_blockers(user, wallet, validation=validation)
+    if blockers:
+        raise ValidationError(" ".join(_BLOCKER_MESSAGES[code] for code in blockers))
+    if validation or not wallet.account_number:
+        # A retained legacy number is not a real cutover; never manufacture approval.
         return ""
-    if validation:
-        raise ValidationError("Validation accounts require dedicated users without a Partnership account.")
     approval = MigrationApproval.objects.filter(user=user, legacy_account_number=wallet.account_number).first()
     if approval is None:
         raise ValidationError("Your existing bank account needs a reviewed migration before activation. Contact support.")
@@ -191,7 +302,7 @@ def enroll_verified(user, *, bvn="", nin="", consent=False, validation=False, co
     if not validation and not enrollment_available(user):
         raise ValidationError("New funding accounts are not available yet.")
     proofs = _verified_proofs(user, bvn, nin)
-    existing = VirtualAccount.objects.select_for_update().filter(user=user).first()
+    existing = VirtualAccount.objects.select_for_update().filter(user=user, mode=values["MODE"]).first()
     if existing:
         if existing.mode != values["MODE"] or existing.prefix != values["PREFIX"]:
             raise ValidationError("This account needs a reviewed migration. Contact support.")
@@ -217,7 +328,7 @@ def enroll_verified(user, *, bvn="", nin="", consent=False, validation=False, co
                     user=user, number=number, display_name=("Zitch/" + name)[:160],
                     encrypted_identity=encrypted,
                     verification_reference=",".join(f"IdentityProof:{proof.pk}" for proof in proofs),
-                    consent_reference=consent_reference or f"{CONSENT_VERSION}:{user.pk}:{timezone.now().isoformat()}",
+                    consent_reference=consent_reference or f"{VALIDATION_CONSENT_VERSION if validation else CONSENT_VERSION}:{user.pk}:{timezone.now().isoformat()}",
                     verified_at=max(proof.created for proof in proofs),
                     mode=values["MODE"], prefix=values["PREFIX"], cutover_reference=cutover,
                 )

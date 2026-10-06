@@ -83,6 +83,41 @@ class VasPublicationGateTests(SimpleTestCase):
         inbound = {target for targets in self.document["routing_model"].values() for target in targets}
         self.assertNotIn(vas_flow.SETUP, inbound)
 
+    def test_setup_contract_declares_and_renders_every_mode_specific_field(self):
+        setup = next(s for s in self.document["screens"] if s["id"] == vas_flow.SETUP)
+        self.assertEqual(set(setup["data"]), {"title", "purpose", "consent_text", "error"})
+        examples = {key: value["__example__"] for key, value in setup["data"].items()}
+        self.assertEqual(examples, vas_flow._setup_data("validation"))
+        text_nodes = {child["text"] for child in setup["layout"]["children"]
+                      if child["type"] in {"TextHeading", "TextBody"}}
+        self.assertEqual(text_nodes, {"${data.title}", "${data.purpose}",
+                                      "${data.consent_text}", "${data.error}"})
+        for mode in ("live", "validation"):
+            with self.subTest(mode=mode):
+                data = vas_flow._setup_data(mode)
+                self.assertEqual(set(data), set(setup["data"]))
+                self.assertIn("Prembly", data["purpose"])
+                self.assertIn("encrypted form", data["purpose"])
+                self.assertIn("Wema Bank", data["purpose"])
+                self.assertIn("SMS", data["consent_text"])
+                self.assertIn("registered email", data["consent_text"])
+                self.assertIn("Close this form to decline", data["consent_text"])
+
+    def test_test_account_consent_is_distinct_from_live_funding_consent(self):
+        validation = vas_flow._setup_data("validation")
+        live = vas_flow._setup_data("live")
+        self.assertIn("711", validation["title"])
+        self.assertIn("TEST ONLY — DO NOT FUND", validation["purpose"])
+        self.assertIn("existing Zitch profile", validation["purpose"])
+        self.assertIn("old bank account and transaction history are retained", validation["purpose"])
+        self.assertIn("does not convert or move your real balance", validation["purpose"])
+        self.assertIn("for a 711 test account only", validation["consent_text"])
+        self.assertEqual(live["title"], "Your funding account")
+        self.assertIn("operate your funding account", live["purpose"])
+        self.assertNotIn("711", json.dumps(live))
+        with self.assertRaises(ValueError):
+            vas_flow._setup_data("unknown")
+
 
 @override_settings(WEMA_VAS=SETTINGS, BANK_ACCOUNT_PROVIDER="wema_vas", WHATSAPP=WA,
                    WHATSAPP_FLOW=FLOW, RATELIMIT_ENABLE=False)
@@ -106,7 +141,15 @@ class VasFlowTests(TestCase):
     def start(self):
         with patch("whatsapp.providers.send_flow", return_value={"success": True}) as send:
             vas_flow.start(self.user, self.msisdn)
+        self.sent_flow = send.call_args.kwargs
         return send.call_args.args[1]
+
+    def mode_settings(self, mode):
+        if mode == "live":
+            return SETTINGS
+        return {**SETTINGS, "MODE": "validation", "PREFIX": "711", "RELEASE_PHASE": "closed",
+                "ENABLE_ENROLLMENT": False, "ENABLE_VALIDATION_ENROLLMENT": True,
+                "VALIDATION_USER_IDS": [self.user.pk]}
 
     def exchange(self, token, data, screen, action="data_exchange"):
         return flows.handle_flow_request({"flow_token": token, "action": action, "screen": screen, "data": data})
@@ -114,6 +157,61 @@ class VasFlowTests(TestCase):
     def consent(self, token):
         response = self.exchange(token, {"consent": True, "identity_type": "bvn"}, vas_flow.SETUP)
         self.assertEqual(response["screen"], vas_flow.IDENTITY)
+
+    def test_open_and_init_use_the_same_signed_mode_specific_consent(self):
+        for mode in ("validation", "live"):
+            with self.subTest(mode=mode), override_settings(WEMA_VAS=self.mode_settings(mode)):
+                cache.clear()
+                token = self.start()
+                initial = self.exchange(token, {}, vas_flow.SETUP, action="INIT")
+                pa = PendingAction.objects.get(action_type="vas_enroll")
+                self.assertEqual(pa.payload["mode"], mode)
+                self.assertEqual(pa.payload["consent_version"], vas_flow.consent_version(mode))
+                self.assertEqual(self.sent_flow["screen_data"], vas_flow._setup_data(mode))
+                self.assertEqual(initial, {"screen": vas_flow.SETUP, "data": self.sent_flow["screen_data"]})
+                if mode == "validation":
+                    self.assertIn("DO NOT FUND", self.sent_flow["body"])
+                else:
+                    self.assertIn("funding account", self.sent_flow["body"])
+
+    def test_mode_change_before_or_after_consent_closes_the_bound_session(self):
+        for initial_mode, changed_mode in (("validation", "live"), ("live", "validation")):
+            for accepted in (False, True):
+                with self.subTest(mode=initial_mode, accepted=accepted):
+                    cache.clear()
+                    with override_settings(WEMA_VAS=self.mode_settings(initial_mode)):
+                        token = self.start()
+                        if accepted:
+                            self.consent(token)
+                    with override_settings(WEMA_VAS=self.mode_settings(changed_mode)), \
+                            patch("whatsapp.vas_flow.enroll_customer") as enroll, \
+                            patch("utility.providers.prembly_verify_bvn") as lookup:
+                        response = self.exchange(token, {"number": self.raw} if accepted else {
+                            "consent": True, "identity_type": "bvn"},
+                            vas_flow.IDENTITY if accepted else vas_flow.SETUP)
+                    self.assertEqual(response, flows._close_flow(token))
+                    enroll.assert_not_called()
+                    lookup.assert_not_called()
+                    self.assertFalse(VirtualAccount.objects.exists())
+
+    def test_consent_version_change_revokes_an_open_session(self):
+        token = self.start()
+        self.consent(token)
+        with patch("whatsapp.vas_flow.consent_version", return_value="updated-consent"), \
+                patch("whatsapp.vas_flow.enroll_customer") as enroll:
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        self.assertEqual(response, flows._close_flow(token))
+        enroll.assert_not_called()
+
+    def test_stored_mode_and_consent_version_are_signed(self):
+        for key, changed in (("mode", "validation"), ("consent_version", "changed-consent")):
+            with self.subTest(key=key):
+                cache.clear()
+                token = self.start()
+                pa = PendingAction.objects.get(action_type="vas_enroll")
+                pa.payload[key] = changed
+                pa.save(update_fields=["payload"])
+                self.assertIsNone(vas_flow._resolve(token))
 
     def test_verified_identity_enrolls_once_and_duplicate_returns_same_outcome(self):
         token = self.start()
@@ -124,6 +222,7 @@ class VasFlowTests(TestCase):
         account = VirtualAccount.objects.get()
         self.assertEqual(account.display_name, "Zitch/Ada Eze")
         self.assertIn(":whatsapp:", account.consent_reference)
+        self.assertTrue(account.consent_reference.startswith(vas_flow.consent_version("live") + ":"))
         self.assertEqual(self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY), response)
         self.assertEqual(VirtualAccount.objects.count(), 1)
         self.assertNotIn(self.raw, json.dumps(PendingAction.objects.get().payload))
@@ -427,16 +526,25 @@ class VasFlowTests(TestCase):
         enroll.assert_not_called()
 
     def test_validation_result_explicitly_marks_test_number_as_nonfundable(self):
-        from types import SimpleNamespace
-        token = self.start()
-        self.consent(token)
-        with patch("whatsapp.vas_flow.enroll_customer", return_value=SimpleNamespace(
-                mode="validation", number="7111234567")):
+        with override_settings(WEMA_VAS=self.mode_settings("validation")), \
+                patch("whatsapp.vas_flow.enroll_customer", wraps=vas_flow.enroll_customer) as enroll:
+            token = self.start()
+            self.consent(token)
             response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        account = VirtualAccount.objects.get()
         self.assertEqual(response["data"]["status"], "Test setup complete")
-        self.assertIn("7111234567", response["data"]["message"])
+        self.assertEqual(account.mode, "validation")
+        self.assertTrue(account.number.startswith("711"))
+        self.assertIn(account.number, response["data"]["message"])
         self.assertIn("DO NOT FUND", response["data"]["message"])
         self.assertNotIn("funding account is ready", response["data"]["message"])
+        version = vas_flow.consent_version("validation")
+        self.assertTrue(account.consent_reference.startswith(version + ":whatsapp:"))
+        self.assertEqual(enroll.call_args.kwargs["expected_mode"], "validation")
+        self.assertEqual(enroll.call_args.kwargs["expected_consent_version"], version)
+        pa = PendingAction.objects.get(action_type="vas_enroll")
+        self.assertEqual(pa.payload["mode"], "validation")
+        self.assertEqual(pa.payload["consent_version"], version)
 
     def test_abandoned_or_expired_candidate_does_not_reserve_an_identity(self):
         from accounts.views import _identity_owned_by_another_user

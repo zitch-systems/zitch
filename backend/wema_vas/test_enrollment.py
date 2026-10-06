@@ -12,7 +12,7 @@ from django.utils import timezone
 from accounts.models import AccessToken, IdentityProof, User, hash_identifier, record_identity_proof
 from wallet.models import Transaction, Wallet, WemaProvisioningAttempt
 
-from .enrollment import customer_account_payload, enroll_verified
+from .enrollment import CONSENT_VERSION, customer_account_payload, enroll_verified
 from .identity import decrypt_identity
 from .models import MigrationApproval, VirtualAccount
 
@@ -176,7 +176,8 @@ class EnrollmentTests(TestCase):
         self.assertFalse(payload["enrollment_available"])
 
     def test_customer_api_requires_customer_token_https_and_returns_no_identifiers(self):
-        payload = json.dumps({"bvn": self.raw, "consent": True})
+        payload = json.dumps({"bvn": self.raw, "consent": True,
+                              "enrollment_mode": "live", "consent_version": CONSENT_VERSION})
         url = "/api/wallet/vas/enroll/"
         self.assertEqual(self.client.post(url, data=payload, content_type="application/json", secure=True).status_code, 401)
         headers = {"HTTP_AUTHORIZATION": f"Bearer {self.token}"}

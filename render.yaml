@@ -66,6 +66,8 @@ services:
         sync: false
       - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
         sync: false
+      - key: WEMA_VAS_VALIDATION_SELF_SERVICE
+        sync: false
       - key: WEMA_VAS_VALIDATION_USER_IDS
         sync: false
       - key: WEMA_VAS_RELEASE_PHASE
@@ -470,6 +472,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
       - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_SELF_SERVICE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
@@ -693,6 +697,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
       - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_SELF_SERVICE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
@@ -799,6 +805,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
       - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_SELF_SERVICE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
@@ -884,6 +892,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
       - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_SELF_SERVICE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
@@ -1037,6 +1047,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
       - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_SELF_SERVICE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
@@ -1122,6 +1134,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
       - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_SELF_SERVICE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
@@ -1236,6 +1250,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
       - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_SELF_SERVICE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
@@ -1343,6 +1359,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
       - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_SELF_SERVICE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
