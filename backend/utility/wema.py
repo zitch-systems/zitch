@@ -2232,39 +2232,97 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
 
 
 def vas_status_entitlement(product: str = "airtime") -> tuple[bool, str]:
-    """Whether the tenant may call the PartnerPayment STATUS endpoint for this product.
+    """Prove current status-query access, never purchase entitlement or settlement.
 
-    Deliberately narrow, because the two halves of a VAS purchase live behind
-    DIFFERENT ALAT products and fail differently. Selling is
-    ``/api/Airtime/Client/PurchaseAirtime``; settling is
-    ``/api/PartnerPayment/CheckTransactionStatus``. Production answers them with two
-    different errors — "Authentication Failed" on the purchase, "You've not been
-    profiled to use this service" on the status check — and reading either as a verdict
-    on the other is how this outage kept being misdiagnosed. This function answers only
-    for the status endpoint it actually calls.
-
-    That answer still matters on its own: settlement runs entirely through this
-    endpoint, so a tenant that cannot call it cannot resolve a purchase that comes back
-    PROCESSING — the exact hazard ``providers.vas_can_settle`` refuses a sale over.
-
-    The probe is a status check on a reference that cannot exist. It is read-only and
-    moves no money — the same class of call ``/vas-diagnose`` already makes — and the
-    two answers are easy to tell apart: an entitled tenant says it has no such
-    transaction, an un-entitled one refuses the product outright.
-
-    Returns ``(True, "")`` when the status endpoint is callable, else
-    ``(False, <reason>)``.
+    The synthetic reference moves no money. Keep transport/envelope evidence
+    here: vas_status deliberately turns failed lookups into Pending to protect
+    historical money, which cannot establish readiness for a new purchase.
+    There is no positive cache; stale product access cannot authorize new sales.
     """
+    product = {"bill": "bills", "data": "airtime"}.get(product, product)
+    if product not in {"airtime", "bills"}:
+        return False, "Unsupported status-query product."
     if not _vas_live(product):
+        # No real status call is applicable. Credential/simulation readiness is
+        # enforced separately; existing isolated mocks do not need reconciliation.
         return True, ""
-    res = vas_status(f"ZITCH-PREFLIGHT-{secrets.token_hex(6).upper()}",
-                     "bill" if product == "bills" else "airtime")
-    # The requery path flags a refused lookup rather than settling it (see _parse_vas),
-    # so this reads that flag. A REFUSED_ status would mean the purchase path answered,
-    # which this probe never takes — kept in the test only so a future change of shape
-    # is caught here rather than silently reporting every tenant as entitled.
-    if res.get("lookup_refused") or str(res.get("status") or "").startswith("REFUSED_"):
-        return False, str(res.get("message") or "the gateway refused the product")
+    reference = f"ZITCH-PREFLIGHT-{secrets.token_hex(6).upper()}"
+    body = {"transactionReference": reference}
+    if product == "airtime":
+        body["transactionType"] = 1
+    path = ("/api/PartnerPayment/checktransactionstatus" if product == "bills"
+            else "/api/PartnerPayment/CheckTransactionStatus")
+    try:
+        response = _post(product, path, body)
+        data = response.json()
+    except (requests.RequestException, ValueError, TypeError):
+        return False, "Status-query service could not be verified."
+    return _vas_status_access_response(data, response.status_code, reference)
+
+
+def _vas_status_access_response(data, http_status, reference) -> tuple[bool, str]:
+    """Accept only documented status evidence or the exact no-record envelope."""
+    unavailable = (False, "Status-query service returned an unconfirmed response.")
+    if http_status != 200 or not isinstance(data, dict):
+        return unavailable
+    result = data.get("result")
+    if result is not None and not isinstance(result, dict):
+        return unavailable
+    result = result or {}
+    # Never echo provider text, which can contain account/reference details.
+    messages = [container.get(key) for container in (data, result)
+                for key in ("message", "errorMessage")]
+    if any(message is not None and not isinstance(message, str) for message in messages):
+        # The confirmed contract uses strings. Selecting the first string from
+        # an array/object could hide contradictory refusal evidence beside it.
+        return unavailable
+    normalized_messages = [message.strip().casefold().rstrip(".") for message in messages if message]
+    if any(_VAS_NOT_ENTITLED_RE.search(message) or "product_not_profiled" in message
+           for message in normalized_messages):
+        return False, "Status-query product is not profiled or authentication was refused."
+    outcome = _envelope_outcome(data)
+    extra_codes = ("code", "errorCode", "error_code", "responseCode",
+                   "response_code", "statusCode", "status_code")
+    if (any(key in container for container in (data, result) for key in extra_codes)
+            or "transactionStatus" in data):
+        # This endpoint's documented outcome lives in result.transactionStatus.
+        # An extra transport/error code has no confirmed semantics here.
+        return unavailable
+    # This is the established empty synthetic-reference response, not a generic
+    # HTTP404/400 or a substring match on an arbitrary provider error message.
+    if (outcome is False and data.get("hasError") is True and not result
+            and normalized_messages and all(message in {"record not found", "transaction not found"}
+                                            for message in normalized_messages)
+            and not any(data.get(key) for key in ("errors", "error", "errorMessages"))):
+        return True, ""
+    if any(_NEGATIVE_STATUS_RE.search(message) for message in normalized_messages):
+        return unavailable
+    if outcome is not True or not result:
+        return unavailable
+    for key, expected in (("hasError", False), ("success", True), ("successful", True)):
+        if key in result and result[key] is not expected:
+            return unavailable
+    if "pending" in result and result["pending"] is not None and result["pending"] is not False:
+        return unavailable
+    returned_reference = result.get("transactionReference")
+    if returned_reference is not None and returned_reference != reference:
+        return unavailable
+    if any(result.get(key) for key in ("errors", "error", "errorMessage", "errorMessages")):
+        return unavailable
+    # The confirmed PartnerPayment query contract returns integer
+    # transactionStatus: 200 (success), 400 (failure), 401 (API/auth refusal).
+    # Here 200/400 prove only that the query was answered; no ledger is settled.
+    code = result.get("transactionStatus")
+    if type(code) is not int or code not in (200, 400):
+        return unavailable
+    if "status" in result:
+        text_status = result["status"]
+        if not isinstance(text_status, str):
+            return unavailable
+        expected = ({"SUCCESS", "SUCCESSFUL", "SUCCESSFULL", "COMPLETED"} if code == 200
+                    else {"FAILED", "FAILURE", "DECLINED", "REJECTED", "REVERSED", "NOT_PROCESSED"})
+        if text_status.strip().upper() not in expected:
+            return unavailable
     return True, ""
 
 

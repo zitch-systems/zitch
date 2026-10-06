@@ -4,14 +4,16 @@ Wema fulfils a data or cable purchase against its OWN packageCode/packageId, whi
 differs from the plan_code we seed. Until a plan carries a `wema_code`,
 utility.providers.vtu_purchase has nothing to send and REFUSES the purchase (before
 any debit) — so running this command is what puts data/cable on sale at all, not an
-optional optimisation. Airtime needs no catalogue and works regardless.
+optional optimisation. Electricity requires a distinct prepaid/postpaid package.
+Airtime needs no catalogue. Every live product still requires status-query access;
+catalogue mapping does not grant the bank subscription or settlement permission.
 
 Matching is best-effort: data plans are matched within a network by exact price, then
 by a normalised size/name; cable bouquets by exact price, then by a normalised name.
 Run it with LIVE Wema keys and REVIEW the result — the ALAT catalogue field names are
 VERIFY-BEFORE-LIVE (this reads `packageCode`/`packageId`/`code`/`price`/`name` defensively).
 
-    python manage.py seed_wema_plans            # sync both data and cable
+    python manage.py seed_wema_plans            # sync data, cable and electricity
     python manage.py seed_wema_plans --dry-run  # report matches, write nothing
     python manage.py seed_wema_plans --only data
 """
@@ -63,7 +65,7 @@ def _name(row: dict) -> str:
 
 
 class Command(BaseCommand):
-    help = "Map Wema's VAS catalogue (packageCode/packageId) onto DataPlan/CablePlan.wema_code."
+    help = "Map Wema catalogue package IDs onto data/cable plans and electricity meter variants."
 
     def add_arguments(self, parser):
         parser.add_argument("--dry-run", action="store_true", help="Report matches; write nothing.")
@@ -133,78 +135,106 @@ class Command(BaseCommand):
                     plan.save(update_fields=["wema_code"])
         self.stdout.write(self.style.SUCCESS(f"cable: {matched} bouquet(s) mapped{' (dry-run)' if dry else ''}"))
 
-    # Disco slug (as the app builds service_id) -> words that identify the biller in
-    # ALAT's catalogue. Matching is by name because ALAT publishes no stable code we
-    # share; each entry needs only enough words to be unambiguous among Nigerian
-    # discos. A slug that matches nothing is REPORTED, never guessed — a wrong
-    # packageId here would pay a stranger's electricity bill.
-    _DISCO_WORDS = {
-        "ikeja": ("ikeja",), "eko": ("eko",), "abuja": ("abuja",), "kano": ("kano",),
-        "port harcourt": ("portharcourt", "phed"), "jos": ("jos",),
-        "kaduna": ("kaduna",), "enugu": ("enugu", "eedc"), "ibadan": ("ibadan",),
+    # Exact biller identities observed in the live Electricity catalogue. A
+    # distributor/state substring is insufficient: other categories sell unrelated
+    # products under the same state name. Package IDs always come from nested
+    # packages, never from a biller ID or the flattened catalogue's fallback.
+    _DISCO_BILLERS = {
+        "ikeja": "Ikeja Electricity",
+        "eko": "EKEDC",
+        "abuja": "AEDC",
+        "kano": "Kano Electricity Distribution Company",
+        "port harcourt": "Porthacourt Electricity Distribution Company",
+        "jos": "Jos Electricity Distribution Company",
+        "kaduna": "Kaduna Electric Distribution Company",
+        "enugu": "Enugu Electricity Distribution Company",
+        "ibadan": "Ibadan Electricity Distribution Company",
     }
 
     def _sync_billers(self, dry):
-        """Map electricity and betting service_ids onto ALAT packageIds.
+        """Map exact electricity billers and explicit prepaid/postpaid packages.
 
-        Unlike data and cable, these have no plan row to hang a code on, so they get
-        their own table (WemaBiller). Only rows we can identify by name are written;
-        anything ambiguous is printed for a human, because the failure mode of a bad
-        mapping is paying the wrong biller, not a missing feature.
+        A missing or ambiguous match changes nothing. Existing unspecified rows
+        remain historical evidence and cannot route electricity; betting mappings
+        are maintained separately. Dry-run does not write any model.
         """
+        from django.db import transaction
         from utility.views import DISCO_NAMES
+
         res = wema.get_bills()
-        rows = res.get("bills", []) or [] if res.get("success") else []
-        if not rows:
+        raw = res.get("raw") if res.get("success") is True else None
+        categories = raw.get("result") if isinstance(raw, dict) else None
+        if not isinstance(categories, list):
             self.stdout.write(self.style.WARNING(
-                "billers: catalogue empty — electricity/betting cannot be sold"))
+                "billers: nested catalogue unavailable — no mappings changed"))
             return
-        wanted = {f"{DISCO_NAMES[k].lower()}-electric": self._DISCO_WORDS.get(DISCO_NAMES[k].lower(), ())
-                  for k in DISCO_NAMES}
-        # Scope to electricity billers before matching, exactly as _sync_cable scopes
-        # to the provider. ALAT's catalogue carries state water boards, waste boards
-        # and revenue agencies alongside the discos, and several share a state name —
-        # so an unscoped search for "kano" can match "Kano State Water Board" and map
-        # a customer's electricity payment to somebody's water bill. Falls back to the
-        # full set only when no row declares a power category, so a catalogue that
-        # labels things differently still maps rather than silently mapping nothing.
-        power = [r for r in rows
-                 if any(w in _norm(f"{r.get('category', '')} {r.get('biller', '')}")
-                        for w in ("electric", "power", "disco", "energy"))]
-        pool = power or rows
-        if not power:
-            self.stdout.write(self.style.WARNING(
-                "  billers: no electricity category found — matching against the whole "
-                "catalogue, so REVIEW each mapping below before applying"))
-        mapped = unmatched = 0
-        for service_id, words in sorted(wanted.items()):
-            hits = [r for r in pool
-                    if any(w in _norm(f"{r.get('biller', '')} {_name(r)}") for w in words)]
-            if len(hits) != 1:
-                unmatched += 1
-                self.stdout.write(self.style.WARNING(
-                    f"  biller {service_id:26} {len(hits)} candidate(s) — not on sale"))
+        billers = []
+        for category in categories:
+            if not isinstance(category, dict) or _norm(str(category.get("name", ""))) != "electricity":
                 continue
-            code = _code(hits[0])
-            if not code:
-                unmatched += 1
-                continue
-            mapped += 1
-            self.stdout.write(f"  biller {service_id:26} -> {code}  ({hits[0].get('biller', '')})")
-            if not dry:
-                # `active` is deliberately NOT in defaults. An operator switches a row
-                # off to stop a bad mapping taking payments; a catalogue sync is not a
-                # decision to undo that, and silently re-enabling it would resume the
-                # exact routing somebody had intervened to halt.
-                WemaBiller.objects.update_or_create(
-                    service_id=service_id,
-                    defaults={"package_id": code, "biller_id": str(hits[0].get("biller", ""))[:60],
-                              "name": _name(hits[0])[:120]},
-                )
+            nested = category.get("billers")
+            if isinstance(nested, list):
+                billers.extend(row for row in nested if isinstance(row, dict))
+        mapped = unresolved = 0
+        updates = []
+        for disco in sorted(DISCO_NAMES.values()):
+            service_id = f"{disco.lower()}-electric"
+            identity = _norm(self._DISCO_BILLERS.get(disco.lower(), ""))
+            hits = [row for row in billers
+                    if identity and _norm(str(row.get("name", ""))) == identity]
+            packages = hits[0].get("packages") if len(hits) == 1 else None
+            for meter_type in ("prepaid", "postpaid"):
+                candidates = []
+                if isinstance(packages, list):
+                    for package in packages:
+                        if not isinstance(package, dict):
+                            continue
+                        # Only an explicit, single meter type is sufficient. A
+                        # package naming both types cannot safely select either.
+                        words = re.findall(r"\b(?:pre|post)[ -]?paid\b",
+                                           str(package.get("name", "")).lower())
+                        variants = {_norm(word) for word in words}
+                        package_id = package.get("id")
+                        if (variants == {meter_type}
+                                and isinstance(package_id, (str, int))
+                                and not isinstance(package_id, bool)
+                                and str(package_id).strip()):
+                            candidates.append(package)
+                if len(candidates) != 1:
+                    unresolved += 1
+                    self.stdout.write(self.style.WARNING(
+                        f"  biller {service_id:26} {meter_type:8} "
+                        f"{len(candidates)} package candidate(s), {len(hits)} biller(s) "
+                        "— mapping unchanged"))
+                    continue
+                package = candidates[0]
+                code = str(package["id"]).strip()
+                mapped += 1
+                self.stdout.write(f"  biller {service_id:26} {meter_type:8} -> {code} "
+                                  f"({hits[0]['name']})")
+                updates.append((service_id, meter_type, {
+                    "package_id": code,
+                    "biller_id": str(hits[0].get("id") or "")[:60],
+                    "name": str(package.get("name", ""))[:120],
+                }))
+        if not dry:
+            with transaction.atomic():
+                for service_id, meter_type, values in updates:
+                    # Keep an existing operator stop. A legacy unspecified stop
+                    # also applies when splitting it into new variant rows.
+                    legacy_stopped = WemaBiller.objects.filter(
+                        service_id=service_id, meter_type="", active=False).exists()
+                    row, created = WemaBiller.objects.get_or_create(
+                        service_id=service_id, meter_type=meter_type,
+                        defaults={**values, "active": not legacy_stopped})
+                    if not created:
+                        for key, value in values.items():
+                            setattr(row, key, value)
+                        row.save(update_fields=[*values, "updated"])
         self.stdout.write(self.style.SUCCESS(
-            f"billers: {mapped} mapped, {unmatched} unresolved{' (dry-run)' if dry else ''}"))
-        if unmatched:
+            f"billers: {mapped} variant(s) matched, {unresolved} unresolved"
+            f"{' (dry-run)' if dry else ''}"))
+        if unresolved:
             self.stdout.write(
-                "  Unresolved services are NOT on sale — a purchase is refused before "
-                "any debit. Map them by hand in the admin (utility > Wema billers) "
-                "once you can see the ALAT catalogue.")
+                "  Unresolved variants were not changed. Missing variant mappings "
+                "cannot route payments; review existing mappings separately.")

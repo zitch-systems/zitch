@@ -96,6 +96,32 @@ class PreflightObservedCallbackTests(TestCase):
                    TERMII={"API_KEY": "tk_x"}, CARD_ISSUER={"API_KEY": "ci_x"},
                    WEMA=_SAFE_CALLBACKS)
 class PreflightGoTests(TestCase):
+    def test_legacy_unspecified_electricity_is_not_reported_as_routable(self):
+        from utility.models import WemaBiller
+
+        WemaBiller.objects.create(service_id="ikeja-electric", package_id="49")
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, _code = _run()
+        self.assertIn("no valid variant mappings", out)
+
+    def test_only_routable_variants_are_counted(self):
+        from utility.models import WemaBiller
+
+        for service_id, meter_type, package_id, active in (
+            ("ikeja-electric", "prepaid", "1043", True),
+            ("ikeja-electric", "postpaid", "1411", True),
+            ("ikeja-electric", "", "49", True),
+            ("eko-electric", "prepaid", "1556", False),
+            ("eko-electric", "postpaid", "", True),
+            ("bet9ja-betting", "", "91", True),
+            ("bet9ja-betting", "prepaid", "92", True),
+        ):
+            WemaBiller.objects.create(service_id=service_id, meter_type=meter_type,
+                                      package_id=package_id, active=active)
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, _code = _run()
+        self.assertIn("3 routable variant(s) mapped", out)
+
     def test_all_pass_is_go(self):
         with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
             out, code = _run()

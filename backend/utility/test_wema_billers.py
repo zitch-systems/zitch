@@ -23,11 +23,11 @@ WEMA_ON = {"KEYS": {"wallet": "k", "airtime": "k", "bills": "k"}, "CHANNEL_ID": 
 @override_settings(VAS_PROVIDER="wema", WEMA=WEMA_ON)
 class BillerRoutingTests(TestCase):
     def test_an_unmapped_disco_fails_closed(self):
-        self.assertIsNone(_wema_vas_route("ikeja-electric", {"amount": "1000"}))
+        self.assertIsNone(_wema_vas_route("ikeja-electric", {"amount": "1000", "variation_code": "prepaid"}))
 
     def test_a_mapped_disco_routes_to_wema_bills(self):
-        WemaBiller.objects.create(service_id="ikeja-electric", package_id="77")
-        route = _wema_vas_route("ikeja-electric", {"amount": "1000"})
+        WemaBiller.objects.create(service_id="ikeja-electric", meter_type="prepaid", package_id="77")
+        route = _wema_vas_route("ikeja-electric", {"amount": "1000", "variation_code": "prepaid"})
         self.assertEqual(route, {"type": "bill", "code": "77", "amount": "1000"})
 
     def test_a_mapped_bookmaker_routes_to_wema_bills(self):
@@ -37,21 +37,22 @@ class BillerRoutingTests(TestCase):
 
     def test_an_inactive_mapping_is_ignored(self):
         # The off switch for one biller, without deleting the code we synced.
-        WemaBiller.objects.create(service_id="eko-electric", package_id="12", active=False)
-        self.assertIsNone(_wema_vas_route("eko-electric", {"amount": "1000"}))
+        WemaBiller.objects.create(service_id="eko-electric", meter_type="prepaid", package_id="12", active=False)
+        self.assertIsNone(_wema_vas_route("eko-electric", {"amount": "1000", "variation_code": "prepaid"}))
 
     def test_a_variable_amount_bill_with_no_amount_falls_through(self):
-        WemaBiller.objects.create(service_id="jos-electric", package_id="5")
-        self.assertIsNone(_wema_vas_route("jos-electric", {}))
+        WemaBiller.objects.create(service_id="jos-electric", meter_type="prepaid", package_id="5")
+        self.assertIsNone(_wema_vas_route("jos-electric", {"variation_code": "prepaid"}))
 
     def test_the_purchase_actually_goes_to_wema_pay_bill(self):
-        WemaBiller.objects.create(service_id="abuja-electric", package_id="31")
+        WemaBiller.objects.create(service_id="abuja-electric", meter_type="prepaid", package_id="31")
         # This exercises package mapping after funding has been approved.
-        with mock.patch("wallet.services.biller_source_for_transaction", return_value="0155500011"), \
+        with mock.patch("utility.wema.vas_status_entitlement", return_value=(True, "")), \
+                mock.patch("wallet.services.biller_source_for_transaction", return_value="0155500011"), \
                 mock.patch("utility.wema.pay_bill",
                            return_value={"success": True, "status": "SUCCESS"}) as pay:
             res = vtu_purchase("abuja-electric",
-                               {"amount": "2500", "billersCode": "1234567890"}, "REF9")
+                               {"amount": "2500", "billersCode": "1234567890", "variation_code": "prepaid"}, "REF9")
         pay.assert_called_once()
         self.assertEqual(pay.call_args.kwargs["package_id"], "31")
         self.assertEqual(pay.call_args.kwargs["identifier"], "1234567890")
@@ -64,16 +65,16 @@ class VerifyCustomerRailTests(TestCase):
     def test_validation_follows_the_purchase_rail(self):
         # Confirming a meter against one biller and paying another is how a customer
         # ends up seeing the right name on the wrong account.
-        WemaBiller.objects.create(service_id="kano-electric", package_id="44")
+        WemaBiller.objects.create(service_id="kano-electric", meter_type="prepaid", package_id="44")
         with mock.patch("utility.wema.validate_bill_customer",
                         return_value={"success": True, "name": "AMINA BELLO"}) as v:
-            res = vtu_verify_customer("kano-electric", "555000111")
+            res = vtu_verify_customer("kano-electric", "555000111", "prepaid")
         v.assert_called_once()
         # The partner-bank VAS contract, which is what every caller actually reads.
         self.assertEqual(res["customer_name"], "AMINA BELLO")
 
     def test_an_unmapped_service_fails_without_partner_bank_mapping(self):
-        res = vtu_verify_customer("enugu-electric", "555000111")
+        res = vtu_verify_customer("enugu-electric", "555000111", "prepaid")
         self.assertFalse(res["success"])
         self.assertIn("partner bank", res["message"])
 
@@ -81,12 +82,12 @@ class VerifyCustomerRailTests(TestCase):
         # An unmapped package or a gateway hiccup looks exactly like a bad meter
         # number. Telling the customer their own meter is wrong on that evidence is
         # the one outcome we can be sure is unhelpful.
-        WemaBiller.objects.create(service_id="ibadan-electric", package_id="60")
+        WemaBiller.objects.create(service_id="ibadan-electric", meter_type="prepaid", package_id="60")
         with mock.patch("utility.wema.validate_bill_customer",
                         return_value={"success": False, "message": "no"}), \
              mock.patch("utility.wema.validate_bill_customer",
                         return_value={"success": True, "name": "FALLBACK"}) as v:
-            res = vtu_verify_customer("ibadan-electric", "555000111")
+            res = vtu_verify_customer("ibadan-electric", "555000111", "prepaid")
         v.assert_called_once()
         self.assertEqual(res["name"], "FALLBACK")
 
@@ -103,11 +104,12 @@ class LegacyVasProviderSettingTests(TestCase):
 
     @override_settings(VAS_PROVIDER="vtung")
     def test_a_mapped_biller_is_still_paid_through_the_partner_bank(self):
-        WemaBiller.objects.create(service_id="ikeja-electric", package_id="77")
-        with mock.patch("wallet.services.biller_source_for_transaction", return_value="0155500011"), \
+        WemaBiller.objects.create(service_id="ikeja-electric", meter_type="prepaid", package_id="77")
+        with mock.patch("utility.wema.vas_status_entitlement", return_value=(True, "")), \
+                mock.patch("wallet.services.biller_source_for_transaction", return_value="0155500011"), \
                 mock.patch("utility.wema.pay_bill",
                            return_value={"success": True, "status": "SUCCESS"}) as p:
-            res = vtu_purchase("ikeja-electric", {"amount": "1000"}, "REF1")
+            res = vtu_purchase("ikeja-electric", {"amount": "1000", "variation_code": "prepaid"}, "REF1")
         p.assert_called_once()
         self.assertEqual(p.call_args.kwargs["package_id"], "77")
         self.assertEqual(p.call_args.kwargs["source_account"], "0155500011")
@@ -124,12 +126,12 @@ class ValidationContractTests(TestCase):
     """
 
     def setUp(self):
-        WemaBiller.objects.create(service_id="ikeja-electric", package_id="70")
+        WemaBiller.objects.create(service_id="ikeja-electric", meter_type="prepaid", package_id="70")
 
     def test_the_wema_rail_answers_in_the_wema_shape(self):
         with mock.patch("utility.wema.validate_bill_customer",
                         return_value={"success": True, "name": "AMINA BELLO"}):
-            res = vtu_verify_customer("ikeja-electric", "555000111")
+            res = vtu_verify_customer("ikeja-electric", "555000111", "prepaid")
         self.assertEqual(res["customer_name"], "AMINA BELLO")
 
     def test_a_clean_envelope_with_no_name_is_not_a_confirmed_owner(self):
@@ -139,6 +141,6 @@ class ValidationContractTests(TestCase):
                         return_value={"success": True, "name": ""}), \
              mock.patch("utility.wema.validate_bill_customer",
                         return_value={"success": True, "customer_name": "FALLBACK"}) as vt:
-            res = vtu_verify_customer("ikeja-electric", "555000111")
+            res = vtu_verify_customer("ikeja-electric", "555000111", "prepaid")
         vt.assert_called_once()
         self.assertEqual(res["customer_name"], "FALLBACK")

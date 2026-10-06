@@ -26,9 +26,11 @@ def map_billers(*service_ids: str) -> None:
     """Map electricity/betting services (no plan catalogue, so codes live on a row)."""
     for service_id in (service_ids or ("ikeja-electric", "eko-electric",
                                        "abuja-electric", "bet9ja-betting")):
-        WemaBiller.objects.update_or_create(
-            service_id=service_id,
-            defaults={"package_id": _CODE, "name": service_id, "active": True})
+        variants = ("prepaid", "postpaid") if service_id.endswith("-electric") else ("",)
+        for meter_type in variants:
+            WemaBiller.objects.update_or_create(
+                service_id=service_id, meter_type=meter_type,
+                defaults={"package_id": _CODE, "name": service_id, "active": True})
 
 
 def map_cable() -> None:
