@@ -9,6 +9,7 @@ import secrets
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from accounts.models import IdentityProof, User, hash_identifier
@@ -153,7 +154,13 @@ def _allocation_blockers(user, wallet, *, validation):
         blockers.append("balance_review")
     if Transaction.objects.filter(user=user, transaction_status=Transaction.PENDING).exists():
         blockers.append("pending_transactions")
-    if (WemaProvisioningAttempt.objects.filter(user=user, status=WemaProvisioningAttempt.PENDING).exists()
+    pending_issuance = WemaProvisioningAttempt.objects.filter(user=user, status=WemaProvisioningAttempt.PENDING)
+    if validation:
+        # An expired, unaccepted OTP cannot request bank issuance. Keep its
+        # history, while accepted attempts remain pending possible callbacks.
+        pending_issuance = pending_issuance.filter(
+            Q(expires_at__gt=timezone.now()) | Q(otp_verified_at__isnull=False))
+    if (pending_issuance.exists()
             or WemaFaceSession.objects.filter(user=user, account_state="awaiting_callback").exists()
             or WemaFaceSession.objects.filter(user=user, status=WemaFaceSession.PENDING, expires_at__gt=timezone.now()).exists()):
         blockers.append("pending_bank_setup")

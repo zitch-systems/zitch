@@ -249,6 +249,62 @@ class SameProfileEnrollmentTests(TestCase):
             self.enroll()
         self.assertFalse(VirtualAccount.objects.exists())
 
+    def test_expired_unaccepted_otp_allows_validation_after_identity_name_refresh(self):
+        self.wallet.account_number = ""
+        self.wallet.save(update_fields=["account_number"])
+        IdentityProof.objects.filter(pk=self.proof.pk).update(
+            source=IdentityProof.WEMA_WALLET_OTP, verified_name="")
+        attempt = WemaProvisioningAttempt.objects.create(
+            user=self.user, tracking_id="expired-unaccepted-otp", identity_type="bvn",
+            identity_hash=hash_identifier(self.raw), identity_last4=self.raw[-4:],
+            expires_at=timezone.now() - timedelta(days=1), otp_verified_at=None)
+        before = customer_account_payload(self.user)
+        self.assertTrue(customer_enrollment_available(self.user))
+        self.assertEqual(before["enrollment_blockers"], ["identity_verification"])
+        record_identity_proof(self.user, "bvn", self.raw,
+            source=IdentityProof.IDENTITY_PROVIDER_OTP, provider_reference="fresh-validation-proof",
+            verified_name="Verified Customer")
+        self.assertTrue(customer_account_payload(self.user)["enrollment_available"])
+        account = self.enroll()
+        self.assertEqual(account.mode, VirtualAccount.VALIDATION)
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.status, WemaProvisioningAttempt.PENDING)
+        self.assertIsNone(attempt.otp_verified_at)
+        self.assertEqual(WemaProvisioningAttempt.objects.filter(user=self.user).count(), 1)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertEqual(self.user.bvn_hash, hash_identifier(self.raw))
+
+    def test_expired_accepted_otp_still_blocks_validation_issuance(self):
+        attempt = WemaProvisioningAttempt.objects.create(
+            user=self.user, tracking_id="expired-accepted-otp", identity_type="bvn",
+            identity_hash=hash_identifier(self.raw), identity_last4=self.raw[-4:],
+            expires_at=timezone.now() - timedelta(days=1),
+            otp_verified_at=timezone.now() - timedelta(days=2))
+        self.assertEqual(customer_account_payload(self.user)["enrollment_blockers"], ["pending_bank_setup"])
+        with self.assertRaises(ValidationError):
+            self.enroll()
+        self.assertFalse(VirtualAccount.objects.exists())
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.status, WemaProvisioningAttempt.PENDING)
+        self.assertIsNotNone(attempt.otp_verified_at)
+
+    def test_expired_unaccepted_otp_still_blocks_live_issuance(self):
+        self.wallet.account_number = ""
+        self.wallet.save(update_fields=["account_number"])
+        attempt = WemaProvisioningAttempt.objects.create(
+            user=self.user, tracking_id="expired-otp-live-review", identity_type="bvn",
+            identity_hash=hash_identifier(self.raw), identity_last4=self.raw[-4:],
+            expires_at=timezone.now() - timedelta(days=1), otp_verified_at=None)
+        with override_settings(WEMA_VAS=LIVE):
+            self.assertEqual(customer_account_payload(self.user)["enrollment_blockers"], ["pending_bank_setup"])
+            with self.assertRaises(ValidationError):
+                self.enroll()
+        self.assertFalse(VirtualAccount.objects.exists())
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.status, WemaProvisioningAttempt.PENDING)
+        self.assertIsNone(attempt.otp_verified_at)
+
     def test_validation_reuse_rejects_unresolved_face_callback(self):
         WemaFaceSession.objects.create(
             user=self.user, state="unresolved-callback", identity_type="bvn",

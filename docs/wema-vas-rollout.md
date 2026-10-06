@@ -116,6 +116,11 @@ Django runtimes only after they have deployed this release and the matching Flow
 has been published. Customers supply their own consent; no account is allocated
 by enabling the flag.
 
+For validation setup, an expired Partnership OTP attempt that was never accepted
+is retained as history and does not count as active bank setup. Unexpired attempts,
+accepted attempts awaiting completion, and pending bank callbacks still block
+allocation. Live enrollment continues to require review of every pending attempt.
+
 One immutable validation account and one separately approved live account can
 belong to the same profile. Their numbers, modes, receipts and balances remain
 separate. Only a live account establishes the VAS boundary for real funds and
