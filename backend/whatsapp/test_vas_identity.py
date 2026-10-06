@@ -73,12 +73,48 @@ class StandaloneVasIdentityTests(TestCase):
         self.assertEqual(self.sms.call_args.args[0], self.record["phone"])
         self.assertEqual(self.email.call_args.args[0], self.record["email"])
         self.assertEqual(self.sms.call_args.args[1], self.email.call_args.args[2])
-        for call in (self.lookup.call_args, self.sms.call_args):
-            self.assertEqual(call.kwargs["timeout"].total, 3)
+        self.assertEqual(self.lookup.call_args.kwargs["timeout"].total, 6)
+        self.assertEqual(self.lookup.call_args.kwargs["timeout"].read_timeout, 5.5)
+        self.assertEqual(self.sms.call_args.kwargs["timeout"].total, 3)
+        self.assertEqual(self.email.call_args.kwargs["timeout"].total, 2)
         self.pa.refresh_from_db()
         payload = json.dumps(self.pa.payload)
         for secret in (self.raw, self.record["phone"], self.record["email"], "123456"):
             self.assertNotIn(secret, payload)
+
+    def test_slow_private_lookup_shares_the_remaining_delivery_budget(self):
+        clock = [100.0]
+
+        def lookup(*_args, **kwargs):
+            self.assertGreater(kwargs["timeout"].read_timeout, 5)
+            clock[0] += 5.5
+            return self.record
+
+        def sms(*_args, **kwargs):
+            self.assertEqual(kwargs["timeout"].total, 2)
+            clock[0] += 1.9
+            return {"success": True}
+
+        self.lookup.side_effect, self.sms.side_effect = lookup, sms
+        with patch("whatsapp.vas_identity.monotonic", side_effect=lambda: clock[0]):
+            self.assertEqual(self.submit(), "otp")
+            self.assertEqual(self.submit(), "otp")
+        self.lookup.assert_called_once()
+        self.sms.assert_called_once()
+        self.email.assert_not_called()
+        self.assertEqual(router.kyc_flow_identity_otp(self.pa, "123456")[0], "ok")
+        self.assertTrue(IdentityProof.objects.exists())
+        self.assertFalse(VirtualAccount.objects.exists())
+
+    def test_expired_budget_prevents_lookup_and_does_not_claim_identity(self):
+        with patch("whatsapp.vas_identity.monotonic", side_effect=[100.0, 107.4]):
+            self.assertEqual(self.submit(), "fail")
+        self.assertEqual(self.submit(), "fail")
+        self.lookup.assert_not_called()
+        self.sms.assert_not_called()
+        self.email.assert_not_called()
+        self.assertFalse(IdentityProof.objects.exists())
+        self.assertFalse(VirtualAccount.objects.exists())
 
     def test_missing_record_email_never_falls_back_to_signup_contact(self):
         self.lookup.return_value = {**self.record, "email": ""}

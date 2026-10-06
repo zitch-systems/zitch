@@ -421,12 +421,129 @@ class VasFlowTests(TestCase):
             response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
         self.assertEqual(response["screen"], vas_flow.CODE)
         graph.assert_not_called()
-        for call in (lookup, sms):
-            budget = call.call_args.kwargs["timeout"]
-            self.assertEqual(budget.total, 3)
-            self.assertEqual(budget.connect_timeout, 1)
-            self.assertEqual(budget.read_timeout, 2)
+        lookup_budget = lookup.call_args.kwargs["timeout"]
+        self.assertEqual(lookup_budget.total, 6)
+        self.assertEqual(lookup_budget.connect_timeout, 1)
+        self.assertEqual(lookup_budget.read_timeout, 5.5)
+        sms_budget = sms.call_args.kwargs["timeout"]
+        self.assertEqual(sms_budget.total, 3)
+        self.assertEqual(sms_budget.connect_timeout, 1)
+        self.assertEqual(sms_budget.read_timeout, 2)
         self.assertIsNot(lookup.call_args.kwargs["timeout"], sms.call_args.kwargs["timeout"])
+
+    def test_slow_lookup_can_succeed_and_delivery_uses_remaining_exchange_budget(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        clock = [100.0]
+
+        def lookup(*_args, **kwargs):
+            # A legitimate response that exceeded the old two-second read limit.
+            self.assertGreater(kwargs["timeout"].read_timeout, 5)
+            clock[0] += 5.5
+            return {"success": True, "first_name": "Ada", "last_name": "Eze",
+                    "phone": "08077778888", "email": "holder@record.example"}
+
+        def sms(*_args, **kwargs):
+            self.assertEqual(kwargs["timeout"].total, 2)
+            clock[0] += 1.5
+            return {"success": True}
+
+        with patch("whatsapp.vas_identity.monotonic", side_effect=lambda: clock[0]), \
+                patch("utility.providers._prembly_identity_live", return_value=True), \
+                patch("utility.providers.prembly_verify_bvn", side_effect=lookup) as provider, \
+                patch.object(router, "sms_live", return_value=True), \
+                patch.object(router, "email_live", return_value=True), \
+                patch.object(router, "send_sms", side_effect=sms) as send_sms, \
+                patch.object(router, "send_email", return_value={"success": True}) as email:
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+            replay = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        self.assertEqual(response["screen"], vas_flow.CODE)
+        self.assertEqual(replay, response)
+        self.assertEqual(email.call_args.kwargs["timeout"].total, 0.5)
+        self.assertEqual(email.call_args.kwargs["timeout"].connect_timeout, 0.5)
+        self.assertEqual(email.call_args.kwargs["timeout"].read_timeout, 0.5)
+        provider.assert_called_once()
+        send_sms.assert_called_once()
+        email.assert_called_once()
+        self.assertFalse(IdentityProof.objects.exists())
+        self.assertFalse(VirtualAccount.objects.exists())
+
+    def test_exhausted_lookup_budget_never_sends_an_ownership_code_or_retries(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        clock = [100.0]
+
+        def lookup(*_args, **_kwargs):
+            # Requests cannot enforce a hard wall clock across all body reads.
+            clock[0] += 7.4
+            return {"success": True, "first_name": "Ada", "last_name": "Eze",
+                    "phone": "08077778888", "email": "holder@record.example"}
+
+        with patch("whatsapp.vas_identity.monotonic", side_effect=lambda: clock[0]), \
+                patch("utility.providers._prembly_identity_live", return_value=True), \
+                patch("utility.providers.prembly_verify_bvn", side_effect=lookup) as provider, \
+                patch.object(router, "sms_live", return_value=True), \
+                patch.object(router, "send_sms") as sms, \
+                patch.object(router, "send_email") as email, \
+                self.assertLogs("whatsapp", level="WARNING") as logs:
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+            replay = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        self.assertEqual(response["data"]["status"], "Not completed")
+        self.assertEqual(replay, response)
+        self.assertIn("category=sms_budget_exhausted", " ".join(logs.output))
+        for secret in (self.raw, "08077778888", "holder@record.example"):
+            self.assertNotIn(secret, " ".join(logs.output))
+        provider.assert_called_once()
+        sms.assert_not_called()
+        email.assert_not_called()
+        self.assertNotIn("id_otp_hash", PendingAction.objects.get().payload)
+        self.assertFalse(IdentityProof.objects.exists())
+        self.assertFalse(VirtualAccount.objects.exists())
+
+    def test_email_budget_exhaustion_preserves_the_accepted_sms_challenge(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        clock = [100.0]
+
+        def lookup(*_args, **_kwargs):
+            clock[0] += 5.5
+            return {"success": True, "first_name": "Ada", "last_name": "Eze",
+                    "phone": "08077778888", "email": "holder@record.example"}
+
+        def sms(*_args, **_kwargs):
+            clock[0] += 1.9
+            return {"success": True}
+
+        with patch("whatsapp.vas_identity.monotonic", side_effect=lambda: clock[0]), \
+                patch("utility.providers._prembly_identity_live", return_value=True), \
+                patch("utility.providers.prembly_verify_bvn", side_effect=lookup), \
+                patch.object(router, "sms_live", return_value=True), \
+                patch.object(router, "email_live", return_value=True), \
+                patch.object(router, "send_sms", side_effect=sms) as sent, \
+                patch.object(router, "send_email") as email:
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        email.assert_not_called()
+        self.assertEqual(response["screen"], vas_flow.CODE)
+        self.assertIn("Email delivery was unavailable", response["data"]["summary"])
+        code = sent.call_args.args[1].split("Zitch: ")[1][:6]
+        self.assertEqual(self.exchange(token, {"number": code}, vas_flow.CODE)["screen"], vas_flow.REENTRY)
+
+    def test_lookup_failure_log_does_not_copy_provider_messages_or_contacts(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        private = self.raw + " holder@record.example 08077778888"
+        with patch("utility.providers._prembly_identity_live", return_value=True), \
+                patch("utility.providers.prembly_verify_bvn", return_value={
+                    "success": False, "message": private, "raw": {"phone": private}}), \
+                self.assertLogs("zitch.security", level="WARNING") as logs:
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        self.assertEqual(response["data"]["status"], "Not completed")
+        self.assertIn("category=lookup_unavailable", " ".join(logs.output))
+        self.assertNotIn(private, " ".join(logs.output))
 
     def test_mock_sms_delivery_never_creates_an_ownership_challenge(self):
         self.unverified()
