@@ -20,6 +20,10 @@ The implementation follows Wema's [Third Party Virtual Account API documentation
 version 2.0. Static accounts are selected. Prefix `711` is for bank validation;
 only Wema's assigned non-711 prefix may be used for real collections.
 
+The [validation handoff pack](wema-vas-handoff.md) contains the Step 4 field
+mapping, blank Postman collection/environment, acceptance evidence and remaining
+bank questions. It is not a completed credentials submission.
+
 ## Contracts
 
 Each bank route accepts POST JSON and a dedicated static Bearer token. A trailing
@@ -103,12 +107,21 @@ customer balance is copied to a new bank account.
    separately through an approved secure channel. The command does not send email
    or Slack messages and never prints the token or identifiers.
 7. Wema validates all five endpoints, profiles the collection account and supplies
-   the live prefix. Retain approval evidence. Complete bank-led real inflow,
-   notification and collection settlement tests before enabling customer funding.
+   the live prefix. Retain approval evidence. The `711` stage proves the API
+   contract only; it cannot prove real inflow or collection settlement.
 8. Select `BANK_ACCOUNT_PROVIDER=wema_vas`, live mode and the assigned prefix only
    after sign-off. Configure `LIVE_APPROVAL_REFERENCE` and `COLLECTION_ACCOUNT`;
-   leave `ENABLE_ENROLLMENT=false` until reconciliation and product launch gates
-   are closed. Apply the same configuration to every Django runtime.
+   leave `ENABLE_ENROLLMENT=false`. Apply the same configuration to every Django
+   runtime. Before enabling a controlled live pilot, implement and verify an
+   enrollment allowlist or equivalent restriction to bank-approved pilot users;
+   the current enrollment flag is global. Do not enable ordinary customer
+   enrollment just to create pilot accounts. The pilot still requires verified
+   identity, consent, zero prior liabilities and genuine bank approval.
+9. With the approved pilot restricted and the assigned live prefix in use,
+   complete bank-led real inflow, notification and collection settlement tests.
+   General enrollment remains closed until reconciliation and product launch
+   gates are satisfied. Never reuse or convert immutable `711` validation users
+   and accounts for live collections.
 
 Both provider selection and archive mode reject new Partnership initiation;
 neither reroutes VAS spending to the old products. Never flip an enrolled customer
