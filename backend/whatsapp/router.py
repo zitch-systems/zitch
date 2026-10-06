@@ -4024,7 +4024,8 @@ def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits:
 
 
 def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str, *,
-                           verified_name: str = "", email: str = "", timeout=None):
+                           verified_name: str = "", email: str = "", timeout=None,
+                           delivery_deadline=None):
     """Send one ownership code only to provider-returned identity contacts.
 
     VAS requires accepted SMS delivery and also attempts the same code at the
@@ -4038,33 +4039,44 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str, *,
     """
     is_vas = pa.action_type == "vas_enroll"
     is_prembly = is_vas or pa.payload.get("vas_identity") is True
+
+    def failed(category, message):
+        if is_prembly:
+            log.warning("wa_identity_challenge_failed category=%s", category)
+        return message
+
     if not is_prembly and (getattr(settings, "TESTING", False) or settings.DEBUG):
         return ""
     if not flows_live():
         # The code is a bearer credential. Collecting it in the thread would undo
         # the reason the number was collected in a Flow in the first place.
-        return "no secure screen to collect the code on"
+        return failed("screen_unavailable", "no secure screen to collect the code on")
     if not phone:
-        return "the identity record carried no phone number"
+        return failed("phone_missing", "the identity record carried no phone number")
     if not sms_live():
-        return "SMS delivery is not configured"
+        return failed("sms_unconfigured", "SMS delivery is not configured")
     expected_state = pa.state
     # A number typed while its secure form is open follows the legacy BVN
     # handler, which parks the same action at 'bvn' before starting its SMS.
     allowed_states = (("flow_vas",) if is_vas else
                       (FLOW_ID_STATE, "bvn") if kind == "bvn" else (FLOW_ID_STATE,))
     if expected_state not in allowed_states:
-        return "the identity verification step changed"
+        return failed("session_changed", "the identity verification step changed")
     identity_hash = (pa.payload.get("identity_hash", "") if is_prembly
                      else getattr(user, f"{kind}_hash", ""))
     if not identity_hash:
-        return "the identity submission changed"
+        return failed("session_changed", "the identity submission changed")
+    if delivery_deadline is not None:
+        from .vas_identity import identity_timeout
+        timeout = identity_timeout(delivery_deadline, 3, read=2)
+        if timeout is None:
+            return failed("sms_budget_exhausted", "the verification delivery budget expired")
     code = f"{secrets.randbelow(10**6):06d}"
     message = (f"Zitch: {code} is your {kind.upper()} verification code. "
                "It expires in 10 minutes. Never share it.")
     sent = send_sms(phone, message, timeout=timeout) if timeout is not None else send_sms(phone, message)
     if not sent.get("success") or (is_prembly and (sent.get("success") is not True or sent.get("mock"))):
-        return "the verification code could not be delivered"
+        return failed("sms_not_accepted", "the verification code could not be delivered")
     masked_phone = f"•••••{phone[-4:]}"
     delivery = None
     if is_prembly:
@@ -4077,16 +4089,21 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str, *,
         if record_email:
             email_status = "unavailable"
             if email_live():
+                email_timeout = (identity_timeout(delivery_deadline, 2, read=1)
+                    if delivery_deadline is not None else Timeout(total=2, connect=1, read=1))
                 try:
-                    emailed = send_email(record_email, "Your Zitch identity verification code", message,
-                        timeout=Timeout(total=2, connect=1, read=1),
-                        html=_branded_email(
-                            f"Verify your {kind.upper()}",
-                            "Enter this code on the secure WhatsApp screen to verify your identity.",
-                            code=code,
-                            note="This code expires in 10 minutes. Never share it."))
-                    email_status = ("accepted" if emailed.get("success") is True
-                                    and not emailed.get("mock") else "failed")
+                    if email_timeout is not None:
+                        emailed = send_email(record_email, "Your Zitch identity verification code", message,
+                            timeout=email_timeout,
+                            html=_branded_email(
+                                f"Verify your {kind.upper()}",
+                                "Enter this code on the secure WhatsApp screen to verify your identity.",
+                                code=code,
+                                note="This code expires in 10 minutes. Never share it."))
+                        email_status = ("accepted" if emailed.get("success") is True
+                                        and not emailed.get("mock") else "failed")
+                    else:
+                        log.warning("wa_identity_optional_email_skipped category=budget_exhausted")
                 except Exception:
                     # SMS remains usable. Never put a destination or provider
                     # exception into a log or the private form response.
@@ -4109,11 +4126,11 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str, *,
                 or not secrets.compare_digest(getattr(current, f"{kind}_hash", ""),
                     str(locked.payload.get("identity_previous_hash", "")) if is_prembly else identity_hash)
                 or (is_prembly and locked.payload.get("identity_hash") != identity_hash)):
-            return "the identity submission changed during SMS delivery"
+            return failed("session_changed", "the identity submission changed during SMS delivery")
         if locked.payload.get("vas_identity"):
             from .vas_identity import bound
             if not bound(locked, current):
-                return "the private verification session changed"
+                return failed("session_changed", "the private verification session changed")
         locked.payload.update({
             "id_otp_hash": make_password(code),
             "id_otp_exp": (timezone.now() + timedelta(minutes=10)).isoformat(),

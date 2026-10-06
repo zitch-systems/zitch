@@ -23,7 +23,6 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
 from django.views.decorators.debug import sensitive_variables
-from urllib3.util import Timeout
 
 from accounts.models import User, hash_identifier
 from common.ratelimit import opaque_cache_identifier
@@ -33,6 +32,7 @@ from wema_vas.enrollment import (
     consent_version, customer_enrollment_available, enroll_customer, named_identity_proof,
 )
 from .models import PendingAction, WhatsAppLink
+from .vas_identity import identity_deadline, identity_timeout, lookup_failure
 
 PREFIX = "va"
 STATE = "flow_vas"
@@ -288,7 +288,7 @@ def _has_proof(user, kind, digest):
 
 
 @sensitive_variables()
-def _identity(token, data, screen, request_digest):
+def _identity(token, data, screen, request_digest, *, deadline):
     number = data.get("number")
     if not isinstance(number, str) or not re.fullmatch(r"[0-9]{11}", number):
         with _locked(token) as (pa, _user):
@@ -337,16 +337,25 @@ def _identity(token, data, screen, request_digest):
     # challenge as KYC. No account creation / Partnership fallback is allowed.
     from utility.providers import _prembly_identity_live, _record_email, prembly_verify_bvn, prembly_verify_nin
     from .router import _kyc_send_identity_otp
-    # Lookup and SMS use separate three-second budgets; optional record-email
-    # delivery below uses two seconds. None inherits the ordinary 30s limit.
-    result = (prembly_verify_bvn if kind == "bvn" else prembly_verify_nin)(number,
-        name=user.get_full_name() or "", timeout=Timeout(total=3, connect=1, read=2)) if _prembly_identity_live() else {}
-    name = " ".join(str(result.get(key) or "").strip() for key in ("first_name", "middle_name", "last_name")).strip()
+    # Prembly can legitimately need more than two seconds. All provider calls
+    # share one exchange budget; delivery consumes only what lookup leaves.
+    result = {}
+    failure = "lookup_unconfigured"
+    if _prembly_identity_live():
+        budget = identity_timeout(deadline, 6, read=5.5)
+        if budget is None:
+            failure = "lookup_budget_exhausted"
+        else:
+            result = (prembly_verify_bvn if kind == "bvn" else prembly_verify_nin)(number,
+                name=user.get_full_name() or "", timeout=budget)
+            failure = lookup_failure(result)
     error = "lookup unavailable"
-    if result.get("success") is True and not result.get("mock") and name and result.get("phone"):
+    if not failure:
+        name = " ".join(result.get(key, "").strip() for key in ("first_name", "middle_name", "last_name")).strip()
         error = _kyc_send_identity_otp(pa, user, kind, result["phone"], verified_name=name,
-            email=_record_email(result),
-            timeout=Timeout(total=3, connect=1, read=2))
+            email=_record_email(result), delivery_deadline=deadline)
+    else:
+        log.warning("wa_vas_identity_failed category=%s", failure)
     with _locked(token) as (current, _user):
         if current is None:
             return _result("This setup has ended. Start again in the chat.")
@@ -359,6 +368,7 @@ def _identity(token, data, screen, request_digest):
 
 @sensitive_variables()
 def handle(token, action, data, screen=""):
+    deadline = identity_deadline()
     from .flows import _close_flow
     # Publication is proven before issuing this short-lived signed session.
     # Bind that immutable Flow ID and exact local contract to every exchange;
@@ -407,7 +417,7 @@ def handle(token, action, data, screen=""):
                 return _screen(pa)
             if step not in {"identity", "reentry"}:
                 return _result("This setup is processing. Return to the chat.")
-        return _identity(token, data, screen, request_digest)
+        return _identity(token, data, screen, request_digest, deadline=deadline)
     except Exception as exc:  # never put provider details or submitted IDs in logs/outcomes
         log.warning("wa_vas_setup_failed error_type=%s", type(exc).__name__)
         with _locked(token) as (pa, _user):

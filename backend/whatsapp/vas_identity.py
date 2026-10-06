@@ -9,6 +9,7 @@ import json
 import logging
 import re
 from contextlib import contextmanager
+from time import monotonic
 
 from django.db import transaction
 from django.utils.crypto import salted_hmac
@@ -24,6 +25,38 @@ log = logging.getLogger("zitch.security")
 MAX_ATTEMPTS = 3
 UNAVAILABLE = "Identity verification could not finish. Return to the chat and try again later."
 CHANGED = "This verification changed. Return to the chat and start again."
+
+
+def identity_deadline():
+    # Keep room below Meta's ten-second exchange limit. Requests timeouts bound
+    # connection/read waits, not every possible response-body or scheduler delay.
+    return monotonic() + 8.5
+
+
+def identity_timeout(deadline, maximum, *, read=None):
+    # Leave at least a second for proof hashing, database work and encryption.
+    remaining = deadline - monotonic() - 1.0
+    if remaining <= 0.25:
+        return None
+    total = min(maximum, remaining)
+    return Timeout(total=total, connect=min(1, total),
+                   read=min(read if read is not None else total, total))
+
+
+def lookup_failure(result):
+    """Only fixed labels may cross the identity-provider logging boundary."""
+    if not isinstance(result, dict):
+        return "lookup_schema"
+    if result.get("mock"):
+        return "lookup_mock"
+    if result.get("success") is not True:
+        return "lookup_rejected" if result.get("invalid") is True else "lookup_unavailable"
+    parts = [result.get(key, "") for key in ("first_name", "middle_name", "last_name")]
+    if not all(isinstance(part, str) for part in parts) or not " ".join(parts).strip():
+        return "lookup_name_missing"
+    if not isinstance(result.get("phone"), str) or not result["phone"]:
+        return "lookup_phone_missing"
+    return ""
 
 
 def credentials(user):
@@ -174,6 +207,7 @@ def _candidate_unchanged(locked, user, kind, digest):
 @sensitive_variables()
 def submit(pa, user, msisdn, kind, digits):
     """Lookup once, then arm the shared private OTP; never allocate an account."""
+    deadline = identity_deadline()
     if kind not in ("bvn", "nin") or not isinstance(digits, str) or not re.fullmatch(r"[0-9]{11}", digits):
         return "invalid"
     digest = hash_identifier(digits)
@@ -208,13 +242,21 @@ def submit(pa, user, msisdn, kind, digits):
     from utility.providers import _prembly_identity_live, prembly_verify_bvn, prembly_verify_nin
 
     result = {}
+    failure = "lookup_unconfigured"
     try:
         if _prembly_identity_live():
-            lookup = prembly_verify_bvn if kind == "bvn" else prembly_verify_nin
-            result = lookup(digits, name=user.get_full_name() or "",
-                            timeout=Timeout(total=3, connect=1, read=2))
+            budget = identity_timeout(deadline, 6, read=5.5)
+            if budget is None:
+                failure = "lookup_budget_exhausted"
+            else:
+                lookup = prembly_verify_bvn if kind == "bvn" else prembly_verify_nin
+                result = lookup(digits, name=user.get_full_name() or "", timeout=budget)
+                failure = lookup_failure(result)
     except Exception as exc:
+        failure = "lookup_exception"
         log.warning("wa_identity_lookup_failed error_type=%s", type(exc).__name__)
+    if failure:
+        log.warning("wa_identity_lookup_failed category=%s", failure)
     if not isinstance(result, dict):
         result = {}
     name_parts = [result.get(key, "") for key in ("first_name", "middle_name", "last_name")]
@@ -241,7 +283,7 @@ def submit(pa, user, msisdn, kind, digits):
 
     try:
         error = _kyc_send_identity_otp(pa, user, kind, phone, verified_name=name,
-            email=email if isinstance(email, str) else "", timeout=Timeout(total=3, connect=1, read=2))
+            email=email if isinstance(email, str) else "", delivery_deadline=deadline)
     except Exception as exc:
         log.warning("wa_identity_delivery_failed error_type=%s", type(exc).__name__)
         error = UNAVAILABLE
