@@ -1,5 +1,6 @@
 """Preserve legacy bills while keeping collection-funded spend attributable."""
 from decimal import Decimal
+from inspect import unwrap
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from unittest.mock import patch
@@ -10,8 +11,8 @@ from django.utils import timezone
 
 from wallet.models import BillFundingBinding, BillFundingRefund, BankHistoryCheckpoint, Transaction, Wallet
 from wallet.services import (DuplicateTransaction, LimitExceeded, bank_spend_error,
-    biller_source_for_transaction, credit, customer_funding_account, debit, refund,
-    settle_or_refund, wallet_expected_balance)
+    biller_source_for_transaction, credit, customer_funding_account, customer_spendable_balance,
+    debit, refund, settle_or_refund, wallet_balance_payload, wallet_expected_balance)
 from wallet.tests import make_user
 from wema_vas.models import VirtualAccount
 from wema_vas.services import account_balance, mini_statement, process_notification
@@ -58,6 +59,12 @@ class RetainedLegacyBillTests(TestCase):
         self.wallet.save(update_fields=["account_number"])
         with self.assertRaises(LimitExceeded):
             debit(self.user, "100", "Airtime — MTN")
+
+    def test_legacy_balance_presentation_remains_unchanged(self):
+        self.assertEqual(wallet_balance_payload(self.user), {
+            "balance": Decimal("1000"), "available_balance": Decimal("1000"),
+            "historical_balance": Decimal("0"), "vas_balance": Decimal("0"),
+        })
 
     def test_history_review_bank_cap_and_kyc_still_apply(self):
         with patch("utility.wema.wema_live", return_value=True):
@@ -108,6 +115,44 @@ class VasBillFundingTests(TestCase):
         with self.assertRaises(LimitExceeded):
             self.bill("1001")
         self.assertEqual(account_balance(self.account), Decimal("1000"))
+
+    def test_customer_balance_separates_legacy_funds_from_available_vas_bills(self):
+        from accounts.models import AccessToken
+        credit(self.user, "5000", "Historical Partnership deposit")
+        state = wallet_balance_payload(self.user)
+        self.assertEqual(state, {"balance": Decimal("6000"), "available_balance": Decimal("1000"),
+                                 "historical_balance": Decimal("5000"), "vas_balance": Decimal("1000")})
+        self.assertEqual(customer_spendable_balance(self.user), Decimal("1000"))
+        token = AccessToken.issue(self.user).key
+        response = self.client.post("/api/wallet_balance/", data={"access_token": token},
+                                    content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        result = response.json()
+        self.assertEqual(result["wallet"], "6000.00")
+        self.assertEqual(result["available_balance"], "1000.00")
+        self.assertEqual(result["historical_balance"], "5000.00")
+        self.assertEqual(result["vas_balance"], "1000.00")
+
+    def test_disabled_or_restricted_vas_balance_is_retained_but_not_available(self):
+        credit(self.user, "5000", "Historical Partnership deposit")
+        with override_settings(WEMA_VAS_BILLER_ENABLED=False):
+            state = wallet_balance_payload(self.user)
+            self.assertEqual(state["available_balance"], 0)
+            self.assertEqual(state["historical_balance"], 5000)
+            self.assertEqual(state["vas_balance"], 1000)
+        VirtualAccount.objects.filter(pk=self.account.pk).update(active=False)
+        self.assertEqual(customer_spendable_balance(self.user), 0)
+        self.assertEqual(wallet_balance_payload(self.user)["balance"], 6000)
+
+    def test_display_balance_tracks_reservations_and_once_only_refunds(self):
+        credit(self.user, "5000", "Historical Partnership deposit")
+        txn = self.bill("200")
+        self.assertEqual(customer_spendable_balance(self.user), 800)
+        self.assertEqual(wallet_balance_payload(self.user)["historical_balance"], 5000)
+        refund(txn)
+        refund(txn)
+        self.assertEqual(customer_spendable_balance(self.user), 1000)
+        self.assertEqual(wallet_balance_payload(self.user)["historical_balance"], 5000)
 
     def test_double_spend_reservations_count_pending_bills(self):
         self.bill("700")
@@ -169,9 +214,10 @@ class VasBillFundingTests(TestCase):
 
     def test_block_denies_bills_but_retains_refunds_and_statement(self):
         from wallet.wema_callbacks import _authorize_payout
+        from wema_vas.views import block
         txn = self.bill()
         self.assertTrue(_authorize_payout(txn.reference, "", "127.0.0.1")[0])
-        VirtualAccount.objects.filter(pk=self.account.pk).update(active=False)
+        unwrap(block)({"accountnumber": self.account.number, "blockreason": "Bank investigation"})
         self.assertFalse(_authorize_payout(txn.reference, "", "127.0.0.1")[0])
         with self.assertRaises(LimitExceeded):
             self.bill()
@@ -276,7 +322,7 @@ class PostgresBillFundingTests(TransactionTestCase):
                 return debit(type(self.user).objects.get(pk=self.user.pk), "100", "Airtime — MTN").reference
             except LimitExceeded:
                 return None
-        reference, _ = self.race([buy, lambda: block.__wrapped__({
+        reference, _ = self.race([buy, lambda: unwrap(block)({
             "accountnumber": self.account.number, "blockreason": "Bank investigation"})])
         if reference:
             self.assertFalse(_authorize_payout(reference, "", "127.0.0.1")[0])

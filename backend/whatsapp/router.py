@@ -50,6 +50,8 @@ from wallet.services import (
     attach_existing_bank_account,
     bank_spend_error,
     customer_funding_account,
+    customer_spendable_balance,
+    wallet_balance_payload,
     customer_safe_failure,
     customer_visible_transactions,
     get_or_create_wallet,
@@ -930,7 +932,7 @@ def _fresh_wallet_balance(user) -> Decimal:
         wallet.refresh_from_db(fields=["balance"])
     except Exception:  # noqa: BLE001 - a newly created unsaved test double may not refresh
         pass
-    return wallet.balance
+    return customer_spendable_balance(user, wallet=wallet)
 
 
 def _has_live_funds(pa: PendingAction, user, *, notify: bool = True) -> bool:
@@ -2193,6 +2195,16 @@ def _do_balance(user, msisdn: str) -> None:
     bals = all_balances(user)
     funding = customer_funding_account(user)
     notice = _funding_spending_notice(funding)
+    balances = wallet_balance_payload(user)
+    total, available = balances["balance"], balances["available_balance"]
+    historical = balances["historical_balance"]
+    if available != total or historical:
+        lines = [f"Total NGN wallet balance: {_money(total)}",
+                 f"Available for bills: {_money(available)}"]
+        if historical:
+            lines.append(f"Historical funds unavailable for bills: {_money(historical)}")
+        lines.extend(f"{ccy} {bal:,.2f}" for ccy, bal in bals.items() if ccy != "NGN")
+        return reply(msisdn, "💰 Your balances:\n" + "\n".join(lines) + notice)
     if len(bals) == 1:
         return reply(msisdn, f"💰 Your Zitch balance is {_money(bals['NGN'])}." + notice)
     lines = [(_money(bal) if ccy == "NGN" else f"{ccy} {bal:,.2f}") for ccy, bal in bals.items()]

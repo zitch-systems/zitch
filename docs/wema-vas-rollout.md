@@ -223,6 +223,12 @@ Neither mutable transaction metadata nor late historical credits authorize VAS
 spending. Callback authorization checks the binding and current account restriction.
 Remita remains unavailable where its existing status/requery contract is absent.
 
+Customer balances distinguish the aggregate wallet total from `available_balance`,
+`historical_balance` and `vas_balance`. Late Partnership credits remain visible in
+the total/history but do not increase the VAS amount available for bills. Restricted
+or disabled VAS spending has zero available balance while retaining the recorded
+funds. App and WhatsApp bill decisions use that available amount.
+
 Static accounts require credit and debit statements. Utility products do not
 provide destination account numbers, so bill debit/refund rows have empty
 `accountNo` and `bankName` rather than invented destinations. Agree this mapping,

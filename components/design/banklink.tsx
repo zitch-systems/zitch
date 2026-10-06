@@ -44,7 +44,7 @@ const sumBalance = (banks: LinkedAccount[]): number =>
 // ---- Home: aggregate summary card ------------------------------------------
 export const LinkedBanksSummary = () => {
   const { c } = useTheme();
-  const { balance, linked, showBal } = useWallet();
+  const { totalBalance, linked, showBal } = useWallet();
   if (linked.length === 0) return null;
 
   const linkedTotal = sumBalance(linked);
@@ -75,7 +75,7 @@ export const LinkedBanksSummary = () => {
           <View style={{ width: 1, alignSelf: 'stretch', backgroundColor: c.line }} />
           <View style={{ flex: 1, alignItems: 'flex-end' }}>
             <NText style={{ fontSize: 19, fontFamily: font.extrabold, color: c.brand, fontVariant: ['tabular-nums'] }}>
-              {showBal ? money(balance + linkedTotal) : '₦ ••••'}
+              {showBal ? money(totalBalance + linkedTotal) : '₦ ••••'}
             </NText>
             <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular, marginTop: 2 }}>total with Zitch</Text>
           </View>

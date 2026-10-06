@@ -15,6 +15,41 @@ export type WalletCapabilities = {
   transfersAvailable: boolean;
 };
 
+type BalancePayload = CapabilityPayload & {
+  wallet?: number | string;
+  available_balance?: number | string;
+  historical_balance?: number | string;
+  vas_balance?: number | string;
+};
+
+export type WalletBalances = {
+  totalBalance: number;
+  availableBalance: number;
+  historicalBalance: number;
+};
+
+const finiteAmount = (value: number | string | undefined): number => {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+export const walletBalances = (value: BalancePayload | null | undefined): WalletBalances => {
+  const totalBalance = finiteAmount(value?.wallet);
+  if (value?.provider !== 'wema_vas') {
+    return { totalBalance, availableBalance: totalBalance, historicalBalance: 0 };
+  }
+  const capabilities = walletCapabilities(value);
+  const availableBalance = capabilities.billPaymentsAvailable || capabilities.transfersAvailable
+    ? Math.max(0, Math.min(totalBalance, finiteAmount(value.available_balance))) : 0;
+  return {
+    totalBalance,
+    availableBalance,
+    historicalBalance: value.historical_balance == null
+      ? Math.max(0, totalBalance - finiteAmount(value.vas_balance))
+      : Math.max(0, finiteAmount(value.historical_balance)),
+  };
+};
+
 export const walletCapabilities = (value: CapabilityPayload | null | undefined): WalletCapabilities => {
   // Older Partnership responses expose one spending flag. VAS requires an
   // explicit capability so a partial response cannot promise usable bill funds.
@@ -32,7 +67,7 @@ export const walletCapabilityMessage = ({ billPaymentsAvailable, transfersAvaila
   return 'Transfers and bill payments are currently unavailable.';
 };
 
-export type WalletBalance = ApiResult<CapabilityPayload & {
+export type WalletBalance = ApiResult<BalancePayload & {
   wallet: number | string;
   user_first_name?: string;
   user_last_name?: string;

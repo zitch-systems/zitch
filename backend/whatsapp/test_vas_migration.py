@@ -148,3 +148,45 @@ class VasCustomerChatTests(TestCase):
             router._run_vtu(pa, self.user, MSISDN, Decimal("100"), "Airtime - MTN", None, None)
         guard.assert_called_once_with(self.user, Decimal("100"), biller=True)
         purchase.assert_not_called()
+
+    def test_private_confirmation_and_affordability_use_canonical_available_balance(self):
+        self.wallet.balance = Decimal("600")
+        self.wallet.save(update_fields=["balance"])
+        pa = PendingAction.objects.create(user=self.user, msisdn=MSISDN,
+            action_type="airtime", state="amount", payload={"amount": "200", "net": "1", "phone": "08012345678"},
+            expires_at=timezone.now() + timedelta(minutes=5))
+        with patch.object(router, "customer_spendable_balance", return_value=Decimal("100")), \
+                patch.object(router, "reply") as reply, patch.object(router, "_arm_confirm") as confirm:
+            self.assertEqual(router._fresh_wallet_balance(self.user), Decimal("100"))
+            self.assertEqual(router._flow_balance_line(pa), "Available balance ₦100.00")
+            self.assertTrue(router._insufficient(self.user, Decimal("200")))
+            router._advance_airtime(pa, self.user, MSISDN, "200")
+        self.assertIn("₦100.00", reply.call_args.args[1])
+        self.assertNotIn("₦600.00", reply.call_args.args[1])
+        confirm.assert_not_called()
+
+    def test_balance_separates_historical_total_from_available_bill_funds(self):
+        balances = {"balance": Decimal("600"), "available_balance": Decimal("100"),
+                    "historical_balance": Decimal("500"), "vas_balance": Decimal("100")}
+        funding = {**self.funding, "bill_payments_available": True, "transfers_available": False}
+        with patch.object(router, "wallet_balance_payload", return_value=balances), \
+                patch.object(router, "customer_funding_account", return_value=funding), \
+                patch.object(router, "reply") as reply:
+            router._do_balance(self.user, MSISDN)
+        message = reply.call_args.args[1]
+        self.assertIn("Total NGN wallet balance: ₦600.00", message)
+        self.assertIn("Available for bills: ₦100.00", message)
+        self.assertIn("Historical funds unavailable for bills: ₦500.00", message)
+
+    def test_encrypted_airtime_details_do_not_offer_historical_funds_for_spending(self):
+        from whatsapp.test_vtu_flow import _submit, _vtu_action
+        from whatsapp.flows import VTU_AIRTIME
+        self.wallet.balance = Decimal("600")
+        self.wallet.save(update_fields=["balance"])
+        pa = _vtu_action(self.user, vtu_kind="airtime", vtu_step="details", net="1")
+        with patch.object(router, "customer_spendable_balance", return_value=Decimal("100")), \
+                patch("common.http.send_limit_error", return_value=None):
+            response = _submit(pa, {"amount": "200", "phone": "08012345678"})
+        self.assertEqual(response["screen"], VTU_AIRTIME)
+        self.assertIn("₦100.00", response["data"]["error"])
+        self.assertNotIn("₦600.00", response["data"]["error"])

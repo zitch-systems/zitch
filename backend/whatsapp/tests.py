@@ -765,6 +765,8 @@ class VtuTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user(balance="20000")
+        # Purchases reserve an owned bank funding source before fulfillment.
+        give_account(self.user)
         WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
         DataPlan.objects.create(network="1", plan_type="3", name="1GB", validity="30 days",
                                 plan_code="mtn-1gb", price=Decimal("500"), active=True)
@@ -1004,6 +1006,8 @@ class AiIntentTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user(balance="50000")
+        # Purchases reserve an owned bank funding source before fulfillment.
+        give_account(self.user)
         WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
                                     status=WhatsAppLink.ACTIVE, ai_enabled=True)
         SystemSetting.set("ai_enabled_global", "true")

@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from django.test import Client, TestCase
 
+from wallet.models import BankHistoryCheckpoint
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
@@ -16,6 +17,11 @@ class BettingTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user("08030000001", "uche@zitch.test", balance="10000")
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = "0453000001"
+        wallet.save(update_fields=["account_number"])
+        BankHistoryCheckpoint.objects.create(wallet=wallet, account_number=wallet.account_number,
+                                             opening_review_required=False)
         map_billers("bet9ja-betting")
         BettingPlatform.objects.create(code="bet9ja", name="Bet9ja", color="#0B7A3B",
                                        service_id="bet9ja-betting")

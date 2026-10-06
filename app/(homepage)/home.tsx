@@ -40,7 +40,7 @@ const MORE = [
 
 const Home = () => {
   const { c } = useTheme();
-  const { balance, firstName, fullName, avatar, accountNumber, bankName, spendingAvailable, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload } = useWallet();
+  const { balance, totalBalance, historicalBalance, fundingProvider, firstName, fullName, avatar, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload } = useWallet();
   const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const [more, setMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -121,7 +121,7 @@ const Home = () => {
             <View style={{ width: 17, height: 17, borderRadius: 9, backgroundColor: 'rgba(255,255,255,.22)', alignItems: 'center', justifyContent: 'center' }}>
               <ZIcon name="check" size={11} color="#fff" stroke={2.6} />
             </View>
-            <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 13, fontFamily: font.medium }}>{spendingAvailable === false ? 'Wallet Balance' : 'Available Balance'}</Text>
+            <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 13, fontFamily: font.medium }}>{fundingProvider === 'wema_vas' ? 'Available for bills' : 'Available Balance'}</Text>
           </View>
           <Pressable onPress={() => router.push('/history')} style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
             <Text style={{ color: '#fff', fontSize: 12.5, fontFamily: font.semibold }}>Transaction History</Text>
@@ -136,6 +136,13 @@ const Home = () => {
             <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
           </Pressable>
         </View>
+        {fundingProvider === 'wema_vas' ? (
+          <View style={{ gap: 3, marginTop: 10 }}>
+            <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Total balance: {showBal ? money(totalBalance) : '₦ ••••••'}</NText>
+            <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Historical funds: {showBal ? money(historicalBalance) : '₦ ••••••'}</NText>
+            {historicalBalance > 0 ? <Text style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.regular }}>Historical funds are not available for new payments.</Text> : null}
+          </View>
+        ) : null}
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, gap: 10 }}>
           {/* The dedicated (Monnify reserved) account number, shown only once the
               wallet is provisioned with one — never a hardcoded placeholder (it

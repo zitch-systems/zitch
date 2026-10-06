@@ -172,6 +172,34 @@ def wallet_expected_balance(user_id) -> Decimal:
     return credits - debits
 
 
+def wallet_balance_payload(user, wallet=None) -> dict:
+    """Separate retained ledger totals from money available for VAS bills.
+
+    These are display values. Actual debits still resolve and reserve their
+    canonical funding source under the wallet lock.
+    """
+    from wema_vas.models import VirtualAccount
+    from wema_vas.services import account_balance
+
+    wallet = wallet or get_or_create_wallet(user)
+    total = wallet.balance
+    account = VirtualAccount.objects.filter(user_id=user.pk).first()
+    if account is None:
+        return {"balance": total, "available_balance": total,
+                "historical_balance": Decimal("0.00"), "vas_balance": Decimal("0.00")}
+    vas_balance = (max(Decimal("0.00"), account_balance(account))
+                   if account.mode == VirtualAccount.LIVE else Decimal("0.00"))
+    available = (min(max(Decimal("0.00"), total), vas_balance)
+                 if biller_spending_available(user) else Decimal("0.00"))
+    return {"balance": total, "available_balance": available,
+            "historical_balance": max(Decimal("0.00"), total - vas_balance),
+            "vas_balance": vas_balance}
+
+
+def customer_spendable_balance(user, *, wallet=None) -> Decimal:
+    return wallet_balance_payload(user, wallet=wallet)["available_balance"]
+
+
 def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
     """Reserve a dedicated virtual account for the user's wallet, exactly once.
 

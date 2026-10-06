@@ -866,7 +866,7 @@ def _phone_from(text: str, user) -> str | None:
 
 
 def _insufficient(user, amount: Decimal) -> bool:
-    return get_or_create_wallet(user).balance < amount
+    return _fresh_wallet_balance(user) < amount
 
 
 def _vtu_detail(pa: PendingAction, amount: Decimal) -> str:
@@ -898,7 +898,7 @@ def _vtu_outcome(pa: PendingAction, user, msisdn: str, amount: Decimal, label: s
     if txn.transaction_status == Transaction.SUCCESS:
         title, rows = receipt(txn, result)
         reply_receipt(msisdn, title, _with_narration(pa, rows), ref=txn.reference,
-                      user=user, balance_after=get_or_create_wallet(user).balance)
+                      user=user, balance_after=_fresh_wallet_balance(user))
         lead = f"{label} was already completed" if replay else f"{label} successful"
         return Outcome(f"{lead} - the receipt is in your chat.", OUTCOME_SUCCESS)
 
@@ -1135,7 +1135,7 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if amount is None or amount < MIN_AIRTIME:
             return reply(msisdn, f"Enter a valid amount, at least ₦{MIN_AIRTIME:,.0f}.")
         if _insufficient(user, amount):
-            return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
         # "bill", not "transfer" - airtime accrues against the bill cap, and
         # checking the wrong bucket both refused purchases the app allows and
         # let through ones it blocks (caught only later, after the OTP).
@@ -1236,7 +1236,7 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
         price = Decimal(pa.payload["price"])
         if _insufficient(user, price):
             _clear_actions(msisdn)
-            return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
         limit_msg = send_limit_error(user, price, biller=True) or daily_limit_error(user, price, "bill")
         if limit_msg:
             _clear_actions(msisdn)
@@ -1378,7 +1378,7 @@ def _electricity_confirm(pa: PendingAction, user, msisdn: str, note: str = "") -
         # rather than end the flow they are halfway through.
         p.pop("amount", None)
         _touch(pa, state="amount", payload=p)
-        return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+        return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
     limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
     if limit_msg:
         _clear_actions(msisdn)
@@ -1537,7 +1537,7 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         price = Decimal(pa.payload["price"])
         if _insufficient(user, price):
             _clear_actions(msisdn)
-            return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
         limit_msg = send_limit_error(user, price, biller=True) or daily_limit_error(user, price, "bill")
         if limit_msg:
             _clear_actions(msisdn)
@@ -1644,7 +1644,7 @@ def _advance_exam(pa: PendingAction, user, msisdn: str, text: str) -> None:
         quantity = int(pa.payload["quantity"])
         amount = Decimal(pa.payload["unit_price"]) * quantity
         if _insufficient(user, amount):
-            return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
         limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
         if limit_msg:
             _clear_actions(msisdn)
@@ -2071,7 +2071,7 @@ def _begin_airtime(user, msisdn: str, amount, phone, network, recipient_ref=None
         amt = None
     if amt and amt >= 50 and netid and ph:
         if _insufficient(user, amt):
-            reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+            reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
             return True
         net = NETWORK_NAMES[netid]
         pa = _new_flow(user, msisdn, "airtime", "pin",

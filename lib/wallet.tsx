@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback, use
 import { getToken, saveDisplayName, saveSpendAccountNamespace } from '@/lib/secureStore';
 import { apiPost, apiJson } from '@/lib/api';
 import type { Txn } from '@/components/design/ui';
-import { walletCapabilities } from '@/lib/services/wallet';
+import { walletBalances, walletCapabilities } from '@/lib/services/wallet';
 
 // An external bank account the user linked via Mono open banking. Mirrors the
 // backend banklink.views._serialize shape (balance is display-only/cached).
@@ -71,7 +71,12 @@ export const mapTxn = (raw: any, i: number): Txn => {
 };
 
 type WalletValue = {
+  /** Spendable funds for existing purchase consumers; never the VAS aggregate. */
   balance: number;
+  availableBalance: number;
+  totalBalance: number;
+  historicalBalance: number;
+  fundingProvider?: 'partnership' | 'wema_vas';
   firstName: string;
   fullName: string;
   avatar: string;
@@ -106,6 +111,9 @@ type WalletValue = {
 
 const WalletContext = createContext<WalletValue>({
   balance: 0,
+  availableBalance: 0,
+  totalBalance: 0,
+  historicalBalance: 0,
   firstName: '',
   fullName: '',
   avatar: '',
@@ -128,7 +136,8 @@ const WalletContext = createContext<WalletValue>({
 });
 
 export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
-  const [balance, setBalance] = useState(0);
+  const [balances, setBalances] = useState(() => walletBalances(undefined));
+  const [fundingProvider, setFundingProvider] = useState<'partnership' | 'wema_vas'>();
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [avatar, setAvatar] = useState('');
@@ -191,7 +200,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
           if (value.account_namespace) {
             await saveSpendAccountNamespace(String(value.account_namespace));
           }
-          setBalance(Number(value.wallet ?? 0));
+          setBalances(walletBalances(value));
+          setFundingProvider(value.provider);
           const first = String(value.user_first_name || '');
           const last = String(value.user_last_name || '');
           const named = String(first || last
@@ -246,8 +256,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   // wallet consumer (Home, Wallet, the tab bar, service screens) re-renders
   // whenever the provider renders, even when nothing it reads has changed.
   const value = useMemo(
-    () => ({ balance, firstName, fullName: accountName || `${firstName} ${lastName}`.trim(), avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, ...capabilities, fundingMessage, txns, loading, hydrated, showBal, setShowBal, reload: load, linked, reloadLinked }),
-    [balance, firstName, lastName, avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, capabilities, fundingMessage, txns, loading, hydrated, showBal, load, linked, reloadLinked],
+    () => ({ balance: balances.availableBalance, ...balances, fundingProvider, firstName, fullName: accountName || `${firstName} ${lastName}`.trim(), avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, ...capabilities, fundingMessage, txns, loading, hydrated, showBal, setShowBal, reload: load, linked, reloadLinked }),
+    [balances, fundingProvider, firstName, lastName, avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, capabilities, fundingMessage, txns, loading, hydrated, showBal, load, linked, reloadLinked],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;

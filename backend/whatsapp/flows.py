@@ -1952,8 +1952,7 @@ def _submit_vtu_details(pa, data: dict) -> dict:
     from utility.models import DataPlan
 
     from .router import (MIN_AIRTIME, NETWORK_NAMES, _clear_actions, _flow_fields,
-                         _insufficient, _money, _own_phone, _phone_from, _touch)
-    from wallet.services import get_or_create_wallet
+                         _fresh_wallet_balance, _insufficient, _money, _own_phone, _phone_from, _touch)
 
     user = pa.user
     kind = pa.payload.get("vtu_kind", "airtime")
@@ -1994,7 +1993,7 @@ def _submit_vtu_details(pa, data: dict) -> dict:
         _clear_actions(pa.msisdn)
         return _success_screen(limit_msg, status="failed")
     if _insufficient(user, amount):
-        return refuse(f"Insufficient balance - you have {_money(get_or_create_wallet(user).balance)}.")
+        return refuse(f"Insufficient balance - you have {_money(_fresh_wallet_balance(user))}.")
     if not user.transaction_pin:
         # Same refusal the transfer form makes: a PIN pad the customer can never
         # satisfy is worse than a clear "set one first".

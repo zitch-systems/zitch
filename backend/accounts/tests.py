@@ -859,6 +859,14 @@ class FullJourneyE2ETests(TestCase):
         self.assertEqual(body["tier"], 1)  # email was the last piece; confirm recomputes
 
         # --- spend + history shape the app depends on ---
+        # Model the owned bank source behind the mocked funding above. Bill
+        # purchases require a canonical customer account, including in this journey.
+        from wallet.models import BankHistoryCheckpoint
+        wallet = get_or_create_wallet(user_obj)
+        wallet.account_number = "0459900001"
+        wallet.save(update_fields=["account_number"])
+        BankHistoryCheckpoint.objects.create(wallet=wallet, account_number=wallet.account_number,
+                                             opening_review_required=False)
         self.assertEqual(self.post("/api/utility/buyairtime/", access_token=tok, amount="1000",
                                    network="1", phone=P, transaction_pin="246810",
                                    idempotency_key="journey-airtime-1")[0], 200)
@@ -887,6 +895,10 @@ class FullJourneyE2ETests(TestCase):
         self.assertEqual(self.post("/api/kyc/address/", access_token=tok,
                                    address="12 Allen Avenue", city="Ikeja", state="Lagos",
                                    document="ZmFrZQ==")[1]["tier"], 3)
+        # Bank and application tiers are independent; model the matching bank
+        # confirmation before the journey's large spend.
+        wallet.bank_tier = 3
+        wallet.save(update_fields=["bank_tier"])
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
                                    amount="150000", transaction_pin="246810",
                                    idempotency_key="journey-p2p-large-1")[0], 200)
