@@ -1844,11 +1844,11 @@
           },
           {
             "type": "TextBody",
-            "text": "Zitch securely stores your verified BVN or NIN and phone in encrypted form and shares them with Wema Bank to operate your funding account. Your existing balance is unchanged."
+            "text": "Zitch checks your BVN or NIN with Prembly, securely stores your verified identity and phone in encrypted form, and shares them with Wema Bank to operate your funding account. Your existing balance is unchanged."
           },
           {
             "type": "TextBody",
-            "text": "Choose an identity to verify privately. By tapping I agree and continue, you consent to this storage and sharing. You can close this form to decline."
+            "text": "Verify your BVN privately, or choose NIN. We send an ownership code by SMS to the phone on your identity record and also try its registered email when available. By tapping I agree and continue, you consent to this verification, storage and sharing. Close this form to decline."
           },
           {
             "type": "TextBody",
@@ -1857,6 +1857,7 @@
           {
             "type": "Form",
             "name": "vas_consent",
+            "init-values": {"identity_type": "bvn"},
             "children": [
               {
                 "type": "Dropdown",

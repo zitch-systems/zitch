@@ -44,6 +44,7 @@ def document(raw=None):
     ZITCH_LINKS={"API_BASE": ORIGIN}, SECURE_SSL_REDIRECT=False,
     CSRF_COOKIE_SECURE=True, RATELIMIT_ENABLE=False,
     PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"],
+    BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE="active",
 )
 class VerificationWebTests(TestCase):
     def setUp(self):
@@ -133,6 +134,92 @@ class VerificationWebTests(TestCase):
         self.link.save()
         with self.assertRaises(ValueError):
             start_verification(self.user, MSISDN, 3)
+
+    def test_vas_selection_and_archive_refuse_new_verification_capabilities(self):
+        count = PendingAction.objects.count()
+        for settings_change in ({"BANK_ACCOUNT_PROVIDER": "wema_vas"},
+                                {"WEMA_PARTNERSHIP_MODE": "archive"}):
+            with self.subTest(settings=settings_change), override_settings(**settings_change):
+                for tier in (2, 3):
+                    with self.subTest(tier=tier), self.assertRaises(ValueError):
+                        start_verification(self.user, MSISDN, tier)
+        self.assertEqual(PendingAction.objects.count(), count)
+        self.pa.refresh_from_db()
+        self.assertEqual(self.pa.state, PIN)
+
+    def test_lifecycle_change_blocks_unsubmitted_pin_and_address_forms(self):
+        for settings_change in ({"BANK_ACCOUNT_PROVIDER": "wema_vas"},
+                                {"WEMA_PARTNERSHIP_MODE": "archive"}):
+            for unlocked in (False, True):
+                with self.subTest(settings=settings_change, unlocked=unlocked):
+                    self.path = self.start()
+                    self.unlock() if unlocked else self.get()
+                    with override_settings(**settings_change), \
+                            patch("whatsapp.verification_web._address_data") as parse, \
+                            patch("whatsapp.verification_web.evaluate_transaction_pin") as pin:
+                        response = self.get()
+                        self.assertEqual(response.status_code, 410)
+                        self.assertNotContains(response, 'name="document"', status_code=410)
+                        self.assertEqual(self.post({"action": "pin", "pin": GOOD_PIN}).status_code, 410)
+                        self.assertEqual(self.post(self.address()).status_code, 410)
+                    parse.assert_not_called()
+                    pin.assert_not_called()
+                    self.pa.refresh_from_db()
+                    self.assertEqual(self.pa.state, READY if unlocked else PIN)
+        self.provider.assert_not_called()
+        self.bank_address.assert_not_called()
+
+    def test_per_customer_vas_blocks_new_and_existing_address_capabilities(self):
+        from wema_vas.models import VirtualAccount
+
+        self.unlock()
+        VirtualAccount.objects.create(
+            user=self.user, number="7120000042", display_name="Zitch/Test User",
+            encrypted_identity="test-encrypted-identity", verification_reference="test-proof",
+            consent_reference="test-consent", verified_at=timezone.now(), mode="live", prefix="712")
+        count = PendingAction.objects.count()
+        with self.assertRaises(ValueError):
+            start_verification(self.user, MSISDN, 3)
+        self.assertEqual(PendingAction.objects.count(), count)
+        self.assertEqual(self.get().status_code, 410)
+        self.assertEqual(self.post(self.address()).status_code, 410)
+        self.provider.assert_not_called()
+        self.bank_address.assert_not_called()
+
+    def test_archive_does_not_rewrite_submitted_verification_records(self):
+        self.get()  # Establish CSRF before attempting already-consumed links.
+        original_payload = dict(self.pa.payload)
+        for state in (PROCESSING, REVIEW, COMPLETE):
+            with self.subTest(state=state):
+                PendingAction.objects.filter(pk=self.pa.pk).update(state=state)
+                with override_settings(WEMA_PARTNERSHIP_MODE="archive"):
+                    self.assertEqual(self.get().status_code, 410)
+                    self.assertEqual(self.post(self.address()).status_code, 410)
+                self.pa.refresh_from_db()
+                self.assertEqual(self.pa.state, state)
+                self.assertEqual(self.pa.payload, original_payload)
+        self.provider.assert_not_called()
+        self.bank_address.assert_not_called()
+
+    def test_accepted_operation_keeps_its_pending_result_after_archive(self):
+        self.unlock()
+
+        def accepted_before_archive(request, user, data):
+            self.pa.refresh_from_db()
+            self.assertEqual(self.pa.state, PROCESSING)
+            self.enterContext(override_settings(WEMA_PARTNERSHIP_MODE="archive"))
+            return JsonResponse({"success": False, "pending": True}, status=202)
+
+        with patch("whatsapp.verification_web._run_address_operation",
+                   side_effect=accepted_before_archive) as provider:
+            response = self.post(self.address())
+        self.assertEqual(response.status_code, 202)
+        self.assertContains(response, "Your address is being checked", status_code=202)
+        self.pa.refresh_from_db()
+        self.assertEqual(self.pa.state, REVIEW)
+        self.assertEqual(self.get().status_code, 410)
+        self.assertEqual(self.post(self.address()).status_code, 410)
+        provider.assert_called_once()
 
     def test_new_link_retires_only_previous_web_actions(self):
         unrelated = PendingAction.objects.create(

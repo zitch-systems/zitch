@@ -139,6 +139,50 @@ class PublishedFlowProbeTests(SimpleTestCase):
         with patch("whatsapp.providers.requests.get", side_effect=OSError("boom")):
             self.assertEqual(published_flow_report()["status"], "unreachable")
 
+    @override_settings(**LIVE)
+    def test_explicit_flow_reads_that_node_assets_and_endpoint(self):
+        from whatsapp.management.commands.publish_flow import ASSET
+
+        endpoint = "https://api.zitch.ng/webhooks/whatsapp/flow"
+        with patch("whatsapp.providers.requests.get", side_effect=[
+            _Resp({"id": "777", "status": "DRAFT", "endpoint_uri": endpoint}),
+            _Resp({"data": [{"asset_type": "FLOW_JSON", "download_url": "https://cdn/777.json"}]}),
+            _Resp(json.loads(ASSET.read_bytes())),
+        ]) as get:
+            report = published_flow_report(flow_id="777")
+        self.assertEqual([call.args[0] for call in get.call_args_list], [
+            "https://graph.facebook.com/v21.0/777",
+            "https://graph.facebook.com/v21.0/777/assets",
+            "https://cdn/777.json",
+        ])
+        self.assertEqual(report["flow_id"], "777")
+        self.assertEqual(report["endpoint_uri"], endpoint)
+        self.assertTrue(report["contract_matches"])
+        self.assertEqual(report["status"], "draft")
+
+    @override_settings(**LIVE)
+    def test_rejected_asset_or_document_is_not_treated_as_a_contract(self):
+        info = _Resp({"id": "999", "status": "PUBLISHED"})
+        asset = _Resp({"data": [{"asset_type": "FLOW_JSON", "download_url": "https://cdn/flow.json"}]})
+        for responses in ([info, _Resp({"error": "secret"}, 403)],
+                          [info, asset, _Resp({"error": "secret"}, 403)]):
+            with self.subTest(responses=responses), patch("whatsapp.providers.requests.get", side_effect=responses):
+                report = published_flow_report()
+            self.assertEqual(report["status"], "error")
+            self.assertNotIn("secret", str(report))
+            self.assertNotIn("contract_matches", report)
+
+    @override_settings(**LIVE)
+    def test_malformed_validation_result_is_a_clean_probe_failure(self):
+        for errors in (None, "secret", ["secret"], {}):
+            with self.subTest(errors=errors), patch("whatsapp.providers.requests.get", return_value=_Resp(
+                {"id": "999", "status": "PUBLISHED", "validation_errors": errors}
+            )) as get:
+                report = published_flow_report()
+            self.assertEqual(report["status"], "error")
+            self.assertNotIn("secret", str(report))
+            self.assertEqual(get.call_count, 1)
+
     @override_settings(WHATSAPP={"MODE": "disabled"}, WHATSAPP_FLOW={})
     def test_it_makes_no_network_call_when_unconfigured(self):
         with patch("whatsapp.providers.requests.get") as get:
@@ -179,6 +223,20 @@ class ProbeCachingTests(SimpleTestCase):
         with patch("whatsapp.providers.requests.get", side_effect=_meta(screens)) as got:
             published_flow_report(force=True)
         self.assertGreater(got.call_count, 0)
+
+    @override_settings(TESTING=False, **LIVE)
+    def test_explicit_target_neither_reads_nor_replaces_configured_flow_cache(self):
+        import whatsapp.providers as p
+
+        with patch("whatsapp.providers._published_flow_report", return_value={"flow_id": "999"}) as probe:
+            self.assertEqual(published_flow_report(), {"flow_id": "999"})
+            configured_cache = p._flow_report_cache
+            probe.return_value = {"flow_id": "777"}
+            self.assertEqual(published_flow_report(flow_id="777"), {"flow_id": "777"})
+            probe.assert_called_with(flow_id="777")
+            self.assertIs(p._flow_report_cache, configured_cache)
+            self.assertEqual(published_flow_report(), {"flow_id": "999"})
+            self.assertEqual(probe.call_count, 2)
 
     @override_settings(TESTING=False, **LIVE)
     def test_a_probe_never_queues_behind_an_in_flight_refresh(self):

@@ -5,6 +5,7 @@ import type { ApiResult } from '@/lib/services/types';
 
 type CapabilityPayload = {
   provider?: 'partnership' | 'wema_vas';
+  test_mode?: boolean;
   spending_available?: boolean;
   bill_payments_available?: boolean;
   transfers_available?: boolean;
@@ -51,6 +52,9 @@ export const walletBalances = (value: BalancePayload | null | undefined): Wallet
 };
 
 export const walletCapabilities = (value: CapabilityPayload | null | undefined): WalletCapabilities => {
+  if (value?.provider === 'wema_vas' && value.test_mode === true) {
+    return { billPaymentsAvailable: false, transfersAvailable: false };
+  }
   // Older Partnership responses expose one spending flag. VAS requires an
   // explicit capability so a partial response cannot promise usable bill funds.
   const legacyAvailable = value?.provider !== 'wema_vas' && value?.spending_available !== false;
@@ -85,6 +89,8 @@ export type VirtualAccount = ApiResult<CapabilityPayload & {
   available?: boolean;
   enrollment_available?: boolean;
   migration_message?: string;
+  validation_account_number?: string;
+  validation_account_name?: string;
   account_setup_state?: string;
   account_number?: string;
   bank_name?: string;
@@ -93,6 +99,7 @@ export type VirtualAccount = ApiResult<CapabilityPayload & {
   tracking_id?: string;
   using_bvn?: boolean;
   otp_destination?: string;
+  delivery_notice?: string;
   delivery?: string;
   identity_verification_provider?: 'prembly' | 'wema';
   otp_destination_kind?: string;

@@ -31,6 +31,7 @@ class VasIdentityTests(TestCase):
         with patch("utility.providers._prembly_identity_live", return_value=configured), \
                 patch("utility.providers.prembly_verify_" + kind, return_value=record or self.record) as lookup, \
                 patch("accounts.views._otp_code", return_value="123456"), \
+                patch("accounts.views.sms_live", return_value=True), \
                 patch("accounts.views.send_sms", return_value={"success": True}) as sms, \
                 patch("accounts.views.verify_bvn") as legacy_bvn, \
                 patch("accounts.views.verify_nin") as legacy_nin:
@@ -111,3 +112,17 @@ class VasIdentityTests(TestCase):
         self.assertEqual(data["identity_verification_provider"], "prembly")
         self.assertFalse(data["identity_face_available"])
         self.assertFalse(data["bank_upgrade_required"])
+        self.assertFalse(data["address_verification_required"])
+        self.assertEqual(data["address_rail"], "none")
+        self.assertEqual(data["account_provider"], "wema_vas")
+
+    def test_vas_address_submission_calls_no_provider_and_grants_no_verification(self):
+        with patch("accounts.views.kyc_verify_address") as document, \
+                patch("utility.wema.upgrade_tier3") as bank:
+            response = self.post("/api/kyc/address/", address="Submitted address", document="ZmFrZQ==")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["code"], "address_not_required")
+        document.assert_not_called()
+        bank.assert_not_called()
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.address_verified)

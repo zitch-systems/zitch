@@ -1238,6 +1238,8 @@ def _kyc_state(user) -> dict:
         "nin_verified": user.nin_verified,
         "face_verified": user.face_verified,
         "address_verified": user.address_verified,
+        "address_verification_required": not migrating,
+        "account_provider": funding.get("provider", "partnership"),
         "identity_upgrade_required": identity_upgrade_required,
         "id_document_verified": user.id_document_verified,
         "email": user.email or "",
@@ -1273,8 +1275,8 @@ def _kyc_state(user) -> dict:
                                           else ["sms_otp"]),
         "face_rail": "document",
         "tier2_face_rail": "prembly",
-        "address_rail": ("wema" if (not migrating and kyc_provider() == "wema" and wema.address_verify_live())
-                         else "document"),
+        "address_rail": ("none" if migrating else
+                         "wema" if (kyc_provider() == "wema" and wema.address_verify_live()) else "document"),
         **({key: value for key, value in funding.items()
             if key in {"provider", "has_account", "account_setup_state", "available",
                        "spending_available", "bill_payments_available", "transfers_available",
@@ -1541,13 +1543,22 @@ def _pending_identity_decrypt(kind: str, token: str) -> str:
 def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict):
     """Send an ownership OTP without weakening live identity proof.
 
-    The challenge is sent only to the phone returned on the identity record
-    (or the tester's phone in explicit legacy simulation/dev mode). Neither an
-    account phone nor an email address substitutes for the registered line.
+    Prembly can additionally deliver the same code to its verified record email.
+    Email never substitutes for mandatory SMS acceptance, and account-profile
+    contacts are never used as live identity ownership destinations.
     """
+    from common.phones import normalize_nigerian_mobile
+    from utility.providers import _record_email, identity_otp_delivery_payload
+
+    prembly = (_requires_prembly_identity(user) or kyc_provider() == "prembly"
+               or result.get("provider") == "prembly")
+    require_real_delivery = prembly or _delivery_must_be_real()
+    if result.get("success") is not True or (result.get("mock") and require_real_delivery):
+        return fail("Identity verification is temporarily unavailable.", status=503,
+                    code="identity_phone_unavailable")
     simulated = bool(result.get("mock") and not mock_disabled_in_prod())
-    destination = (user.phone or "").strip() if simulated else (result.get("phone") or "").strip()
-    if not destination:
+    destination = user.phone if simulated else result.get("phone")
+    if not normalize_nigerian_mobile(destination):
         return fail(
             f"The identity provider did not return a phone for this {kind.upper()}. "
             "Please contact support for review.",
@@ -1555,7 +1566,7 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict)
             code="identity_phone_unavailable",
         )
 
-    require_real_delivery = _delivery_must_be_real()
+    destination = destination.strip()
     sms_possible = sms_live() or not require_real_delivery
     if not sms_possible:
         return fail("Identity verification is temporarily unavailable.", status=503)
@@ -1564,8 +1575,27 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict)
     message = (f"Zitch: {code} is your {kind.upper()} verification code. "
                "It expires in 10 minutes. Never share it.")
     sms_result = send_sms(destination, message)
-    if not sms_result.get("success"):
+    if (not isinstance(sms_result, dict) or sms_result.get("success") is not True
+            or (require_real_delivery and sms_result.get("mock"))):
         return fail("We could not deliver the verification code. Please try again.", status=503)
+
+    delivery = {"delivery": f"registered phone •••••{destination[-4:]}"}
+    if prembly:
+        email = _record_email(result)
+        email_status = "not_available"
+        if email:
+            email_status = "unavailable"
+            if email_live():
+                try:
+                    email_result = send_email(email, f"Your Zitch {kind.upper()} verification code",
+                                              message, timeout=5)
+                    email_status = ("accepted" if isinstance(email_result, dict)
+                                    and email_result.get("success") is True
+                                    and not email_result.get("mock") else "failed")
+                except Exception as exc:  # email is supplementary; keep accepted SMS usable
+                    log.warning("identity_email_delivery_failed error_type=%s", type(exc).__name__)
+                    email_status = "failed"
+        delivery = identity_otp_delivery_payload(destination, email=email, email_status=email_status)
 
     cache.set(
         f"kyc_identity:{kind}:{user.id}",
@@ -1579,10 +1609,9 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict)
         },
         _KYC_BVN_TTL,
     )
-    channel = f"registered phone •••••{destination[-4:]}"
-    return ok(success=True, otp_required=True, delivery=channel,
+    return ok(success=True, otp_required=True, **delivery,
               identity_verification_provider="prembly",
-              message=f"We sent a verification code to your {channel}.")
+              message=f"We sent a verification code to your {delivery['delivery']}.")
 
 def _confirm_identity_ownership_challenge(user, kind: str, otp: str):
     cache_key = f"kyc_identity:{kind}:{user.id}"
@@ -2078,6 +2107,9 @@ def kyc_address(request):
 def verify_kyc_address(user, data):
     """Shared address service. Callers must authenticate and rate-limit the user;
     the service enforces KYC prerequisites and accepts no caller-selected account."""
+    if _requires_prembly_identity(user):
+        return fail("Address verification is not required for VAS account setup.", status=409,
+                    code="address_not_required", address_verification_required=False, address_rail="none")
     gate = _email_gate(user)
     if gate:
         return gate

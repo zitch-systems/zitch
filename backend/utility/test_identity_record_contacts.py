@@ -25,7 +25,9 @@ class RecordEmailTests(SimpleTestCase):
         self.assertEqual(_record_email({"email": None}), "")
 
     def test_something_that_is_not_an_address_is_not_postable(self):
-        for junk in ("not-an-email", "no@domain", "a b@c.com", "@example.com", "x@"):
+        for junk in ("not-an-email", "no@domain", "a b@c.com", "@example.com", "x@",
+                     "a@@example.com", "a@localhost", ["a@example.com"], {"value": "a@example.com"},
+                     "a@example.com\n", "a@example.com\rBcc:other@example.com", "Ada <a@example.com>"):
             self.assertEqual(_record_email({"email": junk}), "")
 
     def test_an_absurdly_long_value_is_refused(self):
@@ -46,3 +48,9 @@ class RecordPhoneStillHoldsTests(SimpleTestCase):
 
     def test_a_record_with_no_line_still_reads_empty(self):
         self.assertEqual(_record_phone({}), "")
+
+    def test_malformed_contact_cannot_become_a_different_number_by_stripping_text(self):
+        for value in ("wrong08031234567", "08031234567000", 8031234567,
+                      ["08031234567"], {"phone": "08031234567"}, "14155551234"):
+            with self.subTest(value=value):
+                self.assertEqual(_record_phone({"phoneNumber": value}), "")

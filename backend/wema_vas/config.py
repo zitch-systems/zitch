@@ -17,6 +17,24 @@ def approval_reference_present(value):
             and value.strip().casefold() not in {"pending", "todo", "tbd", "none", "false", "true"})
 
 
+def validation_user_ids(values=None):
+    """Reject the entire tester allowlist if any configured ID is malformed."""
+    values = config() if values is None else values
+    raw_ids = values.get("VALIDATION_USER_IDS", [])
+    if isinstance(raw_ids, str):
+        raw_ids = raw_ids.split(",") if raw_ids.strip() else []
+    if not isinstance(raw_ids, (list, tuple, set, frozenset)):
+        return frozenset()
+    ids = set()
+    for value in raw_ids:
+        if (isinstance(value, bool) or not isinstance(value, (int, str))
+                or not re.fullmatch(r"[1-9][0-9]{0,18}", str(value).strip())
+                or int(str(value).strip()) > 9223372036854775807):
+            return frozenset()
+        ids.add(int(str(value).strip()))
+    return frozenset(ids)
+
+
 def enrollment_release_policy(values=None):
     """Validate customer release policy independently of bank callback readiness.
 

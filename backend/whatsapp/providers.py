@@ -513,7 +513,7 @@ _flow_report_cache: tuple[float, dict] | None = None
 _flow_report_lock = threading.Lock()
 
 
-def published_flow_report(*, force: bool = False) -> dict:
+def published_flow_report(*, force: bool = False, flow_id: str | None = None) -> dict:
     """Cached wrapper over :func:`_published_flow_report`.
 
     /healthz is unauthenticated — it has to be, the platform probes it without
@@ -531,6 +531,11 @@ def published_flow_report(*, force: bool = False) -> dict:
     the network. Tests and explicit callers pass force=True.
     """
     global _flow_report_cache
+
+    # An operator inspecting a replacement draft must never receive the cached
+    # report for the configured customer Flow, or replace that cached report.
+    if flow_id is not None:
+        return _published_flow_report(flow_id=flow_id)
 
     if force or getattr(settings, "TESTING", False):
         return _published_flow_report()
@@ -553,7 +558,7 @@ def published_flow_report(*, force: bool = False) -> dict:
         _flow_report_lock.release()
 
 
-def _published_flow_report() -> dict:
+def _published_flow_report(*, flow_id: str | None = None) -> dict:
     """What Meta's PUBLISHED Flow actually contains, versus what this code sends.
 
     This is the one reading nothing else provides. `whatsapp_flow_ready` says a
@@ -578,7 +583,7 @@ def _published_flow_report() -> dict:
     from pathlib import Path
 
     flow = getattr(settings, "WHATSAPP_FLOW", {}) or {}
-    flow_id = flow.get("FLOW_ID")
+    flow_id = flow.get("FLOW_ID") if flow_id is None else flow_id
     if not (wa_live() and flow_id):
         return {"status": "unconfigured"}
 
@@ -602,21 +607,32 @@ def _published_flow_report() -> dict:
     headers = {"Authorization": f"Bearer {_cfg()['TOKEN']}"}
     try:
         meta = _graph().get(f"{base}/{flow_id}",
-                            params={"fields": "id,name,status,validation_errors"},
+                            params={"fields": "id,name,status,validation_errors,endpoint_uri"},
                             headers=headers, timeout=6)
         info = meta.json() if meta.content else {}
         if meta.status_code >= 400:
             err = (info.get("error") or {})
             return {"status": "error", "expected_screens": expected,
                     "detail": str(err.get("message") or meta.status_code)[:300]}
+        validation_errors = info.get("validation_errors", [])
+        if (not isinstance(validation_errors, list)
+                or any(not isinstance(error, dict) for error in validation_errors)):
+            return {"status": "error", "expected_screens": expected,
+                    "detail": "Flow validation result could not be read"}
 
         # The published screens live in the FLOW_JSON asset, not on the node.
         assets = _graph().get(f"{base}/{flow_id}/assets", headers=headers, timeout=6)
+        if assets.status_code >= 400:
+            return {"status": "error", "expected_screens": expected,
+                    "detail": "Flow assets could not be read"}
         published, published_props, published_digest = [], {}, ""
         for item in (assets.json().get("data") or []) if assets.content else []:
             if item.get("asset_type") != "FLOW_JSON" or not item.get("download_url"):
                 continue
             body = _graph().get(item["download_url"], timeout=6)
+            if body.status_code >= 400:
+                return {"status": "error", "expected_screens": expected,
+                        "detail": "Flow document could not be read"}
             published_document = body.json()
             published_digest = hashlib.sha256(json.dumps(published_document, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             screens = published_document.get("screens") or []
@@ -642,6 +658,7 @@ def _published_flow_report() -> dict:
     )
     return {
         "flow_id": str(info.get("id") or ""),
+        "endpoint_uri": str(info.get("endpoint_uri") or ""),
         "local_contract_sha256": local_digest,
         "published_contract_sha256": published_digest,
         "contract_matches": bool(local_digest and local_digest == published_digest),
@@ -656,5 +673,5 @@ def _published_flow_report() -> dict:
         "drifted_screens": drifted,
         "stale": bool(missing or drifted),
         "validation_errors": [e.get("error_type") or e.get("message")
-                              for e in (info.get("validation_errors") or [])][:5],
+                              for e in validation_errors][:5],
     }

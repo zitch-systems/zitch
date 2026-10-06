@@ -96,6 +96,38 @@ describe('AddMoney VAS migration', () => {
     expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
   });
 
+  it('shows an authorized validation sample separately with an explicit do-not-fund warning', async () => {
+    mockApiJson.mockResolvedValueOnce({ ...enrollment, account_setup_state: 'vas_validation',
+      test_mode: true, available: false, has_account: false, enrollment_available: false,
+      validation_account_number: '7111234567', validation_account_name: 'Zitch/Ada' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    const output = JSON.stringify(tree.toJSON());
+    expect(output).toContain('Test account only');
+    expect(output).toContain('7111 234 567');
+    expect(output).toContain('Do not send money to this account.');
+    expect(output).not.toContain('Fund by bank transfer');
+    expect(findControl(tree, 'Copy test account number')).toBeTruthy();
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' })).toHaveLength(0);
+    await act(async () => tree.unmount());
+  });
+
+  it.each([
+    { test_mode: false, account_setup_state: 'vas_validation', validation_account_number: '7111234567' },
+    { test_mode: true, account_setup_state: 'restricted', validation_account_number: '7111234567' },
+    { test_mode: true, account_setup_state: 'vas_validation', validation_account_number: '7121234567' },
+    { test_mode: true, account_setup_state: 'ready', account_number: '7111234567', has_account: true, available: true },
+  ])('does not present an unapproved validation sample: %j', async (sample) => {
+    mockApiJson.mockResolvedValueOnce({ ...enrollment, enrollment_available: false, ...sample });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy test account number' })).toHaveLength(0);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' })).toHaveLength(0);
+    expect(JSON.stringify(tree.toJSON())).not.toContain('7111 234 567');
+    expect(JSON.stringify(tree.toJSON())).not.toContain('7121 234 567');
+    await act(async () => tree.unmount());
+  });
+
   it('shows a live VAS account with the spending limitation before funding', async () => {
     mockApiJson.mockResolvedValueOnce({ ...enrollment, account_setup_state: 'ready',
       available: true, has_account: true, enrollment_available: false,

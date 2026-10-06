@@ -106,6 +106,9 @@ WEMA_VAS = {
     # Enable only behind the controlled TLS-terminating Render proxy.
     "TRUST_TLS_PROXY": env_bool("WEMA_VAS_TRUST_TLS_PROXY", False),
     "ENABLE_ENROLLMENT": env_bool("WEMA_VAS_ENABLE_ENROLLMENT", False),
+    # Dedicated 711 testers remain separate from the bank-approved live pilot.
+    "ENABLE_VALIDATION_ENROLLMENT": env_bool("WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT", False),
+    "VALIDATION_USER_IDS": os.environ.get("WEMA_VAS_VALIDATION_USER_IDS", ""),
     "RELEASE_PHASE": os.environ.get("WEMA_VAS_RELEASE_PHASE", "closed").strip().lower(),
     # Preserve malformed entries for the enrollment policy to reject as a whole.
     "PILOT_USER_IDS": os.environ.get("WEMA_VAS_PILOT_USER_IDS", ""),

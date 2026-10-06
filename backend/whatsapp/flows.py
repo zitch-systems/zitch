@@ -255,6 +255,14 @@ def resolve_identity_token(token: str):
         return None
     if not hmac.compare_digest(sig, _sig(f"{_ID_PREFIX}{pa.id}:{pa.msisdn}")):
         return None
+    if pa.payload.get("vas_identity"):
+        from .vas_identity import bound
+        if not bound(pa, pa.user):
+            return None
+    elif pa.payload.get("vas_contacts"):
+        from .vas_identity import contact_bound
+        if not contact_bound(pa, pa.user):
+            return None
     return pa
 
 
@@ -825,6 +833,13 @@ def _handle_flow_request(payload: dict) -> dict:
             # An armed challenge means this submit is the CODE, not the number:
             # the identity was accepted on the previous exchange of this session.
             if pa.payload.get("id_otp_hash"):
+                if pa.payload.get("vas_identity") and payload.get("screen") in {IDENTITY_SCREEN, IDENTITY_RETRY}:
+                    from accounts.models import hash_identifier
+                    number = data.get("number")
+                    if (isinstance(number, str) and len(number) == 11 and number.isascii() and number.isdigit()
+                            and hmac.compare_digest(hash_identifier(number), str(pa.payload.get("identity_hash") or ""))):
+                        return _identity_otp_screen(pa)
+                    return _success_screen("This identity submission changed. Reply 8 in the chat to start again.")
                 return _submit_identity_otp(pa, data)
             return _submit_identity(pa, data)
         if kind == "email":
@@ -1345,7 +1360,7 @@ def _submit_identity(pa, data: dict) -> dict:
             # and test deployments where Wema account creation is unavailable.
             from wallet import views as wallet_views
 
-            if (wallet_views._wema_funding_enabled()
+            if (not pa.payload.get("vas_identity") and wallet_views._wema_funding_enabled()
                     and not bool((getattr(settings, "WEMA", {}) or {}).get("SIMULATION"))):
                 pa.action_type = "add_account"
                 pa.payload["id_type"] = kind
@@ -1389,6 +1404,8 @@ def _submit_identity(pa, data: dict) -> dict:
             if outcome == "fail":
                 return _success_screen(
                     f"{kind.upper()} verification did not complete. See the chat for details.")
+            if outcome == "processing":
+                return _success_screen("Your identity check is processing. Return to the chat shortly to continue.")
             if outcome == "face":
                 return _success_screen(
                     "Open the secure face-verification link in the chat. "
@@ -1434,10 +1451,14 @@ def _identity_otp_screen(pa, error: str = "") -> dict:
             kind = candidate.upper()
             break
     label = f"{kind} code" if kind else "Verification code"
-    sent_to = pa.payload.get("id_otp_to")
+    delivery = pa.payload.get("id_otp_delivery") or {}
+    sent_to = delivery.get("delivery") or pa.payload.get("id_otp_to")
     where = sent_to or (f"the phone registered on your {kind}" if kind else "your phone")
+    summary = f"Enter the 6-digit code we sent to {where}"
+    if delivery.get("delivery_notice"):
+        summary += ". " + delivery["delivery_notice"]
     return _identity_screen(kind or "identity", error=error, label=label,
-                            summary=f"Enter the 6-digit code we sent to {where}",
+                            summary=summary,
                             screen=CODE_RETRY if error else IDENTITY_CHAIN)
 
 

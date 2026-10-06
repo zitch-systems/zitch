@@ -2,7 +2,7 @@
 
 Status: preparation pack, not a completed live-credentials submission or evidence
 of bank acceptance. The collections, pilot, WhatsApp and retained-billing work is
-merged through PR #532 and deployed. Validation credentials are configured;
+merged through PR #533 and deployed. Validation credentials are configured;
 public access and three provisioned sample accounts still need verification.
 
 ## Submission fields
@@ -137,7 +137,7 @@ Clarifications to agree with Wema:
 | Collection reconciliation | Bank balance/statement access, Transaction Search URL/authentication and agreed retry/re-push/settlement rules |
 | Outgoing transfers | Separate payout initiation, idempotency and status/reversal contracts; inbound VAS docs do not define these |
 | Retained bill payments | Independent bill lifecycle implemented; VAS use requires confirmed collection-account debit permission and statement mapping; existing bill API is retained |
-| Prembly identity | App and encrypted WhatsApp lookup/SMS ownership paths implemented; verify live Prembly credentials and registered-phone SMS delivery |
+| Prembly identity | Live key authenticated and wallet active on 6 October; balance NGN 0.00. Fund Prembly before a real BVN test; SMS/email acceptance and handset/inbox delivery still need a consenting participant |
 | Existing customer migration | Bank closure/conversion instructions, reviewed cutover evidence and resolution of existing balances/pending work |
 | Fully in-WhatsApp enrollment | Encrypted consent, identity and SMS recovery screens implemented; publish/verify the new Flow before enabling its gate |
 | General customer launch | Real settlement evidence, reconciliation, product/payment readiness and tested app/WhatsApp release |
@@ -218,9 +218,45 @@ observations, not bank acceptance or authority to enable customer enrollment.
   No VAS Flow approval ID was configured. Prepare and independently validate a
   replacement Flow before changing runtime IDs or enabling onboarding.
 
+Subsequent 6 October checks: all ten services reached release
+`05644cf330a66a8de2705103911b35b077878ac2` (PR #533), with 3,251 PostgreSQL CI tests
+and zero skips. The 18 distinct electricity prepaid/postpaid mappings were
+reviewed and applied. Oregon was archived and permanently deleted with the
+owner's explicit confirmation; all remaining Render resources are in Frankfurt.
+Prembly's production key authenticated against its wallet endpoint; the account
+was active with **NGN 0.00** available. Fund that provider wallet before a real
+BVN test. The deployed Resend sender domain `send.zitch.ng` was verified; Termii
+authenticated with NGN 2,319.20 and its configured `OE Alert` sender was active.
+Neither check proves receipt on a participant's
+phone or in their inbox.
+
 Step 4 therefore still needs three dedicated consenting, verified `711` users,
 the monitored notification group mailbox, and authenticated public reachability
 under the maintenance plan. Live-money activation additionally needs Wema's
 acceptance, assigned production prefix, collection funding permission and real
 settlement evidence. Prembly credentials are configured, but no live identity/OTP
 verification was attempted without a consenting participant.
+
+## Controlled registration and identity testing
+
+The testing release removes address verification from the VAS journey. A live
+Prembly result and identity-record phone ownership remain required. The same
+ownership code is also sent to a valid email returned on that identity record;
+the signup email is never substituted as proof of BVN ownership. Missing or
+failed email delivery is reported accurately while an accepted SMS remains usable.
+Signup email confirmation is a separate challenge.
+
+Set `BANK_ACCOUNT_PROVIDER=wema_vas` while retaining validation mode, prefix
+`711`, release phase `closed`, live enrollment false and VAS-funded bills false.
+Registration and private identity verification do not depend on the tester
+allowlist. Account allocation additionally requires
+`WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT=true` and explicit positive user IDs in
+`WEMA_VAS_VALIDATION_USER_IDS`. An empty or malformed list admits nobody. Add only
+the three designated, consenting, dedicated verified testers; do not select old
+customer accounts automatically. Sample account numbers appear separately with
+a test-only, do-not-fund notice; spending and ordinary funding flags remain false.
+
+Publish and verify the complete encrypted WhatsApp Flow contract before setting
+its configured and approved IDs. A draft or a mismatching published Flow must
+keep the VAS Flow gate closed. Actual mobile, inbox and WhatsApp interaction
+still requires a consenting participant after Prembly is funded.

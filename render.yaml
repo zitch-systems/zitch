@@ -64,6 +64,10 @@ services:
         sync: false
       - key: WEMA_VAS_ENABLE_ENROLLMENT
         sync: false
+      - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
+        sync: false
+      - key: WEMA_VAS_VALIDATION_USER_IDS
+        sync: false
       - key: WEMA_VAS_RELEASE_PHASE
         sync: false
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -464,6 +468,10 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
       - key: WEMA_VAS_ENABLE_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -683,6 +691,10 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
       - key: WEMA_VAS_ENABLE_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -785,6 +797,10 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
       - key: WEMA_VAS_ENABLE_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -823,8 +839,8 @@ services:
   # Partner-bank biller reconciliation — settle purchases left PENDING by a provider timeout:
   # requery the aggregator by reference, then mark Successful (delivered) or
   # refund (definitively failed). Also requires a paid plan (cron has no free
-  # tier). Runs every 10 minutes, matching the live Oregon cadence used by the
-  # migration runbook so cutover does not increase bank/API pressure.
+  # tier). Runs every 10 minutes, preserving the pre-migration cadence so
+  # Frankfurt does not increase bank/API pressure.
   - type: cron
     name: zitch-reconcile-wema
     region: frankfurt
@@ -866,6 +882,10 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
       - key: WEMA_VAS_ENABLE_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -1015,6 +1035,10 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
       - key: WEMA_VAS_ENABLE_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -1096,6 +1120,10 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
       - key: WEMA_VAS_ENABLE_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -1206,6 +1234,10 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
       - key: WEMA_VAS_ENABLE_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -1309,6 +1341,10 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
       - key: WEMA_VAS_ENABLE_ENROLLMENT
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT}
+      - key: WEMA_VAS_VALIDATION_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -1345,31 +1381,23 @@ services:
     # Postgres, so an evicted key cannot produce a double debit. Under noeviction
     # a full instance makes cache.set() RAISE instead of evicting, which fails the
     # /readyz cache probe and takes the whole API down -- trading a cold key for an
-    # outage. The live Oregon cache runs allkeys_lru; keep the two identical so a
-    # region cutover does not silently change failure behaviour.
+    # outage. Preserve the reviewed cache policy when adopting this Blueprint.
     maxmemoryPolicy: allkeys_lru
     ipAllowList: []
 
 databases:
   # DANGER -- READ BEFORE SYNCING THIS BLUEPRINT.
   #
-  # Render matches Blueprint resources to existing ones BY NAME, and a resource's
-  # region is IMMUTABLE once created. The live `zitch-db` is in OREGON and holds
-  # every wallet, ledger row and customer record. This block names that same
-  # database and asks for `region: frankfurt`, which is not an in-place move and
-  # cannot be one. A sync therefore either fails on this resource or reconciles it
-  # as a different one -- and "which of those two" is not something to discover on
-  # a live money rail. The same collision applies to `zitch-cache` above and to
-  # every service in this file: all of them are named after resources currently
-  # running in Oregon.
+  # Oregon retirement completed on 6 October 2026 after explicit owner approval
+  # and an independent archive. The live ledger is now in Frankfurt. Do not
+  # recreate the retired database or treat the archive as a second writer.
   #
   # The Frankfurt stack built in the dashboard uses DIFFERENT names (zitch-db-ry6y,
   # zitch-cache-ry6y, zitch-api-frankfurt, zitch-*-ry6y), so a sync will NOT adopt
-  # it -- it will act on the Oregon resources instead.
+  # it automatically and may create unwanted duplicate resources.
   #
-  # Region migration on Render is build-new + cut-over + retire-old, not an edit to
-  # this field. Until that cutover is done and the Oregon resources are gone, do
-  # not sync this Blueprint.
+  # Legacy Blueprint auto-sync remains paused. Reconcile all names and resource
+  # IDs in a separately reviewed adoption plan before syncing this file.
   - name: zitch-db
     region: frankfurt
     plan: basic-256mb

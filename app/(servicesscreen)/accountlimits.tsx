@@ -10,6 +10,7 @@ import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { apiJson } from '@/lib/api';
+import { walletCapabilities, walletCapabilityMessage, walletService, type VirtualAccount } from '@/lib/services/wallet';
 
 type Status = {
   tier: number;
@@ -20,6 +21,7 @@ type Status = {
   bvn_verified: boolean;
   nin_verified: boolean;
   bank_tier?: number;
+  account_provider?: 'partnership' | 'wema_vas';
 };
 
 // The published Zitch ladder. Kept here as the DISPLAY table only — the tier a
@@ -42,11 +44,17 @@ const AccountLimits = () => {
   const { c, theme } = useTheme();
   const { accountNumber, accountName } = useWallet();
   const [status, setStatus] = useState<Status | null>(null);
+  const [fundingState, setFundingState] = useState<VirtualAccount | null>(null);
 
   useFocusEffect(useCallback(() => {
+    let active = true;
     apiJson('/api/kyc/status/')
-      .then((r) => { if (r?.success) setStatus(r as Status); })
+      .then((r) => { if (active && r?.success) setStatus(r as Status); })
       .catch(() => {});
+    walletService.getAccount()
+      .then((r) => { if (active && r?.success) setFundingState(r); })
+      .catch(() => {});
+    return () => { active = false; };
   }, []));
 
   const tier = status?.tier ?? 1;
@@ -55,6 +63,11 @@ const AccountLimits = () => {
   // an account mid-upgrade they are not the same number.
   const limit = Number(status?.transaction_limit ?? 0);
   const ladderMax = LADDER[LADDER.length - 1].daily;
+  const isVas = status?.account_provider === 'wema_vas' || fundingState?.provider === 'wema_vas';
+  const capabilities = walletCapabilities(fundingState);
+  const vasPaymentsAvailable = fundingState?.provider === 'wema_vas'
+    && fundingState.test_mode !== true
+    && (capabilities.billPaymentsAvailable || capabilities.transfersAvailable);
 
   const copy = async () => {
     if (!accountNumber) return;
@@ -141,10 +154,20 @@ const AccountLimits = () => {
         <ZIcon name="right" size={17} color={c.ink3} />
       </Card>
 
-      {/* --- daily limit --- */}
+      {isVas && !vasPaymentsAvailable ? (
+        <Card style={{ marginBottom: 24 }}>
+          <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>Payments unavailable</Text>
+          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 10 }}>
+            {fundingState?.test_mode
+              ? 'This account is in testing. Identity verification does not enable payments or funding. Do not send money to a sample account.'
+              : 'Your virtual account is not enabled for payments. Check your account status before adding money.'}
+          </Text>
+        </Card>
+      ) : <>
+      {/* The backend transaction_limit is per transaction, not a daily limit. */}
       <Card style={{ marginBottom: 14 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-          <Text style={{ flex: 1, fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>Daily Transaction Limit</Text>
+          <Text style={{ flex: 1, fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>Per-transaction limit</Text>
           <Pressable
             onPress={() => router.push('/kyc')}
             accessibilityRole="button"
@@ -157,7 +180,7 @@ const AccountLimits = () => {
           </Pressable>
         </View>
         <View style={{ borderRadius: 16, backgroundColor: c.surface2, padding: 14 }}>
-          <Progress value={limit} max={ladderMax} />
+          <Progress value={limit} max={isVas ? Math.max(limit, 1) : ladderMax} />
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
             <NText style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3 }}>Min {money(0)}</NText>
             <NText style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3 }}>
@@ -166,8 +189,19 @@ const AccountLimits = () => {
           </View>
         </View>
       </Card>
+      {isVas ? (
+        <Card style={{ marginBottom: 24 }}>
+          <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>Current daily limits</Text>
+          {capabilities.billPaymentsAvailable && status.daily_bill_limit !== undefined && (
+            <Text style={{ color: c.ink2, fontFamily: font.regular, marginTop: 12 }}>Bill payments: {money(Number(status.daily_bill_limit))}</Text>
+          )}
+          {capabilities.transfersAvailable && status.daily_transfer_limit !== undefined && (
+            <Text style={{ color: c.ink2, fontFamily: font.regular, marginTop: 12 }}>Transfers: {money(Number(status.daily_transfer_limit))}</Text>
+          )}
+          {!!walletCapabilityMessage(capabilities) && <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 12 }}>{walletCapabilityMessage(capabilities)}</Text>}
+        </Card>
+      ) : (
 
-      {/* --- ladder --- */}
       <Card style={{ marginBottom: 24 }} pad={0}>
         <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1, padding: 18, paddingBottom: 14 }}>Level Benefit</Text>
         <View style={{ marginHorizontal: 14, marginBottom: 14, borderRadius: 16, borderWidth: 1, borderColor: c.line, overflow: 'hidden' }}>
@@ -209,6 +243,8 @@ const AccountLimits = () => {
           Your partner bank applies its own tier limits alongside these. Where the two differ, the lower one applies.
         </Text>
       </Card>
+      )}
+      </>}
     </Screen>
   );
 };

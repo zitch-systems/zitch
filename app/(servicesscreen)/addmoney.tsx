@@ -35,6 +35,11 @@ const AddMoney = () => {
   const facePollGeneration = useRef(0);
   const mounted = useRef(true);
   const capabilityMessage = walletCapabilityMessage(walletCapabilities(fundingState));
+  const validationAccountNumber = fundingState?.provider === 'wema_vas'
+    && fundingState.test_mode === true
+    && fundingState.account_setup_state === 'vas_validation'
+    && /^711\d{7}$/.test(fundingState.validation_account_number || '')
+    ? fundingState.validation_account_number : '';
 
   const beginAction = () => {
     if (actionInFlight.current) return false;
@@ -66,7 +71,7 @@ const AddMoney = () => {
       if (loadGeneration.current !== generation) return;
       setFundingState(r);
       if (r?.success && r.account_number && (r.provider !== 'wema_vas' ||
-          (r.available === true && r.has_account === true && r.account_setup_state === 'ready'))) {
+          (r.test_mode !== true && r.available === true && r.has_account === true && r.account_setup_state === 'ready'))) {
         setAccount(r as DediAccount);
         setLoadError('');
       } else if (r?.offline) {
@@ -259,13 +264,27 @@ const AddMoney = () => {
         </View>
       ) : fundingState?.provider === 'wema_vas' && !account ? (
         <View style={{ paddingTop: 12 }}>
-          <Label>{fundingState.account_setup_state === 'restricted' ? 'Account restricted' : 'Your new funding account'}</Label>
+          <Label>{fundingState.account_setup_state === 'restricted' ? 'Account restricted' : fundingState.test_mode ? 'Account testing' : 'Your new funding account'}</Label>
           <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>
             {fundingState.migration_message || 'Your new funding account is not available yet. Please check again shortly.'}
           </Text>
           <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 12 }}>
             {capabilityMessage} Only send money when this page shows an active funding account.
           </Text>
+          {!!validationAccountNumber && (
+            <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18, marginTop: 18 }}>
+              <Text style={{ color: c.ink1, fontFamily: font.bold }}>Test account only</Text>
+              <Text accessibilityRole="alert" style={{ color: c.ink2, fontFamily: font.semibold, lineHeight: 20, marginTop: 8 }}>Do not send money to this account. This sample number is for the approved bank integration tests only.</Text>
+              <Text style={{ fontSize: 26, color: c.ink1, fontFamily: font.extrabold, marginTop: 12, fontVariant: ['tabular-nums'] }}>{grouped(validationAccountNumber)}</Text>
+              {!!fundingState.validation_account_name && <Text style={{ color: c.ink2, fontFamily: font.regular, marginTop: 4 }}>{fundingState.validation_account_name}</Text>}
+              <View style={{ marginTop: 12 }}>
+                <Btn label="Copy test account number" icon="copy" variant="ghost" onPress={async () => {
+                  await Clipboard.setStringAsync(validationAccountNumber);
+                  notify('Test number copied', 'Share only for the approved bank tests. Do not fund this account.');
+                }} />
+              </View>
+            </View>
+          )}
           {fundingState.enrollment_available && fundingState.account_setup_state === 'vas_enrollment_required' ? (
             <>
               <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginVertical: 18 }}>
@@ -286,7 +305,7 @@ const AddMoney = () => {
               <Btn label={creating ? 'Please wait…' : 'Set up virtual account'} disabled={creating || !vasConsent || vasIdentity.length !== 11} onPress={enrollVas} />
               <View style={{ marginTop: 14 }}>
                 <Btn label="Confirm my verified name" variant="ghost" disabled={creating} onPress={() => router.push({ pathname: '/(auth)/kyc', params: { verify_identity: vasIdentityKind } })} />
-                <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 8 }}>If your earlier verification did not retain your legal name, confirm it with a new identity SMS code, then return here.</Text>
+                <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 8 }}>If your earlier verification did not retain your legal name, confirm it with a new identity verification code, then return here.</Text>
               </View>
             </>
           ) : null}
