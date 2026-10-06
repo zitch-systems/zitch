@@ -35,6 +35,15 @@ jest.mock('expo-web-browser', () => ({
   openBrowserAsync: (...args: unknown[]) => mockOpenBrowser(...args),
 }));
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
+// These tests exercise funding actions, not native scrolling. The preset's
+// ScrollView mock loads the actual iOS renderer on its first use.
+jest.mock('react-native/Libraries/Components/ScrollView/ScrollView', () => {
+  const ReactActual = jest.requireActual<typeof import('react')>('react');
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+  return function MockScrollView({ children, ...props }: import('react-native').ScrollViewProps) {
+    return ReactActual.createElement(View, props, children);
+  };
+});
 jest.mock('@/lib/wallet', () => ({
   useWallet: () => ({
     balance: 5000,
@@ -85,7 +94,20 @@ jest.mock('@/components/design/ui', () => {
   };
 });
 
-async function openAndEnter(tree: renderer.ReactTestRenderer, amount: string) {
+let mountedTree: renderer.ReactTestRenderer | undefined;
+
+function mount(element: React.ReactElement) {
+  // Both components have synchronous initial renders with these hook mocks.
+  act(() => { mountedTree = renderer.create(element); });
+  return mountedTree!;
+}
+
+afterEach(() => {
+  act(() => { mountedTree?.unmount(); });
+  mountedTree = undefined;
+});
+
+function openAndEnter(tree: renderer.ReactTestRenderer, amount: string) {
   act(() => tree.root.findByProps({ accessibilityLabel: 'Fund Zitch from Test Bank' }).props.onPress());
   act(() => tree.root.findByProps({ accessibilityLabel: 'Linked bank amount' }).props.onChangeText(amount));
 }
@@ -96,11 +118,9 @@ async function submit(tree: renderer.ReactTestRenderer) {
   });
 }
 
-it('includes historical Zitch funds in the aggregate connected-bank total', async () => {
-  let tree!: renderer.ReactTestRenderer;
-  await act(async () => { tree = renderer.create(<LinkedBanksSummary />); });
+it('includes historical Zitch funds in the aggregate connected-bank total', () => {
+  const tree = mount(<LinkedBanksSummary />);
   expect(JSON.stringify(tree.toJSON())).toContain('₦11,000');
-  await act(async () => { tree.unmount(); });
 });
 
 describe('linked-bank funding durability', () => {
@@ -113,9 +133,8 @@ describe('linked-bank funding durability', () => {
     mockReloadLinked.mockResolvedValue(undefined);
   });
 
-  it('does not expose the unsupported linked-bank payout action', async () => {
-    let tree!: renderer.ReactTestRenderer;
-    await act(async () => { tree = renderer.create(<ConnectedAccounts />); });
+  it('does not expose the unsupported linked-bank payout action', () => {
+    const tree = mount(<ConnectedAccounts />);
 
     expect(tree.root.findAllByProps({ accessibilityLabel: 'Fund Test Bank from Zitch' })).toHaveLength(0);
     expect(JSON.stringify(tree.toJSON())).not.toContain('Fund bank');
@@ -126,10 +145,9 @@ describe('linked-bank funding durability', () => {
     mockApiJson
       .mockResolvedValueOnce({ pending: true, message: 'Still processing', _httpOk: true, _httpStatus: 200 })
       .mockResolvedValueOnce({ offline: true });
-    let tree!: renderer.ReactTestRenderer;
-    await act(async () => { tree = renderer.create(<ConnectedAccounts />); });
+    const tree = mount(<ConnectedAccounts />);
 
-    await openAndEnter(tree, '500');
+    openAndEnter(tree, '500');
     await submit(tree);
     act(() => tree.root.findByProps({ accessibilityLabel: 'Linked bank amount' }).props.onChangeText('600'));
     await submit(tree);
@@ -144,10 +162,9 @@ describe('linked-bank funding durability', () => {
 
   it('fails locally without dispatching when durable storage cannot be read', async () => {
     mockAcquireSpendAttempt.mockRejectedValueOnce(new Error('storage unavailable'));
-    let tree!: renderer.ReactTestRenderer;
-    await act(async () => { tree = renderer.create(<ConnectedAccounts />); });
+    const tree = mount(<ConnectedAccounts />);
 
-    await openAndEnter(tree, '500');
+    openAndEnter(tree, '500');
     await submit(tree);
 
     expect(mockApiJson).not.toHaveBeenCalled();
@@ -166,10 +183,9 @@ describe('linked-bank funding durability', () => {
       _httpOk: true,
       _httpStatus: 200,
     });
-    let tree!: renderer.ReactTestRenderer;
-    await act(async () => { tree = renderer.create(<ConnectedAccounts />); });
+    const tree = mount(<ConnectedAccounts />);
 
-    await openAndEnter(tree, '500');
+    openAndEnter(tree, '500');
     await submit(tree);
 
     expect(mockClearSpendAttempt).not.toHaveBeenCalled();
@@ -189,10 +205,9 @@ describe('linked-bank funding durability', () => {
       _httpOk: true,
       _httpStatus: 200,
     });
-    let tree!: renderer.ReactTestRenderer;
-    await act(async () => { tree = renderer.create(<ConnectedAccounts />); });
+    const tree = mount(<ConnectedAccounts />);
 
-    await openAndEnter(tree, '500');
+    openAndEnter(tree, '500');
     await submit(tree);
 
     expect(mockClearSpendAttempt).toHaveBeenCalledWith(
@@ -213,10 +228,9 @@ describe('linked-bank funding durability', () => {
       _httpOk: false,
       _httpStatus: 422,
     });
-    let tree!: renderer.ReactTestRenderer;
-    await act(async () => { tree = renderer.create(<ConnectedAccounts />); });
+    const tree = mount(<ConnectedAccounts />);
 
-    await openAndEnter(tree, '500');
+    openAndEnter(tree, '500');
     await submit(tree);
 
     expect(mockClearSpendAttempt).toHaveBeenCalledWith(

@@ -79,7 +79,7 @@ class AsyncIdentityTests(TestCase):
         self.assertTrue(status["bvn_verified"])
         self.assertFalse(status.get("pending", False))
         with patch("utility.views.vtu_purchase", return_value={"success": True}), \
-                patch("utility.providers.vas_can_settle", return_value=True):
+                patch("utility.providers.vas_can_settle", return_value=(True, "")):
             payload = {"access_token": self.token, "amount": "100", "network": "1",
                        "phone": self.user.phone, "transaction_pin": "123456",
                        "idempotency_key": "async-airtime-31"}
