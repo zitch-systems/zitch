@@ -28,7 +28,7 @@ class Command(BaseCommand):
         if (wallet.balance != 0 or wallet_expected_balance(wallet.user_id) != 0
                 or Transaction.objects.filter(user_id=wallet.user_id, transaction_status=Transaction.PENDING).exists()):
             raise CommandError("Reconcile the balance and pending transactions before recording approval.")
-        if VirtualAccount.objects.filter(user_id=wallet.user_id).exists():
+        if VirtualAccount.objects.filter(user_id=wallet.user_id, mode=VirtualAccount.LIVE).exists():
             raise CommandError("This user already has a VAS account; no retrospective approval is allowed.")
         if MigrationApproval.objects.filter(user_id=wallet.user_id).exists():
             raise CommandError("This user already has immutable approval evidence.")

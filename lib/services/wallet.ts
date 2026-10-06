@@ -88,6 +88,12 @@ export type VirtualAccount = ApiResult<CapabilityPayload & {
   has_account?: boolean;
   available?: boolean;
   enrollment_available?: boolean;
+  enrollment_mode?: 'validation' | 'live';
+  enrollment_status?: 'ready' | 'verification_required' | 'review_required' | 'not_available' | 'enrolled' | 'restricted';
+  enrollment_blockers?: string[];
+  enrollment_message?: string;
+  re_registration_required?: boolean;
+  consent_version?: string;
   migration_message?: string;
   validation_account_number?: string;
   validation_account_name?: string;
@@ -126,8 +132,12 @@ export const walletService = {
   // Dedicated (virtual) account: fetch the existing one, or start BVN/NIN OTP provisioning.
   getAccount: () => apiJson<VirtualAccount>(EP.wallet.account),
   getVasStatus: () => apiJson<VirtualAccount>(EP.wallet.vasStatus),
-  enrollVas: (identity: { bvn: string; nin?: never } | { nin: string; bvn?: never }) =>
-    apiJson<VirtualAccount>(EP.wallet.vasEnroll, { ...identity, consent: true }),
+  enrollVas: (identity: { bvn: string; nin?: never } | { nin: string; bvn?: never },
+    displayed: Pick<VirtualAccount, 'enrollment_mode' | 'consent_version'> = {}) =>
+    apiJson<VirtualAccount>(EP.wallet.vasEnroll, { ...identity, consent: true,
+      ...(displayed.enrollment_mode ? { enrollment_mode: displayed.enrollment_mode } : {}),
+      ...(displayed.consent_version ? { consent_version: displayed.consent_version } : {}),
+    }),
   createAccount: (identity: { bvn?: string; nin?: string } | string) =>
     apiJson<VirtualAccount>(
       EP.wallet.createAccount,

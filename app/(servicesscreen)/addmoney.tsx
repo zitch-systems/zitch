@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import { walletCapabilities, walletCapabilityMessage, walletService, type VirtualAccount } from '@/lib/services/wallet';
 import { isAccountOtpPending, kycService, resolveIdentityOtpRoute } from '@/lib/services/kyc';
@@ -15,8 +15,8 @@ import { useTheme, font } from '@/lib/theme';
 
 type DediAccount = { account_number: string; account_name: string; bank_name: string };
 
-// Funding is bank-transfer only. The partner bank creates the dedicated NUBAN asynchronously
-// after BVN consent by SMS OTP or its hosted face-verification alternative.
+// Reuse the signed-in profile for account setup. The server owns eligibility,
+// the allocation mode, and whether an account may receive real transfers.
 const AddMoney = () => {
   const { c } = useTheme();
   const [loading, setLoading] = useState(true);
@@ -92,13 +92,22 @@ const AddMoney = () => {
 
   useEffect(() => {
     mounted.current = true;
-    void loadAccount();
     return () => {
       mounted.current = false;
       loadGeneration.current += 1;
       facePollGeneration.current += 1;
     };
-  }, [loadAccount]);
+  }, []);
+
+  useFocusEffect(useCallback(() => {
+    void loadAccount();
+    return () => {
+      loadGeneration.current += 1;
+      facePollGeneration.current += 1;
+      setVasIdentity('');
+      setVasConsent(false);
+    };
+  }, [loadAccount]));
 
   const copyAccount = async () => {
     if (!account) return;
@@ -110,10 +119,12 @@ const AddMoney = () => {
   const grouped = (n: string) => n.replace(/^(\d{4})(\d{3})(\d{3}).*$/, '$1 $2 $3');
 
   const enrollVas = async () => {
-    if (!vasConsent || vasIdentity.length !== 11 || !fundingState?.enrollment_available || !beginAction()) return;
+    if (!vasConsent || vasIdentity.length !== 11 || !fundingState?.enrollment_available
+        || fundingState.account_setup_state !== 'vas_enrollment_required' || !beginAction()) return;
     try {
       const result = await walletService.enrollVas(
         vasIdentityKind === 'bvn' ? { bvn: vasIdentity } : { nin: vasIdentity },
+        { enrollment_mode: fundingState.enrollment_mode, consent_version: fundingState.consent_version },
       );
       if (!mounted.current) return;
       if (result.success) {
@@ -266,11 +277,19 @@ const AddMoney = () => {
         <View style={{ paddingTop: 12 }}>
           <Label>{fundingState.account_setup_state === 'restricted' ? 'Account restricted' : fundingState.test_mode ? 'Account testing' : 'Your new funding account'}</Label>
           <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>
-            {fundingState.migration_message || 'Your new funding account is not available yet. Please check again shortly.'}
+            {fundingState.enrollment_message || fundingState.migration_message || 'Your new funding account is not available yet. Please check again shortly.'}
+          </Text>
+          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 12 }}>
+            Continue VAS setup on this Zitch profile. Your contacts, verification history, transactions and recorded balances are preserved.
           </Text>
           <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 12 }}>
             {capabilityMessage} Only send money when this page shows an active funding account.
           </Text>
+          {fundingState.test_mode === true && !validationAccountNumber ? (
+            <Text accessibilityRole="alert" style={{ color: c.ink2, fontFamily: font.semibold, lineHeight: 20, marginTop: 12 }}>
+              This setup is for a test account only. It does not move your existing funds or activate real payments. Do not fund a test number.
+            </Text>
+          ) : null}
           {!!validationAccountNumber && (
             <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18, marginTop: 18 }}>
               <Text style={{ color: c.ink1, fontFamily: font.bold }}>Test account only</Text>
@@ -300,15 +319,22 @@ const AddMoney = () => {
               <Field label={`Verified ${vasIdentityKind.toUpperCase()}`} value={vasIdentity} onChangeText={(value) => setVasIdentity(value.replace(/\D/g, '').slice(0, 11))} secureTextEntry keyboardType="number-pad" maxLength={11} autoComplete="off" autoCorrect={false} editable={!creating} placeholder={`Enter your verified ${vasIdentityKind.toUpperCase()}`} />
               <Pressable accessibilityRole="checkbox" accessibilityLabel="Consent to VAS identity storage and sharing" accessibilityState={{ checked: vasConsent }} disabled={creating} onPress={() => setVasConsent(!vasConsent)} style={{ flexDirection: 'row', gap: 10, marginVertical: 18 }}>
                 <Text style={{ color: c.brand, fontFamily: font.bold }}>{vasConsent ? '☑' : '☐'}</Text>
-                <Text style={{ flex: 1, color: c.ink2, fontFamily: font.regular, lineHeight: 20 }}>I consent to Zitch securely storing my verified identity details in encrypted form and sharing them with Wema Bank to operate my virtual account.</Text>
+                <Text style={{ flex: 1, color: c.ink2, fontFamily: font.regular, lineHeight: 20 }}>{fundingState.test_mode === true
+                  ? 'I consent to Zitch securely storing my verified identity details in encrypted form and sharing them with Wema Bank for this test virtual account. I understand this does not activate real funding or payments.'
+                  : 'I consent to Zitch securely storing my verified identity details in encrypted form and sharing them with Wema Bank to operate my virtual account.'}</Text>
               </Pressable>
-              <Btn label={creating ? 'Please wait…' : 'Set up virtual account'} disabled={creating || !vasConsent || vasIdentity.length !== 11} onPress={enrollVas} />
-              <View style={{ marginTop: 14 }}>
-                <Btn label="Confirm my verified name" variant="ghost" disabled={creating} onPress={() => router.push({ pathname: '/(auth)/kyc', params: { verify_identity: vasIdentityKind } })} />
-                <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 8 }}>If your earlier verification did not retain your legal name, confirm it with a new identity verification code, then return here.</Text>
-              </View>
+              <Btn label={creating ? 'Please wait…' : fundingState.test_mode === true ? 'Set up test account' : 'Set up virtual account'} disabled={creating || !vasConsent || vasIdentity.length !== 11} onPress={enrollVas} />
             </>
           ) : null}
+          <View style={{ marginTop: 14 }}>
+            <Btn label="Review verification" variant="ghost" disabled={creating} onPress={() => router.push('/(auth)/kyc')} />
+            {!validationAccountNumber && fundingState.account_setup_state !== 'restricted' ? (
+              <>
+                <Btn label="Confirm my verified name" variant="ghost" disabled={creating} onPress={() => router.push({ pathname: '/(auth)/kyc', params: { verify_identity: vasIdentityKind } })} />
+                <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 8 }}>If your earlier verification did not retain your legal name, confirm the same identity with a new verification code, then return here. Verification alone does not make an account eligible for setup.</Text>
+              </>
+            ) : null}
+          </View>
           <View style={{ marginTop: 14 }}><Btn label="Refresh account status" variant="ghost" disabled={creating} onPress={() => void loadAccount()} /></View>
         </View>
       ) : account ? (

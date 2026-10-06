@@ -38,7 +38,7 @@ customer session tokens and old Partnership APIM keys.
 | `/vas/mini-statement` | VAS credits, reserved bill debits and once-only refund credits across ten Lagos calendar dates anchored to latest movement; no historical Partnership or held credits |
 | `/vas/kyc-details` | Verified identity and VAS-only posted balance, including inactive accounts |
 | `/vas/block-account` | Serialized restriction preserving original reason and timestamp; no new spendable credit or spend |
-| `/api/wallet/vas/enroll/` | Customer-authenticated POST with existing verified `bvn` or `nin` and literal `consent: true` |
+| `/api/wallet/vas/enroll/` | Customer-authenticated POST with existing verified `bvn` or `nin`, literal `consent: true`, and the displayed `enrollment_mode` and `consent_version` |
 | `/api/wallet/vas/status/` | Customer-authenticated GET or POST; no sensitive identifiers |
 
 `711` notifications create validation receipts and simulated balances only. They
@@ -87,8 +87,9 @@ challenge inside the Flow, followed by fresh private identity re-entry. No raw
 identifier is retained between those pages. Ordinary WhatsApp payment/login
 screens continue to use their existing contract while this gate is off.
 
-Existing non-zero balances or pending transactions block enrollment. A legacy
-bank number additionally requires a per-user immutable `MigrationApproval` with
+Existing non-zero balances or pending transactions block initial enrollment.
+Validation setup may retain the existing Partnership number without migrating it.
+For live allocation, a legacy bank number additionally requires a per-user immutable `MigrationApproval` with
 bank cutover evidence and reviewer reference. `vas_approve_cutover` records this
 evidence only after checking the exact retained account and zero balance. It
 does not contact Wema, settle pending transactions, reset balances or manufacture
@@ -98,6 +99,29 @@ Old account fields, ledger rows, callbacks, OTP completions and reconciliation
 history remain available. Late Partnership credits are retained in the aggregate
 historical wallet but excluded from Wema VAS balance/statement responses. No
 customer balance is copied to a new bank account.
+
+Existing customers can reply **reregister** (or **register**) on linked WhatsApp,
+confirm their PIN in the private form, and continue on the same profile. The app
+provides **Me → Continue VAS setup**. Missing legal-name evidence can be confirmed
+through another ownership challenge for the same identity, without clearing prior
+verification. Address verification is not part of this setup.
+
+Validation self-service requires `WEMA_VAS_VALIDATION_SELF_SERVICE=true` plus
+`WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT=true`, validation mode, prefix `711`, closed
+live release phase and live enrollment disabled. The new flag defaults false;
+without it, the explicit validation-user allowlist remains in force. Contact and
+identity verification, exact test consent, zero cached and ledger balances, and
+pending-work checks still apply. Configure the flag consistently on all nine
+Django runtimes only after they have deployed this release and the matching Flow
+has been published. Customers supply their own consent; no account is allocated
+by enabling the flag.
+
+One immutable validation account and one separately approved live account can
+belong to the same profile. Their numbers, modes, receipts and balances remain
+separate. Only a live account establishes the VAS boundary for real funds and
+retained bill payments. Validation consent (`vas-validation-identity-v1`) cannot
+authorize live enrollment (`vas-identity-v1`). A stale or incomplete app consent
+submission must refresh the displayed mode and version before continuing.
 
 ## Deployment sequence
 
@@ -121,11 +145,13 @@ customer balance is copied to a new bank account.
    management. Enable VAS validation with prefix `711`. Enable trusted proxy
    handling only behind the controlled TLS-terminating proxy. Ensure the canonical
    API host, edge rules and origin guard allow the five authenticated routes.
-5. Provision three dedicated, verified and consented validation users with no
-   legacy account or balance. `vas_provision_validation --user-id … --identity-type
+5. Obtain three verified and explicitly consented validation accounts with no
+   outstanding balances or pending work. Existing customers can opt in on their
+   current profiles using the self-service journey above; their old bank numbers
+   and history remain intact. Alternatively, `vas_provision_validation --user-id … --identity-type
    bvn --consent-reference …` reads the matching ID from a hidden prompt; never
-   pass IDs as arguments. Do not reuse these users for production; account mode
-   and ownership are immutable.
+   pass IDs as arguments. Do not convert a validation account into a live one;
+   account mode and ownership are immutable.
 6. Generate the non-secret submission with `vas_onboarding_package --base-url
    https://api.zitch.ng --service-email <approved-address> --account <711-account-1>
    --account <711-account-2> --account <711-account-3>`. Deliver the bank token
@@ -149,8 +175,9 @@ customer balance is copied to a new bank account.
    General enrollment remains closed until reconciliation and product launch
    gates are satisfied. Opening `WEMA_VAS_RELEASE_PHASE=general` additionally
    requires a separate `WEMA_VAS_GENERAL_APPROVAL_REFERENCE`; setting a reference
-   is not evidence that external bank verification actually occurred. Never reuse or convert
-   immutable `711` validation users and accounts for live collections.
+   is not evidence that external bank verification actually occurred. Never use or convert
+   an immutable `711` account for live collections. A separately approved live
+   account may be allocated to the same verified profile while test evidence is retained.
 
 ## Operator readiness and shared configuration
 

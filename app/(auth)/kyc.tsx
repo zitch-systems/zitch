@@ -10,6 +10,7 @@ import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute, resolveOwnershipOtpRoute, type KycStatus, type KycVerificationFlag, type ResidentialAddress } from '@/lib/services/kyc';
 import type { VirtualAccount } from '@/lib/services/wallet';
 import FaceLivenessModal from '@/components/design/FaceLivenessModal';
+import AuthGuard from '@/components/AuthGuard';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Tap, money } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
@@ -867,4 +868,6 @@ const Kyc = () => {
   );
 };
 
-export default Kyc;
+const KycScreen = () => <AuthGuard fresh><Kyc /></AuthGuard>;
+
+export default KycScreen;

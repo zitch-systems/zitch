@@ -25,7 +25,7 @@ class MigrationApproval(models.Model):
 
 class VirtualAccount(models.Model):
     VALIDATION, LIVE = "validation", "live"
-    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="vas_account")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="vas_accounts")
     number = models.CharField(max_length=10, unique=True)
     display_name = models.CharField(max_length=160)
     encrypted_identity = models.TextField()
@@ -44,6 +44,7 @@ class VirtualAccount(models.Model):
 
     class Meta:
         constraints = [
+            models.UniqueConstraint(fields=["user", "mode"], name="vas_user_mode_unique"),
             models.CheckConstraint(condition=models.Q(validation_balance__gte=0), name="vas_validation_balance_positive"),
             models.CheckConstraint(condition=models.Q(mode="validation") | models.Q(validation_balance=0), name="vas_live_no_validation_balance"),
             models.CheckConstraint(condition=(models.Q(mode="validation", prefix="711") |

@@ -40,7 +40,7 @@ def account_identity(account):
 
 
 def is_restricted(user):
-    return VirtualAccount.objects.filter(user_id=user.pk, active=False).exists()
+    return VirtualAccount.objects.filter(user_id=user.pk, mode=VirtualAccount.LIVE, active=False).exists()
 
 
 def assert_can_spend(user):
@@ -50,7 +50,7 @@ def assert_can_spend(user):
     A collection account must never silently use the archived Partnership rail.
     """
     from wallet.services import LimitExceeded
-    account = VirtualAccount.objects.filter(user_id=user.pk).first()
+    account = VirtualAccount.objects.filter(user_id=user.pk, mode=VirtualAccount.LIVE).first()
     if account is None:
         return
     if not account.active or not user.is_active:

@@ -35,7 +35,7 @@ const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
 
 const Me = () => {
   const { c, theme, setTheme } = useTheme();
-  const { totalBalance, firstName, avatar, showBal, reload: reloadWallet } = useWallet();
+  const { totalBalance, firstName, avatar, showBal, fundingProvider, reload: reloadWallet } = useWallet();
   const [biometrics, setBiometrics] = useState(false);
   const [tier, setTier] = useState(1);
 
@@ -91,6 +91,7 @@ const Me = () => {
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
   const grp1: any[] = [
     { icon: 'user', title: 'Account Details', sub: 'Name, email, phone & photo', go: () => router.push('/accountdetails') },
+    ...(fundingProvider === 'wema_vas' ? [{ icon: 'bank', title: 'Continue VAS setup', sub: 'Use your existing Zitch profile', go: () => router.push('/addmoney') }] : []),
     { icon: 'insurance', title: 'Identity Verification', sub: 'BVN, NIN or selfie · raise limits', badge: 'Verify', go: () => router.push('/kyc') },
     { icon: 'history', title: 'Transaction History', go: () => router.push('/history') },
     { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & transaction limits', go: () => router.push('/kyc') },

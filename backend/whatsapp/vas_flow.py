@@ -25,10 +25,13 @@ from django.utils.crypto import salted_hmac
 from django.views.decorators.debug import sensitive_variables
 from urllib3.util import Timeout
 
-from accounts.models import IdentityProof, User, hash_identifier
+from accounts.models import User, hash_identifier
 from common.ratelimit import opaque_cache_identifier
 from wallet.models import Wallet
-from wema_vas.enrollment import CONSENT_VERSION, customer_enrollment_available, enroll_customer
+from wema_vas.config import config
+from wema_vas.enrollment import (
+    consent_version, customer_enrollment_available, enroll_customer, named_identity_proof,
+)
 from .models import PendingAction, WhatsAppLink
 
 PREFIX = "va"
@@ -91,7 +94,8 @@ def _token(pa):
     return f"{PREFIX}{pa.pk}." + _sig(
         f"vas:{pa.pk}:{pa.user_id}:{pa.msisdn}:{pa.payload.get('link_id')}:"
         f"{pa.payload.get('credentials')}:{pa.payload.get('nonce')}:"
-        f"{pa.payload.get('flow_id')}:{pa.payload.get('contract')}"
+        f"{pa.payload.get('flow_id')}:{pa.payload.get('contract')}:"
+        f"{pa.payload.get('mode')}:{pa.payload.get('consent_version')}"
     )
 
 
@@ -110,6 +114,9 @@ def _resolve(token):
 
 def _bound(pa, user):
     return bool(user.is_active and user.phone_verified and user.email and user.email_verified
+                and pa.payload.get("mode") in {"validation", "live"}
+                and pa.payload.get("mode") == config().get("MODE")
+                and pa.payload.get("consent_version") == consent_version(pa.payload["mode"])
                 and pa.payload.get("flow_id") == settings.WHATSAPP_FLOW.get("FLOW_ID")
                 and pa.payload.get("contract") == _contract_digest()
                 and hmac.compare_digest(_credentials(user), str(pa.payload.get("credentials") or ""))
@@ -143,16 +150,56 @@ def _result(message, status="done"):
 def _finish(pa, message, status="done"):
     # Keep only a harmless terminal outcome and the binding, so a duplicate
     # exchange gives the same answer without reissuing proof or an account.
-    pa.payload = {key: pa.payload[key] for key in ("nonce", "credentials", "link_id", "flow_id", "contract")}
+    pa.payload = {key: pa.payload[key] for key in (
+        "nonce", "credentials", "link_id", "flow_id", "contract", "mode", "consent_version")}
     pa.payload.update({"vas_step": "done", "message": message, "status": status})
     pa.save(update_fields=["payload"])
     return _result(message, status)
 
 
+def _setup_data(mode):
+    """Render the precise purpose approved by this signed setup session."""
+    identity = (
+        "Verify your BVN privately, or choose NIN. We send an ownership code by SMS to the phone "
+        "on your identity record and also try its registered email when available. "
+    )
+    if mode == "validation":
+        return {
+            "title": "711 test account — DO NOT FUND",
+            "purpose": (
+                "This creates a 711 test account only. TEST ONLY — DO NOT FUND. "
+                "Zitch checks your BVN or NIN with Prembly, securely stores your verified identity "
+                "and phone in encrypted form, and shares them with Wema Bank for integration testing. "
+                "Use your existing Zitch profile. Your old bank account and transaction history are "
+                "retained; this does not convert or move your real balance."
+            ),
+            "consent_text": identity + (
+                "By tapping I agree and continue, you consent to this verification, storage and "
+                "sharing for a 711 test account only. Close this form to decline."
+            ),
+            "error": "",
+        }
+    if mode == "live":
+        return {
+            "title": "Your funding account",
+            "purpose": (
+                "Zitch checks your BVN or NIN with Prembly, securely stores your verified identity "
+                "and phone in encrypted form, and shares them with Wema Bank to operate your "
+                "funding account. Your existing balance is unchanged."
+            ),
+            "consent_text": identity + (
+                "By tapping I agree and continue, you consent to this verification, storage and "
+                "sharing. Close this form to decline."
+            ),
+            "error": "",
+        }
+    raise ValueError("Unknown account setup purpose")
+
+
 def _screen(pa):
     step = pa.payload.get("vas_step")
     if step == "consent":
-        return {"screen": SETUP, "data": {"error": ""}}
+        return {"screen": SETUP, "data": _setup_data(pa.payload["mode"])}
     if step == "done":
         return _result(pa.payload["message"], pa.payload["status"])
     kind = str(pa.payload.get("id_kind", "bvn")).upper()
@@ -199,6 +246,8 @@ def start(user, msisdn):
     from .router import EXECUTING_STATE, _clear_actions, _start_kyc, reply
     if not customer_enrollment_available(user) or not ready():
         return reply(msisdn, UNAVAILABLE)
+    mode = config()["MODE"]
+    setup_data = _setup_data(mode)
     link = WhatsAppLink.objects.filter(user=user, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE).first()
     if not link or not user.is_active or not user.phone_verified:
         return reply(msisdn, "Please sign in securely on WhatsApp before setting up your account.")
@@ -216,10 +265,15 @@ def start(user, msisdn):
         pa = PendingAction.objects.create(user=user, msisdn=msisdn, action_type="vas_enroll", state=STATE,
             payload={"vas_step": "consent", "nonce": secrets.token_urlsafe(16), "link_id": link.pk,
                      "credentials": _credentials(user), "flow_id": settings.WHATSAPP_FLOW["FLOW_ID"],
-                     "contract": _contract_digest()}, expires_at=timezone.now() + TTL)
-    result = send_flow(msisdn, _token(pa), header="Set up your Zitch account",
-        body="Set up your funding account privately here. Your identity details never appear in the chat.",
-        screen=SETUP, screen_data={"error": ""}, cta="Set up securely", on_open="data_exchange")
+                     "contract": _contract_digest(), "mode": mode,
+                     "consent_version": consent_version(mode)}, expires_at=timezone.now() + TTL)
+    result = send_flow(msisdn, _token(pa), header=(
+        "Set up your 711 test account" if mode == "validation" else "Set up your Zitch account"),
+        body=("Create a 711 test account privately here. TEST ONLY — DO NOT FUND. "
+              "Your existing profile, old bank account, history and real balance are retained."
+              if mode == "validation" else
+              "Set up your funding account privately here. Your identity details never appear in the chat."),
+        screen=SETUP, screen_data=setup_data, cta="Set up securely", on_open="data_exchange")
     if not result.get("success") or result.get("mock"):
         pa.delete()
         return reply(msisdn, UNAVAILABLE)
@@ -227,10 +281,10 @@ def start(user, msisdn):
 
 
 def _has_proof(user, kind, digest):
-    return bool(getattr(user, f"{kind}_verified")
-        and hmac.compare_digest(getattr(user, f"{kind}_hash") or "", digest)
-        and IdentityProof.objects.filter(user=user, identity_type=kind, identity_hash=digest,
-            source__in=[source for source, _ in IdentityProof.SOURCE_CHOICES]).exclude(verified_name="").exists())
+    if not (getattr(user, f"{kind}_verified")
+            and hmac.compare_digest(getattr(user, f"{kind}_hash") or "", digest)):
+        return False
+    return named_identity_proof(user, kind, digest) is not None
 
 
 @sensitive_variables()
@@ -261,7 +315,9 @@ def _identity(token, data, screen, request_digest):
         if _has_proof(user, kind, digest):
             try:
                 account = enroll_customer(user, **{kind: number}, consent=True,
-                    consent_reference=f"{CONSENT_VERSION}:whatsapp:{pa.pk}:{pa.payload['consent_at']}")
+                    expected_mode=pa.payload["mode"],
+                    expected_consent_version=pa.payload["consent_version"],
+                    consent_reference=f"{pa.payload['consent_version']}:whatsapp:{pa.pk}:{pa.payload['consent_at']}")
             except ValidationError:
                 return _finish(pa, "Your account setup needs review. Contact Zitch Support here; your existing balance is unchanged.", "Not completed")
             from wallet.services import customer_funding_account

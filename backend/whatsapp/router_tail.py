@@ -2352,7 +2352,11 @@ def run_flow_execution(pa: PendingAction, user) -> str:
     # Getting here means the PIN or a verified biometric just passed, so it
     # starts the re-auth window: someone who just authorised a payment should
     # not be challenged again to read their own balance.
-    _mark_verified(pa.msisdn)
+    # Re-registration also binds the proof to the exact active WhatsApp link
+    # and credential snapshot. Its executor marks the session only after those
+    # checks, so a revoked old link cannot authenticate a replacement link.
+    if not (pa.action_type == "unlock" and pa.payload.get("vas_reregister") is True):
+        _mark_verified(pa.msisdn)
     executors = {
         "transfer": _exec_transfer, "airtime": _exec_airtime, "data": _exec_data,
         "electricity": _exec_electricity, "cable": _exec_cable, "convert": _exec_convert,

@@ -257,8 +257,9 @@ class VasValidationTests(TestCase):
         self.assertFalse(Transaction.objects.exists())
         self.assertFalse(TransactionAlertDelivery.objects.exists())
         self.assertEqual(Receipt.objects.get().state, Receipt.VALIDATION)
-        with self.assertRaises(LimitExceeded):
-            assert_can_spend(user)
+        # The simulated balance creates no spendable ledger credit and does not
+        # turn this profile into a live VAS customer. Other rails keep their gates.
+        self.assertIsNone(assert_can_spend(user))
 
 
 @skipUnlessDBFeature("has_select_for_update")

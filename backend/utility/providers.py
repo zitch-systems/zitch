@@ -41,7 +41,7 @@ def partnership_new_business_allowed(user=None) -> bool:
         return False
     if user is not None:
         from wema_vas.models import VirtualAccount
-        if VirtualAccount.objects.filter(user=user).exists():
+        if VirtualAccount.objects.filter(user=user, mode=VirtualAccount.LIVE).exists():
             return False
     return True
 
@@ -81,12 +81,12 @@ def _partnership_reference_blocked(reference: str | None = None, source_account:
         return True
     if source_account:
         from wallet.models import Wallet
-        if Wallet.objects.filter(account_number=source_account, user__vas_account__isnull=False).exists():
+        if Wallet.objects.filter(account_number=source_account, user__vas_accounts__mode=VirtualAccount.LIVE).exists():
             return True
     if reference:
         from wallet.models import Transaction
         user_id = Transaction.objects.filter(reference=reference).values_list("user_id", flat=True).first()
-        if user_id and VirtualAccount.objects.filter(user_id=user_id).exists():
+        if user_id and VirtualAccount.objects.filter(user_id=user_id, mode=VirtualAccount.LIVE).exists():
             return True
     return False
 

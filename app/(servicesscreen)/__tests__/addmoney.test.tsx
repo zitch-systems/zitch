@@ -5,10 +5,20 @@ import AddMoney from '@/app/(servicesscreen)/addmoney';
 
 const mockApiJson = jest.fn();
 const mockPush = jest.fn();
+let mockFocus: () => void | (() => void);
+let mockBlur: (() => void) | void;
 
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: (...args: unknown[]) => mockPush(...args) },
+  useFocusEffect: (callback: () => void | (() => void)) => {
+    const ReactActual = jest.requireActual<typeof import('react')>('react');
+    mockFocus = callback;
+    ReactActual.useEffect(() => {
+      mockBlur = callback();
+      return () => mockBlur?.();
+    }, [callback]);
+  },
 }));
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn() }));
 jest.mock('expo-web-browser', () => ({ openBrowserAsync: jest.fn() }));
@@ -56,6 +66,64 @@ describe('AddMoney VAS migration', () => {
     enrollment_available: true, spending_available: false,
     account_setup_state: 'vas_enrollment_required', migration_message: 'Set up your new virtual account.',
   };
+
+  it('offers same-profile verification while allocation is blocked and shows the server reason', async () => {
+    mockApiJson.mockResolvedValue({ ...enrollment, enrollment_available: false, test_mode: true,
+      enrollment_status: 'review_required', enrollment_blockers: ['balance_review'],
+      enrollment_message: 'Your existing balance needs review before test setup.', re_registration_required: true });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(JSON.stringify(tree.toJSON())).toContain('Your existing balance needs review before test setup.');
+    expect(JSON.stringify(tree.toJSON())).toContain('on this Zitch profile');
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+    act(() => findControl(tree, 'Review verification').props.onPress());
+    expect(mockPush).toHaveBeenLastCalledWith('/(auth)/kyc');
+    act(() => findControl(tree, 'Confirm my verified name').props.onPress());
+    expect(mockPush).toHaveBeenLastCalledWith({ pathname: '/(auth)/kyc', params: { verify_identity: 'bvn' } });
+    expect(mockApiJson).toHaveBeenCalledTimes(1);
+    await act(async () => tree.unmount());
+  });
+
+  it('reloads eligibility after verification returns and discards a blurred identity and consent', async () => {
+    mockApiJson.mockResolvedValueOnce({ ...enrollment, enrollment_available: false })
+      .mockResolvedValueOnce({ ...enrollment, test_mode: true })
+      .mockResolvedValueOnce({ ...enrollment, test_mode: true });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+    await act(async () => { mockBlur?.(); mockBlur = mockFocus(); });
+    expect(tree.root.findByType(TextInput)).toBeTruthy();
+    act(() => tree.root.findByType(TextInput).props.onChangeText('11111111111'));
+    act(() => findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress());
+    expect(findControl(tree, 'Set up test account').props.disabled).toBe(false);
+    await act(async () => { mockBlur?.(); mockBlur = mockFocus(); });
+    expect(tree.root.findByType(TextInput).props.value).toBe('');
+    expect(findControl(tree, 'Consent to VAS identity storage and sharing').props.accessibilityState.checked).toBe(false);
+    expect(mockApiJson.mock.calls.map(([path]) => path)).toEqual(Array(3).fill('/api/wallet/account/'));
+    await act(async () => tree.unmount());
+  });
+
+  it('requires explicit test-only consent and never allocates automatically', async () => {
+    mockApiJson.mockResolvedValueOnce({ ...enrollment, test_mode: true,
+      enrollment_mode: 'validation', consent_version: 'vas-validation-identity-v1' })
+      .mockResolvedValueOnce({ success: true })
+      .mockResolvedValueOnce({ ...enrollment, test_mode: true, enrollment_available: false,
+        account_setup_state: 'vas_validation', validation_account_number: '7111234567' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(JSON.stringify(tree.toJSON())).toContain('does not activate real funding or payments');
+    expect(mockApiJson).toHaveBeenCalledTimes(1);
+    act(() => tree.root.findByType(TextInput).props.onChangeText('11111111111'));
+    expect(findControl(tree, 'Set up test account').props.disabled).toBe(true);
+    act(() => findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress());
+    await act(async () => { await findControl(tree, 'Set up test account').props.onPress(); });
+    expect(mockApiJson).toHaveBeenNthCalledWith(2, '/api/wallet/vas/enroll/', {
+      bvn: '11111111111', consent: true, enrollment_mode: 'validation', consent_version: 'vas-validation-identity-v1',
+    });
+    expect(JSON.stringify(tree.toJSON())).toContain('Test account only');
+    expect(JSON.stringify(tree.toJSON())).not.toContain('Fund by bank transfer');
+    await act(async () => tree.unmount());
+  });
 
   it('requires explicit consent and sends the selected verified identity only to VAS', async () => {
     mockApiJson.mockResolvedValueOnce(enrollment).mockResolvedValueOnce({ success: true })

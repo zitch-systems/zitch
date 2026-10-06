@@ -83,6 +83,7 @@ def deployment_report():
                 "vas_release_phase": _choice(vas.get("RELEASE_PHASE", "closed"), {"closed", "pilot", "general"}),
                 "vas_enrollment_enabled": vas.get("ENABLE_ENROLLMENT") is True,
                 "existing_vas_accounts": existing_accounts,
+                "vas_validation_self_service": vas.get("VALIDATION_SELF_SERVICE") is True,
                 "prembly_api_key_present": prembly_api, "prembly_app_id_present": prembly_app,
                 "prembly_credentials_configured": prembly_api and prembly_app,
                 "prembly_live_configuration_ready": prembly_api and prembly_app and not simulation,

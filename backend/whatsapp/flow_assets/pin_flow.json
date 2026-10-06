@@ -1823,6 +1823,18 @@
       "id": "VAS_SETUP",
       "title": "Set up your Zitch account",
       "data": {
+        "title": {
+          "type": "string",
+          "__example__": "711 test account — DO NOT FUND"
+        },
+        "purpose": {
+          "type": "string",
+          "__example__": "This creates a 711 test account only. TEST ONLY — DO NOT FUND. Zitch checks your BVN or NIN with Prembly, securely stores your verified identity and phone in encrypted form, and shares them with Wema Bank for integration testing. Use your existing Zitch profile. Your old bank account and transaction history are retained; this does not convert or move your real balance."
+        },
+        "consent_text": {
+          "type": "string",
+          "__example__": "Verify your BVN privately, or choose NIN. We send an ownership code by SMS to the phone on your identity record and also try its registered email when available. By tapping I agree and continue, you consent to this verification, storage and sharing for a 711 test account only. Close this form to decline."
+        },
         "error": {
           "type": "string",
           "__example__": ""
@@ -1840,15 +1852,15 @@
           },
           {
             "type": "TextHeading",
-            "text": "Your funding account"
+            "text": "${data.title}"
           },
           {
             "type": "TextBody",
-            "text": "Zitch checks your BVN or NIN with Prembly, securely stores your verified identity and phone in encrypted form, and shares them with Wema Bank to operate your funding account. Your existing balance is unchanged."
+            "text": "${data.purpose}"
           },
           {
             "type": "TextBody",
-            "text": "Verify your BVN privately, or choose NIN. We send an ownership code by SMS to the phone on your identity record and also try its registered email when available. By tapping I agree and continue, you consent to this verification, storage and sharing. Close this form to decline."
+            "text": "${data.consent_text}"
           },
           {
             "type": "TextBody",
