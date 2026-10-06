@@ -4,8 +4,9 @@ import re
 from io import StringIO
 from unittest.mock import patch
 
+from cryptography.fernet import Fernet
 from django.core.management import call_command
-from django.db import connection
+from django.db import DatabaseError, connection
 from django.test import TestCase, override_settings
 
 from wema_vas.management.commands.vas_deployment_diagnostics import deployment_report
@@ -107,3 +108,56 @@ class DeploymentDiagnosticsTests(TestCase):
         self.assertTrue(result["read_only"])
         self.assertTrue(observed)
         network.assert_not_called()
+
+    def test_vas_bank_credentials_are_distinguished_without_disclosing_values(self):
+        key = Fernet.generate_key().decode()
+        token = "unique-bank-token-" + "t" * 48
+        vas = {"MODE": "validation", "PREFIX": "711", "ENABLED": True, "TOKEN": token,
+               "IDENTITY_KEYS": [key], "RELEASE_PHASE": "pilot", "ENABLE_ENROLLMENT": False}
+        with override_settings(WEMA_VAS=vas), patch(MODULE + ".readiness_report", return_value=SAFE_READINESS):
+            report = deployment_report()
+        values = report["configuration"]
+        for name in ("vas_enabled", "vas_token_present", "vas_token_format_valid", "vas_identity_keyring_present",
+                     "vas_identity_keyring_valid", "vas_prefix_format_valid", "vas_prefix_is_validation"):
+            self.assertTrue(values[name], name)
+        self.assertEqual(values["vas_release_phase"], "pilot")
+        self.assertFalse(values["vas_enrollment_enabled"])
+        self.assertFalse(values["existing_vas_accounts"])
+        self.assertNotIn(token, json.dumps(report))
+        self.assertNotIn(key, json.dumps(report))
+        with override_settings(WEMA_VAS={**vas, "TOKEN": token + " ", "IDENTITY_KEYS": ["invalid-secret-key"],
+                                        "PREFIX": "secret-prefix", "RELEASE_PHASE": "secret-phase"}), \
+                patch(MODULE + ".readiness_report", return_value=SAFE_READINESS):
+            invalid = deployment_report()
+        self.assertFalse(invalid["configuration"]["vas_token_format_valid"])
+        self.assertFalse(invalid["configuration"]["vas_identity_keyring_valid"])
+        self.assertFalse(invalid["configuration"]["vas_prefix_format_valid"])
+        self.assertEqual(invalid["configuration"]["vas_release_phase"], "invalid")
+        for secret in (token, "invalid-secret-key", "secret-prefix", "secret-phase"):
+            self.assertNotIn(secret, json.dumps(invalid))
+
+    def test_existing_account_inventory_prevents_false_empty_report(self):
+        from django.utils import timezone
+        from accounts.models import User
+        from wema_vas.models import VirtualAccount
+        user = User.objects.create(username="diagnostic-account-holder")
+        VirtualAccount.objects.create(user=user, number="7131234567", prefix="713", mode="live",
+            display_name="Zitch/Private Holder", encrypted_identity="existing-encrypted-snapshot",
+            verification_reference="proof", consent_reference="consent", verified_at=timezone.now())
+        with patch(MODULE + ".readiness_report", return_value=SAFE_READINESS):
+            report = deployment_report()
+        self.assertTrue(report["configuration"]["existing_vas_accounts"])
+        self.assertNotIn("7131234567", json.dumps(report))
+        with patch(MODULE + ".VirtualAccount.objects.exists", side_effect=DatabaseError(SECRET)):
+            failed = deployment_report()
+        self.assertEqual(failed["status"], "inspection_unavailable")
+        self.assertNotIn("existing_vas_accounts", failed)
+        self.assertNotIn(SECRET, json.dumps(failed))
+
+    def test_prembly_identity_readiness_does_not_require_biometric_app_id(self):
+        with override_settings(PREMBLY={"API_KEY": SECRET, "APP_ID": "", "BASE_URL": "https://api.prembly.com"}), \
+                patch(MODULE + ".readiness_report", return_value=SAFE_READINESS):
+            values = deployment_report()["configuration"]
+        self.assertTrue(values["prembly_identity_configuration_ready"])
+        self.assertFalse(values["prembly_app_id_present"])
+        self.assertFalse(values["prembly_live_configuration_ready"])

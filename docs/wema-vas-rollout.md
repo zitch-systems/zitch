@@ -56,10 +56,19 @@ changes cannot rename a bank account. Earlier proof records without a legal-name
 snapshot must complete provider lookup plus registered-phone SMS ownership again;
 they are never backfilled from mutable profile names. The app provides that path.
 Set `KYC_PROVIDER=prembly` on every Django runtime and retain the configured
-Prembly API key and application ID. VAS identity requires a live Prembly lookup
+Prembly API key and any existing application ID. The current BVN/NIN Advance
+products require `x-api-key`; their identity-only credential check does not require
+an application ID. Other Prembly products retain their existing credential gates.
+VAS identity requires a live Prembly lookup
 and SMS to the identity-registered phone; it never falls back to Partnership or
 mock proof. The app accepts this ownership challenge without a bank tracking ID.
 Historical tracked bank OTP completions remain supported.
+
+Identity responses require a successful HTTP result, literal `status: true`,
+`response_code: "00"` and a valid holder record. Not-found/blocked results reject
+verification; provider downtime, insufficient provider funds and malformed results
+are outages, never identity proof. See Prembly's [BVN Advance](https://docs.prembly.com/reference/bvn-advance)
+and [response-code contract](https://docs.prembly.com/docs/prembly-api-response-codes-verification-status).
 
 Explicit enrollment consent records encrypted storage and disclosure to Wema.
 Raw IDs are encrypted with a separate rotating Fernet keyring; current keyed

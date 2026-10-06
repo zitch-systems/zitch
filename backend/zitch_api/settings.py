@@ -684,11 +684,9 @@ PREMBLY = {
     "API_KEY": os.environ.get("PREMBLY_API_KEY", ""),
     "APP_ID": os.environ.get("PREMBLY_APP_ID", ""),
 }
-# BVN/NIN/vNIN verification is done by Wema's Full KYC (see utility.providers.verify_bvn
-# / verify_nin / verify_vnin). Prembly above is retained ONLY for the image/biometric
-# checks the number lookups can't do: the selfie/liveness step (kyc_verify_face — the
-# ≥₦100k gate), address (kyc_verify_address), and ID-document OCR
-# (kyc_verify_nin_document / kyc_verify_id_document).
+# Prembly supplies BVN/NIN lookup and the registered-phone ownership challenge
+# for VAS, alongside selfie/liveness, address and document-image verification.
+# Historical bank identity attempts retain their own completion handlers.
 # Card issuer (virtual cards) — generic provider.  Credentials alone never turn
 # on an unverified money/card contract: LIVE_ENABLED is a separate go-live gate.
 CARD_ISSUER = {

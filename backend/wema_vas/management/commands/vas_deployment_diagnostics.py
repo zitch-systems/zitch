@@ -7,6 +7,8 @@ from django.core.management.base import BaseCommand
 
 from wema_vas.config import approval_reference_present, config
 from wema_vas.diagnostics import readiness_report
+from wema_vas.identity import cipher
+from wema_vas.models import VirtualAccount
 
 
 def _present(value):
@@ -24,6 +26,22 @@ def deployment_report():
     """Only allowlisted enums and presence booleans leave this function."""
     try:
         vas = config()
+        token = vas.get("TOKEN", "")
+        token_valid = isinstance(token, str) and len(token) >= 48 and not any(char.isspace() for char in token)
+        identity_keys = vas.get("IDENTITY_KEYS", [])
+        if isinstance(identity_keys, str):
+            identity_keys = identity_keys.split(",")
+        keyring_present = isinstance(identity_keys, (list, tuple)) and any(_present(key) for key in identity_keys)
+        try:
+            cipher()
+            keyring_valid = True
+        except Exception:
+            keyring_valid = False
+        prefix = vas.get("PREFIX", "")
+        prefix_valid = isinstance(prefix, str) and bool(re.fullmatch(r"[0-9]{3}", prefix))
+        # A failed inventory query aborts this inspection instead of falsely
+        # reporting no existing records and encouraging unsafe key rotation.
+        existing_accounts = VirtualAccount.objects.exists()
         bank_provider = _choice(getattr(settings, "BANK_ACCOUNT_PROVIDER", "partnership"), {"partnership", "wema_vas"})
         partnership = _choice(getattr(settings, "WEMA_PARTNERSHIP_MODE", "active"), {"active", "archive"})
         kyc_selection = _choice(getattr(settings, "KYC_PROVIDER", ""), {"prembly", "wema"}, blank="auto")
@@ -58,9 +76,17 @@ def deployment_report():
                 "biller_provider": _choice(getattr(settings, "VAS_PROVIDER", "wema"), {"wema"}),
                 "biller_mode": _choice(getattr(settings, "WEMA_BILLER_MODE", "active"), {"active", "disabled"}),
                 "simulation": simulation, "vas_mode": vas_mode,
+                "vas_enabled": vas.get("ENABLED") is True,
+                "vas_token_present": _present(token), "vas_token_format_valid": token_valid,
+                "vas_identity_keyring_present": keyring_present, "vas_identity_keyring_valid": keyring_valid,
+                "vas_prefix_format_valid": prefix_valid, "vas_prefix_is_validation": prefix == "711",
+                "vas_release_phase": _choice(vas.get("RELEASE_PHASE", "closed"), {"closed", "pilot", "general"}),
+                "vas_enrollment_enabled": vas.get("ENABLE_ENROLLMENT") is True,
+                "existing_vas_accounts": existing_accounts,
                 "prembly_api_key_present": prembly_api, "prembly_app_id_present": prembly_app,
                 "prembly_credentials_configured": prembly_api and prembly_app,
                 "prembly_live_configuration_ready": prembly_api and prembly_app and not simulation,
+                "prembly_identity_configuration_ready": bool(prembly_api and _present(prembly.get("BASE_URL")) and not simulation),
                 "termii_api_key_present": termii_key, "termii_sender_present": termii_sender,
                 "termii_configuration_ready": termii_key and termii_sender,
                 "vas_biller_enabled": getattr(settings, "WEMA_VAS_BILLER_ENABLED", False) is True,

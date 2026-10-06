@@ -28,7 +28,7 @@ class VasIdentityTests(TestCase):
 
     def start(self, kind, record=None, configured=True):
         endpoint = "/api/kyc/bvn/start/" if kind == "bvn" else "/api/kyc/nin/"
-        with patch("utility.providers._prembly_live", return_value=configured), \
+        with patch("utility.providers._prembly_identity_live", return_value=configured), \
                 patch("utility.providers.prembly_verify_" + kind, return_value=record or self.record) as lookup, \
                 patch("accounts.views._otp_code", return_value="123456"), \
                 patch("accounts.views.send_sms", return_value={"success": True}) as sms, \

@@ -1627,8 +1627,8 @@ def _requires_prembly_identity(user) -> bool:
 def _lookup_identity(user, kind: str, raw: str) -> dict:
     """VAS identity never falls back to an archived bank or a mock result."""
     if _requires_prembly_identity(user):
-        from utility.providers import _prembly_live, prembly_verify_bvn, prembly_verify_nin
-        if not _prembly_live():
+        from utility.providers import _prembly_identity_live, prembly_verify_bvn, prembly_verify_nin
+        if not _prembly_identity_live():
             return {"success": False, "message": "Identity verification is temporarily unavailable."}
         lookup = prembly_verify_bvn if kind == "bvn" else prembly_verify_nin
         result = lookup(raw, name=user.get_full_name() or "")

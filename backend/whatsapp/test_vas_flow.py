@@ -241,7 +241,7 @@ class VasFlowTests(TestCase):
 
     def provider_code(self, token):
         IdentityProof.objects.filter(user=self.user).delete()
-        with patch("utility.providers._prembly_live", return_value=True), \
+        with patch("utility.providers._prembly_identity_live", return_value=True), \
                 patch("utility.providers.prembly_verify_bvn", return_value={"success": True, "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}), \
                 patch.object(router, "sms_live", return_value=True), \
                 patch.object(router, "send_sms", return_value={"success": True}) as sms:
@@ -312,7 +312,7 @@ class VasFlowTests(TestCase):
         self.unverified()
         token = self.start()
         self.consent(token)
-        with patch("utility.providers._prembly_live", return_value=True), \
+        with patch("utility.providers._prembly_identity_live", return_value=True), \
                 patch("utility.providers.prembly_verify_bvn", return_value={"success": True,
                     "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}) as lookup, \
                 patch.object(router, "sms_live", return_value=True), \
@@ -332,7 +332,7 @@ class VasFlowTests(TestCase):
         self.unverified()
         token = self.start()
         self.consent(token)
-        with patch("utility.providers._prembly_live", return_value=True), \
+        with patch("utility.providers._prembly_identity_live", return_value=True), \
                 patch("utility.providers.prembly_verify_bvn", return_value={"success": True,
                     "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}), \
                 patch.object(router, "sms_live", return_value=True), \
@@ -365,7 +365,7 @@ class VasFlowTests(TestCase):
         self.unverified()
         token = self.start()
         self.consent(token)
-        with patch("utility.providers._prembly_live", return_value=True), \
+        with patch("utility.providers._prembly_identity_live", return_value=True), \
                 patch("utility.providers.prembly_verify_bvn", side_effect=RuntimeError("provider failed")):
             self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
         self.user.refresh_from_db()
@@ -396,7 +396,7 @@ class VasFlowTests(TestCase):
         def lookup(*args, **kwargs):
             concurrent.append(self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY))
             return {"success": True, "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}
-        with patch("utility.providers._prembly_live", return_value=True), \
+        with patch("utility.providers._prembly_identity_live", return_value=True), \
                 patch("utility.providers.prembly_verify_bvn", side_effect=lookup) as verify, \
                 patch.object(router, "sms_live", return_value=True), \
                 patch.object(router, "send_sms", return_value={"success": True}) as sms:
@@ -449,7 +449,7 @@ class VasFlowTests(TestCase):
         self.proof.delete()
         token = self.start()
         self.consent(token)
-        with patch("utility.providers._prembly_live", return_value=False), \
+        with patch("utility.providers._prembly_identity_live", return_value=False), \
                 patch("utility.providers.prembly_verify_bvn") as lookup, patch.object(router, "send_sms") as sms:
             response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
         lookup.assert_not_called()
@@ -461,7 +461,7 @@ class VasFlowTests(TestCase):
         self.proof.delete()
         token = self.start()
         self.consent(token)
-        with patch("utility.providers._prembly_live", return_value=True), \
+        with patch("utility.providers._prembly_identity_live", return_value=True), \
                 patch("utility.providers.prembly_verify_bvn", side_effect=RuntimeError("bad " + self.raw)), \
                 self.assertLogs("zitch.security", level="WARNING") as logs:
             response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)

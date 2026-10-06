@@ -713,11 +713,9 @@ def email_probe() -> dict:
 # ---------------------------------------------------------------------------
 # KYC — selfie/liveness + address + ID-document — Prembly (IdentityPass)
 #
-# Prembly is retained ONLY for the image/biometric checks the partner bank account-creation
-# flow can't do: selfie/liveness (kyc_verify_face — the ≥₦100k transfer gate + Tier 2),
-# address (kyc_verify_address — Tier 2), and document-image OCR (kyc_verify_nin_document /
-# kyc_verify_id_document — Tier 1 NIN slip / Tier 3 government ID). BVN/NIN identity is
-# verified by the name-matched NUBAN account-creation flow (see verify_bvn/nin/vnin).
+# Prembly handles independent BVN/NIN lookup plus supported image/biometric
+# checks. Lookup still needs registered-phone ownership proof before enrollment.
+# Biometric products retain their separate credential and completion gates.
 # ---------------------------------------------------------------------------
 def _prembly_live() -> bool:
     # A deploy-wide simulation must not leak real identity data to Prembly just
@@ -732,6 +730,20 @@ def _prembly_headers() -> dict:
         "app-id": settings.PREMBLY["APP_ID"],
         "Content-Type": "application/json",
     }
+
+
+def _prembly_identity_live() -> bool:
+    """BVN/NIN Advance documents x-api-key; app-id is optional for this rail."""
+    cfg = getattr(settings, "PREMBLY", {}) or {}
+    return bool(not simulation_mode() and cfg.get("API_KEY") and cfg.get("BASE_URL"))
+
+
+def _prembly_identity_headers() -> dict:
+    cfg = settings.PREMBLY
+    headers = {"x-api-key": cfg["API_KEY"], "Content-Type": "application/json"}
+    if cfg.get("APP_ID"):
+        headers["app-id"] = cfg["APP_ID"]
+    return headers
 
 
 def _kyc_mock_or_unavailable() -> dict:
@@ -924,7 +936,7 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
     An explicit Prembly choice never falls back to bank account creation or a
     mock when its credentials are missing or the simulation switch is on.
     """
-    if _prembly_live():
+    if _prembly_identity_live():
         return prembly_verify_bvn(bvn, name=name, timeout=timeout)
     if kyc_provider() == "prembly":
         return {"success": False, "message": "Identity verification is temporarily unavailable.",
@@ -962,34 +974,62 @@ def _prembly_identity_lookup(kind: str, number: str, name: str, *, timeout=REQUE
     if path is None:
         return {"success": False, "message": "Unsupported identity type."}
 
+    unavailable = {"success": False, "code": "identity_provider_unavailable",
+                   "message": "Identity verification service is temporarily unavailable."}
+    invalid = {"success": False, "invalid": True,
+               "message": f"That {kind.upper()} could not be confirmed."}
     try:
         resp = requests.post(
             f"{settings.PREMBLY['BASE_URL'].rstrip('/')}{path}",
-            json={"number": number}, headers=_prembly_headers(), timeout=timeout,
+            json={"number": number}, headers=_prembly_identity_headers(), timeout=timeout,
+            allow_redirects=False,
         )
         data = resp.json()
     except (requests.RequestException, ValueError) as exc:
         log.warning("prembly_%s_unreachable error_type=%s", kind, type(exc).__name__)
         # NOT invalid: we could not ask. Reviewable.
-        return {"success": False, "message": f"Identity provider unreachable: {exc}"}
+        return unavailable
 
     # HTTP failures are gateway/auth/product problems, never proof that the
     # customer's identity is wrong.  In particular, treating a 401/403/404 as
     # ``invalid`` shows "check the digits" for a Zitch configuration fault.
-    if resp.status_code >= 400:
+    if resp.status_code != 200:
         log.warning("prembly_%s_http_error status=%s", kind, resp.status_code)
-        return {"success": False,
-                "message": "Identity verification service is temporarily unavailable."}
-
-    record = data.get("data") or data.get(f"{kind}_data") or {}
-    if not (data.get("status") is True and isinstance(record, dict)):
-        # The provider answered, and the answer is no. `invalid` means definitive:
-        # a wrong number is the customer's to correct, not an operator's to
-        # approve — queueing it would put a human in front of a decision the
-        # authoritative source has already made.
-        return {"success": False, "invalid": True,
-                "message": data.get("message") or f"That {kind.upper()} could not be confirmed.",
-                "raw": data}
+        return unavailable
+    # HTTP 200/status=true means the request was handled, not that an identity
+    # was found. Prembly's documented result code is authoritative: 00 verified,
+    # 01 not found, 07 blocked; 02/03 and unknown codes are service failures.
+    if not isinstance(data, dict) or type(data.get("status")) is not bool:
+        return unavailable
+    code = data.get("response_code")
+    if code in ("01", "07"):
+        return invalid
+    if code != "00" or data["status"] is not True:
+        return unavailable
+    record = data.get("data") if "data" in data else data.get(f"{kind}_data")
+    if not isinstance(record, dict) or not record:
+        return unavailable
+    # Some products also attach verification.status. A pending, failed or
+    # malformed secondary signal cannot override the required completed result.
+    for container in (data, record):
+        if "verification" in container:
+            verification = container["verification"]
+            if not isinstance(verification, dict):
+                return unavailable
+            if "status" in verification and (not isinstance(verification["status"], str)
+                    or verification["status"].strip().upper() != "VERIFIED"):
+                return unavailable
+        for field in ("verification_status", "verificationStatus"):
+            if field in container and (not isinstance(container[field], str)
+                    or container[field].strip().upper() != "VERIFIED"):
+                return unavailable
+        for field in ("verified", "is_verified", "isVerified"):
+            if field in container and container[field] is not True:
+                return unavailable
+    name_fields = ("firstname", "first_name", "firstName", "surname", "lastname",
+                   "last_name", "lastName", "middlename", "middle_name", "middleName")
+    if any(record.get(field) is not None and not isinstance(record[field], str) for field in name_fields):
+        return unavailable
     first = str(record.get("firstname") or record.get("first_name") or
                 record.get("firstName") or "").strip()
     last = str(record.get("surname") or record.get("lastname") or
@@ -1008,11 +1048,9 @@ def _prembly_identity_lookup(kind: str, number: str, name: str, *, timeout=REQUE
             # to someone else" is precisely the case an operator must never be
             # asked to wave through.
             return {"success": False, "invalid": True,
-                    "message": f"That {kind.upper()} does not match the name on this account.",
-                    "raw": data}
+                    "message": f"That {kind.upper()} does not match the name on this account."}
     elif not resolved:
-        return {"success": False, "invalid": True,
-                "message": f"That {kind.upper()} could not be confirmed.", "raw": data}
+        return unavailable
     return {"success": True, "first_name": first, "middle_name": middle, "last_name": last,
             "phone": _record_phone(record), "email": _record_email(record), "raw": data}
 
@@ -1084,7 +1122,7 @@ def verify_nin(nin: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> dict:
     An explicit Prembly choice remains unavailable if its credentials are absent;
     only a selected legacy bank identity flow may use the old provider.
     """
-    if _prembly_live():
+    if _prembly_identity_live():
         return prembly_verify_nin(nin, name=name, timeout=timeout)
     if kyc_provider() == "prembly":
         return {"success": False, "message": "Identity verification is temporarily unavailable.",

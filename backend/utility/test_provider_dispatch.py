@@ -543,7 +543,7 @@ class NinIdentityRailTests(SimpleTestCase):
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_a_matching_record_verifies(self):
-        payload = {"status": True, "data": {"firstName": "ADA", "lastName": "EZE"}}
+        payload = {"status": True, "response_code": "00", "data": {"firstName": "ADA", "lastName": "EZE"}}
         with patch("utility.providers.requests.post", return_value=self._resp(payload)) as post:
             result = P.verify_nin("12345678901", name="Ada Eze")
         self.assertTrue(result["success"])
@@ -555,7 +555,7 @@ class NinIdentityRailTests(SimpleTestCase):
     def test_a_different_person_is_refused_without_naming_them(self):
         """The resolved name belongs to whoever owns the NIN, who may not be the
         person asking — refusing must not tell the asker who they hit."""
-        payload = {"status": True, "data": {"firstname": "CHINEDU", "surname": "OKAFOR"}}
+        payload = {"status": True, "response_code": "00", "data": {"firstname": "CHINEDU", "surname": "OKAFOR"}}
         with patch("utility.providers.requests.post", return_value=self._resp(payload)):
             result = P.verify_nin("12345678901", name="Ada Eze")
         self.assertFalse(result["success"])
@@ -564,7 +564,7 @@ class NinIdentityRailTests(SimpleTestCase):
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_a_record_with_no_name_is_not_a_pass(self):
-        payload = {"status": True, "data": {"dob": "1990-01-01"}}
+        payload = {"status": True, "response_code": "00", "data": {"dob": "1990-01-01"}}
         with patch("utility.providers.requests.post", return_value=self._resp(payload)):
             self.assertFalse(P.verify_nin("12345678901", name="Ada Eze")["success"])
 
@@ -576,7 +576,7 @@ class NinIdentityRailTests(SimpleTestCase):
             with patch("utility.providers.requests.post", side_effect=effect):
                 self.assertFalse(P.verify_nin("12345678901", name="Ada Eze")["success"])
         with patch("utility.providers.requests.post",
-                   return_value=self._resp({"status": False, "message": "not found"})):
+                   return_value=self._resp({"status": False, "response_code": "01", "message": "not found"})):
             self.assertFalse(P.verify_nin("12345678901", name="Ada Eze")["success"])
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
@@ -625,7 +625,7 @@ class BvnIdentityRailTests(SimpleTestCase):
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_a_matching_record_uses_bvn_advance(self):
-        payload = {"status": True, "data": {
+        payload = {"status": True, "response_code": "00", "data": {
             "first_name": "ADA", "last_name": "EZE", "phone_number": "08012345678",
         }}
         with patch("utility.providers.requests.post", return_value=self._resp(payload)) as post:
@@ -637,7 +637,7 @@ class BvnIdentityRailTests(SimpleTestCase):
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_a_different_person_is_refused_without_naming_them(self):
-        payload = {"status": True, "data": {"firstname": "CHINEDU", "surname": "OKAFOR"}}
+        payload = {"status": True, "response_code": "00", "data": {"firstname": "CHINEDU", "surname": "OKAFOR"}}
         with patch("utility.providers.requests.post", return_value=self._resp(payload)):
             result = P.verify_bvn("12345678901", name="Ada Eze")
         self.assertFalse(result["success"])
@@ -650,7 +650,7 @@ class BvnIdentityRailTests(SimpleTestCase):
         with patch("utility.providers.requests.post", side_effect=R.RequestException("down")):
             self.assertFalse(P.verify_bvn("12345678901", name="Ada Eze")["success"])
         with patch("utility.providers.requests.post",
-                   return_value=self._resp({"status": False, "message": "not found"})):
+                   return_value=self._resp({"status": False, "response_code": "01", "message": "not found"})):
             self.assertFalse(P.verify_bvn("12345678901", name="Ada Eze")["success"])
 
     @override_settings(PREMBLY=PREMBLY_LIVE)

@@ -17,7 +17,7 @@ from utility import providers
 class IdentityTimeoutTests(SimpleTestCase):
     def response(self):
         return Mock(status_code=200, json=Mock(return_value={
-            "status": True, "data": {"firstName": "ADA", "lastName": "EZE"},
+            "status": True, "response_code": "00", "data": {"firstName": "ADA", "lastName": "EZE"},
         }))
 
     def test_existing_callers_keep_thirty_second_timeout(self):

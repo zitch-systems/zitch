@@ -126,7 +126,7 @@ class PartnershipArchiveBoundaryTests(TestCase):
         self.assertEqual(self.wallet.balance, Decimal("1000"))
 
     def test_identity_failure_has_no_legacy_bank_fallback(self):
-        with patch("utility.providers._prembly_live", return_value=False), \
+        with patch("utility.providers._prembly_identity_live", return_value=False), \
                 patch("utility.wema.verify_bvn") as verify:
             result = providers.verify_bvn("12345678901", name="Ada Eze")
         self.assertFalse(result["success"])
