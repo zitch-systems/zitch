@@ -40,7 +40,17 @@ def _resp(body, status=200):
     return m
 
 
-class WemaMockTests(SimpleTestCase):
+class BillerTransportSourceMixin:
+    """Wire/parser tests receive a source already approved by the wallet layer."""
+    def setUp(self):
+        super().setUp()
+        resolver = patch("wallet.services.biller_source_for_transaction",
+            side_effect=lambda reference, *, amount, source_account="": source_account)
+        resolver.start()
+        self.addCleanup(resolver.stop)
+
+
+class WemaMockTests(BillerTransportSourceMixin, SimpleTestCase):
     def test_mock_mode_active(self):
         self.assertFalse(wema.wema_live())
 
@@ -628,7 +638,7 @@ class WemaLiveTests(SimpleTestCase):
 
 
 @override_settings(WEMA=WEMA_LIVE)
-class TransferAmbiguityTests(SimpleTestCase):
+class TransferAmbiguityTests(BillerTransportSourceMixin, SimpleTestCase):
     """A refund is irreversible in practice — the recipient has already been paid over
     NIP and the row goes terminal, so nothing re-sweeps it. These lock in the rule that
     only POSITIVE evidence of failure may refund a sender."""
@@ -863,7 +873,7 @@ class WemaDiagnoseViewTests(SimpleTestCase):
 
 
 @override_settings(WEMA=WEMA_VAS)
-class WemaVasLiveTests(SimpleTestCase):
+class WemaVasLiveTests(BillerTransportSourceMixin, SimpleTestCase):
     @patch("utility.wema.requests.post")
     def test_airtime_live_sends_nuban_and_securityinfo(self, mock_post):
         mock_post.return_value = _resp({"result": {"status": "SUCCESS", "transactionReference": "R"},
@@ -1306,7 +1316,7 @@ WEMA_REMITA = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "remita": "remitakey"},
 
 
 @override_settings(WEMA=WEMA_REMITA)
-class WemaRemitaTests(SimpleTestCase):
+class WemaRemitaTests(BillerTransportSourceMixin, SimpleTestCase):
     @patch("utility.wema.requests.get")
     def test_validate_rrr(self, mock_get):
         mock_get.return_value = _resp({"result": {"isValidated": True, "name": "ADA EZE",
@@ -1501,7 +1511,7 @@ class WemaMessageWhiteLabelTests(SimpleTestCase):
 
 
 @override_settings(WEMA=WEMA_VAS)
-class WemaConformanceFixTests(SimpleTestCase):
+class WemaConformanceFixTests(BillerTransportSourceMixin, SimpleTestCase):
     """Fixes from the 2026-07-27 portal-conformance audit."""
 
     # --- bills packageId must go out as an int32, not a JSON string ---

@@ -226,6 +226,47 @@ class Transaction(models.Model):
         return f"{self.service} {sign}₦{self.amount} ({self.transaction_status})"
 
 
+class BillFundingBinding(models.Model):
+    """Immutable source reservation for one bill debit, independent of metadata."""
+    transaction = models.OneToOneField(Transaction, on_delete=models.PROTECT, related_name="bill_funding")
+    source_account = models.CharField(max_length=10)
+    vas_account = models.ForeignKey("wema_vas.VirtualAccount", null=True, blank=True,
+                                   on_delete=models.PROTECT, related_name="bill_fundings")
+    approval_reference = models.CharField(max_length=256, blank=True)
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(source_account__regex=r"^[0-9]{10}$"),
+                                             name="bill_funding_source_account_valid")]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValueError("Bill funding reservations are immutable")
+        txn = self.transaction
+        if (txn.direction != Transaction.OUT or txn.currency != "NGN"
+                or txn.transaction_status != Transaction.PENDING):
+            raise ValueError("Bill funding requires an NGN debit")
+        if self.vas_account_id and (self.vas_account.user_id != txn.user_id
+                                   or self.vas_account.mode != "live"
+                                   or self.source_account == self.vas_account.number
+                                   or not self.approval_reference):
+            raise ValueError("Invalid VAS bill funding reservation")
+        return super().save(*args, **kwargs)
+
+
+class BillFundingRefund(models.Model):
+    """One immutable release of a failed bill reservation; not another ledger credit."""
+    binding = models.OneToOneField(BillFundingBinding, on_delete=models.PROTECT, related_name="refund")
+    created = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValueError("Bill funding refunds are immutable")
+        if self.binding.transaction.transaction_status != Transaction.FAILED:
+            raise ValueError("Bill funding releases require a failed debit")
+        return super().save(*args, **kwargs)
+
+
 class TransactionAlertDelivery(models.Model):
     """One durable notification attempt per movement, outcome and channel.
 

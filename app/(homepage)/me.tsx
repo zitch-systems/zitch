@@ -35,7 +35,7 @@ const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
 
 const Me = () => {
   const { c, theme, setTheme } = useTheme();
-  const { balance, firstName, avatar, showBal, reload: reloadWallet } = useWallet();
+  const { totalBalance, firstName, avatar, showBal, reload: reloadWallet } = useWallet();
   const [biometrics, setBiometrics] = useState(false);
   const [tier, setTier] = useState(1);
 
@@ -154,7 +154,7 @@ const Me = () => {
           <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={15} color={c.ink3} />
         </View>
         <NText style={{ fontSize: 30, fontFamily: font.extrabold, color: c.ink1, marginTop: 2, fontVariant: ['tabular-nums'] }}>
-          {showBal ? money(balance) : '₦ ••••••'}
+          {showBal ? money(totalBalance) : '₦ ••••••'}
         </NText>
       </View>
 

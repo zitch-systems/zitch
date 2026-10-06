@@ -946,12 +946,9 @@ def avatar_upload(request):
 
 
 # --------------------------------- KYC ---------------------------------
-# Nigeria identity (BVN/NIN): ALAT has NO standalone lookup — verification happens in
-# the NUBAN account-creation OTP flow (/api/wallet/wema/*), which name-matches the
-# holder record ALAT returns before lifting the tier. So in PRODUCTION the verify_bvn/
-# verify_nin calls below return an "otp_required" redirect (route the user to account
-# setup); dev/tests keep the provider mock so these endpoints still exercise offline.
-# The image/biometric steps (face/address/ID) stay on Prembly and are unaffected.
+# VAS uses Prembly name matching and an SMS to the identity-registered phone.
+# Legacy Partnership OTP/face completions retain their server-bound bank attempts.
+# Only durable proof can mark an identity verified or supply its legal account name.
 def _reserve_wallet_account(user, bvn: str = "", nin: str = "") -> None:
     """Best-effort: mint the user's dedicated funding account once KYC supplies a
     BVN/NIN. Never lets a provider hiccup fail the KYC response — it's retried on
@@ -1269,6 +1266,7 @@ def _kyc_state(user) -> dict:
         # Older app builds understand face_rail=document, which safely keeps the
         # generic Tier-2 face card on Prembly instead of mislabelling Wema identity
         # proof as a Tier-2 face pass.
+        "identity_verification_provider": "wema" if _use_wema_identity_flow(user) else "prembly",
         "identity_face_available": not migrating and wema.face_verify_live(),
         "identity_verification_methods": (["sms_otp", "wema_face"]
                                           if not migrating and wema.face_verify_live()
@@ -1279,7 +1277,8 @@ def _kyc_state(user) -> dict:
                          else "document"),
         **({key: value for key, value in funding.items()
             if key in {"provider", "has_account", "account_setup_state", "available",
-                       "spending_available", "enrollment_available", "migration_message"}}
+                       "spending_available", "bill_payments_available", "transfers_available",
+                       "enrollment_available", "migration_message"}}
            if migrating else {}),
     }
 
@@ -1542,10 +1541,9 @@ def _pending_identity_decrypt(kind: str, token: str) -> str:
 def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict):
     """Send an ownership OTP without weakening live identity proof.
 
-    Wema Wallet Service does not support email delivery for BVN/NIN OTP. The
-    challenge is therefore sent only to the phone number returned on the
-    identity record (or the tester's phone in explicit simulation/dev mode).
-    Resend remains for Zitch-owned email verification, not bank identity OTP.
+    The challenge is sent only to the phone returned on the identity record
+    (or the tester's phone in explicit legacy simulation/dev mode). Neither an
+    account phone nor an email address substitutes for the registered line.
     """
     simulated = bool(result.get("mock") and not mock_disabled_in_prod())
     destination = (user.phone or "").strip() if simulated else (result.get("phone") or "").strip()
@@ -1583,6 +1581,7 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict)
     )
     channel = f"registered phone •••••{destination[-4:]}"
     return ok(success=True, otp_required=True, delivery=channel,
+              identity_verification_provider="prembly",
               message=f"We sent a verification code to your {channel}.")
 
 def _confirm_identity_ownership_challenge(user, kind: str, otp: str):
@@ -1618,6 +1617,27 @@ def _use_wema_identity_flow(user=None) -> bool:
     # simulated and production deployments all use the ownership-bound bank flow.
     return (kyc_provider() == "wema" and
             (wema.wema_live() or wema.wema_simulation() or mock_disabled_in_prod()))
+
+
+def _requires_prembly_identity(user) -> bool:
+    from utility.providers import partnership_new_business_allowed
+    return not partnership_new_business_allowed(user)
+
+
+def _lookup_identity(user, kind: str, raw: str) -> dict:
+    """VAS identity never falls back to an archived bank or a mock result."""
+    if _requires_prembly_identity(user):
+        from utility.providers import _prembly_identity_live, prembly_verify_bvn, prembly_verify_nin
+        if not _prembly_identity_live():
+            return {"success": False, "message": "Identity verification is temporarily unavailable."}
+        lookup = prembly_verify_bvn if kind == "bvn" else prembly_verify_nin
+        result = lookup(raw, name=user.get_full_name() or "")
+        if result.get("mock"):
+            return {"success": False, "message": "Identity verification is temporarily unavailable."}
+        return result
+    if kind == "bvn":
+        return verify_bvn(raw, name=user.get_full_name() or "", mobile=user.phone or "")
+    return verify_nin(raw, name=user.get_full_name() or "")
 
 
 def _start_bank_identity(request, kind):
@@ -1656,9 +1676,8 @@ def _confirm_bank_identity(request, kind):
 def kyc_bvn_start(request):
     """POST /api/kyc/bvn/start {access_token, bvn}
 
-    Data-matches the BVN, then sends a phone OTP the user must confirm to prove
-    ownership before the BVN counts. Wema Wallet Service does not support email
-    delivery for this OTP.
+    Name-matches the BVN, then sends a registered-phone OTP that proves
+    ownership before saving identity proof. The server selects the provider.
     """
     user = request.user_obj
     gate = _email_gate(user)
@@ -1666,10 +1685,13 @@ def kyc_bvn_start(request):
         return gate
     if _use_wema_identity_flow(user):
         return _start_bank_identity(request, "bvn")
-    bvn = (request.data.get("bvn") or "").strip()
+    bvn = request.data.get("bvn")
+    if not isinstance(bvn, str) or not re.fullmatch(r"[0-9]{11}", bvn.strip()):
+        return fail("Enter your 11-digit BVN")
+    bvn = bvn.strip()
     if _identity_owned_by_another_user(user, "bvn", bvn):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
-    result = verify_bvn(bvn, name=user.get_full_name() or "", mobile=user.phone or "")
+    result = _lookup_identity(user, "bvn", bvn)
     if not result.get("success"):
         return fail(result.get("message", "BVN verification failed"), status=400)
     return _start_identity_ownership_challenge(user, "bvn", bvn, result)
@@ -1709,16 +1731,19 @@ def kyc_bvn(request):
         return gate
     if _use_wema_identity_flow(user):
         return _start_bank_identity(request, "bvn")
-    if mock_disabled_in_prod():
+    if mock_disabled_in_prod() or _requires_prembly_identity(user):
         return fail(
             "BVN ownership requires a verification code. Update the app and use the BVN verification flow.",
             status=409,
             code="ownership_challenge_required",
         )
-    bvn = (request.data.get("bvn") or "").strip()
+    bvn = request.data.get("bvn")
+    if not isinstance(bvn, str) or not re.fullmatch(r"[0-9]{11}", bvn.strip()):
+        return fail("Enter your 11-digit BVN")
+    bvn = bvn.strip()
     if _identity_owned_by_another_user(user, "bvn", bvn):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
-    result = verify_bvn(bvn, name=user.get_full_name() or "", mobile=user.phone or "")
+    result = _lookup_identity(user, "bvn", bvn)
     if not result.get("success"):
         return fail(result.get("message", "BVN verification failed"), status=400)
     if not _save_verified_identity(user, "bvn", bvn):
@@ -1738,12 +1763,15 @@ def kyc_nin(request):
         return gate
     if _use_wema_identity_flow(user):
         return _start_bank_identity(request, "nin")
-    nin = (request.data.get("nin") or "").strip()
+    nin = request.data.get("nin")
+    if not isinstance(nin, str) or not re.fullmatch(r"[0-9]{11}", nin.strip()):
+        return fail("Enter your 11-digit NIN")
+    nin = nin.strip()
     if _identity_owned_by_another_user(user, "nin", nin):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     # Pass the account name so a NIN that demonstrably belongs to someone else is
     # rejected (mirrors kyc_bvn) — otherwise any valid NIN would lift the tier.
-    result = verify_nin(nin, name=user.get_full_name() or "")
+    result = _lookup_identity(user, "nin", nin)
     if not result.get("success"):
         return fail(result.get("message", "NIN verification failed"), status=400)
     # The redesigned flow also uploads the NIN slip/ID image; verify it when sent.
@@ -1758,7 +1786,7 @@ def kyc_nin(request):
     # Keep the fast mock path only for local/test suites. A production deploy —
     # including the explicit simulation environment — exercises the same OTP
     # state machine as live KYC, with the destination policy above.
-    if not settings.DEBUG and not getattr(settings, "TESTING", False):
+    if _requires_prembly_identity(user) or (not settings.DEBUG and not getattr(settings, "TESTING", False)):
         return _start_identity_ownership_challenge(user, "nin", nin, result)
     if not _save_verified_identity(user, "nin", nin, verified_name=getattr(user, "_provider_verified_name", "")):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)

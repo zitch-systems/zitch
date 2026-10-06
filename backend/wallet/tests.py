@@ -553,6 +553,9 @@ class IdempotencyTests(TestCase):
         return get_or_create_wallet(self.user).balance
 
     def test_repeated_key_debits_airtime_once(self):
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = "0451000001"
+        wallet.save(update_fields=["account_number"])
         body = {"access_token": self.token, "amount": "1000", "network": "1",
                 "phone": "08010000001", "transaction_pin": "1234", "idempotency_key": "k-air-1"}
         r1, _ = self.post("/api/utility/buyairtime/", body)

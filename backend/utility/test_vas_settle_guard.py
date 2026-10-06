@@ -94,6 +94,13 @@ class CanSettleTests(SimpleTestCase):
 
 
 class PurchaseRefusalTests(TestCase):
+    def setUp(self):
+        # These tests isolate settlement-status readiness after source approval.
+        source = mock.patch("wallet.services.biller_source_for_transaction",
+                            return_value="0100000001")
+        source.start()
+        self.addCleanup(source.stop)
+
     @override_settings(WEMA=_KEYED)
     def test_an_unsettleable_airtime_purchase_never_reaches_the_bank(self):
         with mock.patch("utility.wema.purchase_airtime") as buy, \
@@ -129,6 +136,7 @@ class PurchaseRefusalTests(TestCase):
         pay.assert_not_called()
         self.assertFalse(res["success"])
         self.assertFalse(res.get("pending"))
+        self.assertIn("WEMA_BILLS_STATUS_LEGEND", res["unsettleable"])
 
     @override_settings(WEMA={**_KEYED, "CHANNEL_ID": "", "KEYS": {}})
     def test_the_dev_mock_path_is_not_broken_by_the_guard(self):
@@ -142,11 +150,15 @@ class RefusalRefundsTests(TestCase):
     """The money property: a refused purchase leaves the customer whole."""
 
     def test_the_debit_is_refunded_not_left_pending(self):
-        from wallet.models import Transaction
+        from wallet.models import BankHistoryCheckpoint, Transaction
         from wallet.services import run_provider_purchase
         from wallet.tests import make_user
 
         user, _ = make_user("08044440009", "settle@zitch.app", balance="5000", tier=3)
+        user.wallet.account_number = "0155500009"
+        user.wallet.save(update_fields=["account_number"])
+        BankHistoryCheckpoint.objects.create(
+            wallet=user.wallet, account_number="0155500009", opening_review_required=False)
 
         with mock.patch("utility.wema.purchase_airtime") as buy, \
              mock.patch("utility.alerts.alert"):
@@ -155,11 +167,12 @@ class RefusalRefundsTests(TestCase):
                 lambda ref: P.vtu_purchase(
                     "mtn-airtime",
                     {"amount": "500", "phone": "08012345678",
-                     "source_account": "0100000001"}, ref),
+                     "source_account": "0155500009"}, ref),
             )
 
         buy.assert_not_called()
         self.assertEqual(status, "failed")
+        self.assertIn("WEMA_VAS_STATUS_LEGEND", _res["unsettleable"])
         txn.refresh_from_db()
         self.assertEqual(txn.transaction_status, Transaction.FAILED)
         user.wallet.refresh_from_db()

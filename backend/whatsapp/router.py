@@ -50,6 +50,8 @@ from wallet.services import (
     attach_existing_bank_account,
     bank_spend_error,
     customer_funding_account,
+    customer_spendable_balance,
+    wallet_balance_payload,
     customer_safe_failure,
     customer_visible_transactions,
     get_or_create_wallet,
@@ -930,7 +932,7 @@ def _fresh_wallet_balance(user) -> Decimal:
         wallet.refresh_from_db(fields=["balance"])
     except Exception:  # noqa: BLE001 - a newly created unsaved test double may not refresh
         pass
-    return wallet.balance
+    return customer_spendable_balance(user, wallet=wallet)
 
 
 def _has_live_funds(pa: PendingAction, user, *, notify: bool = True) -> bool:
@@ -2172,12 +2174,37 @@ def finish_onboarding_from_flow(ob: WaOnboarding, pin: str) -> str:
 # --------------------------------------------------------------------------- #
 # balance
 # --------------------------------------------------------------------------- #
+def _funding_spending_notice(funding: dict) -> str:
+    """Keep bill eligibility separate from the archived transfer capability."""
+    legacy = funding.get("spending_available") is not False and funding.get("provider") != "wema_vas"
+    transfers = funding.get("transfers_available", legacy)
+    bills = funding.get("bill_payments_available", legacy)
+    if transfers and bills:
+        return ""
+    if bills:
+        message = "Bill payments are available. Transfers are currently unavailable."
+    elif transfers:
+        message = "Bill payments are currently unavailable."
+    else:
+        message = "Transfers and bill payments are currently unavailable."
+    detail = str(funding.get("migration_message") or "")
+    return "\n\n" + message + (" " + detail if detail else "")
+
+
 def _do_balance(user, msisdn: str) -> None:
     bals = all_balances(user)
     funding = customer_funding_account(user)
-    notice = ("\n\nTransfers and bill payments are currently unavailable. "
-              + str(funding.get("migration_message") or "")
-              if funding.get("spending_available") is False else "")
+    notice = _funding_spending_notice(funding)
+    balances = wallet_balance_payload(user)
+    total, available = balances["balance"], balances["available_balance"]
+    historical = balances["historical_balance"]
+    if available != total or historical:
+        lines = [f"Total NGN wallet balance: {_money(total)}",
+                 f"Available for bills: {_money(available)}"]
+        if historical:
+            lines.append(f"Historical funds unavailable for bills: {_money(historical)}")
+        lines.extend(f"{ccy} {bal:,.2f}" for ccy, bal in bals.items() if ccy != "NGN")
+        return reply(msisdn, "💰 Your balances:\n" + "\n".join(lines) + notice)
     if len(bals) == 1:
         return reply(msisdn, f"💰 Your Zitch balance is {_money(bals['NGN'])}." + notice)
     lines = [(_money(bal) if ccy == "NGN" else f"{ccy} {bal:,.2f}") for ccy, bal in bals.items()]
@@ -2212,9 +2239,7 @@ def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to 
         body = f"🔢 *{funding.get('account_number', '')}*\n🏛️ {funding.get('bank_name', '')}"
     timing = ("Your wallet is credited after the payment is confirmed."
               if is_vas else "Your wallet is credited automatically, usually within seconds.")
-    spending = ("\n\nTransfers and bill payments are currently unavailable. "
-                + str(funding.get("migration_message") or "")
-                if funding.get("spending_available") is False else "")
+    spending = _funding_spending_notice(funding)
     reply(
         msisdn,
         f"{intro}\n\n"
@@ -4542,7 +4567,7 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
 # --------------------------------------------------------------------------- #
 # transfer (slot-filling state machine)
 # --------------------------------------------------------------------------- #
-def _blocked_from_spending(user, msisdn: str) -> bool:
+def _blocked_from_spending(user, msisdn: str, *, biller: bool = False) -> bool:
     """Refuse to START a money flow for an account that cannot finish one.
 
     The authoritative gate has always been at debit time, under the wallet lock
@@ -4554,7 +4579,7 @@ def _blocked_from_spending(user, msisdn: str) -> bool:
     """
     from common.http import unverified_error
 
-    message = bank_spend_error(user, Decimal("0")) or unverified_error(user)
+    message = bank_spend_error(user, Decimal("0"), biller=biller) or unverified_error(user)
     if not message:
         return False
     _clear_actions(msisdn)

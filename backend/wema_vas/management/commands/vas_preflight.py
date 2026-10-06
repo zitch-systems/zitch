@@ -8,7 +8,7 @@ from django.db.migrations.loader import MigrationLoader
 from django.db.migrations.exceptions import BadMigrationError, InconsistentMigrationHistory, NodeNotFoundError
 
 from accounts.models import IdentityProof
-from wallet.models import Wallet
+from wallet.models import BillFundingBinding, BillFundingRefund, Wallet
 from wema_vas.config import config, enrollment_release_policy, validate_configuration
 from wema_vas.enrollment import _cutover_reference, _verified_proofs, enrollment_available
 from wema_vas.identity import decrypt_identity
@@ -54,7 +54,8 @@ def database_checks():
               "migrations": False, "immutable_evidence": False}
     with connection.cursor() as cursor:
         tables = set(connection.introspection.table_names(cursor))
-        models = (VirtualAccount, Receipt, MigrationApproval, Wallet, IdentityProof)
+        models = (VirtualAccount, Receipt, MigrationApproval, Wallet, IdentityProof,
+                  BillFundingBinding, BillFundingRefund)
         result["schema"] = all(model._meta.db_table in tables for model in models)
         if result["schema"]:
             for model in models:
@@ -71,7 +72,11 @@ def database_checks():
         expected = {("wema_vas_receipt", "wema_vas_receipt_immutable"),
                     ("wema_vas_migrationapproval", "wema_vas_migrationapproval_immutable"),
                     ("wema_vas_virtualaccount", "wema_vas_account_immutable"),
-                    ("wallet_transaction", "wallet_transaction_immutable_guard")}
+                    ("wallet_transaction", "wallet_transaction_immutable_guard"),
+                    ("wallet_billfundingbinding", "wallet_billfundingbinding_immutable"),
+                    ("wallet_billfundingbinding", "wallet_billfundingbinding_valid_insert"),
+                    ("wallet_billfundingrefund", "wallet_billfundingrefund_immutable"),
+                    ("wallet_billfundingrefund", "wallet_billfundingrefund_valid_insert")}
         with connection.cursor() as cursor:
             cursor.execute("""
                 SELECT c.relname, t.tgname FROM pg_trigger t

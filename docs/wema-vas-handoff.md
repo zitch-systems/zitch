@@ -2,7 +2,7 @@
 
 Status: preparation pack, not a completed live-credentials submission or evidence
 of bank acceptance. The base collections application is on `main` in PR #530;
-the pilot/WhatsApp release preparation is in PR #531. Public deployment,
+the pilot/WhatsApp release preparation is merged in PR #531. Public access,
 credentials and provisioned sample accounts still need verification.
 
 ## Submission fields
@@ -101,7 +101,7 @@ as a live funding or bank-settlement client.
 | Same payment reference with a new session | HTTP `409`; no partial increase |
 | Invalid decimal amount, timestamp or recipient name | HTTP `400`; no financial changes |
 | KYC after accepted test receipts | Simulated balance equals accepted amounts exactly once |
-| Mini statement | VAS credits from latest receipt date plus preceding nine Lagos calendar dates; no Partnership or held receipts |
+| Mini statement | VAS movements from latest movement date plus preceding nine Lagos calendar dates; validation accounts have simulated credits only; live approved bills add reserved debits and once-only refund credits; no Partnership or held receipts |
 | Block fourth account, then repeat | `{"message":"Account Restricted Successfully"}`; original reason/time retained |
 | Lookup after block | `status: "07"`, `status_desc: "Inactive Account"`; KYC/history remain readable |
 | Previously successful notification repeated after block | Original successful acknowledgment retained |
@@ -118,9 +118,11 @@ Clarifications to agree with Wema:
 - Amounts and timestamps are normalized for replay comparison. Narration is
   validated but excluded from the replay fingerprint; a narration-only change
   is accepted as a replay.
-- Statements contain credits only while outgoing VAS payments remain disabled.
-  More than 5,000 rows in the statement window returns `503`; there is no assumed
-  pagination contract.
+- Static-account statements include credits and approved bill debits/refunds.
+  Confirm empty destination fields for utility bills, pending-reservation treatment
+  and the document's inconsistent `transactionDate`/`transactiondate` casing before
+  enabling VAS-funded bills. More than 5,000 rows in the statement window returns
+  `503`; there is no assumed pagination contract.
 - A new notification on a restricted account is retained as held evidence.
   Confirm the bank's retry, resolution and re-push procedure; no automatic
   unblock, refund or conversion of held receipts is implemented.
@@ -129,11 +131,13 @@ Clarifications to agree with Wema:
 
 | Work | Dependency and current boundary |
 | --- | --- |
-| Publish and validate the five bank endpoints | Restore hosting, apply migrations/configuration, verify HTTPS and database readiness |
+| Publish and validate the five bank endpoints | Hosting restored and baseline API internally healthy; verify current configuration and authenticated public reachability under the maintenance plan |
 | Complete Step 4 submission | Actual configured token, three provisioned active `711` accounts and monitored group email |
 | Controlled real-money pilot | Implemented per-user pilot restriction; activation still requires Wema's endpoint acceptance, assigned live prefix, profiled collection account and written pilot authorization |
 | Collection reconciliation | Bank balance/statement access, Transaction Search URL/authentication and agreed retry/re-push/settlement rules |
-| Outgoing transfers and bills | Separate payout initiation, idempotency, status/reversal and bill-payment contracts; inbound VAS docs do not define these |
+| Outgoing transfers | Separate payout initiation, idempotency and status/reversal contracts; inbound VAS docs do not define these |
+| Retained bill payments | Independent bill lifecycle implemented; VAS use requires confirmed collection-account debit permission and statement mapping; existing bill API is retained |
+| Prembly identity | App and encrypted WhatsApp lookup/SMS ownership paths implemented; verify live Prembly credentials and registered-phone SMS delivery |
 | Existing customer migration | Bank closure/conversion instructions, reviewed cutover evidence and resolution of existing balances/pending work |
 | Fully in-WhatsApp enrollment | Encrypted consent, identity and SMS recovery screens implemented; publish/verify the new Flow before enabling its gate |
 | General customer launch | Real settlement evidence, reconciliation, product/payment readiness and tested app/WhatsApp release |
@@ -150,13 +154,22 @@ diagnostics page and operator-authenticated `/vas-preflight`. It keeps local
 requirements separate from bank acceptance and never reports full go-live from
 configuration alone.
 
-Operational recheck on 6 October 2026: Frankfurt API and PostgreSQL remain
-billing-suspended; cache is also suspended. The latest successful API artifact
-is still the historical `c00466d` deployment. The Meta connector could not return
-the live Flow inventory. No newer VAS technical answers were found in the
-accessible Slack channels/DMs. Wema's [24 September reply](https://wemabankteam.slack.com/archives/C0BDAQF7U56/p1790250918782509)
-says outbound documentation follows endpoint submission. These observations do
-not substitute for a fresh check when restoring service.
+Operational recheck on 6 October 2026: billing restoration resumed the Frankfurt
+services, PostgreSQL and cache. Initial Python builds failed while PostgreSQL was
+still unavailable. A controlled API retry deployed `f2ff3f2` at 11:14 UTC, applied
+the pending migrations and returned internal readiness `200`. Public maintenance
+remained enabled. Other Python consumers still require release/configuration
+verification; the Meta service deployed the same baseline but remains under
+maintenance. No newer VAS technical answers were found in the accessible Slack
+channels/DMs as of 11:08 UTC. Wema's [24 September reply](https://wemabankteam.slack.com/archives/C0BDAQF7U56/p1790250918782509)
+says outbound documentation follows endpoint submission.
+
+The 13 supplied PDFs were reviewed against the implementation, including Search,
+fraud controls and onboarding. The Notion root, Search and onboarding pages were
+inaccessible during this recheck; the supplied v2.0 copies are the available
+contract evidence. They do not provide collection-funded bill permission, Search
+production credentials or an outward payout contract. Search snapshot comparison
+is implemented as a read-only support tool, not automated bank reconciliation.
 
 Source contract: Wema's [Third Party Virtual Account API documentation, v2.0](https://wemabank-doc.notion.site/Wema-Bank-Third-Party-Virtual-Account-API-Integration-Documentation-31f13df490b68074aa99df46b1de9a4f),
 and the [5 October prefix/endpoint instruction](https://wemabankteam.slack.com/archives/C0C6PTZ4SK0/p1791197691968529).

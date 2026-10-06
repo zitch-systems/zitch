@@ -866,7 +866,7 @@ def _phone_from(text: str, user) -> str | None:
 
 
 def _insufficient(user, amount: Decimal) -> bool:
-    return get_or_create_wallet(user).balance < amount
+    return _fresh_wallet_balance(user) < amount
 
 
 def _vtu_detail(pa: PendingAction, amount: Decimal) -> str:
@@ -898,7 +898,7 @@ def _vtu_outcome(pa: PendingAction, user, msisdn: str, amount: Decimal, label: s
     if txn.transaction_status == Transaction.SUCCESS:
         title, rows = receipt(txn, result)
         reply_receipt(msisdn, title, _with_narration(pa, rows), ref=txn.reference,
-                      user=user, balance_after=get_or_create_wallet(user).balance)
+                      user=user, balance_after=_fresh_wallet_balance(user))
         lead = f"{label} was already completed" if replay else f"{label} successful"
         return Outcome(f"{lead} - the receipt is in your chat.", OUTCOME_SUCCESS)
 
@@ -939,7 +939,7 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
     # VTU path is gated regardless of entry point (the AI-prefilled fast-paths reach
     # this without the guided flow's own send_limit_error check, which would
     # otherwise let a Tier-3-without-face user skip the >=₦100k face requirement).
-    send_msg = send_limit_error(user, amount)
+    send_msg = send_limit_error(user, amount, biller=True)
     if send_msg:
         _clear_actions(msisdn)
         _limit_reply(msisdn, user, send_msg)
@@ -1020,7 +1020,7 @@ def _start_vtu(user, msisdn: str) -> None:
     deploy without Flows configured, and nothing here is secret - the PIN is
     still collected on its own encrypted page either way.
     """
-    if _blocked_from_spending(user, msisdn):
+    if _blocked_from_spending(user, msisdn, biller=True):
         return None
     _clear_actions(msisdn)
     if flows_live():
@@ -1088,7 +1088,7 @@ def _choice_id(text: str, names: dict) -> str | None:
 
 # ---- airtime ----
 def _start_airtime(user, msisdn: str) -> None:
-    if _blocked_from_spending(user, msisdn):
+    if _blocked_from_spending(user, msisdn, biller=True):
         return None
     phone = _own_phone(user)
     payload = {"pin_attempts": 0, **({"phone": phone} if phone else {})}
@@ -1135,11 +1135,11 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if amount is None or amount < MIN_AIRTIME:
             return reply(msisdn, f"Enter a valid amount, at least ₦{MIN_AIRTIME:,.0f}.")
         if _insufficient(user, amount):
-            return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
         # "bill", not "transfer" - airtime accrues against the bill cap, and
         # checking the wrong bucket both refused purchases the app allows and
         # let through ones it blocks (caught only later, after the OTP).
-        limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "bill")
+        limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
         if limit_msg:
             _clear_actions(msisdn)
             return _limit_reply(msisdn, user, limit_msg)
@@ -1191,7 +1191,7 @@ def _start_data(user, msisdn: str, phone=None, network=None) -> None:
     network always wins and the final confirmation still shows both values.
     Unknown prefixes continue to the network picker.
     """
-    if _blocked_from_spending(user, msisdn):
+    if _blocked_from_spending(user, msisdn, biller=True):
         return None
     own_or_given = _phone_from(str(phone), user) if phone else _own_phone(user)
     payload = {"pin_attempts": 0, **({"phone": own_or_given} if own_or_given else {})}
@@ -1236,8 +1236,8 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
         price = Decimal(pa.payload["price"])
         if _insufficient(user, price):
             _clear_actions(msisdn)
-            return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
-        limit_msg = send_limit_error(user, price) or daily_limit_error(user, price, "bill")
+            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
+        limit_msg = send_limit_error(user, price, biller=True) or daily_limit_error(user, price, "bill")
         if limit_msg:
             _clear_actions(msisdn)
             return _limit_reply(msisdn, user, limit_msg)
@@ -1282,7 +1282,7 @@ def _exec_data(pa: PendingAction, user, msisdn: str) -> str:
 
 # ---- electricity ----
 def _start_electricity(user, msisdn: str) -> None:
-    if _blocked_from_spending(user, msisdn):
+    if _blocked_from_spending(user, msisdn, biller=True):
         return None
     pa = _new_flow(user, msisdn, "electricity", "disco")
     _electricity_next(pa, user, msisdn)
@@ -1302,7 +1302,7 @@ def _begin_electricity(user, msisdn: str, biller, customer_id, variation, amount
     balance and limit checks, and the payment still ends at the same confirm +
     PIN. Pre-filling changes which QUESTIONS get asked, never which CHECKS run.
     """
-    if _blocked_from_spending(user, msisdn):
+    if _blocked_from_spending(user, msisdn, biller=True):
         return None
     payload = {"pin_attempts": 0}
     disco = _disco_id(biller)
@@ -1378,8 +1378,8 @@ def _electricity_confirm(pa: PendingAction, user, msisdn: str, note: str = "") -
         # rather than end the flow they are halfway through.
         p.pop("amount", None)
         _touch(pa, state="amount", payload=p)
-        return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
-    limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "bill")
+        return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
+    limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
     if limit_msg:
         _clear_actions(msisdn)
         return _limit_reply(msisdn, user, limit_msg)
@@ -1464,7 +1464,7 @@ def _exec_electricity(pa: PendingAction, user, msisdn: str) -> str:
 
 # ---- cable ----
 def _start_cable(user, msisdn: str) -> None:
-    if _blocked_from_spending(user, msisdn):
+    if _blocked_from_spending(user, msisdn, biller=True):
         return None
     _new_flow(user, msisdn, "cable", "provider")
     reply(msisdn, CABLE_PROMPT)
@@ -1475,7 +1475,7 @@ def _begin_cable(user, msisdn: str, biller, customer_id) -> None:
     list, and a smartcard number given up front is not asked for again. The
     package still has to be chosen - it carries the price - and the card is still
     verified with the provider before anything is confirmed."""
-    if _blocked_from_spending(user, msisdn):
+    if _blocked_from_spending(user, msisdn, biller=True):
         return None
     payload = {"pin_attempts": 0}
     card = re.sub(r"\D", "", str(customer_id or ""))
@@ -1537,8 +1537,8 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         price = Decimal(pa.payload["price"])
         if _insufficient(user, price):
             _clear_actions(msisdn)
-            return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
-        limit_msg = send_limit_error(user, price) or daily_limit_error(user, price, "bill")
+            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
+        limit_msg = send_limit_error(user, price, biller=True) or daily_limit_error(user, price, "bill")
         if limit_msg:
             _clear_actions(msisdn)
             return _limit_reply(msisdn, user, limit_msg)
@@ -1578,7 +1578,7 @@ def _exec_cable(pa: PendingAction, user, msisdn: str) -> str:
 
 # ---- exam PINs ----
 def _start_exam(user, msisdn: str) -> None:
-    if _blocked_from_spending(user, msisdn):
+    if _blocked_from_spending(user, msisdn, biller=True):
         return None
     products = list(ExamProduct.objects.filter(active=True).order_by("name")[:8])
     if not products:
@@ -1644,8 +1644,8 @@ def _advance_exam(pa: PendingAction, user, msisdn: str, text: str) -> None:
         quantity = int(pa.payload["quantity"])
         amount = Decimal(pa.payload["unit_price"]) * quantity
         if _insufficient(user, amount):
-            return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
-        limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "bill")
+            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
+        limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
         if limit_msg:
             _clear_actions(msisdn)
             return _limit_reply(msisdn, user, limit_msg)
@@ -2021,7 +2021,7 @@ def _network_from_prefix(phone) -> str | None:
 def _begin_airtime(user, msisdn: str, amount, phone, network, recipient_ref=None) -> bool:
     """LLM airtime: if amount + network + phone are all known, jump to confirm;
     otherwise start the guided flow."""
-    if _blocked_from_spending(user, msisdn):
+    if _blocked_from_spending(user, msisdn, biller=True):
         return True
     # "recharge tobi 2k" names WHO, not what number. Falling through to the
     # default below would have read the missing number as "me" and topped up the
@@ -2071,7 +2071,7 @@ def _begin_airtime(user, msisdn: str, amount, phone, network, recipient_ref=None
         amt = None
     if amt and amt >= 50 and netid and ph:
         if _insufficient(user, amt):
-            reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+            reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
             return True
         net = NETWORK_NAMES[netid]
         pa = _new_flow(user, msisdn, "airtime", "pin",

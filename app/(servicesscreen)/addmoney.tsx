@@ -4,7 +4,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
 import { notify } from '@/components/design/Notify';
-import { walletService, type VirtualAccount } from '@/lib/services/wallet';
+import { walletCapabilities, walletCapabilityMessage, walletService, type VirtualAccount } from '@/lib/services/wallet';
 import { isAccountOtpPending, kycService, resolveIdentityOtpRoute } from '@/lib/services/kyc';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { Loading } from '@/components/design/Loading';
@@ -34,6 +34,7 @@ const AddMoney = () => {
   const actionInFlight = useRef(false);
   const facePollGeneration = useRef(0);
   const mounted = useRef(true);
+  const capabilityMessage = walletCapabilityMessage(walletCapabilities(fundingState));
 
   const beginAction = () => {
     if (actionInFlight.current) return false;
@@ -263,7 +264,7 @@ const AddMoney = () => {
             {fundingState.migration_message || 'Your new funding account is not available yet. Please check again shortly.'}
           </Text>
           <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 12 }}>
-            Transfers and bill payments are unavailable until the bank integration is complete. Only send money when this page shows an active funding account.
+            {capabilityMessage} Only send money when this page shows an active funding account.
           </Text>
           {fundingState.enrollment_available && fundingState.account_setup_state === 'vas_enrollment_required' ? (
             <>
@@ -297,10 +298,10 @@ const AddMoney = () => {
           <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18 }}>
             <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular }}>
               {fundingState?.provider === 'wema_vas'
-                ? 'Bank transfers to this account appear in your Zitch wallet after Wema confirms the payment.'
+                ? 'Bank transfers to this account appear in your Zitch wallet after the payment is confirmed.'
                 : 'Transfer any amount to this account from any bank app — your Zitch wallet is credited automatically, usually within seconds.'}
             </Text>
-            {fundingState?.spending_available === false ? <Text style={{ color: c.ink2, fontFamily: font.semibold, lineHeight: 20, marginTop: 12 }}>Transfers and bill payments are currently unavailable. {fundingState.migration_message}</Text> : null}
+            {capabilityMessage ? <Text style={{ color: c.ink2, fontFamily: font.semibold, lineHeight: 20, marginTop: 12 }}>{capabilityMessage} {fundingState?.migration_message}</Text> : null}
             <View style={{ height: 1, backgroundColor: c.line, marginVertical: 14 }} />
             {/* Design order top-to-bottom: bank name, grouped number, account name */}
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>

@@ -7,7 +7,7 @@ import Svg, { Circle } from 'react-native-svg';
 import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
-import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute, type KycStatus, type KycVerificationFlag, type ResidentialAddress } from '@/lib/services/kyc';
+import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute, resolveOwnershipOtpRoute, type KycStatus, type KycVerificationFlag, type ResidentialAddress } from '@/lib/services/kyc';
 import type { VirtualAccount } from '@/lib/services/wallet';
 import FaceLivenessModal from '@/components/design/FaceLivenessModal';
 import ZIcon from '@/components/design/ZIcon';
@@ -27,6 +27,7 @@ type Status = {
   id_document_verified?: boolean;
   identity_face_available?: boolean;
   identity_verification_methods?: string[];
+  identity_verification_provider?: 'prembly' | 'wema';
   face_rail?: 'document' | 'wema';
   tier2_face_rail?: 'prembly' | 'wema';
   address_rail?: 'document' | 'wema';
@@ -284,10 +285,12 @@ const Kyc = () => {
         setUpBvn(bvn);
         setMethod('upgrade');
       } else if (res.otp_required) {
-        if (!res.tracking_id) {
-          notify('Error', 'The verification request did not return a tracking reference. Please try again.');
+        const challenge = resolveOwnershipOtpRoute(res);
+        if (!challenge) {
+          notify('Error', 'We could not start a secure verification challenge. Please try again.');
         } else {
-          setBvnTrackingId(String(res.tracking_id));
+          setBvnTrackingId(challenge.trackingId);
+          setBvnOtp('');
           setBvnOtpDestination(res.delivery || res.otp_destination || '');
           setBvnSent(true);
           notify('BVN code requested', res.message || 'Enter the verification code to finish.', 'success');
@@ -314,11 +317,13 @@ const Kyc = () => {
     finally { endAction(); }
   };
   const resendBvn = async () => {
-    if (!bvnTrackingId || !beginAction()) return;
+    if (!bvnSent || !beginAction()) return;
     try {
-      const res = await kycService.resendBvn(bvnTrackingId);
-      if (res.success) {
-        setBvnOtpDestination(res.otp_destination || '');
+      const res = await kycService.resendBvn(bvnTrackingId, bvn);
+      if (res.success && (bvnTrackingId || resolveOwnershipOtpRoute(res))) {
+        if (!bvnTrackingId) setBvnTrackingId(resolveOwnershipOtpRoute(res)!.trackingId);
+        setBvnOtp('');
+        setBvnOtpDestination(res.delivery || res.otp_destination || '');
         notify('BVN code resent', res.message || 'Enter the latest verification code.', 'success');
       } else if (res.pending) {
         notify('Verification processing', res.message || 'Your BVN verification is still processing. Check your status again shortly.', 'info');
@@ -400,7 +405,7 @@ const Kyc = () => {
     finally { endAction(); }
   };
 
-  // --- NIN: enter number -> partner bank sends a one-time code -> confirm it ---
+  // --- NIN: the server selects identity lookup and its ownership challenge ---
   const startNin = async () => {
     if (!beginAction()) return;
     try {
@@ -414,11 +419,13 @@ const Kyc = () => {
         setUpNin(nin);
         setMethod('upgrade');
       } else if (res.otp_required) {
-        if (!res.tracking_id) {
-          notify('Error', 'The verification request did not return a tracking reference. Please try again.');
+        const challenge = resolveOwnershipOtpRoute(res);
+        if (!challenge) {
+          notify('Error', 'We could not start a secure verification challenge. Please try again.');
         } else {
-          setNinTrackingId(String(res.tracking_id));
-          setNinOtpDestination(res.otp_destination || '');
+          setNinTrackingId(challenge.trackingId);
+          setNinOtp('');
+          setNinOtpDestination(res.delivery || res.otp_destination || '');
           setNinSent(true);
           notify('NIN code requested', res.message || 'Enter the verification code to finish.', 'success');
         }
@@ -443,16 +450,18 @@ const Kyc = () => {
     finally { endAction(); }
   };
   const confirmNin = () => submit(
-    () => kycService.confirmNin(ninTrackingId, ninOtp, nin),
+    () => kycService.confirmNin(ninTrackingId, ninOtp),
     'NIN verified — tier upgraded',
     ['nin_verified'],
   );
   const resendNin = async () => {
-    if (!ninTrackingId || !beginAction()) return;
+    if (!ninSent || !beginAction()) return;
     try {
-      const res = await kycService.resendNin(ninTrackingId);
-      if (res.success) {
-        setNinOtpDestination(res.otp_destination || '');
+      const res = await kycService.resendNin(ninTrackingId, nin);
+      if (res.success && (ninTrackingId || resolveOwnershipOtpRoute(res))) {
+        if (!ninTrackingId) setNinTrackingId(resolveOwnershipOtpRoute(res)!.trackingId);
+        setNinOtp('');
+        setNinOtpDestination(res.delivery || res.otp_destination || '');
         notify('NIN code resent', res.message || 'Enter the latest verification code.', 'success');
       } else if (res.pending) {
         notify('Verification processing', res.message || 'Your NIN verification is still processing. Check your status again shortly.', 'info');
@@ -682,7 +691,7 @@ const Kyc = () => {
               <Text onPress={() => void resendBvn()} style={{ fontSize: 12.5, color: busy ? c.ink3 : c.brand, fontFamily: font.semibold }}>Resend code</Text>
             </View>
             <View style={{ height: 22 }} />
-            <Btn label={busy ? 'Confirming…' : 'Confirm BVN'} disabled={busy || bvnOtp.length !== 6 || !bvnTrackingId} onPress={confirmBvn} />
+            <Btn label={busy ? 'Confirming…' : 'Confirm BVN'} disabled={busy || bvnOtp.length !== 6} onPress={confirmBvn} />
             {status?.identity_face_available && (
               <View style={{ marginTop: 12 }}>
                 <Btn label={busy ? 'Opening face verification…' : 'Use face verification instead'} variant="ghost" disabled={busy || bvn.length !== 11} onPress={() => startIdentityFaceVerification({ bvn })} />
@@ -695,7 +704,7 @@ const Kyc = () => {
 
       {method === 'nin' && !ninSent && (
         <View>
-          <Hero icon="card" color={C_NIN} title="NIN verification" sub="Enter your 11-digit NIN. Our partner bank will send a code to the phone number registered on your NIN." />
+          <Hero icon="card" color={C_NIN} title="NIN verification" sub="Enter your 11-digit NIN. We'll send a code to the phone number registered on your NIN." />
           <View style={{ marginTop: 22 }}>
             <Field label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad" value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
             <View style={{ height: 12 }} />
@@ -727,7 +736,7 @@ const Kyc = () => {
               <Text onPress={() => void resendNin()} style={{ fontSize: 12.5, color: busy ? c.ink3 : c.brand, fontFamily: font.semibold }}>Resend code</Text>
             </View>
             <View style={{ height: 22 }} />
-            <Btn label={busy ? 'Confirming…' : 'Confirm NIN'} disabled={busy || ninOtp.length !== 6 || !ninTrackingId} onPress={confirmNin} />
+            <Btn label={busy ? 'Confirming…' : 'Confirm NIN'} disabled={busy || ninOtp.length !== 6} onPress={confirmNin} />
             {status?.identity_face_available && (
               <View style={{ marginTop: 12 }}>
                 <Btn label={busy ? 'Opening face verification…' : 'Use face verification instead'} variant="ghost" disabled={busy || nin.length !== 11} onPress={() => startIdentityFaceVerification({ nin })} />

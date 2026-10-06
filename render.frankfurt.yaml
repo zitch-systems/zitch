@@ -47,6 +47,14 @@ services:
         sync: false
       - key: WEMA_PARTNERSHIP_MODE
         sync: false
+      - key: WEMA_BILLER_MODE
+        sync: false
+      - key: WEMA_VAS_BILLER_ENABLED
+        sync: false
+      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
+        sync: false
+      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
+        sync: false
       - key: WEMA_VAS_ENABLED
         sync: false
       - key: WEMA_VAS_MODE
@@ -202,13 +210,13 @@ services:
       # Bank-PAYOUT + recipient name-enquiry rail: "wema" (the sole rail); blank => wema.
       - key: PAYOUT_PROVIDER
         sync: false
-      # BVN/NIN/vNIN KYC rail: "wema" (Wema Full KYC, the sole rail); blank => wema.
-      # Selfie/liveness + address + ID-document are on Prembly.
+      # Set KYC_PROVIDER=prembly for VAS identity verification.
+      # Consumers share the selection; missing credentials must not fall back to bank KYC.
       - key: KYC_PROVIDER
         sync: false
       - key: VAS_PROVIDER
         sync: false
-      # Prembly carries selfie/liveness, address and ID-document checks.
+      # Prembly carries BVN/NIN ownership lookup and other supported identity checks.
       # Consumers inherit these values so app and WhatsApp cannot drift.
       - key: PREMBLY_BASE_URL
         sync: false
@@ -437,6 +445,16 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_BILLER_MODE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
+      - key: WEMA_VAS_BILLER_ENABLED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
+      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
+      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
+      - key: KYC_PROVIDER
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
       - key: WEMA_VAS_ENABLED
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
       - key: WEMA_VAS_MODE
@@ -646,6 +664,16 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_BILLER_MODE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
+      - key: WEMA_VAS_BILLER_ENABLED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
+      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
+      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
+      - key: KYC_PROVIDER
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
       - key: WEMA_VAS_ENABLED
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
       - key: WEMA_VAS_MODE
@@ -738,6 +766,16 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_BILLER_MODE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
+      - key: WEMA_VAS_BILLER_ENABLED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
+      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
+      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
+      - key: KYC_PROVIDER
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
       - key: WEMA_VAS_ENABLED
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
       - key: WEMA_VAS_MODE
@@ -809,6 +847,16 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_BILLER_MODE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
+      - key: WEMA_VAS_BILLER_ENABLED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
+      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
+      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
+      - key: KYC_PROVIDER
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
       - key: WEMA_VAS_ENABLED
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
       - key: WEMA_VAS_MODE
@@ -948,6 +996,16 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_BILLER_MODE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
+      - key: WEMA_VAS_BILLER_ENABLED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
+      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
+      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
+      - key: KYC_PROVIDER
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
       - key: WEMA_VAS_ENABLED
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
       - key: WEMA_VAS_MODE
@@ -1019,6 +1077,16 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_BILLER_MODE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
+      - key: WEMA_VAS_BILLER_ENABLED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
+      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
+      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
+      - key: KYC_PROVIDER
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
       - key: WEMA_VAS_ENABLED
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
       - key: WEMA_VAS_MODE
@@ -1119,6 +1187,16 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_BILLER_MODE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
+      - key: WEMA_VAS_BILLER_ENABLED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
+      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
+      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
+      - key: KYC_PROVIDER
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
       - key: WEMA_VAS_ENABLED
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
       - key: WEMA_VAS_MODE
@@ -1212,6 +1290,16 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_BILLER_MODE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
+      - key: WEMA_VAS_BILLER_ENABLED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
+      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
+      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
+      - key: KYC_PROVIDER
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
       - key: WEMA_VAS_ENABLED
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
       - key: WEMA_VAS_MODE

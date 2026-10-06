@@ -106,6 +106,21 @@ describe('AddMoney VAS migration', () => {
     expect(JSON.stringify(tree.toJSON())).toContain('Transfers and bill payments are currently unavailable.');
     expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
   });
+
+  it.each([false, true])('keeps eligible bill payments available when the new account is ready: %s', async (ready) => {
+    mockApiJson.mockResolvedValueOnce({ ...enrollment,
+      account_setup_state: ready ? 'ready' : 'vas_enrollment_required',
+      available: ready, has_account: ready, enrollment_available: !ready,
+      bill_payments_available: true, transfers_available: false,
+      account_number: ready ? '7121234567' : '', account_name: 'Zitch/Ada', bank_name: 'Wema Bank' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    const output = JSON.stringify(tree.toJSON());
+    expect(output).toContain('Bill payments are available. Transfers are currently unavailable.');
+    expect(output).not.toContain('Transfers and bill payments are currently unavailable.');
+    expect(output).not.toContain('after Wema confirms');
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' }).length > 0).toBe(ready);
+  });
 });
 
 const findControl = (tree: renderer.ReactTestRenderer, label: string) =>

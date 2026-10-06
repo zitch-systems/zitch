@@ -9,10 +9,12 @@ import { SectionLabel } from '@/components/design/widgets';
 import { ConnectedAccounts } from '@/components/design/ConnectedAccounts';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { walletCapabilityMessage } from '@/lib/services/wallet';
 
 const Wallet = () => {
   const { c } = useTheme();
-  const { balance, fullName, firstName, accountNumber, bankName, spendingAvailable, fundingMessage, txns, showBal, setShowBal, reload } = useWallet();
+  const { balance, totalBalance, historicalBalance, fundingProvider, fullName, firstName, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload } = useWallet();
+  const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const [copied, setCopied] = useState(false);
 
   // Keep balance & transactions fresh each time the tab is opened.
@@ -59,6 +61,7 @@ const Wallet = () => {
             <Text style={{ fontSize: 10, color: '#fff', fontFamily: font.bold }}>Primary</Text>
           </View>
         </View>
+        <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium, marginTop: 10 }}>{fundingProvider === 'wema_vas' ? 'Available for bills' : 'Available balance'}</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 }}>
           <NText style={{ fontSize: 27, fontFamily: font.extrabold, color: '#fff', fontVariant: ['tabular-nums'] }}>
             {showBal ? money(balance) : '₦ ••••••'}
@@ -67,6 +70,13 @@ const Wallet = () => {
             <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
           </Pressable>
         </View>
+        {fundingProvider === 'wema_vas' ? (
+          <View style={{ gap: 3, marginTop: 10 }}>
+            <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Total balance: {showBal ? money(totalBalance) : '₦ ••••••'}</NText>
+            <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Historical funds: {showBal ? money(historicalBalance) : '₦ ••••••'}</NText>
+            {historicalBalance > 0 ? <Text style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.regular }}>Historical funds are not available for new payments.</Text> : null}
+          </View>
+        ) : null}
 
         {/* Two-line account chip — name over "{grouped number} · {bank}", tap to copy. */}
         {accountNumber ? (
@@ -103,9 +113,9 @@ const Wallet = () => {
           </Pressable>
         </View>
       </LinearGradient>
-      {spendingAvailable === false ? (
+      {capabilityMessage ? (
         <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 20, marginHorizontal: 16, marginBottom: 16 }}>
-          Transfers and bill payments are unavailable. {fundingMessage}
+          {capabilityMessage} {fundingMessage}
         </Text>
       ) : null}
 

@@ -91,6 +91,11 @@ INSTALLED_APPS = [
 # Partnership client. Roll out schema/code before selecting the new provider.
 BANK_ACCOUNT_PROVIDER = os.environ.get("BANK_ACCOUNT_PROVIDER", "partnership").strip().lower()
 WEMA_PARTNERSHIP_MODE = os.environ.get("WEMA_PARTNERSHIP_MODE", "active").strip().lower()
+# Bill payments are a separately retained bank product, not the account rail.
+WEMA_BILLER_MODE = os.environ.get("WEMA_BILLER_MODE", "active").strip().lower()
+WEMA_VAS_BILLER_ENABLED = env_bool("WEMA_VAS_BILLER_ENABLED", False)
+WEMA_VAS_BILLER_SOURCE_ACCOUNT = os.environ.get("WEMA_VAS_BILLER_SOURCE_ACCOUNT", "").strip()
+WEMA_VAS_BILLER_APPROVAL_REFERENCE = os.environ.get("WEMA_VAS_BILLER_APPROVAL_REFERENCE", "").strip()
 WEMA_VAS = {
     "ENABLED": env_bool("WEMA_VAS_ENABLED", False),
     "MODE": os.environ.get("WEMA_VAS_MODE", "validation").strip(),
@@ -679,11 +684,9 @@ PREMBLY = {
     "API_KEY": os.environ.get("PREMBLY_API_KEY", ""),
     "APP_ID": os.environ.get("PREMBLY_APP_ID", ""),
 }
-# BVN/NIN/vNIN verification is done by Wema's Full KYC (see utility.providers.verify_bvn
-# / verify_nin / verify_vnin). Prembly above is retained ONLY for the image/biometric
-# checks the number lookups can't do: the selfie/liveness step (kyc_verify_face — the
-# ≥₦100k gate), address (kyc_verify_address), and ID-document OCR
-# (kyc_verify_nin_document / kyc_verify_id_document).
+# Prembly supplies BVN/NIN lookup and the registered-phone ownership challenge
+# for VAS, alongside selfie/liveness, address and document-image verification.
+# Historical bank identity attempts retain their own completion handlers.
 # Card issuer (virtual cards) — generic provider.  Credentials alone never turn
 # on an unverified money/card contract: LIVE_ENABLED is a separate go-live gate.
 CARD_ISSUER = {

@@ -247,7 +247,10 @@ def _identity(token, data, screen, request_digest):
                     consent_reference=f"{CONSENT_VERSION}:whatsapp:{pa.pk}:{pa.payload['consent_at']}")
             except ValidationError:
                 return _finish(pa, "Your account setup needs review. Contact Zitch Support here; your existing balance is unchanged.", "Not completed")
-            return _finish(pa, "Your funding account is ready. Close this form and reply 6 to view it. Payments and transfers are not yet available.", "Successful")
+            from wallet.services import customer_funding_account
+            from .router import _funding_spending_notice
+            notice = _funding_spending_notice(customer_funding_account(user)).strip()
+            return _finish(pa, "Your funding account is ready. Close this form and reply 6 to view it. " + notice, "Successful")
         if pa.payload.get("vas_step") == "reentry":
             return _finish(pa, "Your verification needs review. Contact Zitch Support here.", "Not completed")
         pa.payload.update({"vas_step": "processing", "identity_hash": digest,
@@ -256,13 +259,13 @@ def _identity(token, data, screen, request_digest):
         pa.save(update_fields=["payload"])
     # Reuse the same authoritative lookup and registered-phone ownership
     # challenge as KYC. No account creation / Partnership fallback is allowed.
-    from utility.providers import _prembly_live, verify_bvn, verify_nin
+    from utility.providers import _prembly_identity_live, prembly_verify_bvn, prembly_verify_nin
     from .router import _kyc_send_identity_otp
     # Two sequential external calls share the encrypted exchange's short
     # response window. Keep separate fresh three-second budgets so a slow
     # identity provider or SMS service cannot inherit the ordinary 30s limit.
-    result = (verify_bvn if kind == "bvn" else verify_nin)(number,
-        name=user.get_full_name() or "", timeout=Timeout(total=3, connect=1, read=2)) if _prembly_live() else {}
+    result = (prembly_verify_bvn if kind == "bvn" else prembly_verify_nin)(number,
+        name=user.get_full_name() or "", timeout=Timeout(total=3, connect=1, read=2)) if _prembly_identity_live() else {}
     name = " ".join(str(result.get(key) or "").strip() for key in ("first_name", "middle_name", "last_name")).strip()
     error = "lookup unavailable"
     if result.get("success") is True and not result.get("mock") and name and result.get("phone"):

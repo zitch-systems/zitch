@@ -17,6 +17,8 @@ from django.db.models import F, Q, Sum
 from django.utils import timezone
 
 from .models import (
+    BillFundingBinding,
+    BillFundingRefund,
     FundingIntent,
     ReversalEvidence,
     ReversalEvidenceObservation,
@@ -117,19 +119,27 @@ def customer_funding_account(user) -> dict:
 
     payload = customer_account_payload(user)
     if payload is not None:
+        payload["bill_payments_available"] = biller_spending_available(user)
+        payload["transfers_available"] = False
+        if payload["bill_payments_available"]:
+            payload["migration_message"] = "Bill payments are available. Transfers are unavailable during the bank migration."
         return payload
     if not partnership_new_business_allowed(user):
         return {"account_number": "", "account_name": "", "bank_name": "",
                 "bank_accounts": [], "bank_tier": 0, "has_account": False,
                 "account_setup_state": "migration_pending", "provider": "wema_vas",
                 "available": False, "spending_available": False,
+                "bill_payments_available": biller_spending_available(user), "transfers_available": False,
                 "enrollment_available": True,
-                "migration_message": "Complete secure virtual-account enrollment to continue account setup."}
+                "migration_message": ("Bill payments remain available. Complete secure virtual-account enrollment for new funding details."
+                                      if biller_spending_available(user) else
+                                      "Complete secure virtual-account enrollment to continue account setup.")}
     wallet = get_or_create_wallet(user)
     return {"account_number": wallet.account_number, "account_name": wallet.account_name,
             "bank_name": wallet.bank_name, "bank_accounts": wallet.bank_accounts or [],
             "bank_tier": wallet.bank_tier, "has_account": bool(wallet.account_number),
             "provider": "partnership", "available": bool(wallet.account_number),
+            "bill_payments_available": biller_spending_available(user), "transfers_available": True,
             "enrollment_available": False, "migration_message": "", "spending_available": True}
 
 
@@ -160,6 +170,34 @@ def wallet_expected_balance(user_id) -> Decimal:
                       | Q(transaction_status=Transaction.SUCCESS))
               .aggregate(s=Sum("amount"))["s"] or Decimal("0"))
     return credits - debits
+
+
+def wallet_balance_payload(user, wallet=None) -> dict:
+    """Separate retained ledger totals from money available for VAS bills.
+
+    These are display values. Actual debits still resolve and reserve their
+    canonical funding source under the wallet lock.
+    """
+    from wema_vas.models import VirtualAccount
+    from wema_vas.services import account_balance
+
+    wallet = wallet or get_or_create_wallet(user)
+    total = wallet.balance
+    account = VirtualAccount.objects.filter(user_id=user.pk).first()
+    if account is None:
+        return {"balance": total, "available_balance": total,
+                "historical_balance": Decimal("0.00"), "vas_balance": Decimal("0.00")}
+    vas_balance = (max(Decimal("0.00"), account_balance(account))
+                   if account.mode == VirtualAccount.LIVE else Decimal("0.00"))
+    available = (min(max(Decimal("0.00"), total), vas_balance)
+                 if biller_spending_available(user) else Decimal("0.00"))
+    return {"balance": total, "available_balance": available,
+            "historical_balance": max(Decimal("0.00"), total - vas_balance),
+            "vas_balance": vas_balance}
+
+
+def customer_spendable_balance(user, *, wallet=None) -> Decimal:
+    return wallet_balance_payload(user, wallet=wallet)["available_balance"]
 
 
 def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
@@ -231,8 +269,12 @@ def debit(user, amount, service: str, meta: dict | None = None, reference: str |
     """
     amount = Decimal(str(amount))
     wallet = Wallet.objects.select_for_update().get(user=user)
+    bill_source = None
     if enforce_limits:
-        assert_customer_spending_available(user)
+        if is_biller_service(service):
+            bill_source = _biller_funding_context(user, amount, wallet=wallet)
+        else:
+            assert_customer_spending_available(user)
     if wallet.balance < amount:
         raise InsufficientFunds("Insufficient wallet balance")
     if enforce_limits:
@@ -244,7 +286,7 @@ def debit(user, amount, service: str, meta: dict | None = None, reference: str |
     wallet.save(update_fields=["balance", "updated"])
     try:
         with db_transaction.atomic():  # savepoint: contain the unique violation
-            return Transaction.objects.create(
+            txn = Transaction.objects.create(
                 user=user,
                 service=service,
                 amount=amount,
@@ -254,6 +296,11 @@ def debit(user, amount, service: str, meta: dict | None = None, reference: str |
                 meta=with_idempotency_fingerprint(meta, idempotency_key),
                 idempotency_key=idempotency_key,
             )
+            if bill_source is not None:
+                source, account, approval = bill_source
+                BillFundingBinding.objects.create(transaction=txn, source_account=source,
+                                                  vas_account=account, approval_reference=approval)
+            return txn
     except IntegrityError:
         if idempotency_key:
             raise DuplicateTransaction(idempotency_key)
@@ -301,6 +348,7 @@ def refund(txn: Transaction) -> bool:
     callback already settled Successful. Returns True only for the caller that
     actually performed the transition.
     """
+    _lock_bill_funding_wallet(txn.pk)
     current = Transaction.objects.select_for_update().select_related("user").get(pk=txn.pk)
     if current.transaction_status != Transaction.PENDING:
         return False
@@ -309,6 +357,7 @@ def refund(txn: Transaction) -> bool:
     wallet.save(update_fields=["balance", "updated"])
     current.transaction_status = Transaction.FAILED
     current.save(update_fields=["transaction_status"])
+    _release_bill_funding(current)
     txn.transaction_status = Transaction.FAILED
     return True
 
@@ -328,6 +377,7 @@ def settle_or_refund(txn: Transaction, result: dict) -> str:
     Locks the row and guards on its status, so a later reconcile call can't
     double-settle (credit twice / mark a delivered purchase failed).
     """
+    _lock_bill_funding_wallet(txn.pk)
     txn = Transaction.objects.select_for_update().get(pk=txn.pk)
     if _active_reversal_quarantine(txn):
         # A correlated bank-history row says this payout cannot safely be
@@ -382,7 +432,23 @@ def settle_or_refund(txn: Transaction, result: dict) -> str:
     txn.meta = meta
     txn.transaction_status = Transaction.FAILED
     txn.save(update_fields=["transaction_status", "meta"])
+    _release_bill_funding(txn)
     return "failed"
+
+
+def _release_bill_funding(txn):
+    """Called only within the existing once-only refund transaction."""
+    binding = BillFundingBinding.objects.filter(transaction=txn).first()
+    if binding is not None:
+        BillFundingRefund.objects.get_or_create(binding=binding)
+
+
+def _lock_bill_funding_wallet(transaction_id):
+    """Bound bill paths share wallet -> transaction order with bank authorization."""
+    user_id = BillFundingBinding.objects.filter(transaction_id=transaction_id).values_list(
+        "transaction__user_id", flat=True).first()
+    if user_id is not None:
+        Wallet.objects.select_for_update().get(user_id=user_id)
 
 
 #: A provider saying "insufficient balance" is ALWAYS talking about our float.
@@ -3042,8 +3108,12 @@ def bank_spent_today(user) -> Decimal:
     rows = Transaction.objects.filter(
         user=user, direction=Transaction.OUT, currency="NGN", created__gte=start,
         transaction_status__in=(Transaction.PENDING, Transaction.SUCCESS),
-    ).only("amount", "meta")
+    ).only("amount", "meta", "service")
+    funding = dict(BillFundingBinding.objects.filter(transaction__in=rows).values_list(
+        "transaction_id", "vas_account_id"))
     def debits_bank(row):
+        if row.pk in funding:
+            return funding[row.pk] is None
         meta = row.meta if isinstance(row.meta, dict) else {}
         if meta.get("internal_evidence") or meta.get("internal_movement"):
             return False
@@ -3088,7 +3158,94 @@ def assert_customer_spending_available(user) -> None:
         raise LimitExceeded(PARTNERSHIP_ARCHIVED_MESSAGE)
 
 
-def bank_spend_error(user, amount) -> str | None:
+def is_biller_service(service) -> bool:
+    """Only retained utility products; never cards, transfers or savings."""
+    return bool(re.match(r"^(airtime|data|cable|electricity|remita|betting|exam)(?:\b|\s)",
+                         str(service or "").strip(), re.I))
+
+
+def _biller_funding_context(user, amount=Decimal("0"), *, wallet=None):
+    """Resolve eligibility and reserve only customer-attributable money.
+
+    The debit caller holds Wallet's lock. A bank collection total is never a
+    customer balance, and old NUBAN deposits cannot fund a migrated customer's bill.
+    """
+    from utility.providers import biller_enabled, partnership_new_business_allowed
+    from utility import wema
+    from wema_vas.config import approval_reference_present, config
+    from wema_vas.enrollment import enrollment_available
+    from wema_vas.models import VirtualAccount
+    from wema_vas.services import account_balance
+
+    if not user.is_active or not biller_enabled():
+        raise LimitExceeded("Bill payments are temporarily unavailable.")
+    wallet = wallet or Wallet.objects.get(user=user)
+    account = VirtualAccount.objects.filter(user=user).first()
+    if account is not None:
+        if not account.active or account.mode != VirtualAccount.LIVE or account.prefix == "711":
+            raise LimitExceeded("Your account is restricted or unavailable for bill payments.")
+        source = getattr(settings, "WEMA_VAS_BILLER_SOURCE_ACCOUNT", "")
+        approval = getattr(settings, "WEMA_VAS_BILLER_APPROVAL_REFERENCE", "")
+        if (getattr(settings, "WEMA_VAS_BILLER_ENABLED", False) is not True
+                or not enrollment_available(user)
+                or not isinstance(source, str) or not re.fullmatch(r"[0-9]{10}", source)
+                or source.startswith("711") or source == account.number
+                or source != config().get("COLLECTION_ACCOUNT")
+                or not approval_reference_present(approval)
+                or Wallet.objects.filter(account_number=source).exists()
+                or VirtualAccount.objects.filter(number=source).exists()):
+            raise LimitExceeded("Bill payments on your new account are awaiting activation.")
+        if account_balance(account) < Decimal(str(amount)):
+            raise LimitExceeded("Your available virtual-account balance cannot cover this bill.")
+        return source, account, approval
+    source = wallet.account_number
+    if re.fullmatch(r"[0-9]{10}", source or "") and not source.startswith("711"):
+        return source, None, ""
+    # Preserve isolated simulated purchases; no unbound live or archived spend.
+    if ((settings.DEBUG or getattr(settings, "TESTING", False))
+            and not wema.wema_live() and partnership_new_business_allowed(user)):
+        return None
+    raise LimitExceeded("Your existing bank account is required for bill payments.")
+
+
+def biller_spending_available(user) -> bool:
+    try:
+        _biller_funding_context(user)
+    except (LimitExceeded, Wallet.DoesNotExist):
+        return False
+    return True
+
+
+@db_transaction.atomic
+def biller_source_for_transaction(reference, *, amount, source_account="") -> str:
+    """Authorize only a canonical pending bill reservation, never mutable meta."""
+    try:
+        amount = Decimal(str(amount))
+        if not amount.is_finite() or amount <= 0:
+            raise ValueError
+    except (InvalidOperation, TypeError, ValueError):
+        raise LimitExceeded("Invalid bill amount.") from None
+    binding = BillFundingBinding.objects.select_related("transaction__user", "vas_account").filter(
+        transaction__reference=reference).first()
+    if binding is None:
+        raise LimitExceeded("A verified bill funding reservation is required.")
+    txn = binding.transaction
+    wallet = Wallet.objects.select_for_update().get(user_id=txn.user_id)
+    txn.refresh_from_db(fields=["transaction_status"])
+    if (txn.transaction_status != Transaction.PENDING or txn.direction != Transaction.OUT
+            or txn.currency != "NGN" or not is_biller_service(txn.service)
+            or txn.amount != amount or BillFundingRefund.objects.filter(binding=binding).exists()
+            or (source_account and source_account != binding.source_account)):
+        raise LimitExceeded("Bill funding does not match this payment.")
+    current = _biller_funding_context(txn.user, wallet=wallet)
+    if (current is None or current[0] != binding.source_account
+            or getattr(current[1], "pk", None) != binding.vas_account_id
+            or current[2] != binding.approval_reference):
+        raise LimitExceeded("Bill funding configuration changed; retry after review.")
+    return binding.source_account
+
+
+def bank_spend_error(user, amount, *, biller=False) -> str | None:
     """The partner bank's own DAILY ceiling on outbound spend, or None.
 
     Checked in ADDITION to our KYC-tier limit, never instead of it: the two ladders
@@ -3103,7 +3260,14 @@ def bank_spend_error(user, amount) -> str | None:
     """
     from utility import wema as wema_provider
     try:
-        assert_customer_spending_available(user)
+        if biller:
+            source = _biller_funding_context(user, amount)
+            if source and source[1] is not None:
+                # App KYC/velocity/daily bill limits still run in common.http.
+                # The former NUBAN's bank tier is not a collection-account limit.
+                return None
+        else:
+            assert_customer_spending_available(user)
     except LimitExceeded as exc:
         return str(exc)
     wallet = Wallet.objects.filter(user=user).only("bank_tier", "account_number").first()

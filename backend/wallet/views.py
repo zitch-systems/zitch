@@ -38,6 +38,7 @@ from .services import (
     customer_safe_failure,
     customer_visible_transactions,
     customer_funding_account,
+    wallet_balance_payload,
     get_or_create_wallet,
     make_reference,
     provision_wema_account,
@@ -65,6 +66,7 @@ def wallet_balance(request):
     return ok(
         success=True,
         wallet=str(wallet.balance),
+        **{key: str(value) for key, value in wallet_balance_payload(user, wallet=wallet).items()},
         **customer_funding_account(user),
         account_namespace=spend_account_namespace(user),
         user_first_name=user.first_name or "",

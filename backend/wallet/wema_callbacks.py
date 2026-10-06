@@ -579,6 +579,15 @@ def _authorize_payout(ref: str, security_info: str, ip: str) -> tuple:
 
     max_age = int(_conf("AUTH_MAX_AGE", 900) or 900)
     with db_transaction.atomic():
+        from .models import BillFundingBinding, Wallet
+        from .services import LimitExceeded, biller_source_for_transaction
+
+        bound_user_id = BillFundingBinding.objects.filter(transaction__reference=ref).values_list(
+            "transaction__user_id", flat=True).first()
+        if bound_user_id is not None:
+            # Same order as debit/block/refund: a concurrent restriction cannot
+            # race a new bill authorization or deadlock its refund handler.
+            Wallet.objects.select_for_update().get(user_id=bound_user_id)
         txn = (Transaction.objects.select_for_update()
                .filter(reference=ref, direction=Transaction.OUT).first())
         if txn is None:
@@ -602,7 +611,7 @@ def _authorize_payout(ref: str, security_info: str, ip: str) -> tuple:
         # meta.reconcile is exactly that marker: run_provider_purchase sets it
         # atomically with the debit, BEFORE the provider call, which is the very
         # window this callback arrives in. An internal transfer never carries it.
-        vas_purchase = is_vas_purchase(txn)
+        vas_purchase = bound_user_id is not None or is_vas_purchase(txn)
         if not is_bank_payout(txn) and not vas_purchase:
             return False, "not_a_bank_payout_or_vas_purchase"
         if txn.transaction_status != Transaction.PENDING:
@@ -617,6 +626,12 @@ def _authorize_payout(ref: str, security_info: str, ip: str) -> tuple:
         age = (timezone.now() - txn.created).total_seconds()
         if age > max_age:
             return False, "stale"
+
+        if bound_user_id is not None:
+            try:
+                biller_source_for_transaction(txn.reference, amount=txn.amount)
+            except LimitExceeded:
+                return False, "bill_funding_unavailable"
 
         meta = dict(txn.meta or {})
         prior = meta.get("wema_auth") or {}

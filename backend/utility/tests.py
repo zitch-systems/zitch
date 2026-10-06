@@ -21,6 +21,9 @@ class UtilityTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="20000")
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = "0100000001"
+        wallet.save(update_fields=["account_number"])
         map_billers()
         map_cable()
         self._key_seq = 0

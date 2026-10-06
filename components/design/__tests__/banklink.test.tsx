@@ -1,7 +1,7 @@
 import React, { type ReactNode } from 'react';
 import renderer, { act } from 'react-test-renderer';
 
-import { ConnectedAccounts } from '@/components/design/banklink';
+import { ConnectedAccounts, LinkedBanksSummary } from '@/components/design/banklink';
 
 const mockApiJson = jest.fn();
 const mockAcquireSpendAttempt = jest.fn();
@@ -38,12 +38,14 @@ jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('@/lib/wallet', () => ({
   useWallet: () => ({
     balance: 5000,
+    totalBalance: 10000,
     linked: [linkedBank],
     showBal: true,
     reload: mockReload,
     reloadLinked: mockReloadLinked,
   }),
 }));
+
 jest.mock('@/lib/theme', () => ({
   useTheme: () => ({ c: {
     amber: '#b9770e', brand: '#0FA295', ink1: '#111', ink2: '#222',
@@ -93,6 +95,13 @@ async function submit(tree: renderer.ReactTestRenderer) {
     await tree.root.findByProps({ accessibilityLabel: 'Confirm linked-bank funding' }).props.onPress();
   });
 }
+
+it('includes historical Zitch funds in the aggregate connected-bank total', async () => {
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<LinkedBanksSummary />); });
+  expect(JSON.stringify(tree.toJSON())).toContain('₦11,000');
+  await act(async () => { tree.unmount(); });
+});
 
 describe('linked-bank funding durability', () => {
   beforeEach(() => {

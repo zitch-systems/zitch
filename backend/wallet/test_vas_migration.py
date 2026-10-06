@@ -50,15 +50,16 @@ class PartnershipArchiveBoundaryTests(TestCase):
         upgrade.assert_not_called()
         face.assert_not_called()
 
-    def test_no_bill_ledger_debit_or_provider_call(self):
+    def test_archive_preserves_existing_biller_debit_and_provider_call(self):
         count = Transaction.objects.count()
-        with patch("utility.wema.purchase_airtime") as purchase:
-            with self.assertRaises(LimitExceeded):
-                run_provider_purchase(self.user, "100", "Airtime · MTN", {}, purchase)
-        purchase.assert_not_called()
+        with patch("utility.wema.purchase_airtime", return_value={"success": True}) as purchase:
+            status, txn, _ = run_provider_purchase(self.user, "100", "Airtime · MTN", {}, purchase)
+        self.assertEqual(status, "success")
+        purchase.assert_called_once_with(txn.reference)
+        self.assertEqual(txn.bill_funding.source_account, self.wallet.account_number)
         self.wallet.refresh_from_db()
-        self.assertEqual(self.wallet.balance, Decimal("1000"))
-        self.assertEqual(Transaction.objects.count(), count)
+        self.assertEqual(self.wallet.balance, Decimal("900"))
+        self.assertEqual(Transaction.objects.count(), count + 1)
 
     def test_payout_stops_before_legacy_debit_activation(self):
         bank = SimpleNamespace(name="Bank", bank_code="000013")
@@ -125,7 +126,7 @@ class PartnershipArchiveBoundaryTests(TestCase):
         self.assertEqual(self.wallet.balance, Decimal("1000"))
 
     def test_identity_failure_has_no_legacy_bank_fallback(self):
-        with patch("utility.providers._prembly_live", return_value=False), \
+        with patch("utility.providers._prembly_identity_live", return_value=False), \
                 patch("utility.wema.verify_bvn") as verify:
             result = providers.verify_bvn("12345678901", name="Ada Eze")
         self.assertFalse(result["success"])

@@ -89,15 +89,37 @@ def search_findings(body):
     rows = body.get("transactions")
     if not isinstance(rows, list):
         raise InvalidPayload("Expected transactions array")
+    if len(rows) > 5000:
+        raise InvalidPayload("Transaction-search snapshot exceeds the inspection limit")
     findings = []
+    sessions, references = set(), set()
     for row in rows:
         if not isinstance(row, dict):
             raise InvalidPayload("Invalid transaction-search row")
         session_id = string(row, "sessionid", 128)
         number = account_number(row, "craccount")
+        reference = string(row, "paymentreference", 128)
+        if session_id in sessions or reference in references:
+            raise InvalidPayload("Duplicate transaction identity in search response")
+        sessions.add(session_id)
+        references.add(reference)
+        amount = money(row)
+        source_account = account_number(row, "originatoraccountnumber")
+        source_bank = string(row, "bankname", 120)
+        account_name = string(row, "craccountname", 160)
+        originator_name = string(row, "originatorname", 160)
+        bank_code = string(row, "bankcode", 20)
+        string(row, "narration", 500, optional=True)
+        # Wema documents a date but not its exact encoding/timezone. Retain no
+        # date in the report and do not equate requestdate with created_at.
+        string(row, "requestdate", 64)
         nibss = string(row, "nibssresponse", 30)
         send = string(row, "sendresponse", 30, optional=True)
         outcome = ("uncertain_contact_bank" if nibss != "00" else
                    "notification_repush_required" if send != "00" else "acknowledged")
-        findings.append({"sessionid": session_id, "craccount": number, "outcome": outcome})
+        findings.append({"sessionid": session_id, "craccount": number, "outcome": outcome,
+                         "paymentreference": reference, "amount": format(amount, ".2f"),
+                         "originatoraccountnumber": source_account, "bankname": source_bank,
+                         "craccountname": account_name, "originatorname": originator_name,
+                         "bankcode": bank_code})
     return findings
