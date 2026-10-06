@@ -749,6 +749,12 @@ def _handle_flow_request(payload: dict) -> dict:
 
     token = payload.get("flow_token", "")
 
+    # A distinct signature domain/state keeps an ordinary KYC/payment token
+    # from authorising encrypted identity retention for virtual accounts.
+    from .vas_flow import PREFIX as VAS_PREFIX, handle as handle_vas
+    if str(token).startswith(VAS_PREFIX):
+        return handle_vas(token, action, data, str(payload.get("screen") or ""))
+
     # "Done" normally ends the outcome page. If the first response was pending,
     # however, the rail may have settled after Meta rendered that page. Re-read
     # the ledger first; a terminal result is shown once, a still-pending result

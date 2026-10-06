@@ -20,6 +20,10 @@ The implementation follows Wema's [Third Party Virtual Account API documentation
 version 2.0. Static accounts are selected. Prefix `711` is for bank validation;
 only Wema's assigned non-711 prefix may be used for real collections.
 
+The [validation handoff pack](wema-vas-handoff.md) contains the Step 4 field
+mapping, blank Postman collection/environment, acceptance evidence and remaining
+bank questions. It is not a completed credentials submission.
+
 ## Contracts
 
 Each bank route accepts POST JSON and a dedicated static Bearer token. A trailing
@@ -59,9 +63,14 @@ verified; do not rotate the existing KYC hash key. Request bodies and local
 variables are excluded from Sentry capture.
 
 WhatsApp reads the same funding-account state as the app and hides legacy,
-validation and restricted funding details. VAS consent/enrollment opens the
-authenticated app; raw identity is never requested in the chat thread. A wholly
-in-WhatsApp enrollment screen would require a separately approved encrypted Flow.
+validation and restricted funding details. VAS enrollment uses a dedicated
+encrypted consent/identity Flow; raw identity is never requested in the chat
+thread. The new screens remain disabled until the configured approved Flow ID,
+published status and complete published JSON contract match the deployed asset.
+Missing provider-confirmed name proof requires a provider lookup and SMS ownership
+challenge inside the Flow, followed by fresh private identity re-entry. No raw
+identifier is retained between those pages. Ordinary WhatsApp payment/login
+screens continue to use their existing contract while this gate is off.
 
 Existing non-zero balances or pending transactions block enrollment. A legacy
 bank number additionally requires a per-user immutable `MigrationApproval` with
@@ -101,14 +110,69 @@ customer balance is copied to a new bank account.
    https://api.zitch.ng --service-email <approved-address> --account <711-account-1>
    --account <711-account-2> --account <711-account-3>`. Deliver the bank token
    separately through an approved secure channel. The command does not send email
-   or Slack messages and never prints the token or identifiers.
+   or Slack messages. It prints the three sample account numbers but never the
+   token, BVN, NIN or customer user IDs.
 7. Wema validates all five endpoints, profiles the collection account and supplies
-   the live prefix. Retain approval evidence. Complete bank-led real inflow,
-   notification and collection settlement tests before enabling customer funding.
+   the live prefix. Retain approval evidence. The `711` stage proves the API
+   contract only; it cannot prove real inflow or collection settlement.
 8. Select `BANK_ACCOUNT_PROVIDER=wema_vas`, live mode and the assigned prefix only
-   after sign-off. Configure `LIVE_APPROVAL_REFERENCE` and `COLLECTION_ACCOUNT`;
-   leave `ENABLE_ENROLLMENT=false` until reconciliation and product launch gates
-   are closed. Apply the same configuration to every Django runtime.
+   after sign-off. Configure `WEMA_VAS_LIVE_APPROVAL_REFERENCE` and
+   `WEMA_VAS_COLLECTION_ACCOUNT`; leave `WEMA_VAS_ENABLE_ENROLLMENT=false` and
+   `WEMA_VAS_RELEASE_PHASE=closed`. Apply the same configuration to every Django
+   runtime. For a bank-approved controlled pilot, set `WEMA_VAS_RELEASE_PHASE=pilot`,
+   `WEMA_VAS_PILOT_USER_IDS` to the explicit internal IDs of the approved users,
+   and only then enable enrollment. Empty, malformed or missing
+   pilot settings admit nobody. The pilot still requires verified identity,
+   consent, zero prior liabilities and genuine bank approval.
+9. With the approved pilot restricted and the assigned live prefix in use,
+   complete bank-led real inflow, notification and collection settlement tests.
+   General enrollment remains closed until reconciliation and product launch
+   gates are satisfied. Opening `WEMA_VAS_RELEASE_PHASE=general` additionally
+   requires a separate `WEMA_VAS_GENERAL_APPROVAL_REFERENCE`; setting a reference
+   is not evidence that external bank verification actually occurred. Never reuse or convert
+   immutable `711` validation users and accounts for live collections.
+
+## Operator readiness and shared configuration
+
+`python manage.py vas_preflight --stage validation` performs read-only, redacted
+configuration, schema, migration, immutable-trigger and sample-account checks.
+It succeeds only for local readiness to submit the `711` service to Wema. Use
+`--stage controlled-live-pilot` for the pilot inspection; external bank evidence
+remains pending and the command cannot authorize a public release. No command
+calls a bank or creates users, accounts, balances or messages.
+
+The same report is available in the staff diagnostics page at
+`/admin/diagnostics/`, and via operator-authenticated GET
+`/vas-preflight?stage=validation` or `?stage=controlled-live-pilot`. The HTTP
+endpoint accepts the diagnostic Bearer token, not Wema's VAS token; no token or
+account identifiers go in the query string. A validation HTTP `200` means only
+local submission readiness. A pilot inspection remains HTTP `503` while external
+acceptance is unverified, even when its local checks pass.
+
+Both Render Blueprints now declare the VAS settings on the API and inherit them
+across all Django consumers. Flow identity/private-key configuration and the two
+new enrollment flags are shared between API and WhatsApp worker. The Frankfurt
+candidate's **DO NOT MANUALLY SYNC** warning still applies: first reconcile its
+resource mapping with the existing services using the billing-restoration
+runbook. Do not create duplicate services or writers by applying either file.
+Before any approved Blueprint sync, copy/verify the existing Flow values on the
+API and retain the
+matching keys: replacing a valid worker key with an empty API value would break
+existing Flows. `sync: false` keeps release settings operator-owned; it does not
+populate missing settings or prove consistency in already deployed services.
+Recheck effective values per runtime during the protected restoration sequence.
+
+WhatsApp enrollment needs `WHATSAPP_FLOW_VAS_ENROLLMENT_ENABLED=true` and
+`WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID` matching the published `WHATSAPP_FLOW_ID`.
+Upload and validate a draft containing the new screens before publishing; do
+not assume a previously published Flow is editable. Verify the live endpoint,
+screen contract and encryption before selecting the new published ID. Keep the
+gate false while the Meta connector or publication verification is unavailable.
+
+To pause a pilot, close enrollment or remove pilot membership. This hides
+customer funding instructions, but preserves the five bank endpoints and their
+receipt handling for deposits already sent. Never use a token rotation, prefix
+change, disabled endpoint or service shutdown as an enrollment pause.
 
 Both provider selection and archive mode reject new Partnership initiation;
 neither reroutes VAS spending to the old products. Never flip an enrolled customer

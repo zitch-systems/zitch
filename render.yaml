@@ -37,6 +37,49 @@ services:
     # remains available at /healthz for diagnostics without making provider calls.
     healthCheckPath: /readyz
     envVars:
+      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
+      - key: BANK_ACCOUNT_PROVIDER
+        sync: false
+      - key: WEMA_PARTNERSHIP_MODE
+        sync: false
+      - key: WEMA_VAS_ENABLED
+        sync: false
+      - key: WEMA_VAS_MODE
+        sync: false
+      - key: WEMA_VAS_PREFIX
+        sync: false
+      - key: WEMA_VAS_TOKEN
+        sync: false
+      - key: WEMA_VAS_IDENTITY_KEYS
+        sync: false
+      - key: WEMA_VAS_TRUST_TLS_PROXY
+        sync: false
+      - key: WEMA_VAS_ENABLE_ENROLLMENT
+        sync: false
+      - key: WEMA_VAS_RELEASE_PHASE
+        sync: false
+      - key: WEMA_VAS_PILOT_USER_IDS
+        sync: false
+      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
+        sync: false
+      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
+        sync: false
+      - key: WEMA_VAS_COLLECTION_ACCOUNT
+        sync: false
+      - key: WHATSAPP_FLOW_ID
+        sync: false
+      - key: WHATSAPP_FLOW_PRIVATE_KEY
+        sync: false
+      - key: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE
+        sync: false
+      - key: WHATSAPP_FLOW_CTA
+        sync: false
+      - key: WHATSAPP_FLOW_PASSWORD_SCREEN
+        sync: false
+      - key: WHATSAPP_FLOW_VAS_ENROLLMENT_ENABLED
+        sync: false
+      - key: WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID
+        sync: false
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -380,6 +423,39 @@ services:
     startCommand: "python manage.py whatsapp_worker --batch-size 50 --poll-seconds 0.5"
     maxShutdownDelaySeconds: 60
     envVars:
+      - key: WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID}
+      - key: WHATSAPP_FLOW_VAS_ENROLLMENT_ENABLED
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_VAS_ENROLLMENT_ENABLED}
+      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
+      - key: BANK_ACCOUNT_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
+      - key: WEMA_PARTNERSHIP_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_VAS_ENABLED
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLED}
+      - key: WEMA_VAS_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_MODE}
+      - key: WEMA_VAS_PREFIX
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PREFIX}
+      - key: WEMA_VAS_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TOKEN}
+      - key: WEMA_VAS_IDENTITY_KEYS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_IDENTITY_KEYS}
+      - key: WEMA_VAS_TRUST_TLS_PROXY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
+      - key: WEMA_VAS_ENABLE_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_RELEASE_PHASE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
+      - key: WEMA_VAS_PILOT_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PILOT_USER_IDS}
+      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_COLLECTION_ACCOUNT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -527,15 +603,15 @@ services:
       - key: WHATSAPP_ALLOW_CHAT_SIGNUP
         sync: false
       - key: WHATSAPP_FLOW_ID
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_ID}
       - key: WHATSAPP_FLOW_PRIVATE_KEY
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_PRIVATE_KEY}
       - key: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE}
       - key: WHATSAPP_FLOW_CTA
-        sync: false
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_CTA}
       - key: WHATSAPP_FLOW_PASSWORD_SCREEN
-        value: "true"
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_PASSWORD_SCREEN}
       - key: LLM_API_KEY
         sync: false
       - key: LLM_MODEL
@@ -560,6 +636,35 @@ services:
     buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py run_maturities"
     envVars:
+      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
+      - key: BANK_ACCOUNT_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
+      - key: WEMA_PARTNERSHIP_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_VAS_ENABLED
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLED}
+      - key: WEMA_VAS_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_MODE}
+      - key: WEMA_VAS_PREFIX
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PREFIX}
+      - key: WEMA_VAS_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TOKEN}
+      - key: WEMA_VAS_IDENTITY_KEYS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_IDENTITY_KEYS}
+      - key: WEMA_VAS_TRUST_TLS_PROXY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
+      - key: WEMA_VAS_ENABLE_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_RELEASE_PHASE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
+      - key: WEMA_VAS_PILOT_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PILOT_USER_IDS}
+      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_COLLECTION_ACCOUNT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -623,6 +728,35 @@ services:
     buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py purge_expired_sessions"
     envVars:
+      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
+      - key: BANK_ACCOUNT_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
+      - key: WEMA_PARTNERSHIP_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_VAS_ENABLED
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLED}
+      - key: WEMA_VAS_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_MODE}
+      - key: WEMA_VAS_PREFIX
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PREFIX}
+      - key: WEMA_VAS_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TOKEN}
+      - key: WEMA_VAS_IDENTITY_KEYS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_IDENTITY_KEYS}
+      - key: WEMA_VAS_TRUST_TLS_PROXY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
+      - key: WEMA_VAS_ENABLE_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_RELEASE_PHASE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
+      - key: WEMA_VAS_PILOT_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PILOT_USER_IDS}
+      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_COLLECTION_ACCOUNT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -665,6 +799,35 @@ services:
     buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py reconcile_wema"
     envVars:
+      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
+      - key: BANK_ACCOUNT_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
+      - key: WEMA_PARTNERSHIP_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_VAS_ENABLED
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLED}
+      - key: WEMA_VAS_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_MODE}
+      - key: WEMA_VAS_PREFIX
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PREFIX}
+      - key: WEMA_VAS_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TOKEN}
+      - key: WEMA_VAS_IDENTITY_KEYS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_IDENTITY_KEYS}
+      - key: WEMA_VAS_TRUST_TLS_PROXY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
+      - key: WEMA_VAS_ENABLE_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_RELEASE_PHASE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
+      - key: WEMA_VAS_PILOT_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PILOT_USER_IDS}
+      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_COLLECTION_ACCOUNT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -775,6 +938,35 @@ services:
     buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py integrity_check --fail-nonzero"
     envVars:
+      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
+      - key: BANK_ACCOUNT_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
+      - key: WEMA_PARTNERSHIP_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_VAS_ENABLED
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLED}
+      - key: WEMA_VAS_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_MODE}
+      - key: WEMA_VAS_PREFIX
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PREFIX}
+      - key: WEMA_VAS_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TOKEN}
+      - key: WEMA_VAS_IDENTITY_KEYS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_IDENTITY_KEYS}
+      - key: WEMA_VAS_TRUST_TLS_PROXY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
+      - key: WEMA_VAS_ENABLE_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_RELEASE_PHASE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
+      - key: WEMA_VAS_PILOT_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PILOT_USER_IDS}
+      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_COLLECTION_ACCOUNT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -817,6 +1009,35 @@ services:
     # authenticated bank evidence resolves the case.
     startCommand: "python manage.py reconcile_balances --fail-nonzero"
     envVars:
+      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
+      - key: BANK_ACCOUNT_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
+      - key: WEMA_PARTNERSHIP_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_VAS_ENABLED
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLED}
+      - key: WEMA_VAS_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_MODE}
+      - key: WEMA_VAS_PREFIX
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PREFIX}
+      - key: WEMA_VAS_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TOKEN}
+      - key: WEMA_VAS_IDENTITY_KEYS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_IDENTITY_KEYS}
+      - key: WEMA_VAS_TRUST_TLS_PROXY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
+      - key: WEMA_VAS_ENABLE_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_RELEASE_PHASE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
+      - key: WEMA_VAS_PILOT_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PILOT_USER_IDS}
+      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_COLLECTION_ACCOUNT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -888,6 +1109,35 @@ services:
     buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py settlement_report --fail-on-breach"
     envVars:
+      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
+      - key: BANK_ACCOUNT_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
+      - key: WEMA_PARTNERSHIP_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_VAS_ENABLED
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLED}
+      - key: WEMA_VAS_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_MODE}
+      - key: WEMA_VAS_PREFIX
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PREFIX}
+      - key: WEMA_VAS_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TOKEN}
+      - key: WEMA_VAS_IDENTITY_KEYS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_IDENTITY_KEYS}
+      - key: WEMA_VAS_TRUST_TLS_PROXY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
+      - key: WEMA_VAS_ENABLE_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_RELEASE_PHASE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
+      - key: WEMA_VAS_PILOT_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PILOT_USER_IDS}
+      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_COLLECTION_ACCOUNT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -952,6 +1202,35 @@ services:
     buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
     startCommand: "python manage.py aml_scan --fail-on-overdue"
     envVars:
+      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
+      - key: BANK_ACCOUNT_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
+      - key: WEMA_PARTNERSHIP_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_VAS_ENABLED
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLED}
+      - key: WEMA_VAS_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_MODE}
+      - key: WEMA_VAS_PREFIX
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PREFIX}
+      - key: WEMA_VAS_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TOKEN}
+      - key: WEMA_VAS_IDENTITY_KEYS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_IDENTITY_KEYS}
+      - key: WEMA_VAS_TRUST_TLS_PROXY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
+      - key: WEMA_VAS_ENABLE_ENROLLMENT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
+      - key: WEMA_VAS_RELEASE_PHASE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
+      - key: WEMA_VAS_PILOT_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_PILOT_USER_IDS}
+      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
+      - key: WEMA_VAS_COLLECTION_ACCOUNT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"

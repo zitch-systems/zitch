@@ -145,13 +145,13 @@ class FlowFileContractTests(SimpleTestCase):
                     yield from secret_inputs(v)
 
         found = [inp for s in FLOW["screens"] for inp in secret_inputs(s["layout"])]
-        self.assertEqual(len(found), 11)
+        self.assertEqual(len(found), 15)  # includes four private VAS identity/code pages
         for inp in found:
             # The email ADDRESS rides the same field name but is not digits —
             # it keeps the email keyboard. Everything else is a passcode pad.
             expected = "email" if inp.get("input-type") == "email" else "passcode"
             self.assertEqual(inp.get("input-type"), expected)
-        self.assertEqual(sum(1 for i in found if i.get("input-type") == "passcode"), 10)
+        self.assertEqual(sum(1 for i in found if i.get("input-type") == "passcode"), 14)
 
     def test_identity_fields_are_eleven_and_code_fields_six(self):
         """An incomplete BVN is refused AT THE FIELD (red outline), and a code

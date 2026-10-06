@@ -146,3 +146,27 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
             self.assertIn("*/10 * * * *", schedules)
             fixed_minutes = [value.split()[0] for value in schedules if not value.startswith("*/")]
             self.assertNotIn("0", fixed_minutes, filename)
+
+    def test_vas_release_and_identity_configuration_cannot_diverge_between_consumers(self):
+        """A worker with a stale rail selector or key cannot safely enroll users."""
+        keys = ("BANK_ACCOUNT_PROVIDER", "WEMA_PARTNERSHIP_MODE", "WEMA_VAS_ENABLED",
+                "WEMA_VAS_MODE", "WEMA_VAS_PREFIX", "WEMA_VAS_TOKEN", "WEMA_VAS_IDENTITY_KEYS",
+                "WEMA_VAS_TRUST_TLS_PROXY", "WEMA_VAS_ENABLE_ENROLLMENT", "WEMA_VAS_RELEASE_PHASE",
+                "WEMA_VAS_PILOT_USER_IDS", "WEMA_VAS_LIVE_APPROVAL_REFERENCE",
+                "WEMA_VAS_GENERAL_APPROVAL_REFERENCE", "WEMA_VAS_COLLECTION_ACCOUNT")
+        flow_keys = ("WHATSAPP_FLOW_ID", "WHATSAPP_FLOW_PRIVATE_KEY", "WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE",
+                     "WHATSAPP_FLOW_VAS_ENROLLMENT_ENABLED", "WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID")
+        for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
+            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
+            api_name = "zitch-api" + suffix
+            services = re.findall(r"^  - type: .*?(?=^  - type: |^databases:|\Z)", text, re.M | re.S)
+            for block in services:
+                if "    runtime: python\n" not in block:
+                    continue
+                name = re.search(r"^    name: (.+)$", block, re.M).group(1)
+                expected = keys + (flow_keys if "whatsapp-worker" in name or name == api_name else ())
+                for key in expected:
+                    if name == api_name:
+                        self.assertIn(f"- key: {key}\n        sync: false", block)
+                    else:
+                        self.assertIn(f"fromService: {{type: web, name: {api_name}, envVarKey: {key}}}", block)

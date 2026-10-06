@@ -19,6 +19,7 @@ from .models import MigrationApproval, VirtualAccount
 SETTINGS = {"ENABLED": True, "MODE": "live", "PREFIX": "712", "TOKEN": "t" * 64,
             "IDENTITY_KEYS": [Fernet.generate_key().decode()], "REQUIRE_HTTPS": True,
             "ENABLE_ENROLLMENT": True, "LIVE_APPROVAL_REFERENCE": "bank-test-approval",
+            "RELEASE_PHASE": "general", "GENERAL_APPROVAL_REFERENCE": "test-launch-signoff",
             "COLLECTION_ACCOUNT": "1234567890"}
 
 

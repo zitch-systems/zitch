@@ -1,0 +1,389 @@
+{
+  "info": {
+    "name": "Zitch \u2014 Wema VAS 711 validation",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Vendor-hosted Wema VAS collection contract. No live credentials or provisioned account numbers are included. Read docs/wema-vas-handoff.md before use. Import the matching blank environment. Notification and block requests are disabled by default. The entire collection is restricted to prefix711."
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{bearer_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Requires a current Postman client with pm.execution.skipRequest support.",
+          "// These are validation requests only. Never use a live customer account.",
+          "const base = String(pm.variables.get('base_url') || '');",
+          "const token = String(pm.variables.get('bearer_token') || '');",
+          "let reason = '';",
+          "if (!/^https:\\/\\/[a-z0-9.-]+(?::[0-9]+)?$/i.test(base)) reason = 'Set an HTTPS base_url origin, without a trailing slash.';",
+          "if (token.length < 48 || /\\s/.test(token)) reason = 'Set the dedicated VAS token locally.';",
+          "const samples = [1, 2, 3].map(i => String(pm.variables.get('sample_account_' + i) || ''));",
+          "if (samples.some(n => !/^711[0-9]{7}$/.test(n)) || new Set(samples).size !== 3) reason = 'Set three distinct, provisioned 711 sample accounts.';",
+          "let body;",
+          "try { body = JSON.parse(pm.variables.replaceIn(pm.request.body.raw)); }",
+          "catch (_) { reason = 'Resolve the JSON request variables before sending.'; }",
+          "if (body && !/^711[0-9]{7}$/.test(body.accountnumber || body.craccount || '')) reason = 'Only 711 validation accounts are allowed.';",
+          "const path = pm.variables.replaceIn(pm.request.url.toString()).split(/[?#]/)[0].replace(/\\/+$/, '');",
+          "if (path.endsWith('/transaction-notification')) {",
+          "    if (pm.variables.get('allow_validation_notification') !== 'true') reason = 'Notification tests are disabled; explicitly enable them for validation mode only.';",
+          "    if (!body || !body.craccountname || body.craccountname.includes('{{')) reason = 'Run sample account 1 lookup first.';",
+          "    if (!body || !body.sessionid || !body.paymentreference || !body.created_at || !Number.isFinite(Date.parse(body.created_at))) reason = 'Set unique session_id, payment_reference and an ISO created_at; retain them unchanged for replay tests.';",
+          "}",
+          "if (path.endsWith('/block-account')) {",
+          "    if (pm.variables.get('allow_validation_block') !== 'true') reason = 'Block tests are disabled; explicitly enable them for a disposable account.';",
+          "    if (body && samples.includes(body.accountnumber)) reason = 'Do not block any of the three submission accounts; use a fourth disposable 711 account.';",
+          "}",
+          "if (reason) {",
+          "    console.warn(reason);",
+          "    pm.execution.skipRequest();",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "1 \u2014 Lookup the three provisioned accounts",
+      "item": [
+        {
+          "name": "Account Lookup \u2014 sample 1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountnumber\": \"{{sample_account_1}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/vas/account-lookup",
+            "description": "Read the existing provisioned account. The response contains bank-authorized identity data; do not save or export it into shared test reports."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Response is not cacheable', () => pm.expect(pm.response.headers.get('Cache-Control')).to.include('no-store'));",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Active static account', () => {",
+                  "    pm.expect(data.status).to.eql('00');",
+                  "    pm.expect(data.status_desc).to.eql('Okay');",
+                  "    pm.expect(data.accountname).to.match(/^Zitch\\//);",
+                  "    pm.expect(Boolean(data.bvn || data.nin)).to.eql(true);",
+                  "});",
+                  "if (data.status === '00') pm.environment.set('account_name_1', data.accountname);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Account Lookup \u2014 sample 2",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountnumber\": \"{{sample_account_2}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/vas/account-lookup",
+            "description": "Read the existing provisioned account. The response contains bank-authorized identity data; do not save or export it into shared test reports."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Response is not cacheable', () => pm.expect(pm.response.headers.get('Cache-Control')).to.include('no-store'));",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Active static account', () => {",
+                  "    pm.expect(data.status).to.eql('00');",
+                  "    pm.expect(data.status_desc).to.eql('Okay');",
+                  "    pm.expect(data.accountname).to.match(/^Zitch\\//);",
+                  "    pm.expect(Boolean(data.bvn || data.nin)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Account Lookup \u2014 sample 3",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountnumber\": \"{{sample_account_3}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/vas/account-lookup",
+            "description": "Read the existing provisioned account. The response contains bank-authorized identity data; do not save or export it into shared test reports."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Response is not cacheable', () => pm.expect(pm.response.headers.get('Cache-Control')).to.include('no-store'));",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Active static account', () => {",
+                  "    pm.expect(data.status).to.eql('00');",
+                  "    pm.expect(data.status_desc).to.eql('Okay');",
+                  "    pm.expect(data.accountname).to.match(/^Zitch\\//);",
+                  "    pm.expect(Boolean(data.bvn || data.nin)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2 \u2014 Optional simulated notification",
+      "item": [
+        {
+          "name": "Transaction Notification \u2014 validation receipt",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"originatoraccountnumber\": \"0000000000\",\n  \"originatorname\": \"VAS VALIDATION ONLY\",\n  \"bankcode\": \"000001\",\n  \"bankname\": \"Synthetic validation source\",\n  \"amount\": \"1.00\",\n  \"narration\": \"Synthetic API contract test; not a bank transfer\",\n  \"paymentreference\": \"{{payment_reference}}\",\n  \"sessionid\": \"{{session_id}}\",\n  \"craccount\": \"{{sample_account_1}}\",\n  \"craccountname\": \"{{account_name_1}}\",\n  \"created_at\": \"{{created_at}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/vas/transaction-notification",
+            "description": "Disabled by default. Synthetic payload only: this does not send a bank transfer. Run only with backend validation mode and a dedicated 711 account. Re-send unchanged to test replay; do not refresh timestamps/references. Conflict/error cases are described in the handoff guide and intentionally do not pass the successful-response assertions here."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Response is not cacheable', () => pm.expect(pm.response.headers.get('Cache-Control')).to.include('no-store'));",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Accepted validation receipt', () => {",
+                  "    pm.expect(data.status).to.eql('00');",
+                  "    pm.expect(data.status_desc).to.eql('Okay');",
+                  "    pm.expect(data.transactionreference).to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (data.status === '00') {",
+                  "    const previousSession = pm.environment.get('last_accepted_session');",
+                  "    if (previousSession === pm.variables.get('session_id')) {",
+                  "        pm.test('Replay returns the original acknowledgment', () => pm.expect(data.transactionreference).to.eql(pm.environment.get('last_transaction_reference')));",
+                  "    }",
+                  "    pm.environment.set('last_accepted_session', pm.variables.get('session_id'));",
+                  "    pm.environment.set('last_transaction_reference', data.transactionreference);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3 \u2014 Read balance and statement",
+      "item": [
+        {
+          "name": "Get KYC Details",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountnumber\": \"{{sample_account_1}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/vas/kyc-details",
+            "description": "Read the simulated 711 balance. This does not prove real bank settlement or spendable customer credit. Do not export BVN/NIN/mobile responses."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Response is not cacheable', () => pm.expect(pm.response.headers.get('Cache-Control')).to.include('no-store'));",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Active identity and decimal balance', () => {",
+                  "    pm.expect(data.status_desc).to.eql('Active');",
+                  "    pm.expect(data.walletbalance).to.match(/^[0-9]+\\.[0-9]{2}$/);",
+                  "    pm.expect(data.mobilenumber).to.be.a('string').and.not.empty;",
+                  "    pm.expect(Boolean(data.bvn || data.nin)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Fetch Mini Statement",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountnumber\": \"{{sample_account_1}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/vas/mini-statement",
+            "description": "Read VAS validation receipts from the latest receipt date and preceding nine Lagos calendar dates. Outgoing VAS is not implemented, so there are no VAS debit rows."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Response is not cacheable', () => pm.expect(pm.response.headers.get('Cache-Control')).to.include('no-store'));",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Documented statement rows', () => {",
+                  "    pm.expect(data.transactions).to.be.an('array');",
+                  "    data.transactions.forEach(row => {",
+                  "        pm.expect(row).to.have.all.keys('accountNo', 'bankName', 'amount', 'direction', 'transactionDate');",
+                  "        pm.expect(row.direction).to.eql('Credit');",
+                  "        pm.expect(row.amount).to.match(/^[0-9]+\\.[0-9]{2}$/);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4 \u2014 Optional persistent restriction test",
+      "item": [
+        {
+          "name": "Block Account \u2014 disposable fourth account only",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountnumber\": \"{{block_test_account}}\",\n  \"blockreason\": \"Agreed VAS validation restriction test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/vas/block-account",
+            "description": "Disabled by default. Requires a fourth provisioned disposable 711 account, different from the three bank-submission accounts. Restriction is persistent; no unblock API exists. Do not run automatically or against customer accounts."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Response is not cacheable', () => pm.expect(pm.response.headers.get('Cache-Control')).to.include('no-store'));",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Restriction acknowledged', () => pm.expect(data.message).to.eql('Account Restricted Successfully'));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    }
+  ]
+}

@@ -14,7 +14,7 @@ from django.utils import timezone
 from accounts.models import IdentityProof, User, hash_identifier
 from wallet.models import Transaction, Wallet, WemaFaceSession, WemaProvisioningAttempt
 
-from .config import config, validate_configuration
+from .config import approval_reference_present, config, enrollment_release_policy, validate_configuration
 from .identity import encrypt_identity
 from .models import MigrationApproval, VirtualAccount
 
@@ -23,13 +23,28 @@ PENDING_MESSAGE = "Your new funding account is being prepared. Please wait befor
 SPENDING_MESSAGE = "Payments and transfers are unavailable while the new bank connection is completed."
 
 
-def enrollment_available():
+def enrollment_available(user=None):
+    """Customer enrollment/funding visibility, distinct from bank event delivery."""
     values = config()
-    return bool(values.get("ENABLED") and values.get("ENABLE_ENROLLMENT")
-                and values.get("MODE") == "live"
-                and values.get("LIVE_APPROVAL_REFERENCE")
-                and re.fullmatch(r"[0-9]{10}", values.get("COLLECTION_ACCOUNT", ""))
-                and getattr(settings, "BANK_ACCOUNT_PROVIDER", "partnership") == "wema_vas")
+    policy = enrollment_release_policy(values)
+    if (policy["errors"] or policy["phase"] == "closed"
+            or values.get("ENABLED") is not True or values.get("ENABLE_ENROLLMENT") is not True
+            or values.get("MODE") != "live"
+            or not approval_reference_present(values.get("LIVE_APPROVAL_REFERENCE"))
+            or not isinstance(values.get("COLLECTION_ACCOUNT"), str)
+            or not re.fullmatch(r"[0-9]{10}", values["COLLECTION_ACCOUNT"])
+            or getattr(settings, "BANK_ACCOUNT_PROVIDER", "partnership") != "wema_vas"):
+        return False
+    if user is not None and (not getattr(user, "is_active", False) or not getattr(user, "pk", None)):
+        return False
+    if policy["phase"] == "pilot" and (
+            user is None or getattr(user, "pk", None) not in policy["pilot_user_ids"]):
+        return False
+    try:
+        validate_configuration()
+    except ImproperlyConfigured:
+        return False
+    return True
 
 
 def customer_account_payload(user):
@@ -37,9 +52,9 @@ def customer_account_payload(user):
     selected = getattr(settings, "BANK_ACCOUNT_PROVIDER", "partnership") == "wema_vas"
     if not selected and (account is None or account.mode != VirtualAccount.LIVE):
         return None
-    ready = bool(account and account.active and account.mode == VirtualAccount.LIVE
-                 and config().get("ENABLED") and config().get("ENABLE_ENROLLMENT")
-                 and config().get("MODE") == "live" and account.prefix == config().get("PREFIX"))
+    permitted = enrollment_available(user)
+    ready = bool(permitted and account and account.active and account.mode == VirtualAccount.LIVE
+                 and account.prefix == config().get("PREFIX"))
     state = "ready" if ready else "vas_enrollment_required"
     if account and not account.active:
         state = "restricted"
@@ -51,7 +66,7 @@ def customer_account_payload(user):
         "account_name": account.display_name if ready else "",
         "bank_name": "Wema Bank" if ready else "", "bank_accounts": [], "bank_tier": 0,
         "account_setup_state": state, "spending_available": False,
-        "enrollment_available": bool(enrollment_available() and account is None),
+        "enrollment_available": bool(permitted and account is None),
         "migration_message": SPENDING_MESSAGE if ready else (
             "Your account is restricted. Please contact support." if state == "restricted" else PENDING_MESSAGE),
         "enrollment_endpoint": "/api/wallet/vas/enroll/", "consent_version": CONSENT_VERSION,
@@ -110,7 +125,7 @@ def enroll_verified(user, *, bvn="", nin="", consent=False, validation=False, co
     if validation:
         if values.get("MODE") != "validation":
             raise ValidationError("Validation provisioning requires validation mode.")
-    elif not enrollment_available():
+    elif not enrollment_available(user):
         raise ValidationError("New funding accounts are not available yet.")
     if consent is not True:
         raise ValidationError("Consent to encrypted storage and sharing with Wema is required.")
@@ -118,6 +133,8 @@ def enroll_verified(user, *, bvn="", nin="", consent=False, validation=False, co
     Wallet.objects.get_or_create(user=user)
     wallet = Wallet.objects.select_for_update().get(user=user)
     user = User.objects.select_for_update().get(pk=user.pk)
+    if not validation and not enrollment_available(user):
+        raise ValidationError("New funding accounts are not available yet.")
     proofs = _verified_proofs(user, bvn, nin)
     existing = VirtualAccount.objects.select_for_update().filter(user=user).first()
     if existing:
