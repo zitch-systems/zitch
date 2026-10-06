@@ -574,6 +574,7 @@ def _published_flow_report() -> dict:
     raises, because a health probe that raises is worse than no probe.
     """
     import json
+    import hashlib
     from pathlib import Path
 
     flow = getattr(settings, "WHATSAPP_FLOW", {}) or {}
@@ -583,8 +584,15 @@ def _published_flow_report() -> dict:
 
     asset = Path(__file__).resolve().parent / "flow_assets" / "pin_flow.json"
     expected_props: dict = {}
+    local_digest = ""
     try:
-        local_screens = json.loads(asset.read_text())["screens"]
+        local_document = json.loads(asset.read_text())
+        local_digest = hashlib.sha256(json.dumps(local_document, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        local_screens = local_document["screens"]
+        # Shipping the next enrollment contract must not disable the already
+        # published payment/login screens while enrollment is still gated off.
+        if not flow.get("VAS_ENROLLMENT_ENABLED"):
+            local_screens = [screen for screen in local_screens if not screen["id"].startswith("VAS_")]
         expected = [s["id"] for s in local_screens]
         expected_props = {s["id"]: set((s.get("data") or {}).keys()) for s in local_screens}
     except Exception:  # noqa: BLE001
@@ -604,12 +612,14 @@ def _published_flow_report() -> dict:
 
         # The published screens live in the FLOW_JSON asset, not on the node.
         assets = _graph().get(f"{base}/{flow_id}/assets", headers=headers, timeout=6)
-        published, published_props = [], {}
+        published, published_props, published_digest = [], {}, ""
         for item in (assets.json().get("data") or []) if assets.content else []:
             if item.get("asset_type") != "FLOW_JSON" or not item.get("download_url"):
                 continue
             body = _graph().get(item["download_url"], timeout=6)
-            screens = body.json().get("screens") or []
+            published_document = body.json()
+            published_digest = hashlib.sha256(json.dumps(published_document, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            screens = published_document.get("screens") or []
             published = [s["id"] for s in screens]
             published_props = {s["id"]: set((s.get("data") or {}).keys()) for s in screens}
             break
@@ -631,6 +641,10 @@ def _published_flow_report() -> dict:
         if sid in published_props and expected_props.get(sid, set()) != published_props[sid]
     )
     return {
+        "flow_id": str(info.get("id") or ""),
+        "local_contract_sha256": local_digest,
+        "published_contract_sha256": published_digest,
+        "contract_matches": bool(local_digest and local_digest == published_digest),
         "status": str(info.get("status") or "unknown").lower(),   # published | draft | ...
         "name": info.get("name"),
         "published_screens": published,

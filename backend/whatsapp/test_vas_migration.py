@@ -24,7 +24,7 @@ class VasCustomerChatTests(TestCase):
             "provider": "wema_vas", "has_account": False, "available": False,
             "enrollment_available": True, "spending_available": False,
             "account_setup_state": "vas_enrollment_required",
-            "migration_message": "Set up your new account in the app.",
+            "migration_message": "Set up your new account here.",
         }
 
     def action(self):
@@ -32,15 +32,15 @@ class VasCustomerChatTests(TestCase):
             user=self.user, msisdn=MSISDN, action_type="add_account", state="bvn",
             payload={"id_type": "bvn"}, expires_at=timezone.now() + timedelta(minutes=5))
 
-    def test_add_money_routes_to_app_without_showing_legacy_number(self):
+    def test_add_money_routes_to_private_setup_without_app_handoff(self):
         with patch.object(router, "customer_funding_account", return_value=self.funding), \
                 patch.object(router, "send_cta_url") as cta, \
+                patch("whatsapp.vas_flow.start") as secure, \
                 patch.object(router, "_start_add_account") as start:
             router._do_add_money(self.user, MSISDN)
         start.assert_not_called()
-        self.assertEqual(cta.call_args.args[2], "https://zitch.ng/app")
-        self.assertNotIn(self.wallet.account_number, cta.call_args.args[1])
-        self.assertIn("Do not send your BVN or NIN", cta.call_args.args[1])
+        cta.assert_not_called()
+        secure.assert_called_once_with(self.user, MSISDN)
 
     def test_old_callback_cannot_reveal_validation_number(self):
         funding = {**self.funding, "account_setup_state": "vas_validation",
@@ -48,9 +48,9 @@ class VasCustomerChatTests(TestCase):
         with patch.object(router, "customer_funding_account", return_value=funding), \
                 patch.object(router, "send_cta_url") as cta, patch.object(router, "reply") as reply:
             router._send_account_details(MSISDN, self.wallet)
-        reply.assert_not_called()
-        self.assertNotIn("7111234567", cta.call_args.args[1])
-        self.assertNotIn(self.wallet.account_number, cta.call_args.args[1])
+        cta.assert_not_called()
+        self.assertNotIn("7111234567", reply.call_args.args[1])
+        self.assertNotIn(self.wallet.account_number, reply.call_args.args[1])
 
     def test_live_account_uses_vas_number_and_explains_spending_hold(self):
         funding = {**self.funding, "has_account": True, "available": True,
@@ -67,13 +67,13 @@ class VasCustomerChatTests(TestCase):
     def test_stale_identity_action_does_not_start_partnership_provisioning(self):
         pa = self.action()
         with patch.object(router, "customer_funding_account", return_value=self.funding), \
-                patch.object(router, "send_cta_url") as cta, \
+                patch("whatsapp.vas_flow.start") as secure, \
                 patch.object(router.wallet_views, "_start_wema_attempt") as provision:
             result = router._account_submit_identity(pa, self.user, MSISDN, "22222222222")
         self.assertEqual(result, "fail")
         provision.assert_not_called()
         self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
-        self.assertNotIn("22222222222", cta.call_args.args[1])
+        secure.assert_called_once_with(self.user, MSISDN)
 
     def test_balance_explains_funds_are_not_yet_spendable(self):
         with patch.object(router, "customer_funding_account", return_value=self.funding), \
@@ -95,5 +95,5 @@ class VasCustomerChatTests(TestCase):
             state, message = router.account_flow_otp(pa, "123456")
         complete.assert_called_once()
         self.assertEqual(state, "done")
-        self.assertIn("Open the Zitch app", message)
+        self.assertIn("Reply 6 here", message)
         self.assertNotIn("Account created", message)

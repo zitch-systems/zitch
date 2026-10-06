@@ -101,7 +101,11 @@ WEMA_VAS = {
     # Enable only behind the controlled TLS-terminating Render proxy.
     "TRUST_TLS_PROXY": env_bool("WEMA_VAS_TRUST_TLS_PROXY", False),
     "ENABLE_ENROLLMENT": env_bool("WEMA_VAS_ENABLE_ENROLLMENT", False),
+    "RELEASE_PHASE": os.environ.get("WEMA_VAS_RELEASE_PHASE", "closed").strip().lower(),
+    # Preserve malformed entries for the enrollment policy to reject as a whole.
+    "PILOT_USER_IDS": os.environ.get("WEMA_VAS_PILOT_USER_IDS", ""),
     "LIVE_APPROVAL_REFERENCE": os.environ.get("WEMA_VAS_LIVE_APPROVAL_REFERENCE", "").strip(),
+    "GENERAL_APPROVAL_REFERENCE": os.environ.get("WEMA_VAS_GENERAL_APPROVAL_REFERENCE", "").strip(),
     "COLLECTION_ACCOUNT": os.environ.get("WEMA_VAS_COLLECTION_ACCOUNT", "").strip(),
 }
 
@@ -757,6 +761,8 @@ SOCIAL_LINKS = {name: url for name, url in {
 # request; its public half is uploaded to the WABA once.
 WHATSAPP_FLOW = {
     "FLOW_ID": os.environ.get("WHATSAPP_FLOW_ID", ""),
+    "VAS_ENROLLMENT_ENABLED": env_bool("WHATSAPP_FLOW_VAS_ENROLLMENT_ENABLED", False),
+    "VAS_APPROVED_FLOW_ID": os.environ.get("WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID", "").strip(),
     "PRIVATE_KEY": os.environ.get("WHATSAPP_FLOW_PRIVATE_KEY", ""),
     "PRIVATE_KEY_PASSPHRASE": os.environ.get("WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE", ""),
     "CTA": os.environ.get("WHATSAPP_FLOW_CTA", "Confirm with PIN"),

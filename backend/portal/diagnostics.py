@@ -72,6 +72,16 @@ def diagnostics_view(request):
                              "handset rings, the sender ID is not DND-whitelisted.")
 
     # --- readiness ------------------------------------------------------------
+    from wema_vas.config import config as vas_config
+    from wema_vas.diagnostics import readiness_report
+
+    vas_stage = "controlled-live-pilot" if vas_config().get("MODE") == "live" else "validation"
+    parts.append(_section(
+        "VAS collections readiness", _json(readiness_report(stage=vas_stage)),
+        note="Read-only local checks for the new virtual-account integration. "
+             "A locally ready result does not certify bank acceptance, real settlement "
+             "or general customer launch. No token or customer identifier is shown."))
+
     buf = io.StringIO()
     ready = True
     try:
@@ -81,8 +91,9 @@ def diagnostics_view(request):
     except Exception as exc:                    # noqa: BLE001
         ready = False
         buf.write(f"\npreflight could not run: {type(exc).__name__}: {exc}")
+    legacy_label = "Partnership preflight" if vas_config().get("ENABLED") else "Go-live preflight"
     parts.append(_section(
-        f"Go-live preflight — {'READY' if ready else 'NOT READY'}", buf.getvalue(),
+        f"{legacy_label} — {'READY' if ready else 'NOT READY'}", buf.getvalue(),
         note="The same <code>manage.py wema_preflight</code>. GATE lines block real money; "
              "the rest degrade a non-money feature."))
 

@@ -570,6 +570,25 @@ def preflight_diagnose(request):
 
 @never_cache
 @require_http_methods(["GET"])
+def vas_preflight_diagnose(request):
+    """Read-only VAS collection readiness, authenticated with the operator token."""
+    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
+    if denied:
+        return denied
+    stage = request.GET.get("stage", "validation").strip().lower()
+    if stage not in {"validation", "controlled-live-pilot"}:
+        return JsonResponse({"detail": "stage must be validation or controlled-live-pilot"}, status=400)
+    from wema_vas.diagnostics import readiness_report
+
+    report = readiness_report(stage=stage)
+    # 200 means local readiness to submit the 711 service for bank validation.
+    # A local pilot inspection cannot certify external settlement or a launch.
+    ready = stage == "validation" and report.get("local_ready") is True
+    return JsonResponse({"vas_preflight": report}, status=200 if ready else 503)
+
+
+@never_cache
+@require_http_methods(["GET"])
 def whatsapp_diagnose(request):
     """GET /whatsapp-diagnose with an Authorization bearer token.
 
@@ -764,6 +783,7 @@ urlpatterns = [
                            ("wema-callbacks-diagnose", wema_callbacks_diagnose),
                            ("whatsapp-diagnose", whatsapp_diagnose),
                            ("sms-diagnose", sms_diagnose),
+                           ("vas-preflight", vas_preflight_diagnose),
                            ("preflight", preflight_diagnose))
       for p in (path(frag, view), path(frag + "/", view))],
     path("robots.txt", robots_txt),

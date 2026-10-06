@@ -1,8 +1,9 @@
 # Zitch VAS validation handoff
 
 Status: preparation pack, not a completed live-credentials submission or evidence
-of bank acceptance. The implemented application is on `main` in PR #530. Public
-deployment, credentials and provisioned sample accounts still need verification.
+of bank acceptance. The base collections application is on `main` in PR #530;
+the pilot/WhatsApp release preparation is in PR #531. Public deployment,
+credentials and provisioned sample accounts still need verification.
 
 ## Submission fields
 
@@ -32,8 +33,9 @@ sends email or Slack messages.
 
 Generate the final non-secret JSON using `vas_onboarding_package` only after the
 three accounts exist and the service is correctly configured. The command checks
-active validation accounts; separately test account lookups to confirm their
-users are also active. See the [rollout runbook](wema-vas-rollout.md).
+active users, matching verified identity evidence and validation-account
+isolation. Separately verify the public lookups and bank reachability. See the
+[rollout runbook](wema-vas-rollout.md).
 
 ## Postman pack
 
@@ -129,18 +131,32 @@ Clarifications to agree with Wema:
 | --- | --- |
 | Publish and validate the five bank endpoints | Restore hosting, apply migrations/configuration, verify HTTPS and database readiness |
 | Complete Step 4 submission | Actual configured token, three provisioned active `711` accounts and monitored group email |
-| Controlled real-money pilot | Wema's endpoint acceptance, assigned live prefix, profiled collection account and written pilot authorization; a reviewed way to restrict enrollment to approved pilot users |
+| Controlled real-money pilot | Implemented per-user pilot restriction; activation still requires Wema's endpoint acceptance, assigned live prefix, profiled collection account and written pilot authorization |
 | Collection reconciliation | Bank balance/statement access, Transaction Search URL/authentication and agreed retry/re-push/settlement rules |
 | Outgoing transfers and bills | Separate payout initiation, idempotency, status/reversal and bill-payment contracts; inbound VAS docs do not define these |
 | Existing customer migration | Bank closure/conversion instructions, reviewed cutover evidence and resolution of existing balances/pending work |
-| Fully in-WhatsApp enrollment | Approved encrypted Meta Flow for consent and identity re-entry; the current VAS enrollment path opens the authenticated app |
+| Fully in-WhatsApp enrollment | Encrypted consent, identity and SMS recovery screens implemented; publish/verify the new Flow before enabling its gate |
 | General customer launch | Real settlement evidence, reconciliation, product/payment readiness and tested app/WhatsApp release |
 
 The controlled pilot must occur **after switching to Wema's assigned live
-prefix**, with ordinary customers still excluded. The current enrollment flag
-is global, so an allowlist or equivalent reviewed restriction is a prerequisite
-for such a pilot. Do not enable general enrollment merely to create test users,
-promote `711` accounts to live accounts, or manually manufacture KYC evidence.
+prefix**, with ordinary customers still excluded. Set `WEMA_VAS_RELEASE_PHASE=pilot`
+and the explicit `WEMA_VAS_PILOT_USER_IDS` allowlist; the old enable flag alone
+cannot open enrollment. Missing or malformed release settings close enrollment.
+Do not enable general enrollment merely to create test users, promote `711`
+accounts to live accounts, or manually manufacture KYC evidence.
+
+Read-only local readiness is available through `vas_preflight`, the staff
+diagnostics page and operator-authenticated `/vas-preflight`. It keeps local
+requirements separate from bank acceptance and never reports full go-live from
+configuration alone.
+
+Operational recheck on 6 October 2026: Frankfurt API and PostgreSQL remain
+billing-suspended; cache is also suspended. The latest successful API artifact
+is still the historical `c00466d` deployment. The Meta connector could not return
+the live Flow inventory. No newer VAS technical answers were found in the
+accessible Slack channels/DMs. Wema's [24 September reply](https://wemabankteam.slack.com/archives/C0BDAQF7U56/p1790250918782509)
+says outbound documentation follows endpoint submission. These observations do
+not substitute for a fresh check when restoring service.
 
 Source contract: Wema's [Third Party Virtual Account API documentation, v2.0](https://wemabank-doc.notion.site/Wema-Bank-Third-Party-Virtual-Account-API-Integration-Documentation-31f13df490b68074aa99df46b1de9a4f),
 and the [5 October prefix/endpoint instruction](https://wemabankteam.slack.com/archives/C0C6PTZ4SK0/p1791197691968529).

@@ -914,7 +914,8 @@ def kyc_provider() -> str:
     return choice if choice in {"wema", "prembly"} else "wema"
 
 
-def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
+def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "", *,
+               timeout=REQUEST_TIMEOUT) -> dict:
     """BVN verification entry point.
 
     Prembly first when configured and simulation is OFF. During an end-to-end
@@ -926,7 +927,7 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
     deploy-wide simulation switch is on.
     """
     if _prembly_live():
-        return prembly_verify_bvn(bvn, name=name)
+        return prembly_verify_bvn(bvn, name=name, timeout=timeout)
     if not partnership_new_business_allowed():
         return {"success": False, "message": "Identity verification is temporarily unavailable.",
                 "code": "identity_provider_unavailable"}
@@ -934,7 +935,7 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
     return wema.verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
 
 
-def prembly_verify_bvn(bvn: str, name: str = "") -> dict:
+def prembly_verify_bvn(bvn: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> dict:
     """Look a BVN up at Prembly and name-match the record. Fails CLOSED on every
     uncertainty, exactly like the NIN path — this result lifts a tier and, unlike
     NIN, currently gates whether an account may spend at all.
@@ -944,10 +945,10 @@ def prembly_verify_bvn(bvn: str, name: str = "") -> dict:
     """
     if len(bvn) != 11 or not bvn.isdigit():
         return {"success": False, "invalid": True, "message": "BVN must be 11 digits"}
-    return _prembly_identity_lookup("bvn", bvn, name)
+    return _prembly_identity_lookup("bvn", bvn, name, timeout=timeout)
 
 
-def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
+def _prembly_identity_lookup(kind: str, number: str, name: str, *, timeout=REQUEST_TIMEOUT) -> dict:
     """Shared BVN/NIN lookup: one request shape, one name match, one failure
     policy. Written once so the two identities cannot drift on what counts as a
     pass — they gate the same money."""
@@ -966,7 +967,7 @@ def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
     try:
         resp = requests.post(
             f"{settings.PREMBLY['BASE_URL'].rstrip('/')}{path}",
-            json={"number": number}, headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
+            json={"number": number}, headers=_prembly_headers(), timeout=timeout,
         )
         data = resp.json()
     except (requests.RequestException, ValueError) as exc:
@@ -1073,7 +1074,7 @@ def _record_email(record: dict) -> str:
     return ""
 
 
-def verify_nin(nin: str, name: str = "") -> dict:
+def verify_nin(nin: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> dict:
     """NIN verification entry point.
 
     Prembly first when it is configured: it has the standalone NIN lookup the
@@ -1086,7 +1087,7 @@ def verify_nin(nin: str, name: str = "") -> dict:
     without those keys behaves exactly as it did before.
     """
     if _prembly_live():
-        return prembly_verify_nin(nin, name=name)
+        return prembly_verify_nin(nin, name=name, timeout=timeout)
     if not partnership_new_business_allowed():
         return {"success": False, "message": "Identity verification is temporarily unavailable.",
                 "code": "identity_provider_unavailable"}
@@ -1094,7 +1095,7 @@ def verify_nin(nin: str, name: str = "") -> dict:
     return wema.verify_nin(nin, name=name)
 
 
-def prembly_verify_nin(nin: str, name: str = "") -> dict:
+def prembly_verify_nin(nin: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> dict:
     """Look a NIN up at Prembly and name-match the record against `name`.
 
     Fails CLOSED on every uncertainty — provider down, malformed response, no
@@ -1107,7 +1108,7 @@ def prembly_verify_nin(nin: str, name: str = "") -> dict:
     """
     if len(nin) != 11 or not nin.isdigit():
         return {"success": False, "invalid": True, "message": "NIN must be 11 digits"}
-    return _prembly_identity_lookup("nin", nin, name)
+    return _prembly_identity_lookup("nin", nin, name, timeout=timeout)
 
 def verify_vnin(vnin: str, name: str = "") -> dict:
     """Virtual-NIN verification entry point — see verify_bvn. Verification is the
