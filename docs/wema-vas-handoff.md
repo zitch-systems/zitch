@@ -137,7 +137,7 @@ Clarifications to agree with Wema:
 | Collection reconciliation | Bank balance/statement access, Transaction Search URL/authentication and agreed retry/re-push/settlement rules |
 | Outgoing transfers | Separate payout initiation, idempotency and status/reversal contracts; inbound VAS docs do not define these |
 | Retained bill payments | Independent bill lifecycle implemented; VAS use requires confirmed collection-account debit permission and statement mapping; existing bill API is retained |
-| Prembly identity | Live key authenticated and wallet active on 6 October; balance NGN 0.00. Fund Prembly before a real BVN test; SMS/email acceptance and handset/inbox delivery still need a consenting participant |
+| Prembly identity | Live key authenticated and wallet active on 6 October. Confirm provider funding before a real BVN test; SMS/email acceptance and handset/inbox delivery still need a consenting participant |
 | Existing customer migration | Bank closure/conversion instructions, reviewed cutover evidence and resolution of existing balances/pending work |
 | Fully in-WhatsApp enrollment | Encrypted consent, identity and SMS recovery screens implemented; publish/verify the new Flow before enabling its gate |
 | General customer launch | Real settlement evidence, reconciliation, product/payment readiness and tested app/WhatsApp release |
@@ -223,10 +223,10 @@ Subsequent 6 October checks: all ten services reached release
 and zero skips. The 18 distinct electricity prepaid/postpaid mappings were
 reviewed and applied. Oregon was archived and permanently deleted with the
 owner's explicit confirmation; all remaining Render resources are in Frankfurt.
-Prembly's production key authenticated against its wallet endpoint; the account
-was active with **NGN 0.00** available. Fund that provider wallet before a real
-BVN test. The deployed Resend sender domain `send.zitch.ng` was verified; Termii
-authenticated with NGN 2,319.20 and its configured `OE Alert` sender was active.
+Prembly's production key authenticated against its wallet endpoint and the account
+was active. Check the private operator report for funding before a real BVN test.
+The deployed Resend sender domain `send.zitch.ng` was verified; Termii
+authenticated and its configured sender was active.
 Neither check proves receipt on a participant's
 phone or in their inbox.
 

@@ -3971,6 +3971,7 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str, *,
     masked_phone = f"•••••{phone[-4:]}"
     delivery = None
     if is_prembly:
+        from accounts.views import _branded_email
         from utility.providers import _record_email, identity_otp_delivery_payload
         from urllib3.util import Timeout
 
@@ -3981,7 +3982,12 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str, *,
             if email_live():
                 try:
                     emailed = send_email(record_email, "Your Zitch identity verification code", message,
-                        timeout=Timeout(total=2, connect=1, read=1))
+                        timeout=Timeout(total=2, connect=1, read=1),
+                        html=_branded_email(
+                            f"Verify your {kind.upper()}",
+                            "Enter this code on the secure WhatsApp screen to verify your identity.",
+                            code=code,
+                            note="This code expires in 10 minutes. Never share it."))
                     email_status = ("accepted" if emailed.get("success") is True
                                     and not emailed.get("mock") else "failed")
                 except Exception:

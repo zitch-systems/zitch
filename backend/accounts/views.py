@@ -1588,7 +1588,12 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict)
             if email_live():
                 try:
                     email_result = send_email(email, f"Your Zitch {kind.upper()} verification code",
-                                              message, timeout=5)
+                                              message, timeout=5,
+                                              html=_branded_email(
+                                                  f"Verify your {kind.upper()}",
+                                                  "Enter this code in Zitch to verify your identity.",
+                                                  code=code,
+                                                  note="This code expires in 10 minutes. Never share it."))
                     email_status = ("accepted" if isinstance(email_result, dict)
                                     and email_result.get("success") is True
                                     and not email_result.get("mock") else "failed")
