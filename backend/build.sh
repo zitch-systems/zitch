@@ -10,6 +10,9 @@ python manage.py collectstatic --no-input
 # check to close the race between this preflight and schema application.
 python manage.py audit_card_uniqueness
 python manage.py migrate
+# Read-only, redacted evidence for operators while public maintenance is on.
+# This reports configuration gaps; it cannot authorize release or change funds.
+python manage.py vas_deployment_diagnostics
 python manage.py seed_plans
 
 # Map Wema's VAS catalogue onto our seeded plans, when asked to.

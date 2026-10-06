@@ -47,6 +47,7 @@ Still open before go-live:
 """
 import hashlib
 import hmac
+import inspect
 import json
 import logging
 import re
@@ -172,6 +173,23 @@ def _new_partnership_instruction(function):
         blocked = _partnership_archive_result()
         return blocked if blocked is not None else function(*args, **kwargs)
 
+    return guarded
+
+
+def _new_biller_instruction(function):
+    """Retain bills while independently enforcing the ledger's funding source."""
+    signature = inspect.signature(function)
+    @wraps(function)
+    def guarded(*args, **kwargs):
+        from .providers import _biller_source
+        bound = signature.bind(*args, **kwargs)
+        source, blocked = _biller_source(bound.arguments.get("reference"),
+            amount=bound.arguments["amount_naira"],
+            source_account=bound.arguments.get("source_account", ""))
+        if blocked is not None:
+            return blocked
+        bound.arguments["source_account"] = source
+        return function(*bound.args, **bound.kwargs)
     return guarded
 
 
@@ -1933,7 +1951,7 @@ def _vas_source() -> str:
     return settings.WEMA.get("SOURCE_ACCOUNT", "")
 
 
-@_new_partnership_instruction
+@_new_biller_instruction
 def purchase_airtime(amount_naira, reference: str, phone: str, network: str, *,
                      source_account: str = "") -> dict:
     """Airtime purchase debiting the user's NUBAN (Client single-account variant)."""
@@ -2002,7 +2020,7 @@ def get_data_plans(network: str = "") -> dict:
         return _unreachable(exc)
 
 
-@_new_partnership_instruction
+@_new_biller_instruction
 def purchase_data(amount_naira, reference: str, phone: str, network: str, package_code: str, *,
                   source_account: str = "") -> dict:
     """Data purchase (Client single-account). `package_code` is Wema's plan code."""
@@ -2130,7 +2148,7 @@ def _vas_token(data: dict) -> str:
     return ""
 
 
-@_new_partnership_instruction
+@_new_biller_instruction
 def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, source_account: str = "",
              email: str = "", phone: str = "", name: str = "", charge=0) -> dict:
     """Pay a bill debiting the user's NUBAN (Client PayBill variant).
@@ -2554,7 +2572,7 @@ def validate_rrr(rrr: str) -> dict:
         return _unreachable(exc)
 
 
-@_new_partnership_instruction
+@_new_biller_instruction
 def pay_remita(amount_naira, reference: str, *, rrr: str, source_account: str = "", charge=0,
                email: str = "", phone: str = "", name: str = "", payer_name: str = "",
                payer_email: str = "", payer_number: str = "", description: str = "") -> dict:

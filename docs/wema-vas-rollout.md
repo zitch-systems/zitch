@@ -10,11 +10,12 @@ web service, database or cache is needed. `incubator/wema_vas` is archived as an
 isolated prototype.
 
 This is a **collections implementation awaiting bank validation**, not approval
-to launch a complete banking product. Outgoing VAS transfers, bill payments,
-collection-bank balance reconciliation and automatic transaction search cannot
-be implemented from the supplied inbound contract. New VAS spending is therefore
-blocked in the locked wallet debit path and before Partnership provider calls.
-There is no switch that makes undocumented outgoing calls safe.
+to launch a complete banking product. Partnership account creation and transfers
+are archived independently of the retained bill-payment service. Existing bills
+keep their established provider contract and customer funding checks. VAS-funded
+bills require separate bank approval for debiting the profiled collection account;
+they cannot fall back to an old customer NUBAN or the legacy pool. Outgoing VAS
+transfers and automatic bank reconciliation remain closed without their contracts.
 
 The implementation follows Wema's [Third Party Virtual Account API documentation](https://wemabank-doc.notion.site/Wema-Bank-Third-Party-Virtual-Account-API-Integration-Documentation-31f13df490b68074aa99df46b1de9a4f),
 version 2.0. Static accounts are selected. Prefix `711` is for bank validation;
@@ -34,7 +35,7 @@ customer session tokens and old Partnership APIM keys.
 | --- | --- |
 | `/vas/account-lookup` | Exact 10-digit account lookup, `Zitch/` legal name, encrypted verified BVN/NIN, active/invalid responses |
 | `/vas/transaction-notification` | Validated decimal strings; atomic ledger credit, receipt and alert outbox; exact duplicates return the same acknowledgment; conflicting references reject |
-| `/vas/mini-statement` | VAS posted credits across ten Lagos calendar dates anchored to latest movement; no historical Partnership or held credits |
+| `/vas/mini-statement` | VAS credits, reserved bill debits and once-only refund credits across ten Lagos calendar dates anchored to latest movement; no historical Partnership or held credits |
 | `/vas/kyc-details` | Verified identity and VAS-only posted balance, including inactive accounts |
 | `/vas/block-account` | Serialized restriction preserving original reason and timestamp; no new spendable credit or spend |
 | `/api/wallet/vas/enroll/` | Customer-authenticated POST with existing verified `bvn` or `nin` and literal `consent: true` |
@@ -54,6 +55,11 @@ trusted durable identity proof and provider-confirmed legal name. Profile-name
 changes cannot rename a bank account. Earlier proof records without a legal-name
 snapshot must complete provider lookup plus registered-phone SMS ownership again;
 they are never backfilled from mutable profile names. The app provides that path.
+Set `KYC_PROVIDER=prembly` on every Django runtime and retain the configured
+Prembly API key and application ID. VAS identity requires a live Prembly lookup
+and SMS to the identity-registered phone; it never falls back to Partnership or
+mock proof. The app accepts this ownership challenge without a bank tracking ID.
+Historical tracked bank OTP completions remain supported.
 
 Explicit enrollment consent records encrypted storage and disclosure to Wema.
 Raw IDs are encrypted with a separate rotating Fernet keyring; current keyed
@@ -94,9 +100,12 @@ customer balance is copied to a new bank account.
    `WEMA_PARTNERSHIP_MODE=active`, `WEMA_VAS_ENABLED=false`, enrollment false.
    Verify schema, PostgreSQL constraints, readiness and shared cache.
 3. Set `WEMA_PARTNERSHIP_MODE=archive` consistently on API, worker and all crons
-   when customer maintenance is active. This archives new business while
+   when customer maintenance is active. This archives new account/transfer business while
    preserving outstanding settlement and historical evidence. Retain legacy
    credentials while old work still needs requery. Do not delete them as cleanup.
+   Keep `WEMA_BILLER_MODE=active` to preserve bills and `KYC_PROVIDER=prembly` for
+   identity. Keep VAS collection-funded bills disabled until their funding approval
+   and bank statement mapping are verified as described below.
 4. Stage a distinct strong random token and Fernet keyring through secret
    management. Enable VAS validation with prefix `711`. Enable trusted proxy
    handling only behind the controlled TLS-terminating proxy. Ensure the canonical
@@ -133,6 +142,11 @@ customer balance is copied to a new bank account.
    immutable `711` validation users and accounts for live collections.
 
 ## Operator readiness and shared configuration
+
+After migrations, the Render build runs `vas_deployment_diagnostics`. Its single
+redacted report includes credential-presence booleans, provider selections and
+local readiness. It prints no keys, identity values, collection account or approval
+reference. It does not contact providers or establish bank acceptance.
 
 `python manage.py vas_preflight --stage validation` performs read-only, redacted
 configuration, schema, migration, immutable-trigger and sample-account checks.
@@ -174,11 +188,48 @@ customer funding instructions, but preserves the five bank endpoints and their
 receipt handling for deposits already sent. Never use a token rotation, prefix
 change, disabled endpoint or service shutdown as an enrollment pause.
 
-Both provider selection and archive mode reject new Partnership initiation;
+Both provider selection and archive mode reject new Partnership account/transfer initiation;
 neither reroutes VAS spending to the old products. Never flip an enrolled customer
 back to the old rail as an automatic fallback. After live receipts exist, preserve
 the VAS bank endpoints and ledger when rolling back customer UI. Stopping a receipt
 endpoint after acknowledgment is not a financial rollback.
+
+## Retained bill payments
+
+`WEMA_BILLER_MODE=active` controls bills separately from the archived account and
+transfer products. Legacy bills require the customer's own retained NUBAN, cleared
+history review, identity checks and applicable daily limits. Historical queries,
+callbacks and refunds remain available when new purchases are disabled.
+
+For an approved live VAS customer, configure `WEMA_VAS_BILLER_ENABLED=true`,
+`WEMA_VAS_BILLER_SOURCE_ACCOUNT` equal to `WEMA_VAS_COLLECTION_ACCOUNT`, and a genuine
+`WEMA_VAS_BILLER_APPROVAL_REFERENCE`. Apply them consistently to every Django
+runtime only after Wema confirms the retained bill API may debit that account.
+An active non-711 account, rollout eligibility and adequate canonical VAS funds
+remain mandatory. These configuration fields do not manufacture bank approval.
+
+Each new bill has an immutable funding binding. Pending debits reserve funds;
+failure releases the reservation once, alongside the existing wallet refund.
+Neither mutable transaction metadata nor late historical credits authorize VAS
+spending. Callback authorization checks the binding and current account restriction.
+Remita remains unavailable where its existing status/requery contract is absent.
+
+Static accounts require credit and debit statements. Utility products do not
+provide destination account numbers, so bill debit/refund rows have empty
+`accountNo` and `bankName` rather than invented destinations. Agree this mapping,
+pending-reservation treatment and the document's inconsistent date-field casing
+with Wema before enabling collection-funded bills.
+
+## Inbound Search evidence
+
+`vas_reconcile_snapshot --snapshot <file> --session-id <session>` (or `--account`)
+compares an existing bank Search JSON export with local receipts and ledger
+bindings. It is read-only, scopes every response row, omits account numbers,
+uses keyed session-reference pseudonyms and
+never treats a supplied file as authenticated or complete settlement evidence.
+It flags missing notifications, held receipts, conflicts and bank uncertainty.
+Non-`00` NIBSS outcomes require Wema support; they never trigger an automatic
+refund. Production Search URL/authentication and pagination remain unavailable.
 
 ## Outstanding bank and operations evidence
 
@@ -187,8 +238,9 @@ endpoint after acknowledgment is not a financial rollback.
   semantics. Pure request builders/classification exist, but make no network calls.
 - Collection-bank balance/statement access, fee and settlement rules, reconciliation
   ownership, evidence of a real end-to-end credit and failure/re-push procedure.
-- Payout initiation, idempotency, status enquiry and reversal contracts; separate
-  bill-payment contracts. Inbound Search is never treated as outward TSQ.
+- Payout initiation, idempotency, status enquiry and reversal contracts. Inbound
+  Search is never treated as outward TSQ. Retained bills additionally need bank
+  confirmation of collection-account debit funding and statement mapping for VAS.
 - Existing-account closure/conversion and balance migration instructions.
 - KYC operational acceptance, live SMS/liveness evidence and reviewed legal names.
 - Hosting restored, background consumers controlled, backups tested, deployment and
@@ -206,8 +258,10 @@ correction is made.
 Django is the application framework; Render is the hosting platform. Keep Django
 and reuse the existing Render services for this bank migration. A separate host
 migration would add database, secret, TLS, callback and worker changes at the same
-time as a financial integration change. The suspended services must be restored
-before a live deployment can be verified.
+time as a financial integration change. Billing was restored on 6 October 2026;
+the API deployed `f2ff3f2` at 11:14 UTC, applied its migrations and passed internal
+readiness. Public maintenance and runtime configuration still require separate
+verification before bank validation; a healthy API is not proof of launch readiness.
 
 If DigitalOcean is considered later, a 2 GB VM, weekly backup and basic managed
 PostgreSQL provide a lower infrastructure floor (about $31.70/month with 20 GB

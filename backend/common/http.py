@@ -40,7 +40,7 @@ def ok(data=None, **extra):
     return JsonResponse(payload, status=200)
 
 
-def send_limit_error(user, amount) -> str | None:
+def send_limit_error(user, amount, *, biller=False) -> str | None:
     """User-facing reason `amount` can't be sent — tier cap or (at/above the
     large-txn threshold) missing face verification — or None if it's allowed.
 
@@ -69,7 +69,7 @@ def send_limit_error(user, amount) -> str | None:
     # gateway. Refusing here turns that into a clear message instead of a failed
     # payout that has to be reversed. Silent until the account's bank tier is known.
     from wallet.services import bank_spend_error
-    return bank_spend_error(user, amount)
+    return bank_spend_error(user, amount, biller=biller)
 
 
 def velocity_exceeded(user) -> bool:
@@ -109,7 +109,7 @@ def check_velocity(user):
     return None
 
 
-def check_send_limits(user, amount):
+def check_send_limits(user, amount, *, biller=False):
     """HTTP wrapper around `send_limit_error`: returns an error JsonResponse if
     `amount` breaks a limit, otherwise None. Also applies the fraud velocity
     guard (check_velocity) — every money-send path funnels through here."""
@@ -118,14 +118,14 @@ def check_send_limits(user, amount):
         return velocity
     if amount > user.transaction_limit:
         return fail(
-            send_limit_error(user, amount),
+            send_limit_error(user, amount, biller=biller),
             status=403, code="limit_exceeded", tier=user.tier,
             transaction_limit=str(user.transaction_limit),
         )
     from accounts.models import User
     if amount >= User.LARGE_TXN_THRESHOLD and not user.face_verified:
         return fail(
-            send_limit_error(user, amount),
+            send_limit_error(user, amount, biller=biller),
             status=403, code="face_required",
             large_txn_threshold=str(User.LARGE_TXN_THRESHOLD),
         )
@@ -304,7 +304,8 @@ def spend_limit_error(user, amount, service: str) -> "str | None":
         return unverified
     if velocity_exceeded(user):
         return "Too many transactions in a short time. Please wait a few minutes and try again."
-    msg = send_limit_error(user, amount)
+    from wallet.services import is_biller_service
+    msg = send_limit_error(user, amount, biller=is_biller_service(service))
     if msg:
         return msg
     kind = daily_kind_for(service)

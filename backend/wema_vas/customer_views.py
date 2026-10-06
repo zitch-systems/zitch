@@ -6,9 +6,10 @@ from django.views.decorators.csrf import csrf_exempt
 
 from common.http import api, fail, ok, require_user
 from common.ratelimit import ratelimit
+from wallet.services import customer_funding_account
 
 from .config import config
-from .enrollment import customer_account_payload, enroll_verified
+from .enrollment import enroll_verified
 from .views import _secure
 
 
@@ -31,7 +32,7 @@ def enroll(request):
         return _private(fail(" ".join(exc.messages), status=409, code="vas_enrollment_pending"))
     except (DatabaseError, ImproperlyConfigured):
         return _private(fail("New funding accounts are temporarily unavailable. Please try again later.", status=503))
-    return _private(ok(success=True, **customer_account_payload(request.user_obj)))
+    return _private(ok(success=True, **customer_funding_account(request.user_obj)))
 
 
 @csrf_exempt
@@ -39,4 +40,4 @@ def enroll(request):
 def status(request):
     if request.method not in ("GET", "POST"):
         return _private(fail("Method not allowed", status=405))
-    return _private(ok(success=True, **(customer_account_payload(request.user_obj) or {"provider": "partnership", "enrollment_available": False})))
+    return _private(ok(success=True, **customer_funding_account(request.user_obj)))

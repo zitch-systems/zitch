@@ -39,7 +39,17 @@ def _response(status_code, payload):
     return resp
 
 
-class RefusedPurchaseRefundsTests(SimpleTestCase):
+class BillerTransportSourceMixin:
+    """Funding approval is separate from provider-envelope/refund parsing."""
+    def setUp(self):
+        super().setUp()
+        resolver = mock.patch("wallet.services.biller_source_for_transaction",
+            side_effect=lambda reference, *, amount, source_account="": source_account)
+        resolver.start()
+        self.addCleanup(resolver.stop)
+
+
+class RefusedPurchaseRefundsTests(BillerTransportSourceMixin, SimpleTestCase):
     """The purchase path: any 4xx refusal means nothing was executed."""
 
     @override_settings(WEMA=WEMA_LIVE)
@@ -94,7 +104,7 @@ class RefusedPurchaseRefundsTests(SimpleTestCase):
         self.assertFalse(res["pending"])
 
 
-class RefusedInTheBodyUnderHttp200Tests(SimpleTestCase):
+class RefusedInTheBodyUnderHttp200Tests(BillerTransportSourceMixin, SimpleTestCase):
     """The shape that actually reaches us, and that the HTTP-status check missed.
 
     The first version of this guard read only the status line, shipped, deployed —
@@ -224,7 +234,7 @@ class EntitlementIsAskedOfTheGatewayTests(SimpleTestCase):
         self.assertTrue(entitled)
 
 
-class RefusalLogCannotBeForgedTests(SimpleTestCase):
+class RefusalLogCannotBeForgedTests(BillerTransportSourceMixin, SimpleTestCase):
     """A reference reaches this log from outside the process. A newline inside one
     writes what reads as its own entry — and a forged "settled" line under a real
     reference is exactly what nobody would think to disbelieve while reading a

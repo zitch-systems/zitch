@@ -10,6 +10,7 @@ import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { walletCapabilityMessage } from '@/lib/services/wallet';
 
 const GRID = [
   { label: 'Airtime', icon: 'airtime', badge: '6% off', go: () => router.push('/buyairtime') },
@@ -39,7 +40,8 @@ const MORE = [
 
 const Home = () => {
   const { c } = useTheme();
-  const { balance, firstName, fullName, avatar, accountNumber, bankName, spendingAvailable, fundingMessage, txns, showBal, setShowBal, reload } = useWallet();
+  const { balance, firstName, fullName, avatar, accountNumber, bankName, spendingAvailable, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload } = useWallet();
+  const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const [more, setMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -172,9 +174,9 @@ const Home = () => {
         </View>
       </Hero>
 
-      {spendingAvailable === false ? (
+      {capabilityMessage ? (
         <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 20, marginHorizontal: 16, marginBottom: 16 }}>
-          Transfers and bill payments are unavailable. {fundingMessage}
+          {capabilityMessage} {fundingMessage}
         </Text>
       ) : null}
 

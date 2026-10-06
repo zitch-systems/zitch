@@ -46,13 +46,16 @@ class BillerRoutingTests(TestCase):
 
     def test_the_purchase_actually_goes_to_wema_pay_bill(self):
         WemaBiller.objects.create(service_id="abuja-electric", package_id="31")
-        with mock.patch("utility.wema.pay_bill",
-                        return_value={"success": True, "status": "SUCCESS"}) as pay:
+        # This exercises package mapping after funding has been approved.
+        with mock.patch("wallet.services.biller_source_for_transaction", return_value="0155500011"), \
+                mock.patch("utility.wema.pay_bill",
+                           return_value={"success": True, "status": "SUCCESS"}) as pay:
             res = vtu_purchase("abuja-electric",
                                {"amount": "2500", "billersCode": "1234567890"}, "REF9")
         pay.assert_called_once()
         self.assertEqual(pay.call_args.kwargs["package_id"], "31")
         self.assertEqual(pay.call_args.kwargs["identifier"], "1234567890")
+        self.assertEqual(pay.call_args.kwargs["source_account"], "0155500011")
         self.assertEqual(res["vas_rail"], "wema")
 
 
@@ -101,11 +104,13 @@ class LegacyVasProviderSettingTests(TestCase):
     @override_settings(VAS_PROVIDER="vtung")
     def test_a_mapped_biller_is_still_paid_through_the_partner_bank(self):
         WemaBiller.objects.create(service_id="ikeja-electric", package_id="77")
-        with mock.patch("utility.wema.pay_bill",
-                        return_value={"success": True, "status": "SUCCESS"}) as p:
+        with mock.patch("wallet.services.biller_source_for_transaction", return_value="0155500011"), \
+                mock.patch("utility.wema.pay_bill",
+                           return_value={"success": True, "status": "SUCCESS"}) as p:
             res = vtu_purchase("ikeja-electric", {"amount": "1000"}, "REF1")
         p.assert_called_once()
         self.assertEqual(p.call_args.kwargs["package_id"], "77")
+        self.assertEqual(p.call_args.kwargs["source_account"], "0155500011")
         self.assertEqual(res["vas_rail"], "wema")
 
 

@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback, use
 import { getToken, saveDisplayName, saveSpendAccountNamespace } from '@/lib/secureStore';
 import { apiPost, apiJson } from '@/lib/api';
 import type { Txn } from '@/components/design/ui';
+import { walletCapabilities } from '@/lib/services/wallet';
 
 // An external bank account the user linked via Mono open banking. Mirrors the
 // backend banklink.views._serialize shape (balance is display-only/cached).
@@ -81,6 +82,8 @@ type WalletValue = {
   accountName: string;
   bankName: string;
   spendingAvailable: boolean;
+  billPaymentsAvailable: boolean;
+  transfersAvailable: boolean;
   fundingMessage: string;
   txns: Txn[];
   loading: boolean;
@@ -111,6 +114,8 @@ const WalletContext = createContext<WalletValue>({
   accountName: '',
   bankName: '',
   spendingAvailable: true,
+  billPaymentsAvailable: true,
+  transfersAvailable: true,
   fundingMessage: '',
   txns: [],
   loading: true,
@@ -132,6 +137,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const [accountName, setAccountName] = useState('');
   const [bankName, setBankName] = useState('');
   const [spendingAvailable, setSpendingAvailable] = useState(true);
+  const [capabilities, setCapabilities] = useState(() => walletCapabilities(undefined));
   const [fundingMessage, setFundingMessage] = useState('');
   const [txns, setTxns] = useState<Txn[]>([]);
   const [loading, setLoading] = useState(true);
@@ -198,6 +204,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
             (value.available === true && value.has_account === true && value.account_setup_state === 'ready');
           setAccountNumber(fundable ? String(value.account_number ?? '') : '');
           setSpendingAvailable(value.spending_available !== false);
+          setCapabilities(walletCapabilities(value));
           setFundingMessage(String(value.migration_message ?? ''));
           setPhoneNumber(String(value.user_phone_number ?? ''));
           setAccountName(String(value.account_name ?? ''));
@@ -239,8 +246,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   // wallet consumer (Home, Wallet, the tab bar, service screens) re-renders
   // whenever the provider renders, even when nothing it reads has changed.
   const value = useMemo(
-    () => ({ balance, firstName, fullName: accountName || `${firstName} ${lastName}`.trim(), avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, fundingMessage, txns, loading, hydrated, showBal, setShowBal, reload: load, linked, reloadLinked }),
-    [balance, firstName, lastName, avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, fundingMessage, txns, loading, hydrated, showBal, load, linked, reloadLinked],
+    () => ({ balance, firstName, fullName: accountName || `${firstName} ${lastName}`.trim(), avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, ...capabilities, fundingMessage, txns, loading, hydrated, showBal, setShowBal, reload: load, linked, reloadLinked }),
+    [balance, firstName, lastName, avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, capabilities, fundingMessage, txns, loading, hydrated, showBal, load, linked, reloadLinked],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;

@@ -1,7 +1,7 @@
 """Third-party integration layer.
 
-The partner-bank client in utility.wema is the sole money-movement, Nigeria-KYC
-and VAS rail. Termii handles SMS/OTP, Resend handles email, Prembly/IdentityPass
+The client in utility.wema retains the bank biller product independently of the
+archived Partnership account/transfer rail. Prembly verifies identities. Termii handles SMS/OTP, Resend handles email, Prembly/IdentityPass
 handles selfie/liveness + address + ID-document KYC where needed, and Fincra
 handles FX. Each function returns {"success": bool, ...}. In production,
 money/identity mocks fail closed so a misconfigured deploy never fakes money
@@ -48,6 +48,26 @@ def partnership_new_business_allowed(user=None) -> bool:
 def _archived_payment_result() -> dict:
     return {"success": False, "message": PARTNERSHIP_ARCHIVED_MESSAGE,
             "code": "partnership_archived", "not_charged": True}
+
+
+def biller_enabled() -> bool:
+    """The retained biller product has its own lifecycle, separate from accounts."""
+    return str(getattr(settings, "WEMA_BILLER_MODE", "active") or "").strip().lower() == "active"
+
+
+def _biller_source(reference, *, amount, source_account=""):
+    """Resolve an approved debit source; failures never reach a provider."""
+    from wallet.services import LimitExceeded, biller_source_for_transaction
+    if not biller_enabled():
+        return "", {"success": False, "pending": False, "not_charged": True,
+                    "code": "biller_unavailable",
+                    "message": "Bill payments are temporarily unavailable. You have not been charged."}
+    try:
+        return biller_source_for_transaction(reference, amount=amount,
+            source_account=source_account), None
+    except LimitExceeded as exc:
+        return "", {"success": False, "pending": False, "not_charged": True,
+                    "code": "biller_funding_unavailable", "message": str(exc)}
 
 
 def _partnership_reference_blocked(reference: str | None = None, source_account: str = "") -> bool:
@@ -243,26 +263,6 @@ def _wema_vas_route(service_id: str, payload: dict):
     return None
 
 
-def _vas_source_account(payload: dict, reference: str | None) -> str:
-    """The NUBAN a partner bank VAS purchase debits (per-user-balance money-flow model).
-
-    An explicit ``payload["source_account"]`` wins; otherwise the buyer's own
-    wallet NUBAN is resolved from the ledger row the purchase is keyed on (the
-    row exists by the time the provider call runs), so EVERY caller — app views
-    and the WhatsApp router alike — debits the buyer's account rather than
-    silently falling back to the shared WEMA_SOURCE_ACCOUNT pool, which would
-    leak pool float while the buyer's NUBAN keeps its money. Blank only when the
-    buyer has no partner bank NUBAN yet (the partner bank client then uses the pool)."""
-    src = str(payload.get("source_account", "") or "")
-    if src or not reference:
-        return src
-    from wallet.models import Transaction
-    txn = Transaction.objects.filter(reference=reference).select_related("user").first()
-    if txn is None:
-        return ""
-    return getattr(getattr(txn.user, "wallet", None), "account_number", "") or ""
-
-
 def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
     """Submit every VAS purchase through the partner-bank biller.
 
@@ -271,8 +271,6 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
     """
     from . import wema
 
-    if _partnership_reference_blocked(reference, str(payload.get("source_account") or "")):
-        return _archived_payment_result()
     route = _wema_vas_route(service_id, payload)
     if route is None:
         return {
@@ -280,6 +278,10 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
             "message": "This service is not configured with our partner bank yet.",
             "vas_rail": "wema",
         }
+    src, source_error = _biller_source(reference, amount=route["amount"],
+        source_account=str(payload.get("source_account") or ""))
+    if source_error:
+        return source_error
     can_settle, why = vas_can_settle(route["type"])
     if not can_settle:
         # Refuse BEFORE the provider call, so the customer's debit is refunded by the
@@ -296,7 +298,6 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
             "vas_type": route["type"],
             "unsettleable": why,
         }
-    src = _vas_source_account(payload, reference)
     phone = payload.get("phone", "")
     if route["type"] == "airtime":
         network = _wema_network(service_id.rsplit("-airtime", 1)[0])
@@ -894,20 +895,17 @@ def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# KYC — BVN / NIN / vNIN (partner bank)
+# KYC — Prembly BVN/NIN, with explicitly selected legacy compatibility
 #
 # verify_bvn / verify_nin / verify_vnin are the provider-agnostic entry points the
 # rest of the app calls. ALAT has NO standalone identity lookup, so BVN/NIN are
-# verified by the NUBAN account-creation flow (which name-matches the holder record
-# ALAT returns — see wema.holder_name_mismatch + wallet.views.wema_wallet_verify_otp).
-# These entry points therefore no longer call a lookup endpoint: in production they
-# return an otp_required redirect to account setup; dev/tests keep the mock so the
-# offline KYC flow still exercises. The image/biometric steps (selfie/liveness,
-# address, ID-document OCR) stay on Prembly above. Identity never mock-passes in prod.
+# verified through Prembly's independent lookup and the registered-phone ownership
+# challenge. An explicitly selected legacy deployment can retain its existing
+# NUBAN account-creation flow. VAS and explicit Prembly selection never fall back
+# to that account-creation route when identity credentials are unavailable.
 # ---------------------------------------------------------------------------
 def kyc_provider() -> str:
-    """The BVN/NIN backend — 'wema' (the sole rail). Retained so any caller/diagnostic
-    that reads the selector keeps working."""
+    """Use Prembly for VAS and honour explicit legacy identity selection."""
     if not partnership_new_business_allowed():
         return "prembly"
     choice = (getattr(settings, "KYC_PROVIDER", "") or "").strip().lower()
@@ -923,12 +921,12 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
     credentials are staged in the environment; the dedicated simulated-KYC path
     supplies namespaced fake hashes without accepting or storing a real BVN.
 
-    Falls back to the partner bank behaviour when Prembly is unconfigured or the
-    deploy-wide simulation switch is on.
+    An explicit Prembly choice never falls back to bank account creation or a
+    mock when its credentials are missing or the simulation switch is on.
     """
     if _prembly_live():
         return prembly_verify_bvn(bvn, name=name, timeout=timeout)
-    if not partnership_new_business_allowed():
+    if kyc_provider() == "prembly":
         return {"success": False, "message": "Identity verification is temporarily unavailable.",
                 "code": "identity_provider_unavailable"}
     from . import wema
@@ -1083,12 +1081,12 @@ def verify_nin(nin: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> dict:
     second rail every NIN falls to the operator review queue, and nobody can
     spend until a human clears them.
 
-    Falls back to the partner bank behaviour when Prembly is unconfigured, so a deploy
-    without those keys behaves exactly as it did before.
+    An explicit Prembly choice remains unavailable if its credentials are absent;
+    only a selected legacy bank identity flow may use the old provider.
     """
     if _prembly_live():
         return prembly_verify_nin(nin, name=name, timeout=timeout)
-    if not partnership_new_business_allowed():
+    if kyc_provider() == "prembly":
         return {"success": False, "message": "Identity verification is temporarily unavailable.",
                 "code": "identity_provider_unavailable"}
     from . import wema
@@ -1660,11 +1658,16 @@ def remita_validate(rrr: str) -> dict:
 
 
 def remita_pay(amount_naira, reference: str, *, rrr: str, source_account: str = "", **kw) -> dict:
-    """Pay a Remita RRR debiting the user's NUBAN."""
+    """Pay a Remita RRR using the debit's approved biller source."""
     from . import wema
-    if _partnership_reference_blocked(reference, source_account):
-        return _archived_payment_result()
-    return wema.pay_remita(amount_naira, reference, rrr=rrr, source_account=source_account, **kw)
+    source, source_error = _biller_source(reference, amount=amount_naira, source_account=source_account)
+    if source_error:
+        return source_error
+    can_settle, _reason = vas_can_settle("remita")
+    if not can_settle:
+        return {"success": False, "pending": False, "not_charged": True,
+                "code": "remita_unavailable", "message": _VAS_UNAVAILABLE}
+    return wema.pay_remita(amount_naira, reference, rrr=rrr, source_account=source, **kw)
 
 
 def bnpl_offers() -> dict:

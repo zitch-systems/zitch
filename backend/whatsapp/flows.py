@@ -1989,7 +1989,7 @@ def _submit_vtu_details(pa, data: dict) -> dict:
         extra = {"plan_code": plan.plan_code, "price": str(plan.price), "plan_name": plan.name}
 
     # Airtime and data accrue against the BILL cap, not the transfer one.
-    limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "bill")
+    limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
     if limit_msg:
         _clear_actions(pa.msisdn)
         return _success_screen(limit_msg, status="failed")

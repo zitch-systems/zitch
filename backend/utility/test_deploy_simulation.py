@@ -38,6 +38,7 @@ _STAGED = {
 @override_settings(
     DEBUG=False,
     TESTING=False,
+    KYC_PROVIDER="wema",
     WEMA={"SIMULATION": True},
     **_STAGED,
 )
@@ -51,7 +52,8 @@ class DeployWideSimulationTests(TestCase):
 
     def test_provider_operations_take_mock_paths_without_network(self):
         with patch("utility.providers.requests.post") as provider_post, \
-             patch("utility.mono.requests.post") as mono_post:
+             patch("utility.mono.requests.post") as mono_post, \
+             patch("wallet.services.biller_source_for_transaction", return_value="0100000001"):
             bvn = providers.verify_bvn("12345678901", name="Ada Test")
             face = providers.kyc_verify_face("fake-image")
             card = providers.issue_card("ADA TEST", "test-user")

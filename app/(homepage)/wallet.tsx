@@ -9,10 +9,12 @@ import { SectionLabel } from '@/components/design/widgets';
 import { ConnectedAccounts } from '@/components/design/ConnectedAccounts';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { walletCapabilityMessage } from '@/lib/services/wallet';
 
 const Wallet = () => {
   const { c } = useTheme();
-  const { balance, fullName, firstName, accountNumber, bankName, spendingAvailable, fundingMessage, txns, showBal, setShowBal, reload } = useWallet();
+  const { balance, fullName, firstName, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload } = useWallet();
+  const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const [copied, setCopied] = useState(false);
 
   // Keep balance & transactions fresh each time the tab is opened.
@@ -103,9 +105,9 @@ const Wallet = () => {
           </Pressable>
         </View>
       </LinearGradient>
-      {spendingAvailable === false ? (
+      {capabilityMessage ? (
         <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 20, marginHorizontal: 16, marginBottom: 16 }}>
-          Transfers and bill payments are unavailable. {fundingMessage}
+          {capabilityMessage} {fundingMessage}
         </Text>
       ) : null}
 

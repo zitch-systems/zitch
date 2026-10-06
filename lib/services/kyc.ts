@@ -14,6 +14,7 @@ export type KycStatus = ApiResult<{
   identity_review_required?: boolean;
   otp_required?: boolean;
   tracking_id?: string;
+  identity_verification_provider?: 'prembly' | 'wema';
   delivery?: string;
   otp_destination?: string;
   otp_destination_kind?: string;
@@ -81,6 +82,15 @@ export const resolveIdentityOtpRoute = (
   return { kind, trackingId: String(response.tracking_id) };
 };
 
+/** An explicit provider challenge has no bank tracking reference. */
+export const resolveOwnershipOtpRoute = (
+  response: Pick<KycStatus, 'success' | 'otp_required' | 'tracking_id' | 'identity_verification_provider'>,
+): { trackingId: string } | null => {
+  if (response.success === false || response.otp_required !== true) return null;
+  if (response.identity_verification_provider === 'prembly') return { trackingId: '' };
+  return response.tracking_id ? { trackingId: String(response.tracking_id) } : null;
+};
+
 export const classifyKycResponse = (response: {
   success?: boolean;
   pending?: boolean;
@@ -98,12 +108,16 @@ export const kycService = {
   confirmEmail: (otp: string) => apiJson<KycStatus>(EP.auth.emailVerifyConfirm, { otp }),
   startBvn: (bvn: string) => apiJson<KycStatus>(EP.kyc.bvnStart, { bvn }),
   confirmBvn: (trackingId: string, otp: string) =>
-    apiJson<KycStatus>(EP.kyc.bvnConfirm, { tracking_id: trackingId, otp }),
-  resendBvn: (trackingId: string) => walletService.resendWemaOtp(trackingId),
-  startNin: (nin: string) => walletService.createAccount({ nin }),
-  confirmNin: (trackingId: string, otp: string, nin: string) =>
-    walletService.verifyWemaOtp(trackingId, otp, { nin }),
-  resendNin: (trackingId: string) => walletService.resendWemaOtp(trackingId),
+    apiJson<KycStatus>(EP.kyc.bvnConfirm, { ...(trackingId ? { tracking_id: trackingId } : {}), otp }),
+  resendBvn: (trackingId: string, bvn: string = '') => trackingId
+    ? walletService.resendWemaOtp(trackingId)
+    : apiJson<KycStatus>(EP.kyc.bvnStart, { bvn }),
+  startNin: (nin: string) => apiJson<KycStatus>(EP.kyc.nin, { nin }),
+  confirmNin: (trackingId: string, otp: string) =>
+    apiJson<KycStatus>(EP.kyc.ninConfirm, { ...(trackingId ? { tracking_id: trackingId } : {}), otp }),
+  resendNin: (trackingId: string, nin: string = '') => trackingId
+    ? walletService.resendWemaOtp(trackingId)
+    : apiJson<KycStatus>(EP.kyc.nin, { nin }),
   verifyNin: (nin: string, ninImage: string) => apiJson<KycStatus>(EP.kyc.nin, { nin, nin_image: ninImage }),
   verifyFace: (selfie: string) => apiJson<KycStatus>(EP.kyc.face, { selfie }),
   verifyAddress: (address: ResidentialAddress, document?: string) => {

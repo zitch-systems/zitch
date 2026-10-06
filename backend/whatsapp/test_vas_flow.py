@@ -133,7 +133,7 @@ class VasFlowTests(TestCase):
         for consent in (False, None, "true", 1):
             cache.clear()
             token = self.start()
-            with patch("utility.providers.verify_bvn") as lookup:
+            with patch("utility.providers.prembly_verify_bvn") as lookup:
                 response = self.exchange(token, {"consent": consent, "identity_type": "bvn"}, vas_flow.SETUP)
             lookup.assert_not_called()
             self.assertIn("cancelled", response["data"]["message"])
@@ -242,7 +242,7 @@ class VasFlowTests(TestCase):
     def provider_code(self, token):
         IdentityProof.objects.filter(user=self.user).delete()
         with patch("utility.providers._prembly_live", return_value=True), \
-                patch("utility.providers.verify_bvn", return_value={"success": True, "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}), \
+                patch("utility.providers.prembly_verify_bvn", return_value={"success": True, "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}), \
                 patch.object(router, "sms_live", return_value=True), \
                 patch.object(router, "send_sms", return_value={"success": True}) as sms:
             response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
@@ -313,7 +313,7 @@ class VasFlowTests(TestCase):
         token = self.start()
         self.consent(token)
         with patch("utility.providers._prembly_live", return_value=True), \
-                patch("utility.providers.verify_bvn", return_value={"success": True,
+                patch("utility.providers.prembly_verify_bvn", return_value={"success": True,
                     "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}) as lookup, \
                 patch.object(router, "sms_live", return_value=True), \
                 patch.object(router, "send_sms", return_value={"success": True}) as sms, \
@@ -333,7 +333,7 @@ class VasFlowTests(TestCase):
         token = self.start()
         self.consent(token)
         with patch("utility.providers._prembly_live", return_value=True), \
-                patch("utility.providers.verify_bvn", return_value={"success": True,
+                patch("utility.providers.prembly_verify_bvn", return_value={"success": True,
                     "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}), \
                 patch.object(router, "sms_live", return_value=True), \
                 patch.object(router, "send_sms", return_value={"success": True, "mock": True}):
@@ -366,7 +366,7 @@ class VasFlowTests(TestCase):
         token = self.start()
         self.consent(token)
         with patch("utility.providers._prembly_live", return_value=True), \
-                patch("utility.providers.verify_bvn", side_effect=RuntimeError("provider failed")):
+                patch("utility.providers.prembly_verify_bvn", side_effect=RuntimeError("provider failed")):
             self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
         self.user.refresh_from_db()
         self.assertEqual(self.user.bvn_hash, "")
@@ -397,7 +397,7 @@ class VasFlowTests(TestCase):
             concurrent.append(self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY))
             return {"success": True, "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}
         with patch("utility.providers._prembly_live", return_value=True), \
-                patch("utility.providers.verify_bvn", side_effect=lookup) as verify, \
+                patch("utility.providers.prembly_verify_bvn", side_effect=lookup) as verify, \
                 patch.object(router, "sms_live", return_value=True), \
                 patch.object(router, "send_sms", return_value={"success": True}) as sms:
             response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
@@ -450,7 +450,7 @@ class VasFlowTests(TestCase):
         token = self.start()
         self.consent(token)
         with patch("utility.providers._prembly_live", return_value=False), \
-                patch("utility.providers.verify_bvn") as lookup, patch.object(router, "send_sms") as sms:
+                patch("utility.providers.prembly_verify_bvn") as lookup, patch.object(router, "send_sms") as sms:
             response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
         lookup.assert_not_called()
         sms.assert_not_called()
@@ -462,7 +462,7 @@ class VasFlowTests(TestCase):
         token = self.start()
         self.consent(token)
         with patch("utility.providers._prembly_live", return_value=True), \
-                patch("utility.providers.verify_bvn", side_effect=RuntimeError("bad " + self.raw)), \
+                patch("utility.providers.prembly_verify_bvn", side_effect=RuntimeError("bad " + self.raw)), \
                 self.assertLogs("zitch.security", level="WARNING") as logs:
             response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
         self.assertNotIn(self.raw, json.dumps(response))

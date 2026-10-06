@@ -149,7 +149,9 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
 
     def test_vas_release_and_identity_configuration_cannot_diverge_between_consumers(self):
         """A worker with a stale rail selector or key cannot safely enroll users."""
-        keys = ("BANK_ACCOUNT_PROVIDER", "WEMA_PARTNERSHIP_MODE", "WEMA_VAS_ENABLED",
+        keys = ("BANK_ACCOUNT_PROVIDER", "WEMA_PARTNERSHIP_MODE", "WEMA_BILLER_MODE",
+                "WEMA_VAS_BILLER_ENABLED", "WEMA_VAS_BILLER_SOURCE_ACCOUNT",
+                "WEMA_VAS_BILLER_APPROVAL_REFERENCE", "KYC_PROVIDER", "WEMA_VAS_ENABLED",
                 "WEMA_VAS_MODE", "WEMA_VAS_PREFIX", "WEMA_VAS_TOKEN", "WEMA_VAS_IDENTITY_KEYS",
                 "WEMA_VAS_TRUST_TLS_PROXY", "WEMA_VAS_ENABLE_ENROLLMENT", "WEMA_VAS_RELEASE_PHASE",
                 "WEMA_VAS_PILOT_USER_IDS", "WEMA_VAS_LIVE_APPROVAL_REFERENCE",

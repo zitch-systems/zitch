@@ -1,5 +1,6 @@
 """Customer chat must never present validation or archived funding details."""
 from datetime import timedelta
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -97,3 +98,53 @@ class VasCustomerChatTests(TestCase):
         self.assertEqual(state, "done")
         self.assertIn("Reply 6 here", message)
         self.assertNotIn("Account created", message)
+
+    def test_bill_eligible_funding_and_balance_do_not_say_bills_are_disabled(self):
+        funding = {**self.funding, "has_account": True, "available": True,
+                   "account_setup_state": "ready", "account_number": "7121234567",
+                   "bill_payments_available": True, "transfers_available": False}
+        with patch.object(router, "customer_funding_account", return_value=funding), \
+                patch.object(router, "reply") as reply:
+            router._send_account_details(MSISDN, self.wallet)
+            account_message = reply.call_args.args[1]
+            router._do_balance(self.user, MSISDN)
+            balance_message = reply.call_args.args[1]
+        for message in (account_message, balance_message):
+            self.assertIn("Bill payments are available. Transfers are currently unavailable.", message)
+            self.assertNotIn("Transfers and bill payments are currently unavailable", message)
+
+    def test_bill_starters_select_biller_gate_and_transfers_keep_transfer_gate(self):
+        starters = [
+            (router._start_vtu, ()), (router._start_airtime, ()), (router._start_data, ()),
+            (router._start_electricity, ()), (router._begin_electricity, (None, None, None, None)),
+            (router._start_cable, ()), (router._begin_cable, (None, None)),
+            (router._start_exam, ()), (router._begin_airtime, (None, None, None)),
+        ]
+        for start, args in starters:
+            with self.subTest(start=start.__name__), \
+                    patch.object(router, "_blocked_from_spending", return_value=True) as guard:
+                start(self.user, MSISDN, *args)
+                guard.assert_called_once_with(self.user, MSISDN, biller=True)
+        with patch.object(router, "_blocked_from_spending", return_value=True) as guard:
+            router._start_transfer(self.user, MSISDN)
+        guard.assert_called_once_with(self.user, MSISDN)
+
+    def test_bill_gate_uses_retained_biller_capability(self):
+        def reason(user, amount, *, biller=False):
+            return None if biller else "Transfers unavailable"
+        with patch.object(router, "bank_spend_error", side_effect=reason) as guard, \
+                patch.object(router, "reply"):
+            self.assertFalse(router._blocked_from_spending(self.user, MSISDN, biller=True))
+            self.assertTrue(router._blocked_from_spending(self.user, MSISDN))
+        self.assertEqual(guard.call_args_list[0].kwargs, {"biller": True})
+        self.assertEqual(guard.call_args_list[1].kwargs, {"biller": False})
+
+    def test_bill_executor_checks_biller_limits_before_provider(self):
+        pa = PendingAction.objects.create(user=self.user, msisdn=MSISDN,
+            action_type="airtime", state="executing", payload={"amount": "100", "net": "1", "phone": "08012345678"},
+            expires_at=timezone.now() + timedelta(minutes=5))
+        with patch.object(router, "send_limit_error", return_value="Bill unavailable") as guard, \
+                patch.object(router, "_limit_reply"), patch.object(router, "run_provider_purchase") as purchase:
+            router._run_vtu(pa, self.user, MSISDN, Decimal("100"), "Airtime - MTN", None, None)
+        guard.assert_called_once_with(self.user, Decimal("100"), biller=True)
+        purchase.assert_not_called()

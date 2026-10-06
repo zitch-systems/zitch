@@ -13,7 +13,7 @@ from common.http import (
 )
 from common.phones import normalize_nigerian_mobile
 from common.ratelimit import ratelimit
-from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key, get_or_create_wallet, run_provider_purchase
+from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key, run_provider_purchase
 
 from .models import CablePlan, DataPlan
 from .providers import (
@@ -74,7 +74,7 @@ def _run_purchase(user, amount, service, meta, provider_call, idempotency_key=""
     # guard every other spend flow (transfers/betting/exams/cards) runs. Without
     # it, VTU was the one category not velocity-guarded, so a stolen session+PIN
     # could cash out via rapid airtime buys at a rate transfers would throttle.
-    limit_err = check_send_limits(user, amount)
+    limit_err = check_send_limits(user, amount, biller=True)
     if limit_err:
         return limit_err
     # Daily bill cap (after replay so a retried purchase replays cleanly).
@@ -116,15 +116,13 @@ def buyairtime(request):
     err = _check_pin(user, data)
     if err:
         return err
-    # Sender's own NUBAN — the source account a Wema airtime buy debits (per-user
-    # money-flow model). Blank only when the buyer has no NUBAN yet, in which case
-    # the rail falls back to the pool account.
-    source = get_or_create_wallet(user).account_number or ""
+    # The locked ledger debit binds its funding source. Derive it from the
+    # reference so a migrated customer never spends an old attached NUBAN.
     outcome = _run_purchase(
         user, amount, f"Airtime — {NETWORK_NAMES.get(net, net)}",
         {"phone": phone, "network": net},
         lambda ref: vtu_purchase(f"{NETWORK_NAMES[net].lower()}-airtime",
-                                 {"amount": str(amount), "phone": phone, "source_account": source},
+                                 {"amount": str(amount), "phone": phone},
                                  reference=ref),
         idempotency_key=key,
     )
@@ -410,12 +408,11 @@ def payremita(request):
             code="rrr_amount_changed",
             amount=str(authoritative_amount),
         )
-    source = get_or_create_wallet(user).account_number or ""
     name = user.get_full_name() or user.phone or "Zitch User"
     outcome = _run_purchase(
         user, amount, f"Remita — {rrr}",
         {"rrr": rrr, "vas_rail": "wema", "vas_type": "remita"},
-        lambda ref: remita_pay(amount, ref, rrr=rrr, source_account=source,
+        lambda ref: remita_pay(amount, ref, rrr=rrr,
                                email=user.email or "", phone=user.phone or "", name=name),
         idempotency_key=key,
     )

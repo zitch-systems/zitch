@@ -14,7 +14,7 @@ from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from utility import wema
-from wallet.models import Transaction, Wallet
+from wallet.models import BankHistoryCheckpoint, Transaction, Wallet
 from wallet.services import debit, get_or_create_wallet
 from wallet.tests import make_user
 
@@ -225,7 +225,10 @@ class WemaAuthenticateCallbackTests(TestCase):
         self.user, _ = make_user("08030000888", "auth@zitch.app")
         w = get_or_create_wallet(self.user)
         w.balance = Decimal("50000.00")
-        w.save(update_fields=["balance"])
+        w.account_number = "0453000888"
+        w.save(update_fields=["balance", "account_number"])
+        BankHistoryCheckpoint.objects.create(wallet=w, account_number=w.account_number,
+                                             opening_review_required=False)
 
     def _post(self, payload):
         return self.client.post(f"/webhooks/wema/authorize/{TOKEN}",
@@ -777,7 +780,10 @@ class WemaVasTerminalCallbackTests(TestCase):
         self.user, _ = make_user("08033330009", "vas-callback@zitch.app")
         wallet = get_or_create_wallet(self.user)
         wallet.balance = Decimal("50000")
-        wallet.save(update_fields=["balance"])
+        wallet.account_number = "0453333009"
+        wallet.save(update_fields=["balance", "account_number"])
+        BankHistoryCheckpoint.objects.create(wallet=wallet, account_number=wallet.account_number,
+                                             opening_review_required=False)
         self.txn = debit(self.user, Decimal("55"), "airtime",
                          meta={"reconcile": True, "vas_type": "airtime"})
 

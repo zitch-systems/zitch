@@ -9,7 +9,7 @@ from django.db import IntegrityError, OperationalError, transaction
 from django.db.models import F, Sum
 from django.utils import timezone
 
-from wallet.models import Transaction, Wallet
+from wallet.models import BillFundingBinding, BillFundingRefund, Transaction, Wallet
 from wallet.services import DuplicateTransaction, credit
 
 from .config import config
@@ -137,29 +137,49 @@ def account_balance(account):
         return account.validation_balance
     # Late Partnership credits remain in the shared historical customer wallet.
     # They are not settlement funds belonging to this VAS collection account.
-    # Outgoing VAS is disabled until its separate payout/TSQ contract is supplied.
-    return account.receipts.filter(state=Receipt.CREDITED).aggregate(value=Sum("amount"))["value"] or Decimal("0.00")
+    credits = account.receipts.filter(state=Receipt.CREDITED).aggregate(value=Sum("amount"))["value"] or Decimal("0.00")
+    # Each binding reserves one immutable debit; its once-only release records
+    # the existing wallet refund without creating a second ledger credit.
+    debits = account.bill_fundings.aggregate(value=Sum("transaction__amount"))["value"] or Decimal("0.00")
+    releases = BillFundingRefund.objects.filter(binding__vas_account=account).aggregate(
+        value=Sum("binding__transaction__amount"))["value"] or Decimal("0.00")
+    return credits - debits + releases
 
 
 def mini_statement(account):
     state = Receipt.VALIDATION if account.mode == VirtualAccount.VALIDATION else Receipt.CREDITED
-    # Credits are the only implemented VAS money movement. Held receipts and
-    # historical Partnership movements cannot be represented as VAS settlement.
-    rows = account.receipts.filter(state=state).order_by("-occurred_at", "-pk")
-    time_field = "occurred_at"
-    latest = rows.first()
-    if latest is None:
+    # Only canonical VAS funding movements belong here. A failed reservation
+    # contributes its original debit and exactly one compensating credit.
+    rows = account.receipts.filter(state=state)
+    bindings = account.bill_fundings.select_related("transaction")
+    refunds = BillFundingRefund.objects.filter(binding__vas_account=account).select_related("binding__transaction")
+    latest_times = [rows.order_by("-occurred_at").values_list("occurred_at", flat=True).first(),
+                    bindings.order_by("-created").values_list("created", flat=True).first(),
+                    refunds.order_by("-created").values_list("created", flat=True).first()]
+    latest_times = [value for value in latest_times if value is not None]
+    if not latest_times:
         return {"transactions": []}
     zone = ZoneInfo("Africa/Lagos")
-    latest_date = timezone.localdate(getattr(latest, time_field), timezone=zone)
+    latest_date = timezone.localdate(max(latest_times), timezone=zone)
     # Explicit timezone boundaries avoid dependence on the process timezone.
     from datetime import datetime, time
     start = datetime.combine(latest_date - timedelta(days=9), time.min, tzinfo=zone)
     end = datetime.combine(latest_date + timedelta(days=1), time.min, tzinfo=zone)
-    rows = rows.filter(**{time_field + "__gte": start, time_field + "__lt": end})
-    if rows.count() > 5000:
+    rows = rows.filter(occurred_at__gte=start, occurred_at__lt=end)
+    bindings = bindings.filter(created__gte=start, created__lt=end)
+    refunds = refunds.filter(created__gte=start, created__lt=end)
+    if rows.count() + bindings.count() + refunds.count() > 5000:
         raise OperationalError("Statement exceeds the configured response limit")
     result = [{"accountNo": row.source_account, "bankName": row.source_bank,
                "amount": format(row.amount, ".2f"), "direction": "Credit",
                "transactionDate": row.occurred_at.isoformat()} for row in rows]
+    # Utility products do not provide a destination NUBAN. Do not mislabel the
+    # collection funding source as a destination or invent a biller's account.
+    result.extend({"accountNo": "", "bankName": "",
+                   "amount": format(row.transaction.amount, ".2f"), "direction": "Debit",
+                   "transactionDate": row.created.isoformat()} for row in bindings)
+    result.extend({"accountNo": "", "bankName": "",
+                   "amount": format(row.binding.transaction.amount, ".2f"), "direction": "Credit",
+                   "transactionDate": row.created.isoformat()} for row in refunds)
+    result.sort(key=lambda row: row["transactionDate"], reverse=True)
     return {"transactions": result}

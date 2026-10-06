@@ -149,9 +149,12 @@ class VasDispatchTests(TestCase):
 
     @override_settings(VAS_PROVIDER="wema")
     def test_airtime_routes_to_wema(self):
-        with patch("utility.wema.purchase_airtime", return_value={"success": True}) as mw:
+        # Dispatch is independent of the wallet's reservation approval boundary.
+        with patch("wallet.services.biller_source_for_transaction", return_value="0155500011") as source, \
+                patch("utility.wema.purchase_airtime", return_value={"success": True}) as mw:
             P.vtu_purchase("mtn-airtime", {"amount": "500", "phone": "080", "source_account": "0155500011"},
                            reference="R")
+        source.assert_called_once_with("R", amount="500", source_account="0155500011")
         mw.assert_called_once()
         self.assertEqual(mw.call_args.args[3], "MTN")  # canonical ALAT operator value
         self.assertEqual(mw.call_args.kwargs["source_account"], "0155500011")  # sender NUBAN threaded
@@ -437,7 +440,8 @@ class WemaVasRoutingTests(TestCase):
         from utility.models import DataPlan
         DataPlan.objects.create(network="1", plan_type="1", name="1GB", validity="30 days",
                                 plan_code="MTN1GB", wema_code="WEMA-MTN-1GB", price=Decimal("500"))
-        with patch("utility.wema.purchase_data", return_value={"success": True, "status": "SUCCESS"}) as mw:
+        with patch("wallet.services.biller_source_for_transaction", return_value="0155500011"), \
+                patch("utility.wema.purchase_data", return_value={"success": True, "status": "SUCCESS"}) as mw:
             out = P.vtu_purchase("mtn-data", {"variation_code": "MTN1GB", "phone": "080"}, reference="R")
         mw.assert_called_once()
         self.assertEqual(mw.call_args.args[4], "WEMA-MTN-1GB")  # package_code positional
@@ -457,7 +461,8 @@ class WemaVasRoutingTests(TestCase):
         from utility.models import CablePlan
         CablePlan.objects.create(provider="2", name="DStv Compact", cable_plan_code="DSTV-C",
                                  wema_code="WEMA-DSTV-C", price=Decimal("10500"))
-        with patch("utility.wema.pay_bill", return_value={"success": True, "status": "SUCCESS"}) as mw:
+        with patch("wallet.services.biller_source_for_transaction", return_value="0155500011"), \
+                patch("utility.wema.pay_bill", return_value={"success": True, "status": "SUCCESS"}) as mw:
             out = P.vtu_purchase("dstv", {"variation_code": "DSTV-C", "billersCode": "1234567890"}, reference="R")
         mw.assert_called_once()
         self.assertEqual(mw.call_args.kwargs["package_id"], "WEMA-DSTV-C")
@@ -486,12 +491,15 @@ class WemaVasRoutingTests(TestCase):
         self.assertEqual(mw.call_args.kwargs["source_account"], "0155500099")
 
     @override_settings(VAS_PROVIDER="wema")
-    def test_explicit_source_account_wins_over_ledger_lookup(self):
+    def test_explicit_source_cannot_bypass_a_missing_ledger_reservation(self):
         with patch("utility.wema.purchase_airtime", return_value={"success": True}) as mw:
-            P.vtu_purchase("mtn-airtime",
-                           {"amount": "500", "phone": "080", "source_account": "0100000042"},
-                           reference="NO-SUCH-LEDGER-ROW")
-        self.assertEqual(mw.call_args.kwargs["source_account"], "0100000042")
+            result = P.vtu_purchase("mtn-airtime",
+                                   {"amount": "500", "phone": "080", "source_account": "0100000042"},
+                                   reference="NO-SUCH-LEDGER-ROW")
+        self.assertFalse(result["success"])
+        self.assertTrue(result["not_charged"])
+        self.assertEqual(result["code"], "biller_funding_unavailable")
+        mw.assert_not_called()
 
     def test_requery_uses_partner_bank_rail(self):
         from wallet.services import debit
