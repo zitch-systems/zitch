@@ -214,7 +214,8 @@ def _screen(pa):
             summary += " " + delivery["delivery_notice"]
         label = "Verification code"
     elif step == "reentry":
-        summary = f"Identity confirmed. Re-enter the same {kind} to finish. We did not retain your earlier entry."
+        summary = (f"Identity confirmed. Re-enter the same 11-digit {kind} to finish. "
+                   "We did not retain your earlier entry. Check all 11 digits before submitting.")
         label = kind
     elif step == "processing":
         summary, label = "Your identity is being checked. Please wait for your verification code.", kind
@@ -308,10 +309,25 @@ def _identity(token, data, screen, request_digest, *, deadline):
             return _finish(pa, UNAVAILABLE, "Not completed")
         kind = pa.payload["id_kind"]
         digest = hash_identifier(number)
-        if (_identity_owned_by_another_user(user, kind, number)
-                or (getattr(user, f"{kind}_verified") and not hmac.compare_digest(getattr(user, f"{kind}_hash") or "", digest))
-                or (pa.payload.get("vas_step") == "reentry" and not hmac.compare_digest(pa.payload.get("identity_hash", ""), digest))):
+        # A mistyped second entry must never replace the identity proved by the
+        # code. Explain the recovery without discarding its existing proof or
+        # disclosing the entered identifier / another profile's ownership.
+        if (pa.payload.get("vas_step") == "reentry"
+                and not hmac.compare_digest(pa.payload.get("identity_hash", ""), digest)):
+            log.warning("wa_vas_identity_rejected category=reentry_mismatch")
+            if _has_proof(user, kind, pa.payload.get("identity_hash", "")):
+                return _finish(pa, f"That {kind.upper()} does not match the one you just verified. "
+                    f"Close this form and reply 6 to start again using the same {kind.upper()}. "
+                    "Your successful identity verification is saved.", "Not completed")
+            return _finish(pa, "Your verification needs review. Contact Zitch Support here.", "Not completed")
+        if _identity_owned_by_another_user(user, kind, number):
+            log.warning("wa_vas_identity_rejected category=identity_conflict")
             return _finish(pa, "Those details could not be confirmed. Start again with your own verified identity.", "Not completed")
+        if (getattr(user, f"{kind}_verified")
+                and not hmac.compare_digest(getattr(user, f"{kind}_hash") or "", digest)):
+            log.warning("wa_vas_identity_rejected category=verified_identity_mismatch")
+            return _finish(pa, "Those details do not match the identity already verified on this profile. "
+                "Start again with that identity, or contact Zitch Support here.", "Not completed")
         if _has_proof(user, kind, digest):
             try:
                 account = enroll_customer(user, **{kind: number}, consent=True,
@@ -328,6 +344,7 @@ def _identity(token, data, screen, request_digest, *, deadline):
             notice = _funding_spending_notice(customer_funding_account(user)).strip()
             return _finish(pa, "Your funding account is ready. Close this form and reply 6 to view it. " + notice, "Successful")
         if pa.payload.get("vas_step") == "reentry":
+            log.warning("wa_vas_identity_rejected category=reentry_proof_missing")
             return _finish(pa, "Your verification needs review. Contact Zitch Support here.", "Not completed")
         pa.payload.update({"vas_step": "processing", "identity_hash": digest,
             "identity_previous_hash": getattr(user, f"{kind}_hash"), "identity_last4": number[-4:]})

@@ -754,6 +754,93 @@ class VasFlowTests(TestCase):
         self.assertEqual(response["data"]["status"], "Successful")
         self.assertEqual(VirtualAccount.objects.get().display_name, "Zitch/Ada Eze")
 
+    def test_mistyped_reentry_preserves_proof_and_restart_needs_no_new_lookup(self):
+        token = self.start()
+        self.consent(token)
+        code = self.provider_code(token)
+        self.exchange(token, {"number": code}, vas_flow.CODE)
+        wrong = "99999999999"
+        with patch("whatsapp.vas_flow.enroll_customer") as enroll, \
+                self.assertLogs("zitch.security", level="WARNING") as logs:
+            response = self.exchange(token, {"number": wrong}, vas_flow.REENTRY)
+        enroll.assert_not_called()
+        self.assertEqual(response["data"]["status"], "Not completed")
+        self.assertIn("does not match the one you just verified", response["data"]["message"])
+        self.assertIn("reply 6", response["data"]["message"])
+        self.assertIn("verification is saved", response["data"]["message"])
+        self.assertEqual(IdentityProof.objects.count(), 1)
+        self.assertFalse(VirtualAccount.objects.exists())
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.bvn_hash, hash_identifier(self.raw))
+        self.assertTrue(self.user.bvn_verified)
+        self.assertIn("category=reentry_mismatch", " ".join(logs.output))
+        exposed = json.dumps(response) + json.dumps(PendingAction.objects.get().payload) + " ".join(logs.output)
+        for value in (self.raw, wrong, hash_identifier(self.raw), self.msisdn):
+            self.assertNotIn(value, exposed)
+        # Terminal transport retries cannot turn the mistyped exchange into an
+        # allocation. A fresh signed consent may use the intact named proof.
+        self.assertEqual(self.exchange(token, {"number": self.raw}, vas_flow.REENTRY), response)
+        cache.clear()
+        token = self.start()
+        self.consent(token)
+        with patch("utility.providers.prembly_verify_bvn") as lookup, \
+                patch.object(router, "send_sms") as sms:
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        lookup.assert_not_called()
+        sms.assert_not_called()
+        self.assertEqual(response["data"]["status"], "Successful")
+        self.assertEqual(VirtualAccount.objects.count(), 1)
+
+    def test_reentry_without_saved_proof_cannot_promise_saved_verification(self):
+        token = self.start()
+        self.consent(token)
+        code = self.provider_code(token)
+        self.exchange(token, {"number": code}, vas_flow.CODE)
+        IdentityProof.objects.all().delete()
+        with patch("whatsapp.vas_flow.enroll_customer") as enroll:
+            response = self.exchange(token, {"number": "99999999999"}, vas_flow.REENTRY)
+        enroll.assert_not_called()
+        self.assertEqual(response["data"]["status"], "Not completed")
+        self.assertIn("needs review", response["data"]["message"])
+        self.assertNotIn("saved", response["data"]["message"])
+        self.assertFalse(VirtualAccount.objects.exists())
+
+    def test_changed_verified_identity_after_code_cannot_be_replaced_by_reentry(self):
+        token = self.start()
+        self.consent(token)
+        code = self.provider_code(token)
+        self.exchange(token, {"number": code}, vas_flow.CODE)
+        changed = hash_identifier("99999999999")
+        User.objects.filter(pk=self.user.pk).update(bvn_hash=changed)
+        with patch("whatsapp.vas_flow.enroll_customer") as enroll, \
+                self.assertLogs("zitch.security", level="WARNING") as logs:
+            response = self.exchange(token, {"number": self.raw}, vas_flow.REENTRY)
+        enroll.assert_not_called()
+        self.assertEqual(response["data"]["status"], "Not completed")
+        self.assertIn("already verified on this profile", response["data"]["message"])
+        self.assertIn("category=verified_identity_mismatch", " ".join(logs.output))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.bvn_hash, changed)
+        self.assertFalse(VirtualAccount.objects.exists())
+
+    def test_another_profiles_identity_remains_blocked_without_disclosing_ownership(self):
+        wrong = "99999999999"
+        other = User.objects.create(username="different-owner", bvn_hash=hash_identifier(wrong), bvn_verified=True)
+        token = self.start()
+        self.consent(token)
+        with patch("whatsapp.vas_flow.enroll_customer") as enroll, \
+                patch("utility.providers.prembly_verify_bvn") as lookup, \
+                self.assertLogs("zitch.security", level="WARNING") as logs:
+            response = self.exchange(token, {"number": wrong}, vas_flow.IDENTITY)
+        enroll.assert_not_called()
+        lookup.assert_not_called()
+        self.assertEqual(response["data"]["status"], "Not completed")
+        self.assertIn("could not be confirmed", response["data"]["message"])
+        self.assertNotIn(other.username, json.dumps(response))
+        self.assertIn("category=identity_conflict", " ".join(logs.output))
+        self.assertNotIn(wrong, " ".join(logs.output))
+        self.assertFalse(VirtualAccount.objects.exists())
+
     def test_wrong_code_does_not_issue_proof_and_has_fresh_bounded_retry(self):
         token = self.start()
         self.consent(token)
