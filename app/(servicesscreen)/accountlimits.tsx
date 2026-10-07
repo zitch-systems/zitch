@@ -64,14 +64,17 @@ const AccountLimits = () => {
   const limit = Number(status?.transaction_limit ?? 0);
   const ladderMax = LADDER[LADDER.length - 1].daily;
   const isVas = status?.account_provider === 'wema_vas' || fundingState?.provider === 'wema_vas';
-  const capabilities = walletCapabilities(fundingState);
-  const vasPaymentsAvailable = fundingState?.provider === 'wema_vas'
-    && fundingState.test_mode !== true
-    && (capabilities.billPaymentsAvailable || capabilities.transfersAvailable);
+  const capabilities = walletCapabilities(isVas ? { ...fundingState, provider: 'wema_vas' } : fundingState);
+  const fundingReady = fundingState?.provider === 'wema_vas'
+    && fundingState.test_mode !== true && fundingState.available === true
+    && fundingState.has_account === true && fundingState.account_setup_state === 'ready'
+    && !!fundingState.account_number && !/^711/.test(fundingState.account_number);
+  const displayedNumber = isVas ? fundingReady ? fundingState?.account_number || '' : '' : accountNumber;
+  const displayedName = isVas ? fundingReady ? fundingState?.account_name || '' : '' : accountName;
 
   const copy = async () => {
-    if (!accountNumber) return;
-    await Clipboard.setStringAsync(accountNumber);
+    if (!displayedNumber) return;
+    await Clipboard.setStringAsync(displayedNumber);
     notify('Copied', 'Your account number is on the clipboard.');
   };
 
@@ -87,15 +90,15 @@ const AccountLimits = () => {
   if (!status) {
     return (
       <Screen>
-        <Header title="Account Limits" onBack={() => router.back()} />
-        <Loading label="Checking your limits…" />
+        <Header title={isVas ? "Account details" : "Account Limits"} onBack={() => router.back()} />
+        <Loading label={isVas ? "Checking your account…" : "Checking your limits…"} />
       </Screen>
     );
   }
 
   return (
     <Screen>
-      <Header title="Account Limits" onBack={() => router.back()} />
+      <Header title={isVas ? "Account details" : "Account Limits"} onBack={() => router.back()} />
 
       {/* --- account + tier --- */}
       <LinearGradient
@@ -111,9 +114,9 @@ const AccountLimits = () => {
             </Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 }}>
               <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ flexShrink: 1, fontSize: 26, fontFamily: font.extrabold, color: theme === 'dark' ? '#FFF6DF' : '#2B2205', letterSpacing: -0.4 }}>
-                {grouped(accountNumber) || '—'}
+                {grouped(displayedNumber) || '—'}
               </Text>
-              {!!accountNumber && (
+              {!!displayedNumber && (
                 <Pressable
                   onPress={copy}
                   accessibilityRole="button"
@@ -125,10 +128,10 @@ const AccountLimits = () => {
                 </Pressable>
               )}
             </View>
-            {!!accountName && (
+            {!!displayedName && (
               <View style={{ alignSelf: 'flex-start', marginTop: 12, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, backgroundColor: 'rgba(255,255,255,.45)' }}>
                 <Text numberOfLines={1} style={{ fontSize: 12, fontFamily: font.semibold, color: theme === 'dark' ? '#FFF6DF' : '#4A3B12' }}>
-                  {accountName.toUpperCase()}
+                  {displayedName.toUpperCase()}
                 </Text>
               </View>
             )}
@@ -154,13 +157,11 @@ const AccountLimits = () => {
         <ZIcon name="right" size={17} color={c.ink3} />
       </Card>
 
-      {isVas && !vasPaymentsAvailable ? (
+      {isVas ? (
         <Card style={{ marginBottom: 24 }}>
-          <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>Payments unavailable</Text>
+          <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>{fundingReady ? 'Available services' : 'Account activation pending'}</Text>
           <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 10 }}>
-            {fundingState?.test_mode
-              ? 'This account is in testing. Identity verification does not enable payments or funding. Do not send money to a sample account.'
-              : 'Your virtual account is not enabled for payments. Check your account status before adding money.'}
+            {walletCapabilityMessage(capabilities) || 'Bill payments and transfers are available.'}
           </Text>
         </Card>
       ) : <>
@@ -180,7 +181,7 @@ const AccountLimits = () => {
           </Pressable>
         </View>
         <View style={{ borderRadius: 16, backgroundColor: c.surface2, padding: 14 }}>
-          <Progress value={limit} max={isVas ? Math.max(limit, 1) : ladderMax} />
+          <Progress value={limit} max={ladderMax} />
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
             <NText style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3 }}>Min {money(0)}</NText>
             <NText style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3 }}>
@@ -189,19 +190,6 @@ const AccountLimits = () => {
           </View>
         </View>
       </Card>
-      {isVas ? (
-        <Card style={{ marginBottom: 24 }}>
-          <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>Current daily limits</Text>
-          {capabilities.billPaymentsAvailable && status.daily_bill_limit !== undefined && (
-            <Text style={{ color: c.ink2, fontFamily: font.regular, marginTop: 12 }}>Bill payments: {money(Number(status.daily_bill_limit))}</Text>
-          )}
-          {capabilities.transfersAvailable && status.daily_transfer_limit !== undefined && (
-            <Text style={{ color: c.ink2, fontFamily: font.regular, marginTop: 12 }}>Transfers: {money(Number(status.daily_transfer_limit))}</Text>
-          )}
-          {!!walletCapabilityMessage(capabilities) && <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 12 }}>{walletCapabilityMessage(capabilities)}</Text>}
-        </Card>
-      ) : (
-
       <Card style={{ marginBottom: 24 }} pad={0}>
         <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1, padding: 18, paddingBottom: 14 }}>Level Benefit</Text>
         <View style={{ marginHorizontal: 14, marginBottom: 14, borderRadius: 16, borderWidth: 1, borderColor: c.line, overflow: 'hidden' }}>
@@ -243,7 +231,6 @@ const AccountLimits = () => {
           Your partner bank applies its own tier limits alongside these. Where the two differ, the lower one applies.
         </Text>
       </Card>
-      )}
       </>}
     </Screen>
   );

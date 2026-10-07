@@ -196,7 +196,7 @@ class VasOnboardingFlowTests(TestCase):
         self.assertFalse(user.email_verified)
         contacts.assert_called_once_with(user, msisdn)
         legacy.assert_not_called()
-        self.assertIn("Do not send money", reply.call_args.args[1])
+        self.assertIn("Account activation is pending", reply.call_args.args[1])
 
     def test_contact_code_typed_in_chat_is_not_consumed(self):
         pa = PendingAction.objects.create(user=self.user, msisdn=MSISDN,

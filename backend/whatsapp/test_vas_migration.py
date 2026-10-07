@@ -1,4 +1,4 @@
-"""Customer chat labels test accounts and never offers them for real funding."""
+"""Customer chat keeps pending accounts private and never offers them for funding."""
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -67,7 +67,7 @@ class VasCustomerChatTests(TestCase):
         self.assertIn("Reply *6*", messages)
         self.assertNotIn(self.wallet.account_number, messages)
 
-    def test_validation_details_show_sample_and_no_transaction_limit(self):
+    def test_validation_details_hide_sample_and_transaction_limit(self):
         funding = {**self.funding, "test_mode": True, "account_setup_state": "vas_validation",
                    "enrollment_available": False, "validation_account_number": "7111234567"}
         with patch.object(router, "customer_funding_account", return_value=funding), \
@@ -75,12 +75,25 @@ class VasCustomerChatTests(TestCase):
             router._do_account_details(self.user, MSISDN)
         start.assert_not_called()
         messages = " ".join(call.args[1] for call in reply.call_args_list)
-        self.assertIn("7111234567", messages)
-        self.assertIn("TEST ONLY — DO NOT FUND", messages)
-        self.assertIn("cannot receive real deposits or make payments", messages)
+        self.assertIn("Account activation pending", messages)
+        self.assertNotIn("7111234567", messages)
+        self.assertNotIn("TEST ONLY", messages)
+        self.assertNotIn("Test mode", messages)
         self.assertNotIn("Tier", messages)
         self.assertNotIn("/transaction", messages)
         self.assertNotIn(self.wallet.account_number, messages)
+
+    def test_live_account_details_do_not_advertise_transaction_limit(self):
+        funding = {**self.funding, "account_setup_state": "ready", "has_account": True,
+                   "available": True, "test_mode": False}
+        with patch.object(router, "customer_funding_account", return_value=funding), \
+                patch.object(router, "reply") as reply, \
+                patch.object(router, "_send_account_details") as details:
+            router._do_account_details(self.user, MSISDN)
+        details.assert_called_once_with(MSISDN, self.wallet, intro="🏦 *Your funding account*")
+        messages = " ".join(call.args[1] for call in reply.call_args_list)
+        self.assertNotIn("Tier", messages)
+        self.assertNotIn("/transaction", messages)
 
     def test_restricted_test_account_details_do_not_disclose_its_number(self):
         funding = {**self.funding, "test_mode": True, "account_setup_state": "restricted",

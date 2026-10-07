@@ -20,8 +20,8 @@ from accounts.models import IdentityProof, User, hash_identifier, record_identit
 from wallet.models import Wallet
 from wema_vas.models import VirtualAccount
 from wema_vas.test_enrollment import SETTINGS
-from whatsapp import flows, router, vas_flow
-from whatsapp.models import PendingAction, WhatsAppLink
+from whatsapp import flows, router, vas_capsule, vas_flow
+from whatsapp.models import PendingAction, WaOnboarding, WhatsAppLink
 from whatsapp.providers import _published_flow_report
 from whatsapp.test_flow_publish_probe import _Resp
 
@@ -86,8 +86,9 @@ class VasPublicationGateTests(SimpleTestCase):
     def test_setup_contract_declares_and_renders_every_mode_specific_field(self):
         setup = next(s for s in self.document["screens"] if s["id"] == vas_flow.SETUP)
         self.assertEqual(set(setup["data"]), {"title", "purpose", "consent_text", "error"})
-        examples = {key: value["__example__"] for key, value in setup["data"].items()}
-        self.assertEqual(examples, vas_flow._setup_data("validation"))
+        # Examples belong to the immutable published contract. Actual consent
+        # is server-supplied data, bound to its current version in the session.
+        self.assertEqual(set(setup["data"]), set(vas_flow._setup_data("validation")))
         text_nodes = {child["text"] for child in setup["layout"]["children"]
                       if child["type"] in {"TextHeading", "TextBody"}}
         self.assertEqual(text_nodes, {"${data.title}", "${data.purpose}",
@@ -103,20 +104,24 @@ class VasPublicationGateTests(SimpleTestCase):
                 self.assertIn("registered email", data["consent_text"])
                 self.assertIn("Close this form to decline", data["consent_text"])
 
-    def test_test_account_consent_is_distinct_from_live_funding_consent(self):
+    def test_validation_consent_is_concise_and_distinct_from_live_funding_consent(self):
         validation = vas_flow._setup_data("validation")
         live = vas_flow._setup_data("live")
-        self.assertIn("711", validation["title"])
-        self.assertIn("TEST ONLY — DO NOT FUND", validation["purpose"])
-        self.assertIn("existing Zitch profile", validation["purpose"])
-        self.assertIn("old bank account and transaction history are retained", validation["purpose"])
-        self.assertIn("does not convert or move your real balance", validation["purpose"])
-        self.assertIn("for a 711 test account only", validation["consent_text"])
-        self.assertEqual(live["title"], "Your funding account")
+        self.assertEqual(validation["title"], "Set up your Zitch account")
+        self.assertIn("bank integration validation", validation["purpose"])
+        self.assertIn("Funding becomes available after account activation", validation["purpose"])
+        self.assertIn("for bank integration validation", validation["consent_text"])
+        self.assertNotIn("711", json.dumps(validation))
+        self.assertNotIn("TEST ONLY", json.dumps(validation))
+        self.assertEqual(live["title"], "Set up your Zitch account")
         self.assertIn("operate your funding account", live["purpose"])
         self.assertNotIn("711", json.dumps(live))
         with self.assertRaises(ValueError):
             vas_flow._setup_data("unknown")
+
+    def test_published_code_routes_support_single_entry_without_contract_change(self):
+        for screen in (vas_flow.CODE, vas_flow.CODE_RETRY):
+            self.assertIn("RESULT", self.document["routing_model"][screen])
 
 
 @override_settings(WEMA_VAS=SETTINGS, BANK_ACCOUNT_PROVIDER="wema_vas", WHATSAPP=WA,
@@ -154,8 +159,8 @@ class VasFlowTests(TestCase):
     def exchange(self, token, data, screen, action="data_exchange"):
         return flows.handle_flow_request({"flow_token": token, "action": action, "screen": screen, "data": data})
 
-    def consent(self, token):
-        response = self.exchange(token, {"consent": True, "identity_type": "bvn"}, vas_flow.SETUP)
+    def consent(self, token, kind="bvn"):
+        response = self.exchange(token, {"consent": True, "identity_type": kind}, vas_flow.SETUP)
         self.assertEqual(response["screen"], vas_flow.IDENTITY)
 
     def test_open_and_init_use_the_same_signed_mode_specific_consent(self):
@@ -169,10 +174,9 @@ class VasFlowTests(TestCase):
                 self.assertEqual(pa.payload["consent_version"], vas_flow.consent_version(mode))
                 self.assertEqual(self.sent_flow["screen_data"], vas_flow._setup_data(mode))
                 self.assertEqual(initial, {"screen": vas_flow.SETUP, "data": self.sent_flow["screen_data"]})
-                if mode == "validation":
-                    self.assertIn("DO NOT FUND", self.sent_flow["body"])
-                else:
-                    self.assertIn("funding account", self.sent_flow["body"])
+                self.assertEqual(self.sent_flow["header"], "Set up your Zitch account")
+                self.assertIn("privately", self.sent_flow["body"])
+                self.assertNotIn("test", self.sent_flow["body"].lower())
 
     def test_mode_change_before_or_after_consent_closes_the_bound_session(self):
         for initial_mode, changed_mode in (("validation", "live"), ("live", "validation")):
@@ -339,10 +343,10 @@ class VasFlowTests(TestCase):
                 interpret.assert_not_called()
                 self.assertNotIn(self.raw, reply.call_args.args[1])
 
-    def provider_code(self, token):
+    def provider_code(self, token, kind="bvn"):
         IdentityProof.objects.filter(user=self.user).delete()
         with patch("utility.providers._prembly_identity_live", return_value=True), \
-                patch("utility.providers.prembly_verify_bvn", return_value={"success": True, "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}), \
+                patch("utility.providers.prembly_verify_" + kind, return_value={"success": True, "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}), \
                 patch.object(router, "sms_live", return_value=True), \
                 patch.object(router, "send_sms", return_value={"success": True}) as sms:
             response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
@@ -352,6 +356,17 @@ class VasFlowTests(TestCase):
         self.assertFalse(IdentityProof.objects.exists())
         self.assertNotIn(self.raw, json.dumps(PendingAction.objects.get().payload))
         return sms.call_args.args[1].split("Zitch: ")[1][:6]
+
+    def legacy_reentry(self, token, code):
+        """Model an already displayed screen from before the one-entry release."""
+        pa = PendingAction.objects.get(action_type="vas_enroll")
+        outcome, _message = router.kyc_flow_identity_otp(pa, code)
+        self.assertEqual(outcome, "ok")
+        pa.refresh_from_db()
+        vas_capsule.discard(pa)
+        pa.payload.pop(vas_capsule.FIELD, None)
+        pa.payload.update({"vas_step": "reentry", "screen": vas_flow.REENTRY})
+        pa.save(update_fields=["payload"])
 
     def test_queued_media_is_scrubbed_if_private_setup_opens_before_worker_runs(self):
         from whatsapp.jobs import _decrypt, process_inbound_message
@@ -529,7 +544,7 @@ class VasFlowTests(TestCase):
         self.assertEqual(response["screen"], vas_flow.CODE)
         self.assertIn("Email delivery was unavailable", response["data"]["summary"])
         code = sent.call_args.args[1].split("Zitch: ")[1][:6]
-        self.assertEqual(self.exchange(token, {"number": code}, vas_flow.CODE)["screen"], vas_flow.REENTRY)
+        self.assertEqual(self.exchange(token, {"number": code}, vas_flow.CODE)["screen"], "RESULT")
 
     def test_lookup_failure_log_does_not_copy_provider_messages_or_contacts(self):
         self.unverified()
@@ -606,7 +621,7 @@ class VasFlowTests(TestCase):
         self.assertNotIn("holder@record.example", json.dumps(response))
         self.assertTrue(PendingAction.objects.get().payload["id_otp_delivery"]["delivery_partial"])
         code = sms.call_args.args[1].split("Zitch: ")[1][:6]
-        self.assertEqual(self.exchange(token, {"number": code}, vas_flow.CODE)["screen"], vas_flow.REENTRY)
+        self.assertEqual(self.exchange(token, {"number": code}, vas_flow.CODE)["screen"], "RESULT")
 
     def test_absent_record_email_never_falls_back_to_signup_email(self):
         self.unverified()
@@ -642,18 +657,18 @@ class VasFlowTests(TestCase):
             self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
         enroll.assert_not_called()
 
-    def test_validation_result_explicitly_marks_test_number_as_nonfundable(self):
+    def test_validation_result_reports_pending_activation_without_sample_number(self):
         with override_settings(WEMA_VAS=self.mode_settings("validation")), \
                 patch("whatsapp.vas_flow.enroll_customer", wraps=vas_flow.enroll_customer) as enroll:
             token = self.start()
             self.consent(token)
             response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
         account = VirtualAccount.objects.get()
-        self.assertEqual(response["data"]["status"], "Test setup complete")
+        self.assertEqual(response["data"]["status"], "Account activation pending")
         self.assertEqual(account.mode, "validation")
         self.assertTrue(account.number.startswith("711"))
-        self.assertIn(account.number, response["data"]["message"])
-        self.assertIn("DO NOT FUND", response["data"]["message"])
+        self.assertNotIn(account.number, json.dumps(response))
+        self.assertNotIn("test", json.dumps(response).lower())
         self.assertNotIn("funding account is ready", response["data"]["message"])
         version = vas_flow.consent_version("validation")
         self.assertTrue(account.consent_reference.startswith(version + ":whatsapp:"))
@@ -728,9 +743,10 @@ class VasFlowTests(TestCase):
         sms.assert_called_once()
         code = sms.call_args.args[1].split("Zitch: ")[1][:6]
         advanced = self.exchange(token, {"number": code}, vas_flow.CODE)
-        self.assertEqual(advanced["screen"], vas_flow.REENTRY)
+        self.assertEqual(advanced["screen"], "RESULT")
         self.assertEqual(self.exchange(token, {"number": code}, vas_flow.CODE), advanced)
         self.assertEqual(IdentityProof.objects.count(), 1)
+        self.assertEqual(VirtualAccount.objects.count(), 1)
         self.assertNotIn(self.raw, json.dumps(PendingAction.objects.get().payload))
 
     def test_identity_replay_with_changed_number_cannot_reuse_the_challenge(self):
@@ -741,24 +757,287 @@ class VasFlowTests(TestCase):
         self.assertEqual(response["data"]["status"], "Not completed")
         self.assertFalse(IdentityProof.objects.exists())
 
-    def test_missing_proof_uses_provider_phone_sms_then_fresh_identity_entry(self):
+    def test_missing_proof_enrolls_after_provider_phone_sms_without_identity_reentry(self):
         token = self.start()
         self.consent(token)
         code = self.provider_code(token)
         response = self.exchange(token, {"number": code}, vas_flow.CODE)
-        self.assertEqual(response["screen"], vas_flow.REENTRY)
+        self.assertEqual(response["screen"], "RESULT")
         proof = IdentityProof.objects.get()
         self.assertEqual(proof.verified_name, "Ada Eze")
-        self.assertFalse(VirtualAccount.objects.exists())
-        response = self.exchange(token, {"number": self.raw}, vas_flow.REENTRY)
         self.assertEqual(response["data"]["status"], "Successful")
         self.assertEqual(VirtualAccount.objects.get().display_name, "Zitch/Ada Eze")
+
+    def test_initial_signup_email_then_single_identity_entry_finishes_setup(self):
+        # Exercise the real onboarding/contact router, not just a hand-built VAS
+        # action: a generic BVN form here would cause a second entry after OTP.
+        self.unverified()
+        msisdn = "2348099990000"
+        ob = WaOnboarding.objects.create(msisdn=msisdn, step="pin", payload={
+            "first_name": "Ada", "last_name": "Eze", "email": "new-signup@example.test",
+            "phone_verified_flow": True}, expires_at=timezone.now() + timedelta(minutes=5))
+        policy = {**self.mode_settings("validation"), "VALIDATION_SELF_SERVICE": True}
+        with override_settings(WEMA_VAS=policy), \
+                patch.object(router, "flows_live", return_value=True), \
+                patch.object(router, "email_live", return_value=True), \
+                patch.object(router, "sms_live", return_value=True), \
+                patch.object(router, "send_email", return_value={"success": True}) as email, \
+                patch.object(router, "send_sms", return_value={"success": True}) as sms, \
+                patch.object(router, "send_flow", return_value={"success": True}) as contact_form, \
+                patch("whatsapp.providers.send_flow", return_value={"success": True}) as setup_form, \
+                patch.object(router, "reply") as reply, \
+                patch("utility.providers._prembly_identity_live", return_value=True), \
+                patch("utility.providers.prembly_verify_bvn", return_value={"success": True,
+                    "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}) as lookup, \
+                patch("whatsapp.vas_identity.arm", side_effect=AssertionError("separate BVN verification")):
+            self.assertTrue(router._finish_onboarding(ob, msisdn, "572938"))
+            user = User.objects.get(email="new-signup@example.test")
+            self.assertTrue(user.phone_verified)
+            self.assertFalse(user.email_verified)
+            self.assertFalse(user.bvn_verified)
+            self.assertEqual(contact_form.call_args.kwargs["screen"], flows.CODE_SCREEN)
+            setup_form.assert_not_called()
+            lookup.assert_not_called()
+
+            email_token = contact_form.call_args.args[1]
+            email_code = email.call_args.args[2][-6:]
+            self.exchange(email_token, {"number": email_code}, flows.CODE_SCREEN)
+            user.refresh_from_db()
+            self.assertTrue(user.email_verified)
+            self.assertEqual(PendingAction.objects.get(user=user).action_type, "vas_enroll")
+            self.assertFalse(PendingAction.objects.filter(user=user, action_type="kyc").exists())
+            setup_form.assert_called_once()
+            self.assertEqual(setup_form.call_args.kwargs["screen"], vas_flow.SETUP)
+            token = setup_form.call_args.args[1]
+            self.consent(token)
+            lookup.assert_not_called()
+
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+            self.assertEqual(response["screen"], vas_flow.CODE)
+            self.assertFalse(VirtualAccount.objects.filter(user=user).exists())
+            code = sms.call_args.args[1].split("Zitch: ")[1][:6]
+            response = self.exchange(token, {"number": code}, vas_flow.CODE)
+            self.assertEqual(response["screen"], "RESULT")
+            self.assertEqual(response["data"]["status"], "Account activation pending")
+            self.assertEqual(self.exchange(token, {"number": code}, vas_flow.CODE), response)
+            lookup.assert_called_once()
+            sms.assert_called_once()
+            contact_form.assert_called_once()
+            self.assertEqual(VirtualAccount.objects.filter(user=user).count(), 1)
+            self.assertEqual(IdentityProof.objects.filter(user=user).count(), 1)
+
+            # The next account-details command must show status, not launch a
+            # second identity or account-setup form after successful enrollment.
+            router.handle_inbound(msisdn, "7")
+            setup_form.assert_called_once()
+            contact_form.assert_called_once()
+            self.assertFalse(PendingAction.objects.filter(user=user).exists())
+            self.assertIn("Account activation pending", " ".join(call.args[1] for call in reply.call_args_list))
+
+    def test_verified_contacts_route_straight_to_consent_before_any_identity_form(self):
+        self.unverified()
+        with override_settings(WEMA_VAS=self.mode_settings("validation")), \
+                patch("whatsapp.providers.send_flow", return_value={"success": True}) as setup, \
+                patch.object(router, "reply"), \
+                patch("whatsapp.vas_identity.arm") as separate_identity:
+            router._start_kyc(self.user, self.msisdn)
+        separate_identity.assert_not_called()
+        self.assertEqual(setup.call_args.kwargs["screen"], vas_flow.SETUP)
+        pa = PendingAction.objects.get(user=self.user)
+        self.assertEqual(pa.action_type, "vas_enroll")
+        self.assertEqual(pa.payload["vas_step"], "consent")
+        self.assertNotIn("identity_hash", pa.payload)
+        self.assertFalse(IdentityProof.objects.exists())
+
+    def test_unavailable_enrollment_flow_does_not_fall_back_to_duplicate_identity_path(self):
+        self.unverified()
+        with override_settings(WEMA_VAS=self.mode_settings("validation")), \
+                patch("whatsapp.vas_flow.ready", return_value=False), \
+                patch.object(router, "reply") as reply, \
+                patch("whatsapp.vas_identity.arm") as separate_identity, \
+                patch("utility.providers.prembly_verify_bvn") as lookup:
+            router._start_kyc(self.user, self.msisdn)
+        separate_identity.assert_not_called()
+        lookup.assert_not_called()
+        self.assertIn("temporarily unavailable", reply.call_args.args[1])
+        self.assertFalse(VirtualAccount.objects.exists())
+
+    def test_existing_nin_account_setup_status_does_not_request_bvn_again(self):
+        self.unverified()
+        with override_settings(WEMA_VAS=self.mode_settings("validation")), \
+                patch.object(router, "reply") as reply:
+            token = self.start()
+            self.consent(token, "nin")
+            code = self.provider_code(token, "nin")
+            self.exchange(token, {"number": code}, vas_flow.CODE)
+            with patch("whatsapp.vas_flow.start") as restart, \
+                    patch("whatsapp.vas_identity.arm") as separate_identity:
+                router._send_vas_setup(self.user, self.msisdn)
+        restart.assert_not_called()
+        separate_identity.assert_not_called()
+        self.assertIn("Account activation pending", reply.call_args.args[1])
+        self.assertEqual(VirtualAccount.objects.count(), 1)
+
+    def test_nin_also_finishes_with_one_identity_entry_and_one_ownership_code(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token, "nin")
+        code = self.provider_code(token, "nin")
+        response = self.exchange(token, {"number": code}, vas_flow.CODE)
+        self.assertEqual(response["screen"], "RESULT")
+        self.assertEqual(response["data"]["status"], "Successful")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.nin_verified)
+        self.assertEqual(self.user.nin_hash, hash_identifier(self.raw))
+        self.assertEqual(VirtualAccount.objects.count(), 1)
+        self.assertEqual(IdentityProof.objects.get().identity_type, "nin")
+
+    def test_wrong_code_then_correct_retry_finishes_without_reentry(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        code = self.provider_code(token)
+        wrong = "000000" if code != "000000" else "111111"
+        response = self.exchange(token, {"number": wrong}, vas_flow.CODE)
+        self.assertEqual(response["screen"], vas_flow.CODE_RETRY)
+        self.assertFalse(IdentityProof.objects.exists())
+        self.assertFalse(VirtualAccount.objects.exists())
+        response = self.exchange(token, {"number": code}, vas_flow.CODE_RETRY)
+        self.assertEqual(response["screen"], "RESULT")
+        self.assertEqual(response["data"]["status"], "Successful")
+        self.assertEqual(self.exchange(token, {"number": code}, vas_flow.CODE_RETRY), response)
+        self.assertEqual(IdentityProof.objects.count(), 1)
+        self.assertEqual(VirtualAccount.objects.count(), 1)
+
+    def test_code_delivery_preserves_the_original_bound_session_deadline(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        original_expiry = PendingAction.objects.get(action_type="vas_enroll").expires_at
+        later = timezone.now() + timedelta(minutes=4)
+        with patch("whatsapp.router.timezone.now", return_value=later):
+            code = self.provider_code(token)
+            pa = PendingAction.objects.get(action_type="vas_enroll")
+            self.assertEqual(pa.expires_at, original_expiry)
+            response = self.exchange(token, {"number": code}, vas_flow.CODE)
+        self.assertEqual(response["data"]["status"], "Successful")
+        self.assertEqual(VirtualAccount.objects.count(), 1)
+
+    def test_capsule_loss_or_tampering_stops_before_consuming_ownership_code(self):
+        for change in ("missing", "tampered", "legacy"):
+            with self.subTest(change=change):
+                cache.clear()
+                self.unverified()
+                token = self.start()
+                self.consent(token)
+                code = self.provider_code(token)
+                pa = PendingAction.objects.get(action_type="vas_enroll")
+                key = vas_capsule._key(pa.payload[vas_capsule.FIELD])
+                if change == "missing":
+                    cache.delete(key)
+                elif change == "tampered":
+                    cache.set(key, "changed-ciphertext")
+                else:
+                    pa.payload.pop(vas_capsule.FIELD)
+                    pa.save(update_fields=["payload"])
+                with patch.object(router, "kyc_flow_identity_otp") as confirm:
+                    response = self.exchange(token, {"number": code}, vas_flow.CODE)
+                confirm.assert_not_called()
+                self.assertEqual(response["data"]["status"], "Not completed")
+                self.assertIn("restart", response["data"]["message"])
+                self.assertFalse(IdentityProof.objects.exists())
+                self.assertFalse(VirtualAccount.objects.exists())
+
+    def test_capsule_storage_outage_stops_before_paid_lookup_or_code_delivery(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        with patch("whatsapp.vas_capsule.cache.add", side_effect=RuntimeError("cache unavailable")), \
+                patch("utility.providers.prembly_verify_bvn") as lookup, \
+                patch.object(router, "send_sms") as sms:
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        self.assertEqual(response["data"]["status"], "Not completed")
+        lookup.assert_not_called()
+        sms.assert_not_called()
+        self.assertFalse(IdentityProof.objects.exists())
+        self.assertFalse(VirtualAccount.objects.exists())
+
+    def _assert_capsule_cleanup_after_commit(self, outcome):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        code = self.provider_code(token)
+        pa = PendingAction.objects.get(action_type="vas_enroll")
+        key = vas_capsule._key(pa.payload[vas_capsule.FIELD])
+        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+            if outcome == "success":
+                self.exchange(token, {"number": code}, vas_flow.CODE)
+                self.assertEqual(VirtualAccount.objects.count(), 1)
+            elif outcome == "cancel":
+                self.exchange(token, {"close": True}, vas_flow.CODE)
+            elif outcome == "expired":
+                PendingAction.objects.filter(pk=pa.pk).update(expires_at=timezone.now() - timedelta(seconds=1))
+                with patch.object(router, "reply"):
+                    router._announce_timeout(self.msisdn)
+            else:
+                router._clear_actions(self.msisdn)
+            self.assertIsNotNone(cache.get(key))
+        self.assertTrue(callbacks)
+        self.assertIsNone(cache.get(key))
+
+    # Separate TestCase transactions isolate the immutable bank account created
+    # on success. PostgreSQL correctly forbids deleting that account as cleanup.
+    def test_capsule_cleanup_waits_for_commit_after_success(self):
+        self._assert_capsule_cleanup_after_commit("success")
+
+    def test_capsule_cleanup_waits_for_commit_after_cancel(self):
+        self._assert_capsule_cleanup_after_commit("cancel")
+
+    def test_capsule_cleanup_waits_for_commit_after_session_delete(self):
+        self._assert_capsule_cleanup_after_commit("delete")
+
+    def test_capsule_cleanup_waits_for_commit_after_session_expiry(self):
+        self._assert_capsule_cleanup_after_commit("expired")
+
+    def test_cleanup_outage_does_not_replace_committed_success_with_an_error(self):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        code = self.provider_code(token)
+        with self.assertLogs("zitch.security", level="WARNING") as logs, \
+                patch("whatsapp.vas_capsule.cache.delete", side_effect=RuntimeError("cache unavailable")), \
+                self.captureOnCommitCallbacks(execute=True):
+            response = self.exchange(token, {"number": code}, vas_flow.CODE)
+        self.assertEqual(response["data"]["status"], "Successful")
+        self.assertEqual(VirtualAccount.objects.count(), 1)
+        self.assertNotIn(self.raw, " ".join(logs.output))
+
+    def test_old_reentry_transport_replay_never_generates_a_new_reentry_screen(self):
+        token = self.start()
+        self.consent(token)
+        code = self.provider_code(token)
+        self.legacy_reentry(token, code)
+        response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+        self.assertEqual(response["screen"], "RESULT")
+        self.assertIn("restart", response["data"]["message"])
+        self.assertEqual(IdentityProof.objects.count(), 1)
+        self.assertFalse(VirtualAccount.objects.exists())
+
+    def test_already_displayed_legacy_reentry_can_finish_with_its_intact_proof(self):
+        token = self.start()
+        self.consent(token)
+        code = self.provider_code(token)
+        self.legacy_reentry(token, code)
+        response = self.exchange(token, {"number": self.raw}, vas_flow.REENTRY)
+        self.assertEqual(response["screen"], "RESULT")
+        self.assertEqual(response["data"]["status"], "Successful")
+        self.assertEqual(VirtualAccount.objects.count(), 1)
 
     def test_mistyped_reentry_preserves_proof_and_restart_needs_no_new_lookup(self):
         token = self.start()
         self.consent(token)
         code = self.provider_code(token)
-        self.exchange(token, {"number": code}, vas_flow.CODE)
+        self.legacy_reentry(token, code)
         wrong = "99999999999"
         with patch("whatsapp.vas_flow.enroll_customer") as enroll, \
                 self.assertLogs("zitch.security", level="WARNING") as logs:
@@ -795,7 +1074,7 @@ class VasFlowTests(TestCase):
         token = self.start()
         self.consent(token)
         code = self.provider_code(token)
-        self.exchange(token, {"number": code}, vas_flow.CODE)
+        self.legacy_reentry(token, code)
         IdentityProof.objects.all().delete()
         with patch("whatsapp.vas_flow.enroll_customer") as enroll:
             response = self.exchange(token, {"number": "99999999999"}, vas_flow.REENTRY)
@@ -809,7 +1088,7 @@ class VasFlowTests(TestCase):
         token = self.start()
         self.consent(token)
         code = self.provider_code(token)
-        self.exchange(token, {"number": code}, vas_flow.CODE)
+        self.legacy_reentry(token, code)
         changed = hash_identifier("99999999999")
         User.objects.filter(pk=self.user.pk).update(bvn_hash=changed)
         with patch("whatsapp.vas_flow.enroll_customer") as enroll, \

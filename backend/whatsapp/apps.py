@@ -10,3 +10,6 @@ class WhatsappConfig(AppConfig):
         # this out of a view means workers and management commands see the same
         # action registry as the HTTP process.
         from . import approval_actions  # noqa: F401
+        # Remove temporary encrypted identity input when chat navigation,
+        # cancellation or expiry cleanup deletes its signed setup session.
+        from . import vas_capsule  # noqa: F401

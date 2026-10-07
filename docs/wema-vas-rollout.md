@@ -106,6 +106,30 @@ provides **Me → Continue VAS setup**. Missing legal-name evidence can be confi
 through another ownership challenge for the same identity, without clearing prior
 verification. Address verification is not part of this setup.
 
+After contact verification, enrollment-eligible WhatsApp signups enter the
+consent-first VAS form directly. Account setup collects the BVN or NIN once,
+verifies the ownership code, and completes enrollment without a second
+identity-entry screen. Existing validation accounts return their status without
+reopening identity setup, including accounts verified with NIN. The
+identifier is encrypted in the shared cache for at most 15 minutes and bound to
+the signed customer session and consent. Completion, cancellation and pending
+action deletion schedule its removal after the database transaction commits;
+cache expiry is the fallback. A missing, expired or mismatched handoff cannot
+create an account. Restart old forms to use the current consent and flow.
+
+The PIN label is shortened to **PIN** across all entry and retry screens. The
+reviewed replacement Meta Flow is `1047786551595097`, with canonical SHA-256
+`0534d7fe8ef0d2bf7062437e9899f39824e82f248ac1a775e9c805fc95055a51`.
+Activate both `WHATSAPP_FLOW_ID` and `WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID`
+together on each Django runtime when deploying this exact contract.
+
+Customer screens show **Account activation pending** while the account is in
+validation mode. The 711 sample number is not returned in customer funding
+details or offered for copying or deposits. Bank-authenticated endpoints and
+operator sample exports still expose the approved validation samples. Removing
+the decorative transaction-limit display does not change enforced limits or
+the customer's personal spending controls.
+
 Validation self-service requires `WEMA_VAS_VALIDATION_SELF_SERVICE=true` plus
 `WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT=true`, validation mode, prefix `711`, closed
 live release phase and live enrollment disabled. The new flag defaults false;
@@ -124,9 +148,11 @@ allocation. Live enrollment continues to require review of every pending attempt
 One immutable validation account and one separately approved live account can
 belong to the same profile. Their numbers, modes, receipts and balances remain
 separate. Only a live account establishes the VAS boundary for real funds and
-retained bill payments. Validation consent (`vas-validation-identity-v1`) cannot
+retained bill payments. Validation consent (`vas-validation-identity-v2`) cannot
 authorize live enrollment (`vas-identity-v1`). A stale or incomplete app consent
 submission must refresh the displayed mode and version before continuing.
+Previously recorded validation consent remains historical evidence; its stored
+reference is not rewritten when the displayed consent changes.
 
 ## Deployment sequence
 

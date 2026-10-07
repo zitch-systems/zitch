@@ -53,15 +53,18 @@ class ValidationEnrollmentTests(TestCase):
             before = customer_account_payload(self.user)
             self.assertTrue(before["test_mode"])
             self.assertTrue(before["enrollment_available"])
-            account = self.enroll(consent_reference="vas-identity-v1:whatsapp:action:consent-time")
+            account = self.enroll(consent_reference=f"{VALIDATION_CONSENT_VERSION}:whatsapp:action:consent-time")
             self.assertEqual(self.enroll().pk, account.pk)
-            self.assertEqual(account.consent_reference, "vas-identity-v1:whatsapp:action:consent-time")
+            self.assertEqual(account.consent_reference, f"{VALIDATION_CONSENT_VERSION}:whatsapp:action:consent-time")
             shown = customer_account_payload(self.user)
         self.assertEqual(account.mode, VirtualAccount.VALIDATION)
         self.assertTrue(account.number.startswith("711"))
         self.assertFalse(self.user.address_verified)
-        self.assertEqual(shown["validation_account_number"], account.number)
-        self.assertEqual(shown["validation_account_name"], "Zitch/Test Participant")
+        self.assertEqual(shown["validation_account_number"], "")
+        self.assertEqual(shown["validation_account_name"], "")
+        self.assertNotIn(account.number, json.dumps(shown))
+        self.assertEqual(shown["migration_message"], "Account activation pending.")
+        self.assertEqual(shown["enrollment_message"], "Account activation pending.")
         self.assertEqual(shown["account_number"], "")
         self.assertEqual(shown["account_name"], "")
         self.assertEqual(shown["account_setup_state"], "vas_validation")
@@ -180,7 +183,7 @@ class ValidationEnrollmentTests(TestCase):
             self.assertEqual(account.mode, VirtualAccount.VALIDATION)
             self.assertEqual(customer_account_payload(self.user)["validation_account_number"], "")
 
-    def test_customer_endpoint_derives_mode_and_returns_private_test_details(self):
+    def test_customer_endpoint_derives_mode_without_exposing_validation_details(self):
         body = {"bvn": self.raw, "consent": True, "validation": False, "mode": "live",
                 "enrollment_mode": "validation", "consent_version": VALIDATION_CONSENT_VERSION}
         with override_settings(WEMA_VAS=self.allowed):
@@ -192,13 +195,19 @@ class ValidationEnrollmentTests(TestCase):
         self.assertEqual(result["Cache-Control"], "no-store")
         self.assertNotIn(self.raw, result.content.decode())
         self.assertTrue(result.json()["test_mode"])
-        self.assertTrue(result.json()["validation_account_number"].startswith("711"))
+        self.assertEqual(result.json()["validation_account_number"], "")
+        self.assertEqual(result.json()["validation_account_name"], "")
         self.assertEqual(result.json()["account_number"], "")
         self.assertFalse(result.json()["bill_payments_available"])
-        self.assertEqual(VirtualAccount.objects.get().mode, VirtualAccount.VALIDATION)
+        account = VirtualAccount.objects.get()
+        self.assertEqual(account.mode, VirtualAccount.VALIDATION)
+        self.assertTrue(account.number.startswith("711"))
+        self.assertNotIn(account.number, result.content.decode())
         self.assertEqual(balance.status_code, 200, balance.content)
         self.assertIs(balance.json()["test_mode"], True)
         self.assertEqual(balance.json()["validation_account_number"], result.json()["validation_account_number"])
+        self.assertEqual(balance.json()["validation_account_name"], "")
+        self.assertNotIn(account.number, balance.content.decode())
         self.assertEqual(Decimal(balance.json()["available_balance"]), 0)
         self.assertFalse(balance.json()["spending_available"])
 
@@ -219,6 +228,7 @@ class ValidationEnrollmentTests(TestCase):
         cases += [{**base, **change} for change in (
             {"enrollment_mode": None}, {"consent_version": None},
             {"enrollment_mode": "live"}, {"consent_version": CONSENT_VERSION},
+            {"consent_version": "vas-validation-identity-v1"},
             {"enrollment_mode": True}, {"consent_version": True})]
         with override_settings(WEMA_VAS=self.allowed):
             for body in cases:

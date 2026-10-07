@@ -35,11 +35,10 @@ const AddMoney = () => {
   const facePollGeneration = useRef(0);
   const mounted = useRef(true);
   const capabilityMessage = walletCapabilityMessage(walletCapabilities(fundingState));
-  const validationAccountNumber = fundingState?.provider === 'wema_vas'
-    && fundingState.test_mode === true
-    && fundingState.account_setup_state === 'vas_validation'
-    && /^711\d{7}$/.test(fundingState.validation_account_number || '')
-    ? fundingState.validation_account_number : '';
+  const activationPending = fundingState?.provider === 'wema_vas'
+    && (fundingState.test_mode === true || fundingState.account_setup_state === 'vas_validation');
+  const enrollmentComplete = fundingState?.account_setup_state === 'vas_validation'
+    || fundingState?.enrollment_status === 'enrolled';
 
   const beginAction = () => {
     if (actionInFlight.current) return false;
@@ -71,7 +70,7 @@ const AddMoney = () => {
       if (loadGeneration.current !== generation) return;
       setFundingState(r);
       if (r?.success && r.account_number && (r.provider !== 'wema_vas' ||
-          (r.test_mode !== true && r.available === true && r.has_account === true && r.account_setup_state === 'ready'))) {
+          (r.test_mode !== true && !/^711/.test(r.account_number) && r.available === true && r.has_account === true && r.account_setup_state === 'ready'))) {
         setAccount(r as DediAccount);
         setLoadError('');
       } else if (r?.offline) {
@@ -275,39 +274,20 @@ const AddMoney = () => {
         </View>
       ) : fundingState?.provider === 'wema_vas' && !account ? (
         <View style={{ paddingTop: 12 }}>
-          <Label>{fundingState.account_setup_state === 'restricted' ? 'Account restricted' : fundingState.test_mode ? 'Account testing' : 'Your new funding account'}</Label>
+          <Label>{fundingState.account_setup_state === 'restricted' ? 'Account restricted' : activationPending ? 'Account activation pending' : 'Your new funding account'}</Label>
           <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>
             {fundingState.enrollment_message || fundingState.migration_message || 'Your new funding account is not available yet. Please check again shortly.'}
           </Text>
           <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 12 }}>
-            Continue VAS setup on this Zitch profile. Your contacts, verification history, transactions and recorded balances are preserved.
+            Continue account setup on this Zitch profile.
           </Text>
           <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 12 }}>
             {capabilityMessage} Only send money when this page shows an active funding account.
           </Text>
-          {fundingState.test_mode === true && !validationAccountNumber ? (
-            <Text accessibilityRole="alert" style={{ color: c.ink2, fontFamily: font.semibold, lineHeight: 20, marginTop: 12 }}>
-              This setup is for a test account only. It does not move your existing funds or activate real payments. Do not fund a test number.
-            </Text>
-          ) : null}
-          {!!validationAccountNumber && (
-            <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18, marginTop: 18 }}>
-              <Text style={{ color: c.ink1, fontFamily: font.bold }}>Test account only</Text>
-              <Text accessibilityRole="alert" style={{ color: c.ink2, fontFamily: font.semibold, lineHeight: 20, marginTop: 8 }}>Do not send money to this account. This sample number is for the approved bank integration tests only.</Text>
-              <Text style={{ fontSize: 26, color: c.ink1, fontFamily: font.extrabold, marginTop: 12, fontVariant: ['tabular-nums'] }}>{grouped(validationAccountNumber)}</Text>
-              {!!fundingState.validation_account_name && <Text style={{ color: c.ink2, fontFamily: font.regular, marginTop: 4 }}>{fundingState.validation_account_name}</Text>}
-              <View style={{ marginTop: 12 }}>
-                <Btn label="Copy test account number" icon="copy" variant="ghost" onPress={async () => {
-                  await Clipboard.setStringAsync(validationAccountNumber);
-                  notify('Test number copied', 'Share only for the approved bank tests. Do not fund this account.');
-                }} />
-              </View>
-            </View>
-          )}
           {fundingState.enrollment_available && fundingState.account_setup_state === 'vas_enrollment_required' ? (
             <>
               <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginVertical: 18 }}>
-                Re-enter the BVN or NIN you have already verified with Zitch. Your existing verification and balance are preserved.
+                Confirm your verified BVN or NIN privately to complete account setup.
               </Text>
               <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
                 {(['bvn', 'nin'] as const).map((kind) => (
@@ -320,15 +300,15 @@ const AddMoney = () => {
               <Pressable accessibilityRole="checkbox" accessibilityLabel="Consent to VAS identity storage and sharing" accessibilityState={{ checked: vasConsent }} disabled={creating} onPress={() => setVasConsent(!vasConsent)} style={{ flexDirection: 'row', gap: 10, marginVertical: 18 }}>
                 <Text style={{ color: c.brand, fontFamily: font.bold }}>{vasConsent ? '☑' : '☐'}</Text>
                 <Text style={{ flex: 1, color: c.ink2, fontFamily: font.regular, lineHeight: 20 }}>{fundingState.test_mode === true
-                  ? 'I consent to Zitch securely storing my verified identity details in encrypted form and sharing them with Wema Bank for this test virtual account. I understand this does not activate real funding or payments.'
-                  : 'I consent to Zitch securely storing my verified identity details in encrypted form and sharing them with Wema Bank to operate my virtual account.'}</Text>
+                  ? 'I consent to Prembly identity verification, encrypted storage of my identity details, and sharing them with Wema Bank for integration validation. Account activation remains pending.'
+                  : 'I consent to Prembly identity verification, encrypted storage of my identity details, and sharing them with Wema Bank to operate my account.'}</Text>
               </Pressable>
-              <Btn label={creating ? 'Please wait…' : fundingState.test_mode === true ? 'Set up test account' : 'Set up virtual account'} disabled={creating || !vasConsent || vasIdentity.length !== 11} onPress={enrollVas} />
+              <Btn label={creating ? 'Please wait…' : 'Set up account'} disabled={creating || !vasConsent || vasIdentity.length !== 11} onPress={enrollVas} />
             </>
           ) : null}
           <View style={{ marginTop: 14 }}>
             <Btn label="Review verification" variant="ghost" disabled={creating} onPress={() => router.push('/(auth)/kyc')} />
-            {!validationAccountNumber && fundingState.account_setup_state !== 'restricted' ? (
+            {!enrollmentComplete && fundingState.account_setup_state !== 'restricted' ? (
               <>
                 <Btn label="Confirm my verified name" variant="ghost" disabled={creating} onPress={() => router.push({ pathname: '/(auth)/kyc', params: { verify_identity: vasIdentityKind } })} />
                 <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 8 }}>If your earlier verification did not retain your legal name, confirm the same identity with a new verification code, then return here. Verification alone does not make an account eligible for setup.</Text>

@@ -1461,7 +1461,7 @@
               {
                 "type": "TextInput",
                 "name": "pin",
-                "label": "Your Zitch PIN",
+                "label": "PIN",
                 "input-type": "passcode",
                 "required": true,
                 "helper-text": "Your 6-digit PIN — entered privately, never sent to the chat",
@@ -1553,7 +1553,7 @@
               {
                 "type": "TextInput",
                 "name": "pin",
-                "label": "Your Zitch PIN",
+                "label": "PIN",
                 "input-type": "passcode",
                 "required": true,
                 "helper-text": "Your 6-digit PIN — entered privately, never sent to the chat",
@@ -1645,7 +1645,7 @@
               {
                 "type": "TextInput",
                 "name": "pin",
-                "label": "Your Zitch PIN",
+                "label": "PIN",
                 "input-type": "passcode",
                 "required": true,
                 "helper-text": "Your 6-digit PIN — entered privately, never sent to the chat",
