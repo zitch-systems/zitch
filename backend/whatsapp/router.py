@@ -1185,6 +1185,16 @@ def _announce_timeout(msisdn: str) -> bool:
         return False
     armed = stale.state in _AWAITING_PIN_STATES
     expired.delete()
+    if stale.action_type in ("vas_enroll", "kyc", "add_account", "unlock", "setpin"):
+        purpose = "identity confirmation" if stale.action_type == "unlock" else "secure setup"
+        restart = {
+            "kyc": "Reply *8* to continue verification.",
+            "unlock": "Repeat your request to confirm your identity securely.",
+            "setpin": "Reply *reset pin* to continue securely.",
+        }.get(stale.action_type, "Reply *6* to continue account setup, or choose another menu option.")
+        reply(msisdn, f"⌛ That {purpose} session expired. Your saved account details and completed "
+                      f"verification are unchanged.\n\n{restart}")
+        return True
     mins = int((PIN_TTL if armed else FLOW_TTL).total_seconds() // 60)
     what = "That payment wasn't confirmed in time" if armed else "That request timed out"
     reply(msisdn, f"⌛ {what} - it expired after {mins} minute{'' if mins == 1 else 's'} "
@@ -1470,11 +1480,9 @@ def handle_inbound(msisdn: str, text: str) -> None:
     # require nor verify it, so this guards the thing we can: what the bot will
     # reveal. Only reads are gated - every action already authenticates at the
     # point money moves, and prompting twice would be friction, not security.
-    # Skip re-auth when we just announced a timeout - the expired payment's
-    # "Confirm with PIN" card is still visible in the chat and a second card
-    # right after the timeout message is confusing. The next command will
-    # re-auth if still needed.
-    if not timed_out and _needs_reauth(convo) and _is_sensitive_read(low):
+    # An expired setup or payment never proves who now holds the phone. A new
+    # sensitive read still needs confirmation, even after its timeout notice.
+    if _needs_reauth(convo) and _is_sensitive_read(low):
         return _send_unlock(user, msisdn, text)
 
     # A tap on the "save this recipient" offer. Below the re-auth gate rather
@@ -2262,15 +2270,28 @@ def _send_vas_setup(user, msisdn: str, funding: dict | None = None) -> None:
     sample = funding.get("validation_account_number")
     if (funding.get("test_mode") is True and funding.get("account_setup_state") == "vas_validation"
             and isinstance(sample, str) and re.fullmatch(r"711[0-9]{7}", sample)):
-        return reply(msisdn, "🏦 *Your Zitch test account*\n\n"
-                     f"🔢 *{sample}*\n\n"
-                     "*TEST ONLY — DO NOT FUND.* Share this sample number only for the approved bank integration tests. "
-                     "Your existing profile, verification and transaction history remain saved.")
+        return reply(msisdn, _vas_account_status(funding))
     if funding.get("enrollment_available") or _vas_identity_refresh_available(user, funding):
         return start(user, msisdn)
-    return reply(msisdn, "🏦 *Your Zitch funding account*\n\n"
-                 + str(funding.get("enrollment_message") or funding.get("migration_message") or "Account setup is not available yet.")
-                 + "\n\nPlease check again here later. Do not send your BVN or NIN in this chat.")
+    return reply(msisdn, _vas_account_status(funding))
+
+
+def _vas_account_status(funding: dict) -> str:
+    """Read-only setup status; displaying account details must not open a form."""
+    sample = funding.get("validation_account_number")
+    if (funding.get("test_mode") is True and funding.get("account_setup_state") == "vas_validation"
+            and isinstance(sample, str) and re.fullmatch(r"711[0-9]{7}", sample)):
+        return ("🏦 *Your Zitch test account*\n\n"
+                f"🔢 *{sample}*\n\n"
+                "*TEST ONLY — DO NOT FUND.* This number cannot receive real deposits or make payments. "
+                "Share it only for the approved bank integration tests. "
+                "Your existing profile, verification and transaction history remain saved.")
+    continuation = ("Reply *6* to continue account setup securely."
+                    if funding.get("enrollment_available") or funding.get("enrollment_status") == "verification_required"
+                    else "Please check again here later.")
+    return ("🏦 *Your Zitch account setup*\n\n"
+            + str(funding.get("enrollment_message") or funding.get("migration_message") or "Account setup is not available yet.")
+            + f"\n\n{continuation} Do not send your BVN or NIN in this chat.")
 
 
 def _vas_reregistration_busy(msisdn: str) -> bool:
@@ -4263,9 +4284,10 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
 
 
 def _do_account_details(user, msisdn: str) -> None:
-    """Menu 7: who Zitch thinks you are, plus the funding account (or the way
-    to mint one)."""
+    """Menu 7: profile and account status, without starting a setup session."""
     wallet = get_or_create_wallet(user)
+    funding = customer_funding_account(user)
+    is_vas = funding.get("provider") == "wema_vas"
     lines = [
         "🧾 *My account details*\n",
         f"👤 {user.get_full_name() or user.first_name or '-'}",
@@ -4273,9 +4295,15 @@ def _do_account_details(user, msisdn: str) -> None:
     ]
     if user.email:
         lines.append(f"📧 {user.email}" + ("" if user.email_verified else " (unconfirmed)"))
-    lines.append(f"⭐ Tier {user.tier} · up to ₦{user.transaction_limit:,.0f}/transaction")
+    if is_vas and funding.get("test_mode") is True:
+        lines.append("🧪 Test mode · real deposits and payments are unavailable.")
+    else:
+        lines.append(f"⭐ Tier {user.tier} · up to ₦{user.transaction_limit:,.0f}/transaction")
     reply(msisdn, "\n".join(lines))
-    if customer_funding_account(user).get("provider") == "wema_vas" or wallet.account_number:
+    if is_vas and (funding.get("test_mode") is True or not funding.get("has_account")
+                   or not funding.get("available") or funding.get("account_setup_state") != "ready"):
+        return reply(msisdn, _vas_account_status(funding))
+    if is_vas or wallet.account_number:
         return _send_account_details(msisdn, wallet, intro="🏦 *Your funding account*")
     return reply(msisdn, "You don't have a funding account number yet - reply *6* (Add money) to set one up in a minute.")
 

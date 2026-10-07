@@ -1,4 +1,4 @@
-"""Customer chat must never present validation or archived funding details."""
+"""Customer chat labels test accounts and never offers them for real funding."""
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from wallet.services import get_or_create_wallet
 from whatsapp import router
-from whatsapp.models import PendingAction
+from whatsapp.models import ConversationState, PendingAction
 from whatsapp.test_flows import MSISDN, _make_user
 
 
@@ -52,6 +52,108 @@ class VasCustomerChatTests(TestCase):
         cta.assert_not_called()
         self.assertNotIn("7111234567", reply.call_args.args[1])
         self.assertNotIn(self.wallet.account_number, reply.call_args.args[1])
+
+    def test_account_details_does_not_open_or_replace_a_setup_session(self):
+        pa = self.action()
+        with patch.object(router, "customer_funding_account", return_value=self.funding), \
+                patch.object(router, "reply") as reply, \
+                patch("whatsapp.vas_flow.start") as start, \
+                patch.object(router, "_start_kyc") as kyc:
+            router._do_account_details(self.user, MSISDN)
+        start.assert_not_called()
+        kyc.assert_not_called()
+        self.assertTrue(PendingAction.objects.filter(pk=pa.pk).exists())
+        messages = " ".join(call.args[1] for call in reply.call_args_list)
+        self.assertIn("Reply *6*", messages)
+        self.assertNotIn(self.wallet.account_number, messages)
+
+    def test_validation_details_show_sample_and_no_transaction_limit(self):
+        funding = {**self.funding, "test_mode": True, "account_setup_state": "vas_validation",
+                   "enrollment_available": False, "validation_account_number": "7111234567"}
+        with patch.object(router, "customer_funding_account", return_value=funding), \
+                patch.object(router, "reply") as reply, patch("whatsapp.vas_flow.start") as start:
+            router._do_account_details(self.user, MSISDN)
+        start.assert_not_called()
+        messages = " ".join(call.args[1] for call in reply.call_args_list)
+        self.assertIn("7111234567", messages)
+        self.assertIn("TEST ONLY — DO NOT FUND", messages)
+        self.assertIn("cannot receive real deposits or make payments", messages)
+        self.assertNotIn("Tier", messages)
+        self.assertNotIn("/transaction", messages)
+        self.assertNotIn(self.wallet.account_number, messages)
+
+    def test_restricted_test_account_details_do_not_disclose_its_number(self):
+        funding = {**self.funding, "test_mode": True, "account_setup_state": "restricted",
+                   "enrollment_available": False, "validation_account_number": "7111234567",
+                   "enrollment_message": "Your account is restricted. Please contact support."}
+        with patch.object(router, "customer_funding_account", return_value=funding), \
+                patch.object(router, "reply") as reply, patch("whatsapp.vas_flow.start") as start:
+            router._do_account_details(self.user, MSISDN)
+        start.assert_not_called()
+        messages = " ".join(call.args[1] for call in reply.call_args_list)
+        self.assertIn("restricted", messages)
+        self.assertNotIn("7111234567", messages)
+        self.assertNotIn("/transaction", messages)
+
+    def test_expired_nonpayment_actions_have_contextual_restart_without_charge_claim(self):
+        restarts = {"vas_enroll": "Reply *6*", "kyc": "Reply *8*", "add_account": "Reply *6*",
+                    "unlock": "Repeat your request", "setpin": "Reply *reset pin*"}
+        for action_type, restart in restarts.items():
+            with self.subTest(action_type=action_type):
+                pa = PendingAction.objects.create(user=self.user, msisdn=MSISDN,
+                    action_type=action_type, state="flow_pin" if action_type == "unlock" else "flow_vas",
+                    expires_at=timezone.now() - timedelta(seconds=1))
+                with patch.object(router, "reply") as reply:
+                    self.assertTrue(router._announce_timeout(MSISDN))
+                message = reply.call_args.args[1]
+                self.assertIn("session expired", message)
+                self.assertIn(restart, message)
+                self.assertNotIn("charged", message)
+                self.assertNotIn("payment", message)
+                self.assertNotIn("minutes", message)
+                self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
+
+    @override_settings(WA_REAUTH_IDLE_MINUTES=15)
+    def test_expired_setup_never_bypasses_pin_before_account_details(self):
+        ConversationState.objects.create(msisdn=MSISDN,
+            last_verified=timezone.now() - timedelta(minutes=70))
+        for action_type in ("vas_enroll", "unlock", "airtime"):
+            with self.subTest(action_type=action_type):
+                PendingAction.objects.create(user=self.user, msisdn=MSISDN,
+                    action_type=action_type, state="flow_pin" if action_type == "unlock" else "flow_vas",
+                    expires_at=timezone.now() - timedelta(seconds=1))
+                with patch.object(router, "reply"), patch.object(router, "_send_unlock") as unlock, \
+                        patch.object(router, "_do_account_details") as details:
+                    router.handle_inbound(MSISDN, "7")
+                unlock.assert_called_once_with(self.user, MSISDN, "7")
+                details.assert_not_called()
+
+    @override_settings(WA_REAUTH_IDLE_MINUTES=15)
+    def test_expired_setup_then_account_details_keeps_a_warm_session_read_only(self):
+        ConversationState.objects.create(msisdn=MSISDN, last_verified=timezone.now())
+        PendingAction.objects.create(user=self.user, msisdn=MSISDN, action_type="vas_enroll",
+            state="flow_vas", expires_at=timezone.now() - timedelta(seconds=1))
+        funding = {**self.funding, "test_mode": True}
+        with patch.object(router, "customer_funding_account", return_value=funding), \
+                patch.object(router, "reply") as reply, patch("whatsapp.vas_flow.start") as start:
+            router.handle_inbound(MSISDN, "7")
+        start.assert_not_called()
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+        messages = " ".join(call.args[1] for call in reply.call_args_list)
+        self.assertIn("session expired", messages)
+        self.assertIn("My account details", messages)
+        self.assertIn("Reply *6*", messages)
+        self.assertNotIn("/transaction", messages)
+
+    @override_settings(WA_REAUTH_IDLE_MINUTES=15)
+    def test_code_for_expired_setup_does_not_open_an_unlock_form(self):
+        PendingAction.objects.create(user=self.user, msisdn=MSISDN, action_type="vas_enroll",
+            state="flow_vas", expires_at=timezone.now() - timedelta(seconds=1))
+        with patch.object(router, "reply") as reply, patch.object(router, "_send_unlock") as unlock:
+            router.handle_inbound(MSISDN, "123456")
+        reply.assert_called_once()
+        self.assertIn("session expired", reply.call_args.args[1])
+        unlock.assert_not_called()
 
     def test_live_account_uses_vas_number_and_explains_spending_hold(self):
         funding = {**self.funding, "has_account": True, "available": True,
