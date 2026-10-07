@@ -106,13 +106,22 @@ provides **Me → Continue VAS setup**. Missing legal-name evidence can be confi
 through another ownership challenge for the same identity, without clearing prior
 verification. Address verification is not part of this setup.
 
-WhatsApp account setup now collects the BVN or NIN once, verifies the ownership
-code, and completes enrollment without a second identity-entry screen. The
+After contact verification, enrollment-eligible WhatsApp signups enter the
+consent-first VAS form directly. Account setup collects the BVN or NIN once,
+verifies the ownership code, and completes enrollment without a second
+identity-entry screen. Existing validation accounts return their status without
+reopening identity setup, including accounts verified with NIN. The
 identifier is encrypted in the shared cache for at most 15 minutes and bound to
 the signed customer session and consent. Completion, cancellation and pending
 action deletion schedule its removal after the database transaction commits;
 cache expiry is the fallback. A missing, expired or mismatched handoff cannot
 create an account. Restart old forms to use the current consent and flow.
+
+The PIN label is shortened to **PIN** across all entry and retry screens. The
+reviewed replacement Meta Flow is `1047786551595097`, with canonical SHA-256
+`0534d7fe8ef0d2bf7062437e9899f39824e82f248ac1a775e9c805fc95055a51`.
+Activate both `WHATSAPP_FLOW_ID` and `WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID`
+together on each Django runtime when deploying this exact contract.
 
 Customer screens show **Account activation pending** while the account is in
 validation mode. The 711 sample number is not returned in customer funding

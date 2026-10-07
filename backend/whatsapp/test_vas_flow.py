@@ -21,7 +21,7 @@ from wallet.models import Wallet
 from wema_vas.models import VirtualAccount
 from wema_vas.test_enrollment import SETTINGS
 from whatsapp import flows, router, vas_capsule, vas_flow
-from whatsapp.models import PendingAction, WhatsAppLink
+from whatsapp.models import PendingAction, WaOnboarding, WhatsAppLink
 from whatsapp.providers import _published_flow_report
 from whatsapp.test_flow_publish_probe import _Resp
 
@@ -767,6 +767,116 @@ class VasFlowTests(TestCase):
         self.assertEqual(proof.verified_name, "Ada Eze")
         self.assertEqual(response["data"]["status"], "Successful")
         self.assertEqual(VirtualAccount.objects.get().display_name, "Zitch/Ada Eze")
+
+    def test_initial_signup_email_then_single_identity_entry_finishes_setup(self):
+        # Exercise the real onboarding/contact router, not just a hand-built VAS
+        # action: a generic BVN form here would cause a second entry after OTP.
+        self.unverified()
+        msisdn = "2348099990000"
+        ob = WaOnboarding.objects.create(msisdn=msisdn, step="pin", payload={
+            "first_name": "Ada", "last_name": "Eze", "email": "new-signup@example.test",
+            "phone_verified_flow": True}, expires_at=timezone.now() + timedelta(minutes=5))
+        policy = {**self.mode_settings("validation"), "VALIDATION_SELF_SERVICE": True}
+        with override_settings(WEMA_VAS=policy), \
+                patch.object(router, "flows_live", return_value=True), \
+                patch.object(router, "email_live", return_value=True), \
+                patch.object(router, "sms_live", return_value=True), \
+                patch.object(router, "send_email", return_value={"success": True}) as email, \
+                patch.object(router, "send_sms", return_value={"success": True}) as sms, \
+                patch.object(router, "send_flow", return_value={"success": True}) as contact_form, \
+                patch("whatsapp.providers.send_flow", return_value={"success": True}) as setup_form, \
+                patch.object(router, "reply") as reply, \
+                patch("utility.providers._prembly_identity_live", return_value=True), \
+                patch("utility.providers.prembly_verify_bvn", return_value={"success": True,
+                    "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}) as lookup, \
+                patch("whatsapp.vas_identity.arm", side_effect=AssertionError("separate BVN verification")):
+            self.assertTrue(router._finish_onboarding(ob, msisdn, "572938"))
+            user = User.objects.get(email="new-signup@example.test")
+            self.assertTrue(user.phone_verified)
+            self.assertFalse(user.email_verified)
+            self.assertFalse(user.bvn_verified)
+            self.assertEqual(contact_form.call_args.kwargs["screen"], flows.CODE_SCREEN)
+            setup_form.assert_not_called()
+            lookup.assert_not_called()
+
+            email_token = contact_form.call_args.args[1]
+            email_code = email.call_args.args[2][-6:]
+            self.exchange(email_token, {"number": email_code}, flows.CODE_SCREEN)
+            user.refresh_from_db()
+            self.assertTrue(user.email_verified)
+            self.assertEqual(PendingAction.objects.get(user=user).action_type, "vas_enroll")
+            self.assertFalse(PendingAction.objects.filter(user=user, action_type="kyc").exists())
+            setup_form.assert_called_once()
+            self.assertEqual(setup_form.call_args.kwargs["screen"], vas_flow.SETUP)
+            token = setup_form.call_args.args[1]
+            self.consent(token)
+            lookup.assert_not_called()
+
+            response = self.exchange(token, {"number": self.raw}, vas_flow.IDENTITY)
+            self.assertEqual(response["screen"], vas_flow.CODE)
+            self.assertFalse(VirtualAccount.objects.filter(user=user).exists())
+            code = sms.call_args.args[1].split("Zitch: ")[1][:6]
+            response = self.exchange(token, {"number": code}, vas_flow.CODE)
+            self.assertEqual(response["screen"], "RESULT")
+            self.assertEqual(response["data"]["status"], "Account activation pending")
+            self.assertEqual(self.exchange(token, {"number": code}, vas_flow.CODE), response)
+            lookup.assert_called_once()
+            sms.assert_called_once()
+            contact_form.assert_called_once()
+            self.assertEqual(VirtualAccount.objects.filter(user=user).count(), 1)
+            self.assertEqual(IdentityProof.objects.filter(user=user).count(), 1)
+
+            # The next account-details command must show status, not launch a
+            # second identity or account-setup form after successful enrollment.
+            router.handle_inbound(msisdn, "7")
+            setup_form.assert_called_once()
+            contact_form.assert_called_once()
+            self.assertFalse(PendingAction.objects.filter(user=user).exists())
+            self.assertIn("Account activation pending", " ".join(call.args[1] for call in reply.call_args_list))
+
+    def test_verified_contacts_route_straight_to_consent_before_any_identity_form(self):
+        self.unverified()
+        with override_settings(WEMA_VAS=self.mode_settings("validation")), \
+                patch("whatsapp.providers.send_flow", return_value={"success": True}) as setup, \
+                patch.object(router, "reply"), \
+                patch("whatsapp.vas_identity.arm") as separate_identity:
+            router._start_kyc(self.user, self.msisdn)
+        separate_identity.assert_not_called()
+        self.assertEqual(setup.call_args.kwargs["screen"], vas_flow.SETUP)
+        pa = PendingAction.objects.get(user=self.user)
+        self.assertEqual(pa.action_type, "vas_enroll")
+        self.assertEqual(pa.payload["vas_step"], "consent")
+        self.assertNotIn("identity_hash", pa.payload)
+        self.assertFalse(IdentityProof.objects.exists())
+
+    def test_unavailable_enrollment_flow_does_not_fall_back_to_duplicate_identity_path(self):
+        self.unverified()
+        with override_settings(WEMA_VAS=self.mode_settings("validation")), \
+                patch("whatsapp.vas_flow.ready", return_value=False), \
+                patch.object(router, "reply") as reply, \
+                patch("whatsapp.vas_identity.arm") as separate_identity, \
+                patch("utility.providers.prembly_verify_bvn") as lookup:
+            router._start_kyc(self.user, self.msisdn)
+        separate_identity.assert_not_called()
+        lookup.assert_not_called()
+        self.assertIn("temporarily unavailable", reply.call_args.args[1])
+        self.assertFalse(VirtualAccount.objects.exists())
+
+    def test_existing_nin_account_setup_status_does_not_request_bvn_again(self):
+        self.unverified()
+        with override_settings(WEMA_VAS=self.mode_settings("validation")), \
+                patch.object(router, "reply") as reply:
+            token = self.start()
+            self.consent(token, "nin")
+            code = self.provider_code(token, "nin")
+            self.exchange(token, {"number": code}, vas_flow.CODE)
+            with patch("whatsapp.vas_flow.start") as restart, \
+                    patch("whatsapp.vas_identity.arm") as separate_identity:
+                router._send_vas_setup(self.user, self.msisdn)
+        restart.assert_not_called()
+        separate_identity.assert_not_called()
+        self.assertIn("Account activation pending", reply.call_args.args[1])
+        self.assertEqual(VirtualAccount.objects.count(), 1)
 
     def test_nin_also_finishes_with_one_identity_entry_and_one_ownership_code(self):
         self.unverified()

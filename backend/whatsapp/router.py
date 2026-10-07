@@ -2241,10 +2241,10 @@ def _do_balance(user, msisdn: str) -> None:
 # add money - the user's dedicated (reserved) account for bank-transfer funding
 # --------------------------------------------------------------------------- #
 def _vas_identity_refresh_available(user, funding: dict) -> bool:
-    """Let a verified legacy identity obtain its missing durable name proof.
+    """Allow consent-first setup when identity is the only missing requirement.
 
-    This opens verification only when it is the sole enrollment blocker. The
-    allocator still independently checks consent, proof and financial state.
+    This includes first-time verification and legacy identities missing durable
+    name proof. The allocator still rechecks consent, proof and financial state.
     """
     from wema_vas.enrollment import customer_enrollment_available
 
@@ -2263,10 +2263,10 @@ def _send_vas_setup(user, msisdn: str, funding: dict | None = None) -> None:
     from .vas_flow import start
     _clear_actions(msisdn)
     funding = funding if funding is not None else customer_funding_account(user)
-    if _kyc_outstanding(user):
-        return _start_kyc(user, msisdn)
     if funding.get("account_setup_state") == "vas_validation":
         return reply(msisdn, _vas_account_status(funding))
+    if _kyc_outstanding(user):
+        return _start_kyc(user, msisdn)
     if funding.get("enrollment_available") or _vas_identity_refresh_available(user, funding):
         return start(user, msisdn)
     return reply(msisdn, _vas_account_status(funding))
@@ -3071,9 +3071,10 @@ def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
         if not arm_contacts(pa, user, msisdn):
             pa.delete()
             return reply(msisdn, "This verification session changed. Sign in securely and reply 8 to try again.")
+    next_steps = ("Complete your remaining checks securely." if is_vas
+                  else "These raise your limits. Let's do the rest now -")
     reply(msisdn, "🪪 *Verify your identity*\n\n" + _kyc_status_lines(user)
-          + "\n\nThese raise your limits. Let's do the rest now - "
-            'reply "cancel" to stop anytime.')
+          + "\n\n" + next_steps + ' Reply "cancel" to stop anytime.')
     return _kyc_next(pa, user, msisdn)
 
 
@@ -3206,8 +3207,16 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
     if step in {"bvn", "nin", "face"}:
         funding = customer_funding_account(user)
         if funding.get("provider") == "wema_vas":
+            if funding.get("enrollment_available") or _vas_identity_refresh_available(user, funding):
+                # Enter the consent-first enrollment session BEFORE collecting
+                # BVN/NIN. Verifying in the generic KYC form first would discard
+                # its input and make setup ask for the identifier a second time.
+                # Do not call _send_vas_setup here: outstanding identity checks
+                # would route that helper back through _start_kyc recursively.
+                from .vas_flow import start
+                return start(user, msisdn)
             # Identity proof is independent of an invitation to allocate a test
-            # account. The existing published identity screens can complete it.
+            # account. Keep the independent path when enrollment is unavailable.
             from .vas_identity import arm
             pa.payload.update({"id_kind": "bvn", "vas_contacts": True,
                                "attempted": sorted(attempted | {"bvn"})})
