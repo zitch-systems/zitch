@@ -962,31 +962,42 @@ class VasFlowTests(TestCase):
         self.assertFalse(IdentityProof.objects.exists())
         self.assertFalse(VirtualAccount.objects.exists())
 
-    def test_capsule_cleanup_waits_for_commit_and_runs_on_success_cancel_and_delete(self):
-        for outcome in ("success", "cancel", "delete", "expired"):
-            with self.subTest(outcome=outcome):
-                cache.clear()
-                VirtualAccount.objects.all().delete()
-                self.unverified()
-                token = self.start()
-                self.consent(token)
-                code = self.provider_code(token)
-                pa = PendingAction.objects.get(action_type="vas_enroll")
-                key = vas_capsule._key(pa.payload[vas_capsule.FIELD])
-                with self.captureOnCommitCallbacks(execute=True) as callbacks:
-                    if outcome == "success":
-                        self.exchange(token, {"number": code}, vas_flow.CODE)
-                    elif outcome == "cancel":
-                        self.exchange(token, {"close": True}, vas_flow.CODE)
-                    elif outcome == "expired":
-                        PendingAction.objects.filter(pk=pa.pk).update(expires_at=timezone.now() - timedelta(seconds=1))
-                        with patch.object(router, "reply"):
-                            router._announce_timeout(self.msisdn)
-                    else:
-                        router._clear_actions(self.msisdn)
-                    self.assertIsNotNone(cache.get(key))
-                self.assertTrue(callbacks)
-                self.assertIsNone(cache.get(key))
+    def _assert_capsule_cleanup_after_commit(self, outcome):
+        self.unverified()
+        token = self.start()
+        self.consent(token)
+        code = self.provider_code(token)
+        pa = PendingAction.objects.get(action_type="vas_enroll")
+        key = vas_capsule._key(pa.payload[vas_capsule.FIELD])
+        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+            if outcome == "success":
+                self.exchange(token, {"number": code}, vas_flow.CODE)
+                self.assertEqual(VirtualAccount.objects.count(), 1)
+            elif outcome == "cancel":
+                self.exchange(token, {"close": True}, vas_flow.CODE)
+            elif outcome == "expired":
+                PendingAction.objects.filter(pk=pa.pk).update(expires_at=timezone.now() - timedelta(seconds=1))
+                with patch.object(router, "reply"):
+                    router._announce_timeout(self.msisdn)
+            else:
+                router._clear_actions(self.msisdn)
+            self.assertIsNotNone(cache.get(key))
+        self.assertTrue(callbacks)
+        self.assertIsNone(cache.get(key))
+
+    # Separate TestCase transactions isolate the immutable bank account created
+    # on success. PostgreSQL correctly forbids deleting that account as cleanup.
+    def test_capsule_cleanup_waits_for_commit_after_success(self):
+        self._assert_capsule_cleanup_after_commit("success")
+
+    def test_capsule_cleanup_waits_for_commit_after_cancel(self):
+        self._assert_capsule_cleanup_after_commit("cancel")
+
+    def test_capsule_cleanup_waits_for_commit_after_session_delete(self):
+        self._assert_capsule_cleanup_after_commit("delete")
+
+    def test_capsule_cleanup_waits_for_commit_after_session_expiry(self):
+        self._assert_capsule_cleanup_after_commit("expired")
 
     def test_cleanup_outage_does_not_replace_committed_success_with_an_error(self):
         self.unverified()
