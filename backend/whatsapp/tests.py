@@ -3370,7 +3370,11 @@ class ChatKycTests(TestCase):
         self.assertFalse(self.user.nin_verified)
         nin.assert_not_called()  # Tier 1 needs either identity, not both.
         self.assertEqual(self.user.tier, 1)      # derived, not granted
-        self.assertIn("Tier 1", self.last_reply())
+        self.assertEqual(self.user.transaction_limit, User.TIER_LIMITS[1])
+        for check in ("✅ Phone number", "✅ Email address", "✅ BVN"):
+            self.assertIn(check, self.last_reply())
+        self.assertNotIn("per transaction", self.last_reply())
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
         # Neither identity number is readable in the log.
         self.assertFalse(WaMessageLog.objects.filter(text__contains="12345678901").exists())
         self.assertFalse(WaMessageLog.objects.filter(text__contains="10987654321").exists())
@@ -3398,7 +3402,9 @@ class ChatKycTests(TestCase):
         # review is what unlocks Tier 2, and must not hold the customer at the
         # floor in the meantime.
         self.assertEqual(self.user.tier, 1)
-        self.assertIn("Tier 1", self.last_reply())
+        self.assertEqual(self.user.transaction_limit, User.TIER_LIMITS[1])
+        self.assertIn("✅ BVN", self.last_reply())
+        self.assertNotIn("per transaction", self.last_reply())
         # And the flow ended rather than asking for the same number again.
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
 

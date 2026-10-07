@@ -1,4 +1,5 @@
 """Re-onboarding tests must not migrate an existing customer's real funds."""
+import json
 from decimal import Decimal
 from io import StringIO
 from unittest.mock import patch
@@ -113,9 +114,14 @@ class ExistingUserValidationIsolationTests(TestCase):
             call_command("reconcile_balances", "--fail-nonzero", stdout=StringIO(), stderr=StringIO())
         bank.assert_called_once_with("0458811223")
 
-    def test_test_notice_survives_retained_bill_capability(self):
+    def test_pending_status_preserves_retained_bills_without_exposing_validation_funding(self):
         shown = customer_funding_account(self.user)
         self.assertTrue(shown["test_mode"])
         self.assertTrue(shown["bill_payments_available"])
-        self.assertIn("test", shown["migration_message"].lower())
-        self.assertNotEqual(shown["account_number"], self.sample.number)
+        self.assertEqual(shown["migration_message"], "Account activation pending.")
+        self.assertEqual(shown["account_setup_state"], "vas_validation")
+        for key in ("available", "has_account", "spending_available", "transfers_available"):
+            self.assertFalse(shown[key])
+        for key in ("account_number", "account_name", "validation_account_number", "validation_account_name"):
+            self.assertEqual(shown[key], "")
+        self.assertNotIn(self.sample.number, json.dumps(shown))
