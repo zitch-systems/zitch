@@ -49,4 +49,14 @@ describe('wallet context purchase balance', () => {
     expect(current.billPaymentsAvailable).toBe(false);
     expect(current.transfersAvailable).toBe(false);
   });
+
+  it('never publishes a reserved validation-prefix account as a live funding number', async () => {
+    mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
+      ? { success: true, provider: 'wema_vas', test_mode: false, account_number: '7111234567',
+          available: true, has_account: true, account_setup_state: 'ready' }
+      : { status: true, all_site_transactions: [] } }));
+    act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
+    await act(async () => { await current.reload(); });
+    expect(current.accountNumber).toBe('');
+  });
 });

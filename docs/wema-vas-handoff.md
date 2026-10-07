@@ -1,9 +1,13 @@
 # Zitch VAS validation handoff
 
-Status: preparation pack, not a completed live-credentials submission or evidence
-of bank acceptance. The collections, pilot, WhatsApp and retained-billing work is
-merged through PR #533 and deployed. Validation credentials are configured;
-public access and three provisioned sample accounts still need verification.
+Status updated 7 October 2026: the vendor reports sending the Step 4 package;
+Wema acknowledged it in Slack and will review. All five routes are deployed.
+Authenticated lookup, KYC and statement requests succeeded for three provisioned
+711 samples at submission. At 13:06 UTC one sample was subsequently restricted
+with the recorded reason “Fraud test”; its provenance still needs bank confirmation.
+Do not clear that restriction or create replacement samples automatically.
+The current readiness checklist is [here](wema-vas-launch-readiness.md).
+Older dated observations below are historical, not the current deployment state.
 
 ## Submission fields
 
@@ -13,20 +17,20 @@ does not turn the simulated receipt balance into spendable customer money.
 
 | Field | Value or remaining action |
 | --- | --- |
-| Base URL | `https://api.zitch.ng` — configured target; public maintenance still prevents bank access |
+| Base URL | `https://api.zitch.ng` — authenticated bank reads verified publicly |
 | Authentication key | Dedicated static Bearer token configured in Render; not included in this repository |
 | Account Lookup | `POST https://api.zitch.ng/vas/account-lookup` |
 | Transaction Notification | `POST https://api.zitch.ng/vas/transaction-notification` |
 | Fetch Mini Statement | `POST https://api.zitch.ng/vas/mini-statement` |
 | Get KYC Details | `POST https://api.zitch.ng/vas/kyc-details` |
 | Block Account | `POST https://api.zitch.ng/vas/block-account` |
-| Three sample accounts | Pending: three distinct, active, provisioned 10-digit numbers beginning `711` |
+| Three sample accounts | Submitted privately; all three were verified at submission. One is now restricted for “Fraud test”; preserve evidence and confirm with Wema. |
 | Account type | Static |
 | Service update notification email | Pending: confirm a monitored Zitch group mailbox |
 
 Recipient from Wema's onboarding instructions: `sqa@wemabank.com`, copying
 `TechPartnership@wemabank.com`. Subject: **Virtual Account Service Live Credentials
-for Zitch**. Do not send this incomplete table as credentials. Deliver the actual
+for Zitch**. Deliver the actual
 token to the verified bank recipients through the agreed confidential channel;
 do not commit it or insert it into a shared test report. Nothing in this pack
 sends email or Slack messages.

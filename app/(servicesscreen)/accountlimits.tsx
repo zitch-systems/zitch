@@ -1,16 +1,16 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useFocusEffect } from 'expo-router';
-import { Screen, Header, Card, Progress, money, NText } from '@/components/design/ui';
+import { Screen, Header, Card, Progress, money, NText, Btn } from '@/components/design/ui';
 import { Loading } from '@/components/design/Loading';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { apiJson } from '@/lib/api';
-import { walletCapabilities, walletCapabilityMessage, walletService, type VirtualAccount } from '@/lib/services/wallet';
+import { vasAccountStatusTitle, walletCapabilities, walletCapabilityMessage, walletService, type VirtualAccount } from '@/lib/services/wallet';
 
 type Status = {
   tier: number;
@@ -45,17 +45,41 @@ const AccountLimits = () => {
   const { accountNumber, accountName } = useWallet();
   const [status, setStatus] = useState<Status | null>(null);
   const [fundingState, setFundingState] = useState<VirtualAccount | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const loadGeneration = useRef(0);
+
+  const loadAccount = useCallback(async () => {
+    const generation = ++loadGeneration.current;
+    setLoading(true);
+    setLoadError('');
+    const guard = setTimeout(() => {
+      if (loadGeneration.current === generation) {
+        setLoadError('Your account details are taking longer than expected. Check your connection and try again.');
+        setLoading(false);
+      }
+    }, 8000);
+    try {
+      const [identity, funding] = await Promise.allSettled([apiJson('/api/kyc/status/'), walletService.getAccount()]);
+      if (loadGeneration.current !== generation) return;
+      if (identity.status !== 'fulfilled' || !identity.value?.success
+          || funding.status !== 'fulfilled' || !funding.value?.success) {
+        setLoadError('We could not load your current account details. Check your connection and try again.');
+        return;
+      }
+      setStatus(identity.value as Status);
+      setFundingState(funding.value);
+      setLoadError('');
+    } finally {
+      clearTimeout(guard);
+      if (loadGeneration.current === generation) setLoading(false);
+    }
+  }, []);
 
   useFocusEffect(useCallback(() => {
-    let active = true;
-    apiJson('/api/kyc/status/')
-      .then((r) => { if (active && r?.success) setStatus(r as Status); })
-      .catch(() => {});
-    walletService.getAccount()
-      .then((r) => { if (active && r?.success) setFundingState(r); })
-      .catch(() => {});
-    return () => { active = false; };
-  }, []));
+    void loadAccount();
+    return () => { loadGeneration.current += 1; };
+  }, [loadAccount]));
 
   const tier = status?.tier ?? 1;
   // The per-transaction ceiling the server will actually enforce today. The
@@ -87,7 +111,20 @@ const AccountLimits = () => {
   // Tier 3 customer opens their limits page and reads "Tier 1, ₦0". Hold the
   // brand loader for the first fetch instead of publishing a placeholder answer
   // to the only question the screen is for.
-  if (!status) {
+  if (loadError) {
+    return (
+      <Screen>
+        <Header title="Account details" onBack={() => router.back()} />
+        <Card>
+          <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 17 }}>Couldn&apos;t load account details</Text>
+          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginVertical: 16 }}>{loadError}</Text>
+          <Btn label="Try again" onPress={() => void loadAccount()} />
+        </Card>
+      </Screen>
+    );
+  }
+
+  if (loading || !status) {
     return (
       <Screen>
         <Header title={isVas ? "Account details" : "Account Limits"} onBack={() => router.back()} />
@@ -159,10 +196,14 @@ const AccountLimits = () => {
 
       {isVas ? (
         <Card style={{ marginBottom: 24 }}>
-          <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>{fundingReady ? 'Available services' : 'Account activation pending'}</Text>
+          <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>{fundingReady ? 'Available services' : vasAccountStatusTitle(fundingState)}</Text>
+          {!fundingReady && (fundingState?.enrollment_message || fundingState?.migration_message) ? (
+            <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 10 }}>{fundingState.enrollment_message || fundingState.migration_message}</Text>
+          ) : null}
           <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 10 }}>
             {walletCapabilityMessage(capabilities) || 'Bill payments and transfers are available.'}
           </Text>
+          {!fundingReady ? <View style={{ marginTop: 14 }}><Btn label="Check account setup" onPress={() => router.push('/addmoney')} /></View> : null}
         </Card>
       ) : <>
       {/* The backend transaction_limit is per transaction, not a daily limit. */}

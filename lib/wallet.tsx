@@ -211,7 +211,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
           void saveDisplayName(named);
           setAvatar(String(value.user_avatar ?? ''));
           const fundable = value.provider !== 'wema_vas' ||
-            (value.test_mode !== true && value.available === true && value.has_account === true && value.account_setup_state === 'ready');
+            (value.test_mode !== true && !/^711/.test(String(value.account_number ?? ''))
+              && value.available === true && value.has_account === true && value.account_setup_state === 'ready');
           setAccountNumber(fundable ? String(value.account_number ?? '') : '');
           setSpendingAvailable(value.provider === 'wema_vas' && value.test_mode === true ? false : value.spending_available !== false);
           setCapabilities(walletCapabilities(value));

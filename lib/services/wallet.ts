@@ -126,12 +126,38 @@ export type VirtualAccount = ApiResult<CapabilityPayload & {
   upgraded?: boolean;
 }>;
 
+export const vasAccountStatusTitle = (value: VirtualAccount | null): string => {
+  if (value?.account_setup_state === 'restricted' || value?.enrollment_status === 'restricted') return 'Account restricted';
+  if (value?.account_setup_state === 'vas_validation') return 'Account activation pending';
+  if (value?.enrollment_status === 'verification_required') return 'Verify your identity';
+  if (value?.enrollment_status === 'review_required') return 'Account setup needs review';
+  return 'Set up your funding account';
+};
+
+export type VasIdentityResult = VirtualAccount & {
+  challenge_id?: string;
+  identity_verified?: boolean;
+  retry_available?: boolean;
+  delivery_partial?: boolean;
+  resend_after?: number;
+};
+
 export const walletService = {
   getBalance: () => apiJson<WalletBalance>(EP.wallet.balance),
   getHistory: () => apiJson<TransactionHistory>(EP.wallet.history),
   // Dedicated (virtual) account: fetch the existing one, or start BVN/NIN OTP provisioning.
   getAccount: () => apiJson<VirtualAccount>(EP.wallet.account),
   getVasStatus: () => apiJson<VirtualAccount>(EP.wallet.vasStatus),
+  startVasIdentity: (kind: 'bvn' | 'nin', number: string,
+    displayed: Pick<VirtualAccount, 'enrollment_mode' | 'consent_version'>) =>
+    apiJson<VasIdentityResult>(EP.wallet.vasIdentityStart, {
+      identity_type: kind, number, consent: true, enrollment_mode: displayed.enrollment_mode,
+      consent_version: displayed.consent_version,
+    }),
+  confirmVasIdentity: (challengeId: string, otp?: string) =>
+    apiJson<VasIdentityResult>(EP.wallet.vasIdentityConfirm, { challenge_id: challengeId, ...(otp ? { otp } : {}) }),
+  resendVasIdentity: (challengeId: string) =>
+    apiJson<VasIdentityResult>(EP.wallet.vasIdentityResend, { challenge_id: challengeId }),
   enrollVas: (identity: { bvn: string; nin?: never } | { nin: string; bvn?: never },
     displayed: Pick<VirtualAccount, 'enrollment_mode' | 'consent_version'> = {}) =>
     apiJson<VirtualAccount>(EP.wallet.vasEnroll, { ...identity, consent: true,

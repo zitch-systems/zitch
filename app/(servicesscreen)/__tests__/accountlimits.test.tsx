@@ -28,9 +28,10 @@ jest.mock('@/lib/theme', () => ({
 }));
 jest.mock('@/components/design/ui', () => {
   const ReactActual = jest.requireActual<typeof import('react')>('react');
-  const { Text, View } = jest.requireActual<typeof import('react-native')>('react-native');
+  const { Text, View, Pressable } = jest.requireActual<typeof import('react-native')>('react-native');
   const Container = ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children);
-  return { Screen: Container, Card: Container, NText: Text, Header: () => null, Progress: () => null, money: (value: number) => `₦${value}` };
+  return { Screen: Container, Card: Container, NText: Text, Header: () => null, Progress: () => null, money: (value: number) => `₦${value}`,
+    Btn: ({ label, onPress }: { label: string; onPress: () => void }) => ReactActual.createElement(Pressable, { accessibilityLabel: label, onPress }, ReactActual.createElement(Text, null, label)) };
 });
 
 const state = { success: true, tier: 1, transaction_limit: '50000', daily_transfer_limit: '50000',
@@ -44,7 +45,7 @@ beforeEach(() => {
 
 it('does not promise spendable VAS limits or a legacy tier ladder during testing', async () => {
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
-    success: true, provider: 'wema_vas', test_mode: true, bill_payments_available: false, transfers_available: false,
+    success: true, provider: 'wema_vas', test_mode: true, account_setup_state: 'vas_validation', bill_payments_available: false, transfers_available: false,
   });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
@@ -80,10 +81,46 @@ it('keeps VAS limits unavailable when funding capability cannot be fetched', asy
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
   const output = JSON.stringify(tree.toJSON());
-  expect(output).toContain('Account activation pending');
+  expect(output).toContain("Couldn't load account details");
+  expect(output).not.toContain('Account activation pending');
   expect(output).not.toContain('Level Benefit');
   expect(output).not.toContain('₦50000');
   await act(async () => tree.unmount());
+});
+
+it('shows the real verification step before an account has been allocated', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
+    success: true, provider: 'wema_vas', test_mode: true, account_setup_state: 'vas_enrollment_required',
+    enrollment_status: 'verification_required', enrollment_message: 'Confirm ownership to finish your account setup.',
+  });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Verify your identity');
+  expect(JSON.stringify(tree.toJSON())).toContain('Confirm ownership to finish your account setup.');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Account activation pending');
+  await act(async () => tree.unmount());
+});
+
+it('ends a stalled fetch and lets the customer retry without stale responses replacing the result', async () => {
+  jest.useFakeTimers();
+  const resolveOld: ((value: unknown) => void)[] = [];
+  mockApiJson.mockImplementation(() => new Promise((resolve) => { resolveOld.push(resolve); }));
+  let tree!: renderer.ReactTestRenderer;
+  try {
+    await act(async () => { tree = renderer.create(<AccountLimits />); });
+    await act(async () => { jest.advanceTimersByTime(8000); });
+    expect(JSON.stringify(tree.toJSON())).toContain('taking longer than expected');
+    mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
+      success: true, provider: 'wema_vas', account_setup_state: 'vas_validation',
+    });
+    await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Try again' }).props.onPress(); });
+    await act(async () => { resolveOld.forEach((resolve) => resolve({ success: false })); });
+    expect(JSON.stringify(tree.toJSON())).toContain('Account activation pending');
+    expect(JSON.stringify(tree.toJSON())).not.toContain('taking longer than expected');
+  } finally {
+    act(() => tree.unmount());
+    jest.useRealTimers();
+  }
 });
 
 
