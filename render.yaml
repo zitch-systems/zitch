@@ -70,6 +70,8 @@ services:
         sync: false
       - key: WEMA_VAS_VALIDATION_USER_IDS
         sync: false
+      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
+        sync: false
       - key: WEMA_VAS_RELEASE_PHASE
         sync: false
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -476,6 +478,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
+      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -701,6 +705,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
+      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -809,6 +815,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
+      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -896,6 +904,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
+      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -1051,6 +1061,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
+      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -1138,6 +1150,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
+      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -1254,6 +1268,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
+      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS
@@ -1363,6 +1379,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_SELF_SERVICE}
       - key: WEMA_VAS_VALIDATION_USER_IDS
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_USER_IDS}
+      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
       - key: WEMA_VAS_RELEASE_PHASE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_RELEASE_PHASE}
       - key: WEMA_VAS_PILOT_USER_IDS

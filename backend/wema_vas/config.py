@@ -17,10 +17,8 @@ def approval_reference_present(value):
             and value.strip().casefold() not in {"pending", "todo", "tbd", "none", "false", "true"})
 
 
-def validation_user_ids(values=None):
-    """Reject the entire tester allowlist if any configured ID is malformed."""
-    values = config() if values is None else values
-    raw_ids = values.get("VALIDATION_USER_IDS", [])
+def _strict_user_ids(raw_ids):
+    """Reject the entire allowlist if any configured ID is malformed."""
     if isinstance(raw_ids, str):
         raw_ids = raw_ids.split(",") if raw_ids.strip() else []
     if not isinstance(raw_ids, (list, tuple, set, frozenset)):
@@ -33,6 +31,17 @@ def validation_user_ids(values=None):
             return frozenset()
         ids.add(int(str(value).strip()))
     return frozenset(ids)
+
+
+def validation_user_ids(values=None):
+    values = config() if values is None else values
+    return _strict_user_ids(values.get("VALIDATION_USER_IDS", []))
+
+
+def validation_legacy_balance_user_ids(values=None):
+    """Explicit users permitted to retain reconciled legacy funds during testing."""
+    values = config() if values is None else values
+    return _strict_user_ids(values.get("VALIDATION_LEGACY_BALANCE_USER_IDS", []))
 
 
 def enrollment_release_policy(values=None):

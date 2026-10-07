@@ -16,7 +16,8 @@ from accounts.models import IdentityProof, User, hash_identifier
 from wallet.models import Transaction, Wallet, WemaFaceSession, WemaProvisioningAttempt
 
 from .config import (approval_reference_present, config, enrollment_release_policy,
-                     validate_configuration, validation_user_ids)
+                     validate_configuration, validation_legacy_balance_user_ids,
+                     validation_user_ids)
 from .identity import encrypt_identity
 from .models import MigrationApproval, VirtualAccount
 
@@ -121,7 +122,8 @@ def customer_account_payload(user):
         "enrollment_available": bool(permitted and account is None and eligibility["enrollment_status"] == "ready"),
         "migration_message": SPENDING_MESSAGE if ready else (
             "Your account is restricted. Please contact support." if state == "restricted" else
-            VALIDATION_MESSAGE if test_mode else PENDING_MESSAGE),
+            VALIDATION_MESSAGE if test_mode and account else
+            eligibility["enrollment_message"] if test_mode else PENDING_MESSAGE),
         "enrollment_endpoint": "/api/wallet/vas/enroll/",
         "consent_version": consent_version(mode),
         **eligibility,
@@ -150,7 +152,17 @@ def _allocation_blockers(user, wallet, *, validation):
     """Read-only initial allocation checks; existing test accounts are not cutovers."""
     from wallet.services import wallet_expected_balance
     blockers = []
-    if (wallet is not None and wallet.balance != 0) or wallet_expected_balance(user.pk) != 0:
+    expected_balance = wallet_expected_balance(user.pk)
+    retain_legacy_balance = bool(
+        validation and _validation_policy_allows(user)
+        and user.pk in validation_legacy_balance_user_ids()
+        and wallet is not None and wallet.balance == expected_balance
+        and expected_balance >= 0
+    )
+    # A reviewed tester may retain real legacy funds; never copy, erase or
+    # reclassify them. Live cutover and unmatched balances keep the zero rule.
+    if not retain_legacy_balance and (
+            (wallet is not None and wallet.balance != 0) or expected_balance != 0):
         blockers.append("balance_review")
     if Transaction.objects.filter(user=user, transaction_status=Transaction.PENDING).exists():
         blockers.append("pending_transactions")
@@ -174,7 +186,7 @@ _BLOCKER_MESSAGES = {
     "phone_verification": "Verify the phone number on your existing profile.",
     "email_verification": "Verify the email address on your existing profile.",
     "identity_verification": "Complete BVN or NIN verification to confirm your legal account name.",
-    "balance_review": "Your existing balance needs reconciliation before registration. Contact support; do not create another profile.",
+    "balance_review": "Your existing balance needs a migration review before registration. Contact support; your funds are unchanged.",
     "pending_transactions": "Your pending transactions must finish or be reviewed before registration.",
     "pending_bank_setup": "Your earlier bank account setup must finish or be reviewed before registration.",
     "migration_review": "Your existing bank account needs an approved migration review before live registration.",
@@ -213,7 +225,12 @@ def enrollment_eligibility(user, *, account=None):
                   "verification_required")
     elif not account:
         status = "ready"
-    message = " ".join(_BLOCKER_MESSAGES[code] for code in blockers)
+    messages = dict(_BLOCKER_MESSAGES)
+    if user.bvn_verified or user.nin_verified:
+        messages["identity_verification"] = (
+            "Your previous verification is saved. Confirm your legal name and identity ownership "
+            "with BVN or NIN verification to complete the new account setup.")
+    message = " ".join(messages[code] for code in blockers)
     if not message:
         message = (VALIDATION_MESSAGE if account and mode == VirtualAccount.VALIDATION else
                    "Your funding account is already registered." if account else
