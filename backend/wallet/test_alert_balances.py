@@ -6,7 +6,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from wallet.alerts import _describe, _email_alert_html, _sms_alert, _whatsapp_template_summary
-from wallet.models import Wallet
+from wallet.models import BillFundingBinding, Transaction, Wallet
 from wallet.services import credit, debit, refund
 from wema_vas.models import VirtualAccount
 from wema_vas.services import process_notification
@@ -84,6 +84,49 @@ class TransactionAlertBalanceTests(TestCase):
             self.assertNotIn("balance:", text)
             self.assertNotIn("Available for bills", text)
 
+    def assert_account(self, txn, expected, *, reversal=False):
+        for text in (_sms_alert(txn, reversal=reversal), _email_alert_html(txn, reversal=reversal)):
+            self.assertIn(expected, text)
+            self.assertNotIn("0123****89", text)  # The company's collection account is never customer-facing.
+
+    def test_vas_credit_uses_immutable_receipt_account_despite_old_wallet_or_spoofed_metadata(self):
+        Wallet.objects.filter(user=self.user).update(account_number="0451234567")
+        txn = self.account.receipts.get().transaction
+        txn.meta = {"account_number": "1111111111", "vas_account": "2222222222"}
+        self.assert_account(txn, "9990****01")
+        for text in (_sms_alert(txn), _email_alert_html(txn)):
+            self.assertNotIn("0451****67", text)
+            self.assertNotIn("1111****11", text)
+
+    def test_vas_bill_and_refund_show_customer_account_not_company_source(self):
+        Wallet.objects.filter(user=self.user).update(account_number="0451234567")
+        bill = debit(self.user, "100", "Airtime — MTN")
+        self.assert_account(bill, "9990****01")
+        refund(bill)
+        self.assert_account(bill, "9990****01", reversal=True)
+
+    def test_late_legacy_credit_retains_old_account_after_live_vas_and_ignores_metadata(self):
+        Wallet.objects.filter(user=self.user).update(account_number="0451234567")
+        self.legacy_credit.meta = {"vas_account": self.account.number}
+        self.assert_account(self.legacy_credit, "0451****67")
+        for text in (_sms_alert(self.legacy_credit), _email_alert_html(self.legacy_credit)):
+            self.assertNotIn("9990****01", text)
+
+    def test_legacy_bill_uses_immutable_source_even_after_wallet_account_changes(self):
+        bill = Transaction.objects.create(user=self.user, amount=Decimal("100"), direction=Transaction.OUT,
+            service="Airtime — MTN", reference="legacy-bound-bill", transaction_status=Transaction.PENDING)
+        BillFundingBinding.objects.create(transaction=bill, source_account="0451234567")
+        Wallet.objects.filter(user=self.user).update(account_number="0457654321")
+        self.assert_account(bill, "0451****67")
+
+    def test_provenance_read_failure_omits_account_instead_of_falling_back_to_legacy(self):
+        Wallet.objects.filter(user=self.user).update(account_number="0451234567")
+        txn = self.account.receipts.get().transaction
+        with patch("wema_vas.models.Receipt.objects.select_related", side_effect=RuntimeError("unavailable")):
+            for text in (_sms_alert(txn), _email_alert_html(txn)):
+                self.assertNotIn("0451****67", text)
+                self.assertNotIn("9990****01", text)
+
 
 @override_settings(WEMA_VAS={**VAS, "MODE": "validation", "PREFIX": "711"})
 class ValidationTransactionAlertBalanceTests(TestCase):
@@ -99,3 +142,6 @@ class ValidationTransactionAlertBalanceTests(TestCase):
             self.assertNotIn("9,000", text)
             self.assertNotIn("10,000", text)
             self.assertNotIn("Historical funds unavailable", text)
+        Wallet.objects.filter(user=user).update(account_number=account.number)
+        for text in (_sms_alert(txn), _email_alert_html(txn)):
+            self.assertNotIn("7110****02", text)

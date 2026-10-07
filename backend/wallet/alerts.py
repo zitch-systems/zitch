@@ -828,6 +828,40 @@ def _mask_account(number: str) -> str:
     return f"{digits[:4]}****{digits[-2:]}"
 
 
+def _transaction_account_number(txn) -> str:
+    """Resolve this movement's account without relabelling historical funds."""
+    from .models import BillFundingBinding, Wallet
+    from wema_vas.models import Receipt, VirtualAccount
+
+    try:
+        receipt = Receipt.objects.select_related("account").filter(transaction_id=txn.pk).first()
+        if receipt is not None:
+            account = receipt.account
+            if (txn.direction == txn.IN and txn.currency == "NGN" and receipt.amount == txn.amount
+                    and account.user_id == txn.user_id and account.mode == VirtualAccount.LIVE
+                    and receipt.state == Receipt.CREDITED and not account.number.startswith("711")):
+                return account.number
+            return ""
+        binding = BillFundingBinding.objects.select_related("vas_account").filter(transaction_id=txn.pk).first()
+        if binding is not None:
+            if txn.direction != txn.OUT or txn.currency != "NGN":
+                return ""
+            if binding.vas_account_id:
+                account = binding.vas_account
+                if (account.user_id == txn.user_id and account.mode == VirtualAccount.LIVE
+                        and not account.number.startswith("711")):
+                    return account.number
+                return ""
+            number = binding.source_account
+        else:
+            # A late legacy credit belongs to its retained account, even after
+            # the customer has a live VAS account. Mutable metadata is not proof.
+            number = Wallet.objects.filter(user_id=txn.user_id).values_list("account_number", flat=True).first()
+        return number if number and not number.startswith("711") else ""
+    except Exception:  # noqa: BLE001 — omit unknown provenance; never guess a funding account
+        return ""
+
+
 def _sms_alert(txn, *, reversal: bool = False) -> str:
     """The alert in the bank's own format.
 
@@ -842,12 +876,12 @@ def _sms_alert(txn, *, reversal: bool = False) -> str:
     try:
         wallet = get_or_create_wallet(txn.user)
         balances = wallet_balance_payload(txn.user, wallet=wallet)
-        account = wallet.account_number
         balance = _sms_money(balances["available_balance"])
         if balances["available_balance"] != balances["balance"] or balances["historical_balance"]:
             balance_label = "Avail bills"
     except Exception:  # noqa: BLE001 — an alert must never depend on reading a wallet
-        account, balance = "", ""
+        balance = ""
+    account = _transaction_account_number(txn)
 
     desc = (_meta(txn).get("recipient_name") or _meta(txn).get("counterparty")
             or (txn.service or "").strip() or ("Credit" if credit else "Debit"))
@@ -870,18 +904,12 @@ def _email_alert_html(txn, *, reversal: bool = False) -> str:
     refuse HTML lose the layout and nothing else."""
     from common.emails import email_shell
 
-    from .services import get_or_create_wallet
-
     credit = reversal or txn.direction == txn.IN
     word = "Reversal" if reversal else ("Credit" if credit else "Debit")
     colour = "#0f9c93" if credit else "#b8402f"
     sign = "+" if credit else "\u2212"
 
-    try:
-        wallet = get_or_create_wallet(txn.user)
-        account = _mask_account(wallet.account_number)
-    except Exception:  # noqa: BLE001 \u2014 an alert must never depend on reading a wallet
-        account = "\u2014"
+    account = _mask_account(_transaction_account_number(txn))
     balance_rows = _balance_rows(txn)
 
     counterparty = (_meta(txn).get("recipient_name") or _meta(txn).get("counterparty")
