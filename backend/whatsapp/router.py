@@ -209,7 +209,16 @@ MENU_BODY = (
 def menu_text() -> str:
     """The menu plus the links footer. Built per call, not frozen at import, so
     the links follow settings (which deployments and tests both override)."""
+    from utility.providers import partnership_new_business_allowed
+
     body = MENU_BODY
+    if not partnership_new_business_allowed():
+        # The collection-account product has no outgoing transfer rail yet.
+        # Keep familiar option numbers, but do not invite a payment that the
+        # shared spending guard must refuse before it can begin.
+        body = body.replace("2️⃣  💸 Send money\n", "2️⃣  💸 Transfers unavailable\n")
+        body = body.replace("1️⃣1️⃣  📷 Scan a QR code\n", "1️⃣1️⃣  📷 QR payments unavailable\n")
+        body = body.replace('"send 5k to Ada", "2k airtime".', '"check balance", "2k airtime".')
     if not product_available("fx"):
         body = body.replace("5️⃣  💱 Convert currency\n", "")
     if not product_available("savings"):

@@ -33,6 +33,41 @@ class VasCustomerChatTests(TestCase):
             user=self.user, msisdn=MSISDN, action_type="add_account", state="bvn",
             payload={"id_type": "bvn"}, expires_at=timezone.now() + timedelta(minutes=5))
 
+    @override_settings(BANK_ACCOUNT_PROVIDER="wema_vas", WEMA_PARTNERSHIP_MODE="archive")
+    def test_menu_keeps_bill_and_setup_numbers_without_inviting_unavailable_transfers(self):
+        menu = router.menu_text()
+        for item in ("2️⃣  💸 Transfers unavailable", "3️⃣  📱 Airtime / Data",
+                     "4️⃣  💡 Pay a bill", "6️⃣  🏦 Add money", "7️⃣  🧾 My account details",
+                     "8️⃣  ✅ Verify my identity", "9️⃣  🧾 Transaction history",
+                     "1️⃣1️⃣  📷 QR payments unavailable", "1️⃣2️⃣  ⭐ My saved people"):
+            self.assertIn(item, menu)
+        self.assertIn('"2k airtime"', menu)
+        self.assertNotIn("Send money", menu)
+        self.assertNotIn("Scan a QR code", menu)
+        self.assertNotIn("send 5k to Ada", menu)
+
+    def test_transfer_menu_follows_provider_and_archive_policy_on_each_call(self):
+        for provider, lifecycle, enabled in (("partnership", "active", True),
+                                              ("partnership", "archive", False),
+                                              ("wema_vas", "active", False)):
+            with self.subTest(provider=provider, lifecycle=lifecycle), override_settings(
+                    BANK_ACCOUNT_PROVIDER=provider, WEMA_PARTNERSHIP_MODE=lifecycle):
+                menu = router.menu_text()
+                self.assertEqual("2️⃣  💸 Send money" in menu, enabled)
+                self.assertEqual("1️⃣1️⃣  📷 Scan a QR code" in menu, enabled)
+                self.assertEqual("send 5k to Ada" in menu, enabled)
+
+    @override_settings(BANK_ACCOUNT_PROVIDER="wema_vas", WEMA_PARTNERSHIP_MODE="archive")
+    def test_old_transfer_option_is_refused_before_collecting_recipient_or_pin(self):
+        with patch.object(router, "reply") as reply, \
+                patch.object(router, "_bank_items") as banks, \
+                patch.object(router, "send_flow") as secure:
+            router.handle_inbound(MSISDN, "2")
+        banks.assert_not_called()
+        secure.assert_not_called()
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+        self.assertIn("unavailable", reply.call_args.args[1])
+
     def test_add_money_routes_to_private_setup_without_app_handoff(self):
         with patch.object(router, "customer_funding_account", return_value=self.funding), \
                 patch.object(router, "send_cta_url") as cta, \

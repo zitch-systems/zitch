@@ -1443,10 +1443,15 @@ class EmailAlertBrandingTests(TestCase):
         with self.captureOnCommitCallbacks(execute=True):
             credit(self.user, Decimal("100"), "Deposit")
         txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
-        with patch("wallet.services.get_or_create_wallet", side_effect=RuntimeError("db")):
+        # Account provenance now reads the retained wallet directly; balance
+        # presentation uses the service helper. Fail both independent reads.
+        with patch("wallet.models.Wallet.objects.filter", side_effect=RuntimeError("db")), \
+             patch("wallet.services.get_or_create_wallet", side_effect=RuntimeError("db")):
             html = _email_alert_html(txn)
         self.assertIn("—", html)
         self.assertIn("₦100.00", html)
+        self.assertNotIn("0228****72", html)
+        self.assertNotIn("Available balance", html)
 
 
 class StatementRequestTests(TestCase):

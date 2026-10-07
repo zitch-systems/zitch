@@ -65,6 +65,7 @@ describe('AddMoney VAS migration', () => {
     success: true, provider: 'wema_vas', has_account: false, available: false,
     enrollment_available: true, spending_available: false,
     account_setup_state: 'vas_enrollment_required', migration_message: 'Set up your new virtual account.',
+    enrollment_mode: 'validation', consent_version: 'server-validation-consent-version',
   };
 
   it('offers same-profile verification while allocation is blocked and shows the server reason', async () => {
@@ -74,6 +75,8 @@ describe('AddMoney VAS migration', () => {
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<AddMoney />); });
     expect(JSON.stringify(tree.toJSON())).toContain('Your existing balance needs review before account setup.');
+    expect(JSON.stringify(tree.toJSON())).toContain('Account setup needs review');
+    expect(JSON.stringify(tree.toJSON())).not.toContain('Account activation pending');
     expect(JSON.stringify(tree.toJSON())).toContain('on this Zitch profile');
     expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
     act(() => findControl(tree, 'Review verification').props.onPress());
@@ -117,8 +120,8 @@ describe('AddMoney VAS migration', () => {
     expect(findControl(tree, 'Set up account').props.disabled).toBe(true);
     act(() => findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress());
     await act(async () => { await findControl(tree, 'Set up account').props.onPress(); });
-    expect(mockApiJson).toHaveBeenNthCalledWith(2, '/api/wallet/vas/enroll/', {
-      bvn: '11111111111', consent: true, enrollment_mode: 'validation', consent_version: 'server-validation-consent-version',
+    expect(mockApiJson).toHaveBeenNthCalledWith(2, '/api/wallet/vas/identity/start/', {
+      identity_type: 'bvn', number: '11111111111', consent: true, enrollment_mode: 'validation', consent_version: 'server-validation-consent-version',
     });
     expect(JSON.stringify(tree.toJSON())).toContain('Account activation pending');
     expect(JSON.stringify(tree.toJSON())).not.toContain('Fund by bank transfer');
@@ -138,7 +141,10 @@ describe('AddMoney VAS migration', () => {
     expect(mockApiJson).toHaveBeenCalledTimes(1);
     await act(async () => { findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress(); });
     await act(async () => { await findControl(tree, 'Set up account').props.onPress(); });
-    expect(mockApiJson).toHaveBeenNthCalledWith(2, '/api/wallet/vas/enroll/', { nin: '11111111111', consent: true });
+    expect(mockApiJson).toHaveBeenNthCalledWith(2, '/api/wallet/vas/identity/start/', {
+      identity_type: 'nin', number: '11111111111', consent: true,
+      enrollment_mode: 'validation', consent_version: 'server-validation-consent-version',
+    });
     expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
     expect(JSON.stringify(tree.toJSON())).not.toContain('11111111111');
   });
@@ -152,6 +158,131 @@ describe('AddMoney VAS migration', () => {
     await act(async () => { await findControl(tree, 'Set up account').props.onPress(); });
     expect(tree.root.findByType(TextInput).props.value).toBe('');
     expect(findControl(tree, 'Set up account').props.disabled).toBe(true);
+  });
+
+  it.each(['bvn', 'nin'])('verifies %s and allocates with one identity entry and no identity in the OTP request', async (kind) => {
+    mockApiJson.mockResolvedValueOnce({ ...enrollment, enrollment_available: false,
+      enrollment_status: 'verification_required', enrollment_blockers: ['identity_verification'] })
+      .mockResolvedValueOnce({ success: true, otp_required: true, challenge_id: 'private-challenge', delivery: 'registered phone •••••8888' })
+      .mockResolvedValueOnce({ success: true, identity_verified: true })
+      .mockResolvedValueOnce({ ...enrollment, account_setup_state: 'vas_validation', enrollment_status: 'enrolled', enrollment_available: false });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    if (kind === 'nin') act(() => findControl(tree, 'Use NIN').props.onPress());
+    act(() => tree.root.findByType(TextInput).props.onChangeText('12345678901'));
+    act(() => findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress());
+    await act(async () => { await findControl(tree, 'Set up account').props.onPress(); });
+    expect(JSON.stringify(tree.toJSON())).not.toContain('12345678901');
+    expect(JSON.stringify(tree.toJSON())).toContain('registered phone •••••8888');
+    act(() => tree.root.findByType(TextInput).props.onChangeText('123456'));
+    await act(async () => { await findControl(tree, 'Confirm and set up account').props.onPress(); });
+    expect(mockApiJson).toHaveBeenNthCalledWith(2, '/api/wallet/vas/identity/start/', {
+      identity_type: kind, number: '12345678901', consent: true,
+      enrollment_mode: 'validation', consent_version: 'server-validation-consent-version',
+    });
+    expect(mockApiJson).toHaveBeenNthCalledWith(3, '/api/wallet/vas/identity/confirm/', { challenge_id: 'private-challenge', otp: '123456' });
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+    expect(JSON.stringify(tree.toJSON())).toContain('Account activation pending');
+    expect(mockPush).not.toHaveBeenCalled();
+    await act(async () => tree.unmount());
+  });
+
+  it('keeps the ownership challenge through wrong-code and resend without requesting the identity again', async () => {
+    mockApiJson.mockResolvedValueOnce(enrollment)
+      .mockResolvedValueOnce({ success: true, otp_required: true, challenge_id: 'private-challenge', delivery: 'registered phone •••••8888', delivery_notice: 'Email delivery failed. Use SMS.' })
+      .mockResolvedValueOnce({ success: false, message: 'Incorrect code.' })
+      .mockResolvedValueOnce({ success: true, otp_required: true, challenge_id: 'private-challenge', delivery: 'registered phone •••••8888 and email a***@example.com' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    act(() => tree.root.findByType(TextInput).props.onChangeText('12345678901'));
+    act(() => findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress());
+    await act(async () => { await findControl(tree, 'Set up account').props.onPress(); });
+    act(() => tree.root.findByType(TextInput).props.onChangeText('000000'));
+    await act(async () => { await findControl(tree, 'Confirm and set up account').props.onPress(); });
+    expect(findControl(tree, 'Resend code')).toBeTruthy();
+    await act(async () => { await findControl(tree, 'Resend code').props.onPress(); });
+    expect(mockApiJson).toHaveBeenLastCalledWith('/api/wallet/vas/identity/resend/', { challenge_id: 'private-challenge' });
+    expect(JSON.stringify(tree.toJSON())).toContain('email a***@example.com');
+    expect(JSON.stringify(tree.toJSON())).not.toContain('Email delivery failed');
+    expect(tree.root.findByType(TextInput).props.value).toBe('');
+    await act(async () => tree.unmount());
+  });
+
+  it('honours the server resend cooldown before accepting another OTP delivery request', async () => {
+    jest.useFakeTimers();
+    mockApiJson.mockResolvedValueOnce(enrollment)
+      .mockResolvedValueOnce({ success: true, otp_required: true, challenge_id: 'private-challenge', resend_after: 1 });
+    let tree!: renderer.ReactTestRenderer;
+    try {
+      await act(async () => { tree = renderer.create(<AddMoney />); });
+      act(() => tree.root.findByType(TextInput).props.onChangeText('12345678901'));
+      act(() => findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress());
+      await act(async () => { await findControl(tree, 'Set up account').props.onPress(); });
+      const resend = findControl(tree, 'Resend code in 1s');
+      expect(resend.props.disabled).toBe(true);
+      await act(async () => { await resend.props.onPress(); });
+      expect(mockApiJson).toHaveBeenCalledTimes(2);
+      await act(async () => { jest.advanceTimersByTime(1000); });
+      expect(findControl(tree, 'Resend code').props.disabled).toBe(false);
+    } finally {
+      act(() => tree.unmount());
+      jest.useRealTimers();
+    }
+  });
+
+  it('retries allocation with the verified challenge without another identity or OTP entry', async () => {
+    mockApiJson.mockResolvedValueOnce(enrollment)
+      .mockResolvedValueOnce({ success: false, identity_verified: true, retry_available: true, challenge_id: 'verified-challenge', message: 'Account setup is temporarily unavailable.' })
+      .mockResolvedValueOnce({ success: true, identity_verified: true })
+      .mockResolvedValueOnce({ ...enrollment, account_setup_state: 'vas_validation', enrollment_status: 'enrolled', enrollment_available: false });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    act(() => tree.root.findByType(TextInput).props.onChangeText('12345678901'));
+    act(() => findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress());
+    await act(async () => { await findControl(tree, 'Set up account').props.onPress(); });
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+    expect(JSON.stringify(tree.toJSON())).toContain('Your identity has been verified.');
+    await act(async () => { await findControl(tree, 'Retry account setup').props.onPress(); });
+    expect(mockApiJson).toHaveBeenNthCalledWith(3, '/api/wallet/vas/identity/confirm/', { challenge_id: 'verified-challenge' });
+    expect(JSON.stringify(tree.toJSON())).toContain('Account activation pending');
+    await act(async () => tree.unmount());
+  });
+
+  it('discards a blurred in-flight challenge response and requires fresh consent', async () => {
+    let resolveStart!: (value: unknown) => void;
+    mockApiJson.mockResolvedValueOnce(enrollment)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve; }))
+      .mockResolvedValueOnce(enrollment);
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    act(() => tree.root.findByType(TextInput).props.onChangeText('12345678901'));
+    act(() => findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress());
+    let request!: Promise<void>;
+    act(() => { request = findControl(tree, 'Set up account').props.onPress(); });
+    await act(async () => { mockBlur?.(); mockBlur = mockFocus(); });
+    await act(async () => { resolveStart({ success: true, otp_required: true, challenge_id: 'stale-challenge' }); await request; });
+    expect(tree.root.findByType(TextInput).props.value).toBe('');
+    expect(findControl(tree, 'Consent to VAS identity storage and sharing').props.accessibilityState.checked).toBe(false);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Confirm and set up account' })).toHaveLength(0);
+    await act(async () => tree.unmount());
+  });
+
+  it('refreshes durable funding status when a completed challenge response was lost', async () => {
+    mockApiJson.mockResolvedValueOnce(enrollment)
+      .mockResolvedValueOnce({ success: true, otp_required: true, challenge_id: 'private-challenge' })
+      .mockResolvedValueOnce({ success: false, code: 'vas_identity_challenge_expired', retry_available: false })
+      .mockResolvedValueOnce({ ...enrollment, account_setup_state: 'vas_validation', enrollment_status: 'enrolled', enrollment_available: false });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    act(() => tree.root.findByType(TextInput).props.onChangeText('12345678901'));
+    act(() => findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress());
+    await act(async () => { await findControl(tree, 'Set up account').props.onPress(); });
+    act(() => tree.root.findByType(TextInput).props.onChangeText('123456'));
+    await act(async () => { await findControl(tree, 'Confirm and set up account').props.onPress(); });
+    expect(mockApiJson).toHaveBeenLastCalledWith('/api/wallet/account/');
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+    expect(JSON.stringify(tree.toJSON())).toContain('Account activation pending');
+    await act(async () => tree.unmount());
   });
 
   it.each(['vas_validation', 'restricted'])('never exposes a %s account for funding', async (state) => {

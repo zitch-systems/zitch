@@ -4,7 +4,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
 import { router, useFocusEffect } from 'expo-router';
 import { notify } from '@/components/design/Notify';
-import { walletCapabilities, walletCapabilityMessage, walletService, type VirtualAccount } from '@/lib/services/wallet';
+import { vasAccountStatusTitle, walletCapabilities, walletCapabilityMessage, walletService, type VasIdentityResult, type VirtualAccount } from '@/lib/services/wallet';
 import { isAccountOtpPending, kycService, resolveIdentityOtpRoute } from '@/lib/services/kyc';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { Loading } from '@/components/design/Loading';
@@ -26,6 +26,12 @@ const AddMoney = () => {
   const [vasIdentityKind, setVasIdentityKind] = useState<'bvn' | 'nin'>('bvn');
   const [vasIdentity, setVasIdentity] = useState('');
   const [vasConsent, setVasConsent] = useState(false);
+  const [vasChallenge, setVasChallenge] = useState('');
+  const [vasOtp, setVasOtp] = useState('');
+  const [vasDelivery, setVasDelivery] = useState('');
+  const [vasNotice, setVasNotice] = useState('');
+  const [vasIdentityVerified, setVasIdentityVerified] = useState(false);
+  const [vasResendWait, setVasResendWait] = useState(0);
   const [bvn, setBvn] = useState('');
   const [creating, setCreating] = useState(false);
   const [trackingId, setTrackingId] = useState('');
@@ -34,11 +40,17 @@ const AddMoney = () => {
   const actionInFlight = useRef(false);
   const facePollGeneration = useRef(0);
   const mounted = useRef(true);
+  const vasGeneration = useRef(0);
   const capabilityMessage = walletCapabilityMessage(walletCapabilities(fundingState));
-  const activationPending = fundingState?.provider === 'wema_vas'
-    && (fundingState.test_mode === true || fundingState.account_setup_state === 'vas_validation');
   const enrollmentComplete = fundingState?.account_setup_state === 'vas_validation'
     || fundingState?.enrollment_status === 'enrolled';
+  const vasSetupAvailable = fundingState?.account_setup_state === 'vas_enrollment_required'
+    && (fundingState.enrollment_available || (fundingState.enrollment_status === 'verification_required'
+      && fundingState.enrollment_blockers?.every((blocker) => blocker === 'identity_verification')));
+
+  const clearVasChallenge = () => {
+    setVasChallenge(''); setVasOtp(''); setVasDelivery(''); setVasNotice(''); setVasIdentityVerified(false); setVasResendWait(0);
+  };
 
   const beginAction = () => {
     if (actionInFlight.current) return false;
@@ -79,6 +91,7 @@ const AddMoney = () => {
         setAccount(null);
         setLoadError('');
       }
+      return r;
     } catch {
       if (loadGeneration.current === generation) {
         setLoadError('We could not load your funding account. Check your connection and try again.');
@@ -95,16 +108,25 @@ const AddMoney = () => {
       mounted.current = false;
       loadGeneration.current += 1;
       facePollGeneration.current += 1;
+      vasGeneration.current += 1;
     };
   }, []);
+
+  useEffect(() => {
+    if (!vasChallenge || vasResendWait <= 0) return;
+    const timer = setTimeout(() => setVasResendWait((wait) => Math.max(0, wait - 1)), 1000);
+    return () => clearTimeout(timer);
+  }, [vasChallenge, vasResendWait]);
 
   useFocusEffect(useCallback(() => {
     void loadAccount();
     return () => {
       loadGeneration.current += 1;
       facePollGeneration.current += 1;
+      vasGeneration.current += 1;
       setVasIdentity('');
       setVasConsent(false);
+      setVasChallenge(''); setVasOtp(''); setVasDelivery(''); setVasNotice(''); setVasIdentityVerified(false); setVasResendWait(0);
     };
   }, [loadAccount]));
 
@@ -117,27 +139,73 @@ const AddMoney = () => {
   // Display the NUBAN grouped 4-3-3 ("9012 345 678"); copy stays the raw digits.
   const grouped = (n: string) => n.replace(/^(\d{4})(\d{3})(\d{3}).*$/, '$1 $2 $3');
 
+  const handleVasResult = async (result: VasIdentityResult) => {
+    if (result.success && result.otp_required && result.challenge_id) {
+      setVasChallenge(result.challenge_id);
+      setVasOtp('');
+      setVasDelivery(result.delivery || result.otp_destination || 'your verified contact');
+      setVasNotice(result.delivery_notice || '');
+      setVasResendWait(Math.max(0, Math.min(600, Number(result.resend_after) || 0)));
+      return;
+    }
+    if (result.success) {
+      clearVasChallenge(); setVasConsent(false);
+      await loadAccount();
+      return;
+    }
+    if (result.identity_verified && result.retry_available && result.challenge_id) {
+      setVasChallenge(result.challenge_id); setVasOtp(''); setVasIdentityVerified(true);
+      setVasNotice(result.message || 'Your identity is verified. Retry account setup when the review is complete.');
+      return;
+    }
+    if (result.code === 'vas_identity_challenge_expired' || result.retry_available === false) {
+      clearVasChallenge(); setVasConsent(false);
+      // A completion response can be lost after the server consumes its input.
+      // Refresh durable account state before offering a new identity attempt.
+      const refreshed = await loadAccount();
+      if (refreshed?.enrollment_status === 'enrolled' || refreshed?.account_setup_state === 'vas_validation'
+          || refreshed?.account_setup_state === 'ready') return;
+    }
+    notify('Account setup incomplete', result.message || 'We could not finish your account setup. Check your details and try again.');
+  };
+
   const enrollVas = async () => {
-    if (!vasConsent || vasIdentity.length !== 11 || !fundingState?.enrollment_available
-        || fundingState.account_setup_state !== 'vas_enrollment_required' || !beginAction()) return;
+    if (!vasConsent || vasIdentity.length !== 11 || !vasSetupAvailable || !fundingState || !beginAction()) return;
+    const generation = vasGeneration.current;
     try {
-      const result = await walletService.enrollVas(
-        vasIdentityKind === 'bvn' ? { bvn: vasIdentity } : { nin: vasIdentity },
+      const result = await walletService.startVasIdentity(vasIdentityKind, vasIdentity,
         { enrollment_mode: fundingState.enrollment_mode, consent_version: fundingState.consent_version },
       );
-      if (!mounted.current) return;
-      if (result.success) {
-        setVasConsent(false);
-        await loadAccount();
-      } else {
-        notify('Account setup incomplete', result.message || 'Your verified identity could not be confirmed. Please check your verification status or contact support.');
-      }
+      if (!mounted.current || vasGeneration.current !== generation) return;
+      await handleVasResult(result);
     } catch {
-      if (mounted.current) notify('Account setup incomplete', 'We could not confirm the result. Refresh your account status before trying again.');
+      if (mounted.current && vasGeneration.current === generation) notify('Account setup incomplete', 'We could not confirm the result. Refresh your account status before trying again.');
     } finally {
-      if (mounted.current) setVasIdentity('');
+      if (mounted.current && vasGeneration.current === generation) setVasIdentity('');
       endAction();
     }
+  };
+
+  const confirmVasIdentity = async () => {
+    if (!vasChallenge || (!vasIdentityVerified && vasOtp.length !== 6) || !beginAction()) return;
+    const generation = vasGeneration.current;
+    try {
+      const result = await walletService.confirmVasIdentity(vasChallenge, vasIdentityVerified ? undefined : vasOtp);
+      if (mounted.current && vasGeneration.current === generation) await handleVasResult(result);
+    } catch {
+      if (mounted.current && vasGeneration.current === generation) notify('Could not confirm', 'Check your connection and try again.');
+    } finally { endAction(); }
+  };
+
+  const resendVasIdentity = async () => {
+    if (!vasChallenge || vasIdentityVerified || vasResendWait > 0 || !beginAction()) return;
+    const generation = vasGeneration.current;
+    try {
+      const result = await walletService.resendVasIdentity(vasChallenge);
+      if (mounted.current && vasGeneration.current === generation) await handleVasResult(result);
+    } catch {
+      if (mounted.current && vasGeneration.current === generation) notify('Could not resend code', 'Check your connection and try again.');
+    } finally { endAction(); }
   };
 
   const createAccount = async () => {
@@ -274,7 +342,7 @@ const AddMoney = () => {
         </View>
       ) : fundingState?.provider === 'wema_vas' && !account ? (
         <View style={{ paddingTop: 12 }}>
-          <Label>{fundingState.account_setup_state === 'restricted' ? 'Account restricted' : activationPending ? 'Account activation pending' : 'Your new funding account'}</Label>
+          <Label>{vasAccountStatusTitle(fundingState)}</Label>
           <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>
             {fundingState.enrollment_message || fundingState.migration_message || 'Your new funding account is not available yet. Please check again shortly.'}
           </Text>
@@ -284,10 +352,21 @@ const AddMoney = () => {
           <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 12 }}>
             {capabilityMessage} Only send money when this page shows an active funding account.
           </Text>
-          {fundingState.enrollment_available && fundingState.account_setup_state === 'vas_enrollment_required' ? (
+          {vasChallenge ? (
+            <View style={{ marginTop: 18 }}>
+              <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginBottom: 14 }}>
+                {vasIdentityVerified ? 'Your identity has been verified.' : `Enter the code sent to ${vasDelivery}. You do not need to enter your identity number again.`}
+              </Text>
+              {vasNotice ? <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginBottom: 14 }}>{vasNotice}</Text> : null}
+              {!vasIdentityVerified ? <Field label="Verification code" value={vasOtp} onChangeText={(value) => setVasOtp(value.replace(/\D/g, '').slice(0, 6))} secureTextEntry keyboardType="number-pad" maxLength={6} autoComplete="off" editable={!creating} placeholder="6-digit code" /> : null}
+              <View style={{ marginTop: 14 }}><Btn label={creating ? 'Please wait…' : vasIdentityVerified ? 'Retry account setup' : 'Confirm and set up account'} disabled={creating || (!vasIdentityVerified && vasOtp.length !== 6)} onPress={confirmVasIdentity} /></View>
+              {!vasIdentityVerified ? <Btn label={vasResendWait > 0 ? `Resend code in ${vasResendWait}s` : 'Resend code'} variant="ghost" disabled={creating || vasResendWait > 0} onPress={resendVasIdentity} /> : null}
+              <Btn label="Start again" variant="ghost" disabled={creating} onPress={() => { clearVasChallenge(); setVasConsent(false); }} />
+            </View>
+          ) : vasSetupAvailable ? (
             <>
               <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginVertical: 18 }}>
-                Confirm your verified BVN or NIN privately to complete account setup.
+                Enter your BVN or NIN once to verify your identity and complete account setup.
               </Text>
               <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
                 {(['bvn', 'nin'] as const).map((kind) => (
@@ -296,7 +375,7 @@ const AddMoney = () => {
                   </Pressable>
                 ))}
               </View>
-              <Field label={`Verified ${vasIdentityKind.toUpperCase()}`} value={vasIdentity} onChangeText={(value) => setVasIdentity(value.replace(/\D/g, '').slice(0, 11))} secureTextEntry keyboardType="number-pad" maxLength={11} autoComplete="off" autoCorrect={false} editable={!creating} placeholder={`Enter your verified ${vasIdentityKind.toUpperCase()}`} />
+              <Field label={vasIdentityKind.toUpperCase()} value={vasIdentity} onChangeText={(value) => setVasIdentity(value.replace(/\D/g, '').slice(0, 11))} secureTextEntry keyboardType="number-pad" maxLength={11} autoComplete="off" autoCorrect={false} editable={!creating} placeholder={`Enter your ${vasIdentityKind.toUpperCase()}`} />
               <Pressable accessibilityRole="checkbox" accessibilityLabel="Consent to VAS identity storage and sharing" accessibilityState={{ checked: vasConsent }} disabled={creating} onPress={() => setVasConsent(!vasConsent)} style={{ flexDirection: 'row', gap: 10, marginVertical: 18 }}>
                 <Text style={{ color: c.brand, fontFamily: font.bold }}>{vasConsent ? '☑' : '☐'}</Text>
                 <Text style={{ flex: 1, color: c.ink2, fontFamily: font.regular, lineHeight: 20 }}>{fundingState.test_mode === true
@@ -308,7 +387,7 @@ const AddMoney = () => {
           ) : null}
           <View style={{ marginTop: 14 }}>
             <Btn label="Review verification" variant="ghost" disabled={creating} onPress={() => router.push('/(auth)/kyc')} />
-            {!enrollmentComplete && fundingState.account_setup_state !== 'restricted' ? (
+            {!enrollmentComplete && !vasSetupAvailable && !vasChallenge && fundingState.account_setup_state !== 'restricted' ? (
               <>
                 <Btn label="Confirm my verified name" variant="ghost" disabled={creating} onPress={() => router.push({ pathname: '/(auth)/kyc', params: { verify_identity: vasIdentityKind } })} />
                 <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 8 }}>If your earlier verification did not retain your legal name, confirm the same identity with a new verification code, then return here. Verification alone does not make an account eligible for setup.</Text>

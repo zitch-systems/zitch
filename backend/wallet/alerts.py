@@ -128,17 +128,31 @@ def _detail_lines(txn) -> str:
     return "".join(f"{line}\n" for line in lines)
 
 
+def _balance_rows(txn) -> list[tuple[str, str]]:
+    """Use the spending boundary, not an aggregate that includes retained funds."""
+    from .services import wallet_balance_payload
+
+    try:
+        balances = wallet_balance_payload(txn.user)
+        total = balances["balance"]
+        available = balances["available_balance"]
+        historical = balances["historical_balance"]
+        if available != total or historical:
+            lines = [("Total NGN wallet balance", _money(total)),
+                     ("Available for bills", _money(available))]
+            if historical:
+                lines.append(("Historical funds unavailable for bills", _money(historical)))
+            return lines
+        return [("Available balance", _money(available))]
+    except Exception:  # noqa: BLE001 — balance reads must never prevent a payment alert
+        return []
+
+
 def _describe(txn, *, reversal: bool = False) -> tuple:
     """(subject, body) for the alert, with bounded non-secret transaction detail."""
     credit = txn.direction == txn.IN
     word = "Reversal" if reversal else ("Credit" if credit else "Debit")
     amount = _money(txn.amount, txn.currency)
-
-    from .services import get_or_create_wallet
-    try:
-        balance = _money(get_or_create_wallet(txn.user).balance)
-    except Exception:  # noqa: BLE001 — an alert must not depend on reading a balance
-        balance = ""
 
     meta = _meta(txn)
     counterparty = meta.get("recipient_name") or meta.get("counterparty") or ""
@@ -181,8 +195,8 @@ def _describe(txn, *, reversal: bool = False) -> tuple:
                 f"{_narration_line(txn)}"
                 f"Ref: {txn.reference}\n"
                 f"{_alert_timestamp(txn.created, '%d %b %Y, %I:%M %p')}")
-    if balance:
-        body += f"\nAvailable balance: {balance}"
+    for label, value in _balance_rows(txn):
+        body += f"\n{label}: {value}"
     body += "\n\nNot you? Contact Zitch support immediately."
     return subject, body
 
@@ -372,15 +386,9 @@ def _whatsapp_template_summary(txn, *, reversal: bool) -> str:
     counterparty, resulting balance — flattened onto one line, because a template
     variable cannot hold the line breaks the free-form body uses.
     """
-    from .services import get_or_create_wallet
-
     credit = reversal or txn.direction == txn.IN
     amount = _money(txn.amount, txn.currency)
     counterparty = _meta(txn).get("recipient_name") or _meta(txn).get("counterparty") or ""
-    try:
-        balance = _money(get_or_create_wallet(txn.user).balance)
-    except Exception:  # noqa: BLE001 — an alert must not depend on reading a balance
-        balance = ""
     if reversal:
         where = f" to {counterparty}" if counterparty else ""
         summary = f"Reversal: {amount}{where} returned to your Zitch account."
@@ -388,8 +396,8 @@ def _whatsapp_template_summary(txn, *, reversal: bool) -> str:
         word = "Credit" if credit else "Debit"
         where = f" {'from' if credit else 'to'} {counterparty}" if counterparty else ""
         summary = f"{word} of {amount}{where} on your Zitch account."
-    if balance:
-        summary += f" Balance {balance}."
+    for label, value in _balance_rows(txn):
+        summary += f" {label}: {value}."
     return _oneline(summary)
 
 
@@ -820,6 +828,40 @@ def _mask_account(number: str) -> str:
     return f"{digits[:4]}****{digits[-2:]}"
 
 
+def _transaction_account_number(txn) -> str:
+    """Resolve this movement's account without relabelling historical funds."""
+    from .models import BillFundingBinding, Wallet
+    from wema_vas.models import Receipt, VirtualAccount
+
+    try:
+        receipt = Receipt.objects.select_related("account").filter(transaction_id=txn.pk).first()
+        if receipt is not None:
+            account = receipt.account
+            if (txn.direction == txn.IN and txn.currency == "NGN" and receipt.amount == txn.amount
+                    and account.user_id == txn.user_id and account.mode == VirtualAccount.LIVE
+                    and receipt.state == Receipt.CREDITED and not account.number.startswith("711")):
+                return account.number
+            return ""
+        binding = BillFundingBinding.objects.select_related("vas_account").filter(transaction_id=txn.pk).first()
+        if binding is not None:
+            if txn.direction != txn.OUT or txn.currency != "NGN":
+                return ""
+            if binding.vas_account_id:
+                account = binding.vas_account
+                if (account.user_id == txn.user_id and account.mode == VirtualAccount.LIVE
+                        and not account.number.startswith("711")):
+                    return account.number
+                return ""
+            number = binding.source_account
+        else:
+            # A late legacy credit belongs to its retained account, even after
+            # the customer has a live VAS account. Mutable metadata is not proof.
+            number = Wallet.objects.filter(user_id=txn.user_id).values_list("account_number", flat=True).first()
+        return number if number and not number.startswith("711") else ""
+    except Exception:  # noqa: BLE001 — omit unknown provenance; never guess a funding account
+        return ""
+
+
 def _sms_alert(txn, *, reversal: bool = False) -> str:
     """The alert in the bank's own format.
 
@@ -827,14 +869,19 @@ def _sms_alert(txn, *, reversal: bool = False) -> str:
     given money back, and calling it a debit because the original was one would
     be the single most alarming way to phrase good news.
     """
-    from .services import get_or_create_wallet
+    from .services import get_or_create_wallet, wallet_balance_payload
 
     credit = reversal or txn.direction == txn.IN
+    balance_label = "Bal"
     try:
         wallet = get_or_create_wallet(txn.user)
-        account, balance = wallet.account_number, _sms_money(wallet.balance)
+        balances = wallet_balance_payload(txn.user, wallet=wallet)
+        balance = _sms_money(balances["available_balance"])
+        if balances["available_balance"] != balances["balance"] or balances["historical_balance"]:
+            balance_label = "Avail bills"
     except Exception:  # noqa: BLE001 — an alert must never depend on reading a wallet
-        account, balance = "", ""
+        balance = ""
+    account = _transaction_account_number(txn)
 
     desc = (_meta(txn).get("recipient_name") or _meta(txn).get("counterparty")
             or (txn.service or "").strip() or ("Credit" if credit else "Debit"))
@@ -843,7 +890,7 @@ def _sms_alert(txn, *, reversal: bool = False) -> str:
 
     head = (f"{'CR' if credit else 'DR'}:{_sms_money(txn.amount, txn.currency)}\n"
             f"Acct No:{_mask_account(account)}\n")
-    tail = f"\nBal :{balance}\n{_alert_timestamp(txn.created, '%d-%m-%Y %H:%M:%S')}"
+    tail = f"\n{balance_label} :{balance}\n{_alert_timestamp(txn.created, '%d-%m-%Y %H:%M:%S')}"
     # Trim the description rather than the balance or the timestamp: those are
     # what the customer checks, and a second segment costs a second message.
     room = _SMS_MAX - len(head) - len(tail) - len("Desc :")
@@ -857,19 +904,13 @@ def _email_alert_html(txn, *, reversal: bool = False) -> str:
     refuse HTML lose the layout and nothing else."""
     from common.emails import email_shell
 
-    from .services import get_or_create_wallet
-
     credit = reversal or txn.direction == txn.IN
     word = "Reversal" if reversal else ("Credit" if credit else "Debit")
     colour = "#0f9c93" if credit else "#b8402f"
     sign = "+" if credit else "\u2212"
 
-    try:
-        wallet = get_or_create_wallet(txn.user)
-        account = _mask_account(wallet.account_number)
-        balance = _money(wallet.balance)
-    except Exception:  # noqa: BLE001 \u2014 an alert must never depend on reading a wallet
-        account, balance = "\u2014", "\u2014"
+    account = _mask_account(_transaction_account_number(txn))
+    balance_rows = _balance_rows(txn)
 
     counterparty = (_meta(txn).get("recipient_name") or _meta(txn).get("counterparty")
                     or (txn.service or "").strip() or word)
@@ -897,7 +938,7 @@ def _email_alert_html(txn, *, reversal: bool = False) -> str:
       {row("Account", account)}
       {row("Reference", txn.reference)}
       {row("Date", _alert_timestamp(txn.created, "%d %b %Y, %I:%M %p"))}
-      {row("Available balance", balance, bold=True)}
+      {"".join(row(label, value, bold=True) for label, value in balance_rows)}
     </table>
   </td></tr>
   <tr><td style="padding:16px 28px 26px;font-family:Arial,Helvetica,sans-serif">
@@ -908,4 +949,4 @@ def _email_alert_html(txn, *, reversal: bool = False) -> str:
     </p>
   </td></tr>"""
     return email_shell(content,
-                       preheader=f"{word} of {_money(txn.amount, txn.currency)} \u2014 balance {balance}")
+                       preheader=f"{word} of {_money(txn.amount, txn.currency)} on your Zitch account")

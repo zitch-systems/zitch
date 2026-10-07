@@ -167,10 +167,10 @@ const DetailRow = ({ icon, label, value, big }: { icon: string; label: string; v
  */
 const BankTransfer = () => {
   const { c, theme } = useTheme();
-  const { accountNumber, accountName, bankName, linked } = useWallet();
+  const { accountNumber, accountName, bankName, linked, fundingProvider, fundingMessage } = useWallet();
 
   const acctNo = digitsOnly(accountNumber);
-  const ready = !!acctNo;
+  const ready = /^\d{10}$/.test(acctNo) && !(fundingProvider === 'wema_vas' && /^711/.test(acctNo));
   const banks = useMemo(() => bankShortcuts(linked, 9), [linked]);
 
   const copyAccount = async () => {
@@ -196,6 +196,7 @@ const BankTransfer = () => {
 
   // Copy first, then try to hand the user off to their bank app.
   const openBankApp = async (b: BankShortcut) => {
+    if (!ready) return;
     await copyAccount();
     if (!b.url) {
       notify('Open your bank app', `Your account number is copied — paste it in the ${b.name} app.`);
@@ -208,12 +209,27 @@ const BankTransfer = () => {
     }
   };
 
+  if (!ready) {
+    return (
+      <Screen>
+        <Header title="Bank Transfer" onBack={() => router.back()} />
+        <Card pad={16}>
+          <Text style={{ fontSize: 17, fontFamily: font.bold, color: c.ink1 }}>Your funding account is not available yet</Text>
+          <Text style={{ fontSize: 13.5, color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 12 }}>
+            {fundingMessage || 'Check your account setup to see the next step. Bank transfer details will appear once your account is ready.'}
+          </Text>
+          <View style={{ marginTop: 18 }}><Btn label="Check account setup" onPress={() => router.push('/addmoney')} /></View>
+        </Card>
+      </Screen>
+    );
+  }
+
   const steps: string[] = [
     ready
       ? `Copy the account number above — ${groupAccount(acctNo)} is your Zitch account number.`
       : 'Copy the account number above — it is your Zitch account number.',
     'Open the bank app you want to transfer from.',
-    'Transfer any amount to your Zitch account. Money lands instantly.',
+    'Confirm the displayed account name in your bank app, then make your transfer. Your Zitch balance updates after the payment is confirmed.',
   ];
 
   return (

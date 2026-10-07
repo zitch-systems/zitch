@@ -1540,7 +1540,7 @@ def _pending_identity_decrypt(kind: str, token: str) -> str:
     return clear[len(prefix):] if clear.startswith(prefix) else ""
 
 
-def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict):
+def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict, *, challenge_key=None):
     """Send an ownership OTP without weakening live identity proof.
 
     Prembly can additionally deliver the same code to its verified record email.
@@ -1603,7 +1603,7 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict)
         delivery = identity_otp_delivery_payload(destination, email=email, email_status=email_status)
 
     cache.set(
-        f"kyc_identity:{kind}:{user.id}",
+        challenge_key or f"kyc_identity:{kind}:{user.id}",
         {
             "code_hash": OTP.hash_code(code),
             "identity": _pending_identity_encrypt(kind, raw),
@@ -1618,8 +1618,8 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict)
               identity_verification_provider="prembly",
               message=f"We sent a verification code to your {delivery['delivery']}.")
 
-def _confirm_identity_ownership_challenge(user, kind: str, otp: str):
-    cache_key = f"kyc_identity:{kind}:{user.id}"
+def _confirm_identity_ownership_challenge(user, kind: str, otp: str, *, challenge_key=None, consume=True):
+    cache_key = challenge_key or f"kyc_identity:{kind}:{user.id}"
     pending = cache.get(cache_key)
     if not pending:
         return None, fail(f"Your code expired — start {kind.upper()} verification again", status=400)
@@ -1637,7 +1637,8 @@ def _confirm_identity_ownership_challenge(user, kind: str, otp: str):
         )
     raw = _pending_identity_decrypt(kind, pending.get("identity", ""))
     user._provider_verified_name = _pending_identity_decrypt("name", pending.get("verified_name", ""))
-    cache.delete(cache_key)
+    if consume:
+        cache.delete(cache_key)
     if not raw:
         return None, fail("This verification could not be recovered. Please start again.", status=400)
     return raw, None

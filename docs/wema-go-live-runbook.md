@@ -1,5 +1,11 @@
 # Wema / ALAT go-live runbook
 
+> **Scope: historical Partnership rail.** For the current Virtual Account Service
+> migration, follow [the VAS rollout](wema-vas-rollout.md) and
+> [launch readiness](wema-vas-launch-readiness.md). In this older document,
+> “VAS” can refer to airtime/data services. Do not reactivate Partnership or reuse
+> its account/transfer approval as approval for the new collection rail.
+
 The ordered checks for taking Zitch from **sandbox/mock** to **live money**
 on the Wema/ALAT rail. A passing preflight checks configuration; it does not
 certify provider delivery, financial reconciliation, or a completed migration.
