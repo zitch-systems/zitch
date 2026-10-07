@@ -34,7 +34,8 @@ Do not change the prefix or enable real-money enrollment until written approval.
   QR payments unavailable instead of inviting a transfer that cannot be executed.
 - Payment alerts distinguish total wallet funds from the amount available for VAS
   bills and historical funds. They never label retained historical balances as
-  available VAS spending money.
+  available VAS spending money. SMS and email account labels use each transaction’s
+  immutable receipt or bill funding binding, preserving historical attribution.
 
 ## External and operator requirements
 
@@ -64,12 +65,13 @@ Do not invent endpoint paths, status semantics or reversal behaviour.
 - One historical customer still has unknown Partnership issuance state. Do not
   automatically clear that state or allocate around an unresolved bank outcome.
 - The missing `txn_alert` utility template was submitted to Meta as
-  `1083297937653992` and returned `PENDING`. Submission is not approval or delivery.
+  `1083297937653992`. The subsequent readback confirmed **APPROVED**, UTILITY, en_US.
   Its two body variables match the existing application configuration. No customer
-  message was sent. Check current approval status before launch.
-- The connected Resend account lists a different project's domain. It cannot prove
-  Zitch's sender status; the deployed Zitch key must be checked separately without
-  replacing it with another project's key. Inbox monitoring is still unconfirmed.
+  message was sent; real recipient delivery still needs a controlled pilot check.
+- A direct read with the deployed Zitch email configuration returned HTTP 200 and
+  confirmed `send.zitch.ng` is verified. The separately connected Resend account
+  belongs to another project and was not used to change Zitch. Inbox monitoring
+  is still unconfirmed.
 - Android Firebase native client configuration is absent from app config/build
   workflows. A notification permission prompt alone does not register a working
   push token. Obtain the matching Firebase client and FCM delivery configuration;
