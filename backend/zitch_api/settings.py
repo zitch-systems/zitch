@@ -110,6 +110,8 @@ WEMA_VAS = {
     "ENABLE_VALIDATION_ENROLLMENT": env_bool("WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT", False),
     "VALIDATION_SELF_SERVICE": env_bool("WEMA_VAS_VALIDATION_SELF_SERVICE", False),
     "VALIDATION_USER_IDS": os.environ.get("WEMA_VAS_VALIDATION_USER_IDS", ""),
+    # Individually reviewed testers only; this never relaxes a live cutover.
+    "VALIDATION_LEGACY_BALANCE_USER_IDS": os.environ.get("WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS", ""),
     "RELEASE_PHASE": os.environ.get("WEMA_VAS_RELEASE_PHASE", "closed").strip().lower(),
     # Preserve malformed entries for the enrollment policy to reject as a whole.
     "PILOT_USER_IDS": os.environ.get("WEMA_VAS_PILOT_USER_IDS", ""),

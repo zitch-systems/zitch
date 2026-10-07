@@ -267,6 +267,83 @@ class VasLegacyNameRefreshTests(TestCase):
         self.assertFalse(VirtualAccount.objects.exists())
         self.assertIn(funding["enrollment_message"], " ".join(call.args[1] for call in self.reply.call_args_list))
 
+    def test_approved_validation_with_retained_balance_still_requires_private_name_verification(self):
+        retained_balance = Decimal("500.00")
+        Wallet.objects.filter(pk=self.wallet.pk).update(balance=retained_balance)
+        credit = Transaction.objects.create(user=self.user, service="retained deposit",
+            amount=retained_balance, direction=Transaction.IN,
+            reference="retained-validation-deposit", transaction_status=Transaction.SUCCESS)
+
+        def exchange(token, screen, data):
+            return flows.handle_flow_request({"action": "data_exchange", "flow_token": token,
+                "screen": screen, "data": data})
+
+        with override_settings(WEMA_VAS={**VALIDATION,
+                "VALIDATION_LEGACY_BALANCE_USER_IDS": [self.user.pk]}), \
+                patch("utility.providers._prembly_identity_live", return_value=True), \
+                patch("utility.providers.prembly_verify_bvn", return_value={"success": True,
+                    "first_name": "Ada", "last_name": "Eze", "phone": "08077778888"}) as lookup, \
+                patch.object(router, "sms_live", return_value=True), \
+                patch.object(router, "send_sms", return_value={"success": True}) as sms:
+            funding = router.customer_funding_account(self.user)
+            self.assertEqual(funding["enrollment_blockers"], ["identity_verification"])
+            self.assertFalse(funding["enrollment_available"])
+            self.register()
+            self.setup_send.assert_called_once()
+            self.assertEqual(self.setup_send.call_args.kwargs["screen"], vas_flow.SETUP)
+            self.assertTrue(PendingAction.objects.filter(user=self.user,
+                action_type="vas_enroll", payload__vas_step="consent").exists())
+            self.assertFalse(VirtualAccount.objects.exists())
+            self.assertFalse(IdentityProof.objects.exists())
+            lookup.assert_not_called()
+            sms.assert_not_called()
+            token = self.setup_send.call_args.args[1]
+            consent = exchange(token, vas_flow.SETUP, {"consent": True, "identity_type": "bvn"})
+            self.assertEqual(consent["screen"], vas_flow.IDENTITY)
+            lookup.assert_not_called()
+
+            identity = exchange(token, vas_flow.IDENTITY, {"number": self.raw})
+            self.assertEqual(identity["screen"], vas_flow.CODE)
+            self.assertFalse(IdentityProof.objects.exists())
+            self.assertFalse(VirtualAccount.objects.exists())
+            code = sms.call_args.args[1].split("Zitch: ")[1][:6]
+            completed = exchange(token, vas_flow.CODE, {"number": code})
+            self.assertEqual(completed["screen"], "RESULT")
+            self.assertEqual(completed["data"]["status"], "Account activation pending")
+            self.assertEqual(exchange(token, vas_flow.CODE, {"number": code}), completed)
+            lookup.assert_called_once()
+            sms.assert_called_once()
+            proof = IdentityProof.objects.get(user=self.user)
+            self.assertEqual(proof.source, IdentityProof.IDENTITY_PROVIDER_OTP)
+            self.assertEqual(proof.verified_name, "Ada Eze")
+            self.assertEqual(VirtualAccount.objects.filter(user=self.user).count(), 1)
+            account = VirtualAccount.objects.get(user=self.user)
+            self.assertEqual(account.mode, "validation")
+            self.assertEqual(account.prefix, "711")
+            self.assertTrue(account.number.startswith("711"))
+            self.assertEqual(account.display_name, "Zitch/Ada Eze")
+            self.assertEqual(account.validation_balance, 0)
+            self.assertEqual(account.cutover_reference, "")
+            self.assertIn(":whatsapp:", account.consent_reference)
+
+            router.handle_inbound(self.msisdn, "7")
+            self.setup_send.assert_called_once()
+            self.pin_send.assert_called_once()
+            self.assertIn("Account activation pending", self.reply.call_args.args[1])
+            self.assertNotIn(account.number, self.reply.call_args.args[1])
+        self.user.refresh_from_db()
+        self.wallet.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertEqual(self.user.bvn_hash, hash_identifier(self.raw))
+        self.assertEqual(self.wallet.balance, retained_balance)
+        self.assertEqual(self.wallet.account_number, "0454243073")
+        self.assertEqual(self.wallet.account_reference, "retained-legacy-reference")
+        self.assertTrue(Transaction.objects.filter(pk=credit.pk,
+            amount=retained_balance, transaction_status=Transaction.SUCCESS).exists())
+        self.assertTrue(Transaction.objects.filter(pk=self.txn.pk).exists())
+        self.assertEqual(Transaction.objects.filter(user=self.user).count(), 2)
+        self.assertEqual(User.objects.count(), 1)
+
     @override_settings(WEMA_VAS={**VALIDATION, "VALIDATION_SELF_SERVICE": False})
     def test_disabled_customer_enrollment_cannot_open_repair_flow(self):
         self.assertIn("policy_unavailable", router.customer_funding_account(self.user)["enrollment_blockers"])

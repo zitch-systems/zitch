@@ -3088,7 +3088,7 @@ def _vas_verification_status(user, msisdn: str, funding: dict | None = None) -> 
         return _send_vas_setup(user, msisdn, funding)
     if funding.get("has_account") and funding.get("available"):
         return _send_account_details(msisdn, get_or_create_wallet(user))
-    return reply(msisdn, str(funding.get("migration_message") or "Account setup is not available yet."))
+    return reply(msisdn, _vas_account_status(funding))
 
 
 _UPGRADE_STEPS = {"bvn", "nin"}

@@ -83,6 +83,42 @@ class VasCustomerChatTests(TestCase):
         self.assertNotIn("/transaction", messages)
         self.assertNotIn(self.wallet.account_number, messages)
 
+    def test_verification_status_shows_setup_review_without_claiming_account_activation(self):
+        funding = {**self.funding, "test_mode": True, "enrollment_available": False,
+                   "enrollment_status": "review_required",
+                   "enrollment_blockers": ["identity_verification", "balance_review"],
+                   "enrollment_message": "Your existing balance needs review before account setup. Contact support.",
+                   # A generic migration notice must not hide the actual blocker.
+                   "migration_message": "Account activation pending."}
+        with patch.object(router, "customer_funding_account", return_value=funding), \
+                patch.object(router, "reply") as reply, \
+                patch("whatsapp.vas_flow.start") as start:
+            router._vas_verification_status(self.user, MSISDN)
+        start.assert_not_called()
+        messages = " ".join(call.args[1] for call in reply.call_args_list)
+        self.assertIn(funding["enrollment_message"], messages)
+        self.assertIn("Your completed checks stay saved", messages)
+        self.assertNotIn("Account activation pending", messages)
+        self.assertNotIn("Reply *6*", messages)
+        self.assertNotIn(self.wallet.account_number, messages)
+
+    def test_verification_status_keeps_existing_validation_account_pending_and_private(self):
+        funding = {**self.funding, "test_mode": True, "account_setup_state": "vas_validation",
+                   "enrollment_available": False, "enrollment_status": "enrolled",
+                   "validation_account_number": "7111234567",
+                   "migration_message": "Account activation pending."}
+        with patch.object(router, "customer_funding_account", return_value=funding), \
+                patch.object(router, "reply") as reply, \
+                patch("whatsapp.vas_flow.start") as start:
+            router._vas_verification_status(self.user, MSISDN)
+        start.assert_not_called()
+        messages = " ".join(call.args[1] for call in reply.call_args_list)
+        self.assertIn("Account activation pending", messages)
+        self.assertNotIn("7111234567", messages)
+        self.assertNotIn("test account", messages.lower())
+        self.assertNotIn("Reply *6*", messages)
+        self.assertNotIn(self.wallet.account_number, messages)
+
     def test_live_account_details_do_not_advertise_transaction_limit(self):
         funding = {**self.funding, "account_setup_state": "ready", "has_account": True,
                    "available": True, "test_mode": False}

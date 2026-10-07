@@ -83,11 +83,13 @@ encrypted consent/identity Flow; raw identity is never requested in the chat
 thread. The new screens remain disabled until the configured approved Flow ID,
 published status and complete published JSON contract match the deployed asset.
 Missing provider-confirmed name proof requires a provider lookup and SMS ownership
-challenge inside the Flow, followed by fresh private identity re-entry. No raw
-identifier is retained between those pages. Ordinary WhatsApp payment/login
+challenge inside the Flow. The temporary encrypted handoff described below avoids
+another identity entry after the code is verified. Ordinary WhatsApp payment/login
 screens continue to use their existing contract while this gate is off.
 
-Existing non-zero balances or pending transactions block initial enrollment.
+Existing non-zero balances block initial enrollment by default; an individually
+approved validation tester may retain a reconciled balance as described below.
+Pending transactions continue to block initial enrollment for everyone.
 Validation setup may retain the existing Partnership number without migrating it.
 For live allocation, a legacy bank number additionally requires a per-user immutable `MigrationApproval` with
 bank cutover evidence and reviewer reference. `vas_approve_cutover` records this
@@ -123,8 +125,9 @@ reviewed replacement Meta Flow is `1047786551595097`, with canonical SHA-256
 Activate both `WHATSAPP_FLOW_ID` and `WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID`
 together on each Django runtime when deploying this exact contract.
 
-Customer screens show **Account activation pending** while the account is in
-validation mode. The 711 sample number is not returned in customer funding
+Customer screens show **Account activation pending** once a validation account
+exists. Before creation, they explain the remaining verification or review step.
+The 711 sample number is not returned in customer funding
 details or offered for copying or deposits. Bank-authenticated endpoints and
 operator sample exports still expose the approved validation samples. Removing
 the decorative transaction-limit display does not change enforced limits or
@@ -134,11 +137,24 @@ Validation self-service requires `WEMA_VAS_VALIDATION_SELF_SERVICE=true` plus
 `WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT=true`, validation mode, prefix `711`, closed
 live release phase and live enrollment disabled. The new flag defaults false;
 without it, the explicit validation-user allowlist remains in force. Contact and
-identity verification, exact test consent, zero cached and ledger balances, and
-pending-work checks still apply. Configure the flag consistently on all nine
+identity verification, exact test consent, balance review, and pending-work checks
+still apply. Configure the flag consistently on all nine
 Django runtimes only after they have deployed this release and the matching Flow
 has been published. Customers supply their own consent; no account is allocated
 by enabling the flag.
+
+`WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS` defaults empty. It permits only
+individually reviewed users to create a validation account while retaining their
+old funds. The entire comma-separated positive-ID list fails closed if malformed.
+The exception requires the same closed 711 validation policy, enabled validation
+enrollment, disabled live enrollment, an existing wallet, and a nonnegative stored
+balance exactly matching the ledger. It does not waive named ownership proof,
+contact verification, explicit customer consent or pending-work checks. Existing
+wallet/account fields and ledger rows are unchanged; validation receipts remain
+separate and cannot fund bills or transfers. Live allocation still requires zero
+prior liabilities and the separate bank migration approval. Configure the list
+consistently on all Django runtimes. The onboarding package applies the same
+reviewed-balance rule; removing approval makes a funded sample ineligible again.
 
 For validation setup, an expired Partnership OTP attempt that was never accepted
 is retained as history and does not count as active bank setup. Unexpired attempts,
@@ -177,7 +193,8 @@ reference is not rewritten when the displayed consent changes.
    handling only behind the controlled TLS-terminating proxy. Ensure the canonical
    API host, edge rules and origin guard allow the five authenticated routes.
 5. Obtain three verified and explicitly consented validation accounts with no
-   outstanding balances or pending work. Existing customers can opt in on their
+   pending work and either zero balances or an individually approved reconciled
+   retained balance under the rule above. Existing customers can opt in on their
    current profiles using the self-service journey above; their old bank numbers
    and history remain intact. Alternatively, `vas_provision_validation --user-id … --identity-type
    bvn --consent-reference …` reads the matching ID from a hidden prompt; never
