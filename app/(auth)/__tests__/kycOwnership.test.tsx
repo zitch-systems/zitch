@@ -188,3 +188,17 @@ it.each([
     act(() => tree.unmount());
   }
 });
+
+
+it('keeps VAS identity status without advertising a per-transaction limit', async () => {
+  mockParams.verify_identity = '';
+  mockApiJson.mockResolvedValue({ ...state, tier: 1, transaction_limit: '50000',
+    bvn_verified: true, email_verified: true, account_provider: 'wema_vas' });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  const output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('Current tier');
+  expect(output).not.toContain('Per-transaction limit');
+  expect(output).not.toContain('50000');
+  await act(async () => tree.unmount());
+});

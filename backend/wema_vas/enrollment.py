@@ -21,10 +21,10 @@ from .identity import encrypt_identity
 from .models import MigrationApproval, VirtualAccount
 
 CONSENT_VERSION = "vas-identity-v1"
-VALIDATION_CONSENT_VERSION = "vas-validation-identity-v1"
+VALIDATION_CONSENT_VERSION = "vas-validation-identity-v2"
 PENDING_MESSAGE = "Your new funding account is being prepared. Please wait before sending money."
 SPENDING_MESSAGE = "Payments and transfers are unavailable while the new bank connection is completed."
-VALIDATION_MESSAGE = "Your 711 account is for validation testing only. Do not send real money to it; test funds cannot be spent."
+VALIDATION_MESSAGE = "Account activation pending."
 
 
 def consent_version(mode=None):
@@ -101,8 +101,6 @@ def customer_account_payload(user):
     ready = bool(enrollment_available(user) and account and account.active and account.mode == VirtualAccount.LIVE
                  and account.prefix == values.get("PREFIX"))
     test_mode = values.get("MODE") == "validation"
-    validation_visible = bool(validation_enrollment_available(user) and account and account.active
-                              and account.mode == VirtualAccount.VALIDATION and account.prefix == "711")
     state = "ready" if ready else "vas_enrollment_required"
     if account and not account.active:
         state = "restricted"
@@ -116,8 +114,10 @@ def customer_account_payload(user):
         "bank_name": "Wema Bank" if ready else "", "bank_accounts": [], "bank_tier": 0,
         "account_setup_state": state, "spending_available": False,
         "test_mode": test_mode,
-        "validation_account_number": account.number if validation_visible else "",
-        "validation_account_name": account.display_name if validation_visible else "",
+        # Validation details belong to the authenticated bank/operator paths,
+        # never customer funding instructions. Retain the fields for old clients.
+        "validation_account_number": "",
+        "validation_account_name": "",
         "enrollment_available": bool(permitted and account is None and eligibility["enrollment_status"] == "ready"),
         "migration_message": SPENDING_MESSAGE if ready else (
             "Your account is restricted. Please contact support." if state == "restricted" else
@@ -215,9 +215,9 @@ def enrollment_eligibility(user, *, account=None):
         status = "ready"
     message = " ".join(_BLOCKER_MESSAGES[code] for code in blockers)
     if not message:
-        message = ("Your validation account is already registered. Do not send money to it." if account and mode == VirtualAccount.VALIDATION else
+        message = (VALIDATION_MESSAGE if account and mode == VirtualAccount.VALIDATION else
                    "Your funding account is already registered." if account else
-                   "Use your existing profile to register for validation testing. Confirm your verified identity and test-only consent; no real funds or bank migration are involved." if mode == VirtualAccount.VALIDATION else
+                   "Confirm your verified identity and consent to continue account setup for bank integration validation." if mode == VirtualAccount.VALIDATION else
                    "Confirm your verified identity and consent to register your new funding account.")
     return {"enrollment_mode": mode, "enrollment_status": status,
             "enrollment_blockers": blockers, "enrollment_message": message,

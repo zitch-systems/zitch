@@ -70,10 +70,10 @@ describe('AddMoney VAS migration', () => {
   it('offers same-profile verification while allocation is blocked and shows the server reason', async () => {
     mockApiJson.mockResolvedValue({ ...enrollment, enrollment_available: false, test_mode: true,
       enrollment_status: 'review_required', enrollment_blockers: ['balance_review'],
-      enrollment_message: 'Your existing balance needs review before test setup.', re_registration_required: true });
+      enrollment_message: 'Your existing balance needs review before account setup.', re_registration_required: true });
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<AddMoney />); });
-    expect(JSON.stringify(tree.toJSON())).toContain('Your existing balance needs review before test setup.');
+    expect(JSON.stringify(tree.toJSON())).toContain('Your existing balance needs review before account setup.');
     expect(JSON.stringify(tree.toJSON())).toContain('on this Zitch profile');
     expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
     act(() => findControl(tree, 'Review verification').props.onPress());
@@ -95,7 +95,7 @@ describe('AddMoney VAS migration', () => {
     expect(tree.root.findByType(TextInput)).toBeTruthy();
     act(() => tree.root.findByType(TextInput).props.onChangeText('11111111111'));
     act(() => findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress());
-    expect(findControl(tree, 'Set up test account').props.disabled).toBe(false);
+    expect(findControl(tree, 'Set up account').props.disabled).toBe(false);
     await act(async () => { mockBlur?.(); mockBlur = mockFocus(); });
     expect(tree.root.findByType(TextInput).props.value).toBe('');
     expect(findControl(tree, 'Consent to VAS identity storage and sharing').props.accessibilityState.checked).toBe(false);
@@ -103,24 +103,24 @@ describe('AddMoney VAS migration', () => {
     await act(async () => tree.unmount());
   });
 
-  it('requires explicit test-only consent and never allocates automatically', async () => {
+  it('requires explicit integration-validation consent and never allocates automatically', async () => {
     mockApiJson.mockResolvedValueOnce({ ...enrollment, test_mode: true,
-      enrollment_mode: 'validation', consent_version: 'vas-validation-identity-v1' })
+      enrollment_mode: 'validation', consent_version: 'server-validation-consent-version' })
       .mockResolvedValueOnce({ success: true })
       .mockResolvedValueOnce({ ...enrollment, test_mode: true, enrollment_available: false,
         account_setup_state: 'vas_validation', validation_account_number: '7111234567' });
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<AddMoney />); });
-    expect(JSON.stringify(tree.toJSON())).toContain('does not activate real funding or payments');
+    expect(JSON.stringify(tree.toJSON())).toContain('Wema Bank for integration validation. Account activation remains pending.');
     expect(mockApiJson).toHaveBeenCalledTimes(1);
     act(() => tree.root.findByType(TextInput).props.onChangeText('11111111111'));
-    expect(findControl(tree, 'Set up test account').props.disabled).toBe(true);
+    expect(findControl(tree, 'Set up account').props.disabled).toBe(true);
     act(() => findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress());
-    await act(async () => { await findControl(tree, 'Set up test account').props.onPress(); });
+    await act(async () => { await findControl(tree, 'Set up account').props.onPress(); });
     expect(mockApiJson).toHaveBeenNthCalledWith(2, '/api/wallet/vas/enroll/', {
-      bvn: '11111111111', consent: true, enrollment_mode: 'validation', consent_version: 'vas-validation-identity-v1',
+      bvn: '11111111111', consent: true, enrollment_mode: 'validation', consent_version: 'server-validation-consent-version',
     });
-    expect(JSON.stringify(tree.toJSON())).toContain('Test account only');
+    expect(JSON.stringify(tree.toJSON())).toContain('Account activation pending');
     expect(JSON.stringify(tree.toJSON())).not.toContain('Fund by bank transfer');
     await act(async () => tree.unmount());
   });
@@ -133,11 +133,11 @@ describe('AddMoney VAS migration', () => {
     expect(tree.root.findByType(TextInput).props.secureTextEntry).toBe(true);
     await act(async () => { findControl(tree, 'Use NIN').props.onPress(); });
     await act(async () => { tree.root.findByType(TextInput).props.onChangeText('11111111111'); });
-    expect(findControl(tree, 'Set up virtual account').props.disabled).toBe(true);
-    await act(async () => { await findControl(tree, 'Set up virtual account').props.onPress(); });
+    expect(findControl(tree, 'Set up account').props.disabled).toBe(true);
+    await act(async () => { await findControl(tree, 'Set up account').props.onPress(); });
     expect(mockApiJson).toHaveBeenCalledTimes(1);
     await act(async () => { findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress(); });
-    await act(async () => { await findControl(tree, 'Set up virtual account').props.onPress(); });
+    await act(async () => { await findControl(tree, 'Set up account').props.onPress(); });
     expect(mockApiJson).toHaveBeenNthCalledWith(2, '/api/wallet/vas/enroll/', { nin: '11111111111', consent: true });
     expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
     expect(JSON.stringify(tree.toJSON())).not.toContain('11111111111');
@@ -149,9 +149,9 @@ describe('AddMoney VAS migration', () => {
     await act(async () => { tree = renderer.create(<AddMoney />); });
     await act(async () => { tree.root.findByType(TextInput).props.onChangeText('22222222222'); });
     await act(async () => { findControl(tree, 'Consent to VAS identity storage and sharing').props.onPress(); });
-    await act(async () => { await findControl(tree, 'Set up virtual account').props.onPress(); });
+    await act(async () => { await findControl(tree, 'Set up account').props.onPress(); });
     expect(tree.root.findByType(TextInput).props.value).toBe('');
-    expect(findControl(tree, 'Set up virtual account').props.disabled).toBe(true);
+    expect(findControl(tree, 'Set up account').props.disabled).toBe(true);
   });
 
   it.each(['vas_validation', 'restricted'])('never exposes a %s account for funding', async (state) => {
@@ -164,18 +164,20 @@ describe('AddMoney VAS migration', () => {
     expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
   });
 
-  it('shows an authorized validation sample separately with an explicit do-not-fund warning', async () => {
+  it('shows activation pending without exposing a validation number or copy action', async () => {
     mockApiJson.mockResolvedValueOnce({ ...enrollment, account_setup_state: 'vas_validation',
       test_mode: true, available: false, has_account: false, enrollment_available: false,
       validation_account_number: '7111234567', validation_account_name: 'Zitch/Ada' });
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<AddMoney />); });
     const output = JSON.stringify(tree.toJSON());
-    expect(output).toContain('Test account only');
-    expect(output).toContain('7111 234 567');
-    expect(output).toContain('Do not send money to this account.');
+    expect(output).toContain('Account activation pending');
+    expect(output).not.toContain('7111 234 567');
+    expect(output).not.toContain('Zitch/Ada');
+    expect(output).not.toMatch(/test account|test mode|account testing/i);
     expect(output).not.toContain('Fund by bank transfer');
-    expect(findControl(tree, 'Copy test account number')).toBeTruthy();
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy test account number' })).toHaveLength(0);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Confirm my verified name' })).toHaveLength(0);
     expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' })).toHaveLength(0);
     await act(async () => tree.unmount());
   });
@@ -185,6 +187,7 @@ describe('AddMoney VAS migration', () => {
     { test_mode: true, account_setup_state: 'restricted', validation_account_number: '7111234567' },
     { test_mode: true, account_setup_state: 'vas_validation', validation_account_number: '7121234567' },
     { test_mode: true, account_setup_state: 'ready', account_number: '7111234567', has_account: true, available: true },
+    { test_mode: false, account_setup_state: 'ready', account_number: '7111234567', has_account: true, available: true },
   ])('does not present an unapproved validation sample: %j', async (sample) => {
     mockApiJson.mockResolvedValueOnce({ ...enrollment, enrollment_available: false, ...sample });
     let tree!: renderer.ReactTestRenderer;

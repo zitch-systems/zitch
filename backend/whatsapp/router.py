@@ -2089,9 +2089,7 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
         reply(msisdn, f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your sign-in is ready.\n\n"
               "Next, confirm your registered email and verify your BVN privately here. "
               "Your email confirmation and identity ownership codes are separate checks.\n\n"
-              "Your wallet starts at ₦0. Wait for confirmed funding instructions before sending money."
-              + ("\n\nThis is a test setup. Do not send money to a test account."
-                 if funding.get("test_mode") else ""))
+              "Your wallet starts at ₦0. Account activation is pending.")
         _start_kyc(user, msisdn)
         return True
     reply(
@@ -2267,9 +2265,7 @@ def _send_vas_setup(user, msisdn: str, funding: dict | None = None) -> None:
     funding = funding if funding is not None else customer_funding_account(user)
     if _kyc_outstanding(user):
         return _start_kyc(user, msisdn)
-    sample = funding.get("validation_account_number")
-    if (funding.get("test_mode") is True and funding.get("account_setup_state") == "vas_validation"
-            and isinstance(sample, str) and re.fullmatch(r"711[0-9]{7}", sample)):
+    if funding.get("account_setup_state") == "vas_validation":
         return reply(msisdn, _vas_account_status(funding))
     if funding.get("enrollment_available") or _vas_identity_refresh_available(user, funding):
         return start(user, msisdn)
@@ -2278,14 +2274,8 @@ def _send_vas_setup(user, msisdn: str, funding: dict | None = None) -> None:
 
 def _vas_account_status(funding: dict) -> str:
     """Read-only setup status; displaying account details must not open a form."""
-    sample = funding.get("validation_account_number")
-    if (funding.get("test_mode") is True and funding.get("account_setup_state") == "vas_validation"
-            and isinstance(sample, str) and re.fullmatch(r"711[0-9]{7}", sample)):
-        return ("🏦 *Your Zitch test account*\n\n"
-                f"🔢 *{sample}*\n\n"
-                "*TEST ONLY — DO NOT FUND.* This number cannot receive real deposits or make payments. "
-                "Share it only for the approved bank integration tests. "
-                "Your existing profile, verification and transaction history remain saved.")
+    if funding.get("account_setup_state") == "vas_validation":
+        return "🏦 *Account activation pending*"
     continuation = ("Reply *6* to continue account setup securely."
                     if funding.get("enrollment_available") or funding.get("enrollment_status") == "verification_required"
                     else "Please check again here later.")
@@ -3140,7 +3130,6 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
         ("✅ *Tier 1 verification is complete.*\n\n" if not _kyc_outstanding(user)
          else "🪪 *Your verification status*\n\n")
         + _kyc_status_lines(user)
-        + f"\n\nTier {user.tier} · up to ₦{user.transaction_limit:,.0f} per transaction."
     )
     if user.tier >= 3:
         return reply(msisdn, status + "\n\nYou are already on the highest verification tier.")
@@ -3292,8 +3281,7 @@ def _kyc_finish(pa: PendingAction, user, msisdn: str) -> None:
             elif wallet_views._wema_funding_enabled():
                 tail += ("\n\n🏦 One last step: reply *6* to open your personal Zitch "
                          "account number - the bank sends its own SMS code to finish.")
-    reply(msisdn, "🎉 *Thanks!* Here's where you stand:\n\n" + _kyc_status_lines(user)
-          + f"\n\nTier {user.tier} · up to ₦{user.transaction_limit:,.0f} per transaction." + tail)
+    reply(msisdn, "🎉 *Thanks!* Here's where you stand:\n\n" + _kyc_status_lines(user) + tail)
 
 
 def _kyc_send_phone_code(pa: PendingAction, user, msisdn: str) -> None:
@@ -4164,7 +4152,12 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str, *,
         if is_prembly:
             locked.payload["id_otp_verified_name"] = " ".join(verified_name.split())[:150]
             locked.payload["id_otp_delivery"] = delivery
-        _touch(locked, state="flow_vas" if is_vas else FLOW_ID_STATE, payload=locked.payload)
+        if is_vas:
+            # The encrypted one-entry handoff is bound to this setup session's
+            # original deadline. Delivery must neither shorten nor extend it.
+            locked.save(update_fields=["payload"])
+        else:
+            _touch(locked, state=FLOW_ID_STATE, payload=locked.payload)
         pa.payload, pa.state, pa.expires_at = locked.payload, locked.state, locked.expires_at
     return None
 
@@ -4295,10 +4288,6 @@ def _do_account_details(user, msisdn: str) -> None:
     ]
     if user.email:
         lines.append(f"📧 {user.email}" + ("" if user.email_verified else " (unconfirmed)"))
-    if is_vas and funding.get("test_mode") is True:
-        lines.append("🧪 Test mode · real deposits and payments are unavailable.")
-    else:
-        lines.append(f"⭐ Tier {user.tier} · up to ₦{user.transaction_limit:,.0f}/transaction")
     reply(msisdn, "\n".join(lines))
     if is_vas and (funding.get("test_mode") is True or not funding.get("has_account")
                    or not funding.get("available") or funding.get("account_setup_state") != "ready"):

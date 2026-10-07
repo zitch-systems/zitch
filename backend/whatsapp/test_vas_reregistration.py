@@ -143,14 +143,15 @@ class VasReregistrationTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
 
-    def test_existing_validation_account_is_shown_without_second_enrollment(self):
+    def test_existing_validation_state_prevents_second_enrollment_without_sample_number(self):
         self.funding.return_value = {**self.payload, "account_setup_state": "vas_validation",
-            "enrollment_available": False, "validation_account_number": "7111234567"}
+            # Existing state wins even if a stale caller offers setup again.
+            "enrollment_available": True, "validation_account_number": ""}
         self.confirm(self.begin())
         self.start.assert_not_called()
         messages = " ".join(call.args[1] for call in self.reply.call_args_list)
-        self.assertIn("7111234567", messages)
-        self.assertIn("TEST ONLY — DO NOT FUND", messages)
+        self.assertIn("Account activation pending", messages)
+        self.assertNotIn("test account", messages.lower())
 
     def test_test_mode_can_never_advertise_real_funding_even_with_contradictory_flags(self):
         self.funding.return_value = {**self.payload, "account_setup_state": "ready",
@@ -235,7 +236,9 @@ class VasLegacyNameRefreshTests(TestCase):
     def assert_setup_opened(self):
         self.setup_send.assert_called_once()
         self.assertEqual(self.setup_send.call_args.kwargs["screen"], vas_flow.SETUP)
-        self.assertIn("TEST ONLY — DO NOT FUND", self.setup_send.call_args.kwargs["screen_data"]["purpose"])
+        purpose = self.setup_send.call_args.kwargs["screen_data"]["purpose"]
+        self.assertIn("bank integration validation", purpose)
+        self.assertIn("Funding becomes available after account activation", purpose)
         self.assertTrue(PendingAction.objects.filter(user=self.user, action_type="vas_enroll").exists())
         self.assertFalse(VirtualAccount.objects.exists())
         self.assertFalse(IdentityProof.objects.exists())

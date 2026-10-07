@@ -1,9 +1,9 @@
 """Private virtual-account consent and identity entry inside WhatsApp.
 
 Only a signed, linked customer session can reach enrollment. Identity digits are
-used in memory for lookup/enrollment and are never kept in PendingAction or a
-cache. When new ownership proof is needed, the provider-record contact challenge
-records it first; the customer then re-enters the identifier on a fresh screen.
+never stored in plaintext. A short-lived encrypted cache capsule lets the same
+authorized session finish after its provider-record ownership challenge, without
+asking the customer to enter the identifier again.
 """
 import hmac
 import hashlib
@@ -32,6 +32,7 @@ from wema_vas.enrollment import (
     consent_version, customer_enrollment_available, enroll_customer, named_identity_proof,
 )
 from .models import PendingAction, WhatsAppLink
+from . import vas_capsule
 from .vas_identity import identity_deadline, identity_timeout, lookup_failure
 
 PREFIX = "va"
@@ -150,6 +151,7 @@ def _result(message, status="done"):
 def _finish(pa, message, status="done"):
     # Keep only a harmless terminal outcome and the binding, so a duplicate
     # exchange gives the same answer without reissuing proof or an account.
+    vas_capsule.discard(pa)
     pa.payload = {key: pa.payload[key] for key in (
         "nonce", "credentials", "link_id", "flow_id", "contract", "mode", "consent_version")}
     pa.payload.update({"vas_step": "done", "message": message, "status": status})
@@ -165,23 +167,21 @@ def _setup_data(mode):
     )
     if mode == "validation":
         return {
-            "title": "711 test account — DO NOT FUND",
+            "title": "Set up your Zitch account",
             "purpose": (
-                "This creates a 711 test account only. TEST ONLY — DO NOT FUND. "
-                "Zitch checks your BVN or NIN with Prembly, securely stores your verified identity "
-                "and phone in encrypted form, and shares them with Wema Bank for integration testing. "
-                "Use your existing Zitch profile. Your old bank account and transaction history are "
-                "retained; this does not convert or move your real balance."
+                "Zitch verifies your BVN or NIN with Prembly, stores your verified identity "
+                "and phone in encrypted form, and shares them with Wema Bank for bank integration "
+                "validation. Funding becomes available after account activation."
             ),
             "consent_text": identity + (
                 "By tapping I agree and continue, you consent to this verification, storage and "
-                "sharing for a 711 test account only. Close this form to decline."
+                "sharing for bank integration validation. Close this form to decline."
             ),
             "error": "",
         }
     if mode == "live":
         return {
-            "title": "Your funding account",
+            "title": "Set up your Zitch account",
             "purpose": (
                 "Zitch checks your BVN or NIN with Prembly, securely stores your verified identity "
                 "and phone in encrypted form, and shares them with Wema Bank to operate your "
@@ -214,9 +214,11 @@ def _screen(pa):
             summary += " " + delivery["delivery_notice"]
         label = "Verification code"
     elif step == "reentry":
-        summary = (f"Identity confirmed. Re-enter the same 11-digit {kind} to finish. "
-                   "We did not retain your earlier entry. Check all 11 digits before submitting.")
-        label = kind
+        # A form opened before one-entry setup has no recoverable input. Do not
+        # send another re-entry screen; an already displayed legacy submission
+        # may still use the guarded _identity path below.
+        return _finish(pa, "This setup session needs to be restarted. Close this form and reply 6. "
+                       "Your saved verification is unchanged.", "Not completed")
     elif step == "processing":
         summary, label = "Your identity is being checked. Please wait for your verification code.", kind
     else:
@@ -268,12 +270,8 @@ def start(user, msisdn):
                      "credentials": _credentials(user), "flow_id": settings.WHATSAPP_FLOW["FLOW_ID"],
                      "contract": _contract_digest(), "mode": mode,
                      "consent_version": consent_version(mode)}, expires_at=timezone.now() + TTL)
-    result = send_flow(msisdn, _token(pa), header=(
-        "Set up your 711 test account" if mode == "validation" else "Set up your Zitch account"),
-        body=("Create a 711 test account privately here. TEST ONLY — DO NOT FUND. "
-              "Your existing profile, old bank account, history and real balance are retained."
-              if mode == "validation" else
-              "Set up your funding account privately here. Your identity details never appear in the chat."),
+    result = send_flow(msisdn, _token(pa), header="Set up your Zitch account",
+        body="Verify your identity and set up your account privately here. Your existing profile and balance are unchanged.",
         screen=SETUP, screen_data=setup_data, cta="Set up securely", on_open="data_exchange")
     if not result.get("success") or result.get("mock"):
         pa.delete()
@@ -286,6 +284,29 @@ def _has_proof(user, kind, digest):
             and hmac.compare_digest(getattr(user, f"{kind}_hash") or "", digest)):
         return False
     return named_identity_proof(user, kind, digest) is not None
+
+
+@sensitive_variables()
+def _enroll(pa, user, kind, number):
+    """Use the normal proof/consent allocator while holding the session locks."""
+    if (pa.expired or pa.payload.get("consent") is not True
+            or not _has_proof(user, kind, hash_identifier(number))):
+        return _finish(pa, "This setup session needs to be restarted. Close this form and reply 6. "
+                       "Your saved verification is unchanged.", "Not completed")
+    try:
+        account = enroll_customer(user, **{kind: number}, consent=True,
+            expected_mode=pa.payload["mode"],
+            expected_consent_version=pa.payload["consent_version"],
+            consent_reference=f"{pa.payload['consent_version']}:whatsapp:{pa.pk}:{pa.payload['consent_at']}")
+    except ValidationError:
+        return _finish(pa, "Your account setup needs review. Contact Zitch Support here; your existing balance is unchanged.", "Not completed")
+    if account.mode == "validation":
+        return _finish(pa, "Your details are verified and your account setup is complete.",
+                       "Account activation pending")
+    from wallet.services import customer_funding_account
+    from .router import _funding_spending_notice
+    notice = _funding_spending_notice(customer_funding_account(user)).strip()
+    return _finish(pa, "Your funding account is ready. Close this form and reply 6 to view it. " + notice, "Successful")
 
 
 @sensitive_variables()
@@ -329,25 +350,17 @@ def _identity(token, data, screen, request_digest, *, deadline):
             return _finish(pa, "Those details do not match the identity already verified on this profile. "
                 "Start again with that identity, or contact Zitch Support here.", "Not completed")
         if _has_proof(user, kind, digest):
-            try:
-                account = enroll_customer(user, **{kind: number}, consent=True,
-                    expected_mode=pa.payload["mode"],
-                    expected_consent_version=pa.payload["consent_version"],
-                    consent_reference=f"{pa.payload['consent_version']}:whatsapp:{pa.pk}:{pa.payload['consent_at']}")
-            except ValidationError:
-                return _finish(pa, "Your account setup needs review. Contact Zitch Support here; your existing balance is unchanged.", "Not completed")
-            from wallet.services import customer_funding_account
-            from .router import _funding_spending_notice
-            if account.mode == "validation":
-                return _finish(pa, f"Your test account is ready: {account.number}. TEST ONLY — DO NOT FUND. "
-                               "This number cannot receive real deposits or make payments.", "Test setup complete")
-            notice = _funding_spending_notice(customer_funding_account(user)).strip()
-            return _finish(pa, "Your funding account is ready. Close this form and reply 6 to view it. " + notice, "Successful")
+            return _enroll(pa, user, kind, number)
         if pa.payload.get("vas_step") == "reentry":
             log.warning("wa_vas_identity_rejected category=reentry_proof_missing")
             return _finish(pa, "Your verification needs review. Contact Zitch Support here.", "Not completed")
         pa.payload.update({"vas_step": "processing", "identity_hash": digest,
             "identity_previous_hash": getattr(user, f"{kind}_hash"), "identity_last4": number[-4:]})
+        try:
+            vas_capsule.store(pa, number)
+        except vas_capsule.CapsuleUnavailable:
+            log.warning("wa_vas_identity_failed category=private_entry_unavailable")
+            return _finish(pa, UNAVAILABLE, "Not completed")
         pa.payload.setdefault("accepted_requests", {})[screen] = request_digest
         pa.save(update_fields=["payload"])
     # Reuse the same authoritative lookup and registered-phone ownership
@@ -421,11 +434,18 @@ def handle(token, action, data, screen=""):
                 return _screen(pa)
             if step == "code":
                 from .router import kyc_flow_identity_otp
+                try:
+                    number = vas_capsule.recover(pa)
+                except vas_capsule.CapsuleUnavailable:
+                    log.warning("wa_vas_identity_failed category=private_entry_unavailable")
+                    return _finish(pa, "This setup session needs to be restarted. Close this form and reply 6. "
+                                   "Your saved verification is unchanged.", "Not completed")
                 outcome, _message = kyc_flow_identity_otp(pa, data.get("number", ""))
                 pa.refresh_from_db()
                 pa.payload.setdefault("accepted_requests", {})[screen] = request_digest
                 if outcome == "ok":
-                    pa.payload.update({"vas_step": "reentry", "screen": REENTRY, "error": ""})
+                    user.refresh_from_db()
+                    return _enroll(pa, user, pa.payload["id_kind"], number)
                 elif outcome == "retry" and pa.payload.get("screen") == CODE:
                     pa.payload.update({"screen": CODE_RETRY, "error": "Check your verification code and try once more."})
                 else:
