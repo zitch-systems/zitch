@@ -54,7 +54,7 @@ jobs:
           disable-animations: false
           script: |
             adb install diagnostic-only.apk
-            python3 scripts/android-smoke-diagnostics.py --output-dir android-diagnostics-results
+            python3 scripts/android-release-smoke.py --package com.zitch.app --output-dir android-diagnostics-results
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
