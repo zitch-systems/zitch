@@ -5,7 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
-import { router, SplashScreen, Stack, usePathname, useRootNavigationState } from "expo-router";
+import { router, SplashScreen, Stack, useNavigationContainerRef, usePathname } from "expo-router";
 import { ThemeProvider, appFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
 import { NotifyHost } from "@/components/design/Notify";
@@ -33,7 +33,6 @@ InputAny.defaultProps.style = [textBase, InputAny.defaultProps.style];
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 const RootStack = () => {
-  console.info('ZITCH_DIAG root stack render');
   const { theme, c } = useTheme();
   return (
     <>
@@ -51,18 +50,19 @@ const RootStack = () => {
 const RootLayout = () => {
   console.info('ZITCH_DIAG root render');
   useEffect(() => {
-    console.info('ZITCH_DIAG root mounted');
     const heartbeat = setInterval(() => console.info('ZITCH_DIAG heartbeat'), 2000);
-    return () => { clearInterval(heartbeat); console.info('ZITCH_DIAG root unmounted'); };
+    return () => clearInterval(heartbeat);
   }, []);
   // The whole app uses Manrope (see lib/theme `font`). Only these are loaded.
   const [fontsLoaded, error] = useFonts(appFonts);
 
   const [fontWaitOver, setFontWaitOver] = useState(false);
   const ready = splashReady(fontsLoaded, error, fontWaitOver);
-  const navigation = useRootNavigationState();
+  // Only readiness is needed here. Subscribing to the whole root state together
+  // with usePathname can repeatedly invalidate Expo Router's snapshot while a
+  // newly mounted nested navigator still has unhydrated parent state.
+  const navigation = useNavigationContainerRef();
   const pathname = usePathname();
-  console.info('ZITCH_DIAG path', pathname);
 
   useEffect(() => {
     const timer = setTimeout(() => setFontWaitOver(true), FONT_WAIT_MS);
@@ -86,27 +86,26 @@ const RootLayout = () => {
   // stays open and idle. Active use keeps the stamp fresh via authenticated API
   // calls, so the timer only trips after a real stretch of inactivity.
   useEffect(() => {
-    if (!ready || !navigation?.key) return;
+    if (!ready) return;
     let checking = false;
     // App lock: re-opening the app (or returning from background) requires a
     // biometric/password unlock — not just after the idle timeout. The token
     // survives the lock so unlock is instant; a full sign-out clears it.
     const check = async () => {
-      console.info('ZITCH_DIAG auth check', pathname);
-      if (checking || isExternalActivityActive()) return;
+      if (!navigation.isReady() || checking || isExternalActivityActive()) return;
       checking = true;
       try {
         const expired = await enforceHardExpiry();
-        console.info('ZITCH_DIAG auth expiry done');
         await lockIfAwayTooLong();
-        console.info('ZITCH_DIAG auth away done');
         await enforceIdleTimeout();
-        console.info('ZITCH_DIAG auth idle done');
         if ((expired || await isSessionLocked()) && pathname !== '/signin') router.replace('/signin');
       } catch {
         if (pathname !== '/signin') router.replace('/signin');
-      } finally { checking = false; console.info('ZITCH_DIAG auth check done'); }
+      } finally { checking = false; }
     };
+    // The stack may become ready after this effect. Observe readiness without
+    // feeding each nested navigation-state object back into the root render.
+    const unsubscribeNavigation = navigation.addListener('state', check);
     check();
     const sub = AppState.addEventListener("change", (s) => {
       if (s === "background") {
@@ -122,16 +121,17 @@ const RootLayout = () => {
     const timer = setInterval(check, 30 * 1000);
     return () => {
       sub.remove();
+      unsubscribeNavigation();
       clearInterval(timer);
     };
-  }, [ready, navigation?.key, pathname]);
+  }, [ready, navigation, pathname]);
 
   if (!ready) {
     return null;
   }
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }} onTouchStart={(event) => console.info('ZITCH_DIAG root touch', event.nativeEvent.target)}>
+    <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <ThemeProvider>
           {/* Wallet state lives at the root so it is shared across BOTH the
