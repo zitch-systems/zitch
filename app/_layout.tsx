@@ -5,7 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
-import { router, SplashScreen, Stack, usePathname, useRootNavigationState } from "expo-router";
+import { router, SplashScreen, Stack, useNavigationContainerRef, usePathname } from "expo-router";
 import { ThemeProvider, appFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
 import { NotifyHost } from "@/components/design/Notify";
@@ -53,7 +53,10 @@ const RootLayout = () => {
 
   const [fontWaitOver, setFontWaitOver] = useState(false);
   const ready = splashReady(fontsLoaded, error, fontWaitOver);
-  const navigation = useRootNavigationState();
+  // Only readiness is needed here. Subscribing to the whole root state together
+  // with usePathname can repeatedly invalidate Expo Router's snapshot while a
+  // newly mounted nested navigator still has unhydrated parent state.
+  const navigation = useNavigationContainerRef();
   const pathname = usePathname();
 
   useEffect(() => {
@@ -78,13 +81,13 @@ const RootLayout = () => {
   // stays open and idle. Active use keeps the stamp fresh via authenticated API
   // calls, so the timer only trips after a real stretch of inactivity.
   useEffect(() => {
-    if (!ready || !navigation?.key) return;
+    if (!ready) return;
     let checking = false;
     // App lock: re-opening the app (or returning from background) requires a
     // biometric/password unlock — not just after the idle timeout. The token
     // survives the lock so unlock is instant; a full sign-out clears it.
     const check = async () => {
-      if (checking || isExternalActivityActive()) return;
+      if (!navigation.isReady() || checking || isExternalActivityActive()) return;
       checking = true;
       try {
         const expired = await enforceHardExpiry();
@@ -95,6 +98,9 @@ const RootLayout = () => {
         if (pathname !== '/signin') router.replace('/signin');
       } finally { checking = false; }
     };
+    // The stack may become ready after this effect. Observe readiness without
+    // feeding each nested navigation-state object back into the root render.
+    const unsubscribeNavigation = navigation.addListener('state', check);
     check();
     const sub = AppState.addEventListener("change", (s) => {
       if (s === "background") {
@@ -110,9 +116,10 @@ const RootLayout = () => {
     const timer = setInterval(check, 30 * 1000);
     return () => {
       sub.remove();
+      unsubscribeNavigation();
       clearInterval(timer);
     };
-  }, [ready, navigation?.key, pathname]);
+  }, [ready, navigation, pathname]);
 
   if (!ready) {
     return null;
