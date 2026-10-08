@@ -51,7 +51,11 @@ export const NotifyHost = () => {
 
   useEffect(() => {
     _emit = setItem;
-    return () => { _emit = null; };
+    return () => {
+      // Android can replace the root before its predecessor finishes unmounting.
+      // That older host must not unregister the replacement's notification sink.
+      if (_emit === setItem) _emit = null;
+    };
   }, []);
 
   // Self-clearing popups. Keyed on the item object, so a second flash arriving
