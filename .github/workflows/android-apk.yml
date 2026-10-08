@@ -4,41 +4,34 @@
 name: Android APK
 
 on:
+  # Explicit release refs avoid rebuilding the same merged revision once for
+  # main and again for publication. Ordinary CI still runs on every main push.
   push:
-    branches: [main]
-    paths:
-      - 'app/**'
-      - 'components/**'
-      - 'lib/**'
-      - 'hooks/**'
-      - 'constants/**'
-      - 'plugins/**'
-      - 'shims/**'
-      - 'assets/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'app.json'
-      - 'eas.json'
-      - 'babel.config.js'
-      - 'metro.config.js'
-      - '.github/workflows/android-apk.yml'
+    tags: ['zitch-android-test-*']
+  # REST/GraphQL branch creation emits create; filter it at the build job.
+  # Branch pushes are excluded so one branch creation cannot start two builds.
+  create: {}
   # Build on demand from the Actions tab, any branch.
   workflow_dispatch: {}
 
-# Cancel superseded runs so a burst of pushes doesn't stack up Actions minutes.
+# Never cancel a release while its verified assets are being published.
 concurrency:
   group: android-apk-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
-# The job only checks out code, builds, and uploads an artifact — no GitHub
-# API writes — so the GITHUB_TOKEN needs nothing beyond read access.
+# Build jobs never receive production signing keys or a repository write token.
+# Only an explicit test-release tag or branch can publish a GitHub pre-release.
 permissions:
   contents: read
+  checks: read
+  actions: read
 
 jobs:
   build:
     name: Build sideload APK
+    if: github.event_name != 'create' || (github.event.ref_type == 'branch' && startsWith(github.ref, 'refs/heads/release/zitch-android-test-'))
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       # Mirrors eas.json's "preview" profile so the app talks to the live API.
       EXPO_PUBLIC_API_URL: "https://api.zitch.ng"
@@ -46,6 +39,30 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Require reviewed main revision for a test release
+        if: startsWith(github.ref, 'refs/tags/zitch-android-test-') || startsWith(github.ref, 'refs/heads/release/zitch-android-test-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_tag="${GITHUB_REF_NAME#release/}"
+          [[ "$release_tag" =~ ^zitch-android-test-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+            echo 'Invalid Android test-release name.' >&2
+            exit 1
+          }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo 'Test releases must use a revision merged into main.' >&2
+            exit 1
+          }
+          for check in 'Backend (Django)' 'Backend (PostgreSQL)' 'App (Expo)' 'Meta connector'; do
+            conclusion="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100" \
+              --jq "[.check_runs[] | select(.name == \"$check\" and .app.slug == \"github-actions\")] | sort_by(.started_at) | last | .conclusion // \"missing\"")"
+            test "$conclusion" = success || {
+              echo "Required check '$check' must succeed for $GITHUB_SHA before creating the release ref; found $conclusion." >&2
+              exit 1
+            }
+          done
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -63,6 +80,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Check APK verifier safety gates
+        run: python3 -m unittest discover -s scripts/__tests__ -p 'test_android*.py'
+
       - name: Expo prebuild (generate the native android/ project)
         run: npx expo prebuild --platform android --clean
 
@@ -71,11 +91,117 @@ jobs:
         # release-signing plugin deliberately falls back to the debug key. This
         # artifact is for internal testing/sideloading only, never Play upload.
         working-directory: android
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Verify and stage the exact installable APK
+        run: |
+          mkdir -p release-apk
+          cp android/app/build/outputs/apk/release/app-release.apk release-apk/Zitch-Android-Test.apk
+          python3 scripts/verify-android-apk.py \
+            --apk release-apk/Zitch-Android-Test.apk \
+            --keystore android/app/debug.keystore --signing preview \
+            --revision "$GITHUB_SHA" --metadata release-apk/build-info.json
+          cd release-apk
+          sha256sum Zitch-Android-Test.apk > SHA256SUMS.txt
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: zitch-sideload-apk
-          path: android/app/build/outputs/**/*.apk
+          path: release-apk/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
+
+  smoke:
+    name: Android emulator smoke
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/zitch-android-test-') || startsWith(github.ref, 'refs/heads/release/zitch-android-test-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Download this run's verified APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name zitch-sideload-apk --dir release-apk
+      - name: Enable Android emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install and exercise startup and sign-in validation
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: |
+            cd release-apk && sha256sum -c SHA256SUMS.txt && cd ..
+            adb install release-apk/Zitch-Android-Test.apk
+            python3 scripts/android-release-smoke.py --package com.zitch.app --output-dir android-smoke-results
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: zitch-android-smoke-results
+          path: android-smoke-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish:
+    name: Publish downloadable test APK
+    needs: [build, smoke]
+    if: startsWith(github.ref, 'refs/tags/zitch-android-test-') || startsWith(github.ref, 'refs/heads/release/zitch-android-test-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Download this run's verified and smoke-tested APK
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name zitch-sideload-apk --dir release-apk
+      - name: Publish GitHub pre-release with APK and checksum
+        run: |
+          release_tag="${GITHUB_REF_NAME#release/}"
+          [[ "$release_tag" =~ ^zitch-android-test-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+            echo 'Invalid Android test-release name.' >&2
+            exit 1
+          }
+          tag_args=(--target "$GITHUB_SHA")
+          if git show-ref --verify --quiet "refs/tags/$release_tag"; then
+            tag_sha="$(git rev-parse "refs/tags/$release_tag^{commit}")"
+            test "$tag_sha" = "$GITHUB_SHA" || {
+              echo 'Existing release tag points to a different revision; refusing publication.' >&2
+              exit 1
+            }
+            tag_args=(--verify-tag)
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo 'The triggering release tag no longer exists; refusing publication.' >&2
+            exit 1
+          fi
+          cd release-apk
+          sha256sum -c SHA256SUMS.txt
+          cat > release-notes.md <<'NOTES'
+          Download **Zitch-Android-Test.apk** under Assets on your Android phone and open it to install. The Source code ZIP files are not needed.
+
+          This is an internal Android test build, signed with the existing debug/test key. It connects to https://api.zitch.ng and is not a Play Store production release. If Android reports a signing conflict with an existing installation, keep that installation and report the conflict before removing it.
+
+          Automated checks cover the exact revision's app tests, native package/version, APK signature, permissions, embedded JavaScript, and emulator startup/sign-in validation. Bank activation, real OTP, push notification delivery, device biometrics, and live money settlement require separate verification.
+
+          VAS live enrollment, outgoing transfers and VAS-funded bill purchases remain disabled pending bank acceptance. Do not fund 711 validation accounts. This build preserves those restrictions.
+
+          SHA256SUMS.txt verifies the downloaded APK. build-info.json records its source commit, version, and signing certificate.
+          NOTES
+          gh release create "$release_tag" Zitch-Android-Test.apk SHA256SUMS.txt build-info.json \
+            --repo "$GITHUB_REPOSITORY" "${tag_args[@]}" --prerelease --latest=false \
+            --title "Zitch Android test APK — $release_tag" --notes-file release-notes.md

@@ -1,9 +1,12 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { apiPost } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
-import { saveTransactionPin } from '@/lib/secureStore';
+import { clearTransactionPin, saveTransactionPin } from '@/lib/secureStore';
+import { isBiometricTxnEnabled } from '@/lib/biometrics';
+import AuthGuard from '@/components/AuthGuard';
+import { usePinScreenProtection } from '@/lib/screenCapture';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
@@ -19,22 +22,33 @@ const ResetPin = () => {
   const [pin, setPin] = useState('');
   const [pin2, setPin2] = useState('');
   const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
+  usePinScreenProtection();
 
   const canSubmit = password.length >= 8
     && pin.length === TRANSACTION_PIN_LENGTH
     && pin === pin2;
 
   const submit = async () => {
+    if (!canSubmit || inFlight.current) return;
     if (pin !== pin2) {
       notify('Error', 'PINs do not match');
       return;
     }
+    inFlight.current = true;
     setBusy(true);
     try {
       const response = await apiPost(EP.auth.setTransactionPin, { pin, password });
       const result = await response.json();
       if (response.ok) {
-        await saveTransactionPin(pin); // keep the keychain copy (biometric pay) in sync
+        // Remove the old PIN even if the customer cancels the OS prompt for the
+        // replacement. A successful server change must not leave a stale secret.
+        const biometricPay = await isBiometricTxnEnabled();
+        await clearTransactionPin();
+        if (biometricPay) {
+          try { await saveTransactionPin(pin); }
+          catch { notify('Biometric payments paused', 'Your PIN changed. Enable biometric payments again from Security when you are ready.'); }
+        }
         notify('Done', 'Your transaction PIN has been changed.');
         router.back();
       } else {
@@ -43,6 +57,7 @@ const ResetPin = () => {
     } catch {
       notify('Error', 'Something went wrong. Please try again later.');
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };
@@ -92,4 +107,4 @@ const ResetPin = () => {
   );
 };
 
-export default ResetPin;
+export default function GuardedResetPin() { return <AuthGuard fresh><ResetPin /></AuthGuard>; }

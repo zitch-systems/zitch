@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
@@ -7,6 +7,7 @@ import { Screen, Header, Card, Btn } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
+import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { useTheme, font } from '@/lib/theme';
 
 // The three consent assurances shown on the link screen (matches design v2).
@@ -19,11 +20,14 @@ const CHECKS: { icon: string; title: string; sub: string }[] = [
 const LinkBank = () => {
   const { c } = useTheme();
   const [busy, setBusy] = useState(false);
+  const connecting = useRef(false);
 
   // Open the hosted Mono Connect widget, capture the returned auth code, and
   // exchange it server-side. Uses an app deep link as the redirect so the auth
   // session closes back into Zitch.
   const connect = async () => {
+    if (connecting.current) return;
+    connecting.current = true;
     setBusy(true);
     try {
       const redirect = Linking.createURL('linkbank');
@@ -35,7 +39,10 @@ const LinkBank = () => {
         notify('Error', init.message || "Couldn't start bank linking.");
         return;
       }
-      const result = await WebBrowser.openAuthSessionAsync(init.mono_url, redirect);
+      beginExternalActivity();
+      let result;
+      try { result = await WebBrowser.openAuthSessionAsync(init.mono_url, redirect); }
+      finally { endExternalActivity(); }
       if (result.type !== 'success' || !result.url) return; // user dismissed
       const callbackParams = Linking.parse(result.url).queryParams;
       const code = callbackParams?.code;
@@ -57,6 +64,7 @@ const LinkBank = () => {
     } catch {
       notify('Error', 'Something went wrong linking your bank.');
     } finally {
+      connecting.current = false;
       setBusy(false);
     }
   };

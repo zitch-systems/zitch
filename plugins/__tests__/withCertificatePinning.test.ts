@@ -29,6 +29,17 @@ describe('resolvePins', () => {
     expect(() => resolvePins({ ...valid, pins: [PIN_A] }, NOW)).toThrow(/backup/);
   });
 
+  it('requires a distinct backup pin', () => {
+    expect(() => resolvePins({ ...valid, pins: [PIN_A, PIN_A] }, NOW)).toThrow(/backup/);
+  });
+
+  it('rejects malformed hostnames instead of writing broken XML', () => {
+    for (const domain of ['https://api.zitch.ng', 'api.zitch.ng</domain>', '*.zitch.ng', '-api.zitch.ng']) {
+      expect(() => resolvePins({ ...valid, domains: [domain] }, NOW)).toThrow(/hostname/);
+    }
+    expect(() => resolvePins({ ...valid, domains: 'api.zitch.ng' }, NOW)).toThrow(/arrays/);
+  });
+
   it('refuses a pin that is not a base64 SHA-256 SPKI digest', () => {
     expect(() => resolvePins({ ...valid, pins: [PIN_A, 'sha256/short'] }, NOW))
       .toThrow(/SPKI digest/);
@@ -51,6 +62,8 @@ describe('resolvePins', () => {
 
   it('refuses an unparseable expiration', () => {
     expect(() => resolvePins({ ...valid, expiration: 'next year' }, NOW))
+      .toThrow(/not a YYYY-MM-DD date/);
+    expect(() => resolvePins({ ...valid, expiration: '2027-02-31' }, NOW))
       .toThrow(/not a YYYY-MM-DD date/);
   });
 

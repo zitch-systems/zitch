@@ -22,7 +22,7 @@ jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: jest.fn(), replace: jest.fn() },
 }));
 jest.mock('@/lib/wallet', () => ({
-  useWallet: () => ({ balance: 20000, reload: mockReload }),
+  useWallet: () => ({ balance: 20000, billPaymentsAvailable: true, transfersAvailable: true, reload: mockReload }),
 }));
 jest.mock('@/components/design/Notify', () => ({ notify: (...args: unknown[]) => mockNotify(...args) }));
 jest.mock('@/lib/theme', () => ({

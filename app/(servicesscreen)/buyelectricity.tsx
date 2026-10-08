@@ -30,7 +30,7 @@ type Step = null | 'confirm' | 'pin';
 
 const BuyElectricity = () => {
   const { c } = useTheme();
-  const { balance, reload } = useWallet();
+  const { balance, reload, billPaymentsAvailable } = useWallet();
   const [disco, setDisco] = useState('1');
   const [meterType, setMeterType] = useState('prepaid');
   const [meter, setMeter] = useState('');
@@ -54,7 +54,7 @@ const BuyElectricity = () => {
   const amount = Number(amt || 0);
   const validationKey = `${disco}|${meterType}|${meter.trim()}`;
   const verifiedCustomer = validatedFor === validationKey ? customerName : '';
-  const valid = meter.length >= 8 && !!verifiedCustomer && amount >= 500 && amount <= balance;
+  const valid = billPaymentsAvailable === true && meter.length >= 8 && !!verifiedCustomer && amount >= 500 && amount <= balance;
 
   const validateMeter = async () => {
     if (meter.trim().length < 8) { notify('Error', 'Enter a valid meter number.'); return; }
@@ -72,7 +72,7 @@ const BuyElectricity = () => {
       });
       const result = await response.json();
       if (generation !== validationGeneration.current) return;
-      if (response.ok) {
+      if (response.ok && result.success === true) {
         setCustomerName(result.customer_name || result.name || 'Verified');
         setValidatedFor(requestedFor);
       } else {
@@ -110,7 +110,7 @@ const BuyElectricity = () => {
   };
 
   const purchase = async (enteredPin: string) => {
-    if (purchaseInFlight.current) return;
+    if (!valid || done || purchaseInFlight.current) return;
     purchaseInFlight.current = true;
     const fingerprint = [disco, meterType, meter.trim(), String(amount)].join('|');
     let deliveryStarted = false;
@@ -232,6 +232,7 @@ const BuyElectricity = () => {
       />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
+      {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
 

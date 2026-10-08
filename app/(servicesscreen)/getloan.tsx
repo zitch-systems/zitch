@@ -49,7 +49,9 @@ const GetLoan = () => {
   useEffect(() => {
     loansService.getStatus()
         .then((res) => {
-          setProductAvailable(res?.product_available === true);
+          setProductAvailable(res?.success === true && res.product_available === true
+            && res.quote_rate != null && Number.isFinite(Number(res.quote_rate)) && Number(res.quote_rate) >= 0
+            && Number.isFinite(Number(res.available)) && Number(res.available) > 0);
           setUnavailableMessage(res?.unavailable_message || 'Loans are not available right now.');
           if (res.available != null) setAvailable(Number(res.available));
           if (res.quote_rate) setRate(Number(res.quote_rate));
@@ -65,9 +67,10 @@ const GetLoan = () => {
   const interest = Math.round(amount * rate * (tenure / 30));
   const repay = amount + interest;
   const overLimit = amount > available;
+  const valid = productAvailable && !hasActiveLoan && Number.isFinite(amount) && amount >= 10000 && !overLimit;
 
   const request = async (pin: string) => {
-    if (!productAvailable || hasActiveLoan || requestInFlight.current) return;
+    if (!valid || done || requestInFlight.current) return;
     requestInFlight.current = true;
     const fingerprint = [String(amount), String(tenure)].join('|');
     let deliveryStarted = false;
@@ -231,7 +234,7 @@ const GetLoan = () => {
         <Row2 k="Total repayment" v={money(repay)} strong />
       </View>
 
-      <Btn label={`Get ${money(amount)}`} disabled={overLimit || amount < 10000} onPress={() => setStep('confirm')} />
+      <Btn label={`Get ${money(amount)}`} disabled={!valid} onPress={() => setStep('confirm')} />
       {overLimit && (
         <Text style={{ fontSize: 12.5, color: c.red, marginTop: 10, textAlign: 'center', fontFamily: font.semibold }}>
           Amount exceeds your available credit

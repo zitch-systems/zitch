@@ -1,11 +1,11 @@
-import React, { useEffect } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import { View, Text } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, ZItem, money } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
-import { useWallet } from '@/lib/wallet';
+import { transactionParams, useWallet } from '@/lib/wallet';
 import { clearPendingNotificationOpen } from '@/lib/notifications';
 
 /**
@@ -18,16 +18,19 @@ import { clearPendingNotificationOpen } from '@/lib/notifications';
  */
 const Notifications = () => {
   const { c } = useTheme();
-  const { txns, loading } = useWallet();
+  const { txns, loading, hydrated, historyError, reload } = useWallet();
 
   useEffect(() => {
     clearPendingNotificationOpen().catch(() => {});
   }, []);
 
+  useFocusEffect(useCallback(() => { void reload(); }, [reload]));
+
   return (
-    <Screen tab>
+    <Screen tab refreshing={loading && hydrated} onRefresh={() => { void reload(); }}>
       <Header title="Notifications" sub="Activity on your account" onBack={() => router.back()} />
-      {loading && txns.length === 0 ? (
+      {historyError ? <Text accessibilityRole="alert" style={{ color: c.amber, marginBottom: 12 }}>{historyError} Pull down to retry.</Text> : null}
+      {!hydrated && txns.length === 0 ? (
         <View style={{ paddingVertical: 48 }}>
           <Loading full={false} />
         </View>
@@ -36,7 +39,7 @@ const Notifications = () => {
           <View style={{ width: 84, height: 84, borderRadius: 26, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="bell" size={38} color={c.brand} />
           </View>
-          <Text style={{ fontSize: 17, fontFamily: font.extrabold, color: c.ink1, marginTop: 18 }}>Nothing here yet</Text>
+          <Text style={{ fontSize: 17, fontFamily: font.extrabold, color: c.ink1, marginTop: 18 }}>{historyError ? 'Activity unavailable' : 'Nothing here yet'}</Text>
           <Text style={{ fontSize: 13.5, color: c.ink3, marginTop: 6, textAlign: 'center', maxWidth: 280, fontFamily: font.regular }}>
             Money in, purchases and transfers will show up here as they happen.
           </Text>
@@ -52,7 +55,7 @@ const Notifications = () => {
             onPress={() =>
               router.push({
                 pathname: '/txndetail',
-                params: { type: x.type, amount: String(x.amount), status: x.status, dir: x.dir, detail: x.detail, reference: x.reference, icon: x.icon },
+                params: transactionParams(x),
               })
             }
           />

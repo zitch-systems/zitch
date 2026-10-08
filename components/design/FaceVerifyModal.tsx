@@ -53,6 +53,11 @@ const FaceVerifyModal = ({
   const { c } = useTheme();
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  let verificationOrigin = '';
+  try {
+    const initial = new URL(url);
+    if (initial.protocol === 'https:' && !initial.username && !initial.password) verificationOrigin = initial.origin;
+  } catch { /* Invalid verification links are never loaded. */ }
   // The app-lock counts the camera and the picker as "away"; the same applies here.
   // Held for as long as the sheet is up, and released once — a ref, not state, so a
   // re-render can never double-count it.
@@ -119,14 +124,14 @@ const FaceVerifyModal = ({
           <ZIcon name="shield" size={18} color={c.brand} stroke={2} />
         </View>
 
-        {failed ? (
+        {failed || !verificationOrigin ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 10 }}>
             <ZIcon name="help" size={28} color={c.ink3} stroke={2} />
             <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 15, textAlign: 'center' }}>
               Couldn&apos;t open the verification page
             </Text>
             <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13, textAlign: 'center', lineHeight: 19 }}>
-              Check your connection and try again. Nothing has been submitted.
+              Check your connection and try again. Your verification status will be checked when you return.
             </Text>
           </View>
         ) : (
@@ -140,9 +145,10 @@ const FaceVerifyModal = ({
             // customer staring at our callback's JSON response: close the bank
             // sheet immediately and reveal the KYC screen while the parent keeps
             // polling the authenticated server result.
-            onShouldStartLoadWithRequest={(request: { url: string }) => {
+            onShouldStartLoadWithRequest={(request: { url: string; isTopFrame?: boolean }) => {
               try {
                 const target = new URL(request.url);
+                if (target.protocol !== 'https:' || target.username || target.password) return false;
                 // Matched against the API base this build actually talks to, not
                 // a literal host. Hardcoding api.zitch.ng meant the sheet only
                 // closed itself in production: on staging, a review build, or any
@@ -158,10 +164,10 @@ const FaceVerifyModal = ({
                   close();
                   return false;
                 }
-              } catch {
-                // Let the WebView handle malformed/transient navigation values.
-              }
-              return true;
+                // Provider SDK subframes may use another HTTPS origin. Keep
+                // top-level navigation on the authenticated verification host.
+                return request.isTopFrame === false || target.origin === verificationOrigin;
+              } catch { return false; }
             }}
             // Liveness needs the camera INSIDE the web page. Both platforms already
             // declare the permission at the app level (app.json); these hand it
@@ -169,13 +175,7 @@ const FaceVerifyModal = ({
             // rather than meeting a silent black rectangle.
             allowsInlineMediaPlayback
             mediaPlaybackRequiresUserAction={false}
-            mediaCapturePermissionGrantType="grant"
-            // Android does not honour mediaCapturePermissionGrantType — it requires
-            // the host to handle onPermissionRequest and explicitly grant the resources
-            // the page asked for (camera, microphone). Without this the WebView silently
-            // refuses getUserMedia and the liveness capture fails with a "network error"
-            // inside the bank's page.
-            onPermissionRequest={(request: { grant: (r: string[]) => void; resources: string[] }) => request.grant(request.resources)}
+            mediaCapturePermissionGrantType="grantIfSameHostElsePrompt"
             // The bank's verification page also requests the device's location.
             // Permission is requested by the caller before this sheet opens;
             // this flag passes whatever the OS granted through to the web page.
@@ -183,18 +183,14 @@ const FaceVerifyModal = ({
             // Android needs this for getUserMedia to be offered at all.
             javaScriptEnabled
             domStorageEnabled
-            // Allow the full HTTPS space. Wema's liveness SDK makes requests to
-            // Azure Cognitive Services and other Azure subdomains during capture;
-            // locking to the exact host silently blocks those and the page reports
-            // "network error". The redirect guard below (setSupportMultipleWindows)
-            // is the real protection against off-site navigation.
+            // HTTPS resources are allowed; top-level navigation is checked above.
             originWhitelist={['https://*']}
             setSupportMultipleWindows={false}
             style={{ flex: 1, backgroundColor: c.bg }}
           />
         )}
 
-        {loading && !failed ? (
+        {loading && !failed && verificationOrigin ? (
           // Below the header, never over it. Covering the whole sheet hid the close
           // button, so a page that hung left the customer with no way out at all on
           // iOS, where there is no system back gesture to fall back on.

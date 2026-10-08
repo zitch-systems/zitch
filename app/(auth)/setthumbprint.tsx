@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
@@ -11,6 +11,7 @@ import {
   isBiometricEnabled, setBiometricEnabled,
   isBiometricTxnEnabled, setBiometricTxnEnabled,
 } from '@/lib/biometrics';
+import { apiPost } from '@/lib/api';
 import { saveTransactionPin } from '@/lib/secureStore';
 
 // Biometrics settings: turn Face ID / fingerprint SIGN-IN and PAYMENT approval on
@@ -24,12 +25,15 @@ const SetThumbprint = () => {
   const [signIn, setSignIn] = useState(false);       // biometric sign-in on/off
   const [pay, setPay] = useState(false);             // approve payments with biometrics on/off
   const [pinOpen, setPinOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [pinError, setPinError] = useState('');
+  const enablingPay = useRef(false);
 
   useEffect(() => {
-    isBiometricAvailable().then(setAvailable);
+    isBiometricAvailable().then(setAvailable).catch(() => setAvailable(false));
     biometricLabel().then(setKind);
-    isBiometricEnabled().then(setSignIn);
-    isBiometricTxnEnabled().then(setPay);
+    isBiometricEnabled().then(setSignIn).catch(() => {});
+    isBiometricTxnEnabled().then(setPay).catch(() => {});
   }, []);
 
   const label = kind === 'face' ? 'Face ID' : kind === 'fingerprint' ? 'Fingerprint' : 'Biometrics';
@@ -56,15 +60,35 @@ const SetThumbprint = () => {
   const togglePay = async (v: boolean) => {
     if (!v) { await setBiometricTxnEnabled(false); setPay(false); return; }
     if (!(await guardAvailable())) return;
+    setPinError('');
     setPinOpen(true);
   };
 
   const enablePay = async (pin: string) => {
-    setPinOpen(false);
-    await saveTransactionPin(pin);
-    await setBiometricTxnEnabled(true);
-    setPay(true);
-    notify('All set', `${label} payments are on.`);
+    if (enablingPay.current) return;
+    enablingPay.current = true;
+    setBusy(true);
+    setPinError('');
+    try {
+      // Never cache a typo: replaying a wrong PIN at each future payment can lock
+      // the account across both the mobile app and WhatsApp.
+      const response = await apiPost('/api/verify-transaction-pin/', { pin });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.success) {
+        setPinError(result.message || 'Could not verify your transaction PIN.');
+        return;
+      }
+      await saveTransactionPin(pin);
+      await setBiometricTxnEnabled(true);
+      setPinOpen(false);
+      setPay(true);
+      notify('All set', `${label} payments are on.`);
+    } catch {
+      setPinError('Biometric payments were not enabled. Please try again when you are ready.');
+    } finally {
+      enablingPay.current = false;
+      setBusy(false);
+    }
   };
 
   return (
@@ -106,7 +130,9 @@ const SetThumbprint = () => {
 
       <PinSheet
         open={pinOpen}
-        onClose={() => setPinOpen(false)}
+        onClose={() => { if (!enablingPay.current) setPinOpen(false); }}
+        busy={busy}
+        error={pinError}
         onComplete={enablePay}
         title={`Approve payments with ${label}?`}
         subtitle={`Enter your 6-digit PIN to approve payments with ${label} too. You can skip and just use it to sign in.`}
@@ -123,7 +149,7 @@ const SetThumbprint = () => {
 // screens in this group already carry (resetpin, securitysetup, kyc,
 // accountdetails).
 const GuardedSetThumbprint = () => (
-  <AuthGuard>
+  <AuthGuard fresh>
     <SetThumbprint />
   </AuthGuard>
 );

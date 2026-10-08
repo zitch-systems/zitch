@@ -1,20 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { View, AppState } from 'react-native';
 import { Redirect } from 'expo-router';
-import { getToken } from '@/lib/secureStore';
-import { isSessionLocked } from '@/lib/session';
+import { getToken, getSessionGeneration } from '@/lib/secureStore';
+import { enforceHardExpiry, enforceIdleTimeout, isExternalActivityActive, isSessionLocked, lockIfAwayTooLong } from '@/lib/session';
 import { Loading } from '@/components/design/Loading';
 import { useTheme } from '@/lib/theme';
 
 type AuthState = 'loading' | 'authed' | 'unauthed';
-
-// Remember the last resolved auth result across mounts. Each route group wraps
-// its content in its own AuthGuard, so navigating (homepage) -> (servicesscreen)
-// mounts a fresh guard; without this it would start in 'loading' and flash the
-// full-screen loader on every navigation. Seeding from the cache lets an in-app
-// navigation render the target screen immediately while the check re-confirms in
-// the background (it still redirects if the session has since locked/expired).
-let lastKnownAuth: AuthState | null = null;
 
 /**
  * Gates a route group behind a valid access token. Screens inside the
@@ -26,29 +18,35 @@ let lastKnownAuth: AuthState | null = null;
  * not just on mount — so a session that LOCKS while an authed screen is already
  * rendered is dropped to /signin rather than staying visible until remount.
  */
-const AuthGuard = ({ children, fresh = false }: { children: React.ReactNode; fresh?: boolean }) => {
+const AuthGuard = ({ children }: { children: React.ReactNode; fresh?: boolean }) => {
   const { c } = useTheme();
-  // Deep-link payment approvals opt out of the navigation cache: the app may
-  // have been locked while it was backgrounded in WhatsApp, so the previous
-  // route's authenticated result is not safe enough to render payment details.
-  const [state, setState] = useState<AuthState>(fresh ? 'loading' : (lastKnownAuth ?? 'loading'));
+  // Always establish an unlocked session before mounting children. A previous
+  // route's cached result can expose account data or run effects after logout.
+  const [state, setState] = useState<AuthState>('loading');
+  const [obscured, setObscured] = useState(false);
 
   useEffect(() => {
     let active = true;
-    const check = async () => {
+    const check = async (): Promise<void> => {
+      const generation = getSessionGeneration();
       try {
+        if (isExternalActivityActive()) return;
+        await enforceHardExpiry();
+        await lockIfAwayTooLong();
+        await enforceIdleTimeout();
         const token = await getToken();
         const locked = token ? await isSessionLocked() : false;
+        if (generation !== getSessionGeneration()) { if (active) await check(); return; }
         const next: AuthState = token && !locked ? 'authed' : 'unauthed';
-        lastKnownAuth = next;
-        if (active) setState(next);
+        if (active) { setState(next); setObscured(false); }
       } catch {
         if (active) setState('unauthed');
       }
     };
     check();
     const sub = AppState.addEventListener('change', (s) => {
-      if (s === 'active') check();
+      if (s === 'active') void check();
+      else if (s === 'background' && !isExternalActivityActive()) setObscured(true);
     });
     // Catches a session that locks while a screen is already open. The root
     // layout also enforces the idle lock (every 30s + on foreground), so this is
@@ -73,7 +71,18 @@ const AuthGuard = ({ children, fresh = false }: { children: React.ReactNode; fre
     return <Redirect href="/signin" />;
   }
 
-  return <>{children}</>;
+  // Keep a short app switch from destroying an unfinished form or in-flight
+  // payment. Hide it until the foreground check succeeds, then show the same
+  // mounted screen; expired/locked sessions still unmount via the redirect.
+  return (
+    <View style={{ flex: 1, backgroundColor: c.bg }}>
+      <View style={{ flex: 1, opacity: obscured ? 0 : 1 }} pointerEvents={obscured ? 'none' : 'auto'}
+        accessibilityElementsHidden={obscured} importantForAccessibility={obscured ? 'no-hide-descendants' : 'auto'}>
+        {children}
+      </View>
+      {obscured && <View style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 }}><Loading /></View>}
+    </View>
+  );
 };
 
 export default AuthGuard;

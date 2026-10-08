@@ -333,7 +333,7 @@ export const ConfirmSheet = ({
   // Never let a wallet-funded payment proceed past confirm when the funds (or,
   // for a loan, the available credit) can't cover it — the server rejects it
   // anyway, but the user should be blocked here, not after entering their PIN.
-  const insufficient = total > balance;
+  const insufficient = !Number.isFinite(total) || !Number.isFinite(balance) || total <= 0 || total > balance;
   return (
     <Sheet open={open} onClose={onClose}>
       {/* An explicit close, and the PIN as a stated choice. The sheet used to be
@@ -371,7 +371,6 @@ export const ConfirmSheet = ({
       <View style={{ borderRadius: 16, backgroundColor: c.surface2, paddingHorizontal: 14, paddingBottom: 2, marginBottom: 18 }}>
         {rows.map((r, i) => <Row2 key={i} k={r[0]} v={r[1]} icon={i === 0 ? productIcon : undefined} />)}
         <Row2 k="Amount" v={money(total)} strong />
-        <Row2 k="Fee" v="₦0" />
       </View>
 
       <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1, marginBottom: 10 }}>{methodTitle}</Text>

@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Manrope_400Regular,
@@ -199,16 +199,20 @@ const STORAGE_KEY = 'z-theme';
 
 export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
   const [theme, setThemeState] = useState<ThemeName>('light');
+  const changedByUser = useRef(false);
 
   useEffect(() => {
+    let active = true;
     AsyncStorage.getItem(STORAGE_KEY).then((v) => {
-      if (v === 'light' || v === 'dark') setThemeState(v);
-    });
+      if (active && !changedByUser.current && (v === 'light' || v === 'dark')) setThemeState(v);
+    }).catch(() => {});
+    return () => { active = false; };
   }, []);
 
   const setTheme = useCallback((t: ThemeName) => {
+    changedByUser.current = true;
     setThemeState(t);
-    AsyncStorage.setItem(STORAGE_KEY, t);
+    void AsyncStorage.setItem(STORAGE_KEY, t).catch(() => {});
   }, []);
   const toggle = useCallback(() => setTheme(theme === 'dark' ? 'light' : 'dark'), [theme, setTheme]);
 

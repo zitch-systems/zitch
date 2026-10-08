@@ -16,7 +16,7 @@ jest.mock('@/lib/services/loans', () => ({
 jest.mock('@/lib/pendingSpend', () => ({ acquireSpendAttempt: jest.fn(), clearSpendAttempt: jest.fn() }));
 jest.mock('@/lib/spendOutcome', () => ({ classifySpendResponse: jest.fn(), isRecoveredSpendResponse: jest.fn() }));
 jest.mock('expo-router', () => ({ router: { back: jest.fn(), replace: jest.fn(), push: jest.fn() } }));
-jest.mock('@/lib/wallet', () => ({ useWallet: () => ({ balance: 20000, reload: jest.fn() }) }));
+jest.mock('@/lib/wallet', () => ({ useWallet: () => ({ balance: 20000, billPaymentsAvailable: true, transfersAvailable: true, reload: jest.fn() }) }));
 jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
 jest.mock('@/components/design/ZIcon', () => () => null);
 jest.mock('@/components/design/Receipt', () => ({ __esModule: true, default: () => null }));

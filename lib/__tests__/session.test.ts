@@ -12,10 +12,13 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 const mockGetToken = jest.fn<Promise<string | null>, []>();
-jest.mock('@/lib/secureStore', () => ({ getToken: () => mockGetToken() }));
+const mockClearSession = jest.fn();
+let mockGeneration = 0;
+jest.mock('@/lib/secureStore', () => ({ getToken: () => mockGetToken(), getSessionGeneration: () => mockGeneration, clearSession: () => mockClearSession() }));
 
 import {
   IDLE_LIMIT_MS,
+  HARD_EXPIRE_MS, enforceHardExpiry,
   LOCK_AFTER_BACKGROUND_MS,
   touchActivity,
   isSessionIdleExpired,
@@ -31,6 +34,8 @@ import {
 beforeEach(() => {
   for (const k of Object.keys(mem)) delete mem[k];
   mockGetToken.mockReset();
+  mockClearSession.mockReset();
+  mockGeneration = 0;
 });
 
 describe('idle expiry', () => {
@@ -99,5 +104,22 @@ describe('lockIfAwayTooLong', () => {
     beginExternalActivity();
     expect(await lockIfAwayTooLong()).toBe(false);
     endExternalActivity();
+  });
+});
+
+
+describe('hard expiry account isolation', () => {
+  it('clears an abandoned session after seven days', async () => {
+    mockGetToken.mockResolvedValue('old-token');
+    mem.lastActiveAt = String(Date.now() - HARD_EXPIRE_MS - 1000);
+    expect(await enforceHardExpiry()).toBe(true);
+    expect(mockClearSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not clear a new session after an old expiry check crosses an account switch', async () => {
+    mem.lastActiveAt = String(Date.now() - HARD_EXPIRE_MS - 1000);
+    mockGetToken.mockImplementationOnce(async () => { mockGeneration += 1; return 'old-token'; });
+    expect(await enforceHardExpiry()).toBe(false);
+    expect(mockClearSession).not.toHaveBeenCalled();
   });
 });

@@ -15,10 +15,10 @@ import { useWallet } from '@/lib/wallet';
 import { clearSession, getToken } from '@/lib/secureStore';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 
-const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => {
+const Toggle = ({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) => {
   const { c } = useTheme();
   return (
-    <Pressable onPress={() => onChange(!on)} style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center' }}>
+    <Pressable accessibilityRole="switch" accessibilityLabel={label} accessibilityState={{ checked: on }} onPress={() => onChange(!on)} style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center' }}>
       <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', transform: [{ translateX: on ? 18 : 0 }] }} />
     </Pressable>
   );
@@ -35,12 +35,12 @@ const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
 
 const Me = () => {
   const { c, theme, setTheme } = useTheme();
-  const { totalBalance, firstName, avatar, showBal, fundingProvider, reload: reloadWallet } = useWallet();
+  const { totalBalance, firstName, avatar, showBal, fundingProvider, accountNumber, balanceLoaded, hydrated, reload: reloadWallet } = useWallet();
   const [biometrics, setBiometrics] = useState(false);
-  const [tier, setTier] = useState(1);
+  const [tier, setTier] = useState<number | null>(null);
 
   useEffect(() => {
-    isBiometricEnabled().then(setBiometrics);
+    isBiometricEnabled().then(setBiometrics).catch(() => {});
   }, []);
 
   // Reflect the real KYC tier (was hardcoded "Tier 3"); refresh on focus so it
@@ -63,6 +63,7 @@ const Me = () => {
 
   // Enabling requires a live biometric scan; disabling is immediate.
   const toggleBio = async (v: boolean) => {
+    try {
     if (!v) {
       await setBiometricEnabled(false);
       setBiometrics(false);
@@ -78,6 +79,7 @@ const Me = () => {
       await setBiometricEnabled(true);
       setBiometrics(true);
     }
+    } catch { notify('Could not update biometrics', 'Please try again.'); }
   };
 
   const handleLogout = async () => {
@@ -91,20 +93,20 @@ const Me = () => {
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
   const grp1: any[] = [
     { icon: 'user', title: 'Account Details', sub: 'Name, email, phone & photo', go: () => router.push('/accountdetails') },
-    ...(fundingProvider === 'wema_vas' ? [{ icon: 'bank', title: 'Continue VAS setup', sub: 'Use your existing Zitch profile', go: () => router.push('/addmoney') }] : []),
+    ...(fundingProvider === 'wema_vas' && !accountNumber ? [{ icon: 'bank', title: 'Continue VAS setup', sub: 'Use your existing Zitch profile', go: () => router.push('/addmoney') }] : []),
     { icon: 'insurance', title: 'Identity Verification', sub: 'BVN, NIN or selfie · raise limits', badge: 'Verify', go: () => router.push('/kyc') },
     { icon: 'history', title: 'Transaction History', go: () => router.push('/history') },
-    { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & transaction limits', go: () => router.push('/kyc') },
+    { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & transaction limits', go: () => router.push('/accountlimits') },
     { icon: 'card', title: 'Bank Card / Account', sub: 'Add a payment option', go: () => router.push('/accountdetails') },
     { icon: 'bank', title: 'My BizPayment', sub: 'Receive payment for business', go: () => router.push('/bizpayment') },
     { icon: 'invite', title: 'Zitch Junior', sub: 'Create an account for your child', badge: 'New', hot: true, go: () => router.push('/junior') },
-    { icon: 'loan', title: 'Buy Now, Pay Later', sub: 'Shop now, spread the cost', badge: 'Enjoy ₦0', go: () => router.push('/bnpl') },
+    { icon: 'loan', title: 'Buy Now, Pay Later', sub: 'Check availability', go: () => router.push('/bnpl') },
   ];
   const grp2: any[] = [
     { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
     { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 6-digit PIN', go: () => router.push('/resetpin') },
     { icon: 'help', title: 'Customer Service Center', go: () => router.push('/support') },
-    { icon: 'gift', title: 'Invitation', sub: 'Invite friends & earn up to ₦5,600', go: () => router.push('/invite') },
+    { icon: 'gift', title: 'Invitation', sub: 'Invite friends to Zitch', go: () => router.push('/invite') },
     { icon: 'airtime', title: 'Zitch USSD', sub: 'Bank without internet', go: () => router.push('/ussd') },
   ];
 
@@ -140,7 +142,7 @@ const Me = () => {
           <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>Hi, {firstName || 'there'}</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4, paddingHorizontal: 9, paddingVertical: 3, borderRadius: 999, backgroundColor: 'rgba(245,166,35,.16)', alignSelf: 'flex-start' }}>
             <ZIcon name="check" size={11} color="#B27400" stroke={2.6} />
-            <Text style={{ color: '#B27400', fontSize: 11.5, fontFamily: font.bold }}>Tier {tier}</Text>
+            <Text style={{ color: '#B27400', fontSize: 11.5, fontFamily: font.bold }}>{tier ? `Tier ${tier}` : 'Tier unavailable'}</Text>
           </View>
         </View>
         <Pressable onPress={() => router.push('/settings')} style={{ width: 40, height: 40, borderRadius: 13, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}>
@@ -155,7 +157,7 @@ const Me = () => {
           <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={15} color={c.ink3} />
         </View>
         <NText style={{ fontSize: 30, fontFamily: font.extrabold, color: c.ink1, marginTop: 2, fontVariant: ['tabular-nums'] }}>
-          {showBal ? money(totalBalance) : '₦ ••••••'}
+          {balanceLoaded === false ? (hydrated ? 'Unavailable' : 'Loading…') : showBal ? money(totalBalance) : '₦ ••••••'}
         </NText>
       </View>
 
@@ -197,9 +199,9 @@ const Me = () => {
         </View>
         <View style={{ flex: 1 }}>
           <Text style={{ fontFamily: font.semibold, color: c.ink1 }}>Face ID / Fingerprint</Text>
-          <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Sign in & approve payments</Text>
+          <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Use biometrics to sign in</Text>
         </View>
-        <Toggle on={biometrics} onChange={toggleBio} />
+        <Toggle label="Biometric sign-in" on={biometrics} onChange={toggleBio} />
       </Card>
 
       {/* dark mode */}
@@ -208,7 +210,7 @@ const Me = () => {
           <ZIcon name="spark" size={20} color={c.brand} />
         </View>
         <Text style={{ flex: 1, fontFamily: font.semibold, color: c.ink1 }}>Dark mode</Text>
-        <Toggle on={theme === 'dark'} onChange={(v) => setTheme(v ? 'dark' : 'light')} />
+        <Toggle label="Dark mode" on={theme === 'dark'} onChange={(v) => setTheme(v ? 'dark' : 'light')} />
       </Card>
 
       {/* logout */}

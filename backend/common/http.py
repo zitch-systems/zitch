@@ -662,6 +662,26 @@ def fail(message, status=400, **extra):
     return JsonResponse({"message": message, **extra}, status=status)
 
 
+def check_confirmed_price(data, amount):
+    """Do not charge more or less than a current client explicitly confirmed.
+
+    Older clients omit this field; current purchase screens send the displayed
+    total. Call only AFTER replaying an existing idempotency key, so a catalogue
+    price change cannot hide a payment that already happened.
+    """
+    if "expected_amount" not in data:
+        return None
+    expected = parse_amount(data["expected_amount"])
+    if expected is None:
+        return fail("Refresh the price and confirm this purchase again.",
+                    code="invalid_expected_amount")
+    if expected != amount:
+        return fail(
+            f"The price has changed to ₦{amount:,.2f}. Review the new price before paying.",
+            status=409, code="price_changed", current_price=str(amount))
+    return None
+
+
 def parse_json_object(request, *, limit: int | None = None):
     """Return ``(dict, None)`` or ``(None, error_response)`` for JSON input.
 

@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getToken, clearSession } from '@/lib/secureStore';
+import { getToken, clearSession, getSessionGeneration } from '@/lib/secureStore';
 
 /**
  * Client-side inactivity timeout.
@@ -58,8 +58,9 @@ export async function isSessionIdleExpired(): Promise<boolean> {
  * stamped by authenticated API calls and on sign-in.
  */
 export async function enforceIdleTimeout(): Promise<boolean> {
+  const generation = getSessionGeneration();
   if (await isSessionLocked()) return false; // already locked — nothing to do
-  if (await isSessionIdleExpired()) {
+  if (await isSessionIdleExpired() && generation === getSessionGeneration()) {
     await lockSession();
     return true;
   }
@@ -117,7 +118,8 @@ export async function isSessionHardExpired(): Promise<boolean> {
  * BEFORE the idle lock so a long-idle session is cleared, not merely locked.
  */
 export async function enforceHardExpiry(): Promise<boolean> {
-  if (await isSessionHardExpired()) {
+  const generation = getSessionGeneration();
+  if (await isSessionHardExpired() && generation === getSessionGeneration()) {
     await clearSession();
     return true;
   }
@@ -155,12 +157,13 @@ export async function markBackgrounded(): Promise<void> {
  * Returns true if it just locked.
  */
 export async function lockIfAwayTooLong(): Promise<boolean> {
+  const generation = getSessionGeneration();
   const raw = await AsyncStorage.getItem(BACKGROUND_AT_KEY);
   await AsyncStorage.removeItem(BACKGROUND_AT_KEY);
   if (!raw || isExternalActivityActive()) return false;
   const at = Number(raw);
   if (!Number.isFinite(at) || Date.now() - at < LOCK_AFTER_BACKGROUND_MS) return false;
-  if (!(await getToken())) return false;
+  if (!(await getToken()) || generation !== getSessionGeneration()) return false;
   await lockSession();
   return true;
 }

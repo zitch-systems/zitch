@@ -1,0 +1,938 @@
+{
+  "date": "2026-10-08",
+  "scope": "All first-party mobile runtime source files tracked at the base revision under app, components, constants, hooks, lib, plugins, and shims. Android build configuration and mobile-facing backend contracts were also reviewed. Third-party dependency implementation and the whole backend are not claimed as line-by-line audited.",
+  "base_revision": "426cd421428905571e93d5d155b1928c0eb2270f",
+  "source_file_count": 144,
+  "reviewed_sources": [
+    {
+      "path": "app/(auth)/_layout.tsx",
+      "lines": 28,
+      "sha256": "8a4f05b90e7e2f7d4f778a22afcaeed9bb224a3f0a678f3c6747cabc35486371",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/accountdetails.tsx",
+      "lines": 177,
+      "sha256": "fca2ce99514bff612579389f1a2c7a78d499d03bb0bf531671ad81017fd56c09",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/completed.tsx",
+      "lines": 44,
+      "sha256": "f6e95f794aaff62ddc701600a73d35a0a1cf0a95b9b43c46626b379502488d95",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/forgotpassword.tsx",
+      "lines": 76,
+      "sha256": "54beaeee5cf9fde2d2a22a66909ebdebff411ede98452dc346d4da5c4451e24c",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/kyc.tsx",
+      "lines": 850,
+      "sha256": "4c04667a7a290d0372df584ed892fa53ba0dc6cee2b6ee5dcbbeb5b3550eb94c",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/otp.tsx",
+      "lines": 209,
+      "sha256": "167dda0cae98ba56bbb1038b36886504cbb231ffc6d9576492635cb89451959a",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/register.tsx",
+      "lines": 138,
+      "sha256": "326d1e3869de3fd93bebb6c39efb04bca0652e1e4d6e0d9e8ae51ee799c1236a",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/resetpassword.tsx",
+      "lines": 117,
+      "sha256": "5845efb6c6f7992a8cd2068dc4fe5028d135e21481b84729bb5ab3ad5eacbf70",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/resetpin.tsx",
+      "lines": 110,
+      "sha256": "a8f71a4cadd82577e66913fdf1c96d45c276052ea8940d21987ef84ed80ec5fc",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/securitysetup.tsx",
+      "lines": 51,
+      "sha256": "ac7fb66a80732fd2ca769dbeba58def084458d3d94a2c67c7392b6908ccc2dd9",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/setpassword.tsx",
+      "lines": 138,
+      "sha256": "dddabcd3de693a4a5881c012be3140b8814c583cc1329bf131be42a95a4717bb",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/setpin.tsx",
+      "lines": 123,
+      "sha256": "7701bb1db0e0cbfbbe4580c2f4820965fb3e819cc450330692f3e4157d0d2677",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/setthumbprint.tsx",
+      "lines": 157,
+      "sha256": "3bf32450814fcd858f2a325a78077626b84bfeeb3f0a99c479d6ff787905c30b",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/setup.tsx",
+      "lines": 53,
+      "sha256": "a9da04c0a6c1f10a5ef547401a7e90c17685ea6dbc6f757f19a0ca3e90052bca",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/signin.tsx",
+      "lines": 200,
+      "sha256": "214b541cfd38a623c588af31a1e1e824c0b70c99d1f9922fd6b82ecf29b3ac45",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/wa/approve/[token].tsx",
+      "lines": 9,
+      "sha256": "09b7d2a7883d8b8521bdcf4f911350b20ae4f876e0e243de7fdd21e0da0357ad",
+      "removed": false
+    },
+    {
+      "path": "app/(auth)/waapprove.tsx",
+      "lines": 196,
+      "sha256": "265664b3d47e1d853f12a313fc2b2ebb2bc61148295a772dcb68e95abaf26281",
+      "removed": false
+    },
+    {
+      "path": "app/(homepage)/_layout.tsx",
+      "lines": 39,
+      "sha256": "0731a3969a6742e2203f3b8d774197b0c860520ab79d890c84cb977ba1600d78",
+      "removed": false
+    },
+    {
+      "path": "app/(homepage)/analysis.tsx",
+      "lines": 114,
+      "sha256": "c8514b9a0bbb1bdbc2ccaf428f67124c2ef26130d2b6b12bec277ca56d337e05",
+      "removed": false
+    },
+    {
+      "path": "app/(homepage)/cards.tsx",
+      "lines": 449,
+      "sha256": "135872c6e4376ab84e3717c02f52c2f5a7364435d988c9a4055a41da05801fbd",
+      "removed": false
+    },
+    {
+      "path": "app/(homepage)/convert.tsx",
+      "lines": 175,
+      "sha256": "3b751efe6e7cb80b9050075363dbe841f99485f9cb956dc8a98e77ec4a833db3",
+      "removed": false
+    },
+    {
+      "path": "app/(homepage)/history.tsx",
+      "lines": 232,
+      "sha256": "23c52e567f5636e92b0f5a3728c8880f68be44a297abbb13efbb27b1a68d5ea9",
+      "removed": false
+    },
+    {
+      "path": "app/(homepage)/home.tsx",
+      "lines": 242,
+      "sha256": "eb4f6487348bb513f90ffabdd262911f0b57bf082a4bb6d680311410be5e9e01",
+      "removed": false
+    },
+    {
+      "path": "app/(homepage)/loan.tsx",
+      "lines": 198,
+      "sha256": "39dac0f9d3b8d0141de0afe3912c07d29be9828b49c04e218b30e98ff132cc09",
+      "removed": false
+    },
+    {
+      "path": "app/(homepage)/me.tsx",
+      "lines": 226,
+      "sha256": "022a31814f5141c6aa625c06a81ca6ca694b735d7f7fbfae170ff5dccf225f00",
+      "removed": false
+    },
+    {
+      "path": "app/(homepage)/notifications.tsx",
+      "lines": 68,
+      "sha256": "58c15d2fe411e9fe86c6c62abe254cc9badd7b8fc79cd45207c083f5eec99975",
+      "removed": false
+    },
+    {
+      "path": "app/(homepage)/txndetail.tsx",
+      "lines": 279,
+      "sha256": "068d01e9a2ede57e1164245d3f9c97f0fb7746c968abe746e6e4433f1f701326",
+      "removed": false
+    },
+    {
+      "path": "app/(homepage)/wallet.tsx",
+      "lines": 165,
+      "sha256": "15b7cbf61addcbb0f90cf9d9414350b0a06b2c9385e99b330eab253610fb7721",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/_layout.tsx",
+      "lines": 44,
+      "sha256": "f47e44ada9d1aaae2af4241a7e3db954055ec3011009db7e4b91612fe1b7ee2d",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/accountlimits.tsx",
+      "lines": 280,
+      "sha256": "d6513330acac3483cecf7d924a37ed47bf65db2c824b326dd8cea9d2534fdddf",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/addmoney.tsx",
+      "lines": 500,
+      "sha256": "159de11fcf620e9c8ba6226e3823bf63bcf71b6b45507c152929bef98dcce218",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/banktransfer.tsx",
+      "lines": 303,
+      "sha256": "bfd357586ebe71b13538aac91ee2801df35fb606598cc0b45ac8741a6aef5d2c",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/betting.tsx",
+      "lines": 175,
+      "sha256": "c78fd3f86455210a5f90ac4312a7978641b4fc27bb22452b8d34c5966ea93859",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/bizpayment.tsx",
+      "lines": 32,
+      "sha256": "d07d2185acf59077e6e53059cab2ba9587aee0823d58300b44d61358840842cf",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/bnpl.tsx",
+      "lines": 20,
+      "sha256": "f32c49659f51f0bbf10231053d0328e4287b75fa4b3e0e30bfe9d64835861340",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/buyairtime.tsx",
+      "lines": 181,
+      "sha256": "c49bbe8c52421bb48f059e8d1f8f00da0594f5631c156eb8fe8f62c93442a8c1",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/buycable.tsx",
+      "lines": 304,
+      "sha256": "c197d58facb7cb971b6bc7c454d19894c5593e1a3412d547280dd024e7c94f84",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/buydata.tsx",
+      "lines": 246,
+      "sha256": "9b2d8a0cd40b820008abd9959fd6754f258ab17d5c9ca013c943f88139e04b0b",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/buyelectricity.tsx",
+      "lines": 259,
+      "sha256": "b0620c3f08f832e211edb955424bda2faeb2a094fc408a085de99ff3e6442f2b",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/comingsoon.tsx",
+      "lines": 6,
+      "sha256": "1c2ce6b0ecc08b41b3a03a6ab6ccb9fb0a596f128ec7fa1a871b527a761e5280",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/exams.tsx",
+      "lines": 217,
+      "sha256": "760b9909555ab8f69bbd12a1dc2a41cbb82e4efc4fe384197481f96fe1e87691",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/fixedsave.tsx",
+      "lines": 258,
+      "sha256": "9745103bd5b7e1df11e41d63870284e83556309a7b2566e1cd55c98a799b5dd2",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/getloan.tsx",
+      "lines": 264,
+      "sha256": "b74da168fabff67a3b116c8997eb12d148fe693ae99cab90b9e9e355d5871af6",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/insurance.tsx",
+      "lines": 20,
+      "sha256": "723d27763618b475dc21f6dee14d16a572b1e1f502233cbabf66f0ac31a843bc",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/invite.tsx",
+      "lines": 244,
+      "sha256": "6bdba34ce068e15efeb746637c46b9892eb4ea574fb768838947627ed9732c79",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/junior.tsx",
+      "lines": 19,
+      "sha256": "07a80f9c617f9bf6262f63eca90a857cb5991c0a550288150bbc93ad5d071679",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/limits.tsx",
+      "lines": 197,
+      "sha256": "33eb02d4d7183d2c2bee963054230210e0c460d4090a6bd839c605fdd9509ee2",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/linkbank.tsx",
+      "lines": 118,
+      "sha256": "8be390294b5251d2a4b98ca47ed3676aa7d5e82669afd3cd28d5ee442ee907b7",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/linkwhatsapp.tsx",
+      "lines": 255,
+      "sha256": "486da5a7858c8e187020288444c97d3f5e02b9082ce787e867cdd8d41055fa65",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/movies.tsx",
+      "lines": 19,
+      "sha256": "b3aad584f43bf211d8302ed03a0e59ee31cd81f489d083b0c4249b595dad4d5c",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/remita.tsx",
+      "lines": 231,
+      "sha256": "3b132cdc4cce0d0974ba435e632f9a3fed27fcfdc3614860f8da88d29f2c795f",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/safetytips.tsx",
+      "lines": 41,
+      "sha256": "82f97953c71e0571c29d25f9503c343c651706d8c1bef9f1272c1d296f198ddc",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/savings.tsx",
+      "lines": 199,
+      "sha256": "f244b8f5629a562e6857719e7511903d853472a457499a02aa564912d68035e6",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/scan.tsx",
+      "lines": 100,
+      "sha256": "1c85a260773cd3c57021a74d2aad0f977f53675fb027ef71238b9c25f1c50546",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/sendmoney.tsx",
+      "lines": 544,
+      "sha256": "c0844a33fb154e8075b6c90951b2ff9d4e1e7010f66a52e14d575b2c77637912",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/settings.tsx",
+      "lines": 155,
+      "sha256": "f559db601d3d6d0fa9caba7beffcb2cc29697302a8fb28f1aab471cfe938ab0a",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/statement.tsx",
+      "lines": 288,
+      "sha256": "06c77238a3e0aede7e998e49bf9c475a1b6a2bdfc65f8ac497e503e67c82bf21",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/support.tsx",
+      "lines": 64,
+      "sha256": "b9db2b6c70b8f481a46e484d06cec0548636308a0e6475432b771e6b40d3973f",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/ussd.tsx",
+      "lines": 29,
+      "sha256": "ebd0dfd4f398c332d28e6a25451bbc654430f0d5282d600e6ec3cc80f6cf2e59",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/utility.tsx",
+      "lines": 21,
+      "sha256": "2f653a0185679e5d52c87974efb57579d218decfc0ffc16135048f102685a77f",
+      "removed": false
+    },
+    {
+      "path": "app/(servicesscreen)/water.tsx",
+      "lines": 19,
+      "sha256": "af921fb3da8b0134ab82ab44dd2fe89e44a43bde1921e1a63803cf496422ff19",
+      "removed": false
+    },
+    {
+      "path": "app/_layout.tsx",
+      "lines": 141,
+      "sha256": "4ea5f2898ab16db82c2208deffa64edd18689f51e93b1f3aca7c65e61f8a198c",
+      "removed": false
+    },
+    {
+      "path": "app/index.tsx",
+      "lines": 141,
+      "sha256": "d2ca6ba9bbf19055a4571c5b6f8cbff916136c9b608433df20183a66d65e17d7",
+      "removed": false
+    },
+    {
+      "path": "components/AuthGuard.tsx",
+      "lines": 88,
+      "sha256": "ce955d5fdee162442acb4285b714e5dc2733e9e0f0cbcfc6eb479951b3660b5c",
+      "removed": false
+    },
+    {
+      "path": "components/Collapsible.tsx",
+      "lines": 41,
+      "sha256": "9fdee5c94325d284592f7f3f889044b520597e0ac9cb8261939582ce89e51d72",
+      "removed": false
+    },
+    {
+      "path": "components/ComingSoonView.tsx",
+      "lines": 28,
+      "sha256": "d14001eda86f1600def0398449cd49e16751c1a5eeed824b6b643845240583d0",
+      "removed": false
+    },
+    {
+      "path": "components/ExternalLink.tsx",
+      "lines": 24,
+      "sha256": "7d39a8fa0e5d8dc213c45c869d7def4183ccb4d0a6f7c4245ec1d5c567eaf2c3",
+      "removed": false
+    },
+    {
+      "path": "components/HelloWave.tsx",
+      "lines": 37,
+      "sha256": "852868cec6b6a7e39d78714b02f23e7b857d4d761f6f58723489c36d15f8ea89",
+      "removed": false
+    },
+    {
+      "path": "components/ParallaxScrollView.tsx",
+      "lines": 76,
+      "sha256": "e977decf6951b87f39d0b886eb36e308d456e46415b6b9e5516d83f0bf2cf1fc",
+      "removed": false
+    },
+    {
+      "path": "components/ThemedText.tsx",
+      "lines": 60,
+      "sha256": "86f7146daa3c245b7d206f8e8cf5c7e562573a2dc178b39cc44138b158da0abe",
+      "removed": false
+    },
+    {
+      "path": "components/ThemedView.tsx",
+      "lines": 14,
+      "sha256": "9499a821958c7d33c345f56f598cdd174232a910a2528fd44e5d7b0dad4e9c70",
+      "removed": false
+    },
+    {
+      "path": "components/configFiles/apiConfig.tsx",
+      "lines": 44,
+      "sha256": "f347c0e3ba84e567a14edf4ec1b2be0cf22211b237a766149ddff26e30414ad3",
+      "removed": false
+    },
+    {
+      "path": "components/configFiles/links.ts",
+      "lines": 18,
+      "sha256": "8b01f20acafd10a0388706b6361aa9a4007a870998c6ce2c957a551e553d75f5",
+      "removed": false
+    },
+    {
+      "path": "components/design/AmbientBackground.tsx",
+      "lines": 46,
+      "sha256": "7c95922fa9bd9c6d03c342f62ee4b67e7009662a780ae41b6e829ab8deadcee9",
+      "removed": false
+    },
+    {
+      "path": "components/design/BottomNav.tsx",
+      "lines": 117,
+      "sha256": "983af52ebf569ddad40a747f1ca196103223926715c7eef2af57ea2808d6b577",
+      "removed": false
+    },
+    {
+      "path": "components/design/Brand.tsx",
+      "lines": 88,
+      "sha256": "49a57d578c280342a2eac9140082fde73ddd4c89e775391c12dc040c937f5916",
+      "removed": false
+    },
+    {
+      "path": "components/design/ConnectedAccounts.tsx",
+      "lines": 309,
+      "sha256": "ffe9843f51d1ba173c23746f4171d2141d1dbd2fe1df2e741e4d6f07129aba3d",
+      "removed": false
+    },
+    {
+      "path": "components/design/FaceLivenessModal.tsx",
+      "lines": 147,
+      "sha256": "0003345f64242b882f1653514c324ea60b983afcfdfb41db8469fae3dac41f8a",
+      "removed": false
+    },
+    {
+      "path": "components/design/FaceVerifyModal.tsx",
+      "lines": 220,
+      "sha256": "2cbba58bde5272886f5efb9b5b6d5ff14186f14dbb9062419cdccf254d3728b7",
+      "removed": false
+    },
+    {
+      "path": "components/design/FeatureScreen.tsx",
+      "lines": 81,
+      "sha256": "f6bbecd24bd6a0e09faab3e64ab053e15ac0a5f9df02b1108859e9c09843fd03",
+      "removed": false
+    },
+    {
+      "path": "components/design/Keypad.tsx",
+      "lines": 44,
+      "sha256": "9292916f3ab7a2d4d2e3196faf292c73931845765744c9d96d995b80f0bd56d7",
+      "removed": false
+    },
+    {
+      "path": "components/design/Loading.tsx",
+      "lines": 145,
+      "sha256": "7104697d188fd2e245b29b8fadf3149d00d5a7e463747cc0ec97c5b06ae76e38",
+      "removed": false
+    },
+    {
+      "path": "components/design/Naira.tsx",
+      "lines": 44,
+      "sha256": "bc1c4009706453966d0c580a9769134f9df33ec14f1cd4d2affb83a332cba7a7",
+      "removed": false
+    },
+    {
+      "path": "components/design/Notify.tsx",
+      "lines": 136,
+      "sha256": "2528679e2676c539209a0f7d0951633fd40611793a0f5bf0e419af37e2eb595c",
+      "removed": false
+    },
+    {
+      "path": "components/design/Receipt.tsx",
+      "lines": 210,
+      "sha256": "6d1a7ec66407b50b5aab35f7197973b58bd8687a2b1bf0de5fd28e241099fc42",
+      "removed": false
+    },
+    {
+      "path": "components/design/ReceiptExport.tsx",
+      "lines": 96,
+      "sha256": "95fab77ab9860669cfc5492474bb4d2728f0f02cbb4e455a4d32a7b3b6d35d1e",
+      "removed": false
+    },
+    {
+      "path": "components/design/Sidebar.tsx",
+      "lines": 78,
+      "sha256": "59e2b408a8499be6685e6f8a6bd65be701859606afa25b33b5d8cc4d7ec386af",
+      "removed": false
+    },
+    {
+      "path": "components/design/Skeleton.tsx",
+      "lines": 179,
+      "sha256": "ce4b9b2c4927a7cefb47828454ffab7f33e4704a792c061fb417a71eebd8e9a0",
+      "removed": false
+    },
+    {
+      "path": "components/design/SmartPaste.tsx",
+      "lines": 118,
+      "sha256": "18b8e3e9883bb7a3b899d3ef647775da58f8071465407dcfedfbbbe2cf1f86d8",
+      "removed": false
+    },
+    {
+      "path": "components/design/Stepper.tsx",
+      "lines": 58,
+      "sha256": "84f7cdfb069bba4ed56b605e57f0f6c6d1ea40555e36be567f56fa73cddcbc9b",
+      "removed": false
+    },
+    {
+      "path": "components/design/Watermark.tsx",
+      "lines": 53,
+      "sha256": "3bb2be362e9e532d3900a4c8e8840a32c4f1ec2a63435ac38e6b8fc6e35cdf40",
+      "removed": false
+    },
+    {
+      "path": "components/design/WhatsAppGlyph.tsx",
+      "lines": 17,
+      "sha256": "01b04393c9ddce719f716ac117cb624555f329434ef52e0aac2e4d070d846c36",
+      "removed": false
+    },
+    {
+      "path": "components/design/ZIcon.tsx",
+      "lines": 311,
+      "sha256": "a6d964cb53d1e802029c1ed812532d10378b7f275667a376364b94a8fd597935",
+      "removed": false
+    },
+    {
+      "path": "components/design/banklink.tsx",
+      "lines": 304,
+      "sha256": "625a99040dcfd0712efa994aada62bdaf12587603a47bf3e2b7779a4d9b7a259",
+      "removed": false
+    },
+    {
+      "path": "components/design/flowkit.tsx",
+      "lines": 407,
+      "sha256": "90212addfcaf843c9dff5e08b5be983ea7e26695e23b4e28a9eb7c7a01526b1b",
+      "removed": false
+    },
+    {
+      "path": "components/design/ui.tsx",
+      "lines": 1268,
+      "sha256": "d5d0afe100076c71dab3120dbb4a8d25b9bcbcf4f131d74429dbbf4515ee2745",
+      "removed": false
+    },
+    {
+      "path": "components/design/whatsapp-banking-promo.tsx",
+      "lines": 79,
+      "sha256": "b16f973ac757f18677d42acf4d294b28339ad52a5ea2f3f72cae28c2f9c9da40",
+      "removed": false
+    },
+    {
+      "path": "components/design/widgets.tsx",
+      "lines": 111,
+      "sha256": "8c5282fcc0eaa01a467e21f2c55fbaec09084e368dc432289100637bef620c30",
+      "removed": false
+    },
+    {
+      "path": "components/navigation/TabBarIcon.tsx",
+      "lines": 9,
+      "sha256": "12e852e08858d47bd2dbe4f75467ad8a39f28f73444147213244d7763572e8ab",
+      "removed": false
+    },
+    {
+      "path": "constants/Colors.ts",
+      "lines": 26,
+      "sha256": "3f1c5c32c6eaa9f43e65e4e9eb4712a39898fb34c251efd371db5c37a032a9b8",
+      "removed": false
+    },
+    {
+      "path": "constants/icons.js",
+      "lines": 29,
+      "sha256": "02e71f52f212b9439f18efdd975c35492a1e86c277919c8ca7fd89d19f22df5e",
+      "removed": false
+    },
+    {
+      "path": "constants/images.js",
+      "lines": 57,
+      "sha256": "5f021cd3bb2d4a5ae30c312bd96e288876dd203e793b43833c1059429f3521be",
+      "removed": false
+    },
+    {
+      "path": "constants/index.js",
+      "lines": 4,
+      "sha256": "9f5a3dc664e0f4dc98ce1135c5bf8b9729a08c6c9847f53581b0e1fb30987685",
+      "removed": false
+    },
+    {
+      "path": "constants/nigeria.ts",
+      "lines": 94,
+      "sha256": "a1a198595edeedab147dea03e0f87a9eeaced8e501ac18a91538525c1f0729c2",
+      "removed": false
+    },
+    {
+      "path": "hooks/useColorScheme.ts",
+      "lines": 1,
+      "sha256": "33beb965500ae5fdfe5c8699805a6be94c8c126a751fbe2ed7bcae87df394882",
+      "removed": false
+    },
+    {
+      "path": "hooks/useColorScheme.web.ts",
+      "lines": 8,
+      "sha256": "d9c64d66bdcea774b5f3beb7d83cff9819c3a022f18967ee90739cf082f87405",
+      "removed": false
+    },
+    {
+      "path": "hooks/useThemeColor.ts",
+      "lines": 22,
+      "sha256": "364ce19d008a02f65bbfddc1ae2c0cb2f122cf016b9fd71e3279d800e018b79f",
+      "removed": false
+    },
+    {
+      "path": "lib/api.ts",
+      "lines": 294,
+      "sha256": "7e70927722660e67748881e236f816000e6dd95b95ac084eb19e17dd9c5c0a49",
+      "removed": false
+    },
+    {
+      "path": "lib/biometrics.ts",
+      "lines": 196,
+      "sha256": "8039df65723b45a483fcd030a7e20cd20bb6310f0c04e81e3bbf2867b6c7c4a5",
+      "removed": false
+    },
+    {
+      "path": "lib/boot.ts",
+      "lines": 33,
+      "sha256": "63f6a362ea21288dbcc9bc922b4026e9ce48e2a7d0c3f134881294ddff07d3bc",
+      "removed": false
+    },
+    {
+      "path": "lib/device.ts",
+      "lines": 27,
+      "sha256": "2969d0068703feb6b26355a5e22edfe15977765f3c24f47d52777794a21830e5",
+      "removed": false
+    },
+    {
+      "path": "lib/deviceIntegrity.ts",
+      "lines": 161,
+      "sha256": "633d9c70bab3c29178f0e27d3c7f65303cbe4cae32c725ed5a89af83ce594e84",
+      "removed": false
+    },
+    {
+      "path": "lib/endpoints.ts",
+      "lines": 94,
+      "sha256": "daeaf36cb53a60022ca0097da7e02b5cdbac73fe3c82944e0561f369b72314d4",
+      "removed": false
+    },
+    {
+      "path": "lib/externalLinks.ts",
+      "lines": 21,
+      "sha256": "fa50bb1e1448f59f740be455932bd861800e92819ca9d2544685168a249b2821",
+      "removed": false
+    },
+    {
+      "path": "lib/format.ts",
+      "lines": 103,
+      "sha256": "729c70ccffc07f3f395c6b262b37f265cb0018bf968862afb2dacd97cd438ac8",
+      "removed": false
+    },
+    {
+      "path": "lib/mono.tsx",
+      "lines": 0,
+      "sha256": null,
+      "removed": true
+    },
+    {
+      "path": "lib/netPatch.ts",
+      "lines": 60,
+      "sha256": "ea77625ea313ce111a044bc658361e6293c4da60aa26f3b675c97eb4ba54cc84",
+      "removed": false
+    },
+    {
+      "path": "lib/notifications.ts",
+      "lines": 104,
+      "sha256": "526e6e3a9d7b98f8379e83c1367ecf909417dd4127f3385b348dfb8cc5897243",
+      "removed": false
+    },
+    {
+      "path": "lib/pendingApproval.ts",
+      "lines": 105,
+      "sha256": "fcf407e903422150883eb0af3287ebb0431189b913c9e709edf7061b0929ab2e",
+      "removed": false
+    },
+    {
+      "path": "lib/pendingSpend.ts",
+      "lines": 103,
+      "sha256": "6a8d5041cdb22580060eca6f4dcbef9e1a64eba0af9e1cc97a9657655bf2d7fd",
+      "removed": false
+    },
+    {
+      "path": "lib/phone.ts",
+      "lines": 40,
+      "sha256": "5e4a0f02bdc01f9d4616475f794519eb94cc17774800faa7e0b80f415fa51581",
+      "removed": false
+    },
+    {
+      "path": "lib/receipt.ts",
+      "lines": 347,
+      "sha256": "2159d8c4ec13311f9aa88e26a7797a4d67bed0f9980e6d06a066429f342bf42d",
+      "removed": false
+    },
+    {
+      "path": "lib/registration.ts",
+      "lines": 23,
+      "sha256": "3ff3dfb291badd07129dc721cd4f40539363ed68e82163568b3343ee7d92debd",
+      "removed": false
+    },
+    {
+      "path": "lib/savings.ts",
+      "lines": 19,
+      "sha256": "4690f15f1ab01a496ecc2e2d031fb0f26fb6d99aa973de5bb46945300fac7cd9",
+      "removed": false
+    },
+    {
+      "path": "lib/screenCapture.ts",
+      "lines": 23,
+      "sha256": "9459a11063552b521533e68f4223cae075abf9ba78c74ad11581064471a35e97",
+      "removed": false
+    },
+    {
+      "path": "lib/secureStore.ts",
+      "lines": 365,
+      "sha256": "32837b634914d34ed3a32afcf702b612e80a24302f750b23bc89758e2d3c6061",
+      "removed": false
+    },
+    {
+      "path": "lib/services/bills.ts",
+      "lines": 27,
+      "sha256": "60248d1191562c859647b40af898cfc7ad603a99b5524391abf46ed5880b0b05",
+      "removed": false
+    },
+    {
+      "path": "lib/services/cards.ts",
+      "lines": 47,
+      "sha256": "1e9b8874bbf714ca6a77e0ed0a99049b7771f5279c2646638ca08b3d2541bdda",
+      "removed": false
+    },
+    {
+      "path": "lib/services/kyc.ts",
+      "lines": 151,
+      "sha256": "19cdec2b42210ba6300e2cb193e949b2df99315d038f4459c7edbebd28b2ac0c",
+      "removed": false
+    },
+    {
+      "path": "lib/services/loans.ts",
+      "lines": 27,
+      "sha256": "1f307ab94d0f888d830ac218346c23b32fcf51cbb22695cbad1e5cf52451787b",
+      "removed": false
+    },
+    {
+      "path": "lib/services/savings.ts",
+      "lines": 20,
+      "sha256": "cf446ab15639ca3ca76655e7b3d9a73768f81fd94719040e36f11cebb95d9449",
+      "removed": false
+    },
+    {
+      "path": "lib/services/transfers.ts",
+      "lines": 59,
+      "sha256": "98fa6e0e897729657e97685dbb7caa3955c8d3a84ed8dda91ba2450ec0b7bcc9",
+      "removed": false
+    },
+    {
+      "path": "lib/services/types.ts",
+      "lines": 17,
+      "sha256": "84944d92ea8d184e84fc5e931fe1e3c5db9bd1f3a44e56326257bc32427e8e15",
+      "removed": false
+    },
+    {
+      "path": "lib/services/wallet.ts",
+      "lines": 183,
+      "sha256": "1f6b4e3a62617091fd11a8f847c1f7e40ad7a60210db40ead808e790fcb832a0",
+      "removed": false
+    },
+    {
+      "path": "lib/session.ts",
+      "lines": 169,
+      "sha256": "625b982ce31c3cf888428e7bae59c5d5f05eb881c9f006bf0879ee70cf567ef1",
+      "removed": false
+    },
+    {
+      "path": "lib/spendOutcome.ts",
+      "lines": 73,
+      "sha256": "44e3467518e47252755e6b9fcc66c3a1eacf74dd952fb0e266e4c304df5239e8",
+      "removed": false
+    },
+    {
+      "path": "lib/theme.tsx",
+      "lines": 229,
+      "sha256": "18c5c0a41dfa77078b07908c96b3362dc899f81fe47ddd1b5aeec12aa8dd4245",
+      "removed": false
+    },
+    {
+      "path": "lib/transactionPin.ts",
+      "lines": 6,
+      "sha256": "f43a5d490d95f3d1f6e1ecb314465fbcc33e3c1e60972836cc6e7023de9208dc",
+      "removed": false
+    },
+    {
+      "path": "lib/transactionStatus.ts",
+      "lines": 56,
+      "sha256": "701773c02371758f87202ad196e6c3f4bb048d10d889bd2f70edea2afeec36a2",
+      "removed": false
+    },
+    {
+      "path": "lib/wallet.tsx",
+      "lines": 309,
+      "sha256": "d71f9dc2272ecfe7632264cf5f737585eb174d7ec7be13f3acbff9ff8a27ac9b",
+      "removed": false
+    },
+    {
+      "path": "plugins/withAndroidReleaseSigning.js",
+      "lines": 126,
+      "sha256": "067ab6b683031a9aec2794a1376eb98ec3008786bcbd6440d6f4dfbaab205968",
+      "removed": false
+    },
+    {
+      "path": "plugins/withAndroidSecurity.js",
+      "lines": 60,
+      "sha256": "75c81f975e9a8c50d8d7d62087c0e64e5d40cd3e6e0ed6a443ee1ec8dc842d54",
+      "removed": false
+    },
+    {
+      "path": "plugins/withCertificatePinning.js",
+      "lines": 177,
+      "sha256": "c3aff83806f2246177f94e1528727f17bb3669b6a7692ccf8baa1f1d9062ae69",
+      "removed": false
+    },
+    {
+      "path": "shims/empty.js",
+      "lines": 4,
+      "sha256": "44d42a33b8676791ad9942fa34246a079959690be0ad26c7725435056a670651",
+      "removed": false
+    }
+  ],
+  "fixed_areas": [
+    "startup and font failure recovery",
+    "authentication guards and session/account isolation",
+    "encrypted credential write ordering",
+    "server-verified biometric PIN setup",
+    "refresh token rotation and stale-response handling",
+    "recipient binding and QR routing",
+    "payment single-flight and persistent retry identity",
+    "confirmed catalogue price before debit",
+    "recovery of settled electricity tokens",
+    "WhatsApp linking PIN/expiry/rate-limit contract",
+    "balance, linked-account, history and service loading/error states",
+    "Android card/receipt privacy and export behavior",
+    "statement calendar validation on client and server",
+    "unsupported promotional claims and navigation/accessibility",
+    "native APK identity/signature/manifest verification and tag-gated GitHub pre-release"
+  ],
+  "release_classification": "Internal test APK; existing Android debug signing certificate with release-mode runtime",
+  "verification": {
+    "baseline_app_tests": 345,
+    "final_results": "See exact revision CI and Android release build evidence; emulator smoke is a publication gate.",
+    "final_local_app_tests": 457,
+    "local_typecheck": "passed",
+    "local_eslint_errors": 0,
+    "local_eslint_warnings": 22,
+    "android_metro_export": "passed",
+    "targeted_backend_tests": 63,
+    "build_patch_tests": 4,
+    "apk_verifier_tests": 7,
+    "full_jdk_signing_test": "skipped locally; required in Android CI"
+  },
+  "remaining_acceptance": [
+    "Bank-controlled VAS activation, transfer adapter and VAS bill settlement remain gated; no real-money actions were performed.",
+    "Real SMS/email OTP, physical-device biometrics/camera, receipt sharing and push delivery need device acceptance.",
+    "Production Android signing credentials and Firebase/FCM configuration are not verified.",
+    "Expo51/ReactNative0.74 require a separate native SDK modernization for public store eligibility.",
+    "Dependency audit retains documented high-severity build-tool advisories; no claim of a clean dependency audit."
+  ],
+  "dependencies": {
+    "scope": "Dependency tree excluding devDependencies; this still includes npm-classified production build tooling.",
+    "source_command": "npm audit --omit=dev --json",
+    "total_package_findings": 88,
+    "critical": 0,
+    "high_package_findings": 65,
+    "moderate": 22,
+    "low": 1,
+    "underlying_high_packages": [
+      "braces",
+      "image-size (affected parsers disabled)",
+      "node-forge",
+      "turbo-stream"
+    ],
+    "ci_all_dependencies": {
+      "scope": "All installed dependencies, including devDependencies.",
+      "source_command": "npm ci",
+      "revision": "7fd853b2ce837fb570abffb649febbb075622563",
+      "job_url": "https://github.com/zitch-systems/zitch/actions/runs/37800809539/job/113392718892",
+      "observed_at": "2026-10-08T15:29:04Z",
+      "total_package_findings": 109,
+      "critical": 0,
+      "high_package_findings": 79,
+      "moderate": 29,
+      "low": 1
+    },
+    "note": "Toolchain dependency updates remove the four critical findings, but this is not a clean dependency security audit. Counts are package findings, including propagated dependency findings, rather than distinct advisories. The local and CI observations use different dependency scopes; audit totals can also change with registry advisory metadata."
+  }
+}

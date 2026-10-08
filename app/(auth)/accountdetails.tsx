@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
+import AuthGuard from '@/components/AuthGuard';
 import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { apiPost } from '@/lib/api';
@@ -23,6 +24,9 @@ const AccountDetails = () => {
   const [token, setToken] = useState<string | null>(null);
   const [current, setCurrent] = useState({ firstName: '', lastName: '', email: '', phone: '' });
   const [form, setForm] = useState({ firstName: '', lastName: '', email: '' });
+  const [password, setPassword] = useState('');
+  const inFlight = useRef(false);
+  const photoInFlight = useRef(false);
 
   useEffect(() => {
     getToken().then(setToken);
@@ -47,38 +51,38 @@ const AccountDetails = () => {
   }, [token]);
 
   const updatePhoto = async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      notify('Permission needed', 'Allow photo access to update your picture.');
-      return;
-    }
-    beginExternalActivity(); // keep the app-lock from firing while the picker is up
-    let res;
+    if (photoInFlight.current) return;
+    photoInFlight.current = true;
+    const previousAvatar = avatar;
     try {
-      res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.6,
-        base64: true,
-      });
-    } finally { endExternalActivity(); }
-    if (res.canceled || !res.assets?.[0]?.base64) return;
-    const asset = res.assets[0];
-    setAvatar(asset.uri); // optimistic local preview
-    setUploadingPhoto(true);
-    try {
-      const r = await apiPost(EP.auth.avatar, { image: `data:image/jpeg;base64,${asset.base64}` });
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) { notify('Permission needed', 'Allow photo access to update your picture.'); return; }
+      beginExternalActivity();
+      let res;
+      try {
+        res = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true,
+          aspect: [1, 1], quality: 0.6, base64: true,
+        });
+      } finally { endExternalActivity(); }
+      if (res.canceled || !res.assets?.[0]?.base64) return;
+      const asset = res.assets[0];
+      setAvatar(asset.uri);
+      setUploadingPhoto(true);
+      const r = await apiPost(EP.auth.avatar, { image: `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}` });
       const body = await r.json();
       if (r.ok && body.success) {
         setAvatar(body.avatar);
-        reloadWallet(); // refresh the photo shown on home/profile headers
+        void reloadWallet();
       } else {
+        setAvatar(previousAvatar);
         notify('Error', body.message || 'Could not update photo');
       }
     } catch {
-      notify('Error', 'Something went wrong uploading your photo.');
+      setAvatar(previousAvatar);
+      notify('Error', 'Could not update your photo. Please try again.');
     } finally {
+      photoInFlight.current = false;
       setUploadingPhoto(false);
     }
   };
@@ -86,23 +90,31 @@ const AccountDetails = () => {
   // Gate "Save changes": only enable once something changed and the email is valid.
   const emailOk = !form.email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email);
   const dirty = !!(form.firstName || form.lastName || form.email);
-  const canSave = dirty && emailOk;
+  const changingEmail = !!form.email.trim() && form.email.trim().toLowerCase() !== current.email.toLowerCase();
+  const canSave = dirty && emailOk && (!changingEmail || !!password);
 
   const handleUpdate = async () => {
+    if (!canSave || inFlight.current) return;
     if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
       notify('Invalid email', 'Enter a valid email address.');
       return;
     }
+    inFlight.current = true;
     setIsUpdating(true);
     try {
       const response = await apiPost(EP.auth.updateInfo, {
-        email: form.email || current.email,
-        first_name: form.firstName || current.firstName,
-        last_name: form.lastName || current.lastName,
+        email: form.email.trim() || current.email,
+        first_name: form.firstName.trim() || current.firstName,
+        last_name: form.lastName.trim() || current.lastName,
+        ...(changingEmail ? { password } : {}),
       });
       const result = await response.json();
       if (response.ok) {
-        if (form.email) await AsyncStorage.setItem('UserEmail', form.email);
+        if (form.email) await AsyncStorage.setItem('UserEmail', form.email.trim());
+        setCurrent((previous) => ({ ...previous, firstName: form.firstName.trim() || previous.firstName, lastName: form.lastName.trim() || previous.lastName, email: form.email.trim() || previous.email }));
+        setForm({ firstName: '', lastName: '', email: '' });
+        setPassword('');
+        void reloadWallet();
         notify('Profile updated');
       } else {
         notify('Error', result.message || 'Failed to update account');
@@ -110,6 +122,7 @@ const AccountDetails = () => {
     } catch {
       notify('Error', 'Something went wrong. Please try again later.');
     } finally {
+      inFlight.current = false;
       setIsUpdating(false);
     }
   };
@@ -136,6 +149,8 @@ const AccountDetails = () => {
         <Field label="First name" value={form.firstName} onChangeText={(e) => setForm({ ...form, firstName: e })} placeholder={current.firstName || 'First name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
         <Field label="Last name" value={form.lastName} onChangeText={(e) => setForm({ ...form, lastName: e })} placeholder={current.lastName || 'Last name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
         <Field label="Email" value={form.email} onChangeText={(e) => setForm({ ...form, email: e })} keyboardType="email-address" placeholder={current.email || 'you@email.com'} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
+        {changingEmail && <Field label="Account password" value={password} onChangeText={setPassword}
+          secureTextEntry autoComplete="current-password" placeholder="Confirm password to change email" />}
         <View>
           <Field label="Verified phone" value={current.phone} editable={false} prefix={<ZIcon name="airtime" size={18} color={c.ink3} />} />
           <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular, lineHeight: 18, marginTop: 7 }}>
@@ -159,4 +174,4 @@ const AccountDetails = () => {
   );
 };
 
-export default AccountDetails;
+export default function GuardedAccountDetails() { return <AuthGuard fresh><AccountDetails /></AuthGuard>; }

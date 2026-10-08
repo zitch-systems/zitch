@@ -94,11 +94,12 @@ const MySavings = () => {
     const token = await getToken();
     if (!token) {
       setLoading(false);
+      setRefreshing(false);
       return;
     }
     try {
       const res = await savingsService.list();
-      setProductAvailable(res?.product_available === true);
+      setProductAvailable(res?.success === true && res.product_available === true);
       setUnavailableMessage(res?.unavailable_message || 'Fixed savings is not available right now.');
       if (Array.isArray(res?.plans)) {
         setPlans(res.plans);

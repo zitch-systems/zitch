@@ -1,5 +1,5 @@
 import {
-  outcomeMessage, receiptFileName, receiptHtml, receiptStamp, senderRows,
+  outcomeMessage, receiptFileName, receiptHtml, receiptStamp, senderRows, shareReceipt,
 } from '@/lib/receipt';
 import { BANK_WHATSAPP_DISPLAY } from '@/components/configFiles/links';
 
@@ -208,4 +208,16 @@ describe('receiptHtml watermark', () => {
     // every row below it and alter the artifact it exists to mark.
     expect(/\.wm\s*\{[^}]*inset:/.test(html)).toBe(true);
   });
+});
+
+
+it('does not claim a payment succeeded when exporting its receipt fails', async () => {
+  jest.spyOn(require('expo-sharing'), 'isAvailableAsync').mockResolvedValue(true);
+  const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const outcome = await shareReceipt('jpeg', { reference: 'PENDING-REF', html: '', capture: async () => { throw new Error('Capture unavailable'); } });
+    expect(outcome).toBe('failed');
+    expect(outcomeMessage(outcome, 'jpeg')).not.toContain('payment went through');
+    expect(outcomeMessage(outcome, 'jpeg')).toContain('Check the transaction status');
+  } finally { warning.mockRestore(); }
 });

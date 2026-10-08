@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 import re
 
 from common.http import (
-    MIN_AIRTIME, MIN_ELECTRICITY, api, check_daily_limit, check_send_limits, fail,
+    MIN_AIRTIME, MIN_ELECTRICITY, api, check_confirmed_price, check_daily_limit, check_send_limits, fail,
     idempotent_replay, ok, parse_amount, provider_purchase_response, require_user,
     spend_key, verify_transaction_pin,
 )
@@ -172,6 +172,9 @@ def buydata(request):
     plan = DataPlan.objects.filter(plan_code=plan_code, network=net).first()
     if plan is None or not plan.active:
         return fail("Plan not found", status=404)
+    price_error = check_confirmed_price(data, plan.price)
+    if price_error is not None:
+        return price_error
     err = _check_pin(user, data)
     if err:
         return err
@@ -248,6 +251,9 @@ def buycable(request):
     plan = CablePlan.objects.filter(cable_plan_code=plan_code, provider=prov).first()
     if plan is None or not plan.active:
         return fail("Plan not found", status=404)
+    price_error = check_confirmed_price(data, plan.price)
+    if price_error is not None:
+        return price_error
     err = _check_pin(user, data)
     if err:
         return err

@@ -43,7 +43,7 @@ const Sidebar = ({ state, navigation, width }: BottomTabBarProps & { width?: num
             <Pressable
               key={it.name}
               onPress={() => {
-                const event = navigation.emit({ type: 'tabPress', target: it.name, canPreventDefault: true });
+                const event = navigation.emit({ type: 'tabPress', target: state.routes.find((route) => route.name === it.name)?.key ?? it.name, canPreventDefault: true });
                 if (!on && !event.defaultPrevented) navigation.navigate(it.name as never);
               }}
               accessibilityRole="tab"

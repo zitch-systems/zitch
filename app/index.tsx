@@ -12,9 +12,9 @@ import { getToken } from '@/lib/secureStore';
 import { useTheme, font } from '@/lib/theme';
 
 const SLIDES = [
-  { icon: 'send', t: 'Send money instantly', d: 'Free transfers to Zitch and any Nigerian bank, with saved beneficiaries.' },
+  { icon: 'send', t: 'Send money with confidence', d: 'Send money to Zitch and Nigerian bank accounts when your account is enabled.' },
   { wa: true, t: 'Bank on WhatsApp', d: 'Check your balance, send money and pay bills right inside your WhatsApp chats.' },
-  { icon: 'more', t: 'Everything in one app', d: 'Airtime, data, bills, cards, savings & loans — all in one place.' },
+  { icon: 'more', t: 'Everyday payments, made simple', d: 'Airtime, data and supported bill payments, with your account status in one place.' },
 ];
 
 const GRADIENT = ['#DDF3EF', '#EFF7F5', '#F5FAF9'] as const;
@@ -60,10 +60,10 @@ const Index = () => {
       const t = await getToken();
       if (t) { router.replace('/signin'); return; }
       const pend = await AsyncStorage.getItem('otpPending');
-      if (pend && Date.now() - Number(pend) < 60 * 60 * 1000) { router.replace('/otp'); return; }
+      if (pend && Number(pend) <= Date.now() && Date.now() - Number(pend) < 60 * 60 * 1000) { router.replace('/otp'); return; }
       if (pend) await AsyncStorage.removeItem('otpPending'); // stale — clear it
       setReady(true);
-    })();
+    })().catch(() => setReady(true));
   }, []);
 
   // Coin-flip brand loader on open (instead of a blank flash) while we decide.
@@ -74,7 +74,7 @@ const Index = () => {
         <View style={{ height: 22 }} />
         <Text style={{ fontSize: 30, fontFamily: font.extrabold, letterSpacing: 30 * 0.18, color: '#fff' }}>ZITCH</Text>
         <Text style={{ fontSize: 14, color: 'rgba(255,255,255,.7)', marginTop: 8, fontFamily: font.regular }}>Pay. Send. Grow.</Text>
-        <Text style={{ position: 'absolute', bottom: 36, fontSize: 11.5, color: 'rgba(255,255,255,.45)', fontFamily: font.regular }}>Secured by Zitch · NDIC insured</Text>
+        <Text style={{ position: 'absolute', bottom: 36, fontSize: 11.5, color: 'rgba(255,255,255,.45)', fontFamily: font.regular }}>Your account. Protected.</Text>
       </LinearGradient>
     );
   }

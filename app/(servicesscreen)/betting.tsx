@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
-import { getToken } from '@/lib/secureStore';
+import { publicPost } from '@/lib/api';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { bettingService } from '@/lib/services/bills';
@@ -20,33 +19,40 @@ type Step = null | 'confirm' | 'pin';
 
 const Betting = () => {
   const { c } = useTheme();
-  const { balance, reload } = useWallet();
-  const [token, setToken] = useState('');
+  const { balance, reload, billPaymentsAvailable } = useWallet();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
+  const [quoteRevision, setQuoteRevision] = useState(0);
+  const [catalogueLoading, setCatalogueLoading] = useState(true);
   const [selected, setSelected] = useState('');
   const [userId, setUserId] = useState('');
   const [amt, setAmt] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
+  const purchaseInFlight = useRef(false);
   const [done, setDone] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingMessage, setPendingMessage] = useState('');
   const [recovered, setRecovered] = useState(false);
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
-  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
   useEffect(() => {
-    fetch(`${baseUrl}/api/betting/list/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-      .then((r) => r.json())
-      .then((res) => { if (Array.isArray(res.platforms)) { setPlatforms(res.platforms); if (res.platforms[0]) setSelected(res.platforms[0].code); } })
-      .catch(() => {});
-  }, []);
+    let current = true;
+    setCatalogueLoading(true);
+    publicPost('/api/betting/list/', {}, 15000)
+      .then((r) => { if (r.ok === false) throw new Error('Catalogue unavailable'); return r.json(); })
+      .then((res) => { if (current && Array.isArray(res.platforms)) { setPlatforms(res.platforms); if (res.platforms[0]) setSelected(res.platforms[0].code); } })
+      .catch(() => {})
+      .finally(() => { if (current) setCatalogueLoading(false); });
+    return () => { current = false; };
+  }, [quoteRevision]);
 
   const platform = platforms.find((p) => p.code === selected);
   const amount = Number(amt || 0);
-  const valid = !!platform && userId.length >= 4 && amount >= 100;
+  const valid = billPaymentsAvailable === true && !!platform && userId.length >= 4 && Number.isFinite(amount) && amount >= 100 && amount <= balance;
 
   const fund = async (pin: string) => {
+    if (!valid || done || purchaseInFlight.current) return;
+    purchaseInFlight.current = true;
     const fingerprint = [selected, userId.trim(), String(amount)].join('|');
     let deliveryStarted = false;
     setBusy(true);
@@ -89,6 +95,7 @@ const Betting = () => {
         notify('Unable to start funding', 'Could not safely prepare this request. Please try again.');
       }
     } finally {
+      purchaseInFlight.current = false;
       setBusy(false);
     }
   };
@@ -117,6 +124,8 @@ const Betting = () => {
       <Header title="Betting" sub="Fund your betting wallet instantly" onBack={() => router.back()} />
 
       <Label>Select platform</Label>
+      {catalogueLoading ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Loading available platforms…</Text> : platforms.length === 0 ? <View style={{ marginBottom: 16 }}><Text style={{ color: c.ink3, fontFamily: font.regular }}>No platforms are available right now.</Text><Btn label="Try again" variant="outline" onPress={() => setQuoteRevision((value) => value + 1)} /></View> : null}
+
       <ProviderGrid items={platforms.map((p) => ({ id: p.code, name: p.name, color: p.color }))} value={selected} onPick={setSelected} cols={3} />
 
       <Field
@@ -139,6 +148,7 @@ const Betting = () => {
       />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
+      {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
 

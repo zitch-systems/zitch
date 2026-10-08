@@ -16,7 +16,7 @@ type Step = null | 'confirm' | 'pin';
 
 const Remita = () => {
   const { c } = useTheme();
-  const { balance, reload } = useWallet();
+  const { balance, reload, billPaymentsAvailable } = useWallet();
 
   const [rrr, setRrr] = useState('');
   const [validatedFor, setValidatedFor] = useState('');
@@ -28,6 +28,7 @@ const Remita = () => {
   const [validating, setValidating] = useState(false);
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
+  const purchaseInFlight = useRef(false);
   const [done, setDone] = useState(false);
   // The ledger reference the server minted for this transaction — shown on the
   // receipt and carried into the saved/shared file, so a support ticket can name it.
@@ -41,7 +42,7 @@ const Remita = () => {
   const normalizedRrr = rrr.trim();
   const validated = !!normalizedRrr && validatedFor === normalizedRrr;
   const amount = Number((fixedAmt || amt) || 0);
-  const valid = validated && amount >= 100 && amount <= balance;
+  const valid = billPaymentsAvailable === true && validated && amount >= 100 && amount <= balance;
 
   const validate = async () => {
     const requestedRrr = normalizedRrr;
@@ -78,6 +79,8 @@ const Remita = () => {
   };
 
   const pay = async (pin: string) => {
+    if (!valid || done || purchaseInFlight.current) return;
+    purchaseInFlight.current = true;
     const fingerprint = [rrr.trim(), String(amount)].join('|');
     let deliveryStarted = false;
     setBusy(true);
@@ -141,6 +144,7 @@ const Remita = () => {
         notify('Unable to start payment', 'Could not safely prepare this request. Please try again.');
       }
     } finally {
+      purchaseInFlight.current = false;
       setBusy(false);
     }
   };
@@ -200,6 +204,7 @@ const Remita = () => {
       ) : null}
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
+      {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Btn label={amount > 0 ? `Pay · ${money(amount)}` : 'Pay'} disabled={!valid} onPress={() => setStep('confirm')} />
 

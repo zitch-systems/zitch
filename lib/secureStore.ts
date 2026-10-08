@@ -53,15 +53,42 @@ const TXN_PIN_KEYCHAIN_OPTS: SecureStore.SecureStoreOptions = {
 // `undefined` = not loaded yet; `null` = loaded and known-absent.
 let cachedToken: string | null | undefined;
 let cachedRefresh: string | null | undefined;
+let sessionGeneration = 0;
+let tokenRevision = 0;
+let refreshRevision = 0;
+
+/** Changes only on login/account replacement or logout, never token rotation. */
+export function getSessionGeneration(): number { return sessionGeneration; }
+
+// Native keychain operations can finish out of order. Serialize mutations per
+// credential so an old write cannot land after a newer logout/account switch.
+const secretMutations = new Map<string, Promise<void>>();
+function mutateSecret(key: string, mutation: () => Promise<void>): Promise<void> {
+  const pending = (secretMutations.get(key) || Promise.resolve()).catch(() => {}).then(mutation);
+  secretMutations.set(key, pending);
+  const done = () => { if (secretMutations.get(key) === pending) secretMutations.delete(key); };
+  void pending.then(done, done);
+  return pending;
+}
+function requireGeneration(generation: number): void {
+  if (generation !== sessionGeneration) throw new Error('Your session changed. Please sign in again.');
+}
+
 
 export async function saveToken(token: string): Promise<void> {
-  cachedToken = token;
+  const revision = ++tokenRevision;
+  const generation = sessionGeneration;
   if (isWeb) {
     // Erase a token left by a pre-hardening build; never persist the replacement.
     await AsyncStorage.removeItem(TOKEN_KEY);
+    if (revision === tokenRevision) cachedToken = token;
     return;
   }
-  await SecureStore.setItemAsync(TOKEN_KEY, token, KEYCHAIN_OPTS);
+  await mutateSecret(TOKEN_KEY, async () => {
+    requireGeneration(generation);
+    await SecureStore.setItemAsync(TOKEN_KEY, token, KEYCHAIN_OPTS);
+  });
+  if (revision === tokenRevision) cachedToken = token;
 }
 
 /**
@@ -79,12 +106,18 @@ export async function saveToken(token: string): Promise<void> {
  */
 export async function saveRefreshToken(token: string): Promise<void> {
   if (!token) { await clearRefreshToken(); return; }
-  cachedRefresh = token;
+  const revision = ++refreshRevision;
+  const generation = sessionGeneration;
   if (isWeb) {
     await AsyncStorage.removeItem(REFRESH_KEY);
+    if (revision === refreshRevision) cachedRefresh = token;
     return;
   }
-  await SecureStore.setItemAsync(REFRESH_KEY, token, KEYCHAIN_OPTS);
+  await mutateSecret(REFRESH_KEY, async () => {
+    requireGeneration(generation);
+    await SecureStore.setItemAsync(REFRESH_KEY, token, KEYCHAIN_OPTS);
+  });
+  if (revision === refreshRevision) cachedRefresh = token;
 }
 
 export async function getRefreshToken(): Promise<string | null> {
@@ -94,7 +127,9 @@ export async function getRefreshToken(): Promise<string | null> {
     cachedRefresh = null;
     return null;
   }
+  const revision = refreshRevision;
   const token = await SecureStore.getItemAsync(REFRESH_KEY);
+  if (revision !== refreshRevision) return getRefreshToken();
   cachedRefresh = token;
   return token;
 }
@@ -113,26 +148,44 @@ export async function storeSession(result: {
   refresh_token?: string;
   account_namespace?: string;
 }): Promise<void> {
-  // Set (or fail closed by clearing) the account pointer before making the new
-  // access token usable.  Old servers omit this field; sharing an old account's
-  // namespace would be worse than requiring that session to sign in again.
-  await saveSpendAccountNamespace(result?.account_namespace || '');
-  if (result?.refresh_token) await saveRefreshToken(result.refresh_token);
-  if (result?.access_token) await saveToken(result.access_token);
+  if (!result?.access_token) throw new Error('The sign-in response did not contain a session');
+  const generation = ++sessionGeneration;
+  // A password sign-in / OTP / reset replaces the entire session. Never pair a
+  // new customer's access token with another customer's refresh token or PIN.
+  await Promise.all([clearToken(), clearRefreshToken(), clearTransactionPin()]);
+  try {
+    requireGeneration(generation);
+    await saveSpendAccountNamespace(result.account_namespace || '');
+    requireGeneration(generation);
+    if (result.refresh_token) await saveRefreshToken(result.refresh_token);
+    requireGeneration(generation);
+    await saveToken(result.access_token);
+    requireGeneration(generation);
+  } catch (error) {
+    if (generation === sessionGeneration) await Promise.allSettled([clearToken(), clearRefreshToken(), clearTransactionPin()]);
+    throw error;
+  }
 }
 
 /** Persist only a hash of the authenticated account's opaque namespace. */
 export async function saveSpendAccountNamespace(namespace: string): Promise<void> {
+  const generation = sessionGeneration;
   const clean = String(namespace || '').trim();
   if (!clean) {
-    await AsyncStorage.removeItem(SPEND_ACCOUNT_NAMESPACE_KEY);
+    await mutateSecret(SPEND_ACCOUNT_NAMESPACE_KEY, async () => {
+      requireGeneration(generation);
+      await AsyncStorage.removeItem(SPEND_ACCOUNT_NAMESPACE_KEY);
+    });
     return;
   }
   const digest = await Crypto.digestStringAsync(
     Crypto.CryptoDigestAlgorithm.SHA256,
     `zitch-spend-account\u0000${clean}`,
   );
-  await AsyncStorage.setItem(SPEND_ACCOUNT_NAMESPACE_KEY, digest);
+  await mutateSecret(SPEND_ACCOUNT_NAMESPACE_KEY, async () => {
+    requireGeneration(generation);
+    await AsyncStorage.setItem(SPEND_ACCOUNT_NAMESPACE_KEY, digest);
+  });
 }
 
 export async function getSpendAccountNamespace(): Promise<string> {
@@ -140,12 +193,13 @@ export async function getSpendAccountNamespace(): Promise<string> {
 }
 
 export async function clearRefreshToken(): Promise<void> {
+  refreshRevision += 1;
   cachedRefresh = null;
   if (isWeb) {
     await AsyncStorage.removeItem(REFRESH_KEY);
     return;
   }
-  await SecureStore.deleteItemAsync(REFRESH_KEY);
+  await mutateSecret(REFRESH_KEY, () => SecureStore.deleteItemAsync(REFRESH_KEY));
 }
 
 export async function getToken(): Promise<string | null> {
@@ -155,18 +209,21 @@ export async function getToken(): Promise<string | null> {
     cachedToken = null;
     return null;
   }
+  const revision = tokenRevision;
   const token = await SecureStore.getItemAsync(TOKEN_KEY);
+  if (revision !== tokenRevision) return getToken();
   cachedToken = token;
   return token;
 }
 
 export async function clearToken(): Promise<void> {
+  tokenRevision += 1;
   cachedToken = null;
   if (isWeb) {
     await AsyncStorage.removeItem(TOKEN_KEY);
     return;
   }
-  await SecureStore.deleteItemAsync(TOKEN_KEY);
+  await mutateSecret(TOKEN_KEY, () => SecureStore.deleteItemAsync(TOKEN_KEY));
 }
 
 /** Clears the token plus the non-sensitive profile keys kept in AsyncStorage. */
@@ -190,8 +247,13 @@ export async function saveTransactionPin(pin: string): Promise<void> {
   if (!isValidTransactionPin(pin)) {
     throw new Error(`A ${TRANSACTION_PIN_LENGTH}-digit transaction PIN is required`);
   }
-  await SecureStore.setItemAsync(TXN_PIN_KEY, pin, TXN_PIN_KEYCHAIN_OPTS);
-  await AsyncStorage.setItem(HAS_TXN_PIN_KEY, '1');
+  const generation = sessionGeneration;
+  await mutateSecret(TXN_PIN_KEY, async () => {
+    requireGeneration(generation);
+    await SecureStore.setItemAsync(TXN_PIN_KEY, pin, TXN_PIN_KEYCHAIN_OPTS);
+    requireGeneration(generation);
+    await AsyncStorage.setItem(HAS_TXN_PIN_KEY, '1');
+  });
 }
 
 export async function getTransactionPin(): Promise<string | null> {
@@ -213,8 +275,10 @@ export async function hasTransactionPin(): Promise<boolean> {
 
 export async function clearTransactionPin(): Promise<void> {
   if (isWeb) return;
-  await SecureStore.deleteItemAsync(TXN_PIN_KEY);
-  await AsyncStorage.removeItem(HAS_TXN_PIN_KEY);
+  await mutateSecret(TXN_PIN_KEY, async () => {
+    await SecureStore.deleteItemAsync(TXN_PIN_KEY);
+    await AsyncStorage.removeItem(HAS_TXN_PIN_KEY);
+  });
 }
 
 // Non-secret marker: whether we've already nudged the user (once) to turn on
@@ -237,8 +301,12 @@ export async function markBiometricPayOffered(): Promise<void> {
 const DISPLAY_NAME_KEY = 'z-display-name';
 
 export async function saveDisplayName(name: string): Promise<void> {
+  const generation = sessionGeneration;
   const clean = (name || '').trim();
-  if (clean) await AsyncStorage.setItem(DISPLAY_NAME_KEY, clean);
+  if (clean) await mutateSecret(DISPLAY_NAME_KEY, async () => {
+    requireGeneration(generation);
+    await AsyncStorage.setItem(DISPLAY_NAME_KEY, clean);
+  });
 }
 
 export async function getDisplayName(): Promise<string> {
@@ -267,9 +335,8 @@ export async function getRememberedIdentifier(): Promise<string> {
 }
 
 export async function clearSession(): Promise<void> {
-  await clearToken();
-  await clearRefreshToken();
-  await clearTransactionPin();
+  sessionGeneration += 1;
+
   // BIOPAY_OFFERED_KEY is deliberately NOT cleared. It records that we have
   // already asked this person once whether they want to approve payments with a
   // fingerprint — a UI preference, not a credential, and nothing about signing
@@ -288,8 +355,11 @@ export async function clearSession(): Promise<void> {
   // SPEND_ACCOUNT_NAMESPACE_KEY also remains. It is a pseudonymous pointer to
   // that account's unresolved idempotency records, not an authentication secret.
   await Promise.all([
+    clearToken(), clearRefreshToken(), clearTransactionPin(),
+    ...[
     'userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'UserFirstName',
     'UserLastName', 'otpPending', 'lastActiveAt',
-    'z-locked', 'z-has-pin', DISPLAY_NAME_KEY,
-  ].map((key) => AsyncStorage.removeItem(key)));
+    'z-locked', 'z-bg-at', 'z-has-pin', DISPLAY_NAME_KEY,
+  ].map((key) => mutateSecret(key, () => AsyncStorage.removeItem(key))),
+  ]);
 }

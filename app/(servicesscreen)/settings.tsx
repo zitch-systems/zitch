@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, Linking } from 'react-native';
 import { router } from 'expo-router';
 import Constants from 'expo-constants';
@@ -13,10 +13,10 @@ import { EP } from '@/lib/endpoints';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 import { TERMS_URL, PRIVACY_URL } from '@/components/configFiles/links';
 
-const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => {
+const Toggle = ({ on, onChange, disabled = false, label }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean; label: string }) => {
   const { c } = useTheme();
   return (
-    <Pressable onPress={() => onChange(!on)} style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center' }}>
+    <Pressable accessibilityRole="switch" accessibilityLabel={label} accessibilityState={{ checked: on, disabled }} disabled={disabled} onPress={() => onChange(!on)} style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center' }}>
       <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', transform: [{ translateX: on ? 18 : 0 }] }} />
     </Pressable>
   );
@@ -25,34 +25,58 @@ const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
 const Settings = () => {
   const { c, theme, setTheme } = useTheme();
   const [biometrics, setBiometrics] = useState(false);
+  const [bioBusy, setBioBusy] = useState(true);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const bioLock = useRef(false);
+  const logoutLock = useRef(false);
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
 
   useEffect(() => {
-    isBiometricEnabled().then(setBiometrics);
+    let active = true;
+    isBiometricEnabled().then((enabled) => { if (active) setBiometrics(enabled); })
+      .catch(() => { if (active) notify('Could not load preferences', 'Please reopen Settings to try again.'); })
+      .finally(() => { if (active) setBioBusy(false); });
+    return () => { active = false; };
   }, []);
 
   const toggleBio = async (v: boolean) => {
-    if (!v) {
-      await setBiometricEnabled(false);
-      setBiometrics(false);
-      return;
-    }
-    if (!(await isBiometricAvailable())) {
-      notify('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
-      return;
-    }
-    if (await authenticate('Enable biometric sign-in')) {
-      await setBiometricEnabled(true);
-      setBiometrics(true);
+    if (bioLock.current || bioBusy) return;
+    bioLock.current = true;
+    setBioBusy(true);
+    try {
+      if (v) {
+        if (!(await isBiometricAvailable())) {
+          notify('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
+          return;
+        }
+        if (!(await authenticate('Enable biometric sign-in'))) return;
+      }
+      await setBiometricEnabled(v);
+      setBiometrics(v);
+    } catch {
+      notify('Could not save preference', 'Please try again.');
+    } finally {
+      bioLock.current = false;
+      setBioBusy(false);
     }
   };
 
   const openUrl = (url: string) => Linking.openURL(url).catch(() => notify('Error', 'Could not open this link.'));
 
   const handleLogout = async () => {
-    try { await apiPost(EP.auth.logout); } catch { /* fall through */ }
-    await clearSession();
-    router.replace('/signin');
+    if (logoutLock.current) return;
+    logoutLock.current = true;
+    setLoggingOut(true);
+    try {
+      try { await apiPost(EP.auth.logout, {}, 5000); } catch { /* still clear the device session */ }
+      await clearSession();
+      router.replace('/signin');
+    } catch {
+      notify('Could not finish signing out', 'Please try again to clear this device session.');
+    } finally {
+      logoutLock.current = false;
+      setLoggingOut(false);
+    }
   };
 
   const version = Constants.expoConfig?.version ?? '1.0.0';
@@ -60,7 +84,7 @@ const Settings = () => {
   const security = [
     { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 6-digit PIN', go: () => router.push('/resetpin') },
     { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
-    { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & limits', go: () => router.push('/kyc') },
+    { icon: 'chart', title: 'Account Limits', sub: 'Account details & available services', go: () => router.push('/accountlimits') },
   ];
   const about = [
     { icon: 'ticket', title: 'Terms of Service', go: () => openUrl(TERMS_URL) },
@@ -94,11 +118,11 @@ const Settings = () => {
         <Card pad={0} style={{ paddingHorizontal: 16 }}>
           <ZItem
             icon="spark" title="Dark mode" sub="Easier on the eyes at night"
-            right={<Toggle on={theme === 'dark'} onChange={(v) => setTheme(v ? 'dark' : 'light')} />}
+            right={<Toggle label="Dark mode" on={theme === 'dark'} onChange={(v) => setTheme(v ? 'dark' : 'light')} />}
           />
           <ZItem
-            icon="faceid" title="Biometric login" sub="Sign in & approve payments" last
-            right={<Toggle on={biometrics} onChange={toggleBio} />}
+            icon="faceid" title="Biometric login" sub="Unlock Zitch with your face or fingerprint" last
+            right={<Toggle label="Biometric login" disabled={bioBusy} on={biometrics} onChange={toggleBio} />}
           />
         </Card>
 
@@ -118,8 +142,8 @@ const Settings = () => {
           ))}
         </Card>
 
-        <Pressable onPress={handleLogout} style={{ marginTop: 18, paddingVertical: 14, borderRadius: 16, backgroundColor: 'rgba(255,59,59,.1)', alignItems: 'center' }}>
-          <Text style={{ color: c.red, fontFamily: font.bold }}>Log out</Text>
+        <Pressable accessibilityRole="button" disabled={loggingOut} onPress={handleLogout} style={{ marginTop: 18, paddingVertical: 14, borderRadius: 16, backgroundColor: 'rgba(255,59,59,.1)', alignItems: 'center' }}>
+          <Text style={{ color: c.red, fontFamily: font.bold }}>{loggingOut ? 'Logging out…' : 'Log out'}</Text>
         </Pressable>
 
         <Text style={{ textAlign: 'center', color: c.ink3, fontSize: 12, marginTop: 16, fontFamily: font.regular }}>Zitch v{version}</Text>

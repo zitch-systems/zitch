@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { publicPost } from '@/lib/api';
@@ -15,15 +15,18 @@ const ForgotPassword = () => {
   const { c } = useTheme();
   const [ident, setIdent] = useState('');
   const [busy, setBusy] = useState(false);
+  const requesting = useRef(false);
 
   const isEmail = ident.includes('@');
   const valid = isEmail ? /\S+@\S+\.\S+/.test(ident.trim()) : ident.replace(/\D/g, '').length >= 10;
 
   const requestCode = async () => {
+    if (requesting.current) return;
     if (!valid) {
       notify('Error', 'Enter the phone number or email on your account');
       return;
     }
+    requesting.current = true;
     setBusy(true);
     try {
       const response = await publicPost('/api/password/forgot/', { email_or_phone: ident.trim() });
@@ -36,6 +39,7 @@ const ForgotPassword = () => {
     } catch {
       notify('Error', 'Something went wrong. Please try again later.');
     } finally {
+      requesting.current = false;
       setBusy(false);
     }
   };

@@ -11,11 +11,11 @@ const SUCCESS = new Set([
   'approved',
 ]);
 
-const FAILED = /fail|declin|revers|cancel|reject|expire|void/;
+const FAILED = new Set(['failed', 'failure', 'declined', 'reversed', 'cancelled', 'canceled', 'rejected', 'expired', 'void', 'voided']);
 
 export function txnState(status: unknown): TxnState {
   const normalized = String(status ?? '').trim().toLowerCase();
-  if (FAILED.test(normalized)) return 'failed';
+  if (FAILED.has(normalized)) return 'failed';
   if (SUCCESS.has(normalized)) return 'success';
   // Blank, malformed and future provider states are not proof of settlement.
   return 'pending';
@@ -41,7 +41,7 @@ export function settledTransactionTotal(
 ): number {
   return transactions
     .filter((transaction) => (
-      transaction.dir === direction && txnState(transaction.status) === 'success'
+      transaction.dir === direction && txnState(transaction.status) === 'success' && Number.isFinite(transaction.amount)
     ))
     .reduce((total, transaction) => total + Math.abs(transaction.amount), 0);
 }

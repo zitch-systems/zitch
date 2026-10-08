@@ -1,21 +1,22 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Linking, ActivityIndicator } from 'react-native';
-import { router } from 'expo-router';
+import { View, Text, Pressable, Linking, ActivityIndicator, AppState } from 'react-native';
+import { router, useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { Screen, Header, Card, Btn } from '@/components/design/ui';
+import { Screen, Header, Card, Btn, PinSheet } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
 import { useTheme, font } from '@/lib/theme';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
+import { safeWhatsAppUrl } from '@/lib/externalLinks';
 import { BANK_WHATSAPP } from '@/components/configFiles/links';
 
 const WA_GREEN = '#25D366';
 
-type Stage = 'loading' | 'unlinked' | 'code' | 'linked';
+type Stage = 'loading' | 'error' | 'unlinked' | 'code' | 'linked';
 
 // Open WhatsApp at the Zitch banking number, optionally with prefilled text.
 const openWa = (text?: string, link?: string) => {
-  const url = link || `https://wa.me/${BANK_WHATSAPP}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
+  const url = safeWhatsAppUrl(link) || `https://wa.me/${BANK_WHATSAPP}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
   Linking.openURL(url).catch(() => notify('WhatsApp', 'Could not open WhatsApp. Make sure it is installed, then try again.'));
 };
 
@@ -38,60 +39,130 @@ const LinkWhatsApp = () => {
   const [code, setCode] = useState('');
   const [waLink, setWaLink] = useState('');
   const [busy, setBusy] = useState(false);
-  const [polling, setPolling] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [pinOpen, setPinOpen] = useState(false);
+  const [expiresAt, setExpiresAt] = useState(0);
+  const [expired, setExpired] = useState(false);
+  const [error, setError] = useState('');
+  const [focused, setFocused] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const focusedRef = useRef(false);
+  const statusBusy = useRef(false);
+  const actionBusy = useRef(false);
 
-  const stopPoll = useCallback(() => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    setPolling(false);
+  const refreshStatus = useCallback(async (manual = false): Promise<boolean> => {
+    if (statusBusy.current || !focusedRef.current) return false;
+    statusBusy.current = true;
+    setChecking(true);
+    try {
+      const res = await apiJson<{ success?: boolean; linked?: boolean; masked_number?: string; message?: string }>(
+        '/api/whatsapp/link/status/', {}, 10000,
+      );
+      if (!focusedRef.current) return false;
+      if (!res?.success) {
+        setError(res?.message || 'Could not check your WhatsApp connection.');
+        setStage((s) => s === 'loading' ? 'error' : s);
+        return false;
+      }
+      setError('');
+      if (res.linked) {
+        setMasked(res.masked_number || '');
+        setCode('');
+        setWaLink('');
+        setStage('linked');
+        return true;
+      }
+      setStage((s) => s === 'code' ? s : 'unlinked');
+      if (manual) notify('Not linked yet', 'Send the link code in your Zitch WhatsApp chat, then check again.');
+      return false;
+    } catch {
+      if (focusedRef.current) {
+        setError('Could not check your WhatsApp connection. Please try again.');
+        setStage((s) => s === 'loading' ? 'error' : s);
+      }
+      return false;
+    } finally {
+      statusBusy.current = false;
+      if (focusedRef.current) setChecking(false);
+    }
   }, []);
 
-  // Check whether this account already has an active WhatsApp link.
-  const refreshStatus = useCallback(async (silent = false): Promise<boolean> => {
-    const res = await apiJson<{ linked?: boolean; masked_number?: string }>('/api/whatsapp/link/status/');
-    if (res?.linked) {
-      setMasked(res.masked_number || '');
-      setStage('linked');
-      stopPoll();
-      return true;
-    }
-    if (!silent) setStage((s) => (s === 'loading' ? 'unlinked' : s));
-    return false;
-  }, [stopPoll]);
+  useFocusEffect(useCallback(() => {
+    focusedRef.current = true;
+    setFocused(true);
+    void refreshStatus();
+    return () => { focusedRef.current = false; setFocused(false); };
+  }, [refreshStatus]));
 
-  useEffect(() => { refreshStatus(); return () => stopPoll(); }, [refreshStatus, stopPoll]);
+  useEffect(() => {
+    if (!focused || stage !== 'code' || !expiresAt || expired) return;
+    const checkExpiry = () => {
+      if (Date.now() >= expiresAt) setExpired(true);
+    };
+    checkExpiry();
+    // The status endpoint allows 30 checks per five minutes. Leave headroom
+    // for foreground/manual checks and never overlap slow network requests.
+    const poll = setInterval(() => {
+      checkExpiry();
+      if (Date.now() < expiresAt && AppState.currentState === 'active') void refreshStatus();
+    }, 15000);
+    const expiry = setTimeout(checkExpiry, Math.max(0, expiresAt - Date.now()));
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') { checkExpiry(); void refreshStatus(); }
+    });
+    return () => { clearInterval(poll); clearTimeout(expiry); subscription.remove(); };
+  }, [focused, stage, expiresAt, expired, refreshStatus]);
 
-  const generate = async () => {
+  const generate = async (pin: string) => {
+    if (actionBusy.current) return;
+    actionBusy.current = true;
     setBusy(true);
-    const res = await apiJson<{ success?: boolean; code?: string; wa_link?: string; message?: string }>('/api/whatsapp/link/start/');
-    setBusy(false);
-    if (res?.success && res.code) {
-      setCode(res.code);
-      setWaLink(res.wa_link || '');
-      setStage('code');
-      // Auto-detect the moment the user sends the code from WhatsApp.
-      stopPoll();
-      setPolling(true);
-      pollRef.current = setInterval(() => { refreshStatus(true); }, 4000);
-    } else {
-      notify('Error', res?.message || 'Could not generate a code. Please try again.');
+    try {
+      const res = await apiJson<{ success?: boolean; code?: string; wa_link?: string; expires_in?: number; message?: string }>(
+        '/api/whatsapp/link/start/', { transaction_pin: pin }, 15000,
+      );
+      if (!focusedRef.current) return;
+      setPinOpen(false);
+      if (res?.success && res.code) {
+        setCode(res.code);
+        setWaLink(res.wa_link || '');
+        const seconds = Number(res.expires_in);
+        setExpiresAt(Date.now() + (Number.isFinite(seconds) && seconds > 0 ? seconds : 600) * 1000);
+        setExpired(false);
+        setError('');
+        setStage('code');
+      } else notify('Could not link', res?.message || 'Could not generate a code. Please try again.');
+    } catch {
+      if (focusedRef.current) notify('Could not link', 'Check your connection and try again.');
+    } finally {
+      actionBusy.current = false;
+      setBusy(false);
     }
   };
 
   const copyCode = async () => {
-    await Clipboard.setStringAsync(`LINK ${code}`);
-    notify('Copied', 'Paste it into your WhatsApp chat with Zitch.');
+    if (Date.now() >= expiresAt) { setExpired(true); return; }
+    try {
+      await Clipboard.setStringAsync(`LINK ${code}`);
+      notify('Copied', 'Paste it into your WhatsApp chat with Zitch.');
+    } catch { notify('Could not copy', 'Open WhatsApp to use the prefilled link code.'); }
   };
 
   const unlink = async () => {
+    if (actionBusy.current) return;
+    actionBusy.current = true;
     setBusy(true);
-    const res = await apiJson<{ success?: boolean; message?: string }>('/api/whatsapp/link/unlink/');
-    setBusy(false);
-    if (res?.success) {
-      setCode(''); setMasked(''); setStage('unlinked');
-      notify('Unlinked', 'Your WhatsApp has been disconnected.');
-    } else {
-      notify('Error', res?.message || 'Could not unlink. Please try again.');
+    try {
+      const res = await apiJson<{ success?: boolean; message?: string }>('/api/whatsapp/link/unlink/', {}, 15000);
+      if (!focusedRef.current) return;
+      if (res?.success) {
+        setCode(''); setWaLink(''); setMasked(''); setStage('unlinked');
+        notify('Unlinked', 'Your WhatsApp has been disconnected.');
+      } else notify('Could not unlink', res?.message || 'Please try again.');
+    } catch {
+      if (focusedRef.current) notify('Could not unlink', 'Check your connection and try again.');
+    } finally {
+      actionBusy.current = false;
+      setBusy(false);
     }
   };
 
@@ -114,15 +185,18 @@ const LinkWhatsApp = () => {
         <View style={{ paddingVertical: 40, alignItems: 'center' }}><ActivityIndicator color={c.brand} /></View>
       )}
 
+      {error ? <Text accessibilityRole="alert" style={{ color: c.red, marginBottom: 14 }}>{error}</Text> : null}
+      {stage === 'error' && <Btn label="Try again" disabled={checking} onPress={() => void refreshStatus()} />}
+
       {stage === 'unlinked' && (
         <>
           <Card>
-            <Step n={1} text="Tap the button below to get your one-time link code." />
-            <Step n={2} text="WhatsApp opens with the code ready — just hit send." />
+            <Step n={1} text="Tap the button below to confirm your PIN and get a one-time link code." />
+            <Step n={2} text="Tap Open WhatsApp, then send the prefilled code." />
             <Step n={3} text="You're linked. This screen updates on its own." />
           </Card>
           <View style={{ height: 18 }} />
-          <Btn label={busy ? 'Generating…' : 'Generate link code'} variant="primary" onPress={generate} disabled={busy} />
+          <Btn label={busy ? 'Generating…' : 'Generate link code'} variant="primary" onPress={() => setPinOpen(true)} disabled={busy} />
         </>
       )}
 
@@ -130,21 +204,27 @@ const LinkWhatsApp = () => {
         <>
           <Card style={{ alignItems: 'center' }}>
             <Text style={{ fontFamily: font.medium, fontSize: 12, color: c.ink3, textTransform: 'uppercase', letterSpacing: 1 }}>Your link code</Text>
-            <Text style={{ fontFamily: font.bold, fontSize: 34, color: c.ink1, letterSpacing: 6, marginTop: 8 }}>{code}</Text>
-            <Pressable onPress={copyCode} style={{ marginTop: 10, paddingVertical: 7, paddingHorizontal: 15, borderRadius: 999, backgroundColor: c.surface3 }}>
+            <Text style={{ fontFamily: font.bold, fontSize: 20, color: c.ink1, letterSpacing: 1, marginTop: 8, textAlign: 'center' }}>{code}</Text>
+            <Pressable disabled={expired} accessibilityRole="button" accessibilityLabel="Copy link code" onPress={copyCode} style={{ marginTop: 10, paddingVertical: 7, paddingHorizontal: 15, borderRadius: 999, backgroundColor: c.surface3 }}>
               <Text style={{ fontFamily: font.semibold, fontSize: 12.5, color: c.brandDeep }}>Copy “LINK {code}”</Text>
             </Pressable>
             <Text style={{ fontFamily: font.regular, fontSize: 12.5, color: c.ink3, textAlign: 'center', marginTop: 14, lineHeight: 19 }}>
-              Send <Text style={{ fontFamily: font.semibold, color: c.ink2 }}>LINK {code}</Text> to the Zitch WhatsApp number from this phone. The code expires in 10 minutes.
+              Send <Text style={{ fontFamily: font.semibold, color: c.ink2 }}>LINK {code}</Text> to the Zitch WhatsApp number from the WhatsApp account you want to connect. Keep this code private.
             </Text>
           </Card>
           <View style={{ height: 16 }} />
-          <Btn label="Open WhatsApp" variant="primary" onPress={() => openWa(`LINK ${code}`, waLink)} />
+          <Btn label="Open WhatsApp" variant="primary" disabled={expired || busy} onPress={() => {
+            if (Date.now() >= expiresAt) { setExpired(true); return; }
+            openWa(`LINK ${code}`, waLink);
+          }} />
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 34, marginTop: 4 }}>
-            {polling && <ActivityIndicator size="small" color={c.ink3} />}
-            {polling && <Text style={{ fontFamily: font.regular, fontSize: 12.5, color: c.ink3 }}>Waiting for the code…</Text>}
+            {!expired && <ActivityIndicator size="small" color={c.ink3} />}
+            {!expired && <Text style={{ fontFamily: font.regular, fontSize: 12.5, color: c.ink3 }}>Waiting for the code…</Text>}
           </View>
-          <Btn label="I've sent it — check now" variant="outline" onPress={() => refreshStatus(false)} />
+          {expired ? <Text style={{ color: c.red, textAlign: 'center', marginBottom: 12 }}>This code has expired. Generate a new one to continue.</Text> : null}
+          <Btn label={checking ? 'Checking…' : "I've sent it — check now"} variant="outline" disabled={checking || busy} onPress={() => void refreshStatus(true)} />
+          <View style={{ height: 10 }} />
+          <Btn label="Generate a new code" variant="outline" disabled={busy} onPress={() => setPinOpen(true)} />
         </>
       )}
 
@@ -166,6 +246,8 @@ const LinkWhatsApp = () => {
           <Btn label={busy ? 'Unlinking…' : 'Unlink WhatsApp'} variant="outline" onPress={unlink} disabled={busy} />
         </>
       )}
+      <PinSheet open={pinOpen} onClose={() => { if (!busy) setPinOpen(false); }} onComplete={generate}
+        busy={busy} title="Connect WhatsApp" subtitle="Enter your 6-digit transaction PIN to create a private link code." />
     </Screen>
   );
 };

@@ -1,24 +1,24 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
-import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, Sheet, TxnRow, money, NText } from '@/components/design/ui';
 import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
 import { useTheme, font } from '@/lib/theme';
-import { useWallet } from '@/lib/wallet';
+import { transactionParams, useWallet } from '@/lib/wallet';
+import { notify } from '@/components/design/Notify';
 import { walletCapabilityMessage } from '@/lib/services/wallet';
 
 const GRID = [
-  { label: 'Airtime', icon: 'airtime', badge: '6% off', go: () => router.push('/buyairtime') },
+  { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
   { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
   { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
   { label: 'Save', icon: 'fixed', go: () => router.push('/savings') },
-  { label: 'Loan', icon: 'loan', go: () => router.push('/loan') },
+  { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
   { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
   { label: 'More', icon: 'more', more: true },
 ];
@@ -40,51 +40,35 @@ const MORE = [
 
 const Home = () => {
   const { c } = useTheme();
-  const { balance, totalBalance, historicalBalance, fundingProvider, firstName, fullName, avatar, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload } = useWallet();
+  const { balance, totalBalance, historicalBalance, fundingProvider, firstName, fullName, avatar, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, linked, reloadLinked, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
   const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const [more, setMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
-  // Count of Mono-linked external bank accounts, for the "Linked banks" summary.
-  const [linkedCount, setLinkedCount] = useState<number | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
+  const linkedCount = linked.length;
 
-  // Refresh balance & activity whenever Home regains focus — after sign-in and
-  // after returning from a transfer/purchase — so the dashboard never shows a
-  // stale figure.
-  useFocusEffect(useCallback(() => { reload(); }, [reload]));
-
-  // Fetch the number of connected (Mono-linked) bank accounts so the summary
-  // block can show a live count and route to the wallet (or link flow if none).
-  useFocusEffect(
-    useCallback(() => {
-      let alive = true;
-      (async () => {
-        try {
-          const res = await apiJson<{ accounts?: unknown[] }>('/api/banklink/list/');
-          if (alive) setLinkedCount(Array.isArray(res.accounts) ? res.accounts.length : 0);
-        } catch {
-          // leave last-known count
-        }
-      })();
-      return () => { alive = false; };
-    }, []),
-  );
+  useFocusEffect(useCallback(() => { void reload(); void reloadLinked(); }, [reload, reloadLinked]));
 
   // Pull-to-refresh: re-fetch balance + activity (e.g. after a bank-transfer
   // top-up the webhook just credited).
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    try { await reload(); } finally { setRefreshing(false); }
-  }, [reload]);
+    try { await Promise.all([reload(), reloadLinked()]); } finally { setRefreshing(false); }
+  }, [reload, reloadLinked]);
 
   // Copy ONLY the bare 10-digit account number (not the "· bank" suffix) and pop
   // a small local "copied" bubble above the chip for ~1.3s, per the v2 design —
   // not a global toast.
   const copyAccount = async () => {
     if (!accountNumber) return;
-    await Clipboard.setStringAsync(accountNumber);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1300);
+    try {
+      await Clipboard.setStringAsync(accountNumber);
+      setCopied(true);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(false), 1300);
+    } catch { notify('Could not copy', 'Please try again.'); }
   };
 
   // NUBAN account numbers display grouped 4-3-3 ("9012 345 678").
@@ -94,22 +78,17 @@ const Home = () => {
     <Screen pad={false} tab onRefresh={onRefresh} refreshing={refreshing}>
       {/* header */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 18, paddingTop: 4 }}>
-        <Pressable onPress={() => router.push('/me')}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Your profile" onPress={() => router.push('/me')}>
           <Avatar size={38} ring={c.brand} surface={c.surface} uri={avatar} />
         </Pressable>
         <Text style={{ flex: 1, fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>
           Hi, {firstName || 'there'}
         </Text>
         <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
-          <Pressable onPress={() => router.push('/support')}><ZIcon name="help" size={24} color={c.ink1} /></Pressable>
-          <Pressable onPress={() => router.push('/scan')}><ZIcon name="scan" size={24} color={c.ink1} /></Pressable>
-          <Pressable onPress={() => router.push('/notifications')}>
-            <View>
-              <ZIcon name="bell" size={24} color={c.ink1} />
-              <View style={{ position: 'absolute', top: -6, right: -7, minWidth: 16, height: 16, paddingHorizontal: 4, borderRadius: 9, backgroundColor: c.red, alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ color: '#fff', fontSize: 10, fontFamily: font.bold }}>24</Text>
-              </View>
-            </View>
+          <Pressable accessibilityRole="button" accessibilityLabel="Help and support" hitSlop={10} onPress={() => router.push('/support')}><ZIcon name="help" size={24} color={c.ink1} /></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Scan a QR code" hitSlop={10} onPress={() => router.push('/scan')}><ZIcon name="scan" size={24} color={c.ink1} /></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Notifications" hitSlop={10} onPress={() => router.push('/notifications')}>
+            <ZIcon name="bell" size={24} color={c.ink1} />
           </Pressable>
         </View>
       </View>
@@ -130,9 +109,9 @@ const Home = () => {
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 9 }}>
           <NText style={{ color: '#fff', fontSize: 32, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
-            {showBal ? money(balance) : '₦ ••••••'}
+            {!balanceLoaded ? (hydrated ? 'Unavailable' : 'Loading…') : showBal ? money(balance) : '₦ ••••••'}
           </NText>
-          <Pressable onPress={() => setShowBal(!showBal)}>
+          <Pressable accessibilityRole="button" accessibilityLabel={showBal ? 'Hide balance' : 'Show balance'} hitSlop={10} onPress={() => setShowBal(!showBal)}>
             <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
           </Pressable>
         </View>
@@ -181,7 +160,9 @@ const Home = () => {
         </View>
       </Hero>
 
-      {capabilityMessage ? (
+      {balanceError ? <Text accessibilityRole="alert" style={{ color: c.amber, marginHorizontal: 16, marginBottom: 12, fontFamily: font.medium }}>{balanceLoaded ? 'Showing your last known balance. ' : ''}{balanceError} Pull down to retry.</Text> : null}
+
+      {balanceLoaded && capabilityMessage ? (
         <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 20, marginHorizontal: 16, marginBottom: 16 }}>
           {capabilityMessage} {fundingMessage}
         </Text>
@@ -203,7 +184,7 @@ const Home = () => {
         <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
           {GRID.map((s) => (
             <View key={s.label} style={{ width: '25%', alignItems: 'center', marginBottom: 18 }}>
-              <ServiceTile icon={s.icon} label={s.label} badge={s.badge} onPress={() => (s.more ? setMore(true) : s.go && s.go())} />
+              <ServiceTile icon={s.icon} label={s.label} onPress={() => (s.more ? setMore(true) : s.go && s.go())} />
             </View>
           ))}
         </View>
@@ -235,24 +216,11 @@ const Home = () => {
       <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
         <SectionLabel action="See all" onAction={() => router.push('/history')}>Recent activity</SectionLabel>
         {txns.length === 0 ? (
-          <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>No transactions yet</Text>
+          <Text accessibilityRole={historyError ? 'alert' : undefined} style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>{!hydrated ? 'Loading transactions…' : historyError || 'No transactions yet'}</Text>
         ) : (
-          txns.slice(0, 4).map((x, i) => <TxnRow key={x.id} txn={x} last={i === Math.min(3, txns.length - 1)} />)
+          txns.slice(0, 4).map((x, i) => <TxnRow key={x.id} txn={x} last={i === Math.min(3, txns.length - 1)} onSelect={(txn) => router.push({ pathname: '/txndetail', params: transactionParams(txn) })} />)
         )}
       </View>
-
-      {/* daily interest strip — pinned as the last element on the screen per design */}
-      <Pressable onPress={() => router.push('/savings')} style={{ marginHorizontal: 16, marginTop: 16 }}>
-        <Card pad={0} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11, paddingHorizontal: 14, borderRadius: 16 }}>
-          <View style={{ width: 26, height: 26, borderRadius: 8, backgroundColor: 'rgba(0,181,29,.14)', alignItems: 'center', justifyContent: 'center' }}>
-            <ZIcon name="spark" size={16} color={c.lime} />
-          </View>
-          <Text style={{ flex: 1, fontSize: 12.5, color: c.ink2, fontFamily: font.regular }}>
-            Act now — start earning <Text style={{ color: c.brand, fontFamily: font.bold }}>daily interest</Text>
-          </Text>
-          <ZIcon name="right" size={16} color={c.ink3} />
-        </Card>
-      </Pressable>
 
       {/* more services sheet */}
       <Sheet open={more} onClose={() => setMore(false)} title="All services">

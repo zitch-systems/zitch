@@ -1,16 +1,19 @@
-import { useEffect } from "react";
-import { AppState, Platform, Text as RNText, TextInput as RNTextInput } from "react-native";
+import { useEffect, useState } from "react";
+import { AppState, Linking, Platform, Text as RNText, TextInput as RNTextInput } from "react-native";
 import { useFonts } from "expo-font";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
-import { router, SplashScreen, Stack } from "expo-router";
+import { router, SplashScreen, Stack, usePathname, useRootNavigationState } from "expo-router";
 import { ThemeProvider, appFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
 import { NotifyHost } from "@/components/design/Notify";
-import { enforceIdleTimeout, isSessionLocked, lockIfAwayTooLong, markBackgrounded, isExternalActivityActive } from "@/lib/session";
-import { getToken } from "@/lib/secureStore";
+import { enforceHardExpiry, enforceIdleTimeout, isSessionLocked, lockIfAwayTooLong, markBackgrounded, isExternalActivityActive } from "@/lib/session";
+import { getToken, getSessionGeneration } from "@/lib/secureStore";
+import { FONT_WAIT_MS, splashReady } from "@/lib/boot";
+import { reconcileCachedPin } from "@/lib/biometrics";
+import { rememberWhatsAppApprovalUrl } from "@/lib/pendingApproval";
 
 // Default every Text/TextInput to Manrope so nothing can fall back to the
 // platform font. An explicit fontFamily on a component still wins, since the
@@ -27,7 +30,7 @@ InputAny.defaultProps = InputAny.defaultProps || {};
 InputAny.defaultProps.style = [textBase, InputAny.defaultProps.style];
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
-SplashScreen.preventAutoHideAsync();
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 const RootStack = () => {
   const { theme, c } = useTheme();
@@ -48,12 +51,26 @@ const RootLayout = () => {
   // The whole app uses Manrope (see lib/theme `font`). Only these are loaded.
   const [fontsLoaded, error] = useFonts(appFonts);
 
+  const [fontWaitOver, setFontWaitOver] = useState(false);
+  const ready = splashReady(fontsLoaded, error, fontWaitOver);
+  const navigation = useRootNavigationState();
+  const pathname = usePathname();
+
   useEffect(() => {
-    if (error) throw error;
-    if (fontsLoaded) {
-      SplashScreen.hideAsync();
-    }
-  }, [fontsLoaded, error]);
+    const timer = setTimeout(() => setFontWaitOver(true), FONT_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  useEffect(() => {
+    if (ready) SplashScreen.hideAsync().catch(() => {});
+  }, [ready]);
+  useEffect(() => {
+    reconcileCachedPin().catch(() => {});
+    Linking.getInitialURL().then(rememberWhatsAppApprovalUrl).catch(() => {});
+    const subscription = Linking.addEventListener('url', ({ url }) => {
+      rememberWhatsAppApprovalUrl(url).catch(() => {});
+    });
+    return () => subscription.remove();
+  }, []);
 
   // Inactivity timeout: lock a session idle past the limit and bounce to the
   // sign-in / unlock screen. Checked on launch, whenever the app returns to the
@@ -61,13 +78,22 @@ const RootLayout = () => {
   // stays open and idle. Active use keeps the stamp fresh via authenticated API
   // calls, so the timer only trips after a real stretch of inactivity.
   useEffect(() => {
+    if (!ready || !navigation?.key) return;
+    let checking = false;
     // App lock: re-opening the app (or returning from background) requires a
     // biometric/password unlock — not just after the idle timeout. The token
     // survives the lock so unlock is instant; a full sign-out clears it.
     const check = async () => {
-      await lockIfAwayTooLong(); // re-lock only if backgrounded >= 1 min
-      await enforceIdleTimeout();
-      if (await isSessionLocked()) router.replace("/signin");
+      if (checking || isExternalActivityActive()) return;
+      checking = true;
+      try {
+        const expired = await enforceHardExpiry();
+        await lockIfAwayTooLong();
+        await enforceIdleTimeout();
+        if ((expired || await isSessionLocked()) && pathname !== '/signin') router.replace('/signin');
+      } catch {
+        if (pathname !== '/signin') router.replace('/signin');
+      } finally { checking = false; }
     };
     check();
     const sub = AppState.addEventListener("change", (s) => {
@@ -76,7 +102,7 @@ const RootLayout = () => {
         // was away at least a minute. Skip while an in-app picker/camera is up,
         // so uploading a photo never bounces to the unlock screen.
         if (isExternalActivityActive()) return;
-        getToken().then((t) => { if (t) markBackgrounded(); });
+        getToken().then(async (t) => { if (t) await markBackgrounded(); }).catch(() => {});
       } else if (s === "active") {
         check();
       }
@@ -86,9 +112,9 @@ const RootLayout = () => {
       sub.remove();
       clearInterval(timer);
     };
-  }, []);
+  }, [ready, navigation?.key, pathname]);
 
-  if (!fontsLoaded && !error) {
+  if (!ready) {
     return null;
   }
 
@@ -101,7 +127,7 @@ const RootLayout = () => {
               screen calling reload() updates the same balance Home/Wallet render —
               previously the provider only wrapped the tabs, so service screens got
               a no-op default context and the balance never refreshed. */}
-          <WalletProvider>
+          <WalletProvider key={getSessionGeneration()}>
             <RootStack />
             {/* Branded success/error popups, overlaid above all routes. */}
             <NotifyHost />

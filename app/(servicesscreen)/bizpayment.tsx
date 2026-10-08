@@ -20,7 +20,7 @@ const BizPayment = () => {
         </View>
         <Text style={{ fontSize: 17, fontFamily: font.bold, color: c.ink1, marginTop: 14 }}>Secure payment links are coming soon</Text>
         <Text style={{ fontSize: 13, color: c.ink3, marginTop: 8, textAlign: 'center', lineHeight: 20, fontFamily: font.regular }}>
-          We’ll enable this after every request can be signed, tied to your account and safely expire.
+          Payment links are not available yet. To receive a bank transfer, use the active funding account shown in Add money.
         </Text>
       </Card>
       <View style={{ height: 18 }} />

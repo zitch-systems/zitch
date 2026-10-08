@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, Pressable, ScrollView, Alert } from 'react-native';
 import { router } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
@@ -95,6 +95,7 @@ export const ConnectedAccounts = () => {
   const [target, setTarget] = useState<LinkedAccount | null>(null);
   const [amount, setAmount] = useState('');
   const [busy, setBusy] = useState(false);
+  const fundingInFlight = useRef(false);
 
   const closeFunding = () => { setFundingOpen(false); setTarget(null); setAmount(''); };
 
@@ -127,7 +128,7 @@ export const ConnectedAccounts = () => {
 
   // Fund Zitch FROM the bank (Mono DirectPay) — wallet credited via webhook.
   const fundIn = async () => {
-    if (!target) return;
+    if (!target || fundingInFlight.current) return;
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt < 100) { notify('Error', 'Minimum amount is ₦100'); return; }
     const scope = 'banklink-fund';
@@ -137,6 +138,7 @@ export const ConnectedAccounts = () => {
     const fingerprint = [String(target.id), amt.toFixed(2)].join('|');
     let requestKey = '';
     let deliveryStarted = false;
+    fundingInFlight.current = true;
     setBusy(true);
     try {
       requestKey = await acquireSpendAttempt(scope, fingerprint);
@@ -190,7 +192,9 @@ export const ConnectedAccounts = () => {
         notify('Test mode', 'Bank funding is in test mode — no real debit was made.');
         return;
       }
-      if (!r.authorization_url || !/^https?:/.test(r.authorization_url)) {
+      let authorizationUrl: URL | null = null;
+      try { authorizationUrl = new URL(r.authorization_url || ''); } catch { /* unusable URL */ }
+      if (!authorizationUrl || authorizationUrl.protocol !== 'https:' || authorizationUrl.username || authorizationUrl.password) {
         // `success` here only means initialization succeeded; without a usable
         // authorization URL it is not evidence that the bank debit failed.
         notify('Not confirmed', 'Your bank funding request was started, but its authorization link was not confirmed. Retry to safely resume the same attempt.');
@@ -201,7 +205,7 @@ export const ConnectedAccounts = () => {
       // not a bank-confirmed wallet credit. A later identical action first
       // replays this key and reports the earlier outcome accurately.
       closeFunding();
-      await WebBrowser.openBrowserAsync(r.authorization_url);
+      await WebBrowser.openBrowserAsync(authorizationUrl.toString());
       notify(
         recovered ? 'Continue earlier authorization' : 'Authorize in your bank',
         'Finish there — your Zitch wallet is credited only after your bank confirms.',
@@ -214,7 +218,7 @@ export const ConnectedAccounts = () => {
           : 'Could not safely prepare this request. Please try again.',
       );
     }
-    finally { setBusy(false); }
+    finally { fundingInFlight.current = false; setBusy(false); }
   };
 
   return (

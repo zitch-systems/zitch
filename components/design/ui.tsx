@@ -620,6 +620,11 @@ export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = fal
   // Fire the biometric prompt at most once per mount (each time the sheet opens),
   // so the OS sheet doesn't reappear after a manual cancel or a wrong-PIN retry.
   const autoTried = React.useRef(false);
+  const mounted = React.useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   // Both the auto prompt and the visible biometric button call the same async
   // function. A fast tap while the automatic OS sheet is opening used to start a
   // second native prompt; keep one scan and one completion in flight per pad.
@@ -674,7 +679,7 @@ export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = fal
     setPin('');
   }, [length]);
   const handleBiometric = React.useCallback(async () => {
-    if (busyRef.current || bioInFlight.current || bioCompleted.current) return;
+    if (!mounted.current || busyRef.current || bioInFlight.current || bioCompleted.current || pinCompleted.current) return;
     bioInFlight.current = true;
     try {
       // The transaction PIN is itself protected by SecureStore's authenticated
@@ -682,8 +687,9 @@ export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = fal
       // separate LocalAuthentication scan first caused the double prompt users
       // reported and added no protection to the already-gated secret.
       const storedPin = await getTransactionPin();
-      if (storedPin) {
+      if (storedPin && mounted.current && !busyRef.current && !pinCompleted.current) {
         bioCompleted.current = true;
+        pinCompleted.current = true;
         onCompleteRef.current && onCompleteRef.current(storedPin, true);
       }
     } catch {
@@ -722,7 +728,7 @@ export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = fal
     return () => { alive = false; };
   }, [autoBiometric, handleBiometric]);
   const press = (d: string) => {
-    if (busy || pinCompleted.current) return; // ignore input while a submission is in flight (prevents double-charge)
+    if (busy || bioInFlight.current || bioCompleted.current || pinCompleted.current) return; // ignore input while a submission is in flight (prevents double-charge)
     if (pin.length < length) {
       const np = pin + d;
       setPin(np);
@@ -737,7 +743,7 @@ export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = fal
     }
   };
   const del = () => {
-    if (busy) return;
+    if (busy || bioInFlight.current || bioCompleted.current) return;
     if (completionTimer.current) {
       clearTimeout(completionTimer.current);
       completionTimer.current = null;
@@ -1239,7 +1245,7 @@ export const TxnRow = React.memo((
   const tint = inflow ? 'rgba(0,181,29,.12)' : (ICON_COLORS[txn.icon] ? iconTint(ICON_COLORS[txn.icon], theme === 'dark') : c.surface3);
   const Wrap: any = handlePress ? Pressable : View;
   return (
-    <Wrap onPress={handlePress} style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
+    <Wrap onPress={handlePress} accessibilityRole={handlePress ? 'button' : undefined} accessibilityLabel={handlePress ? `${txn.type}, ${money(Math.abs(txn.amount))}, ${txn.status}, ${txn.detail}` : undefined} style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
       {/* A disc, not the rounded square used for service TILES: a tile is a
           thing you tap to start something, a transaction is a thing that already
           happened, and the two should not read as the same affordance. */}

@@ -50,4 +50,16 @@ describe('mapTxn', () => {
     expect(t.reviewKind).toBe('reversal');
     expect(t.statusMessage).toContain('Do not retry');
   });
+  it('preserves ISO timezone offsets and seconds from the server', () => {
+    const instant = '2026-10-01T00:15:42+01:00';
+    expect(mapTxn({ date: instant }, 0).ts).toBe(Date.parse(instant));
+    expect(mapTxn({ date: '2026-10-01T00:15:42.123Z' }, 0).ts).toBe(Date.parse('2026-10-01T00:15:42.123Z'));
+  });
+
+  it('rejects invalid date components rather than moving a row into another month', () => {
+    expect(mapTxn({ date: '2026-02-31 12:00' }, 0).ts).toBeUndefined();
+    expect(mapTxn({ date: '2026-02-01 25:00' }, 0).ts).toBeUndefined();
+    expect(mapTxn({ date: '2026-02-01 12:30' }, 0).ts).toBe(new Date(2026, 1, 1, 12, 30).getTime());
+  });
+
 });

@@ -17,13 +17,27 @@ const mockApiPost = jest.fn();
 const mockRouterPush = jest.fn();
 const mockReloadWallet = jest.fn();
 const originalFetch = global.fetch;
+let mockSearchParams: Record<string, string> = {};
+
+// These tests exercise recipient binding, not native scrolling. RN's default
+// ScrollView Jest mock imports the full native/Animated implementation lazily
+// when beneficiaries first render. Cold CI workers can spend the entire test
+// deadline transforming that unrelated graph. Keep this native boundary light
+// while preserving its children, props and recipient press handlers.
+jest.mock('react-native/Libraries/Components/ScrollView/ScrollView', () => {
+  const ReactActual = jest.requireActual<typeof import('react')>('react');
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+  return function MockScrollView({ children, ...props }: { children?: ReactNode }) {
+    return ReactActual.createElement(View, props, children);
+  };
+});
 
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: (...args: unknown[]) => mockRouterPush(...args), replace: jest.fn() },
-  useLocalSearchParams: () => ({}),
+  useLocalSearchParams: () => mockSearchParams,
 }));
 jest.mock('@/lib/secureStore', () => ({ getToken: (...args: unknown[]) => mockGetToken(...args) }));
-jest.mock('@/lib/api', () => ({ apiPost: (...args: unknown[]) => mockApiPost(...args) }));
+jest.mock('@/lib/api', () => ({ publicPost: (path: string, body: unknown) => global.fetch(path, { body: JSON.stringify(body) }), apiPost: (...args: unknown[]) => mockApiPost(...args) }));
 jest.mock('@/lib/pendingSpend', () => ({
   acquireSpendAttempt: (...args: unknown[]) => mockAcquireSpendAttempt(...args),
   clearSpendAttempt: (...args: unknown[]) => mockClearSpendAttempt(...args),
@@ -45,7 +59,7 @@ jest.mock('@/lib/biometrics', () => ({
   authenticate: (...args: unknown[]) => mockAuthenticate(...args),
 }));
 jest.mock('@/lib/wallet', () => ({
-  useWallet: () => ({ balance: 200000, reload: (...args: unknown[]) => mockReloadWallet(...args) }),
+  useWallet: () => ({ balance: 200000, billPaymentsAvailable: true, transfersAvailable: true, reload: (...args: unknown[]) => mockReloadWallet(...args) }),
 }));
 jest.mock('@/components/design/Notify', () => ({ notify: (...args: unknown[]) => mockNotify(...args) }));
 jest.mock('@/components/design/ZIcon', () => () => null);
@@ -164,6 +178,7 @@ const loadBankCatalogue = () => {
 
 describe('SendMoney recipient response binding', () => {
   beforeEach(() => {
+    mockSearchParams = {};
     mockResolveLegacy.mockReset();
     mockResolveBank.mockReset();
     mockNotify.mockReset();
@@ -183,6 +198,29 @@ describe('SendMoney recipient response binding', () => {
   afterEach(() => {
     jest.useRealTimers();
     global.fetch = originalFetch;
+  });
+
+  it('keeps a scanned 11-digit phone in Zitch mode without truncating to a bank account', async () => {
+    mockSearchParams = { identifier: '08012345678', mode: 'zitch' };
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<SendMoney />); });
+    expect(control(tree, 'Zitch tag or phone').props.value).toBe('08012345678');
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Account number' })).toHaveLength(0);
+    expect(control(tree, 'Continue').props.disabled).toBe(true);
+    act(() => tree.unmount());
+  });
+
+  it('requires saved Zitch aliases to resolve to an immutable recipient before a send', async () => {
+    loadBankCatalogue();
+    mockApiPost.mockResolvedValue({ json: async () => ({ beneficiaries: [{ id: 1, name: 'Saved Recipient', account_number: '08012345678', bank_name: 'Zitch', initials: 'SR' }] }) });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<SendMoney />); });
+    await act(async () => { pressText(tree, 'Saved'); });
+    await act(async () => { control(tree, 'Enter amount').props.onChangeText('1000'); });
+    expect(control(tree, 'Zitch tag or phone').props.value).toBe('08012345678');
+    expect(control(tree, 'Continue').props.disabled).toBe(true);
+    expect(control(tree, 'Confirm recipient')).toBeTruthy();
+    act(() => tree.unmount());
   });
 
   it('does not apply a late recipient response to an edited identifier', async () => {

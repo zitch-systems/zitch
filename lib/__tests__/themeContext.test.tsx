@@ -96,3 +96,16 @@ it('does publish a new value when the theme actually changes', async () => {
 
   await renderer.act(async () => { tree.unmount(); });
 });
+
+
+it('does not let a delayed stored preference overwrite a theme just chosen by the user', async () => {
+  const storage = require('@react-native-async-storage/async-storage');
+  let finish!: (theme: string) => void;
+  storage.getItem.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  const seen: any[] = [];
+  const tree = await renderProvider(makeProbe(seen));
+  await renderer.act(async () => { seen[seen.length - 1].setTheme('dark'); });
+  await renderer.act(async () => { finish('light'); });
+  expect(seen[seen.length - 1].theme).toBe('dark');
+  await renderer.act(async () => { tree.unmount(); });
+});

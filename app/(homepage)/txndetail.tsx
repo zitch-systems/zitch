@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Share } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import * as Clipboard from 'expo-clipboard';
+import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Btn, money } from '@/components/design/ui';
 import { Monogram } from '@/components/design/flowkit';
@@ -28,6 +30,12 @@ type TransactionStatusRow = {
   date?: string;
   reference?: string;
   direction?: string;
+  token?: string;
+  meter?: string;
+  meter_type?: string;
+  customer_name?: string;
+  customer_address?: string;
+  electricity_units?: string;
 };
 
 type TransactionStatusResult = {
@@ -41,7 +49,7 @@ const Row2 = ({ k, v }: { k: string; v: string }) => {
   return (
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.line }}>
       <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular }}>{k}</Text>
-      <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1, maxWidth: '62%', textAlign: 'right' }}>{v}</Text>
+      <Text selectable style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1, maxWidth: '62%', textAlign: 'right' }}>{v}</Text>
     </View>
   );
 };
@@ -82,6 +90,7 @@ const TxnDetail = () => {
   const clearSettledAttempt = useCallback(async (transaction: TransactionStatusRow) => {
     const returnedReference = String(transaction.reference || '').trim();
     if (!referenceParam || returnedReference !== referenceParam
+      || transaction.under_review === true
       || txnState(transaction.transaction_status) === 'pending'
       || !TRANSFER_SPEND_SCOPES.has(spendAttempt.scope)
       || !spendAttempt.scope || !spendAttempt.fingerprint || !spendAttempt.key) return;
@@ -97,12 +106,14 @@ const TxnDetail = () => {
     if (!transaction) return null;
     if (String(transaction.reference || '').trim() !== referenceParam) return null;
 
-    const nextState = txnState(transaction.transaction_status);
-    await clearSettledAttempt(transaction);
+    const nextState = txnState(transaction.under_review ? 'Under review' : transaction.transaction_status);
+    if (generation < appliedGeneration.current) return displayedState.current;
     // A terminal outcome is monotonic in the customer UI. An older pending
     // response must never overwrite a newer success/failure response.
-    if (nextState !== 'pending'
-      || (displayedState.current === 'pending' && generation >= appliedGeneration.current)) {
+    if (generation >= appliedGeneration.current
+      && (nextState !== 'pending' || displayedState.current === 'pending' || transaction.under_review === true)) {
+      await clearSettledAttempt(transaction);
+      if (!isActive() || currentReference.current !== referenceParam || generation < appliedGeneration.current) return null;
       displayedState.current = nextState;
       appliedGeneration.current = Math.max(appliedGeneration.current, generation);
       setLiveTxn(transaction);
@@ -174,6 +185,13 @@ const TxnDetail = () => {
     : String(liveTxn?.transaction_status ?? p.status ?? '').trim();
   const { state, label: status, icon: statusIcon } = transactionStatusPresentation(rawStatus);
   const statusColor = state === 'failed' ? c.red : state === 'pending' ? c.amber : c.lime;
+  const electricityToken = state === 'success' && !underReview ? String(liveTxn?.token || '').trim() : '';
+  const electricityRows = electricityToken ? [
+    ['Electricity token', electricityToken],
+    ['Meter', liveTxn?.meter], ['Meter type', liveTxn?.meter_type],
+    ['Customer', liveTxn?.customer_name], ['Address', liveTxn?.customer_address],
+    ['Units', liveTxn?.electricity_units],
+  ].filter((row) => row[1]) : [];
 
   return (
     <Screen>
@@ -195,6 +213,7 @@ const TxnDetail = () => {
         {detail ? <Row2 k="Date" v={detail} /> : null}
         <Row2 k="Reference" v={reference || '—'} />
         <Row2 k="Channel" v="Zitch Wallet" />
+        {electricityRows.map(([label, value]) => <Row2 key={label} k={String(label)} v={String(value)} />)}
       </View>
 
       {underReview ? (
@@ -210,6 +229,9 @@ const TxnDetail = () => {
       ) : null}
 
       <View style={{ marginTop: 16 }}>
+        {electricityToken ? <View style={{ marginBottom: 10 }}><Btn label="Copy electricity token" icon="copy" onPress={() => {
+          void Clipboard.setStringAsync(electricityToken).then(() => notify('Copied', 'Electricity token copied.')).catch(() => notify('Could not copy', 'Please try again.'));
+        }} /></View> : null}
         {state === 'pending' && referenceParam ? (
           <View style={{ marginBottom: 10 }}>
             <Btn
@@ -242,6 +264,7 @@ const TxnDetail = () => {
                 `Status: ${status}`,
                 detail ? `Date: ${detail}` : '',
                 `Reference: ${reference || '—'}`,
+                ...electricityRows.map(([label, value]) => `${label}: ${value}`),
                 '',
                 'Sent with Zitch',
               ].filter(Boolean).join('\n'),

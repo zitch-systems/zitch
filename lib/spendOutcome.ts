@@ -42,10 +42,14 @@ export function classifySpendResponse(
       ? status >= 200 && status < 300
       : (typeof response?._httpOk === 'boolean' ? response._httpOk : undefined));
   const ambiguousStatus = status === 408
+    || status === 409
     || status === 425
     || status === 429
     || (typeof status === 'number' && status >= 500);
   if (response?.pending === true) return 'pending';
+  // Quote changes are rejected before execution. Other conflicts can represent
+  // an in-flight duplicate and must keep their durable retry marker.
+  if (status === 409 && response?.code === 'price_changed') return 'failed';
   if ((status === undefined || status === 429)
       && typeof response?.code === 'string'
       && PRE_EXECUTION_FAILURE_CODES.has(response.code)) return 'failed';

@@ -3,12 +3,14 @@ import renderer, { act } from 'react-test-renderer';
 import { WalletProvider, useWallet } from '@/lib/wallet';
 
 const mockApiPost = jest.fn();
+let mockGeneration = 1;
 jest.mock('@/lib/api', () => ({
   apiPost: (...args: unknown[]) => mockApiPost(...args),
   apiJson: jest.fn().mockResolvedValue({ accounts: [] }),
 }));
 jest.mock('@/lib/secureStore', () => ({
   getToken: jest.fn().mockResolvedValue('test-token'),
+  getSessionGeneration: () => mockGeneration,
   saveDisplayName: jest.fn().mockResolvedValue(undefined),
   saveSpendAccountNamespace: jest.fn().mockResolvedValue(undefined),
 }));
@@ -18,7 +20,7 @@ const Capture = () => { current = useWallet(); return null; };
 
 describe('wallet context purchase balance', () => {
   let tree: renderer.ReactTestRenderer;
-  beforeEach(() => { jest.useFakeTimers(); mockApiPost.mockReset(); });
+  beforeEach(() => { jest.useFakeTimers(); mockApiPost.mockReset(); mockGeneration = 1; jest.clearAllMocks(); });
   afterEach(() => { act(() => { tree?.unmount(); }); jest.useRealTimers(); });
 
   it.each([true, false])('publishes canonical VAS funds to existing bill consumers, bill gate: %s', async (enabled) => {
@@ -59,4 +61,45 @@ describe('wallet context purchase balance', () => {
     await act(async () => { await current.reload(); });
     expect(current.accountNumber).toBe('');
   });
+  it('distinguishes an offline first load from an empty wallet and keeps payments gated', async () => {
+    mockApiPost.mockRejectedValue(new Error('offline'));
+    act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
+    await act(async () => { await current.reload(); });
+    expect(current.hydrated).toBe(true);
+    expect(current.balanceLoaded).toBe(false);
+    expect(current.balanceError).toContain('Could not refresh');
+    expect(current.historyError).toContain('Could not refresh');
+    expect(current.billPaymentsAvailable).toBe(false);
+    expect(current.transfersAvailable).toBe(false);
+  });
+
+  it('keeps the last known balance with an explicit stale-data error after refresh fails', async () => {
+    mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
+      ? { success: true, provider: 'partnership', wallet: '2500' }
+      : { status: true, all_site_transactions: [] } }));
+    act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
+    await act(async () => { await current.reload(); });
+    mockApiPost.mockRejectedValue(new Error('offline'));
+    await act(async () => { await current.reload(); });
+    expect(current.balance).toBe(2500);
+    expect(current.balanceLoaded).toBe(true);
+    expect(current.balanceError).toContain('Could not refresh');
+  });
+
+  it('discards an old account response before it can rewrite identity or spending namespace', async () => {
+    let finish!: (value: unknown) => void;
+    mockApiPost.mockImplementation(async (path: string) => ({ json: () => path === '/api/wallet_balance/'
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ status: true, all_site_transactions: [] }) }));
+    act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
+    let load!: Promise<void>;
+    await act(async () => { load = current.reload(); await Promise.resolve(); });
+    mockGeneration += 1;
+    await act(async () => { finish({ success: true, provider: 'partnership', account_namespace: 'old-user', wallet: '9999', user_first_name: 'Old User' }); await load; });
+    expect(current.balanceLoaded).toBe(false);
+    expect(current.firstName).toBe('');
+    expect(require('@/lib/secureStore').saveSpendAccountNamespace).not.toHaveBeenCalled();
+    expect(require('@/lib/secureStore').saveDisplayName).not.toHaveBeenCalled();
+  });
+
 });

@@ -25,8 +25,8 @@ type ActiveLoan = {
 const Loans = () => {
   const { c } = useTheme();
   const { reload: reloadWallet } = useWallet();
-  const [limit, setLimit] = useState(500000);
-  const [available, setAvailable] = useState(500000);
+  const [limit, setLimit] = useState(0);
+  const [available, setAvailable] = useState(0);
   const [active, setActive] = useState<ActiveLoan | null>(null);
   const [pinOpen, setPinOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -36,12 +36,17 @@ const Loans = () => {
   const [repaymentAvailable, setRepaymentAvailable] = useState(false);
   const [unavailableMessage, setUnavailableMessage] = useState('Loans are not available right now.');
   const repayInFlight = useRef(false);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
-    const t = await getToken();
-    if (!t) return;
     try {
+      const t = await getToken();
+      if (!t) return;
       const res = await loansService.getStatus();
+      if (res?.success !== true) throw new Error('Loan status unavailable');
+      setLoaded(true);
+      setLoadError('');
       setProductAvailable(res?.product_available === true);
       setRepaymentAvailable(res?.repayment_available === true);
       setUnavailableMessage(res?.unavailable_message || 'Loans are not available right now.');
@@ -49,7 +54,7 @@ const Loans = () => {
       if (res.available != null) setAvailable(Number(res.available));
       setActive(res.active_loan ?? null);
     } catch {
-      // keep last-known state
+      setLoadError('Could not load your loan details. Please try again.');
     }
   }, []);
 
@@ -151,6 +156,7 @@ const Loans = () => {
       )}
 
       <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
+        {loadError ? <Text accessibilityRole="alert" style={{ color: c.ink3, marginBottom: 12 }}>{loadError}</Text> : null}
         <SectionLabel>Active loans</SectionLabel>
         {active ? (
           <View style={{ borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 16 }}>
@@ -175,11 +181,11 @@ const Loans = () => {
             </View>
           </View>
         ) : (
-          <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>No active loans</Text>
+          <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>{!loaded ? (loadError ? 'Loan details unavailable' : 'Loading loan details…') : 'No active loans'}</Text>
         )}
       </View>
 
-      <Sheet open={pinOpen} onClose={() => !busy && setPinOpen(false)} title="Enter your PIN">
+      <Sheet open={pinOpen} onClose={() => !busy && setPinOpen(false)} title="Enter your PIN" protectScreen>
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Processing…' : `Repay ${active ? money(Number(active.outstanding)) : ''} from your wallet`}
         </Text>

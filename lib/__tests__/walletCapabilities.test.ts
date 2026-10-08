@@ -3,6 +3,11 @@ import { walletBalances, walletCapabilities, walletCapabilityMessage } from '@/l
 jest.mock('@/lib/api', () => ({ apiJson: jest.fn() }));
 
 describe('wallet capability display', () => {
+  it('fails closed before a wallet is hydrated and for malformed feature booleans', () => {
+    for (const value of [undefined, null, {}]) expect(walletCapabilities(value)).toEqual({ billPaymentsAvailable: false, transfersAvailable: false });
+    expect(walletCapabilities({ provider: 'wema_vas', bill_payments_available: 'true', transfers_available: 1 } as any)).toEqual({ billPaymentsAvailable: false, transfersAvailable: false });
+  });
+
   it('uses separate bill and transfer capabilities over the generic spending flag', () => {
     const capabilities = walletCapabilities({
       provider: 'wema_vas', spending_available: false,

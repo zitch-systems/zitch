@@ -177,4 +177,14 @@ describe('card provider capabilities', () => {
       'info',
     );
   });
+  it('does not offer card creation while the existing-card lookup is unavailable', async () => {
+    mockList.mockRejectedValueOnce(new Error('offline'));
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Cards />); });
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Create a virtual card' })).toHaveLength(0);
+    expect(tree.root.findByProps({ accessibilityLabel: 'Retry loading cards' })).toBeTruthy();
+    expect(JSON.stringify(tree.toJSON())).toContain('Could not load your cards');
+    act(() => tree.unmount());
+  });
+
 });

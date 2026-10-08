@@ -3,8 +3,9 @@ import { View, Text, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router, Link } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { storeSession, getToken } from '@/lib/secureStore';
-import { unlockSession } from '@/lib/session';
+import { storeSession, getToken, getRememberedIdentifier, rememberIdentifier } from '@/lib/secureStore';
+import { enforceHardExpiry, unlockSession } from '@/lib/session';
+import { pendingWhatsAppApproval } from '@/lib/pendingApproval';
 import { publicPost } from '@/lib/api';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
@@ -26,26 +27,41 @@ const Signin = () => {
   // supports them, and a previous session token is still on the device.
   useEffect(() => {
     (async () => {
+      await enforceHardExpiry();
+      const remembered = await getRememberedIdentifier();
+      if (remembered) setForm((current) => ({ ...current, email: current.email || remembered }));
       const [enabled, available, token] = await Promise.all([
         isBiometricEnabled(),
         isBiometricAvailable(),
         getToken(),
       ]);
       setBioReady(enabled && available && !!token);
-    })();
+    })().catch(() => setBioReady(false));
   }, []);
 
+  const enterAccount = async () => {
+    await unlockSession();
+    const token = await pendingWhatsAppApproval();
+    router.replace(token ? { pathname: '/waapprove', params: { token } } : '/home');
+  };
+
   const handleBiometricSignin = async () => {
+    if (signinInFlight.current) return;
     if (!bioReady) {
       notify('Biometric sign-in', 'Enable biometrics from Me → Face ID / Fingerprint after signing in with your password.');
       return;
     }
-    const ok = await authenticate('Sign in to Zitch');
-    if (ok) {
-      // Clear any idle lock and refresh activity before entering the app.
-      await unlockSession();
-      router.replace('/home');
-    }
+    signinInFlight.current = true;
+    try {
+      if (await enforceHardExpiry() || !(await getToken())) {
+        setBioReady(false);
+        notify('Sign in again', 'Enter your password to start a new session.');
+        return;
+      }
+      if (await authenticate('Sign in to Zitch')) await enterAccount();
+    } catch {
+      notify('Sign in again', 'Please sign in with your password.');
+    } finally { signinInFlight.current = false; }
   };
 
   // Auto-prompt the OS biometric sheet as soon as the screen opens, when a
@@ -86,8 +102,8 @@ const Signin = () => {
         await storeSession(result);
         await AsyncStorage.setItem('userID', form.email);
         await AsyncStorage.setItem('sessionExpiration', Date.now().toString());
-        await unlockSession(); // clear any idle lock + stamp activity
-        router.replace('/home');
+        await rememberIdentifier(form.email);
+        await enterAccount();
       } else {
         notify('Error', result.message || 'Incorrect Details');
       }
@@ -123,6 +139,9 @@ const Signin = () => {
           value={form.email}
           onChangeText={(e) => setForm({ ...form, email: e })}
           keyboardType="email-address"
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="username"
           placeholder="Email or phone number"
           prefix={<ZIcon name="user" size={18} color={c.ink3} />}
         />
@@ -131,6 +150,8 @@ const Signin = () => {
           value={form.password}
           onChangeText={(e) => setForm({ ...form, password: e })}
           secureTextEntry
+          autoComplete="current-password"
+          textContentType="password"
           placeholder="Enter password"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />

@@ -3,7 +3,7 @@
 # This workflow intentionally cannot run without the encrypted upload-keystore
 # secrets. The preview APK workflow is debug-key signed and must never be used
 # for Play Console uploads.
-name: Android production AAB
+name: Android production APK and AAB
 
 on:
   workflow_dispatch: {}
@@ -18,9 +18,10 @@ permissions:
 
 jobs:
   build:
-    name: Build signed production AAB
+    name: Build signed production APK and AAB
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: production
     env:
       EXPO_PUBLIC_API_URL: "https://api.zitch.ng"
@@ -86,16 +87,33 @@ jobs:
       - run: npm ci
       - name: Expo prebuild
         run: npx expo prebuild --platform android --clean
-      - name: Build production bundle
+      - name: Build production APK and bundle
         working-directory: android
-        run: ./gradlew bundleRelease --no-daemon -PZITCH_UPLOAD_STORE_FILE="$ZITCH_UPLOAD_STORE_FILE" -PZITCH_UPLOAD_STORE_PASSWORD="$ZITCH_UPLOAD_STORE_PASSWORD" -PZITCH_UPLOAD_KEY_ALIAS="$ZITCH_UPLOAD_KEY_ALIAS" -PZITCH_UPLOAD_KEY_PASSWORD="$ZITCH_UPLOAD_KEY_PASSWORD" -PZITCH_REQUIRE_UPLOAD_KEY=true
+        run: |
+          export ORG_GRADLE_PROJECT_ZITCH_UPLOAD_STORE_FILE="$ZITCH_UPLOAD_STORE_FILE"
+          export ORG_GRADLE_PROJECT_ZITCH_UPLOAD_STORE_PASSWORD="$ZITCH_UPLOAD_STORE_PASSWORD"
+          export ORG_GRADLE_PROJECT_ZITCH_UPLOAD_KEY_ALIAS="$ZITCH_UPLOAD_KEY_ALIAS"
+          export ORG_GRADLE_PROJECT_ZITCH_UPLOAD_KEY_PASSWORD="$ZITCH_UPLOAD_KEY_PASSWORD"
+          export ORG_GRADLE_PROJECT_ZITCH_REQUIRE_UPLOAD_KEY=true
+          ./gradlew assembleRelease bundleRelease --no-daemon
       - name: Verify AAB signer matches the configured upload key
         run: scripts/verify-android-signing.sh android/app/build/outputs/bundle/release/app-release.aab "$ZITCH_UPLOAD_STORE_FILE"
+      - name: Verify APK signer, package and native security policy
+        run: |
+          python3 scripts/verify-android-apk.py \
+            --apk android/app/build/outputs/apk/release/app-release.apk \
+            --keystore "$ZITCH_UPLOAD_STORE_FILE" --signing upload \
+            --revision "$RELEASE_SHA" --metadata "$RUNNER_TEMP/zitch-apk-build-info.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: zitch-production-aab
+          name: zitch-production-android
           path: |
             android/app/build/outputs/bundle/release/app-release.aab
+            android/app/build/outputs/apk/release/app-release.apk
             ${{ runner.temp }}/zitch-release-sha.txt
+            ${{ runner.temp }}/zitch-apk-build-info.json
           if-no-files-found: error
           retention-days: 14
+      - name: Remove temporary upload key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/zitch-upload.keystore"

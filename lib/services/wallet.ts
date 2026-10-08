@@ -57,10 +57,11 @@ export const walletCapabilities = (value: CapabilityPayload | null | undefined):
   }
   // Older Partnership responses expose one spending flag. VAS requires an
   // explicit capability so a partial response cannot promise usable bill funds.
-  const legacyAvailable = value?.provider !== 'wema_vas' && value?.spending_available !== false;
+  const legacyAvailable = (value?.provider === 'partnership' && value.spending_available !== false)
+    || (value?.provider == null && value?.spending_available === true);
   return {
-    billPaymentsAvailable: value?.bill_payments_available ?? legacyAvailable,
-    transfersAvailable: value?.transfers_available ?? legacyAvailable,
+    billPaymentsAvailable: value?.bill_payments_available == null ? legacyAvailable : value.bill_payments_available === true,
+    transfersAvailable: value?.transfers_available == null ? legacyAvailable : value.transfers_available === true,
   };
 };
 

@@ -9,7 +9,7 @@ const SYS_FONT = Platform.select({ ios: 'System', android: 'sans-serif', default
 const nairaStyle: TextStyle = { fontFamily: SYS_FONT as any };
 
 export const Naira = ({ style, ...rest }: TextProps) => (
-  <Text {...rest} style={[nairaStyle, style]}>₦</Text>
+  <Text {...rest} style={[style, nairaStyle]}>₦</Text>
 );
 
 // Drop-in Text replacement: splits a string child on the ₦ glyph and renders
@@ -22,7 +22,7 @@ const splitNaira = (s: string, baseStyle?: StyleProp<TextStyle>) => {
   if (parts.length === 1) return s;
   const out: React.ReactNode[] = [];
   parts.forEach((p, i) => {
-    if (i > 0) out.push(<Text key={`n-${i}`} style={[nairaStyle, baseStyle]}>₦</Text>);
+    if (i > 0) out.push(<Text key={`n-${i}`} style={[baseStyle, nairaStyle]}>₦</Text>);
     if (p) out.push(p);
   });
   return out;

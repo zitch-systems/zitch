@@ -89,7 +89,7 @@ export async function pendingWhatsAppApproval(): Promise<string> {
     const stored = JSON.parse(raw) as Partial<StoredApproval>;
     const token = cleanToken(stored.token);
     const savedAt = Number(stored.savedAt);
-    if (!token || !Number.isFinite(savedAt) || Date.now() - savedAt > MAX_AGE_MS) {
+    if (!token || !Number.isFinite(savedAt) || (savedAt > Date.now() || Date.now() - savedAt > MAX_AGE_MS)) {
       await remove();
       return '';
     }

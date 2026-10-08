@@ -4,6 +4,7 @@ import { notify } from '@/components/design/Notify';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { publicPost } from '@/lib/api';
+import { unlockSession } from '@/lib/session';
 import { storeSession } from '@/lib/secureStore';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header } from '@/components/design/ui';
@@ -58,6 +59,7 @@ const OTPVerification = () => {
       const result = await response.json();
       if (response.ok && result.access_token) {
         await storeSession(result);
+        await unlockSession();
         await AsyncStorage.removeItem('otpPending'); // verification done
         router.replace('/setpassword');
       } else {
@@ -68,6 +70,7 @@ const OTPVerification = () => {
     } catch {
       notify('Error', 'Something went wrong. Please try again later.');
       submittedRef.current = '';
+      setOtp('');
     } finally {
       setIsCheckingOtp(false);
     }
@@ -109,7 +112,7 @@ const OTPVerification = () => {
     }
   };
 
-  const masked = userPhone ? userPhone.replace(/(\d{4})(\d{3})(\d{0,4})/, '$1 $2 $3') : 'your phone';
+  const masked = userPhone ? `${userPhone.slice(0, 4)} *** ${userPhone.slice(-4)}` : 'your phone';
 
   if (isCheckingOtp) {
     return (

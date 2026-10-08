@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, ScrollView, ActivityIndicator, Animated } from 'react-native';
+import { Alert, View, Text, Pressable, ScrollView, ActivityIndicator, Animated } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
+import { useWallet } from '@/lib/wallet';
+import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Card, money, Sheet, Tap } from '@/components/design/ui';
@@ -98,7 +100,8 @@ const FundChip = ({ icon, dir, delay, label, ghost, onPress }: { icon: string; d
 
 const LinkedBankCard = ({ a, onRefresh, refreshing, onOpen }: { a: Linked; onRefresh: () => void; refreshing: boolean; onOpen: () => void }) => {
   const { c } = useTheme();
-  const reauth = a.status === 'reauth' || a.balance == null;
+  const { showBal } = useWallet();
+  const reauth = a.status !== 'active' || a.balance == null;
   const color = bankColor(a.bank_name);
   const bankTag = a.bank_name || 'bank';
   return (
@@ -119,7 +122,7 @@ const LinkedBankCard = ({ a, onRefresh, refreshing, onOpen }: { a: Linked; onRef
           <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.amber }}>Reconnect to view</Text>
         ) : (
           <Text style={{ fontSize: 15, fontFamily: font.extrabold, color: c.ink1, fontVariant: ['tabular-nums'] }}>
-            {a.balance != null ? money(Number(a.balance)) : '—'}
+            {!showBal ? '₦ ••••••' : a.balance != null ? money(Number(a.balance)) : '—'}
           </Text>
         )}
         {a.balance_updated ? (
@@ -182,6 +185,7 @@ const ManageRow = ({ icon, color, title, sub, onPress }: { icon: string; color: 
 // Reads /api/banklink/list/ on focus; refresh hits /api/banklink/refresh/.
 export const ConnectedAccounts = () => {
   const { c } = useTheme();
+  const { reloadLinked, showBal } = useWallet();
   const [accts, setAccts] = useState<Linked[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -210,6 +214,22 @@ export const ConnectedAccounts = () => {
     } finally {
       setBusyId(null);
     }
+  };
+
+  const unlink = (account: Linked) => {
+    Alert.alert('Unlink this bank?', `${account.bank_name} ${account.account_number} will be removed from Zitch.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Unlink', style: 'destructive', onPress: () => {
+        void (async () => {
+          try {
+            const result = await apiJson<{ success?: boolean }>('/api/banklink/unlink/', { linked_id: account.id });
+            if (result.success !== true) throw new Error('Unlink failed');
+            setManageFor(null);
+            await Promise.all([load(), reloadLinked()]);
+          } catch { notify('Could not unlink', 'Please try again.'); }
+        })();
+      } },
+    ]);
   };
 
   if (loading) return null;
@@ -264,7 +284,7 @@ export const ConnectedAccounts = () => {
                 <Text numberOfLines={1} style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.medium, fontVariant: ['tabular-nums'] }}>{manageFor.account_number}</Text>
               </View>
               <Text style={{ fontSize: 16, fontFamily: font.extrabold, color: manageReauth ? c.amber : c.ink1, fontVariant: ['tabular-nums'] }}>
-                {manageReauth ? 'Reconnect' : (manageFor.balance != null ? money(Number(manageFor.balance)) : '—')}
+                {!showBal ? '₦ ••••••' : manageReauth ? 'Reconnect' : (manageFor.balance != null ? money(Number(manageFor.balance)) : '—')}
               </Text>
             </View>
 
@@ -277,9 +297,8 @@ export const ConnectedAccounts = () => {
                 <ManageRow icon="convert" color={c.brand} title="Refresh balance" sub="Sync the latest balance" onPress={() => closeAfter(() => refresh(manageFor.id))} />
               </>
             )}
-            {/* No unlink/remove API exists in lib/api yet, so Unlink routes to the
-                link-bank manager (documented fallback) rather than a no-op call. */}
-            <ManageRow icon="x" color={c.red} title="Unlink bank" sub="Remove this connection from Zitch" onPress={() => closeAfter(() => router.push('/linkbank'))} />
+            {/* Unlink requires explicit confirmation and refreshes shared account state. */}
+            <ManageRow icon="x" color={c.red} title="Unlink bank" sub="Remove this connection from Zitch" onPress={() => unlink(manageFor)} />
           </>
         ) : null}
       </Sheet>

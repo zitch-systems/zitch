@@ -1,5 +1,5 @@
-import React, { useCallback, useState } from 'react';
-import { Alert, View, Text, Pressable, Image } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, AppState, View, Text, Pressable, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
@@ -11,6 +11,7 @@ import { Screen, Btn, Field, Sheet, PinPad, money, Naira } from '@/components/de
 import { QuickAmounts } from '@/components/design/flowkit';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
+import { usePinScreenProtection } from '@/lib/screenCapture';
 import { useWallet } from '@/lib/wallet';
 
 type Reveal = { pan: string; cvv: string; expiry: string; holder: string };
@@ -28,6 +29,10 @@ const Cards = () => {
   const { reload: reloadWallet } = useWallet();
   const [card, setCard] = useState<VirtualCard | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const actionInFlight = useRef(false);
+  const screenActive = useRef(false);
 
   // sheets
   const [fundOpen, setFundOpen] = useState(false);
@@ -42,26 +47,39 @@ const Cards = () => {
   const [issuanceReference, setIssuanceReference] = useState('');
 
   const load = useCallback(async () => {
-    const t = await getToken();
-    if (!t) return undefined;
     try {
+      const t = await getToken();
+      if (!t) return undefined;
       const res = await cardsService.list();
+      if (res.success !== true) throw new Error('Card information unavailable');
+      setLoaded(true);
+      setLoadError('');
       const nextCard = res.cards?.[0] ?? null;
       setCard(nextCard);
       setIssuancePending(Boolean(!nextCard && res.issuance?.pending));
       setIssuanceReference(!nextCard ? String(res.issuance?.reference || '') : '');
       return nextCard;
     } catch {
+      setLoadError('Could not load your cards. Please try again.');
       return undefined; // keep last state
     }
   }, []);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => { screenActive.current = true; void load(); return () => { screenActive.current = false; setReveal(null); }; }, [load]));
+  usePinScreenProtection(!!reveal);
+  useEffect(() => {
+    if (!reveal) return;
+    const timer = setTimeout(() => setReveal(null), 30000);
+    const subscription = AppState.addEventListener('change', (state) => { if (state !== 'active') setReveal(null); });
+    return () => { clearTimeout(timer); subscription.remove(); };
+  }, [reveal]);
 
   const createCard = async () => {
+    if (!loaded || loadError || actionInFlight.current || issuancePending) return;
     const fingerprint = 'single';
     let requestKey = '';
     let deliveryStarted = false;
+    actionInFlight.current = true;
     setBusy(true);
     try {
       requestKey = await acquireSpendAttempt('card-issue', fingerprint);
@@ -97,11 +115,11 @@ const Cards = () => {
         notify('Unable to start card request', 'Could not safely prepare this request. Please try again.');
       }
     }
-    finally { setBusy(false); }
+    finally { actionInFlight.current = false; setBusy(false); }
   };
 
   const toggleFreeze = async () => {
-    if (!card) return;
+    if (!card || actionInFlight.current) return;
     if (card.frozen && card.capabilities.can_unfreeze !== true) {
       notify(
         card.capabilities.permanent_block ? 'Card permanently blocked' : 'Status unavailable',
@@ -112,6 +130,7 @@ const Cards = () => {
       );
       return;
     }
+    actionInFlight.current = true;
     setBusy(true);
     try {
       const res = await cardsService.freeze(card.id);
@@ -144,12 +163,13 @@ const Cards = () => {
         'info',
       );
     } finally {
+      actionInFlight.current = false;
       setBusy(false);
     }
   };
 
   const requestStatusChange = () => {
-    if (!card) return;
+    if (!card || actionInFlight.current) return;
     if (card.capabilities.permanent_block && !card.frozen) {
       Alert.alert(
         'Permanently block this card?',
@@ -185,7 +205,7 @@ const Cards = () => {
   };
 
   const doFund = async (pin: string) => {
-    if (!card) return;
+    if (!card || actionInFlight.current) return;
     if (card.capabilities.can_fund !== true) {
       setFundPin(false);
       setFundOpen(false);
@@ -195,6 +215,7 @@ const Cards = () => {
     const fingerprint = [String(card.id), String(Number(fundAmt))].join('|');
     let requestKey = '';
     let deliveryStarted = false;
+    actionInFlight.current = true;
     setBusy(true);
     try {
       requestKey = await acquireSpendAttempt('card-fund', fingerprint);
@@ -248,14 +269,16 @@ const Cards = () => {
         notify('Unable to start card funding', 'Could not safely prepare this request. Please try again.');
       }
     }
-    finally { setBusy(false); }
+    finally { actionInFlight.current = false; setBusy(false); }
   };
 
   const doReveal = async (pin: string) => {
-    if (!card) return;
+    if (!card || actionInFlight.current) return;
+    actionInFlight.current = true;
     setBusy(true);
     try {
       const res = await cardsService.details(card.id, pin);
+      if (!screenActive.current || (AppState.currentState && AppState.currentState !== 'active')) return;
       if (res.success) {
         setDetailsPin(false);
         setPinError('');
@@ -269,7 +292,7 @@ const Cards = () => {
       else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
       else { setDetailsPin(false); notify('Error', res.message || 'Could not fetch details'); }
     } catch { setDetailsPin(false); notify('Error', 'Something went wrong.'); }
-    finally { setBusy(false); }
+    finally { actionInFlight.current = false; setBusy(false); }
   };
 
   const frozen = card?.frozen ?? false;
@@ -282,6 +305,7 @@ const Cards = () => {
       icon: 'plus',
       label: fundPending ? 'Funding…' : 'Fund',
       color: '#16A34A',
+      disabled: busy,
       go: () => fundPending
         ? notify('Card funding requires review', 'Check History and contact support before starting another funding attempt.', 'info')
         : setFundOpen(true),
@@ -299,6 +323,7 @@ const Cards = () => {
       icon: reveal ? 'eyeoff' : 'eye',
       label: reveal ? 'Hide' : 'Details',
       color: '#7A5CFF',
+      disabled: busy,
       go: () => (reveal ? setReveal(null) : (setPinError(''), setDetailsPin(true))),
     },
   ];
@@ -307,7 +332,8 @@ const Cards = () => {
     <Screen pad={false} tab>
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Cards</Text>
 
-      {card ? (
+      {loadError ? <View style={{ margin: 16, gap: 12 }}><Text accessibilityRole="alert" style={{ color: c.ink2 }}>{loadError}</Text><Btn label="Retry loading cards" onPress={() => { void load(); }} /></View> : null}
+      {!loaded && !loadError ? <Text style={{ margin: 24, color: c.ink3 }}>Loading cards…</Text> : !loaded ? null : card ? (
         <>
           {/* card visual */}
           <LinearGradient
@@ -375,13 +401,13 @@ const Cards = () => {
           <Text style={{ fontSize: 14, color: c.ink3, marginTop: 8, textAlign: 'center', maxWidth: 280, fontFamily: font.regular }}>
             {issuancePending
               ? `Your card request is being verified${issuanceReference ? ` (${issuanceReference})` : ''}. Do not submit another request.`
-              : 'Create a free virtual card for online & USD payments.'}
+              : 'Request a virtual card. Availability and eligibility depend on your account.'}
           </Text>
           <View style={{ height: 20 }} />
           <Btn
             label={issuancePending ? 'Card request pending' : 'Create a virtual card'}
             icon="plus"
-            disabled={busy}
+            disabled={busy || !!loadError}
             onPress={issuancePending
               ? () => notify(
                 'Card request under review',
@@ -402,7 +428,7 @@ const Cards = () => {
         <Btn label={Number(fundAmt) > 0 ? `Fund ${money(Number(fundAmt))}` : 'Fund card'} disabled={Number(fundAmt) < 100} onPress={() => { setFundOpen(false); setPinError(''); setTimeout(() => setFundPin(true), 320); }} />
       </Sheet>
 
-      <Sheet open={fundPin} onClose={() => !busy && setFundPin(false)} title="Enter your PIN">
+      <Sheet open={fundPin} onClose={() => !busy && setFundPin(false)} title="Enter your PIN" protectScreen>
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Funding…' : `Load ${money(Number(fundAmt))} onto your card`}
         </Text>
@@ -410,7 +436,7 @@ const Cards = () => {
       </Sheet>
 
       {/* Details reveal: PIN */}
-      <Sheet open={detailsPin} onClose={() => !busy && setDetailsPin(false)} title="Reveal card details">
+      <Sheet open={detailsPin} onClose={() => !busy && setDetailsPin(false)} title="Reveal card details" protectScreen>
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           Enter your PIN to show the full card number & CVV
         </Text>

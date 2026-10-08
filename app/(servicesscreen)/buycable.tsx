@@ -2,8 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { Loading } from '@/components/design/Loading';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
-import { apiPost } from '@/lib/api';
+import { apiPost, publicPost } from '@/lib/api';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
@@ -28,20 +27,23 @@ type Step = null | 'confirm' | 'pin';
 
 const BuyCable = () => {
   const { c } = useTheme();
-  const { balance, reload } = useWallet();
+  const { balance, reload, billPaymentsAvailable } = useWallet();
   const [prov, setProv] = useState('1');
   const [iuc, setIuc] = useState('');
   const [plan, setPlan] = useState('');
   const [price, setPrice] = useState('');
+  const [quoteRevision, setQuoteRevision] = useState(0);
   const [priceFor, setPriceFor] = useState('');
   const [plans, setPlans] = useState<{ id: string; label: string; sub?: string; price: number }[]>([]);
   const [plansFor, setPlansFor] = useState('');
   const [loadingPlans, setLoadingPlans] = useState(false);
+  const [catalogueRevision, setCatalogueRevision] = useState(0);
   const [validatedName, setValidatedName] = useState('');
   const [validatedFor, setValidatedFor] = useState('');
   const [validating, setValidating] = useState(false);
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
+  const purchaseInFlight = useRef(false);
   const [done, setDone] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingMessage, setPendingMessage] = useState('');
@@ -59,12 +61,8 @@ const BuyCable = () => {
     setPlan('');
     setPlans([]);
     setPlansFor('');
-    fetch(`${baseUrl}/api/utility/get_cable_plans/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cablenetwork: prov }),
-    })
-      .then((r) => r.json())
+    publicPost('/api/utility/get_cable_plans/', { cablenetwork: prov }, 15000)
+      .then((r) => { if (r.ok === false) throw new Error('Catalogue unavailable'); return r.json(); })
       .then((res) => {
         if (current && res?.cable_plans) {
           setPlans(res.cable_plans.map((p: any) => ({
@@ -79,7 +77,7 @@ const BuyCable = () => {
       .catch(() => {})
       .finally(() => { if (current) setLoadingPlans(false); });
     return () => { current = false; };
-  }, [prov]);
+  }, [prov, catalogueRevision]);
 
   // Authoritative price for the chosen bouquet.
   useEffect(() => {
@@ -88,12 +86,8 @@ const BuyCable = () => {
     if (!plan) return;
     const requestedFor = `${prov}|${plan}`;
     let current = true;
-    fetch(`${baseUrl}/api/utility/get_cable_plans_price/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cable_plan_code: plan }),
-    })
-      .then((r) => r.json())
+    publicPost('/api/utility/get_cable_plans_price/', { cable_plan_code: plan }, 15000)
+      .then((r) => { if (r.ok === false) throw new Error('Catalogue unavailable'); return r.json(); })
       .then((res) => {
         if (current && res?.cable_plans_price != null) {
           setPrice(String(res.cable_plans_price));
@@ -102,7 +96,7 @@ const BuyCable = () => {
       })
       .catch(() => {});
     return () => { current = false; };
-  }, [prov, plan]);
+  }, [prov, plan, quoteRevision]);
 
   const provider = PROVIDERS.find((p) => p.id === prov)!;
   const currentPlans = plansFor === prov ? plans : [];
@@ -112,7 +106,7 @@ const BuyCable = () => {
   const hasAuthoritativePrice = currentPrice !== '' && Number.isFinite(amount) && amount > 0;
   const validationKey = `${prov}|${iuc.trim()}`;
   const verifiedName = validatedFor === validationKey ? validatedName : '';
-  const valid = iuc.length >= 8 && !!planObj && !!verifiedName && hasAuthoritativePrice && amount <= balance;
+  const valid = billPaymentsAvailable === true && iuc.length >= 8 && !!planObj && !!verifiedName && hasAuthoritativePrice && amount <= balance;
 
   // Auto-resolve the customer name once the smartcard reaches a plausible length
   // (most NUBAN-style IUCs are 10-11 digits). The manual button stays as a
@@ -141,7 +135,7 @@ const BuyCable = () => {
       });
       const result = await response.json();
       if (generation !== validationGeneration.current) return;
-      if (response.ok) {
+      if (response.ok && result.success === true) {
         setValidatedName(result.customer_name || result.name || 'Verified');
         setValidatedFor(requestedFor);
       } else {
@@ -173,6 +167,8 @@ const BuyCable = () => {
   };
 
   const purchase = async (enteredPin: string) => {
+    if (!valid || done || purchaseInFlight.current) return;
+    purchaseInFlight.current = true;
     const fingerprint = [prov, plan, iuc.trim()].join('|');
     let deliveryStarted = false;
     setBusy(true);
@@ -183,6 +179,7 @@ const BuyCable = () => {
         iuc,
         cablenetwork: prov,
         selectedcablePlan: plan,
+        expected_amount: currentPrice,
         transaction_pin: enteredPin,
         idempotency_key: requestKey,
       });
@@ -208,6 +205,7 @@ const BuyCable = () => {
         setPinError(result.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
         await clearSpendAttempt('cable', fingerprint, requestKey);
+        if (result.code === 'price_changed') setQuoteRevision((value) => value + 1);
         notify('Error', result.message || 'Transaction failed');
         setStep(null);
       }
@@ -222,6 +220,7 @@ const BuyCable = () => {
         notify('Unable to start subscription', 'Could not safely prepare this request. Please try again.');
       }
     } finally {
+      purchaseInFlight.current = false;
       setBusy(false);
     }
   };
@@ -271,12 +270,14 @@ const BuyCable = () => {
       {loadingPlans ? (
         <Loading full={false} />
       ) : currentPlans.length === 0 ? (
-        <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>No bouquets available.</Text>
+        <View><Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>No bouquets available.</Text><Btn label="Retry plans" variant="outline" onPress={() => setCatalogueRevision((value) => value + 1)} /></View>
       ) : (
         <PlanList plans={currentPlans} value={plan} onPick={setPlan} />
       )}
+      {!!planObj && !hasAuthoritativePrice ? <View style={{ marginVertical: 12 }}><Text style={{ color: c.ink3, fontFamily: font.regular }}>A confirmed price is needed before payment.</Text><Btn label="Refresh price" variant="outline" onPress={() => setQuoteRevision((value) => value + 1)} /></View> : null}
       <View style={{ height: 14 }} />
       {amount > 0 ? <BalanceHint amount={amount} balance={balance} /> : null}
+      {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
 

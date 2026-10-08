@@ -92,7 +92,6 @@ const Kyc = () => {
   const [ninOtpDestination, setNinOtpDestination] = useState('');
   const [ninDeliveryNotice, setNinDeliveryNotice] = useState('');
   const [ninSent, setNinSent] = useState(false);
-  const [ninImage, setNinImage] = useState(''); // base64 of the NIN slip
   // Combined existing-account upgrade. The bank scores all three together, so
   // they are collected before anything is sent — a partial submission is just a
   // refusal with the customer's identity already handed over.
@@ -249,7 +248,7 @@ const Kyc = () => {
       } else if (outcome === 'review') {
         notify('Verification needs review', res.message || 'Your account opened, but the verification service needs to review the identity details.', 'info');
         setBvn(''); setBvnOtp(''); setBvnSent(false); setBvnTrackingId(''); setBvnOtpDestination('');
-        setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false); setNinImage('');
+        setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false);
         setUpBvn(''); setUpNin(''); setUpSelfie('');
         setAddressDocument('');
         setAddress(EMPTY_ADDRESS);
@@ -273,7 +272,7 @@ const Kyc = () => {
         }
         notify(successTitle, undefined, 'success');
         setBvn(''); setBvnOtp(''); setBvnSent(false); setBvnTrackingId(''); setBvnOtpDestination('');
-        setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false); setNinImage('');
+        setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false);
         setUpBvn(''); setUpNin(''); setUpSelfie('');
         setAddressDocument('');
         setAddress(EMPTY_ADDRESS);
@@ -486,19 +485,6 @@ const Kyc = () => {
     finally { endAction(); }
   };
 
-  // Optional document upload remains available for providers that require a slip.
-  const pickNinSlip = async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your NIN slip.'); return; }
-    beginExternalActivity(); // don't let the app-lock fire while the picker is up
-    try {
-      const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.4, allowsEditing: true,
-      });
-      if (res.canceled || !res.assets?.[0]?.base64) return;
-      setNinImage(res.assets[0].base64);
-    } finally { endExternalActivity(); }
-  };
   const verifyNin = startNin;
 
   // --- Selfie: a real captured image for server-side identity verification (NOT device
@@ -731,17 +717,6 @@ const Kyc = () => {
           <View style={{ marginTop: 22 }}>
             <Field label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad" value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
             <View style={{ height: 12 }} />
-            <Tap onPress={pickNinSlip}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: ninImage ? C_BVN : c.line, backgroundColor: ninImage ? 'rgba(15,162,149,.08)' : c.surface2 }}>
-                <View style={{ width: 40, height: 40, borderRadius: 11, backgroundColor: ninImage ? 'rgba(15,162,149,.16)' : c.surface3, alignItems: 'center', justifyContent: 'center' }}>
-                  <ZIcon name={ninImage ? 'check' : 'plus'} size={20} color={ninImage ? C_BVN : c.ink3} stroke={2.4} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{ninImage ? 'NIN_slip.jpg' : 'Upload NIN slip if available'}</Text>
-                  <Text style={{ fontSize: 12, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{ninImage ? 'Tap to replace' : 'Optional support document'}</Text>
-                </View>
-              </View>
-            </Tap>
             <View style={{ height: 18 }} />
             <Btn label={busy ? 'Requesting code…' : 'Send NIN verification code'} disabled={busy || nin.length !== 11} onPress={verifyNin} />
           </View>

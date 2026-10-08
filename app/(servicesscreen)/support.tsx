@@ -9,9 +9,9 @@ import { SUPPORT_EMAIL, SUPPORT_PHONE, SUPPORT_WHATSAPP, FAQ_URL } from '@/compo
 
 const open = async (url: string) => {
   try {
-    const ok = await Linking.canOpenURL(url);
-    if (ok) await Linking.openURL(url);
-    else notify('Unavailable', 'No app is available to handle this action.');
+    // Android package visibility can make canOpenURL report false even when
+    // the phone has an email, browser or dialler app capable of opening this.
+    await Linking.openURL(url);
   } catch {
     notify('Error', 'Could not open this link.');
   }
@@ -22,7 +22,7 @@ const Support = () => {
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
 
   const channels = [
-    { icon: 'chat', title: 'Chat on WhatsApp', sub: 'Fastest response, 8am–8pm', go: () => open(`https://wa.me/${SUPPORT_WHATSAPP}`) },
+    { icon: 'chat', title: 'Chat on WhatsApp', sub: 'Send our support team a message', go: () => open(`https://wa.me/${SUPPORT_WHATSAPP}`) },
     { icon: 'phone', title: 'Call us', sub: SUPPORT_PHONE, go: () => open(`tel:${SUPPORT_PHONE}`) },
     { icon: 'mail', title: 'Email support', sub: SUPPORT_EMAIL, go: () => open(`mailto:${SUPPORT_EMAIL}`) },
     { icon: 'help', title: 'Help center / FAQ', sub: 'Answers to common questions', go: () => open(FAQ_URL) },
@@ -40,8 +40,8 @@ const Support = () => {
             <ZIcon name="insurance" size={24} color={c.brand} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 15 }}>Average reply under 5 min</Text>
-            <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>Our team typically responds quickly on WhatsApp.</Text>
+            <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 15 }}>Contact the Zitch team</Text>
+            <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>Choose WhatsApp, phone or email below.</Text>
           </View>
         </Card>
 

@@ -6,14 +6,14 @@ const mockFetch = jest.fn();
 const mockApiPost = jest.fn();
 
 jest.mock('@/lib/secureStore', () => ({ getToken: jest.fn(async () => null) }));
-jest.mock('@/lib/api', () => ({ apiPost: (...args: unknown[]) => mockApiPost(...args) }));
+jest.mock('@/lib/api', () => ({ publicPost: (path: string, body: unknown) => global.fetch(path, { body: JSON.stringify(body) }), apiPost: (...args: unknown[]) => mockApiPost(...args) }));
 jest.mock('@/lib/pendingSpend', () => ({ acquireSpendAttempt: jest.fn(), clearSpendAttempt: jest.fn() }));
 jest.mock('@/lib/spendOutcome', () => ({
   classifySpendResponse: jest.fn(),
   isRecoveredSpendResponse: jest.fn(),
 }));
 jest.mock('expo-router', () => ({ router: { back: jest.fn(), replace: jest.fn() } }));
-jest.mock('@/lib/wallet', () => ({ useWallet: () => ({ balance: 20000, reload: jest.fn() }) }));
+jest.mock('@/lib/wallet', () => ({ useWallet: () => ({ balance: 20000, billPaymentsAvailable: true, transfersAvailable: true, reload: jest.fn() }) }));
 jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
 jest.mock('@/components/design/ZIcon', () => () => null);
 jest.mock('@/components/design/Receipt', () => ({ __esModule: true, default: () => null }));
@@ -115,7 +115,7 @@ describe('BuyCable response binding', () => {
     });
     mockApiPost
       .mockReturnValueOnce(oldIuc)
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ customer_name: 'Current Subscriber' }) });
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ success: true, customer_name: 'Current Subscriber' }) });
 
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<BuyCable />); });
@@ -143,7 +143,7 @@ describe('BuyCable response binding', () => {
       control(tree, 'Smartcard / IUC number').props.onChangeText('22222222');
     });
     await act(async () => {
-      resolveOldIuc({ ok: true, json: async () => ({ customer_name: 'Stale Subscriber' }) });
+      resolveOldIuc({ ok: true, json: async () => ({ success: true, customer_name: 'Stale Subscriber' }) });
       await oldValidation;
     });
 

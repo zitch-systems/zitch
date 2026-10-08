@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Linking, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
@@ -48,6 +48,7 @@ const WaApprove = () => {
   // fallback below just opens WhatsApp.
   const [returnTo, setReturnTo] = useState('');
   const [pinError, setPinError] = useState('');
+  const approving = useRef(false);
   usePinScreenProtection(phase === 'confirm' || phase === 'busy');
 
   /** Send them back to the thread they approved from.
@@ -78,7 +79,7 @@ const WaApprove = () => {
       if (!alive) return;
       if (res?.success) {
         setSummary(res.summary || 'Confirm your payment');
-        setReturnTo(typeof res.return_to === 'string' ? res.return_to : '');
+        setReturnTo(typeof res.return_to === 'string' && /^https:\/\/wa\.me\/\d+(?:\?|$)/.test(res.return_to) ? res.return_to : '');
         setPhase('confirm');
       } else {
         // Expired, already completed, or not this account's action — the
@@ -87,11 +88,16 @@ const WaApprove = () => {
         setPhase('dead');
         clearPendingWhatsAppApproval().catch(() => {});
       }
-    })();
+    })().catch(() => {
+      if (alive) { setDeadReason('Could not load this request. Open the link again when you are connected.'); setPhase('dead'); }
+    });
     return () => { alive = false; };
   }, [token]);
 
   const approve = async (pin: string) => {
+    if (approving.current) return;
+    approving.current = true;
+    try {
     setPhase('busy');
     setPinError('');
     const res = await apiJson('/api/whatsapp/approve/execute/', { token, transaction_pin: pin });
@@ -120,6 +126,10 @@ const WaApprove = () => {
       setPinError(message);
       setPhase('confirm');
     }
+    } catch {
+      setPinError('Could not confirm the payment result. Check your history before trying again.');
+      setPhase('confirm');
+    } finally { approving.current = false; }
   };
 
   return (
@@ -176,10 +186,11 @@ const WaApprove = () => {
 // Guarded like its (auth) siblings: this screen is reachable by deep link, and
 // an idle-locked session keeps its token on the device — without the guard, an
 // OS-unlocked phone could open straight onto a live payment approval.
-const Guarded = () => (
-  <AuthGuard fresh>
-    <WaApprove />
-  </AuthGuard>
-);
+const Guarded = () => {
+  const { token } = useLocalSearchParams<{ token?: string }>();
+  // Capture before the guard redirects a locked/signed-out customer to login.
+  useEffect(() => { rememberWhatsAppApproval(token).catch(() => {}); }, [token]);
+  return <AuthGuard fresh><WaApprove /></AuthGuard>;
+};
 
 export default Guarded;

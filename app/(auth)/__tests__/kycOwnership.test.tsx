@@ -10,7 +10,7 @@ const mockGetToken = jest.fn();
 const mockSessionLocked = jest.fn();
 const mockRedirect = jest.fn();
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));
-jest.mock('@/lib/secureStore', () => ({ getToken: () => mockGetToken() }));
+jest.mock('@/lib/secureStore', () => ({ getToken: () => mockGetToken(), getSessionGeneration: () => 0 }));
 jest.mock('expo-router', () => ({
   router: { back: jest.fn() }, useLocalSearchParams: () => mockParams,
   Redirect: (props: { href: string }) => { mockRedirect(props.href); return null; },
@@ -24,6 +24,8 @@ jest.mock('expo-web-browser', () => ({}));
 jest.mock('@/lib/session', () => ({
   beginExternalActivity: jest.fn(), endExternalActivity: jest.fn(),
   isSessionLocked: () => mockSessionLocked(),
+  isExternalActivityActive: () => false,
+  enforceHardExpiry: jest.fn(), enforceIdleTimeout: jest.fn(), lockIfAwayTooLong: jest.fn(),
 }));
 jest.mock('@/components/design/Loading', () => ({ Loading: () => null }));
 jest.mock('@/components/design/FaceLivenessModal', () => () => null);
