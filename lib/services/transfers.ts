@@ -9,6 +9,7 @@ import type { ApiResult } from '@/lib/services/types';
 export type ResolveResult = ApiResult<{
   // Resolved account-holder name (single-bank / legacy resolve paths).
   name: string;
+  mock?: boolean;
   account_name?: string;
   bank_name?: string;
   bank_code?: string;

@@ -4,8 +4,8 @@ import { Loading } from '@/components/design/Loading';
 import { useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { convertService } from '@/lib/services/bills';
-import { Screen, Card, Field, Naira, NText } from '@/components/design/ui';
-import { Label, QuickAmounts } from '@/components/design/flowkit';
+import { Screen, Card, NText } from '@/components/design/ui';
+import { Label, QuickAmounts, AmountField } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 
@@ -37,7 +37,10 @@ const Convert = () => {
     try {
       const res = await convertService.getRate();
       if (res?.success && Array.isArray(res.currencies) && res.currencies.length) {
-        setCurrencies(res.currencies.map((r: any) => ({ ...r, rate: Number(r.rate) })));
+        const rates = res.currencies.map((r: any) => ({ ...r, rate: Number(r.rate) }))
+          .filter((r: Currency) => Number.isFinite(r.rate) && r.rate > 0);
+        if (!rates.length) throw new Error('Rates unavailable');
+        setCurrencies(rates);
         setUpdated(typeof res.updated === 'string' ? res.updated : '');
       } else {
         setError(res?.message || "Couldn't load live rates.");
@@ -60,9 +63,11 @@ const Convert = () => {
   const amount = Number(amt || 0);
 
   const copyValue = async (cur: Currency) => {
-    await Clipboard.setStringAsync(fx(amount * cur.rate, cur.symbol));
-    setCopied(cur.code);
-    setTimeout(() => setCopied((prev) => (prev === cur.code ? '' : prev)), 1300);
+    try {
+      await Clipboard.setStringAsync(fx(amount * cur.rate, cur.symbol));
+      setCopied(cur.code);
+      setTimeout(() => setCopied((prev) => (prev === cur.code ? '' : prev)), 1300);
+    } catch { setError('Could not copy the value. Please try again.'); }
   };
 
   return (
@@ -75,14 +80,7 @@ const Convert = () => {
       <View style={{ paddingHorizontal: 20, paddingTop: 18 }}>
         <Label>Amount in Naira</Label>
         <QuickAmounts amounts={NGN_PRESETS} value={amt} onPick={setAmt} />
-        <Field
-          label="Or enter amount"
-          value={amt}
-          onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
-          keyboardType="number-pad"
-          placeholder="0"
-          prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
-        />
+        <AmountField label="Or enter amount" value={amt} onChangeText={setAmt} placeholder="0" />
 
         {/* converted values */}
         <View style={{ marginTop: 20 }}>

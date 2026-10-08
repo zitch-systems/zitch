@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text } from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Screen, Header, Card, Progress, money, NText, txnState } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font, ICON_COLORS, iconTint } from '@/lib/theme';
@@ -25,19 +25,20 @@ const CATEGORY_LABEL: Record<string, string> = {
 
 const Analysis = () => {
   const { c, theme } = useTheme();
-  const { txns } = useWallet();
+  const { txns, hydrated, historyError, reload } = useWallet();
   const { month } = useLocalSearchParams<{ month?: string }>();
   // Read once on mount rather than on every render: the clock is not a prop, and
   // a screen left open across midnight on the 1st should not silently re-scope
   // itself to a different month under the reader.
   const [thisMonth] = useState(() => monthKey(Date.now()));
   const key = String(month || thisMonth);
+  useFocusEffect(useCallback(() => { void reload(); }, [reload]));
 
   const { rows, spent, received, top } = useMemo(() => {
     // Only explicitly successful transactions are aggregated. Pending/unknown
     // rows have not proved settlement and would inflate spending or receipts.
     const kept = txns.filter(
-      (t) => t.ts && monthKey(t.ts) === key && txnState(t.status) === 'success',
+      (t) => (key === 'undated' ? t.ts == null : t.ts != null && monthKey(t.ts) === key) && txnState(t.status) === 'success',
     );
     const out = kept.filter((t) => t.dir === 'out');
     const totals = new Map<string, number>();
@@ -59,22 +60,23 @@ const Analysis = () => {
     <Screen tab>
       <Header title="Analysis" sub={key === 'undated' ? undefined : monthLabel(key)} onBack={() => router.back()} />
 
+      {historyError ? <Text accessibilityRole="alert" style={{ color: c.amber, marginBottom: 12 }}>{historyError}</Text> : null}
       <Card style={{ marginBottom: 14, flexDirection: 'row' }}>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3 }}>Money out</Text>
-          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={{ fontSize: 21, fontFamily: font.extrabold, color: c.ink1, marginTop: 4, letterSpacing: -0.3 }}>{money(spent)}</NText>
+          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={{ fontSize: 21, fontFamily: font.extrabold, color: c.ink1, marginTop: 4, letterSpacing: -0.3 }}>{!hydrated ? 'Loading…' : historyError && !txns.length ? 'Unavailable' : money(spent)}</NText>
         </View>
         <View style={{ width: 1, backgroundColor: c.line, marginHorizontal: 16 }} />
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3 }}>Money in</Text>
-          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={{ fontSize: 21, fontFamily: font.extrabold, color: c.lime, marginTop: 4, letterSpacing: -0.3 }}>{money(received)}</NText>
+          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={{ fontSize: 21, fontFamily: font.extrabold, color: c.lime, marginTop: 4, letterSpacing: -0.3 }}>{!hydrated ? 'Loading…' : historyError && !txns.length ? 'Unavailable' : money(received)}</NText>
         </View>
       </Card>
 
       <Card>
         <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1, marginBottom: 4 }}>Where it went</Text>
         <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3, marginBottom: 18 }}>
-          Your spending this month, largest first.
+          Your spending in this period, largest first.
         </Text>
         {rows.length === 0 ? (
           <Text style={{ fontSize: 13.5, fontFamily: font.regular, color: c.ink3, paddingVertical: 20, textAlign: 'center' }}>

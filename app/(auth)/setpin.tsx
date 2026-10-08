@@ -1,7 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
-import { getToken, saveTransactionPin } from '@/lib/secureStore';
+import { clearTransactionPin } from '@/lib/secureStore';
+import AuthGuard from '@/components/AuthGuard';
+import { usePinScreenProtection } from '@/lib/screenCapture';
 import { apiPost } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
 import { notify } from '@/components/design/Notify';
@@ -17,23 +19,23 @@ const SetPin = () => {
   const [confirm, setConfirm] = useState<string | null>(null);
   const [err, setErr] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [token, setToken] = useState('');
+  const inFlight = useRef(false);
+  usePinScreenProtection();
 
   const active = confirm === null ? pin : confirm;
 
-  useEffect(() => {
-    getToken().then((t) => t && setToken(t));
-  }, []);
 
   const submit = async (finalPin: string) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setSubmitting(true);
     try {
       const response = await apiPost(EP.auth.setTransactionPin, { pin: finalPin });
       const result = await response.json().catch(() => ({}));
       if (response.ok) {
-        await saveTransactionPin(finalPin); // cached (keychain) for biometric pay
+        await clearTransactionPin(); // biometric payments require a separate explicit opt-in
         router.replace('/completed');
-      } else if (response.status === 403 || result.code === 'password_required') {
+      } else if (result.code === 'password_required') {
         // This account already has a PIN (e.g. re-onboarding the same number);
         // changing it needs the password, which isn't part of first-time setup.
         // The account is already secured, so move on instead of getting stuck.
@@ -47,7 +49,7 @@ const SetPin = () => {
       notify('Error', 'Something went wrong. Please try again later.');
       setConfirm('');
       setSubmitting(false);
-    }
+    } finally { inFlight.current = false; }
   };
 
   // Drive the create → confirm → submit flow.
@@ -118,4 +120,4 @@ const SetPin = () => {
   );
 };
 
-export default SetPin;
+export default function GuardedSetPin() { return <AuthGuard fresh><SetPin /></AuthGuard>; }

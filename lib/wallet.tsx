@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { getToken, saveDisplayName, saveSpendAccountNamespace } from '@/lib/secureStore';
+import { getToken, getSessionGeneration, saveDisplayName, saveSpendAccountNamespace } from '@/lib/secureStore';
 import { apiPost, apiJson } from '@/lib/api';
 import type { Txn } from '@/components/design/ui';
 import { walletBalances, walletCapabilities } from '@/lib/services/wallet';
@@ -24,12 +24,21 @@ export type LinkedAccount = {
 // transaction into the next day's group. Returns undefined when unreadable, and
 // the caller buckets those separately rather than inventing a date.
 const parseTs = (s: string): number | undefined => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(s.trim());
-  if (!m) {
-    const loose = Date.parse(s);
-    return Number.isNaN(loose) ? undefined : loose;
+  const value = s.trim();
+  // Preserve explicit UTC/offset information from ISO API responses.
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
   }
-  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime();
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(value);
+  if (!m) return undefined;
+  const parts = m.slice(1, 7).map((part) => Number(part ?? 0));
+  const [year, month, day, hour, minute, second] = parts;
+  const date = new Date(year, month - 1, day, hour, minute, second, Number((m[7] ?? '').padEnd(3, '0')));
+  // Date silently normalizes 31 February and 25:00. Keep invalid rows undated.
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+    && date.getHours() === hour && date.getMinutes() === minute && date.getSeconds() === second
+    ? date.getTime() : undefined;
 };
 
 // Picks an icon from the service label. Direction comes from the backend's
@@ -70,6 +79,14 @@ export const mapTxn = (raw: any, i: number): Txn => {
   };
 };
 
+/** Carry review guidance consistently from every activity entry point. */
+export const transactionParams = (txn: Txn) => ({
+  type: txn.type, amount: String(txn.amount), status: txn.status, dir: txn.dir,
+  detail: txn.detail, reference: txn.reference ?? '', icon: txn.icon,
+  narration: txn.narration ?? '', underReview: txn.underReview ? '1' : '',
+  statusMessage: txn.statusMessage ?? '', reviewKind: txn.reviewKind ?? '',
+});
+
 type WalletValue = {
   /** Spendable funds for existing purchase consumers; never the VAS aggregate. */
   balance: number;
@@ -102,6 +119,9 @@ type WalletValue = {
    *  data" actually needs. Refreshes after that are the pull-to-refresh
    *  spinner's job, not the skeleton's. */
   hydrated: boolean;
+  balanceLoaded: boolean;
+  balanceError: string;
+  historyError: string;
   showBal: boolean;
   setShowBal: (v: boolean) => void;
   reload: () => Promise<void>;
@@ -121,13 +141,16 @@ const WalletContext = createContext<WalletValue>({
   phoneNumber: '',
   accountName: '',
   bankName: '',
-  spendingAvailable: true,
-  billPaymentsAvailable: true,
-  transfersAvailable: true,
+  spendingAvailable: false,
+  billPaymentsAvailable: false,
+  transfersAvailable: false,
   fundingMessage: '',
   txns: [],
   loading: true,
   hydrated: false,
+  balanceLoaded: false,
+  balanceError: '',
+  historyError: '',
   showBal: true,
   setShowBal: () => {},
   reload: () => Promise.resolve(),
@@ -145,29 +168,34 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [accountName, setAccountName] = useState('');
   const [bankName, setBankName] = useState('');
-  const [spendingAvailable, setSpendingAvailable] = useState(true);
-  const [capabilities, setCapabilities] = useState(() => walletCapabilities(undefined));
+  const [spendingAvailable, setSpendingAvailable] = useState(false);
+  const [capabilities, setCapabilities] = useState({ billPaymentsAvailable: false, transfersAvailable: false });
   const [fundingMessage, setFundingMessage] = useState('');
   const [txns, setTxns] = useState<Txn[]>([]);
   const [loading, setLoading] = useState(true);
   const [hydrated, setHydrated] = useState(false);
+  const [balanceLoaded, setBalanceLoaded] = useState(false);
+  const [balanceError, setBalanceError] = useState('');
+  const [historyError, setHistoryError] = useState('');
   const [showBal, setShowBal] = useState(true);
   const [linked, setLinked] = useState<LinkedAccount[]>([]);
 
   // The user's Mono-linked external bank accounts (display + funding source).
   // Loaded alongside the wallet and refreshable on demand (reloadLinked).
   const reloadLinked = useCallback(async () => {
+    const generation = getSessionGeneration();
     try {
       const token = await getToken();
       if (!token) return;
-      const r = await apiJson<{ accounts?: any[] }>('/api/banklink/list/');
-      const list = Array.isArray(r?.accounts) ? r.accounts : [];
+      const r = await apiJson<{ success?: boolean; accounts?: any[] }>('/api/banklink/list/');
+      if (getSessionGeneration() !== generation || r?.success === false || !Array.isArray(r?.accounts)) return;
+      const list = r.accounts;
       setLinked(list.map((a) => ({
         id: Number(a.id),
         bank_name: String(a.bank_name ?? ''),
         account_number: String(a.account_number ?? ''),
         account_name: String(a.account_name ?? ''),
-        balance: a.balance == null || a.balance === '' ? null : Number(a.balance),
+        balance: a.balance == null || a.balance === '' || !Number.isFinite(Number(a.balance)) ? null : Number(a.balance),
         balance_updated: a.balance_updated ?? null,
         status: String(a.status ?? 'active'),
         mono_account_id: a.mono_account_id ? String(a.mono_account_id) : undefined,
@@ -185,22 +213,27 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const load = useCallback((): Promise<void> => {
     if (loadInFlight.current) return loadInFlight.current;
 
+    const generation = getSessionGeneration();
     const run = (async () => {
       setLoading(true);
       try {
         const token = await getToken();
-        if (!token) return;
+        if (!token || getSessionGeneration() !== generation) return;
         const [balRes, txRes] = await Promise.allSettled([
           apiPost('/api/wallet_balance/').then((response) => response.json()),
           apiPost('/api/user-transaction-history/').then((response) => response.json()),
         ]);
 
-        if (balRes.status === 'fulfilled' && balRes.value?.success) {
+        if (getSessionGeneration() !== generation) return;
+        if (balRes.status === 'fulfilled' && balRes.value?.success === true) {
           const value = balRes.value;
           if (value.account_namespace) {
             await saveSpendAccountNamespace(String(value.account_namespace));
+            if (getSessionGeneration() !== generation) return;
           }
           setBalances(walletBalances(value));
+          setBalanceLoaded(true);
+          setBalanceError('');
           setFundingProvider(value.provider);
           const first = String(value.user_first_name || '');
           const last = String(value.user_last_name || '');
@@ -208,28 +241,37 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
             || String(value.user_email || '').split('@')[0] || '');
           setFirstName(first || named);
           setLastName(last);
-          void saveDisplayName(named);
+          void saveDisplayName(named).catch(() => {});
           setAvatar(String(value.user_avatar ?? ''));
           const fundable = value.provider !== 'wema_vas' ||
             (value.test_mode !== true && !/^711/.test(String(value.account_number ?? ''))
               && value.available === true && value.has_account === true && value.account_setup_state === 'ready');
-          setAccountNumber(fundable ? String(value.account_number ?? '') : '');
+          const account = String(value.account_number ?? '');
+          setAccountNumber(fundable && /^\d{10}$/.test(account) && !/^711/.test(account) ? account : '');
           setSpendingAvailable(value.provider === 'wema_vas' && value.test_mode === true ? false : value.spending_available !== false);
           setCapabilities(walletCapabilities(value));
           setFundingMessage(String(value.migration_message ?? ''));
           setPhoneNumber(String(value.user_phone_number ?? ''));
           setAccountName(String(value.account_name ?? ''));
           setBankName(String(value.bank_name ?? ''));
+        } else {
+          setBalanceError('Could not refresh your balance. Check your connection and try again.');
         }
-        if (txRes.status === 'fulfilled' && txRes.value?.status) {
+        if (txRes.status === 'fulfilled' && txRes.value?.status === true) {
+          setHistoryError('');
           const list = Array.isArray(txRes.value.all_site_transactions)
             ? txRes.value.all_site_transactions
             : [];
           setTxns(list.map(mapTxn));
+        } else {
+          setHistoryError('Could not refresh your transactions. Check your connection and try again.');
         }
       } catch {
-        // Keep last-known values visible through transient network failures.
+        if (getSessionGeneration() !== generation) return;
+        setBalanceError('Could not refresh your balance. Check your connection and try again.');
+        setHistoryError('Could not refresh your transactions. Check your connection and try again.');
       } finally {
+        if (getSessionGeneration() !== generation) return;
         setLoading(false);
         // Latched on the attempt, not on success: a first load that fails
         // offline must stop showing skeletons and fall through to the real
@@ -257,8 +299,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   // wallet consumer (Home, Wallet, the tab bar, service screens) re-renders
   // whenever the provider renders, even when nothing it reads has changed.
   const value = useMemo(
-    () => ({ balance: balances.availableBalance, ...balances, fundingProvider, firstName, fullName: accountName || `${firstName} ${lastName}`.trim(), avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, ...capabilities, fundingMessage, txns, loading, hydrated, showBal, setShowBal, reload: load, linked, reloadLinked }),
-    [balances, fundingProvider, firstName, lastName, avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, capabilities, fundingMessage, txns, loading, hydrated, showBal, load, linked, reloadLinked],
+    () => ({ balance: balances.availableBalance, ...balances, fundingProvider, firstName, fullName: accountName || `${firstName} ${lastName}`.trim(), avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, ...capabilities, fundingMessage, txns, loading, hydrated, balanceLoaded, balanceError, historyError, showBal, setShowBal, reload: load, linked, reloadLinked }),
+    [balances, fundingProvider, firstName, lastName, avatar, accountNumber, phoneNumber, accountName, bankName, spendingAvailable, capabilities, fundingMessage, txns, loading, hydrated, balanceLoaded, balanceError, historyError, showBal, load, linked, reloadLinked],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;

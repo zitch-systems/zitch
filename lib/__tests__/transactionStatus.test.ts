@@ -16,7 +16,7 @@ describe('transaction status display classification', () => {
     (status) => expect(txnState(status)).toBe('failed'),
   );
 
-  it.each(['', 'unknown', 'queued', 'processing', 'SUCCESS_OR_PENDING', undefined, null])(
+  it.each(['', 'unknown', 'queued', 'processing', 'SUCCESS_OR_PENDING', 'reversal pending', 'refund failed, payment under review', undefined, null])(
     'keeps unproven state %s non-successful',
     (status) => expect(txnState(status)).toBe('pending'),
   );

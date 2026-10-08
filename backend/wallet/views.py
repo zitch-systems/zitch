@@ -1043,7 +1043,35 @@ def transaction_status(request):
         user.transactions.filter(reference=reference)).first()
     if txn is None:
         return fail("Transaction not found", status=404)
-    return ok(success=True, transaction=_txn_row(txn))
+    row = _txn_row(txn)
+    # Recover purchased value after an app restart or a late provider settlement.
+    # Keep it out of bulk history, and never expose a token while the payment is
+    # pending, refunded or under review. The lookup above is owner-scoped.
+    if (row["transaction_status"] == Transaction.SUCCESS
+            and not row["under_review"] and txn.direction == Transaction.OUT
+            and txn.service.casefold().startswith("electricity")):
+        meta = txn.meta if isinstance(txn.meta, dict) else {}
+
+        def receipt_text(key, maximum=160):
+            value = meta.get(key)
+            if not isinstance(value, (str, int, Decimal)) or isinstance(value, bool):
+                return ""
+            return str(value).strip()[:maximum]
+
+        row.update(
+            meter=receipt_text("meter", 40),
+            meter_type=receipt_text("meter_type", 20),
+            customer_name=receipt_text("customer_name") or receipt_text("customer"),
+            customer_address=receipt_text("customer_address", 320) or receipt_text("address", 320),
+            electricity_units=receipt_text("electricity_units", 40) or receipt_text("units", 40),
+        )
+        if row["meter_type"] != "postpaid":
+            # A provider reference is not proof of a recharge token. Only the
+            # explicitly parsed and persisted token can be typed into a meter.
+            row["token"] = receipt_text("token", 256)
+    response = ok(success=True, transaction=row)
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 # ----------------------- WALLET FUNDING (Wema) -----------------------
@@ -1595,13 +1623,24 @@ def statement_request(request):
     if file_type not in ("pdf", "excel"):
         return fail("Choose either a PDF or an Excel file", status=400)
 
-    def _day(v, default):
-        v = str(v or "").strip()
-        return v if re.match(r"^\d{4}-\d{2}-\d{2}$", v) else default
+    def _day(value, default):
+        # Missing dates retain the documented default. An explicit invalid date
+        # must never silently select another period or escape as a server error.
+        value = str(value if value is not None else "").strip() or default
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise ValueError("Invalid statement date format")
+        return value, datetime.strptime(value, "%Y-%m-%d")
 
     today = timezone.localdate()
-    date_to = _day(request.data.get("to"), today.strftime("%Y-%m-%d"))
-    date_from = _day(request.data.get("from"), (today - timedelta(days=30)).strftime("%Y-%m-%d"))
+    try:
+        date_to, end_day = _day(request.data.get("to"), today.strftime("%Y-%m-%d"))
+        date_from, start_day = _day(request.data.get("from"), (today - timedelta(days=30)).strftime("%Y-%m-%d"))
+        start = timezone.make_aware(start_day)
+        # Add the inclusive end day inside the guard too: 9999-12-31 cannot
+        # represent the following midnight and otherwise raises OverflowError.
+        end = timezone.make_aware(end_day + timedelta(days=1))
+    except (ValueError, OverflowError):
+        return fail("Enter valid start and end dates in YYYY-MM-DD format", status=400)
     if date_from > date_to:
         return fail("The end date can't come before the start date", status=400)
 
@@ -1614,8 +1653,6 @@ def statement_request(request):
 
     # Inclusive of the end DAY, not the end instant: "to 14 Aug" that silently
     # dropped everything after midnight on the 14th would look like missing money.
-    start = timezone.make_aware(datetime.strptime(date_from, "%Y-%m-%d"))
-    end = timezone.make_aware(datetime.strptime(date_to, "%Y-%m-%d")) + timedelta(days=1)
     txns = list(customer_visible_transactions(
         user.transactions.filter(created__gte=start, created__lt=end)
     ).order_by("-created")[:1000])

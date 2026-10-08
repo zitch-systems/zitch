@@ -7,16 +7,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 
-// Pull a payable destination (10-digit account or 11-digit phone) out of a
-// scanned/typed value: a Zitch pay link's query param, or a bare number.
-const extractIdentifier = (raw: string): string | null => {
-  const value = raw.trim();
-  const q = value.match(/[?&](?:account|acct|phone|identifier)=([0-9]{10,11})/i);
-  if (q) return q[1];
-  const digits = value.replace(/\D/g, '');
-  if (digits.length === 10 || digits.length === 11) return digits;
-  return null;
-};
+import { paymentDestination } from '@/lib/phone';
 
 const Scan = () => {
   const { c } = useTheme();
@@ -25,9 +16,9 @@ const Scan = () => {
   const handled = useRef(false); // guard against the camera firing repeatedly
 
   const applyResult = (raw: string) => {
-    const id = extractIdentifier(raw);
-    if (id) {
-      router.replace({ pathname: '/sendmoney', params: { identifier: id } });
+    const destination = paymentDestination(raw);
+    if (destination) {
+      router.replace({ pathname: '/sendmoney', params: destination });
     } else {
       handled.current = false; // let them try again
       notify('Unrecognised code', "That QR doesn't contain a Zitch account or phone number.");

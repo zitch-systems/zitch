@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { publicPost } from '@/lib/api';
 import { notify } from '@/components/design/Notify';
+import { unlockSession } from '@/lib/session';
+import { usePinScreenProtection } from '@/lib/screenCapture';
 import { storeSession } from '@/lib/secureStore';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
@@ -14,7 +16,10 @@ import { useTheme, font } from '@/lib/theme';
 const ResetPassword = () => {
   const { c } = useTheme();
   const params = useLocalSearchParams<{ ident?: string; phone?: string }>();
-  const ident = params.ident ?? params.phone ?? '';
+  const rawIdent = params.ident ?? params.phone;
+  const ident = typeof rawIdent === 'string' ? rawIdent : '';
+  const inFlight = useRef(false);
+  usePinScreenProtection();
   const [otp, setOtp] = useState('');
   const [p1, setP1] = useState('');
   const [p2, setP2] = useState('');
@@ -22,19 +27,22 @@ const ResetPassword = () => {
 
   const strong = p1.length >= 8 && /[A-Za-z]/.test(p1) && /[0-9]/.test(p1) && /[^A-Za-z0-9]/.test(p1);
   const match = p1 !== '' && p1 === p2;
-  const canSubmit = otp.length === 6 && strong && match;
+  const canSubmit = !!ident && otp.length === 6 && strong && match;
 
   const reset = async () => {
+    if (!canSubmit || inFlight.current) return;
     if (!match) {
       notify('Error', 'Passwords do not match');
       return;
     }
+    inFlight.current = true;
     setBusy(true);
     try {
       const response = await publicPost('/api/password/reset/', { email_or_phone: ident, otp, password: p1 });
       const result = await response.json();
       if (response.ok && result.access_token) {
         await storeSession(result);
+        await unlockSession();
         router.replace('/home');
       } else {
         notify('Error', result.message || 'Could not reset your password');
@@ -42,6 +50,7 @@ const ResetPassword = () => {
     } catch {
       notify('Error', 'Something went wrong. Please try again later.');
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };

@@ -5,7 +5,7 @@ import * as Clipboard from 'expo-clipboard';
 import ZIcon from '@/components/design/ZIcon';
 import { Btn } from '@/components/design/ui';
 import { NText } from '@/components/design/Naira';
-import { flash } from '@/components/design/Notify';
+import { flash, notifyError } from '@/components/design/Notify';
 import ReceiptExport, { ExportAction } from '@/components/design/ReceiptExport';
 import Watermark from '@/components/design/Watermark';
 import WhatsAppBankingPromo from '@/components/design/whatsapp-banking-promo';
@@ -90,8 +90,10 @@ const Receipt = ({
   const asText = [title, message, '', ...allRows.map(([k, v]) => `${k}: ${v}`), '', 'Zitch'].join('\n');
 
   const onCopyRef = async () => {
-    await Clipboard.setStringAsync(reference || asText);
-    flash('Copied', reference ? 'Reference copied' : 'Receipt copied');
+    try {
+      await Clipboard.setStringAsync(reference || asText);
+      flash('Copied', reference ? 'Reference copied' : 'Receipt copied');
+    } catch { notifyError('Could not copy', 'Please try again.'); }
   };
 
   const actions: [string, string, () => void][] = [

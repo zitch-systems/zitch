@@ -5,6 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { notify } from '@/components/design/Notify';
 import { publicPost } from '@/lib/api';
 import { isCompleteRegistrationName, splitRegistrationName } from '@/lib/registration';
+import { PRIVACY_URL, TERMS_URL } from '@/components/configFiles/links';
 import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
@@ -117,8 +118,8 @@ const Register = () => {
         </View>
       </View>
       <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 18, marginTop: 14, fontFamily: font.regular }}>
-        By continuing you agree to Zitch&apos;s <Text style={{ color: c.brand, fontFamily: font.semibold }}>Terms</Text> &{' '}
-        <Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy</Text>.
+        By continuing you agree to Zitch&apos;s <Link href={TERMS_URL as any}><Text style={{ color: c.brand, fontFamily: font.semibold }}>Terms</Text></Link> &{' '}
+        <Link href={PRIVACY_URL as any}><Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy</Text></Link>.
       </Text>
 
       <View style={{ marginTop: 26 }}>

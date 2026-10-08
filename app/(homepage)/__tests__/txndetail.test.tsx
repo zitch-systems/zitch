@@ -37,6 +37,8 @@ jest.mock('expo-router', () => {
     useFocusEffect: (effect: () => void | (() => void)) => ReactActual.useEffect(effect, [effect]),
   };
 });
+jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
+jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn().mockResolvedValue(undefined) }));
 jest.mock('@/components/design/ZIcon', () => () => null);
 jest.mock('@/lib/theme', () => ({
   useTheme: () => ({ c: {
@@ -212,4 +214,30 @@ describe('transaction-detail pending refresh', () => {
     expect(alert.props.children).toContain('Check your connection');
     act(() => tree.unmount());
   });
+  it('keeps a stale successful ledger under review and preserves the retry guard', async () => {
+    mockApiJson.mockResolvedValue({ ...transaction('SUCCESSFUL'), transaction: {
+      ...transaction('SUCCESSFUL').transaction, under_review: true, token: 'secret-token',
+    } });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+    expect(mockClearSpendAttempt).not.toHaveBeenCalled();
+    expect(JSON.stringify(tree.toJSON())).toContain('Under review');
+    expect(JSON.stringify(tree.toJSON())).not.toContain('secret-token');
+    act(() => tree.unmount());
+  });
+
+  it('recovers and allows copying a confirmed electricity token from history', async () => {
+    mockApiJson.mockResolvedValue({ ...transaction('SUCCESSFUL'), transaction: {
+      ...transaction('SUCCESSFUL').transaction, service: 'Electricity', token: '1234-5678-9012-3456-7890',
+      meter: '12345678901', electricity_units: '42.5 kWh',
+    } });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+    expect(JSON.stringify(tree.toJSON())).toContain('1234-5678-9012-3456-7890');
+    expect(JSON.stringify(tree.toJSON())).toContain('42.5 kWh');
+    await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Copy electricity token' }).props.onPress(); });
+    expect(require('expo-clipboard').setStringAsync).toHaveBeenCalledWith('1234-5678-9012-3456-7890');
+    act(() => tree.unmount());
+  });
+
 });

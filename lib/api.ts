@@ -8,6 +8,7 @@ import {
   saveToken,
   saveRefreshToken,
   saveSpendAccountNamespace,
+  getSessionGeneration,
 } from '@/lib/secureStore';
 import { touchActivity } from '@/lib/session';
 // Importing this also installs the global fetch guard: it stamps the app
@@ -21,12 +22,17 @@ import { deviceHeaders } from '@/lib/deviceIntegrity';
 // bounce to sign-in. Guarded so several in-flight requests failing together only
 // redirect once; a later login re-arms it.
 let handlingExpiredSession = false;
-async function onSessionExpired(): Promise<void> {
-  if (handlingExpiredSession) return;
+async function onSessionExpired(generation: number): Promise<void> {
+  if (handlingExpiredSession || generation !== getSessionGeneration()) return;
   handlingExpiredSession = true;
-  await clearSession();
-  router.replace('/signin');
-  setTimeout(() => { handlingExpiredSession = false; }, 1500);
+  try {
+    const clearing = clearSession();
+    const clearedGeneration = getSessionGeneration();
+    await clearing;
+    if (clearedGeneration === getSessionGeneration()) router.replace('/signin');
+  } finally {
+    handlingExpiredSession = false;
+  }
 }
 
 // A refresh in flight, shared by every caller that wants one.
@@ -40,36 +46,44 @@ async function onSessionExpired(): Promise<void> {
 // supposed to keep them signed in, and reports a break-in while doing it.
 let refreshing: Promise<RefreshOutcome> | null = null;
 
-// Three outcomes, not two. 'renewed' retries the request; 'rejected' means the
+// A changed account must never resume an old request. For the same account, 'renewed' retries the request; 'rejected' means the
 // server refused the refresh token, which is a genuinely dead session and the only
 // case that signs the customer out. 'unavailable' is a dropped connection or a
 // timeout — the session may be perfectly valid once there is signal again, so the
 // original 401 is returned to the caller and nothing is wiped. Collapsing the last
 // two into one boolean turns a subway tunnel into a re-login.
-type RefreshOutcome = 'renewed' | 'rejected' | 'unavailable';
+type RefreshOutcome = 'renewed' | 'rejected' | 'unavailable' | 'changed';
+let refreshingGeneration: number | null = null;
 
 /** Exchange the stored refresh token for a new pair. */
-async function refreshSession(): Promise<RefreshOutcome> {
-  if (refreshing) return refreshing;
+async function refreshSession(generation: number): Promise<RefreshOutcome> {
+  if (generation !== getSessionGeneration()) return 'changed';
+  if (refreshing) return refreshingGeneration === generation ? refreshing : 'unavailable';
+  refreshingGeneration = generation;
   refreshing = (async (): Promise<RefreshOutcome> => {
     try {
       const refresh = await getRefreshToken();
       // Nothing to renew with: an older install, or a session stored before
       // refresh tokens existed. That IS a dead session.
+      if (generation !== getSessionGeneration()) return 'changed';
       if (!refresh) return 'rejected';
       // publicPost, not apiPost: this call carries no access token (the point is
       // that the old one is dead) and must never recurse into this handler.
       const res = await publicPost('/api/token/refresh/', { refresh_token: refresh }, 15000);
       const data = await res.json().catch(() => null);
-      if (res.ok && data?.access_token && data?.refresh_token) {
+      if (generation !== getSessionGeneration()) return 'changed';
+      if (res.ok && typeof data?.access_token === 'string' && data.access_token && typeof data?.refresh_token === 'string' && data.refresh_token) {
         // Persist the rotated pair BEFORE any retried request goes out. If the app
         // died between using the new token and storing it, the next launch would
         // present the burnt one and be treated as a theft.
         await saveRefreshToken(data.refresh_token);
+        if (generation !== getSessionGeneration()) return 'changed';
         if (data.account_namespace) {
           await saveSpendAccountNamespace(data.account_namespace);
         }
+        if (generation !== getSessionGeneration()) return 'changed';
         await saveToken(data.access_token);
+        if (generation !== getSessionGeneration()) return 'changed';
         return 'renewed';
       }
       // A 401 here is the server's verdict on the refresh token itself. A 5xx or
@@ -81,6 +95,7 @@ async function refreshSession(): Promise<RefreshOutcome> {
       // Cleared in `finally` so a failed refresh doesn't pin every later attempt
       // to the same rejected promise.
       refreshing = null;
+      refreshingGeneration = null;
     }
   })();
   return refreshing;
@@ -98,27 +113,30 @@ async function refreshSession(): Promise<RefreshOutcome> {
  * `res.ok` and `await res.json()`.
  */
 export async function apiPost(path: string, body: Record<string, any> = {}, timeoutMs = 30000): Promise<Response> {
-  const res = await sendAuthed(path, body, timeoutMs);
+  const generation = getSessionGeneration();
   const token = await getToken();
-  // A 401 on a request we authenticated means the access token expired or was
-  // revoked. Expiry is the ordinary case — the token lives TOKEN_TTL_HOURS and the
-  // app is opened daily — so try the refresh token once before concluding the
-  // session is over. Only if that fails is the customer actually signed out.
-  //
-  // Retried once, never in a loop: a server that 401s a freshly minted token is
-  // telling us something a second attempt won't change.
+  if (generation !== getSessionGeneration()) throw new Error('Session changed');
+  const res = await sendAuthed(path, body, timeoutMs, token, generation);
+  if (generation !== getSessionGeneration()) throw new Error('Session changed');
   if (token && res.status === 401) {
-    const outcome = await refreshSession();
+    // A delayed response from the old token can arrive after another request
+    // finished rotation. Reuse that token, without rotating the new pair again.
+    const currentToken = await getToken();
+    if (generation !== getSessionGeneration()) throw new Error('Session changed');
+    const outcome = currentToken && currentToken !== token
+      ? 'renewed' : await refreshSession(generation);
+    if (generation !== getSessionGeneration() || outcome === 'changed') throw new Error('Session changed');
     if (outcome === 'renewed') {
-      const retried = await sendAuthed(path, body, timeoutMs);
-      if (retried.status === 401) await onSessionExpired();
+      const renewedToken = await getToken();
+      const retried = await sendAuthed(path, body, timeoutMs, renewedToken, generation);
+      if (generation !== getSessionGeneration()) throw new Error('Session changed');
+      if (retried.status === 401) await onSessionExpired(generation);
       else void touchActivity();
       return retried;
     }
-    // 'unavailable' returns the 401 without clearing anything — see RefreshOutcome.
-    if (outcome === 'rejected') await onSessionExpired();
+    if (outcome === 'rejected') await onSessionExpired(generation);
   } else if (token) {
-    void touchActivity(); // record activity for the idle timeout
+    void touchActivity();
   }
   return res;
 }
@@ -126,8 +144,7 @@ export async function apiPost(path: string, body: Record<string, any> = {}, time
 /** One authenticated attempt: builds the headers from whatever token is stored
  *  now, so a retry after a refresh picks up the NEW one rather than resending the
  *  expired token it was called with. */
-async function sendAuthed(path: string, body: Record<string, any>, timeoutMs: number): Promise<Response> {
-  const token = await getToken();
+async function sendAuthed(path: string, body: Record<string, any>, timeoutMs: number, token: string | null, generation: number): Promise<Response> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
@@ -138,6 +155,7 @@ async function sendAuthed(path: string, body: Record<string, any>, timeoutMs: nu
     // compromised device controls every value in them.
     ...(await deviceHeaders()),
   };
+  if (generation !== getSessionGeneration()) throw new Error('Session changed');
   if (token) headers.Authorization = `Bearer ${token}`;
   // Bound every request so a slow/hanging backend (e.g. a slow upstream provider
   // call) can never leave a screen stuck forever — it aborts and the caller's
@@ -170,11 +188,14 @@ export async function apiJson<T = any>(path: string, body: Record<string, any> =
   // their idempotency key, so a user retry replays server-side instead of
   // double-debiting.
   const offline = { success: false, offline: true, message: 'Service temporarily unavailable. Please try again.' } as T;
+  const generation = getSessionGeneration();
   try {
     const res = await apiPost(path, body, timeoutMs);
     const text = await res.text();
+    if (generation !== getSessionGeneration()) return offline;
     try {
       const parsed = JSON.parse(text) as any;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return offline;
       // Replace the WAF's raw block-page message ("You are not authorized to
       // access this resource") with something a user can act on.
       if (res.status === 403 && isEdgeBlockMessage(parsed?.message)) {
@@ -268,5 +289,6 @@ export function newIdempotencyKey(): string {
   if (uuid) return uuid;
   // Keep the helper usable in SDK/test environments where expo-crypto is
   // present but its native UUID implementation is unavailable.
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  const bytes = Crypto.getRandomBytes(16);
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 }

@@ -368,7 +368,7 @@ describe('AddMoney face fallback', () => {
 
   it('hands a server-selected NIN OTP attempt to KYC instead of BVN confirmation', async () => {
     mockApiJson
-      .mockResolvedValueOnce({ success: false })
+      .mockResolvedValueOnce({ success: true, provider: 'partnership', has_account: false, account_setup_state: 'identity_required' })
       .mockResolvedValueOnce({ success: true, otp_required: true, tracking_id: 'bvn-track' })
       .mockResolvedValueOnce({
         success: true,
@@ -407,8 +407,8 @@ describe('AddMoney face fallback', () => {
     expect(findControl(tree, 'Use face verification instead')).toBeTruthy();
   });
 
-  it('does not offer new BVN provisioning when account lookup is offline', async () => {
-    mockApiJson.mockResolvedValueOnce({ success: false, offline: true });
+  it.each([{ success: false, offline: true }, { success: false, message: 'Service unavailable' }, {}])('does not offer new BVN provisioning on an unsuccessful account lookup %j', async (response) => {
+    mockApiJson.mockResolvedValueOnce(response);
 
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<AddMoney />); });

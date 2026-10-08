@@ -1,9 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { Loading } from '@/components/design/Loading';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
-import { apiPost } from '@/lib/api';
+import { apiPost, publicPost } from '@/lib/api';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
@@ -13,6 +12,7 @@ import { notify } from '@/components/design/Notify';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { purchasablePhoneNumber } from '@/lib/phone';
 
 const NETWORKS = [
   { id: '1', name: 'MTN', color: '#FFCC00', logo: require('@/assets/images/providers/mtn.png') },
@@ -31,18 +31,25 @@ type Step = null | 'confirm' | 'pin';
 
 const BuyData = () => {
   const { c } = useTheme();
-  const { balance, reload } = useWallet();
+  const { balance, reload, billPaymentsAvailable, phoneNumber } = useWallet();
   const [net, setNet] = useState('1');
   const [planType, setPlanType] = useState('1');
   const [plan, setPlan] = useState('');
-  const [phone, setPhone] = useState('');
+  const [phone, setPhone] = useState(() => purchasablePhoneNumber(phoneNumber));
+  const phoneEdited = useRef(false);
+  useEffect(() => {
+    if (!phoneEdited.current) setPhone((current) => current || purchasablePhoneNumber(phoneNumber));
+  }, [phoneNumber]);
   const [price, setPrice] = useState('');
+  const [quoteRevision, setQuoteRevision] = useState(0);
   const [priceFor, setPriceFor] = useState('');
   const [plans, setPlans] = useState<{ id: string; label: string; sub?: string; price: number }[]>([]);
   const [plansFor, setPlansFor] = useState('');
   const [loadingPlans, setLoadingPlans] = useState(false);
+  const [catalogueRevision, setCatalogueRevision] = useState(0);
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
+  const purchaseInFlight = useRef(false);
   const [done, setDone] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingMessage, setPendingMessage] = useState('');
@@ -59,12 +66,8 @@ const BuyData = () => {
     setPlan('');
     setPlans([]);
     setPlansFor('');
-    fetch(`${baseUrl}/api/utility/get_data_plans/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ datanetwork: net, selectedPlanType: planType }),
-    })
-      .then((r) => r.json())
+    publicPost('/api/utility/get_data_plans/', { datanetwork: net, selectedPlanType: planType }, 15000)
+      .then((r) => { if (r.ok === false) throw new Error('Catalogue unavailable'); return r.json(); })
       .then((res) => {
         if (current && res?.data_plans) {
           setPlans(res.data_plans.map((p: any) => ({
@@ -79,7 +82,7 @@ const BuyData = () => {
       .catch(() => {})
       .finally(() => { if (current) setLoadingPlans(false); });
     return () => { current = false; };
-  }, [net, planType]);
+  }, [net, planType, catalogueRevision]);
 
   // Fetch authoritative price for the chosen plan.
   useEffect(() => {
@@ -88,12 +91,8 @@ const BuyData = () => {
     if (!plan) return;
     const requestedFor = `${net}|${planType}|${plan}`;
     let current = true;
-    fetch(`${baseUrl}/api/utility/get_data_plans_price/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ selectedDataPlan: plan }),
-    })
-      .then((r) => r.json())
+    publicPost('/api/utility/get_data_plans_price/', { selectedDataPlan: plan }, 15000)
+      .then((r) => { if (r.ok === false) throw new Error('Catalogue unavailable'); return r.json(); })
       .then((res) => {
         if (current && res?.price != null) {
           setPrice(String(res.price));
@@ -102,7 +101,7 @@ const BuyData = () => {
       })
       .catch(() => {});
     return () => { current = false; };
-  }, [net, planType, plan]);
+  }, [net, planType, plan, quoteRevision]);
 
   const network = NETWORKS.find((n) => n.id === net)!;
   const currentPlanContext = `${net}|${planType}`;
@@ -111,8 +110,10 @@ const BuyData = () => {
   const currentPrice = priceFor === `${currentPlanContext}|${plan}` ? price : '';
   const amount = Number(currentPrice || 0);
   const hasAuthoritativePrice = currentPrice !== '' && Number.isFinite(amount) && amount > 0;
-  const valid = phone.length >= 10 && !!planObj && hasAuthoritativePrice && amount <= balance;
+  const valid = billPaymentsAvailable === true && /^0[789]\d{9}$/.test(phone) && !!planObj && hasAuthoritativePrice && amount <= balance;
   const purchase = async (enteredPin: string) => {
+    if (!valid || done || purchaseInFlight.current) return;
+    purchaseInFlight.current = true;
     const fingerprint = [net, plan, phone.trim()].join('|');
     let deliveryStarted = false;
     setBusy(true);
@@ -123,6 +124,7 @@ const BuyData = () => {
         phone,
         datanetwork: net,
         selectedDataPlan: plan,
+        expected_amount: currentPrice,
         transaction_pin: enteredPin,
         idempotency_key: requestKey,
       });
@@ -148,6 +150,7 @@ const BuyData = () => {
         setPinError(result.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
         await clearSpendAttempt('data', fingerprint, requestKey);
+        if (result.code === 'price_changed') setQuoteRevision((value) => value + 1);
         notify('Error', result.message || 'Transaction failed');
         setStep(null);
       }
@@ -162,6 +165,7 @@ const BuyData = () => {
         notify('Unable to start purchase', 'Could not safely prepare this request. Please try again.');
       }
     } finally {
+      purchaseInFlight.current = false;
       setBusy(false);
     }
   };
@@ -199,21 +203,23 @@ const BuyData = () => {
       {loadingPlans ? (
         <Loading full={false} />
       ) : currentPlans.length === 0 ? (
-        <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>No plans available for this selection.</Text>
+        <View><Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>No plans available for this selection.</Text><Btn label="Retry plans" variant="outline" onPress={() => setCatalogueRevision((value) => value + 1)} /></View>
       ) : (
         <PlanList plans={currentPlans} value={plan} onPick={setPlan} />
       )}
+      {!!planObj && !hasAuthoritativePrice ? <View style={{ marginVertical: 12 }}><Text style={{ color: c.ink3, fontFamily: font.regular }}>A confirmed price is needed before payment.</Text><Btn label="Refresh price" variant="outline" onPress={() => setQuoteRevision((value) => value + 1)} /></View> : null}
       <View style={{ height: 16 }} />
 
       <Field
         label="Phone number"
         value={phone}
-        onChangeText={(v) => setPhone(v.replace(/\D/g, '').slice(0, 11))}
+        onChangeText={(v) => { phoneEdited.current = true; setPhone(purchasablePhoneNumber(v) || v.replace(/\D/g, '').slice(0, 15)); }}
         keyboardType="number-pad"
         placeholder="0801 234 5678"
       />
       <View style={{ height: 10 }} />
       <BalanceHint amount={amount} balance={balance} />
+      {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
 

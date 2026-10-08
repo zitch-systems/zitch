@@ -1,5 +1,5 @@
-import React, { useCallback, useState } from 'react';
-import { View, Text } from 'react-native';
+import React, { useCallback, useRef, useState } from 'react';
+import { View, Text, ActivityIndicator } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Screen, Header, Card, Field, Btn, PinSheet, money } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
@@ -37,22 +37,51 @@ const Limits = () => {
   const [pinOpen, setPinOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pendingClear, setPendingClear] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const generation = useRef(0);
+  const saving = useRef(false);
 
   const load = useCallback(async () => {
-    const res = await apiJson<any>('/api/limits/', {});
-    if (res?.success) {
+    const id = ++generation.current;
+    setLoading(true);
+    setError('');
+    try {
+      const res = await apiJson<LimitState & { success?: boolean; message?: string }>('/api/limits/', {}, 10000);
+      if (generation.current !== id) return;
+      const amounts = [res?.tier_transaction_limit, res?.transaction_limit, res?.daily_transfer_limit, res?.daily_bill_limit];
+      if (!res?.success || amounts.some((v) => v == null || !Number.isFinite(Number(v)) || Number(v) < 0)) {
+        setLimits(null);
+        setError(res?.message || 'Could not load your current limits. Please try again.');
+        return;
+      }
       setLimits(res);
-      setDraft(res.self_txn_limit ? String(Math.trunc(Number(res.self_txn_limit))) : '');
-    }
+      // Zero freezes spending, and kobo are supported. Neither may be discarded.
+      setDraft(res.self_txn_limit != null ? String(res.self_txn_limit) : '');
+    } catch {
+      if (generation.current === id) { setLimits(null); setError('Could not load your current limits. Please try again.'); }
+    } finally { if (generation.current === id) setLoading(false); }
   }, []);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    void load();
+    return () => { generation.current += 1; };
+  }, [load]));
+
+  const ceiling = limits ? Number(limits.tier_transaction_limit) : 0;
+  const cleaned = draft.trim().replace(/^₦\s*/, '');
+  const validAmount = /^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d{1,2})?$/.test(cleaned);
+  const typed = Number(cleaned.replace(/,/g, ''));
+  const tooHigh = validAmount && Number.isFinite(typed) && typed > ceiling;
+  const canSave = !!limits && validAmount && Number.isFinite(typed) && typed >= 0 && !tooHigh && !loading;
 
   const apply = async (pin: string) => {
+    if (saving.current || !limits || (!pendingClear && !canSave)) return;
+    saving.current = true;
     setBusy(true);
     try {
       const res = await apiJson<any>('/api/limits/transaction/', {
-        limit: pendingClear ? 'off' : draft,
+        limit: pendingClear ? 'off' : cleaned.replace(/,/g, ''),
         pin,
       });
       setPinOpen(false);
@@ -62,21 +91,23 @@ const Limits = () => {
       }
       notify('Saved', res.message || 'Transaction limit updated');
       await load();
+    } catch {
+      setPinOpen(false);
+      notify('Not changed', 'Could not update your limit. Please try again.');
     } finally {
+      saving.current = false;
       setBusy(false);
       setPendingClear(false);
     }
   };
-
-  const ceiling = limits ? Number(limits.tier_transaction_limit) : 0;
-  const typed = Number(String(draft).replace(/[^0-9.]/g, ''));
-  const tooHigh = !!draft && Number.isFinite(typed) && typed > ceiling;
 
   return (
     <AuthGuard>
       <Screen>
         <Header title="Transaction limit" sub="How much you can send in one go" onBack={() => router.back()} />
 
+        {loading ? <ActivityIndicator accessibilityLabel="Loading limits" color={c.brand} /> : null}
+        {error ? <Card><Text accessibilityRole="alert" style={{ color: c.red, marginBottom: 12 }}>{error}</Text><Btn label="Try again" onPress={() => void load()} /></Card> : null}
         <Card>
           <Row label="Your limit per transaction" value={limits ? money(Number(limits.transaction_limit)) : '—'} strong />
           <Row label={`Tier ${limits?.tier ?? '—'} maximum`} value={limits ? money(ceiling) : '—'} />
@@ -97,9 +128,12 @@ const Limits = () => {
           <Field
             value={draft}
             onChangeText={setDraft}
-            keyboardType="number-pad"
+            keyboardType="decimal-pad"
+            label="Your transaction limit (₦)"
+            editable={!loading && !busy && !!limits}
             placeholder={limits ? `Up to ${money(ceiling)}` : 'Amount'}
           />
+          {draft && !validAmount ? <Text style={{ color: c.red, marginTop: 8 }}>Enter a number with up to two decimal places.</Text> : null}
           {tooHigh ? (
             <Text style={{ fontSize: 12, color: c.red, fontFamily: font.regular, marginTop: 8 }}>
               Your Tier {limits?.tier} maximum is {money(ceiling)}. Verify more of your identity to go higher.
@@ -109,10 +143,10 @@ const Limits = () => {
           <Btn
             label="Save limit"
             size="md"
-            disabled={busy || !draft || tooHigh}
+            disabled={busy || !canSave}
             onPress={() => { setPendingClear(false); setPinOpen(true); }}
           />
-          {limits?.self_txn_limit ? (
+          {limits && limits.self_txn_limit != null ? (
             <>
               <View style={{ height: 10 }} />
               {/* Offered only when one is actually set: a "remove" button for a
@@ -122,7 +156,7 @@ const Limits = () => {
                 label="Remove my limit"
                 size="md"
                 variant="outline"
-                disabled={busy}
+                disabled={busy || loading}
                 onPress={() => { setPendingClear(true); setPinOpen(true); }}
               />
             </>
@@ -131,7 +165,7 @@ const Limits = () => {
 
         <PinSheet
           open={pinOpen}
-          onClose={() => { setPinOpen(false); setPendingClear(false); }}
+          onClose={() => { if (!busy) { setPinOpen(false); setPendingClear(false); } }}
           onComplete={apply}
           busy={busy}
           title="Confirm it's you"

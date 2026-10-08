@@ -3,7 +3,7 @@
 # Produces an installable APK with no EAS/Expo build credits. The Expo project
 # lives at the repository root, so this file sits at the root too.
 #
-# The GitHub Actions Android APK workflow owns automatic preview builds. Keep
+# The GitHub Actions Android APK workflow owns tagged preview releases. Keep
 # this Codemagic workflow as a manual fallback: "Start new build" → "android-apk".
 workflows:
   android-apk:
@@ -36,8 +36,15 @@ workflows:
         script: |
           cd android
           ./gradlew assembleRelease
+      - name: Verify installable test APK
+        script: |
+          python3 scripts/verify-android-apk.py \
+            --apk android/app/build/outputs/apk/release/app-release.apk \
+            --keystore android/app/debug.keystore --signing preview \
+            --revision "$(git rev-parse HEAD)" --metadata android/apk-build-info.json
     artifacts:
       - android/app/build/outputs/**/*.apk
+      - android/apk-build-info.json
     # Manual fallback only. There is intentionally no `triggering:` block here,
     # so a main-branch push cannot duplicate GitHub's automatic preview build.
     # Keep the changeset scope as a guardrail if automation is restored later.
@@ -66,12 +73,7 @@ workflows:
     name: Zitch Android production AAB
     instance_type: linux_x2
     max_build_duration: 60
-    triggering:
-      events:
-        - tag
-      tag_patterns:
-        - pattern: "v*"
-          include: true
+    # Manual fallback only; arbitrary tags must not expose production signing.
     environment:
       node: 20
       java: 17
@@ -86,6 +88,9 @@ workflows:
         - $CM_BUILD_DIR/node_modules
         - $HOME/.gradle/caches
     scripts:
+      - name: Require the main branch for production signing
+        script: |
+          test "$CM_BRANCH" = main || { echo 'Production signing requires main.' >&2; exit 1; }
       - name: Install dependencies
         script: npm ci
       - name: Expo prebuild
@@ -97,17 +102,16 @@ workflows:
           test -n "$CM_KEY_ALIAS"
           test -n "$CM_KEY_PASSWORD"
           cd android
-          ./gradlew bundleRelease --no-daemon \
-            -PZITCH_UPLOAD_STORE_FILE="$CM_KEYSTORE_PATH" \
-            -PZITCH_UPLOAD_STORE_PASSWORD="$CM_KEYSTORE_PASSWORD" \
-            -PZITCH_UPLOAD_KEY_ALIAS="$CM_KEY_ALIAS" \
-            -PZITCH_UPLOAD_KEY_PASSWORD="$CM_KEY_PASSWORD" \
-            -PZITCH_REQUIRE_UPLOAD_KEY=true
+          export ORG_GRADLE_PROJECT_ZITCH_UPLOAD_STORE_FILE="$CM_KEYSTORE_PATH"
+          export ORG_GRADLE_PROJECT_ZITCH_UPLOAD_STORE_PASSWORD="$CM_KEYSTORE_PASSWORD"
+          export ORG_GRADLE_PROJECT_ZITCH_UPLOAD_KEY_ALIAS="$CM_KEY_ALIAS"
+          export ORG_GRADLE_PROJECT_ZITCH_UPLOAD_KEY_PASSWORD="$CM_KEY_PASSWORD"
+          export ORG_GRADLE_PROJECT_ZITCH_REQUIRE_UPLOAD_KEY=true
+          ./gradlew bundleRelease --no-daemon
       - name: Verify signed AAB
         script: |
-          AAB="android/app/build/outputs/bundle/release/app-release.aab"
-          test -s "$AAB"
-          jarsigner -verify -verbose -certs "$AAB" >/tmp/zitch-jarsigner.txt
-          ! grep -q 'CN=Android Debug' /tmp/zitch-jarsigner.txt
+          export ZITCH_UPLOAD_STORE_PASSWORD="$CM_KEYSTORE_PASSWORD"
+          export ZITCH_UPLOAD_KEY_ALIAS="$CM_KEY_ALIAS"
+          scripts/verify-android-signing.sh android/app/build/outputs/bundle/release/app-release.aab "$CM_KEYSTORE_PATH"
     artifacts:
       - android/app/build/outputs/bundle/release/app-release.aab

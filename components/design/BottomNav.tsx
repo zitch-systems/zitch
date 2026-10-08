@@ -30,8 +30,11 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
     return (
       <Pressable
         key={it.name}
+        accessibilityRole="tab"
+        accessibilityLabel={it.label}
+        accessibilityState={{ selected: on }}
         onPress={() => {
-          const event = navigation.emit({ type: 'tabPress', target: it.name, canPreventDefault: true });
+          const event = navigation.emit({ type: 'tabPress', target: state.routes.find((route) => route.name === it.name)?.key ?? it.name, canPreventDefault: true });
           if (!on && !event.defaultPrevented) navigation.navigate(it.name as never);
         }}
         // Tactile 3D press: the tab scales down + dims on touch.
@@ -106,10 +109,7 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
 
         {RIGHT.map((it) => <Tab key={it.name} it={it} />)}
       </View>
-      {/* iOS-style home indicator */}
-      <View style={{ height: 22 + (insets.bottom ? insets.bottom - 6 : 0), alignItems: 'center', justifyContent: 'center' }}>
-        <View style={{ width: 134, height: 5, borderRadius: 3, backgroundColor: c.ink1, opacity: 0.85 }} />
-      </View>
+      <View style={{ height: insets.bottom }} />
     </View>
   );
 };

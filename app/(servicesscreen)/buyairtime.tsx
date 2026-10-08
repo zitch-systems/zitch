@@ -1,7 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { getToken } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
@@ -12,6 +11,7 @@ import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { purchasablePhoneNumber } from '@/lib/phone';
 
 const NETWORKS = [
   { id: '1', name: 'MTN', color: '#FFCC00', logo: require('@/assets/images/providers/mtn.png') },
@@ -24,27 +24,32 @@ type Step = null | 'confirm' | 'pin';
 
 const BuyAirtime = () => {
   const { c } = useTheme();
-  const { balance, reload } = useWallet();
+  const { balance, reload, billPaymentsAvailable, phoneNumber } = useWallet();
   const params = useLocalSearchParams<{ phone?: string }>();
-  const [token, setToken] = useState('');
   const [net, setNet] = useState('1');
-  const [phone, setPhone] = useState(params.phone ?? '');
+  const [phone, setPhone] = useState(() => purchasablePhoneNumber(params.phone) || purchasablePhoneNumber(phoneNumber));
+  const phoneEdited = useRef(false);
+  useEffect(() => {
+    if (!phoneEdited.current) setPhone((current) => current || purchasablePhoneNumber(phoneNumber));
+  }, [phoneNumber]);
   const [amt, setAmt] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
+  const purchaseInFlight = useRef(false);
   const [done, setDone] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingMessage, setPendingMessage] = useState('');
   const [recovered, setRecovered] = useState(false);
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
-  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
 
   const network = NETWORKS.find((n) => n.id === net)!;
   const amount = Number(amt || 0);
-  const valid = phone.length >= 10 && amount >= 100 && amount <= balance;
+  const valid = billPaymentsAvailable === true && /^0[789]\d{9}$/.test(phone) && amount >= 100 && amount <= balance;
 
   const purchase = async (enteredPin: string) => {
+    if (!valid || done || purchaseInFlight.current) return;
+    purchaseInFlight.current = true;
     const fingerprint = [net, phone.trim(), String(amount)].join('|');
     let deliveryStarted = false;
     setBusy(true);
@@ -97,6 +102,7 @@ const BuyAirtime = () => {
         notify('Unable to start purchase', 'Could not safely prepare this request. Please try again.');
       }
     } finally {
+      purchaseInFlight.current = false;
       setBusy(false);
     }
   };
@@ -130,7 +136,7 @@ const BuyAirtime = () => {
       <Field
         label="Phone number"
         value={phone}
-        onChangeText={(v) => setPhone(v.replace(/\D/g, '').slice(0, 11))}
+        onChangeText={(v) => { phoneEdited.current = true; setPhone(purchasablePhoneNumber(v) || v.replace(/\D/g, '').slice(0, 15)); }}
         keyboardType="number-pad"
         placeholder="0801 234 5678"
       />
@@ -148,6 +154,7 @@ const BuyAirtime = () => {
       />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
+      {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
 

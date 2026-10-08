@@ -14,6 +14,7 @@ jest.mock('expo-router', () => ({
     push: (...args: unknown[]) => mockRouterPush(...args),
   },
 }));
+jest.mock('@/components/AuthGuard', () => ({ __esModule: true, default: ({ children }: { children: ReactNode }) => children }));
 jest.mock('@/lib/api', () => ({ apiPost: (...args: unknown[]) => mockApiPost(...args) }));
 jest.mock('@/lib/secureStore', () => ({ getToken: (...args: unknown[]) => mockGetToken(...args) }));
 jest.mock('@/lib/endpoints', () => ({

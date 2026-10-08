@@ -9,7 +9,7 @@ jest.mock('@/lib/api', () => ({ apiPost: (...args: unknown[]) => mockApiPost(...
 jest.mock('@/lib/pendingSpend', () => ({ acquireSpendAttempt: jest.fn(), clearSpendAttempt: jest.fn() }));
 jest.mock('@/lib/spendOutcome', () => ({ classifySpendResponse: jest.fn(), isRecoveredSpendResponse: jest.fn() }));
 jest.mock('expo-router', () => ({ router: { back: jest.fn(), replace: jest.fn() } }));
-jest.mock('@/lib/wallet', () => ({ useWallet: () => ({ balance: 20000, reload: jest.fn() }) }));
+jest.mock('@/lib/wallet', () => ({ useWallet: () => ({ balance: 20000, billPaymentsAvailable: true, transfersAvailable: true, reload: jest.fn() }) }));
 jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
 jest.mock('@/components/design/Receipt', () => ({ __esModule: true, default: () => null }));
 jest.mock('@/lib/theme', () => ({
@@ -63,12 +63,22 @@ const control = (tree: renderer.ReactTestRenderer, label: string) =>
 describe('electricity meter validation binding', () => {
   beforeEach(() => mockApiPost.mockReset());
 
+  it('does not mark an HTTP 200 failure envelope as verified', async () => {
+    mockApiPost.mockResolvedValueOnce({ ok: true, json: async () => ({ success: false, message: 'Lookup unavailable' }) });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<BuyElectricity />); });
+    await act(async () => { control(tree, 'Meter number').props.onChangeText('12345678'); control(tree, 'Pick amount').props.onPress(); });
+    await act(async () => { await control(tree, 'Validate meter').props.onPress(); });
+    expect(control(tree, 'Continue').props.disabled).toBe(true);
+    act(() => tree.unmount());
+  });
+
   it('requires current meter validation and ignores a late stale response', async () => {
     let resolveOld!: (value: unknown) => void;
     const oldResponse = new Promise((resolve) => { resolveOld = resolve; });
     mockApiPost
       .mockReturnValueOnce(oldResponse)
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ customer_name: 'Current Customer' }) });
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ success: true, customer_name: 'Current Customer' }) });
 
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<BuyElectricity />); });
@@ -85,7 +95,7 @@ describe('electricity meter validation binding', () => {
     });
     await act(async () => { control(tree, 'Meter number').props.onChangeText('22222222'); });
     await act(async () => {
-      resolveOld({ ok: true, json: async () => ({ customer_name: 'Stale Customer' }) });
+      resolveOld({ ok: true, json: async () => ({ success: true, customer_name: 'Stale Customer' }) });
       await pending;
     });
     expect(control(tree, 'Continue').props.disabled).toBe(true);

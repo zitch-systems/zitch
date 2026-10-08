@@ -1,21 +1,19 @@
 import React from 'react';
-import { router } from 'expo-router';
 import FeatureScreen from '@/components/design/FeatureScreen';
 
 const Bnpl = () => (
   <FeatureScreen
     title="Buy Now, Pay Later"
     icon="loan"
-    tagline="Shop today and spread the cost over time — interest-free on your first order."
+    tagline="Buy Now, Pay Later is not available yet. Terms and eligibility will appear when the service launches."
     points={[
-      { icon: 'check', title: 'Split in 4', sub: 'Pay 25% now, the rest over 6 weeks' },
-      { icon: 'spark', title: '₦0 interest', sub: 'No fees when you pay on time' },
-      { icon: 'chart', title: 'Instant decision', sub: 'Eligibility based on your Zitch limit' },
+      { icon: 'check', title: 'Payment plans', sub: 'Details will be published at launch' },
+      { icon: 'spark', title: 'Clear pricing', sub: 'Review rates and fees before applying' },
+      { icon: 'chart', title: 'Eligibility', sub: 'Requirements will be confirmed at launch' },
     ]}
-    primaryLabel="Check eligibility"
+    primaryLabel="Contact support"
     primaryIcon="loan"
-    onPrimary={() => router.push('/getloan')}
-    note="Buy Now, Pay Later uses your Zitch credit limit. Repay from your wallet anytime."
+    note="There is no active Buy Now, Pay Later application in the app yet."
   />
 );
 

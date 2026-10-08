@@ -5,6 +5,14 @@ cable TV, electricity, exams, loans, transfers and a wallet. Built with
 [Expo](https://expo.dev) (SDK 51), [expo-router](https://docs.expo.dev/router/introduction)
 file-based routing, and [NativeWind](https://www.nativewind.dev/).
 
+## Download the Android test app
+
+Open [GitHub Releases](https://github.com/zitch-systems/zitch/releases) on your Android phone, open the newest **Zitch Android test APK** release, then download **Zitch-Android-Test.apk** under **Assets** and open it to install. The source-code ZIP files are not needed. Allow installation for the browser/download app if Android asks.
+
+These are release-mode internal test builds signed with the existing Android test key. They connect to `https://api.zitch.ng`; account activation and service availability follow server controls. They are not Play Store production releases. If an existing installation reports a signing conflict, keep it and report the conflict before removing it.
+
+Each tagged test release must pass the exact source revision's four CI suites, APK certificate/manifest verification, and an Android emulator startup/sign-in check. The release includes a SHA-256 checksum and build metadata. Production signing, push credentials, physical-device acceptance and bank settlement acceptance remain separate requirements.
+
 ## Tech stack
 
 - **Expo SDK 51** / React Native 0.74
@@ -65,14 +73,14 @@ app/
 components/              # reusable UI (CustomButtons, CustomField, AuthGuard, ComingSoonView)
 components/configFiles/  # apiConfig (base URL) and links (legal URLs)
 constants/               # images, icons, colors
-lib/secureStore.ts       # token storage (SecureStore on native, AsyncStorage on web)
+lib/secureStore.ts       # token storage (SecureStore on native, memory only on web)
 docs/design_handoff_zitch_revamp/   # design reference / prototype (NOT shipped code)
 ```
 
 ## Configuration
 
 - **API base URL:** `components/configFiles/apiConfig.tsx`
-- **Legal links:** `components/configFiles/links.ts` (placeholders — replace with real URLs)
+- **Legal links:** `components/configFiles/links.ts`
 - **Design tokens:** mirrored into `tailwind.config.js` from
   `docs/design_handoff_zitch_revamp/assets/tokens.css`
 
@@ -85,7 +93,6 @@ npm run test:watch
 
 ## Notes
 
-- Several service flows (loans, exams, send money, biometric setup) are placeholders that
-  render a "Coming Soon" screen until implemented.
+- Feature availability is determined by the backend and provider readiness. In particular, VAS transfers and VAS-funded bills remain disabled until bank acceptance; an APK build does not activate them.
 - The `docs/design_handoff_zitch_revamp/` bundle is an HTML/React prototype used as the
   visual source of truth for the planned revamp. It is **not** production code.

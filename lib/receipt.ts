@@ -259,6 +259,7 @@ export const exportReceipt = async (
 
 /** Hand the file to the OS share sheet (WhatsApp, mail, AirDrop, …). */
 export const shareReceipt = async (format: ReceiptFormat, src: ReceiptSource): Promise<ExportOutcome> => {
+  lastFailure = '';
   if (Platform.OS === 'web') return 'unsupported';
   try {
     const Sharing = await import('expo-sharing');
@@ -285,6 +286,7 @@ export const shareReceipt = async (format: ReceiptFormat, src: ReceiptSource): P
  * same promise: the file exists somewhere findable when this returns 'saved'.
  */
 export const saveReceipt = async (format: ReceiptFormat, src: ReceiptSource): Promise<ExportOutcome> => {
+  lastFailure = '';
   if (Platform.OS === 'web') return 'unsupported';
   try {
     const { uri, mime, filename } = await exportReceipt(format, src);
@@ -337,7 +339,7 @@ export const outcomeMessage = (outcome: ExportOutcome, format: ReceiptFormat): s
       // popup, so the payment itself is never in doubt.
       const why = lastExportFailure();
       return why
-        ? `Could not create the ${what.toLowerCase()} — ${why}. Your payment went through; the reference is on the receipt.`
+        ? `Could not create the ${what.toLowerCase()} — ${why}. Check the transaction status and reference on your receipt.`
         : `Could not create the ${what.toLowerCase()} file`;
     }
     case 'cancelled': return null;   // the user backed out; say nothing

@@ -59,7 +59,10 @@ export async function registerForPushNotifications(
       token,
       platform: Platform.OS,
     });
-    if (!result?.success) return 'failed';
+    // This endpoint returns a successful HTTP response with a message, without
+    // a `success` property. Respect an explicit failure but don't report an
+    // already-registered device as failed because that optional field is absent.
+    if (result?.success === false || result?._httpOk !== true) return 'failed';
     await AsyncStorage.setItem(TOKEN_KEY, token);
     return 'registered';
   } catch {
@@ -70,24 +73,30 @@ export async function registerForPushNotifications(
 /** Route both warm-app and cold-start notification taps through one callback. */
 export function subscribeToNotificationOpens(onOpen: () => void): () => void {
   if (Platform.OS === 'web') return () => {};
+  let active = true;
   const open = () => {
-    AsyncStorage.setItem(PENDING_OPEN_KEY, Date.now().toString()).catch(() => {});
-    onOpen();
+    if (!active) return;
+    // Persist before routing: a cold-start guard may immediately consume this
+    // marker, so racing a fire-and-forget write can reopen it a second time.
+    void AsyncStorage.setItem(PENDING_OPEN_KEY, Date.now().toString())
+      .catch(() => {})
+      .then(() => { if (active) onOpen(); });
   };
   const sub = Notifications.addNotificationResponseReceivedListener(open);
   void Notifications.getLastNotificationResponseAsync().then((last) => {
-    if (!last) return;
-    void Notifications.clearLastNotificationResponseAsync();
-    setTimeout(open, 0);
-  });
-  return () => sub.remove();
+    if (!active || !last) return;
+    void Notifications.clearLastNotificationResponseAsync().catch(() => {});
+    open();
+  }).catch(() => {});
+  return () => { active = false; sub.remove(); };
 }
 
 export async function takePendingNotificationOpen(): Promise<boolean> {
   const raw = await AsyncStorage.getItem(PENDING_OPEN_KEY);
   await AsyncStorage.removeItem(PENDING_OPEN_KEY);
   const at = Number(raw);
-  return Number.isFinite(at) && Date.now() - at < 10 * 60 * 1000;
+  const age = Date.now() - at;
+  return raw !== null && Number.isFinite(at) && age >= 0 && age < 10 * 60 * 1000;
 }
 
 export async function clearPendingNotificationOpen(): Promise<void> {

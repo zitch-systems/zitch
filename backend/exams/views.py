@@ -4,7 +4,7 @@ Same money pattern as the utility flows: verify PIN -> debit wallet (pending) ->
 call the aggregator -> settle the ledger (refund on failure).
 """
 from common.http import (
-    api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok,
+    api, check_confirmed_price, check_daily_limit, check_send_limits, fail, idempotent_replay, ok,
     provider_purchase_response, require_user, spend_key, verify_transaction_pin,
 )
 from utility.providers import vtu_purchase
@@ -52,6 +52,9 @@ def buy_exam(request):
         return replay
     if not product.active:
         return fail("Exam product not found", status=404)
+    price_error = check_confirmed_price(data, amount)
+    if price_error is not None:
+        return price_error
 
     pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
     if pin_err:

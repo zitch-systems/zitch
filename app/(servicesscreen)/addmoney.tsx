@@ -85,8 +85,9 @@ const AddMoney = () => {
           (r.test_mode !== true && !/^711/.test(r.account_number) && r.available === true && r.has_account === true && r.account_setup_state === 'ready'))) {
         setAccount(r as DediAccount);
         setLoadError('');
-      } else if (r?.offline) {
-        setLoadError('We could not load your funding account. Check your connection and try again.');
+      } else if (r?.success !== true) {
+        setAccount(null);
+        setLoadError(r?.message || 'We could not load your funding account. Check your connection and try again.');
       } else {
         setAccount(null);
         setLoadError('');

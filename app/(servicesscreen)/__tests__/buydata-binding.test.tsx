@@ -6,14 +6,14 @@ import BuyData from '@/app/(servicesscreen)/buydata';
 const mockFetch = jest.fn();
 
 jest.mock('@/lib/secureStore', () => ({ getToken: jest.fn(async () => null) }));
-jest.mock('@/lib/api', () => ({ apiPost: jest.fn() }));
+jest.mock('@/lib/api', () => ({ publicPost: (path: string, body: unknown) => global.fetch(path, { body: JSON.stringify(body) }), apiPost: jest.fn() }));
 jest.mock('@/lib/pendingSpend', () => ({ acquireSpendAttempt: jest.fn(), clearSpendAttempt: jest.fn() }));
 jest.mock('@/lib/spendOutcome', () => ({
   classifySpendResponse: jest.fn(),
   isRecoveredSpendResponse: jest.fn(),
 }));
 jest.mock('expo-router', () => ({ router: { back: jest.fn(), replace: jest.fn() } }));
-jest.mock('@/lib/wallet', () => ({ useWallet: () => ({ balance: 20000, reload: jest.fn() }) }));
+jest.mock('@/lib/wallet', () => ({ useWallet: () => ({ balance: 20000, billPaymentsAvailable: true, transfersAvailable: true, reload: jest.fn() }) }));
 jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
 jest.mock('@/components/design/ZIcon', () => () => null);
 jest.mock('@/components/design/Receipt', () => ({ __esModule: true, default: () => null }));

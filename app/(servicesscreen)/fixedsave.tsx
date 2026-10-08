@@ -54,7 +54,7 @@ const FixedSave = () => {
   useEffect(() => {
     savingsService.getRates()
       .then((res) => {
-        const available = res?.product_available === true;
+        const available = res?.success === true && res.product_available === true;
         setProductAvailable(available);
         setUnavailableMessage(res?.unavailable_message || 'Fixed savings is not available right now.');
         if (available && Array.isArray(res?.rates) && res.rates.length) {
@@ -77,7 +77,7 @@ const FixedSave = () => {
   const valid = productAvailable && amount >= minAmt && amount <= balance && rate > 0;
 
   const create = async (pin: string) => {
-    if (!productAvailable || createInFlight.current) return;
+    if (!valid || done || createInFlight.current) return;
     createInFlight.current = true;
     const fingerprint = [String(amount), String(days)].join('|');
     let deliveryStarted = false;

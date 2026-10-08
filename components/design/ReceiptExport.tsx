@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
 import { Sheet } from '@/components/design/ui';
@@ -37,9 +37,12 @@ const ReceiptExport = ({
   onBusy?: (busy: boolean) => void;
 }) => {
   const { c } = useTheme();
+  const inFlight = useRef(false);
 
   const run = async (fmt: ReceiptFormat) => {
-    const act = action ?? 'save';
+    if (inFlight.current || !action) return;
+    inFlight.current = true;
+    const act = action;
     onClose();
     onBusy?.(true);
     // Let this sheet finish its dismiss animation before presenting the next
@@ -56,7 +59,10 @@ const ReceiptExport = ({
       // we can't make.
       if (outcome === 'saved' || outcome === 'shared') flash(outcome === 'saved' ? 'Saved' : 'Ready', line);
       else notifyError(outcome === 'denied' ? 'Permission needed' : 'Receipt', line);
+    } catch {
+      notifyError('Receipt', 'Could not prepare the receipt. Please try again.');
     } finally {
+      inFlight.current = false;
       onBusy?.(false);
     }
   };

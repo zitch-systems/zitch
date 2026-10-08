@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
-import { getToken } from '@/lib/secureStore';
+import { publicPost } from '@/lib/api';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { examsService } from '@/lib/services/bills';
@@ -12,6 +11,7 @@ import { notify } from '@/components/design/Notify';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { purchasablePhoneNumber } from '@/lib/phone';
 
 const EXAM_COLORS: Record<string, string> = {
   waec: '#0B7A3B', neco: '#1E5BB8', jamb: '#7A1FA2', nabteb: '#C0392B',
@@ -22,14 +22,20 @@ type Step = null | 'confirm' | 'pin';
 
 const Exams = () => {
   const { c } = useTheme();
-  const { balance, reload } = useWallet();
-  const [token, setToken] = useState('');
+  const { balance, reload, billPaymentsAvailable, phoneNumber } = useWallet();
   const [exams, setExams] = useState<Exam[]>([]);
+  const [quoteRevision, setQuoteRevision] = useState(0);
+  const [catalogueLoading, setCatalogueLoading] = useState(true);
   const [selected, setSelected] = useState('');
   const [qty, setQty] = useState(1);
-  const [phone, setPhone] = useState('');
+  const [phone, setPhone] = useState(() => purchasablePhoneNumber(phoneNumber));
+  const phoneEdited = useRef(false);
+  useEffect(() => {
+    if (!phoneEdited.current) setPhone((current) => current || purchasablePhoneNumber(phoneNumber));
+  }, [phoneNumber]);
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
+  const purchaseInFlight = useRef(false);
   const [done, setDone] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingMessage, setPendingMessage] = useState('');
@@ -37,26 +43,31 @@ const Exams = () => {
   const [txnRef, setTxnRef] = useState('');
   const [purchasedPins, setPurchasedPins] = useState<string[]>([]);
   const [pinError, setPinError] = useState('');
-  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
   useEffect(() => {
-    fetch(`${baseUrl}/api/exams/list/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-      .then((r) => r.json())
-      .then((res) => { if (Array.isArray(res.exams)) { setExams(res.exams); if (res.exams[0]) setSelected(res.exams[0].code); } })
-      .catch(() => {});
-  }, []);
+    let current = true;
+    setCatalogueLoading(true);
+    publicPost('/api/exams/list/', {}, 15000)
+      .then((r) => { if (r.ok === false) throw new Error('Catalogue unavailable'); return r.json(); })
+      .then((res) => { if (current && Array.isArray(res.exams)) { setExams(res.exams); if (res.exams[0]) setSelected(res.exams[0].code); } })
+      .catch(() => {})
+      .finally(() => { if (current) setCatalogueLoading(false); });
+    return () => { current = false; };
+  }, [quoteRevision]);
 
   const exam = exams.find((e) => e.code === selected);
   const amount = exam ? Number(exam.price) * qty : 0;
-  const valid = !!exam && phone.length >= 10;
+  const valid = billPaymentsAvailable === true && !!exam && /^0[789]\d{9}$/.test(phone) && Number.isFinite(amount) && amount > 0 && amount <= balance;
 
   const purchase = async (pin: string) => {
+    if (!valid || done || purchaseInFlight.current) return;
+    purchaseInFlight.current = true;
     const fingerprint = [selected, String(qty), phone.trim()].join('|');
     let deliveryStarted = false;
     setBusy(true);
     try {
       const requestKey = await acquireSpendAttempt('exam', fingerprint);
       deliveryStarted = true;
-      const res = await examsService.buy(selected, qty, phone, pin, requestKey);
+      const res = await examsService.buy(selected, qty, phone, pin, requestKey, amount);
       const outcome = classifySpendResponse(res);
       if (outcome === 'success') {
         await clearSpendAttempt('exam', fingerprint, requestKey);
@@ -82,6 +93,7 @@ const Exams = () => {
         setPinError(res.message || 'Incorrect PIN');
       } else {
         await clearSpendAttempt('exam', fingerprint, requestKey);
+        if (res.code === 'price_changed') { setExams([]); setQuoteRevision((value) => value + 1); }
         notify('Error', res.message || 'Transaction failed');
         setStep(null);
       }
@@ -96,6 +108,7 @@ const Exams = () => {
         notify('Unable to start purchase', 'Could not safely prepare this request. Please try again.');
       }
     } finally {
+      purchaseInFlight.current = false;
       setBusy(false);
     }
   };
@@ -135,6 +148,8 @@ const Exams = () => {
       <Header title="Exams · JAMB / WAEC" onBack={() => router.back()} />
 
       <Label>Select exam</Label>
+      {catalogueLoading ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Loading available exam products…</Text> : exams.length === 0 ? <View style={{ marginBottom: 16 }}><Text style={{ color: c.ink3, fontFamily: font.regular }}>No exam products are available right now.</Text><Btn label="Try again" variant="outline" onPress={() => setQuoteRevision((value) => value + 1)} /></View> : null}
+
       <View style={{ gap: 10, marginBottom: 16 }}>
         {exams.map((e) => {
           const on = selected === e.code;
@@ -169,12 +184,13 @@ const Exams = () => {
       <Field
         label="Phone number (PIN delivery)"
         value={phone}
-        onChangeText={(v) => setPhone(v.replace(/\D/g, '').slice(0, 11))}
+        onChangeText={(v) => { phoneEdited.current = true; setPhone(purchasablePhoneNumber(v) || v.replace(/\D/g, '').slice(0, 15)); }}
         keyboardType="number-pad"
         placeholder="0801 234 5678"
       />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
+      {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
 

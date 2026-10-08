@@ -1,9 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { apiPost } from '@/lib/api';
+import { apiPost, publicPost } from '@/lib/api';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
@@ -16,6 +15,7 @@ import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { paymentDestination } from '@/lib/phone';
 
 const AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 // Mirrors backend User.LARGE_TXN_THRESHOLD — drives the device biometric step-up.
@@ -28,20 +28,21 @@ type PendingAttempt = { scope: string; fingerprint: string; key: string };
 
 const SendMoney = () => {
   const { c } = useTheme();
-  const { balance, reload } = useWallet();
-  const params = useLocalSearchParams<{ identifier?: string }>();
+  const { balance, reload, transfersAvailable } = useWallet();
+  const params = useLocalSearchParams<{ identifier?: string; mode?: string }>();
 
-  const [mode, setMode] = useState<'bank' | 'zitch'>('bank');
+  const initialDestination = paymentDestination(params.identifier);
+  const [mode, setMode] = useState<'bank' | 'zitch'>(initialDestination?.mode || 'bank');
   const [banks, setBanks] = useState<Bank[]>([]);
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
   const [query, setQuery] = useState('');
   const [picked, setPicked] = useState<Beneficiary | null>(null);
 
   // bank mode
-  const [acct, setAcct] = useState(params.identifier?.replace(/\D/g, '').slice(0, 10) ?? '');
+  const [acct, setAcct] = useState(initialDestination?.mode === 'bank' ? initialDestination.identifier : '');
   const [bank, setBank] = useState<Bank | null>(null);
   // zitch mode
-  const [identifier, setIdentifier] = useState('');
+  const [identifier, setIdentifier] = useState(initialDestination?.mode === 'zitch' ? initialDestination.identifier : '');
   const [resolvedName, setResolvedName] = useState('');
   const [resolvedRecipient, setResolvedRecipient] = useState('');
   const [resolvedFor, setResolvedFor] = useState('');
@@ -66,7 +67,7 @@ const SendMoney = () => {
   useEffect(() => {
     getToken().then((t) => {
       if (!t) return;
-      fetch(`${baseUrl}/api/transfers/banks/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      publicPost('/api/transfers/banks/', {}, 15000)
         .then((r) => r.json()).then((res) => res.banks && setBanks(res.banks)).catch(() => {});
       apiPost(EP.transfers.beneficiaries)
         .then((r) => r.json()).then((res) => res.beneficiaries && setBeneficiaries(res.beneficiaries)).catch(() => {});
@@ -107,8 +108,8 @@ const SendMoney = () => {
       try {
         const res = await transfersService.resolve(requestedAccount); // no bank -> auto-detect
         if (cancelled || generation !== bankResolveGeneration.current) return;
-        if (res.success && res.matches?.length === 1) applyMatch(res.matches[0], requestedAccount);
-        else if (res.success && res.matches?.length) setMatches(res.matches);
+        if (res.success && res.mock !== true && res.matches?.length === 1) applyMatch(res.matches[0], requestedAccount);
+        else if (res.success && res.mock !== true && res.matches?.length) setMatches(res.matches);
         else setBankErr(res.message || "Couldn't detect the bank — tap “Bank” to pick it.");
       } catch {
         if (!cancelled && generation === bankResolveGeneration.current) {
@@ -131,7 +132,7 @@ const SendMoney = () => {
     try {
       const res = await transfersService.resolve(requestedAccount, b.code);
       if (generation !== bankResolveGeneration.current) return;
-      if (res.success && res.name) {
+      if (res.success && res.mock !== true && res.name) {
         setBankName(res.name);
         setBankNameFor(`${requestedAccount}|${b.code}`);
       }
@@ -159,7 +160,7 @@ const SendMoney = () => {
     ? acct.length === 10 && !!bank && !!activeBankName
     : !!activeResolvedName;
   const recipientName = picked ? picked.name : mode === 'bank' ? activeBankName : activeResolvedName;
-  const valid = (pickedReady || acctReady) && amount >= 10 && amount <= balance;
+  const valid = transfersAvailable === true && (pickedReady || acctReady) && amount >= 10 && amount <= balance;
 
   const resolveZitch = async () => {
     const requestedIdentifier = identifier.trim();
@@ -197,7 +198,7 @@ const SendMoney = () => {
     setResolvedName('');
     setResolvedRecipient('');
     setResolvedFor('');
-    setIdentifier(value.replace(/[^\d@a-zA-Z]/g, '').slice(0, 15));
+    setIdentifier(value.replace(/[^\d@a-zA-Z._+\-]/g, '').slice(0, 150));
   };
 
   const transferAttempt = () => {
@@ -240,7 +241,7 @@ const SendMoney = () => {
   };
 
   const send = async (pin: string) => {
-    if (sendInFlight.current) return;
+    if (!valid || done || sendInFlight.current) return;
     sendInFlight.current = true;
     const attempt = transferAttempt();
     let requestKey = '';
@@ -262,7 +263,7 @@ const SendMoney = () => {
       const outcome = classifySpendResponse(res);
 
       // Large transfers need durable face verification (done once in KYC).
-      if (!res.success && res.code === 'face_required') {
+      if (outcome === 'failed' && res.code === 'face_required') {
         await clearSpendAttempt(attempt.scope, attempt.fingerprint, requestKey);
         setStep(null);
         Alert.alert(
@@ -332,7 +333,7 @@ const SendMoney = () => {
             : recovered
               ? 'This confirms your earlier transfer. No new transfer was made. Authorize a new transfer to send again.'
             : `${money(amount)} sent to ${recipientName || 'recipient'}.`}
-          rows={[['Recipient', recipientName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Fee', '₦0'], ['Total', money(amount), true]]}
+          rows={[['Recipient', recipientName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Total', money(amount), true]]}
           reference={txnRef}
           status={pending ? (underReview ? 'Under review' : 'Processing') : 'Successful'}
           footer={pending ? (
@@ -472,6 +473,7 @@ const SendMoney = () => {
       <Field value={amt} onChangeText={(v) => setAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
+      {transfersAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Transfers are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Field label="Narration (optional)" value={note} onChangeText={setNote} placeholder="What's it for?" />
       <View style={{ height: 20 }} />
@@ -490,7 +492,13 @@ const SendMoney = () => {
           ) : (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingBottom: 4 }}>
               {filteredBens.map((b) => (
-                <Pressable key={b.id} onPress={() => setPicked(b)} style={{ alignItems: 'center', gap: 7, width: 64 }}>
+                <Pressable key={b.id} onPress={() => {
+                  if (b.bank_name === 'Zitch') {
+                    // Resolve mutable saved aliases again so they bind to the
+                    // same immutable recipient key as a manually entered send.
+                    setPicked(null); setMode('zitch'); changeIdentifier(b.account_number);
+                  } else setPicked(b);
+                }} style={{ alignItems: 'center', gap: 7, width: 64 }}>
                   <Monogram text={b.initials} color={b.color} size={52} />
                   <Text numberOfLines={1} style={{ fontSize: 11, fontFamily: font.semibold, color: c.ink2, textAlign: 'center' }}>{b.name.split(' ')[0]}</Text>
                 </Pressable>

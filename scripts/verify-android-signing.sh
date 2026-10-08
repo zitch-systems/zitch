@@ -24,12 +24,14 @@ done
 test -s "$aab" || { echo "AAB does not exist or is empty: $aab" >&2; exit 1; }
 test -s "$keystore" || { echo "Keystore does not exist or is empty: $keystore" >&2; exit 1; }
 
-# Verify the archive's cryptographic signatures. Do not use `-strict` here:
-# Android upload keys are normally self-signed, and jarsigner's strict mode treats
-# an otherwise valid self-signed certificate chain as a non-zero signer error.
-# The certificate extraction and exact fingerprint comparison below make an
-# unsigned archive or an archive signed by any other key fail closed.
-jarsigner -verify "$aab" >/dev/null
+# Supplying the trusted upload keystore makes its self-signed certificate valid
+# for this verification. Strict mode is essential: ordinary jarsigner verification
+# exits successfully even when unsigned files have been added to a signed archive.
+# The explicit alias also rejects entries signed with another certificate.
+jarsigner -verify -strict \
+  -keystore "$keystore" \
+  -storepass:env ZITCH_UPLOAD_STORE_PASSWORD \
+  "$aab" "$ZITCH_UPLOAD_KEY_ALIAS" >/dev/null
 
 artifact_fingerprint=$(
   keytool -printcert -jarfile "$aab" -rfc \

@@ -18,6 +18,8 @@ jest.mock('@/lib/netPatch', () => ({ USER_AGENT: 'zitch-test', isEdgeBlockMessag
 jest.mock('@/lib/deviceIntegrity', () => ({ deviceHeaders: async () => ({}) }));
 jest.mock('@/lib/secureStore', () => ({
   getToken: jest.fn(),
+  getSessionGeneration: jest.fn().mockReturnValue(0),
+  saveSpendAccountNamespace: jest.fn(),
   getRefreshToken: jest.fn(),
   saveToken: jest.fn(),
   saveRefreshToken: jest.fn(),
@@ -199,5 +201,60 @@ describe('refresh on 401', () => {
 
     expect(calledPaths()).toEqual(['/api/sigin/']);
     expect(mockClearSession).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('session replacement during a request', () => {
+  it('does not replay a rejected spend with another account token', async () => {
+    const store = jest.requireMock('../secureStore');
+    let finish!: (value: Response) => void;
+    (global.fetch as jest.Mock).mockReturnValueOnce(new Promise(r => { finish = r; }));
+    const pending = apiPost('/api/transfers/send/', { amount: 100, idempotency_key: 'original' });
+    while ((global.fetch as jest.Mock).mock.calls.length < 1) await Promise.resolve();
+    store.getSessionGeneration.mockReturnValue(1);
+    mockGetToken.mockResolvedValue('other-account');
+    finish(json(401, {}));
+    await expect(pending).rejects.toThrow('Session changed');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(mockClearSession).not.toHaveBeenCalled();
+  });
+
+  it('does not revive an account after logout while refresh was in flight', async () => {
+    const store = jest.requireMock('../secureStore');
+    let finish!: (value: Response) => void;
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(json(401, {}))
+      .mockReturnValueOnce(new Promise(r => { finish = r; }));
+    const pending = apiPost('/api/wallet/');
+    // The response resolver exists before the request starts, so wait until
+    // the refresh fetch itself has been issued.
+    while ((global.fetch as jest.Mock).mock.calls.length < 2) await Promise.resolve();
+    store.getSessionGeneration.mockReturnValue(1);
+    mockGetToken.mockResolvedValue(null);
+    finish(json(200, { access_token: 'revived', refresh_token: 'revived-refresh' }));
+    await expect(pending).rejects.toThrow('Session changed');
+    expect(mockSaveToken).not.toHaveBeenCalled();
+    expect(mockSaveRefresh).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses a completed rotation when an old-token 401 arrives late', async () => {
+    let finishSlow!: (value: Response) => void;
+    let current = 'old-access';
+    mockGetToken.mockImplementation(async () => current);
+    mockSaveToken.mockImplementation(async token => { current = token; });
+    (global.fetch as jest.Mock).mockImplementation(async (url: string, init: any) => {
+      if (url.endsWith('/slow/') && init.headers.Authorization === 'Bearer old-access') {
+        return new Promise(r => { finishSlow = r; });
+      }
+      if (url.endsWith('/api/token/refresh/')) return json(200, { access_token: 'new-access', refresh_token: 'refresh-2' });
+      return json(init.headers.Authorization === 'Bearer old-access' ? 401 : 200, {});
+    });
+    const slow = apiPost('/slow/');
+    await apiPost('/fast/');
+    finishSlow(json(401, {}));
+    expect((await slow).status).toBe(200);
+    expect(calledPaths().filter(p => p === '/api/token/refresh/')).toHaveLength(1);
   });
 });

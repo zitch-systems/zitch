@@ -15,9 +15,10 @@ export const bettingService = {
 };
 
 export const examsService = {
-  buy: (exam: string, quantity: number, phone: string, pin: string, idempotencyKey: string) =>
+  buy: (exam: string, quantity: number, phone: string, pin: string, idempotencyKey: string, expectedAmount?: number | string) =>
     apiJson<BillResult>(EP.exams.buy, {
       exam, quantity, phone, transaction_pin: pin, idempotency_key: idempotencyKey,
+      ...(expectedAmount == null ? {} : { expected_amount: expectedAmount }),
     }),
 };
 

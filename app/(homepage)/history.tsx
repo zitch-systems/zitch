@@ -43,7 +43,7 @@ const inCategory = (t: { dir: string; icon: string }, cat: string) => {
 
 const History = () => {
   const { c } = useTheme();
-  const { txns, hydrated, reload } = useWallet();
+  const { txns, hydrated, historyError, reload } = useWallet();
   const [cat, setCat] = useState('all');
   const [status, setStatus] = useState('all');
   const [picker, setPicker] = useState<null | 'cat' | 'status'>(null);
@@ -127,6 +127,8 @@ const History = () => {
         <SelectRow compact value={statusLabel} onPress={() => setPicker('status')} />
       </View>
 
+      {historyError ? <Text accessibilityRole="alert" style={{ color: c.amber, fontFamily: font.medium, marginBottom: 12 }}>{txns.length ? 'Showing previously loaded transactions. ' : ''}{historyError} Pull down to retry.</Text> : null}
+
       {!hydrated && txns.length === 0 ? (
         // Before the first fetch returns there is nothing to say about this
         // account yet. "Nothing to show" is an answer, and showing it to someone
@@ -145,9 +147,9 @@ const History = () => {
           <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: c.surface3, alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
             <ZIcon name="history" size={26} color={c.ink3} />
           </View>
-          <Text style={{ color: c.ink2, fontFamily: font.bold, fontSize: 15 }}>Nothing to show</Text>
+          <Text style={{ color: c.ink2, fontFamily: font.bold, fontSize: 15 }}>{historyError ? 'Transactions unavailable' : 'Nothing to show'}</Text>
           <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 13, marginTop: 4, textAlign: 'center' }}>
-            {cat === 'all' && status === 'all'
+            {historyError ? 'Pull down to retry.' : cat === 'all' && status === 'all'
               ? 'Your transactions will appear here.'
               : 'No transactions match these filters.'}
           </Text>

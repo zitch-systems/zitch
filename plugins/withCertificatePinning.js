@@ -71,6 +71,9 @@ function resolvePins(props, now = new Date()) {
   const pins = (props && props.pins) || [];
   const expiration = props && props.expiration;
 
+  if (!Array.isArray(domains) || !Array.isArray(pins)) {
+    throw new Error('withCertificatePinning: `domains` and `pins` must be arrays');
+  }
   if (!pins.length && !domains.length) return null; // not configured — no-op
   if (!domains.length) {
     throw new Error('withCertificatePinning: `pins` given with no `domains` to apply them to');
@@ -78,12 +81,20 @@ function resolvePins(props, now = new Date()) {
   if (!pins.length) {
     throw new Error('withCertificatePinning: `domains` given with no `pins`');
   }
-  if (pins.length < 2) {
+  if (new Set(pins).size < 2) {
     throw new Error(
       'withCertificatePinning: at least two pins are required — a primary and a backup. ' +
         'With one pin, losing that key locks every installed app out of the API permanently, ' +
         'and there is no remote fix.'
     );
+  }
+  for (const domain of domains) {
+    // Hostnames only: URLs, wildcards and XML markup are not domain names.
+    if (typeof domain !== 'string' || domain.length > 253 ||
+        !domain.split('.').every((label) =>
+          /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))) {
+      throw new Error('withCertificatePinning: every domain must be a valid hostname');
+    }
   }
   for (const pin of pins) {
     if (!/^sha256\/[A-Za-z0-9+/]{43}=$/.test(pin)) {
@@ -101,7 +112,8 @@ function resolvePins(props, now = new Date()) {
     );
   }
   const when = new Date(`${expiration}T00:00:00Z`);
-  if (Number.isNaN(when.getTime())) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(expiration) || Number.isNaN(when.getTime()) ||
+      when.toISOString().slice(0, 10) !== expiration) {
     throw new Error(`withCertificatePinning: expiration ${expiration} is not a YYYY-MM-DD date`);
   }
   if (when <= now) {

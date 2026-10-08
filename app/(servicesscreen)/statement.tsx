@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, Platform } from 'react-native';
 import { router } from 'expo-router';
 import {
@@ -10,11 +10,16 @@ import { useTheme, font } from '@/lib/theme';
 import { apiJson } from '@/lib/api';
 import { dayLabel, isoDay } from '@/lib/format';
 
-const DAY = 24 * 60 * 60 * 1000;
+const daysBefore = (timestamp: number, days: number): number => {
+  const date = new Date(timestamp);
+  date.setDate(date.getDate() - days);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+};
 
 const FRAMES = [
-  { v: 'm1', label: 'Last month' },
-  { v: 'm2', label: 'Last 2 months' },
+  { v: 'm1', label: 'Last 30 days' },
+  { v: 'm2', label: 'Last 60 days' },
   { v: 'custom', label: 'Custom' },
 ];
 
@@ -55,28 +60,35 @@ const Statement = () => {
   const [email, setEmail] = useState('');
   const [draftEmail, setDraftEmail] = useState('');
   const [busy, setBusy] = useState(false);
+  const [emailLoading, setEmailLoading] = useState(true);
+  const emailEdited = useRef(false);
+  const submitting = useRef(false);
   // Custom range, held as epoch-ms day boundaries. Only reachable from the
   // "Custom" frame; the presets compute their own range below.
-  const [customFrom, setCustomFrom] = useState(() => Date.now() - 30 * DAY);
-  const [customTo, setCustomTo] = useState(() => Date.now());
+  const [customFrom, setCustomFrom] = useState(() => daysBefore(now, 29));
+  const [customTo, setCustomTo] = useState(() => daysBefore(now, 0));
   const [dateEdit, setDateEdit] = useState<null | 'from' | 'to'>(null);
   const [dateDraft, setDateDraft] = useState('');
 
   React.useEffect(() => {
-    // The address the statement will be mailed to is the account's own, not
-    // something typed here — this only reads it so the screen can show which
-    // inbox to check.
-    apiJson('/api/kyc/status/')
-      .then((r) => { if (r?.email) setEmail(String(r.email)); })
-      .catch(() => {});
+    let active = true;
+    // Default to the account email; an edited destination applies only to this
+    // request and must not be overwritten by a late profile response.
+    apiJson('/api/kyc/status/', {}, 10000)
+      .then((r) => { if (active && !emailEdited.current && r?.success && r.email) setEmail(String(r.email)); })
+      .catch(() => {})
+      .finally(() => { if (active) setEmailLoading(false); });
+    return () => { active = false; };
   }, []);
 
   const { from, to } = useMemo(() => {
     if (frame === 'custom') return { from: customFrom, to: customTo };
-    return { from: now - (frame === 'm2' ? 60 : 30) * DAY, to: now };
+    // The API includes both endpoint days, so today plus the previous 29/59
+    // days is exactly 30/60 calendar days (including across DST changes).
+    return { from: daysBefore(now, frame === 'm2' ? 59 : 29), to: daysBefore(now, 0) };
   }, [frame, customFrom, customTo, now]);
 
-  const rangeValid = to >= from;
+  const rangeValid = Number.isFinite(from) && Number.isFinite(to) && isoDay(to) >= isoDay(from);
   const ready = !!fileType && rangeValid && !!email;
 
   const openDate = (which: 'from' | 'to') => {
@@ -89,25 +101,26 @@ const Statement = () => {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateDraft.trim());
     if (!m) return notify('Check the date', 'Use the format YYYY-MM-DD, e.g. 2026-07-15.');
     const ts = new Date(+m[1], +m[2] - 1, +m[3]).getTime();
-    if (Number.isNaN(ts)) return notify('Check the date', "That date doesn't exist.");
+    if (!Number.isFinite(ts) || isoDay(ts) !== dateDraft.trim()) return notify('Check the date', "That date doesn't exist.");
     if (ts > Date.now()) return notify('Check the date', "A statement can't cover the future.");
     if (dateEdit === 'from') setCustomFrom(ts); else setCustomTo(ts);
     setDateEdit(null);
   };
 
   const submit = async () => {
-    if (!ready) return;
+    if (!ready || submitting.current) return;
+    submitting.current = true;
     setBusy(true);
     try {
       const res = await apiJson('/api/wallet/statement/request/', {
         from: isoDay(from),
         to: isoDay(to),
         file_type: fileType,
-        include_address: showAddress,
+        include_address: fileType === 'pdf' && showAddress,
         email,
       });
       if (res?.success) {
-        notify('On its way', `Your ${fileType === 'pdf' ? 'PDF' : 'Excel'} statement is being prepared and will arrive at ${email} shortly.`);
+        notify('Statement sent', `Your ${fileType === 'pdf' ? 'PDF' : 'Excel'} statement has been sent to ${email}.`);
         router.back();
       } else {
         notify('Not sent', res?.message || "We couldn't prepare that statement. Please try again.");
@@ -115,6 +128,7 @@ const Statement = () => {
     } catch {
       notify('Not sent', 'Something went wrong. Please try again later.');
     } finally {
+      submitting.current = false;
       setBusy(false);
     }
   };
@@ -165,11 +179,11 @@ const Statement = () => {
       <Card style={{ marginBottom: 14 }}>
         <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>Email</Text>
         <Text style={{ fontSize: 13, fontFamily: font.regular, color: c.ink3, marginTop: 4, marginBottom: 14 }}>
-          Your account statement will be sent to your email.
+          Choose where to send this statement. This does not change your account email.
         </Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, height: 52, borderRadius: 14, backgroundColor: c.surface3, paddingHorizontal: 16 }}>
           <Text numberOfLines={1} style={{ flex: 1, fontSize: 14.5, fontFamily: font.semibold, color: email ? c.ink1 : c.ink3 }}>
-            {email ? maskEmail(email) : 'No email on your account yet'}
+            {email ? maskEmail(email) : emailLoading ? 'Loading your email…' : 'Enter a statement email'}
           </Text>
           <Pressable
             onPress={() => { setDraftEmail(email); setEditEmail(true); }}
@@ -195,7 +209,7 @@ const Statement = () => {
         />
       </Card>
 
-      <Card style={{ marginBottom: 22, flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+      {fileType !== 'excel' && <Card style={{ marginBottom: 22, flexDirection: 'row', alignItems: 'center', gap: 14 }}>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>Address shown on statement</Text>
           <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3, marginTop: 3 }}>
@@ -203,7 +217,7 @@ const Statement = () => {
           </Text>
         </View>
         <Toggle on={showAddress} onChange={setShowAddress} />
-      </Card>
+      </Card>}
 
       <Btn
         label={busy ? 'Preparing…' : 'Continue'}
@@ -212,7 +226,7 @@ const Statement = () => {
       />
       {!email && (
         <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3, textAlign: 'center', marginTop: 10 }}>
-          Add an email to your account first — tap Edit above.
+          Enter the email for this statement — tap Edit above.
         </Text>
       )}
 
@@ -246,6 +260,7 @@ const Statement = () => {
             if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v)) {
               return notify('Check the address', "That doesn't look like an email address.");
             }
+            emailEdited.current = true;
             setEmail(v);
             setEditEmail(false);
           }}

@@ -29,6 +29,10 @@ const FaceLivenessModal = ({
   const [capturing, setCapturing] = useState(false);
   const [captureError, setCaptureError] = useState('');
   const held = useRef(false);
+  const capturingRef = useRef(false);
+  const active = useRef(visible);
+  active.current = visible;
+  useEffect(() => () => { active.current = false; }, []);
 
   const release = () => {
     if (held.current) {
@@ -43,6 +47,7 @@ const FaceLivenessModal = ({
       beginExternalActivity();
     }
     setCaptureError('');
+    setCapturing(false);
     if (!permission?.granted) void requestPermission();
   };
 
@@ -52,22 +57,25 @@ const FaceLivenessModal = ({
   }, [visible]);
 
   const close = () => {
+    active.current = false;
     release();
     onClose();
   };
 
   const capture = async () => {
-    if (!permission?.granted || capturing || !camera.current) return;
+    if (!active.current || !permission?.granted || capturingRef.current || !camera.current) return;
+    capturingRef.current = true;
     setCapturing(true);
     setCaptureError('');
     try {
       const photo = await camera.current.takePictureAsync({ base64: true, quality: 0.7, skipProcessing: false });
       if (!photo?.base64) throw new Error('The camera did not return an image.');
-      onCapture(photo.base64);
+      if (active.current) onCapture(photo.base64);
     } catch (error) {
       setCaptureError(error instanceof Error ? error.message : 'Could not capture the photo. Try again.');
     } finally {
-      setCapturing(false);
+      capturingRef.current = false;
+      if (active.current) setCapturing(false);
     }
   };
 

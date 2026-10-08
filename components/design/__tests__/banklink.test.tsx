@@ -238,4 +238,14 @@ describe('linked-bank funding durability', () => {
     );
     expect(mockNotify).toHaveBeenCalledWith('Error', 'Funding refused');
   });
+  it('rejects an insecure authorization URL without discarding the initialized debit', async () => {
+    mockApiJson.mockResolvedValueOnce({ success: true, authorization_url: 'http://pay.example/authorize', _httpOk: true, _httpStatus: 200 });
+    const tree = mount(<ConnectedAccounts />);
+    openAndEnter(tree, '500');
+    await submit(tree);
+    expect(mockOpenBrowser).not.toHaveBeenCalled();
+    expect(mockClearSpendAttempt).not.toHaveBeenCalled();
+    expect(mockNotify).toHaveBeenCalledWith('Not confirmed', expect.stringContaining('authorization link was not confirmed'));
+  });
+
 });

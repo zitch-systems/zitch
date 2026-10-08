@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, Image } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
@@ -8,14 +8,17 @@ import { Screen, TxnRow, money, NText, settledTransactionTotal } from '@/compone
 import { SectionLabel } from '@/components/design/widgets';
 import { ConnectedAccounts } from '@/components/design/ConnectedAccounts';
 import { useTheme, font } from '@/lib/theme';
-import { useWallet } from '@/lib/wallet';
+import { transactionParams, useWallet } from '@/lib/wallet';
+import { notify } from '@/components/design/Notify';
 import { walletCapabilityMessage } from '@/lib/services/wallet';
 
 const Wallet = () => {
   const { c } = useTheme();
-  const { balance, totalBalance, historicalBalance, fundingProvider, fullName, firstName, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload } = useWallet();
+  const { balance, totalBalance, historicalBalance, fundingProvider, fullName, firstName, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, loading, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
   const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
 
   // Keep balance & transactions fresh each time the tab is opened.
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
@@ -29,16 +32,19 @@ const Wallet = () => {
   // local confirmation bubble above the chip, matching Home's pattern.
   const copyAccount = async () => {
     if (!accountNumber) return;
-    await Clipboard.setStringAsync(accountNumber);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1300);
+    try {
+      await Clipboard.setStringAsync(accountNumber);
+      setCopied(true);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(false), 1300);
+    } catch { notify('Could not copy', 'Please try again.'); }
   };
 
   // NUBAN account numbers display grouped 4-3-3 ("9012 345 678").
   const groupedAccount = accountNumber.replace(/^(\d{4})(\d{3})(\d{3}).*$/, '$1 $2 $3');
 
   return (
-    <Screen pad={false} tab>
+    <Screen pad={false} tab refreshing={loading && hydrated} onRefresh={() => { void reload(); void reloadLinked(); }}>
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Wallet</Text>
 
       {/* Primary Zitch wallet card — uses its own distinct wallet gradient (NOT the
@@ -64,9 +70,9 @@ const Wallet = () => {
         <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium, marginTop: 10 }}>{fundingProvider === 'wema_vas' ? 'Available for bills' : 'Available balance'}</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 }}>
           <NText style={{ fontSize: 27, fontFamily: font.extrabold, color: '#fff', fontVariant: ['tabular-nums'] }}>
-            {showBal ? money(balance) : '₦ ••••••'}
+            {!balanceLoaded ? (hydrated ? 'Unavailable' : 'Loading…') : showBal ? money(balance) : '₦ ••••••'}
           </NText>
-          <Pressable onPress={() => setShowBal(!showBal)} hitSlop={8}>
+          <Pressable accessibilityRole="button" accessibilityLabel={showBal ? 'Hide balance' : 'Show balance'} onPress={() => setShowBal(!showBal)} hitSlop={8}>
             <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
           </Pressable>
         </View>
@@ -113,7 +119,8 @@ const Wallet = () => {
           </Pressable>
         </View>
       </LinearGradient>
-      {capabilityMessage ? (
+      {balanceError ? <Text accessibilityRole="alert" style={{ color: c.amber, marginHorizontal: 16, marginBottom: 12, fontFamily: font.medium }}>{balanceLoaded ? 'Showing your last known balance. ' : ''}{balanceError} Pull down to retry.</Text> : null}
+      {balanceLoaded && capabilityMessage ? (
         <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 20, marginHorizontal: 16, marginBottom: 16 }}>
           {capabilityMessage} {fundingMessage}
         </Text>
@@ -127,7 +134,7 @@ const Wallet = () => {
           <View key={s.k} style={{ flex: 1, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 16 }}>
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{s.k}</Text>
             <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: s.color, marginTop: 4, fontVariant: ['tabular-nums'] }}>
-              {s.sign}{money(s.v)}
+              {historyError ? 'Unavailable' : !hydrated ? 'Loading…' : showBal ? `${s.sign}${money(s.v)}` : '₦ ••••••'}
             </Text>
           </View>
         ))}
@@ -137,16 +144,16 @@ const Wallet = () => {
       <ConnectedAccounts />
 
       <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
-        <SectionLabel action="Filter">Recent activity</SectionLabel>
+        <SectionLabel action="See all" onAction={() => router.push('/history')}>Recent activity</SectionLabel>
         {txns.length === 0 ? (
-          <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>No transactions yet</Text>
+          <Text accessibilityRole={historyError ? 'alert' : undefined} style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>{!hydrated ? 'Loading transactions…' : historyError || 'No transactions yet'}</Text>
         ) : (
-          txns.map((x, i) => (
+          txns.slice(0, 10).map((x, i) => (
             <TxnRow
               key={x.id}
               txn={x}
-              last={i === txns.length - 1}
-              onPress={() => router.push({ pathname: '/txndetail', params: { type: x.type, amount: String(x.amount), status: x.status, dir: x.dir, detail: x.detail, reference: x.reference, icon: x.icon } })}
+              last={i === Math.min(9, txns.length - 1)}
+              onPress={() => router.push({ pathname: '/txndetail', params: transactionParams(x) })}
             />
           ))
         )}

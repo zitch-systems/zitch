@@ -17,14 +17,14 @@ describe('classifySpendResponse', () => {
     expect(classifySpendResponse({ success: false, offline: true })).toBe('unknown');
   });
 
-  it.each([408, 425, 429, 500, 502, 503, 599])(
+  it.each([408, 409, 425, 429, 500, 502, 503, 599])(
     'retains the attempt for ambiguous HTTP %s even with structured failure JSON',
     (status) => {
       expect(classifySpendResponse({ success: false }, status)).toBe('unknown');
     },
   );
 
-  it.each([408, 425, 429, 500, 502, 503, 599])(
+  it.each([408, 409, 425, 429, 500, 502, 503, 599])(
     'does not let success=true override ambiguous HTTP %s',
     (status) => {
       expect(classifySpendResponse({ success: true }, status)).toBe('unknown');
@@ -67,6 +67,11 @@ describe('classifySpendResponse', () => {
   it('treats a definitive non-success response as failed', () => {
     expect(classifySpendResponse({}, false)).toBe('failed');
     expect(classifySpendResponse({})).toBe('failed');
+  });
+
+  it('treats a rejected changed quote as terminal without treating other conflicts as failed', () => {
+    expect(classifySpendResponse({ success: false, code: 'price_changed' }, 409)).toBe('failed');
+    expect(classifySpendResponse({ success: false, message: 'Duplicate request' } as any, 409)).toBe('unknown');
   });
 
   it('distinguishes a confirmed earlier attempt from a new success', () => {

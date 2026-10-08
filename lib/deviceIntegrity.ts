@@ -51,6 +51,7 @@ export type DeviceSignals = {
 };
 
 let cachedId: string | null | undefined;
+let pendingId: Promise<string> | undefined;
 
 function randomId(): string {
   // This value now participates in server-side session binding, so it must be
@@ -62,6 +63,13 @@ function randomId(): string {
 /** A stable per-install id, created on first call and kept in the keychain. */
 export async function getDeviceId(): Promise<string> {
   if (cachedId) return cachedId;
+  // Parallel first requests must share one install ID; otherwise a refresh token
+  // can bind to one generated ID while the last keychain write persists another.
+  if (!pendingId) pendingId = loadDeviceId().finally(() => { pendingId = undefined; });
+  return pendingId;
+}
+
+async function loadDeviceId(): Promise<string> {
   if (isWeb) {
     // Web is preview-only and has no keychain; a per-session id is enough and is
     // marked as such so the backend never treats web as a bound device.
@@ -148,5 +156,6 @@ export async function deviceHeaders(): Promise<Record<string, string>> {
 /** Test seam: forget the cached id and root result. */
 export function __resetDeviceCache(): void {
   cachedId = undefined;
+  pendingId = undefined;
   cachedRooted = undefined;
 }

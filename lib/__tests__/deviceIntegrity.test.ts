@@ -50,6 +50,14 @@ describe('getDeviceId', () => {
     });
   });
 
+  it('single-flights simultaneous first requests so session binding uses one ID', async () => {
+    store.getItemAsync.mockResolvedValue(null);
+    const ids = await Promise.all(Array.from({ length: 8 }, () => getDeviceId()));
+    expect(new Set(ids).size).toBe(1);
+    expect(store.getItemAsync).toHaveBeenCalledTimes(1);
+    expect(store.setItemAsync).toHaveBeenCalledTimes(1);
+  });
+
   it('caches within the process instead of hitting the keychain per request', async () => {
     store.getItemAsync.mockResolvedValue('existing-id');
     await getDeviceId();

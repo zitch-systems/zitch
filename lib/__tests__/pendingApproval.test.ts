@@ -43,6 +43,12 @@ describe('pending WhatsApp approval hand-off', () => {
     expect(storage.setItemAsync).not.toHaveBeenCalled();
   });
 
+  it('rejects future-dated hand-offs instead of extending their validity', async () => {
+    storage.getItemAsync.mockResolvedValue(JSON.stringify({ token: 'ap.future', savedAt: Date.now() + 60000 }));
+    await expect(pendingWhatsAppApproval()).resolves.toBe('');
+    expect(storage.deleteItemAsync).toHaveBeenCalledWith('z-pending-wa-approval');
+  });
+
   it('burns a stored hand-off after ten minutes', async () => {
     storage.getItemAsync.mockResolvedValue(JSON.stringify({
       token: 'ap10.signed',
