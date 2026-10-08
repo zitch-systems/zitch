@@ -76,6 +76,7 @@ const Signin = () => {
   }, [bioReady]);
 
   const handleSignin = async () => {
+    console.info('ZITCH_DIAG signin handler', signinInFlight.current);
     if (signinInFlight.current) return;
     signinInFlight.current = true;
     setIsChecking(true);

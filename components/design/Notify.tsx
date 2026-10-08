@@ -30,6 +30,7 @@ const inferKind = (title: string): Kind =>
       : 'info';
 
 export function notify(title: string, message?: string, kind?: Kind): void {
+  console.info('ZITCH_DIAG notify listener', !!_emit);
   _emit?.({ title, message, kind: kind ?? inferKind(title) });
 }
 export const notifySuccess = (title: string, message?: string) => notify(title, message, 'success');

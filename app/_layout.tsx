@@ -48,6 +48,11 @@ const RootStack = () => {
 };
 
 const RootLayout = () => {
+  useEffect(() => {
+    console.info('ZITCH_DIAG root mounted');
+    const heartbeat = setInterval(() => console.info('ZITCH_DIAG heartbeat'), 2000);
+    return () => { clearInterval(heartbeat); console.info('ZITCH_DIAG root unmounted'); };
+  }, []);
   // The whole app uses Manrope (see lib/theme `font`). Only these are loaded.
   const [fontsLoaded, error] = useFonts(appFonts);
 
@@ -119,7 +124,7 @@ const RootLayout = () => {
   }
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={{ flex: 1 }} onTouchStart={(event) => console.info('ZITCH_DIAG root touch', event.nativeEvent.target)}>
       <SafeAreaProvider>
         <ThemeProvider>
           {/* Wallet state lives at the root so it is shared across BOTH the

@@ -12,6 +12,8 @@ jobs:
     if: github.event.ref_type == 'branch' && startsWith(github.ref, 'refs/heads/diagnostics/android-smoke-')
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      EXPO_PUBLIC_API_URL: https://api.zitch.ng
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -32,6 +34,17 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Instrument JavaScript in a diagnostic-only APK
+        run: |
+          npm ci
+          npx expo prebuild --platform android --clean
+          npx expo export:embed --platform android --dev false --entry-file node_modules/expo-router/entry.js --bundle-output diagnostic.js --max-workers 2
+          node_modules/react-native/sdks/hermesc/linux64-bin/hermesc -O -emit-binary -out diagnostic.hbc diagnostic.js
+          python3 scripts/instrument-diagnostic-apk.py
       - name: Observe local UI controls without credentials
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
@@ -40,7 +53,7 @@ jobs:
           target: google_apis
           disable-animations: false
           script: |
-            adb install release-apk/Zitch-Android-Test.apk
+            adb install diagnostic-only.apk
             python3 scripts/android-smoke-diagnostics.py --output-dir android-diagnostics-results
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()

@@ -169,6 +169,15 @@ def main():
         observe('07-instant-signin', instant_signin, 'Biometric sign-in')
         # Only navigate to the recovery form; never press Send reset code.
         observe('08-forgot-password', forgot_password, 'Reset password')
+        def focus_empty_input():
+            action = press('Email or phone')
+            _, root = hierarchy()
+            fields = [node for node in matches(root, 'Email or phone')
+                      if node.get('class') == 'android.widget.EditText']
+            if not fields or fields[0].get('focused') != 'true':
+                raise AssertionError('Native input did not receive focus')
+            return action
+        observe('09-native-input-focus', focus_empty_input, 'Email or phone')
         result['completed'] = True
     finally:
         (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
@@ -176,6 +185,7 @@ def main():
         for name, parts in [('activity', ('activity', 'top')), ('input', ('input',)),
                             ('windows', ('window', 'windows'))]:
             (out / f'{name}.txt').write_text(adb('shell', 'dumpsys', *parts, check=False))
+        (out / 'cpu.txt').write_text(adb('shell', 'top', '-b', '-n', '1', '-H', check=False))
         print('Diagnostic observations saved; this does not replace the release smoke gate.', flush=True)
 
 

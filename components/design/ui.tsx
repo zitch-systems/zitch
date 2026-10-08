@@ -126,7 +126,7 @@ export const Screen = ({
     </View>
   ) : null;
   return (
-    <LinearGradient colors={c.bgGradient} style={{ flex: 1 }}>
+    <LinearGradient colors={c.bgGradient} style={{ flex: 1 }} onTouchStart={(event) => console.info('ZITCH_DIAG screen touch', event.nativeEvent.target)}>
       <AmbientBackground />
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
         {/* Lift content above the keyboard on iOS so a focused field / its submit
@@ -136,6 +136,7 @@ export const Screen = ({
         {headerBlock}
         {scroll ? (
           <ScrollView
+            onTouchStart={(event) => console.info('ZITCH_DIAG scroll touch', event.nativeEvent.target)}
             showsVerticalScrollIndicator={false}
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
