@@ -1,0 +1,51 @@
+name: Android existing APK diagnostics
+
+on:
+  create: {}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    if: github.event.ref_type == 'branch' && startsWith(github.ref, 'refs/heads/diagnostics/android-smoke-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Download the exact previously verified APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 37816350040 --repo "$GITHUB_REPOSITORY" --name zitch-sideload-apk --dir release-apk
+          echo '9f07216d988f1eec571916e731385b14e91f7351563234f9001112efd3b50690  release-apk/Zitch-Android-Test.apk' | sha256sum -c -
+          python3 -c "import json; assert json.load(open('release-apk/build-info.json'))['source_revision'] == '6765fbb018033d669b6cbbe1f89a03cb8662c82f'"
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Observe local UI controls without credentials
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: |
+            adb install release-apk/Zitch-Android-Test.apk
+            python3 scripts/android-smoke-diagnostics.py --output-dir android-diagnostics-results
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: zitch-android-control-diagnostics
+          path: android-diagnostics-results/
+          if-no-files-found: error
+          retention-days: 14
