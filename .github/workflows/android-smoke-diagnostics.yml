@@ -38,7 +38,7 @@ jobs:
           api-level: 34
           arch: x86_64
           target: google_apis
-          disable-animations: true
+          disable-animations: false
           script: |
             adb install release-apk/Zitch-Android-Test.apk
             python3 scripts/android-smoke-diagnostics.py --output-dir android-diagnostics-results

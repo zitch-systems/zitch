@@ -92,7 +92,9 @@ def main():
         raise RuntimeError('Diagnostics require a disposable Android emulator')
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    result = {'diagnostic_only': True, 'package': args.package, 'observations': []}
+    result = {'diagnostic_only': True, 'package': args.package, 'observations': [],
+              'animation_scales': {key: adb('shell', 'settings', 'get', 'global', key).strip()
+                  for key in ('window_animation_scale', 'transition_animation_scale', 'animator_duration_scale')}}
 
     def capture(stage, observation):
         try:
@@ -171,6 +173,9 @@ def main():
     finally:
         (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
         (out / 'logcat.txt').write_text(adb('logcat', '-d', '-v', 'threadtime', check=False))
+        for name, parts in [('activity', ('activity', 'top')), ('input', ('input',)),
+                            ('windows', ('window', 'windows'))]:
+            (out / f'{name}.txt').write_text(adb('shell', 'dumpsys', *parts, check=False))
         print('Diagnostic observations saved; this does not replace the release smoke gate.', flush=True)
 
 
