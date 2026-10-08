@@ -25,7 +25,8 @@ jest.mock('expo-router', () => {
   const { View } = jest.requireActual<typeof import('react-native')>('react-native');
   const Stack = ({ children }: { children: ReactNode }) => R.createElement(View, { testID: 'app-navigation' }, children);
   Stack.Screen = () => null;
-  return { Stack, usePathname: () => '/', useRootNavigationState: () => undefined,
+  const navigation = { isReady: () => false, addListener: () => () => {} };
+  return { Stack, usePathname: () => '/', useNavigationContainerRef: () => navigation,
     SplashScreen: { preventAutoHideAsync: jest.fn().mockResolvedValue(undefined), hideAsync: jest.fn().mockResolvedValue(undefined) } };
 });
 
