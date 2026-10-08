@@ -8,14 +8,16 @@ on:
   # main and again for publication. Ordinary CI still runs on every main push.
   push:
     tags: ['zitch-android-test-*']
-    branches: ['release/zitch-android-test-*']
+  # REST/GraphQL branch creation emits create; filter it at the build job.
+  # Branch pushes are excluded so one branch creation cannot start two builds.
+  create: {}
   # Build on demand from the Actions tab, any branch.
   workflow_dispatch: {}
 
-# Cancel superseded runs so a burst of pushes doesn't stack up Actions minutes.
+# Never cancel a release while its verified assets are being published.
 concurrency:
   group: android-apk-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 # Build jobs never receive production signing keys or a repository write token.
 # Only an explicit test-release tag or branch can publish a GitHub pre-release.
@@ -27,6 +29,7 @@ permissions:
 jobs:
   build:
     name: Build sideload APK
+    if: github.event_name != 'create' || (github.event.ref_type == 'branch' && startsWith(github.ref, 'refs/heads/release/zitch-android-test-'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
