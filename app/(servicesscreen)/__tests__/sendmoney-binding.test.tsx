@@ -19,6 +19,19 @@ const mockReloadWallet = jest.fn();
 const originalFetch = global.fetch;
 let mockSearchParams: Record<string, string> = {};
 
+// These tests exercise recipient binding, not native scrolling. RN's default
+// ScrollView Jest mock imports the full native/Animated implementation lazily
+// when beneficiaries first render. Cold CI workers can spend the entire test
+// deadline transforming that unrelated graph. Keep this native boundary light
+// while preserving its children, props and recipient press handlers.
+jest.mock('react-native/Libraries/Components/ScrollView/ScrollView', () => {
+  const ReactActual = jest.requireActual<typeof import('react')>('react');
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+  return function MockScrollView({ children, ...props }: { children?: ReactNode }) {
+    return ReactActual.createElement(View, props, children);
+  };
+});
+
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: (...args: unknown[]) => mockRouterPush(...args), replace: jest.fn() },
   useLocalSearchParams: () => mockSearchParams,

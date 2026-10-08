@@ -908,6 +908,9 @@
     "Dependency audit retains documented high-severity build-tool advisories; no claim of a clean dependency audit."
   ],
   "dependencies": {
+    "scope": "Dependency tree excluding devDependencies; this still includes npm-classified production build tooling.",
+    "source_command": "npm audit --omit=dev --json",
+    "total_package_findings": 88,
     "critical": 0,
     "high_package_findings": 65,
     "moderate": 22,
@@ -918,6 +921,18 @@
       "node-forge",
       "turbo-stream"
     ],
-    "note": "Toolchain dependency updates remove the four critical findings, but this is not a clean dependency security audit."
+    "ci_all_dependencies": {
+      "scope": "All installed dependencies, including devDependencies.",
+      "source_command": "npm ci",
+      "revision": "7fd853b2ce837fb570abffb649febbb075622563",
+      "job_url": "https://github.com/zitch-systems/zitch/actions/runs/37800809539/job/113392718892",
+      "observed_at": "2026-10-08T15:29:04Z",
+      "total_package_findings": 109,
+      "critical": 0,
+      "high_package_findings": 79,
+      "moderate": 29,
+      "low": 1
+    },
+    "note": "Toolchain dependency updates remove the four critical findings, but this is not a clean dependency security audit. Counts are package findings, including propagated dependency findings, rather than distinct advisories. The local and CI observations use different dependency scopes; audit totals can also change with registry advisory metadata."
   }
 }
