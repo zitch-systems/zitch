@@ -16,6 +16,7 @@ import { Hero } from '@/components/design/widgets';
 import { useTheme, font } from '@/lib/theme';
 
 const Signin = () => {
+  console.info('ZITCH_DIAG signin render');
   const { c } = useTheme();
   const [ischecking, setIsChecking] = useState(false);
   const [form, setForm] = useState({ email: '', password: '' });
@@ -27,16 +28,21 @@ const Signin = () => {
   // supports them, and a previous session token is still on the device.
   useEffect(() => {
     (async () => {
+      console.info('ZITCH_DIAG signin init start');
       await enforceHardExpiry();
+      console.info('ZITCH_DIAG signin expiry done');
       const remembered = await getRememberedIdentifier();
+      console.info('ZITCH_DIAG signin remembered done');
       if (remembered) setForm((current) => ({ ...current, email: current.email || remembered }));
       const [enabled, available, token] = await Promise.all([
         isBiometricEnabled(),
         isBiometricAvailable(),
         getToken(),
       ]);
+      console.info('ZITCH_DIAG signin biometrics done');
       setBioReady(enabled && available && !!token);
     })().catch(() => setBioReady(false));
+    return () => console.info('ZITCH_DIAG signin unmount');
   }, []);
 
   const enterAccount = async () => {

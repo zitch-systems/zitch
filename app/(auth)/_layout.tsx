@@ -3,6 +3,7 @@ import { Stack } from 'expo-router';
 import { useTheme } from '@/lib/theme';
 
 const AuthLayout = () => {
+  console.info('ZITCH_DIAG auth layout render');
   const { c } = useTheme();
   return (
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: c.bg } }}>

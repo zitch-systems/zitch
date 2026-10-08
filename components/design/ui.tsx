@@ -108,6 +108,7 @@ export const Screen = ({
   const { c } = useTheme();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  console.info('ZITCH_DIAG screen render');
   const bottomPad = 28;
   // Phone tab scenes already sit above BottomNav, including its safe area. On
   // fold/tablet the tab bar becomes a side rail, so keep the device bottom inset.
@@ -462,6 +463,7 @@ export const Field = ({
   loading?: boolean;
 }) => {
   const { c } = useTheme();
+  console.info('ZITCH_DIAG field render', label);
   const [show, setShow] = useState(false);
   const secure = !!secureTextEntry && !show;
   // Passwords/PINs and emails must never be auto-capitalized or auto-corrected —

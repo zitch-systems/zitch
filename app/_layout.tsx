@@ -33,6 +33,7 @@ InputAny.defaultProps.style = [textBase, InputAny.defaultProps.style];
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 const RootStack = () => {
+  console.info('ZITCH_DIAG root stack render');
   const { theme, c } = useTheme();
   return (
     <>
@@ -48,6 +49,7 @@ const RootStack = () => {
 };
 
 const RootLayout = () => {
+  console.info('ZITCH_DIAG root render');
   useEffect(() => {
     console.info('ZITCH_DIAG root mounted');
     const heartbeat = setInterval(() => console.info('ZITCH_DIAG heartbeat'), 2000);
@@ -60,6 +62,7 @@ const RootLayout = () => {
   const ready = splashReady(fontsLoaded, error, fontWaitOver);
   const navigation = useRootNavigationState();
   const pathname = usePathname();
+  console.info('ZITCH_DIAG path', pathname);
 
   useEffect(() => {
     const timer = setTimeout(() => setFontWaitOver(true), FONT_WAIT_MS);
@@ -89,16 +92,20 @@ const RootLayout = () => {
     // biometric/password unlock — not just after the idle timeout. The token
     // survives the lock so unlock is instant; a full sign-out clears it.
     const check = async () => {
+      console.info('ZITCH_DIAG auth check', pathname);
       if (checking || isExternalActivityActive()) return;
       checking = true;
       try {
         const expired = await enforceHardExpiry();
+        console.info('ZITCH_DIAG auth expiry done');
         await lockIfAwayTooLong();
+        console.info('ZITCH_DIAG auth away done');
         await enforceIdleTimeout();
+        console.info('ZITCH_DIAG auth idle done');
         if ((expired || await isSessionLocked()) && pathname !== '/signin') router.replace('/signin');
       } catch {
         if (pathname !== '/signin') router.replace('/signin');
-      } finally { checking = false; }
+      } finally { checking = false; console.info('ZITCH_DIAG auth check done'); }
     };
     check();
     const sub = AppState.addEventListener("change", (s) => {
