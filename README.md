@@ -13,6 +13,8 @@ These are release-mode internal test builds signed with the existing Android tes
 
 Each tagged test release must pass the exact source revision's four CI suites, APK certificate/manifest verification, and an Android emulator startup/sign-in check. The release includes a SHA-256 checksum and build metadata. Production signing, push credentials, physical-device acceptance and bank settlement acceptance remain separate requirements.
 
+Maintainers can trigger publication with a `zitch-android-test-*` tag, or by creating a branch named `release/zitch-android-test-*` at the exact reviewed commit on `main` after all four CI suites pass. For example, `release/zitch-android-test-20261008` publishes the tag `zitch-android-test-20261008`. Do not add commits to the release branch: the workflow requires its commit to already be merged into `main` and green in CI. Both triggers use the same APK verification and emulator gates. The branch trigger creates its tag at the tested commit; an existing tag must match that commit. Use one trigger per release name; existing releases are never overwritten.
+
 ## Tech stack
 
 - **Expo SDK 51** / React Native 0.74
