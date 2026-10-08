@@ -1,5 +1,9 @@
 import importlib.util
+import hashlib
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -13,7 +17,7 @@ CONFIG = {'version': '1.0.4', 'android': {'package': 'com.zitch.app', 'versionCo
 BADGING = "package: name='com.zitch.app' versionCode='12' versionName='1.0.4'\nuses-permission: name='android.permission.INTERNET'\n"
 MANIFEST = "A: android:allowBackup(0x01010280)=(type 0x12)0x0\nA: android:usesCleartextTraffic(0x010104ec)=(type 0x12)0x0\n"
 FINGERPRINT = 'a' * 64
-SIGNER = f'Signer #1 certificate DN: C=US, O=Android, CN=Android Debug\nSigner #1 certificate SHA-256 digest: {FINGERPRINT}\n'
+SIGNER = f'Number of signers: 1\nSigner #1 certificate DN: C=US, O=Android, CN=Android Debug\nSigner #1 certificate SHA-256 digest: {FINGERPRINT}\n'
 
 
 class AndroidApkVerificationTests(unittest.TestCase):
@@ -44,8 +48,62 @@ class AndroidApkVerificationTests(unittest.TestCase):
 
     def test_unsigned_or_multiple_signers_fail(self):
         for signer in ('', SIGNER + SIGNER.replace('#1', '#2')):
-            with self.assertRaisesRegex(ValueError, 'match'):
+            with self.assertRaisesRegex(ValueError, 'exactly one'):
                 verifier.verify_signer(signer, FINGERPRINT, 'preview')
+
+    def test_sdk37_scheme_labels_and_sdk_ranges_keep_exact_certificate_check(self):
+        for label in ('V1 Signer:', 'V2 Signer:', 'V3.1 Signer:',
+                      'Signer (minSdkVersion=33, maxSdkVersion=2147483647)'):
+            with self.subTest(label=label):
+                output = SIGNER.replace('Signer #1', label)
+                self.assertEqual(verifier.verify_signer(output, FINGERPRINT, 'preview'), FINGERPRINT)
+        repeated = SIGNER + SIGNER.replace('Number of signers: 1\n', '').replace('Signer #1', 'V2 Signer:')
+        self.assertEqual(verifier.verify_signer(repeated, FINGERPRINT, 'preview'), FINGERPRINT)
+        with self.assertRaisesRegex(ValueError, 'match'):
+            verifier.verify_signer(repeated.replace(f'V2 Signer: certificate SHA-256 digest: {FINGERPRINT}',
+                                                  f'V2 Signer: certificate SHA-256 digest: {"b" * 64}'), FINGERPRINT, 'preview')
+        with self.assertRaisesRegex(ValueError, 'exactly one'):
+            verifier.verify_signer(repeated.replace('Number of signers: 1', 'Number of signers: 2'), FINGERPRINT, 'preview')
+        with self.assertRaisesRegex(ValueError, 'Unsupported'):
+            verifier.verify_signer(SIGNER.replace('Signer #1', 'Unknown Signer'), FINGERPRINT, 'preview')
+
+    @unittest.skipUnless(shutil.which('keytool'), 'A JDK is required')
+    def test_real_apksigner_output_and_keystore_certificate(self):
+        try:
+            apksigner = verifier.sdk_tool('apksigner')
+        except ValueError as error:
+            self.skipTest(str(error))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            store, apk = path / 'test.jks', path / 'test.apk'
+            env = {**os.environ, 'ZITCH_TEST_STORE_PASSWORD': 'test-only-password'}
+            subprocess.run([
+                'keytool', '-genkeypair', '-keystore', str(store), '-alias', 'test-debug',
+                '-storepass:env', 'ZITCH_TEST_STORE_PASSWORD', '-keypass:env', 'ZITCH_TEST_STORE_PASSWORD',
+                '-dname', 'CN=Android Debug,O=Zitch Verification Test', '-keyalg', 'RSA', '-validity', '30',
+            ], check=True, capture_output=True, env=env)
+            with zipfile.ZipFile(apk, 'w') as archive:
+                archive.writestr('assets/fixture.txt', 'APK signature parser regression')
+            subprocess.run([
+                apksigner, 'sign', '--min-sdk-version', '23', '--ks', str(store),
+                '--ks-key-alias', 'test-debug', '--ks-pass', 'env:ZITCH_TEST_STORE_PASSWORD', str(apk),
+            ], check=True, capture_output=True, env=env)
+            certificate = subprocess.check_output([
+                'keytool', '-exportcert', '-keystore', str(store), '-alias', 'test-debug',
+                '-storepass:env', 'ZITCH_TEST_STORE_PASSWORD',
+            ], env=env)
+            fingerprint = hashlib.sha256(certificate).hexdigest()
+            # Explicit 23–25 allows a tiny ZIP fixture without a compiled Android
+            # manifest; production verification still checks the APK's full range.
+            command = [apksigner, 'verify', '--min-sdk-version', '23', '--max-sdk-version', '25',
+                       '--verbose', '--print-certs', str(apk)]
+            output = subprocess.check_output(command, text=True)
+            self.assertEqual(verifier.verify_signer(output, fingerprint, 'preview'), fingerprint)
+            with self.assertRaisesRegex(ValueError, 'match'):
+                verifier.verify_signer(output, '0' * 64, 'preview')
+            with zipfile.ZipFile(apk, 'a') as archive:
+                archive.writestr('assets/unsigned.txt', 'Added after signing')
+            self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
 
     def test_apk_requires_embedded_bundle_and_device_libraries(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -58,10 +58,26 @@ def verify_payload(apk):
 
 
 def verify_signer(output, expected_fingerprint, signing):
-    fingerprints = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]+)$', output, re.M)
-    if len(fingerprints) != 1 or fingerprints[0].lower() != expected_fingerprint.lower():
-        raise ValueError('APK signer does not match the configured keystore')
-    debug_certificate = bool(re.search(r'^Signer #\d+ certificate DN: .*CN=Android Debug(?:,|$)', output, re.M))
+    # SDK 37 prints "V2 Signer:" instead of "Signer #1". Key-rotation
+    # output also carries SDK ranges, and may repeat one certificate across
+    # schemes. Require one effective signer and compare every reported digest.
+    counts = re.findall(r'^Number of signers: (\d+)\s*$', output, re.M)
+    if counts != ['1']:
+        raise ValueError(f'Expected exactly one APK signer; reported counts: {counts}')
+    label = r'(?:V[1-4](?:\.\d+)? )?Signer(?: #[1-9]\d*| \(minSdkVersion=\d+(?: \(dev release=true\))?, maxSdkVersion=\d+\))?:?'
+    certificate_lines = [line for line in output.splitlines() if ' certificate SHA-256 digest:' in line]
+    fingerprints = []
+    for line in certificate_lines:
+        match = re.fullmatch(rf'({label}) certificate SHA-256 digest: ([0-9a-fA-F]{{64}})', line)
+        if not match:
+            raise ValueError(f'Unsupported APK signing-certificate output: {line}')
+        fingerprints.append(match.group(2).lower())
+    if not fingerprints or set(fingerprints) != {expected_fingerprint.lower()}:
+        raise ValueError(f'APK signer does not match the configured keystore: expected {expected_fingerprint.lower()}, observed {fingerprints}')
+    subjects = re.findall(rf'^{label} certificate DN: (.+)$', output, re.M)
+    if len(subjects) != len(fingerprints):
+        raise ValueError('Missing APK signing-certificate subject')
+    debug_certificate = any(re.search(r'(?:^|,\s*)CN=Android Debug(?:,|$)', subject) for subject in subjects)
     if signing == 'upload' and debug_certificate:
         raise ValueError('Production APK must not use an Android Debug certificate')
     if signing == 'preview' and not debug_certificate:
