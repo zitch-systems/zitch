@@ -9,6 +9,7 @@ from wema_vas.config import approval_reference_present, config
 from wema_vas.diagnostics import readiness_report
 from wema_vas.identity import cipher
 from wema_vas.models import VirtualAccount
+from wema_vas.transaction_query import query_configuration
 
 
 def _present(value):
@@ -71,11 +72,16 @@ def deployment_report():
             "status": "inspection_completed", "read_only": True, "release_authorization": False,
             "full_go_live_ready": False,
             "configuration": {
+                **query_configuration(vas),
                 "account_provider": bank_provider, "partnership_mode": partnership,
                 "kyc_provider_setting": kyc_selection, "kyc_provider": kyc,
                 "biller_provider": _choice(getattr(settings, "VAS_PROVIDER", "wema"), {"wema"}),
                 "biller_mode": _choice(getattr(settings, "WEMA_BILLER_MODE", "active"), {"active", "disabled"}),
                 "simulation": simulation, "vas_mode": vas_mode,
+                "biller_airtime_key_present": _present((wema.get("KEYS") or {}).get("airtime")) or _present((wema.get("KEYS") or {}).get("wallet")),
+                "biller_bills_key_present": _present((wema.get("KEYS") or {}).get("bills")),
+                "biller_base_is_nonproduction": any(marker in str(wema.get("BASE_URL", "")).lower()
+                                                    for marker in ("pilot", "playground", "sandbox", "-uat", "-dev")),
                 "vas_enabled": vas.get("ENABLED") is True,
                 "vas_token_present": _present(token), "vas_token_format_valid": token_valid,
                 "vas_identity_keyring_present": keyring_present, "vas_identity_keyring_valid": keyring_valid,

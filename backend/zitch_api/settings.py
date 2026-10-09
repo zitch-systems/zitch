@@ -118,6 +118,8 @@ WEMA_VAS = {
     "LIVE_APPROVAL_REFERENCE": os.environ.get("WEMA_VAS_LIVE_APPROVAL_REFERENCE", "").strip(),
     "GENERAL_APPROVAL_REFERENCE": os.environ.get("WEMA_VAS_GENERAL_APPROVAL_REFERENCE", "").strip(),
     "COLLECTION_ACCOUNT": os.environ.get("WEMA_VAS_COLLECTION_ACCOUNT", "").strip(),
+    "NIP_QUERY_URL": os.environ.get("WEMA_VAS_NIP_QUERY_URL", "").strip(),
+    "ETRANZACT_QUERY_URL": os.environ.get("WEMA_VAS_ETRANZACT_QUERY_URL", "").strip(),
 }
 
 MIDDLEWARE = [

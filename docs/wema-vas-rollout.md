@@ -15,7 +15,9 @@ are archived independently of the retained bill-payment service. Existing bills
 keep their established provider contract and customer funding checks. VAS-funded
 bills require separate bank approval for debiting the profiled collection account;
 they cannot fall back to an old customer NUBAN or the legacy pool. Outgoing VAS
-transfers and automatic bank reconciliation remain closed without their contracts.
+transfers and automatic financial reconciliation remain closed without their contracts.
+Operator-only inbound queries for the two supplied bank URLs are now implemented;
+they compare evidence without changing financial records.
 
 The implementation follows Wema's [Third Party Virtual Account API documentation](https://wemabank-doc.notion.site/Wema-Bank-Third-Party-Virtual-Account-API-Integration-Documentation-31f13df490b68074aa99df46b1de9a4f),
 version 2.0. Static accounts are selected. Prefix `711` is for bank validation;
@@ -314,6 +316,39 @@ with Wema before enabling collection-funded bills.
 
 ## Inbound Search evidence
 
+The bank supplied the live prefix `908` and these separate inbound endpoints:
+
+| Environment variable | Bank URL |
+| --- | --- |
+| `WEMA_VAS_NIP_QUERY_URL` | `https://apps3.wemabank.com/FintechTransQuery/api/v1/Trans/TransQuery` |
+| `WEMA_VAS_ETRANZACT_QUERY_URL` | `https://apps3.wemabank.com/eTzTransQuery/api/v1/Trans/EtzTransQuery` |
+
+Set both on all nine Django runtimes. The client accepts only these exact HTTPS
+URLs, sends one POST with either `craccount` or `sessionid`, refuses redirects,
+bounds time/response size, and never forwards Zitch or Partnership credentials.
+The bank sample session returned `status: "02"`, `No data found.`, and
+`transactions: null` on both endpoints on 9 October 2026. No rows is inconclusive;
+it is not a failed transaction, a verified deposit or evidence of settlement.
+
+Operators can use **Admin → Diagnostics → Verify an incoming transaction** at
+`/admin/vas-transaction-query/`. Staff financial-evidence permission and CSRF
+protection apply. The redacted report is also available through
+`vas_query_transactions --rail nip|etranzact --session-id <session>` (or `--account`),
+and POST `/vas-transaction-query` with the diagnostic Bearer token and JSON
+`{"rail":"nip","sessionid":"<session>"}`. Account numbers and sessions are never
+placed in URL query strings or returned in the report. Customer and bank callback
+tokens cannot authorize this operator endpoint.
+
+NIP rows use the documented Search contract and are compared with immutable
+receipts and ledger bindings. Etranzact common financial fields can be compared,
+but its transaction status remains uncertain until the bank confirms its success
+and reversal semantics. Unknown response schemas reject safely. Pagination and
+complete history are unverified for both rails. A successful query cannot post
+money, release held funds, validate a bill debit or validate an outward transfer.
+Missing notifications must be re-pushed by Wema through the authenticated
+notification endpoint. There is no scheduled bank polling without the bank's
+rate and pagination contract.
+
 `vas_reconcile_snapshot --snapshot <file> --session-id <session>` (or `--account`)
 compares an existing bank Search JSON export with local receipts and ledger
 bindings. It is read-only, scopes every response row, omits account numbers,
@@ -321,13 +356,15 @@ uses keyed session-reference pseudonyms and
 never treats a supplied file as authenticated or complete settlement evidence.
 It flags missing notifications, held receipts, conflicts and bank uncertainty.
 Non-`00` NIBSS outcomes require Wema support; they never trigger an automatic
-refund. Production Search URL/authentication and pagination remain unavailable.
+refund. This offline command does not authenticate its input; use the operator
+query client for HTTPS retrieval. Complete pagination remains unverified.
 
 ## Outstanding bank and operations evidence
 
-- Live prefix, collection account profiling and five-endpoint acceptance.
-- Production Transaction Search URL/authentication, access and retry/response
-  semantics. Pure request builders/classification exist, but make no network calls.
+- Prefix and collection account have been supplied. Complete five-endpoint
+  acceptance and a bank-tested live sample still need evidence.
+- NIP/Etranzact URLs are implemented. Positive bank response samples, Etranzact
+  status semantics, pagination, rate limits and bank re-push procedure remain unverified.
 - Collection-bank balance/statement access, fee and settlement rules, reconciliation
   ownership, evidence of a real end-to-end credit and failure/re-push procedure.
 - Payout initiation, idempotency, status enquiry and reversal contracts. Inbound

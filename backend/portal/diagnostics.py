@@ -60,6 +60,7 @@ def diagnostics_view(request):
     from utility.providers import sms_live, sms_probe, vas_can_settle, vtu_live
 
     parts = []
+    parts.append('<p><a href="../vas-transaction-query/">Verify an incoming NIP or Etranzact transaction</a></p>')
     sent = ""
 
     # --- the one action with a side effect -----------------------------------

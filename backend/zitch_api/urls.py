@@ -12,6 +12,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from portal.diagnostics import diagnostics_view
+from wema_vas.operator_queries import query_diagnose, query_page
 from portal.pages import admin_portal, landing, prototype
 from whatsapp.views import approve_handoff as whatsapp_approve_handoff
 from whatsapp.views import flow_endpoint as whatsapp_flow_endpoint
@@ -784,6 +785,7 @@ urlpatterns = [
                            ("whatsapp-diagnose", whatsapp_diagnose),
                            ("sms-diagnose", sms_diagnose),
                            ("vas-preflight", vas_preflight_diagnose),
+                           ("vas-transaction-query", query_diagnose),
                            ("preflight", preflight_diagnose))
       for p in (path(frag, view), path(frag + "/", view))],
     path("robots.txt", robots_txt),
@@ -794,6 +796,7 @@ urlpatterns = [
     # staff-session auth instead of a shared bearer token. Registered BEFORE admin/ so
     # it resolves rather than being swallowed by the admin catch-all.
     *([path("admin/diagnostics/", admin.site.admin_view(diagnostics_view), name="diagnostics"),
+       path("admin/vas-transaction-query/", admin.site.admin_view(query_page), name="vas_transaction_query"),
        path("admin/", admin.site.urls)]
       if getattr(settings, "DJANGO_ADMIN_ENABLED", False) else []),
     # Meta calls this exact path (no /api prefix, no trailing slash).

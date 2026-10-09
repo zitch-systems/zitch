@@ -82,8 +82,10 @@ def search_request(*, session_id="", account=""):
     return {"craccount": account_number({"craccount": account}, "craccount")}
 
 
-def search_findings(body):
+def search_findings(body, *, rail="nip"):
     """Read-only classification. Never book money/refund from a search result."""
+    if rail not in ("nip", "etranzact"):
+        raise InvalidPayload("Unsupported transaction rail")
     if not isinstance(body, dict) or body.get("status") != "00":
         raise InvalidPayload("Unsuccessful or invalid transaction-search envelope")
     rows = body.get("transactions")
@@ -113,10 +115,15 @@ def search_findings(body):
         # Wema documents a date but not its exact encoding/timezone. Retain no
         # date in the report and do not equate requestdate with created_at.
         string(row, "requestdate", 64)
-        nibss = string(row, "nibssresponse", 30)
-        send = string(row, "sendresponse", 30, optional=True)
-        outcome = ("uncertain_contact_bank" if nibss != "00" else
-                   "notification_repush_required" if send != "00" else "acknowledged")
+        # NIP's NIBSS status legend must not be assumed for Etranzact. Common
+        # financial identity can be compared, but Etz outcomes await its contract.
+        if rail == "nip":
+            nibss = string(row, "nibssresponse", 30)
+            send = string(row, "sendresponse", 30, optional=True)
+            outcome = ("uncertain_contact_bank" if nibss != "00" else
+                       "notification_repush_required" if send != "00" else "acknowledged")
+        else:
+            outcome = "uncertain_contact_bank"
         findings.append({"sessionid": session_id, "craccount": number, "outcome": outcome,
                          "paymentreference": reference, "amount": format(amount, ".2f"),
                          "originatoraccountnumber": source_account, "bankname": source_bank,
