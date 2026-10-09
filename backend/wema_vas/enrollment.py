@@ -92,6 +92,9 @@ def customer_enrollment_available(user=None):
 
 
 def customer_account_payload(user):
+    from .partnership import return_enabled
+    if return_enabled():
+        return None
     values = config()
     mode = values.get("MODE", "validation")
     account = VirtualAccount.objects.filter(user=user, mode=mode).first()

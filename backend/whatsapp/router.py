@@ -2359,6 +2359,8 @@ def _finish_vas_reregistration(pa: PendingAction, user, msisdn: str) -> str:
 
 def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to your wallet*") -> None:
     funding = customer_funding_account(wallet.user)
+    if funding.get("account_setup_state") == "partnership_review":
+        return reply(msisdn, funding["migration_message"])
     is_vas = funding.get("provider") == "wema_vas"
     if is_vas and (funding.get("test_mode") is True or not funding.get("has_account") or not funding.get("available")
                    or funding.get("account_setup_state") != "ready"):
@@ -2391,7 +2393,7 @@ def _do_add_money(user, msisdn: str) -> None:
     yet, run the identity + OTP round-trip right here in the chat."""
     wallet = get_or_create_wallet(user)
     funding = customer_funding_account(user)
-    if funding.get("provider") == "wema_vas":
+    if funding.get("provider") == "wema_vas" or funding.get("account_setup_state") == "partnership_review":
         return _send_account_details(msisdn, wallet)
     if wallet.account_number:
         return _send_account_details(msisdn, wallet)
@@ -3050,6 +3052,8 @@ def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
     outstanding = _kyc_outstanding(user)
     from wallet.identity import accepted_identity_pending
     funding = customer_funding_account(user)
+    if funding.get("account_setup_state") == "partnership_review":
+        return reply(msisdn, funding["migration_message"])
     is_vas = funding.get("provider") == "wema_vas"
 
     if not is_vas and accepted_identity_pending(user):
@@ -4298,6 +4302,8 @@ def _do_account_details(user, msisdn: str) -> None:
     """Menu 7: profile and account status, without starting a setup session."""
     wallet = get_or_create_wallet(user)
     funding = customer_funding_account(user)
+    if funding.get("account_setup_state") == "partnership_review":
+        return reply(msisdn, funding["migration_message"])
     is_vas = funding.get("provider") == "wema_vas"
     lines = [
         "🧾 *My account details*\n",
@@ -4322,8 +4328,9 @@ def _do_account_details(user, msisdn: str) -> None:
 # The BVN/NIN input state is masked out of the message log by is_awaiting_bvn.
 # --------------------------------------------------------------------------- #
 def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
+    from wema_vas.partnership import first_partnership_setup
     funding = customer_funding_account(user)
-    if funding.get("provider") == "wema_vas":
+    if funding.get("provider") == "wema_vas" or funding.get("account_setup_state") == "partnership_review":
         return _send_account_details(msisdn, get_or_create_wallet(user))
     if not wallet_views._wema_funding_enabled():
         return reply(msisdn, "🏦 Account setup isn't available right now - please try again later.")
@@ -4332,7 +4339,11 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
     if wallet.account_number:
         return _send_account_details(
             msisdn, wallet, intro="✅ *Your Zitch account number is already set up*")
-    if user.bvn_verified:
+    from wallet.identity import accepted_identity_pending
+    if accepted_identity_pending(user):
+        return reply(msisdn, "Your bank accepted the verification code. Your account setup is still processing. "
+                     "You do not need to submit your BVN or the code again. Reply *6* to check shortly.")
+    if user.bvn_verified and not first_partnership_setup(user):
         recovered, _detail = attach_existing_bank_account(user, using_bvn=True)
         if recovered is not None and recovered.account_number:
             return _send_account_details(
@@ -4464,7 +4475,8 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
     using_bvn = kind == "bvn"
     wallet = get_or_create_wallet(user)
     identity_already_verified = bool(getattr(user, f"{kind}_verified", False))
-    if identity_already_verified and not wallet.account_number:
+    from wema_vas.partnership import first_partnership_setup
+    if identity_already_verified and not wallet.account_number and not first_partnership_setup(user):
         # A stale WhatsApp action can survive the callback which verifies the
         # identity.  The old guard returned "already verified" here and discarded
         # the only remaining route to a NUBAN, so every subsequent reply 6 landed

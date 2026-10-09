@@ -81,6 +81,9 @@ const AddMoney = () => {
       const r = await walletService.getAccount();
       if (loadGeneration.current !== generation) return;
       setFundingState(r);
+      if (r?.success && r.provider === 'partnership' && r.account_setup_state === 'otp_pending' && r.tracking_id) {
+        setTrackingId(r.tracking_id);
+      }
       if (r?.success && r.account_number && (r.provider !== 'wema_vas' ||
           (r.test_mode !== true && !/^711/.test(r.account_number) && r.available === true && r.has_account === true && r.account_setup_state === 'ready'))) {
         setAccount(r as DediAccount);
@@ -341,6 +344,20 @@ const AddMoney = () => {
             <Btn label="Try again" onPress={() => void loadAccount()} />
           </View>
         </View>
+      ) : fundingState?.provider === 'partnership' && fundingState.account_setup_state === 'processing' ? (
+        <View style={{ paddingTop: 12 }}>
+          <Label>Account setup is processing</Label>
+          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>
+            Wema accepted your code and is completing your account setup. Your identity verification is saved.
+          </Text>
+          <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void loadAccount()} /></View>
+        </View>
+      ) : fundingState?.account_setup_state === 'partnership_review' ? (
+        <View style={{ paddingTop: 12 }}>
+          <Label>Account review in progress</Label>
+          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{fundingState.migration_message}</Text>
+          <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void loadAccount()} /></View>
+        </View>
       ) : fundingState?.provider === 'wema_vas' && !account ? (
         <View style={{ paddingTop: 12 }}>
           <Label>{vasAccountStatusTitle(fundingState)}</Label>
@@ -462,8 +479,9 @@ const AddMoney = () => {
               Get your Zitch account number
             </Text>
             <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular, marginTop: 10, textAlign: 'center', lineHeight: 21 }}>
-              Enter your BVN to instantly get a dedicated account for funding by bank transfer — no
-              card needed. It&apos;s verified securely; we never store it.
+              {fundingState?.partnership_setup_required
+                ? 'Your Zitch identity verification is saved. Enter your BVN securely so Wema can send its account setup code and issue your Partnership account number.'
+                : 'Enter your BVN to get a dedicated account for funding by bank transfer. It is verified securely.'}
             </Text>
           </View>
 

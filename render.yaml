@@ -42,6 +42,8 @@ services:
         sync: false
       - key: WEMA_PARTNERSHIP_MODE
         sync: false
+      - key: WEMA_PARTNERSHIP_RESTORE_VAS
+        sync: false
       - key: WEMA_BILLER_MODE
         sync: false
       - key: WEMA_VAS_BILLER_ENABLED
@@ -452,6 +454,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_PARTNERSHIP_RESTORE_VAS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_RESTORE_VAS}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
       - key: WEMA_VAS_BILLER_ENABLED
@@ -683,6 +687,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_PARTNERSHIP_RESTORE_VAS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_RESTORE_VAS}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
       - key: WEMA_VAS_BILLER_ENABLED
@@ -797,6 +803,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_PARTNERSHIP_RESTORE_VAS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_RESTORE_VAS}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
       - key: WEMA_VAS_BILLER_ENABLED
@@ -890,6 +898,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_PARTNERSHIP_RESTORE_VAS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_RESTORE_VAS}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
       - key: WEMA_VAS_BILLER_ENABLED
@@ -1051,6 +1061,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_PARTNERSHIP_RESTORE_VAS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_RESTORE_VAS}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
       - key: WEMA_VAS_BILLER_ENABLED
@@ -1144,6 +1156,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_PARTNERSHIP_RESTORE_VAS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_RESTORE_VAS}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
       - key: WEMA_VAS_BILLER_ENABLED
@@ -1266,6 +1280,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_PARTNERSHIP_RESTORE_VAS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_RESTORE_VAS}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
       - key: WEMA_VAS_BILLER_ENABLED
@@ -1381,6 +1397,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: BANK_ACCOUNT_PROVIDER}
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_PARTNERSHIP_RESTORE_VAS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_RESTORE_VAS}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
       - key: WEMA_VAS_BILLER_ENABLED

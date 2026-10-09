@@ -46,8 +46,8 @@ def is_restricted(user):
 def assert_can_spend(user):
     """Caller holds Wallet lock; BlockAccount takes the same lock first.
 
-    No enable switch exists until payout/TSQ and biller contracts are implemented.
-    A collection account must never silently use the archived Partnership rail.
+    VAS cannot pay out through Partnership. An explicit return may use the
+    customer's own Partnership account only when no collection liability remains.
     """
     from wallet.services import LimitExceeded
     account = VirtualAccount.objects.filter(user_id=user.pk, mode=VirtualAccount.LIVE).first()
@@ -55,6 +55,11 @@ def assert_can_spend(user):
         return
     if not account.active or not user.is_active:
         raise LimitExceeded("Your account is restricted. Please contact support.")
+    from .partnership import REVIEW_MESSAGE, return_enabled, return_blockers
+    if return_enabled():
+        if return_blockers(user):
+            raise LimitExceeded(REVIEW_MESSAGE)
+        return
     raise LimitExceeded("Bank migration is awaiting payment activation. Please try again later.")
 
 

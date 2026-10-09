@@ -1209,7 +1209,8 @@ def _kyc_state(user) -> dict:
     from wallet.services import customer_funding_account
 
     funding = customer_funding_account(user)
-    migrating = funding.get("provider") != "partnership"
+    migrating = (funding.get("provider") != "partnership"
+                 or funding.get("account_setup_state") == "partnership_review")
     identity_processing = False if migrating else accepted_identity_pending(user)
     wallet = Wallet.objects.filter(user=user).only(
         "bank_tier", "account_number", "identity_upgrade_required").first()

@@ -84,7 +84,12 @@ class Command(BaseCommand):
         # Exact asset attribution is not established by its aggregate balance.
         # Preserve the independent legacy history sweep; this comparison must
         # fail as incomplete rather than invent a ledger-over-bank discrepancy.
-        for w in wema_provisioned_wallets().exclude(user__vas_accounts__mode="live"):
+        from wema_vas.models import VirtualAccount
+        from wema_vas.partnership import return_enabled, return_blockers
+        for w in wema_provisioned_wallets().select_related("user"):
+            if VirtualAccount.objects.filter(user_id=w.user_id, mode=VirtualAccount.LIVE).exists():
+                if not return_enabled() or return_blockers(w.user):
+                    continue
             checked += 1
             res = wema.get_balance(w.account_number)
             bank = res.get("balance_naira") if res.get("success") else None

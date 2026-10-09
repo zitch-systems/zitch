@@ -31,6 +31,8 @@ type Status = {
   identity_verification_methods?: string[];
   identity_verification_provider?: 'prembly' | 'wema';
   account_provider?: 'partnership' | 'wema_vas';
+  account_setup_state?: string;
+  migration_message?: string;
   face_rail?: 'document' | 'wema';
   tier2_face_rail?: 'prembly' | 'wema';
   address_rail?: 'document' | 'wema' | 'none';
@@ -581,6 +583,13 @@ const Kyc = () => {
       </View>
     </Tap>
   );
+
+  if (status?.account_setup_state === 'partnership_review') {
+    return <Screen>
+      <Header title="Identity verification" onBack={onBack} />
+      <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{status.migration_message}</Text>
+    </Screen>;
+  }
 
   return (
     <>

@@ -9,6 +9,7 @@ from wema_vas.config import approval_reference_present, config
 from wema_vas.diagnostics import readiness_report
 from wema_vas.identity import cipher
 from wema_vas.models import VirtualAccount
+from wema_vas.partnership import return_inventory
 from wema_vas.transaction_query import query_configuration
 
 
@@ -74,6 +75,7 @@ def deployment_report():
             "configuration": {
                 **query_configuration(vas),
                 "account_provider": bank_provider, "partnership_mode": partnership,
+                "partnership_restore_vas": getattr(settings, "WEMA_PARTNERSHIP_RESTORE_VAS", False) is True,
                 "kyc_provider_setting": kyc_selection, "kyc_provider": kyc,
                 "biller_provider": _choice(getattr(settings, "VAS_PROVIDER", "wema"), {"wema"}),
                 "biller_mode": _choice(getattr(settings, "WEMA_BILLER_MODE", "active"), {"active", "disabled"}),
@@ -108,6 +110,7 @@ def deployment_report():
                                                        and current_flow == approved_flow),
             },
             "vas_readiness": readiness_report(stage),
+            "partnership_return": return_inventory(),
             "scope": "Configuration and local database inspection only. No provider calls, credential values, "
                      "identity values or financial changes. Provider acceptance, SMS delivery, Flow publication "
                      "and bank settlement remain unverified.",

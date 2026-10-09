@@ -36,7 +36,7 @@ const finiteAmount = (value: number | string | undefined): number => {
 
 export const walletBalances = (value: BalancePayload | null | undefined): WalletBalances => {
   const totalBalance = finiteAmount(value?.wallet);
-  if (value?.provider !== 'wema_vas') {
+  if (value?.provider !== 'wema_vas' && value?.available_balance == null) {
     return { totalBalance, availableBalance: totalBalance, historicalBalance: 0 };
   }
   const capabilities = walletCapabilities(value);
@@ -99,6 +99,7 @@ export type VirtualAccount = ApiResult<CapabilityPayload & {
   validation_account_number?: string;
   validation_account_name?: string;
   account_setup_state?: string;
+  partnership_setup_required?: boolean;
   account_number?: string;
   bank_name?: string;
   account_name?: string;

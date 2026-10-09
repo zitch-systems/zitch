@@ -91,6 +91,8 @@ INSTALLED_APPS = [
 # Partnership client. Roll out schema/code before selecting the new provider.
 BANK_ACCOUNT_PROVIDER = os.environ.get("BANK_ACCOUNT_PROVIDER", "partnership").strip().lower()
 WEMA_PARTNERSHIP_MODE = os.environ.get("WEMA_PARTNERSHIP_MODE", "active").strip().lower()
+# Explicit rollback policy; VAS liabilities still fail closed per customer.
+WEMA_PARTNERSHIP_RESTORE_VAS = env_bool("WEMA_PARTNERSHIP_RESTORE_VAS", False)
 # Bill payments are a separately retained bank product, not the account rail.
 WEMA_BILLER_MODE = os.environ.get("WEMA_BILLER_MODE", "active").strip().lower()
 WEMA_VAS_BILLER_ENABLED = env_bool("WEMA_VAS_BILLER_ENABLED", False)
