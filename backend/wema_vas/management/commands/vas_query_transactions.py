@@ -18,8 +18,8 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         try:
             report = query_and_reconcile(options["rail"], session_id=options["session_id"], account=options["account"])
-        except (InvalidPayload, QueryUnavailable) as exc:
-            raise CommandError(str(exc)) from None
+        except (InvalidPayload, QueryUnavailable):
+            raise CommandError("Bank query unavailable or query input invalid; no financial changes made.") from None
         self.stdout.write(json.dumps(report, indent=2, sort_keys=True))
         if report["action_required"] or not report["observed_count"]:
             raise CommandError("No verified transaction match; inspect the redacted report and bank evidence.")

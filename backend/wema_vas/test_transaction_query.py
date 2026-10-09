@@ -45,7 +45,7 @@ class QueryTransportTests(SimpleTestCase):
                                ({"session_id": "S-1"}, {"sessionid": "S-1"})):
                 self.assertEqual(fetch_query(rail, **args), {"status": "00", "transactions": []})
                 client.post.assert_called_with(url, json=body, headers={"Accept": "application/json"},
-                                               timeout=(4, 10), allow_redirects=False, stream=True)
+                                               timeout=(8, 12), allow_redirects=False, stream=True)
                 self.assertIsInstance(client.auth, NoBankCredentials)
 
     def test_only_exact_bank_endpoints_are_accepted_before_network(self):
@@ -179,10 +179,11 @@ class QueryHttpTests(SimpleTestCase):
 
     @patch("wema_vas.operator_queries.query_and_reconcile")
     def test_bank_unavailability_is_not_ok_and_admin_page_requires_permission(self, query):
-        query.side_effect = QueryUnavailable("Bank query unavailable.")
+        query.side_effect = QueryUnavailable("private-token-and-bank-body")
         response = self.client.post("/vas-transaction-query", {"rail": "nip", "sessionid": "S"},
             content_type="application/json", HTTP_AUTHORIZATION="Bearer operator-secret")
         self.assertEqual(response.status_code, 503)
+        self.assertNotIn("private-token", response.content.decode())
         request = RequestFactory().get("/admin/vas-transaction-query/")
         request.user = AnonymousUser()
         self.assertEqual(query_page(request).status_code, 403)
