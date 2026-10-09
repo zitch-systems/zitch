@@ -67,10 +67,10 @@ def _local_result(bank, account, receipt, payment_receipt):
     return "matched_in_supplied_rows"
 
 
-def reconcile_snapshot(body, *, session_id="", account=""):
+def reconcile_snapshot(body, *, session_id="", account="", rail="nip"):
     """Compare scoped bank-search rows and return a redacted, read-only report."""
     request = search_request(session_id=session_id, account=account)
-    banks = search_findings(body)
+    banks = search_findings(body, rail=rail)
     for bank in banks:
         if (("sessionid" in request and bank["sessionid"] != request["sessionid"])
                 or ("craccount" in request and bank["craccount"] != request["craccount"])):

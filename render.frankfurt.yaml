@@ -81,6 +81,10 @@ services:
         sync: false
       - key: WEMA_VAS_COLLECTION_ACCOUNT
         sync: false
+      - key: WEMA_VAS_NIP_QUERY_URL
+        sync: false
+      - key: WEMA_VAS_ETRANZACT_QUERY_URL
+        sync: false
       - key: WHATSAPP_FLOW_ID
         sync: false
       - key: WHATSAPP_FLOW_PRIVATE_KEY
@@ -483,6 +487,10 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
       - key: WEMA_VAS_COLLECTION_ACCOUNT
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
+      - key: WEMA_VAS_NIP_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
+      - key: WEMA_VAS_ETRANZACT_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -704,6 +712,10 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
       - key: WEMA_VAS_COLLECTION_ACCOUNT
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
+      - key: WEMA_VAS_NIP_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
+      - key: WEMA_VAS_ETRANZACT_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -808,6 +820,10 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
       - key: WEMA_VAS_COLLECTION_ACCOUNT
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
+      - key: WEMA_VAS_NIP_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
+      - key: WEMA_VAS_ETRANZACT_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -891,6 +907,10 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
       - key: WEMA_VAS_COLLECTION_ACCOUNT
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
+      - key: WEMA_VAS_NIP_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
+      - key: WEMA_VAS_ETRANZACT_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -1042,6 +1062,10 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
       - key: WEMA_VAS_COLLECTION_ACCOUNT
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
+      - key: WEMA_VAS_NIP_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
+      - key: WEMA_VAS_ETRANZACT_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -1125,6 +1149,10 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
       - key: WEMA_VAS_COLLECTION_ACCOUNT
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
+      - key: WEMA_VAS_NIP_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
+      - key: WEMA_VAS_ETRANZACT_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -1237,6 +1265,10 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
       - key: WEMA_VAS_COLLECTION_ACCOUNT
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
+      - key: WEMA_VAS_NIP_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
+      - key: WEMA_VAS_ETRANZACT_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -1342,6 +1374,10 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
       - key: WEMA_VAS_COLLECTION_ACCOUNT
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
+      - key: WEMA_VAS_NIP_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
+      - key: WEMA_VAS_ETRANZACT_QUERY_URL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"

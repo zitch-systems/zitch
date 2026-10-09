@@ -1,0 +1,16 @@
+{% extends "admin/base_site.html" %}
+{% block title %}Verify an incoming transaction | Zitch{% endblock %}
+{% block content %}
+<h1>Verify an incoming transaction</h1>
+<p>Choose the bank rail and enter a session ID or virtual account number.</p>
+<p>This check compares returned bank records with Zitch's receipts. It does not credit,
+refund, or release money. A missing record or uncertain status needs bank review.</p>
+<form method="post">
+  {% csrf_token %}
+  {{ form.as_p }}
+  <input type="submit" value="Check transaction">
+</form>
+{% if error %}<p class="errornote" role="alert">{{ error }}</p>{% endif %}
+{% if report %}<h2>Verification result</h2><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ report }}</pre>{% endif %}
+<p><a href="{% url 'diagnostics' %}">Back to diagnostics</a></p>
+{% endblock %}
