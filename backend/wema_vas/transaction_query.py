@@ -20,7 +20,9 @@ ENDPOINTS = {
     "etranzact": ("ETRANZACT_QUERY_URL", "https://apps3.wemabank.com/eTzTransQuery/api/v1/Trans/EtzTransQuery"),
 }
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
-REQUEST_TIMEOUT = (4, 10)
+# Bank HTTPS connection setup exceeded four seconds in the live sample probe.
+# Keep a finite budget while accommodating the observed six-second response.
+REQUEST_TIMEOUT = (8, 12)
 
 
 class QueryUnavailable(Exception):

@@ -37,8 +37,9 @@ def query_diagnose(request):
         report = query_and_reconcile(body["rail"], session_id=body.get("sessionid", ""), account=body.get("craccount", ""))
     except (InvalidPayload, ValueError, UnicodeError, RecursionError):
         return JsonResponse({"detail": "Select a rail and supply exactly one valid sessionid or craccount."}, status=400)
-    except QueryUnavailable as exc:
-        return JsonResponse({"detail": str(exc), "read_only": True}, status=503)
+    except QueryUnavailable:
+        return JsonResponse({"detail": "Bank transaction verification is unavailable. No financial changes made.",
+                             "read_only": True}, status=503)
     return JsonResponse({"transaction_query": report})
 
 
@@ -65,6 +66,8 @@ def query_page(request):
                 session_id=values["value"] if values["query_type"] == "session" else "",
                 account=values["value"] if values["query_type"] == "account" else "")
             report = json.dumps(result, indent=2, sort_keys=True)
-        except (InvalidPayload, QueryUnavailable) as exc:
-            error = str(exc)
+        except InvalidPayload:
+            error = "Enter a valid session ID or ten-digit virtual account number."
+        except QueryUnavailable:
+            error = "Bank transaction verification is unavailable. No financial changes made."
     return render(request, "wema_vas/transaction_query.html", {"form": form, "report": report, "error": error})
