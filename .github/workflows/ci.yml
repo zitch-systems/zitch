@@ -94,7 +94,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:18
+        # Docker's official mirror avoids Docker Hub rate limits/auth outages.
+        # Same PostgreSQL major and test service; no production configuration.
+        image: public.ecr.aws/docker/library/postgres:18
         env:
           POSTGRES_USER: zitch_ci
           POSTGRES_PASSWORD: zitch-ci-local-password
