@@ -198,7 +198,7 @@ jobs:
 
           Automated checks cover the exact revision's app tests, native package/version, APK signature, permissions, embedded JavaScript, and emulator startup/sign-in validation. Bank activation, real OTP, push notification delivery, device biometrics, and live money settlement require separate verification.
 
-          VAS live enrollment, outgoing transfers and VAS-funded bill purchases remain disabled pending bank acceptance. Do not fund 711 validation accounts. This build preserves those restrictions.
+          This build supports the return to Wema Partnership on the app and WhatsApp. Live availability follows the server configuration and each customer's account status. VAS enrollment and VAS-funded bill purchases are closed. Profiles with a VAS balance, held receipt or unresolved bill remain in review until that exposure is resolved. Do not fund 711 validation accounts.
 
           SHA256SUMS.txt verifies the downloaded APK. build-info.json records its source commit, version, and signing certificate.
           NOTES
