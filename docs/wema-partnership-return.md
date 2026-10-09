@@ -33,6 +33,12 @@ Existing Partnership NUBANs are reused. Customers without one follow the existin
 verified account setup/recovery flow; unknown issuance is never reset or retried
 blindly. Validation accounts do not affect real funds or block this return.
 
+VAS-only customers with an independent identity proof and no prior Partnership
+account, bank proof, bank attempt or cutover can explicitly start their first
+Wema account/OTP flow on either channel. The submitted identity must match their
+retained hash. Verification flags stay intact; any bank history keeps the recovery
+path, and existing OTP attempts resume without another creation request.
+
 A customer with a live VAS account returns only when it is unrestricted, its
 canonical collection balance is exactly zero, and it has no held receipt or
 unresolved bill. These checks run again under the wallet lock before spending.

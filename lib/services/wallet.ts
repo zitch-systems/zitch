@@ -99,6 +99,7 @@ export type VirtualAccount = ApiResult<CapabilityPayload & {
   validation_account_number?: string;
   validation_account_name?: string;
   account_setup_state?: string;
+  partnership_setup_required?: boolean;
   account_number?: string;
   bank_name?: string;
   account_name?: string;

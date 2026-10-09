@@ -74,6 +74,37 @@ describe('AddMoney VAS migration', () => {
     await act(async () => tree.unmount());
   });
 
+  it('explains the first Partnership setup for an already verified VAS customer', async () => {
+    mockApiJson.mockResolvedValue({ success: true, provider: 'partnership',
+      partnership_setup_required: true, bvn_verified: true, has_account: false });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(JSON.stringify(tree.toJSON())).toContain('Your Zitch identity verification is saved.');
+    expect(tree.root.findByType(TextInput)).toBeTruthy();
+    await act(async () => tree.unmount());
+  });
+
+  it('resumes an existing Partnership OTP after reopening the screen', async () => {
+    mockApiJson.mockResolvedValue({ success: true, provider: 'partnership',
+      account_setup_state: 'otp_pending', otp_required: true, tracking_id: 'saved-bank-otp', has_account: false });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(JSON.stringify(tree.toJSON())).toContain('Confirm code');
+    expect(JSON.stringify(tree.toJSON())).not.toContain('Get my account');
+    expect(mockApiJson).toHaveBeenCalledTimes(1);
+    await act(async () => tree.unmount());
+  });
+
+  it('does not request BVN or OTP again while Wema finishes account issuance', async () => {
+    mockApiJson.mockResolvedValue({ success: true, provider: 'partnership',
+      account_setup_state: 'processing', bvn_verified: true, otp_required: false, has_account: false });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(JSON.stringify(tree.toJSON())).toContain('Account setup is processing');
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+    await act(async () => tree.unmount());
+  });
+
   const enrollment = {
     success: true, provider: 'wema_vas', has_account: false, available: false,
     enrollment_available: true, spending_available: false,

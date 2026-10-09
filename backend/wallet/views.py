@@ -199,9 +199,10 @@ def wallet_account_create(request):
     bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
 
-    # A verified BVN is final. We retain only its keyed hash, so no later feature
-    # may train customers to disclose the raw number again.
-    if user.bvn_verified and bvn:
+    # Retain verified identity and existing bank recovery holds. A VAS-only
+    # customer may explicitly start their first Wema ownership/issuance challenge.
+    from wema_vas.partnership import first_partnership_setup
+    if user.bvn_verified and bvn and not first_partnership_setup(user):
         return fail("Your BVN is already verified. You do not need to enter it again.", status=409)
     if user.bvn_verified and nin and not wallet.account_number:
         # A missing BVN NUBAN must not dead-end the customer. Try the provider
@@ -502,8 +503,11 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
 
 
 
+@db_transaction.atomic
 def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
     """Start and bind an OTP request, returning (provider_result, error)."""
+    # Serialize app/chat starts and VAS credits before selecting a funding rail.
+    Wallet.objects.select_for_update().get(user=user)
     if not partnership_new_business_allowed(user):
         from wema_vas.partnership import REVIEW_MESSAGE, return_enabled
         if return_enabled():
@@ -589,7 +593,8 @@ def start_wema_identity(user, *, bvn="", nin=""):
         return fail("Enter your 11-digit BVN or NIN")
     if bvn and nin:
         return fail("Choose one identity for account setup; submit both through the Tier 2 upgrade.")
-    if user.bvn_verified and bvn:
+    from wema_vas.partnership import first_partnership_setup
+    if user.bvn_verified and bvn and not first_partnership_setup(user):
         return fail("Your BVN is already verified. You do not need to enter it again.", status=409)
     if user.bvn_verified and nin and not wallet.account_number:
         # A missing BVN NUBAN must not block the independent NIN rail. Read back

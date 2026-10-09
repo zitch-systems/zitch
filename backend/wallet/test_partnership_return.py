@@ -1,10 +1,12 @@
 """Restore both channels while collection liabilities remain isolated."""
 import json
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from accounts.models import IdentityProof, hash_identifier
 
 from utility.providers import partnership_new_business_allowed, _partnership_reference_blocked
 from wallet.models import Transaction, Wallet
@@ -12,7 +14,7 @@ from wallet.services import (LimitExceeded, biller_source_for_transaction, custo
     debit, settle_or_refund, wallet_balance_payload, wallet_expected_balance)
 from wallet.tests import make_user
 from wema_vas.models import VirtualAccount
-from wema_vas.partnership import return_blockers, return_inventory
+from wema_vas.partnership import first_partnership_setup, return_blockers, return_inventory
 from wema_vas.services import process_notification
 from wema_vas.tests import LIVE, payload
 from whatsapp import router
@@ -132,3 +134,86 @@ class PartnershipReturnTests(TestCase):
             validation_balance=100)
         self.assertTrue(partnership_new_business_allowed(other))
         self.assertEqual(customer_funding_account(other)["provider"], "partnership")
+
+    def vas_only_identity(self):
+        self.wallet.account_number = ""
+        self.wallet.save(update_fields=["account_number"])
+        self.user.bvn_hash = hash_identifier("12345678901")
+        self.user.save(update_fields=["bvn_hash"])
+        IdentityProof.objects.create(user=self.user, identity_type="bvn",
+            identity_hash=self.user.bvn_hash, source=IdentityProof.IDENTITY_PROVIDER_OTP,
+            provider_reference="independent-otp-proof", verified_name="Ada Eze")
+
+    def test_vas_only_customer_can_start_first_partnership_otp_in_app(self):
+        self.vas_only_identity()
+        self.assertTrue(first_partnership_setup(self.user))
+        self.assertTrue(customer_funding_account(self.user)["partnership_setup_required"])
+        with patch("utility.wema.create_wallet_request", return_value={
+                "success": True, "tracking_id": "first-partnership-otp"}) as create:
+            result = self.client.post("/api/wallet/account/create/", json.dumps({
+                "access_token": self.token, "bvn": "12345678901"}), content_type="application/json")
+        self.assertEqual(result.status_code, 200, result.content)
+        self.assertTrue(result.json()["otp_required"])
+        create.assert_called_once()
+        self.assertFalse(first_partnership_setup(self.user))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertEqual(self.response("/api/wallet/account/")["tracking_id"], "first-partnership-otp")
+
+    def test_vas_only_whatsapp_setup_uses_bank_otp_without_false_recovery(self):
+        from whatsapp.models import PendingAction
+        self.vas_only_identity()
+        with patch.object(router, "reply"), patch.object(router, "attach_existing_bank_account") as recover, \
+                patch.object(router.wallet_views, "_wema_funding_enabled", return_value=True):
+            router._start_add_account(self.user, "2348099990106")
+        recover.assert_not_called()
+        pa = PendingAction.objects.get(user=self.user)
+        pa.payload = {"id_type": "bvn"}
+        pa.save(update_fields=["payload"])
+        with patch.object(router, "reply"), patch.object(router, "_send_account_otp_flow", return_value=True), \
+                patch.object(router, "_send_identity_face_option") as face, \
+                patch("utility.wema.create_wallet_request", return_value={
+                    "success": True, "tracking_id": "wa-first-partnership-otp"}) as create:
+            outcome = router._account_submit_identity(pa, self.user, pa.msisdn, "12345678901", in_flow=True)
+        self.assertEqual(outcome, "otp")
+        create.assert_called_once()
+        face.assert_not_called()
+
+    def test_prior_bank_attempt_keeps_verified_identity_on_recovery_path(self):
+        from wallet.models import WemaProvisioningAttempt
+        self.vas_only_identity()
+        WemaProvisioningAttempt.objects.create(user=self.user, tracking_id="prior-unknown",
+            identity_type="bvn", identity_hash=self.user.bvn_hash,
+            expires_at=timezone.now() - timedelta(minutes=1))
+        self.assertFalse(first_partnership_setup(self.user))
+        with patch("utility.wema.create_wallet_request") as create:
+            result = self.client.post("/api/wallet/account/create/", json.dumps({
+                "access_token": self.token, "bvn": "12345678901"}), content_type="application/json")
+        self.assertEqual(result.status_code, 409)
+        create.assert_not_called()
+
+    def test_bank_accepted_otp_remains_processing_despite_prior_vas_verification(self):
+        from wallet.models import WemaProvisioningAttempt
+        self.vas_only_identity()
+        attempt = WemaProvisioningAttempt.objects.create(user=self.user, tracking_id="accepted-first-bank-otp",
+            identity_type="bvn", identity_hash=self.user.bvn_hash,
+            expires_at=timezone.now() + timedelta(minutes=5))
+        attempt.otp_verified_at = timezone.now()
+        attempt.save(update_fields=["otp_verified_at"])
+        state = self.response("/api/wallet/account/")
+        self.assertEqual(state["account_setup_state"], "processing")
+        self.assertFalse(state["otp_required"])
+        with patch.object(router, "reply") as reply, \
+                patch.object(router, "attach_existing_bank_account") as recover, \
+                patch.object(router.wallet_views, "_wema_funding_enabled", return_value=True):
+            router._start_add_account(self.user, "2348099990106")
+        recover.assert_not_called()
+        self.assertIn("still processing", reply.call_args.args[1])
+
+    def test_first_bank_setup_still_requires_matching_retained_identity(self):
+        self.vas_only_identity()
+        with patch("utility.wema.create_wallet_request") as create:
+            result = self.client.post("/api/wallet/account/create/", json.dumps({
+                "access_token": self.token, "bvn": "10987654321"}), content_type="application/json")
+        self.assertEqual(result.status_code, 409)
+        create.assert_not_called()

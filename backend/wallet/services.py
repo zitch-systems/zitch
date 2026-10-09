@@ -143,12 +143,14 @@ def customer_funding_account(user) -> dict:
                                       if biller_spending_available(user) else
                                       "Complete secure virtual-account enrollment to continue account setup.")}
     wallet = get_or_create_wallet(user)
+    from wema_vas.partnership import first_partnership_setup
     return {"account_number": wallet.account_number, "account_name": wallet.account_name,
             "bank_name": wallet.bank_name, "bank_accounts": wallet.bank_accounts or [],
             "bank_tier": wallet.bank_tier, "has_account": bool(wallet.account_number),
             "provider": "partnership", "available": bool(wallet.account_number),
             "bill_payments_available": biller_spending_available(user), "transfers_available": True,
-            "enrollment_available": False, "migration_message": "", "spending_available": True}
+            "enrollment_available": False, "migration_message": "", "spending_available": True,
+            "partnership_setup_required": first_partnership_setup(user)}
 
 
 def wallet_expected_balance(user_id) -> Decimal:
