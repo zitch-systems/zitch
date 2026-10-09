@@ -45,7 +45,7 @@ class QueryTransportTests(SimpleTestCase):
                                ({"session_id": "S-1"}, {"sessionid": "S-1"})):
                 self.assertEqual(fetch_query(rail, **args), {"status": "00", "transactions": []})
                 client.post.assert_called_with(url, json=body, headers={"Accept": "application/json"},
-                                               timeout=(4, 10), allow_redirects=False, stream=True)
+                                               timeout=(8, 12), allow_redirects=False, stream=True)
                 self.assertIsInstance(client.auth, NoBankCredentials)
 
     def test_only_exact_bank_endpoints_are_accepted_before_network(self):
