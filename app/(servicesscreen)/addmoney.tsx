@@ -341,6 +341,12 @@ const AddMoney = () => {
             <Btn label="Try again" onPress={() => void loadAccount()} />
           </View>
         </View>
+      ) : fundingState?.account_setup_state === 'partnership_review' ? (
+        <View style={{ paddingTop: 12 }}>
+          <Label>Account review in progress</Label>
+          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{fundingState.migration_message}</Text>
+          <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void loadAccount()} /></View>
+        </View>
       ) : fundingState?.provider === 'wema_vas' && !account ? (
         <View style={{ paddingTop: 12 }}>
           <Label>{vasAccountStatusTitle(fundingState)}</Label>

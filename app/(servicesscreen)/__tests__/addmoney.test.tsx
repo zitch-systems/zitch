@@ -61,6 +61,19 @@ describe('AddMoney VAS migration', () => {
     mockPush.mockReset();
   });
 
+  it('shows the Partnership review without asking for another identity or exposing funding details', async () => {
+    mockApiJson.mockResolvedValue({ success: true, provider: 'partnership',
+      account_setup_state: 'partnership_review', available: false, has_account: false,
+      migration_message: 'Your return to Wema Partnership needs a balance review.' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(JSON.stringify(tree.toJSON())).toContain('Account review in progress');
+    expect(JSON.stringify(tree.toJSON())).toContain('balance review');
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+    expect(JSON.stringify(tree.toJSON())).not.toContain('Get my account');
+    await act(async () => tree.unmount());
+  });
+
   const enrollment = {
     success: true, provider: 'wema_vas', has_account: false, available: false,
     enrollment_available: true, spending_available: false,

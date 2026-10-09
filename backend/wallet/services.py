@@ -125,6 +125,14 @@ def customer_funding_account(user) -> dict:
             payload["migration_message"] = "Bill payments are available. Transfers are unavailable during the bank migration."
         return payload
     if not partnership_new_business_allowed(user):
+        from wema_vas.partnership import REVIEW_MESSAGE, return_enabled
+        if return_enabled():
+            return {"account_number": "", "account_name": "", "bank_name": "",
+                    "bank_accounts": [], "bank_tier": 0, "has_account": False,
+                    "account_setup_state": "partnership_review", "provider": "partnership",
+                    "available": False, "spending_available": False,
+                    "bill_payments_available": False, "transfers_available": False,
+                    "enrollment_available": False, "migration_message": REVIEW_MESSAGE}
         return {"account_number": "", "account_name": "", "bank_name": "",
                 "bank_accounts": [], "bank_tier": 0, "has_account": False,
                 "account_setup_state": "migration_pending", "provider": "wema_vas",
@@ -190,6 +198,11 @@ def wallet_balance_payload(user, wallet=None) -> dict:
                 "historical_balance": Decimal("0.00"), "vas_balance": Decimal("0.00")}
     vas_balance = (max(Decimal("0.00"), account_balance(account))
                    if account.mode == VirtualAccount.LIVE else Decimal("0.00"))
+    from wema_vas.partnership import return_enabled, partnership_allowed
+    if return_enabled():
+        available = max(Decimal("0.00"), total) if partnership_allowed(user) else Decimal("0.00")
+        return {"balance": total, "available_balance": available,
+                "historical_balance": max(Decimal("0.00"), total - available), "vas_balance": vas_balance}
     available = (min(max(Decimal("0.00"), total), vas_balance)
                  if biller_spending_available(user) else Decimal("0.00"))
     return {"balance": total, "available_balance": available,
@@ -3198,6 +3211,11 @@ def _biller_funding_context(user, amount=Decimal("0"), *, wallet=None):
     wallet = wallet or Wallet.objects.get(user=user)
     # Retained validation records are not a live cutover or a funding source.
     account = VirtualAccount.objects.filter(user=user, mode=VirtualAccount.LIVE).first()
+    from wema_vas.partnership import REVIEW_MESSAGE, return_enabled, partnership_allowed
+    if account is not None and return_enabled():
+        if not partnership_allowed(user):
+            raise LimitExceeded(REVIEW_MESSAGE)
+        account = None
     if account is not None:
         if not account.active or account.mode != VirtualAccount.LIVE or account.prefix == "711":
             raise LimitExceeded("Your account is restricted or unavailable for bill payments.")

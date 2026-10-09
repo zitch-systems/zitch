@@ -40,9 +40,8 @@ def partnership_new_business_allowed(user=None) -> bool:
     if partnership_archived() or bank_account_provider() != "partnership":
         return False
     if user is not None:
-        from wema_vas.models import VirtualAccount
-        if VirtualAccount.objects.filter(user=user, mode=VirtualAccount.LIVE).exists():
-            return False
+        from wema_vas.partnership import partnership_allowed
+        return partnership_allowed(user)
     return True
 
 
@@ -74,19 +73,20 @@ def _biller_source(reference, *, amount, source_account=""):
 def _partnership_reference_blocked(reference: str | None = None, source_account: str = "") -> bool:
     if not partnership_new_business_allowed():
         return True
-    # A migrated customer must never spend a legacy NUBAN even if the global
-    # rollout is still serving other Partnership customers.
+    # A VAS account is never a Partnership debit source. Returning customers
+    # must pass the same liability check as the locked reservation path.
     from wema_vas.models import VirtualAccount
     if source_account and VirtualAccount.objects.filter(number=source_account).exists():
         return True
     if source_account:
         from wallet.models import Wallet
-        if Wallet.objects.filter(account_number=source_account, user__vas_accounts__mode=VirtualAccount.LIVE).exists():
+        wallet = Wallet.objects.select_related("user").filter(account_number=source_account).first()
+        if wallet and not partnership_new_business_allowed(wallet.user):
             return True
     if reference:
         from wallet.models import Transaction
-        user_id = Transaction.objects.filter(reference=reference).values_list("user_id", flat=True).first()
-        if user_id and VirtualAccount.objects.filter(user_id=user_id, mode=VirtualAccount.LIVE).exists():
+        txn = Transaction.objects.select_related("user").filter(reference=reference).first()
+        if txn and not partnership_new_business_allowed(txn.user):
             return True
     return False
 

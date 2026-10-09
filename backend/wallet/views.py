@@ -126,7 +126,7 @@ def _account_setup_state(user, wallet) -> dict:
     from .identity import accepted_identity_pending
 
     funding = customer_funding_account(user)
-    if funding.get("provider") != "partnership":
+    if funding.get("provider") != "partnership" or funding.get("account_setup_state") == "partnership_review":
         return {"account_setup_state": funding.get("account_setup_state", "migration_pending"),
                 "otp_required": False,
                 "identity_verified": bool(user.bvn_verified or user.nin_verified)}
@@ -185,6 +185,9 @@ def wallet_account_create(request):
     """
     user = request.user_obj
     if not partnership_new_business_allowed(user):
+        from wema_vas.partnership import REVIEW_MESSAGE, return_enabled
+        if return_enabled():
+            return fail(REVIEW_MESSAGE, status=409, code="partnership_review")
         return fail("Complete secure virtual-account enrollment to continue account setup.",
                     status=409, code="vas_enrollment_required",
                     enrollment_endpoint="/api/wallet/vas/enroll/")
@@ -502,6 +505,9 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
 def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
     """Start and bind an OTP request, returning (provider_result, error)."""
     if not partnership_new_business_allowed(user):
+        from wema_vas.partnership import REVIEW_MESSAGE, return_enabled
+        if return_enabled():
+            return None, REVIEW_MESSAGE
         return None, "Use secure virtual-account enrollment to complete account setup."
     identity_type, raw_identity = _identity_for_attempt(bvn, nin)
     if not re.fullmatch(r"[0-9]{11}", raw_identity):
@@ -563,6 +569,9 @@ def wema_wallet_create(request):
 def start_wema_identity(user, *, bvn="", nin=""):
     """Shared authenticated-user entry point for bank identity onboarding."""
     if not partnership_new_business_allowed(user):
+        from wema_vas.partnership import REVIEW_MESSAGE, return_enabled
+        if return_enabled():
+            return fail(REVIEW_MESSAGE, status=409, code="partnership_review")
         return fail("Use secure virtual-account enrollment to complete account setup.",
                     status=409, code="partnership_archived", enrollment_endpoint="/api/wallet/vas/enroll/")
     if not _wema_funding_enabled():

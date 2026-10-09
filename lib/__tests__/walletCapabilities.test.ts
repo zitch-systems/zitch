@@ -70,6 +70,15 @@ describe('wallet balance separation', () => {
     expect(walletBalances({ ...vas, wallet: '500.00', available_balance: '1000.00' }).availableBalance).toBe(500);
   });
 
+  it('honours a Partnership review hold rather than exposing VAS funds as spendable', () => {
+    expect(walletBalances({ provider: 'partnership', wallet: '1100', available_balance: '0',
+      historical_balance: '1100', bill_payments_available: false, transfers_available: false })).toEqual({
+      totalBalance: 1100, availableBalance: 0, historicalBalance: 1100,
+    });
+    expect(walletBalances({ provider: 'partnership', wallet: '1000', available_balance: '1000',
+      historical_balance: '0', transfers_available: true }).availableBalance).toBe(1000);
+  });
+
   it('preserves the legacy wallet balance contract', () => {
     expect(walletBalances({ wallet: '6000.00' })).toEqual({
       totalBalance: 6000, availableBalance: 6000, historicalBalance: 0,
