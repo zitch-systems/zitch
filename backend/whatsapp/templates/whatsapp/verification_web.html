@@ -85,8 +85,13 @@
     <p>Your address verification is recorded. Return to WhatsApp to check your account’s updated verification status.</p>
     <p class="note">This link is now closed and cannot submit another verification.</p>
   {% elif screen == 'pending' %}
-    <h1>Your address is being checked</h1>
-    <p>Your bank is still verifying your address. Your verification tier has not changed yet. You do not need to submit your address again.</p>
+    {% if needs_review %}
+      <h1>Your address request needs review</h1>
+      <p>Please contact Zitch Support about your submitted Tier 3 request. Your current verification stays saved. Do not submit your address again.</p>
+    {% else %}
+      <h1>Your address is being checked</h1>
+      <p>Your bank is still verifying your address. Your verification tier has not changed yet. You do not need to submit your address again.</p>
+    {% endif %}
     {% if can_refresh %}
       <form method="post" autocomplete="off">
         {% csrf_token %}
@@ -96,7 +101,7 @@
       </form>
     {% endif %}
     <p>After this link expires, return to WhatsApp and reply “8” to check your status.</p>
-    <p class="note">This link has submitted your request and cannot submit again.</p>
+    <p class="note">Your existing request cannot be submitted again from this page.</p>
   {% elif screen == 'review' %}
     <h1>Check your verification status</h1>
     <p>We could not confirm the final result. Return to WhatsApp and check your status before starting another verification. This link cannot submit again.</p>

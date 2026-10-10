@@ -9,7 +9,7 @@ tests do not establish complete live bank/provider acceptance.
 | --- | --- | --- |
 | 1 | Verified contacts plus BVN **or** NIN, proved using bank SMS OTP or the bank-hosted face route | Account creation must be attributable to the customer's identity; uncertain issuance stays under review. |
 | 2 | Prembly interactive live face verification | The documented combined bank upgrade requires BVN, NIN and live face image; the second identity is collected for this upgrade. Bank tier and holder readback must confirm completion. |
-| 3 | Completed address verification | Persist the submitted account, address and pending intent before calling the bank; promote only after authenticated bank Tier 3 and explicit completed address status. |
+| 3 | Completed address verification | Unavailable until authenticated bank evidence identifies the submitted account, address and verification request, as well as terminal completion. Account-level Tier 3/Completed alone cannot certify a newly entered address. |
 
 Prembly's image liveness endpoint assesses an uploaded image. It is not the SDK's
 interactive live-presence challenge. New Tier 2 authorization is unavailable on
@@ -22,9 +22,11 @@ does not revoke historical verification flags or certify their original evidence
 - Explicit bank face selection is honoured. Existing OTP challenges resume;
   accepted OTPs and completed face checks cannot restart uncertain issuance.
 - App verification failures offer a retry; accepted requests show processing.
-- Address requests survive disconnects and worker restarts. Repeated submissions
-  refresh status without replaying the bank request. Missing bank configuration
-  cannot fall back to document OCR to grant Partnership Tier 3.
+- New address submissions are unavailable before address collection or bank
+  dispatch. Existing verified flags and pending address records remain intact;
+  neither Completed nor Rejected account status can approve them or release a
+  retry. Changing KYC settings, a provider mode, or a capability flag cannot
+  reopen an OCR fallback. Bank-tier synchronization remains independent.
 - Bank-history review exposes zero available funds while retaining total funds,
   transaction history and valid incoming-account details. Both channels explain
   the restriction. VAS return safeguards and late callbacks remain intact.
@@ -38,6 +40,13 @@ does not revoke historical verification flags or certify their original evidence
    establish the authenticated session response contract. Bind terminal challenge
    evidence to the customer and server-issued action, enforce expiry and one-use
    consumption, then validate native and WhatsApp secure-browser journeys.
+   For Tier 3, obtain Wema's authenticated request/address correlation contract
+   and implement its terminal-result verifier. The current account-status shape
+   includes an address status and tier, but no submitted address or verification
+   request reference. Even a Pending-to-Completed transition may describe an
+   older bank job. No status allowlist, local timestamp or inferred reference is
+   accepted as a substitute. Core preflight explicitly excludes Tier 2/3
+   certification; full preflight fails while either verifier is unavailable.
 2. Resolve opening-history reviews, bank/ledger differences, funded VAS return
    cases and unknown account issuance using attributable bank statements and
    references. Do not clear holds or adjust balances to make a report pass.

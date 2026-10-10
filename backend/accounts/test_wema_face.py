@@ -376,16 +376,16 @@ class AddressRailTests(TestCase):
                                  "city": "Ikeja", "state": "Lagos", **extra},
                                 content_type="application/json")
 
-    def test_the_bank_verifies_and_no_document_is_required(self):
+    def test_uncorrelated_bank_completion_cannot_verify_new_address(self):
         with mock.patch("utility.wema.upgrade_tier3",
                         return_value={"success": True}) as up, \
                 mock.patch("utility.wema.get_kyc_status", return_value={"success": True,
                            "tier": "Tier 3", "address_verification": "Completed"}):
             res = self._post()
-        up.assert_called_once()
+        up.assert_not_called()
         self.user.refresh_from_db()
-        self.assertTrue(self.user.address_verified)
-        self.assertEqual(res.status_code, 200)
+        self.assertFalse(self.user.address_verified)
+        self.assertEqual(res.status_code, 503)
 
     def test_a_bank_refusal_is_final_and_a_document_cannot_route_around_it(self):
         with mock.patch("utility.wema.upgrade_tier3",
@@ -393,7 +393,7 @@ class AddressRailTests(TestCase):
              mock.patch("utility.providers.kyc_verify_address",
                         return_value={"success": True}) as prembly:
             res = self._post(document="ZmFrZQ==")
-        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.status_code, 503)
         prembly.assert_not_called()
         self.user.refresh_from_db()
         self.assertFalse(self.user.address_verified)
@@ -402,7 +402,7 @@ class AddressRailTests(TestCase):
         self.user.wallet.account_number = ""
         self.user.wallet.save(update_fields=["account_number"])
         res = self._post()
-        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.status_code, 503)
 
 
 class TheFaceUrlCarriesTheChannelIdTests(TestCase):

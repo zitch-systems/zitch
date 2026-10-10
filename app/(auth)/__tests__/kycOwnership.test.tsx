@@ -289,3 +289,42 @@ it('shows submitted address verification with refresh instead of a repeated addr
   expect(mockApiJson).toHaveBeenCalledTimes(2);
   act(() => tree.unmount());
 });
+
+it('does not collect a new address when Tier 3 verification is unavailable', async () => {
+  mockParams.verify_identity = '';
+  mockApiJson.mockResolvedValue({ ...state, bvn_verified: true, nin_verified: true, face_verified: true,
+    tier: 2, email_verified: true, account_provider: 'partnership', address_rail: 'wema',
+    tier3_address_available: false, tier3_address_unavailable_reason: 'Contact support to complete your address review.' });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  const output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('Address verification is temporarily unavailable');
+  expect(output).toContain('Contact support to complete your address review.');
+  expect(output).not.toContain('Building number');
+  expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+  expect(tree.root.findByProps({ accessibilityLabel: 'Contact support' })).toBeTruthy();
+  act(() => tree.unmount());
+});
+
+it.each(['verified', 'pending'])('preserves an existing %s address when new Tier 3 verification is unavailable', async (addressState) => {
+  mockParams.verify_identity = '';
+  mockApiJson.mockResolvedValue({ ...state, bvn_verified: true, nin_verified: true, face_verified: true,
+    tier: addressState === 'verified' ? 3 : 2, email_verified: true, account_provider: 'partnership', address_rail: 'wema',
+    tier3_address_available: false, tier3_address_unavailable_reason: 'Contact support for address verification review.', address_verified: addressState === 'verified',
+    address_verification_pending: addressState === 'pending', address_verification_state: addressState });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  const output = JSON.stringify(tree.toJSON());
+  expect(output).not.toContain('Address verification is temporarily unavailable');
+  expect(output).toContain(addressState === 'verified' ? 'Address verification' : 'Address verification needs review');
+  expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+  if (addressState === 'verified') {
+    expect(tree.root.findAllByType(Text).filter((node) => node.props.children === 'Verified')).toHaveLength(4);
+  } else {
+    expect(output).toContain('Contact support for address verification review.');
+    expect(output).not.toContain('Tier 3 becomes available after confirmation');
+    expect(output).not.toContain('Address verification in progress');
+    expect(tree.root.findByProps({ accessibilityLabel: 'Contact support' })).toBeTruthy();
+  }
+  act(() => tree.unmount());
+});

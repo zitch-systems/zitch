@@ -189,6 +189,38 @@ class PartnershipJourneyTests(TestCase):
              patch.object(router, "reply") as reply, \
              patch.object(router, "reply_buttons") as buttons:
             router._offer_tier_upgrade(self.user, MSISDN)
-        self.assertIn("Your address is being checked", reply.call_args.args[1])
+        self.assertIn("Your address request needs review", reply.call_args.args[1])
         buttons.assert_not_called()
         self.assertFalse(PendingAction.objects.filter(user=self.user).exists())
+
+    def test_tier3_unavailable_is_shown_before_creating_a_portal_or_collecting_address(self):
+        self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
+        self.user.recompute_tier()
+        self.user.save()
+        capability = {"tier3_address_available": False,
+                      "tier3_address_unavailable_reason": "Address verification is unavailable. Contact Zitch support."}
+        with patch("wallet.address_verification.tier3_address_capability", return_value=capability), \
+             patch.object(router, "reply") as reply, \
+             patch.object(router, "reply_buttons") as buttons, \
+             patch("whatsapp.verification_web.start_verification") as portal:
+            router._offer_tier_upgrade(self.user, MSISDN)
+            self.assertIn("Contact Zitch support", reply.call_args.args[1])
+            router._send_web_verification(self.user, MSISDN, 3)
+            self.assertEqual(reply.call_args.args[1], capability["tier3_address_unavailable_reason"])
+        portal.assert_not_called()
+        buttons.assert_not_called()
+        self.assertFalse(PendingAction.objects.filter(user=self.user).exists())
+
+    def test_disabled_new_tier3_checks_do_not_downgrade_previously_verified_customer(self):
+        self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
+        self.user.address_verified = True
+        self.user.recompute_tier()
+        self.user.save()
+        with patch("wallet.address_verification.tier3_address_capability", return_value={
+                "tier3_address_available": False, "tier3_address_unavailable_reason": "Contact support."}), \
+             patch.object(router, "reply") as reply:
+            router._offer_tier_upgrade(self.user, MSISDN)
+        self.assertIn("highest verification tier", reply.call_args.args[1])
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.address_verified)
+        self.assertEqual(self.user.tier, 3)

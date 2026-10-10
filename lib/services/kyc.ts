@@ -46,6 +46,8 @@ export type KycStatus = ApiResult<{
   tier2_face_rail?: 'prembly' | 'wema';
   tier2_face_available?: boolean;
   tier2_unavailable_reason?: string;
+  tier3_address_available?: boolean;
+  tier3_address_unavailable_reason?: string;
   address_rail?: 'document' | 'wema' | 'none';
 }>;
 

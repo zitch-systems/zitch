@@ -182,11 +182,15 @@ class PreflightLaunchScopeTests(TestCase):
         self.assertIn("RESULT: GO — launch_scope=core", out)
         self.assertIn("Tier 2 and Tier 3 upgrades are outside", out)
         self.assertIn("a core GO does not certify higher tiers", out)
+        self.assertIn("Tier 3 requires bank completion tied to the submitted address and request", out)
         self.assertNotIn("Full launch product capabilities", out)
+        self.assertNotIn("[FAIL] GATE Tier 3", out)
 
     def test_full_scope_can_pass_capability_gate_only_when_all_are_available(self):
-        # Isolate the existing product capability gate from session readiness.
-        with mock.patch("utility.management.commands.wema_preflight.tier2_face_available", return_value=True):
+        # Isolate the product capability gate from both KYC capability gates.
+        with mock.patch("utility.management.commands.wema_preflight.tier2_face_available", return_value=True), \
+                mock.patch("utility.management.commands.wema_preflight.tier3_address_capability",
+                           return_value={"tier3_address_available": True}):
             out, code = self.run_with_capabilities(True)
 
         self.assertEqual(code, 0)
@@ -199,6 +203,20 @@ class PreflightLaunchScopeTests(TestCase):
         self.assertEqual(code, 1)
         self.assertIn("[FAIL] GATE Tier 2 provider-verified live session", out)
         self.assertIn("Prembly SDK session verification is not implemented", out)
+        self.assertIn("RESULT: NOT READY — launch_scope=full", out)
+        self.assertNotIn("RESULT: GO", out)
+
+    def test_full_scope_cannot_pass_without_correlated_tier3_bank_completion(self):
+        # Even if a real Tier 2 adapter existed and the address API were keyed,
+        # account-level status could still describe an older address check.
+        with mock.patch("utility.management.commands.wema_preflight.tier2_face_available", return_value=True), \
+                mock.patch("utility.wema.address_verify_live", return_value=True):
+            out, code = self.run_with_capabilities(True)
+        self.assertEqual(code, 1)
+        self.assertIn("[PASS] GATE Tier 2 provider-verified live session", out)
+        self.assertIn("[FAIL] GATE Tier 3 bank address completion correlation", out)
+        self.assertIn("an account-level Completed status cannot certify Tier 3", out)
+        self.assertIn("key presence does not certify Tier 3 address completion", out)
         self.assertIn("RESULT: NOT READY — launch_scope=full", out)
         self.assertNotIn("RESULT: GO", out)
 

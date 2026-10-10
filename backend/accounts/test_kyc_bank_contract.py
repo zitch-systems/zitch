@@ -236,13 +236,13 @@ class BankUpgradeContractsTests(TestCase):
                     document.assert_not_called()
                     setattr(self.user, field, True)
 
-    def test_bank_tier_one_requires_combined_upgrade_before_address_submission(self):
+    def test_address_gate_does_not_start_bank_upgrade_for_tier_one(self):
         self.wallet.bank_tier = 1
         self.wallet.save(update_fields=["bank_tier"])
         with patch("wallet.services.sync_bank_tier"), patch("utility.wema.upgrade_tier3") as bank:
             response = self.post_address()
-        self.assertEqual(response.status_code, 409)
-        self.assertTrue(response.json()["upgrade_required"])
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(response.json()["tier3_address_available"])
         bank.assert_not_called()
 
     def test_invalid_or_truncated_address_never_reaches_provider(self):
@@ -252,13 +252,13 @@ class BankUpgradeContractsTests(TestCase):
             with self.subTest(data=data), patch("utility.wema.upgrade_tier3") as bank, \
                     patch("accounts.views.kyc_verify_address") as document:
                 response = self.post_address(**data)
-                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.status_code, 503)
                 bank.assert_not_called()
                 document.assert_not_called()
         self.user.refresh_from_db()
         self.assertFalse(self.user.address_verified)
 
-    def test_structured_address_reaches_bank_and_both_tiers_update_on_completion(self):
+    def test_structured_address_is_not_certified_by_old_account_completion(self):
         address = {"buildingNumber": "12", "apartment": "2B", "street": "Allen Avenue",
             "city": "Ikeja", "town": "Ikeja", "state": "Lagos", "lga": "Ikeja",
             "lcda": "Ikeja", "landmark": "Library", "additionalInformation": "Blue gate",
@@ -267,19 +267,19 @@ class BankUpgradeContractsTests(TestCase):
                 patch("utility.wema.get_kyc_status", return_value={"success": True,
                       "tier": "Tier 3", "address_verification": "Completed"}):
             response = self.post_address(residentialAddress=address)
-        self.assertEqual(response.status_code, 200, response.content)
-        bank.assert_called_once_with(self.wallet.account_number, address)
+        self.assertEqual(response.status_code, 503, response.content)
+        bank.assert_not_called()
         self.user.refresh_from_db()
         self.wallet.refresh_from_db()
-        self.assertTrue(self.user.address_verified)
-        self.assertEqual(self.user.tier, 3)
-        self.assertEqual(self.wallet.bank_tier, 3)
-        self.assertEqual(response.json()["bank_tier"], 3)
+        self.assertFalse(self.user.address_verified)
+        self.assertEqual(self.user.address, "")
+        self.assertEqual(self.user.tier, 2)
+        self.assertEqual(self.wallet.bank_tier, 2)
 
     def test_pending_or_failed_bank_address_does_not_grant_tier_or_fall_back(self):
-        for result, code in (({"success": True, "pending": True}, 202),
-                             ({"success": False}, 202),
-                             ({"success": False, "rejected": True}, 400)):
+        for result, code in (({"success": True, "pending": True}, 503),
+                             ({"success": False}, 503),
+                             ({"success": False, "rejected": True}, 503)):
             User.objects.filter(pk=self.user.pk).update(address_verification_pending=False)
             with self.subTest(result=result), patch("utility.wema.upgrade_tier3", return_value=result), \
                     patch("utility.wema.get_kyc_status", return_value={"success": True,

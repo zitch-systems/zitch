@@ -168,9 +168,8 @@ def _upgrade_block(user) -> str:
         tail = ("Reply *8* to finish verifying your identity securely from WhatsApp. "
                 "Your limit changes after verification is confirmed.")
     else:
-        top = user.TIER_LIMITS[3]
-        tail = (f"Reply *8* to upgrade securely from WhatsApp. *Tier 3* takes you up to "
-                f"₦{top:,.0f} per transaction after identity, liveness and address checks.")
+        tail = ("Reply *8* to review your verification status. "
+                "Contact Zitch Support for help with higher limits.")
     block = _more_info_block()
     return tail + (f"\n\n{block}" if block else "")
 
@@ -3151,12 +3150,16 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
     ])
     if user.tier >= 2:
         from accounts.views import _kyc_state
-        from wallet.address_verification import refresh_address_verification
+        from wallet.address_verification import refresh_address_verification, tier3_address_capability
 
         if user.address_verification_pending:
             refresh_address_verification(user)
         address_status = _kyc_state(user)
         if address_status.get("address_verification_pending"):
+            if tier3_address_capability()["tier3_address_available"] is False:
+                return reply(msisdn, "⏳ *Your address request needs review.*\n\n"
+                             "Please contact Zitch Support about your submitted Tier 3 request. "
+                             "Your current verification stays saved. Do not submit your address again.")
             return reply(msisdn, "⏳ *Your address is being checked.*\n\n"
                          "Your Tier 3 request is already submitted. You do not need to send it again. "
                          "Reply *8* to refresh your verification status.")
@@ -3168,6 +3171,13 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
     )
     if user.tier >= 3:
         return reply(msisdn, status + "\n\nYou are already on the highest verification tier.")
+    if user.tier >= 2:
+        from wallet.address_verification import tier3_address_capability
+
+        capability = tier3_address_capability()
+        if capability["tier3_address_available"] is False:
+            return reply(msisdn, status + "\n\n*Tier 3 · Address verification*\n"
+                         + capability["tier3_address_unavailable_reason"])
     pa = PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="kyc", state=KYC_UPGRADE_STATE,
         payload={}, expires_at=_flow_deadline("idle"),
@@ -3209,6 +3219,16 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
 
     if customer_funding_account(user).get("provider") == "wema_vas":
         return _start_kyc(user, msisdn)
+    if tier == 3:
+        from wallet.address_verification import tier3_address_capability
+
+        user.refresh_from_db(fields=["address_verified", "address_verification_pending", "tier"])
+        if user.address_verified or user.address_verification_pending:
+            return _offer_tier_upgrade(user, msisdn)
+        capability = tier3_address_capability()
+        if capability["tier3_address_available"] is False:
+            _clear_actions(msisdn)
+            return reply(msisdn, capability["tier3_address_unavailable_reason"])
     try:
         url = start_verification(user, msisdn, tier)
     except (ValueError, ImproperlyConfigured):

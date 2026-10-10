@@ -3583,12 +3583,13 @@ class LimitReferralTests(TestCase):
              "SUPPORT_WA": "2349012345678", "SUPPORT_EMAIL": "support@zitch.ng"}
 
     @override_settings(ZITCH_LINKS=LINKS)
-    def test_a_verified_customer_over_the_cap_is_given_whatsapp_upgrade_entry(self):
+    def test_a_verified_customer_over_the_cap_is_given_status_and_support(self):
         from whatsapp.router import _upgrade_block
 
         block = _upgrade_block(self.user)          # tier 1, all four checks done
-        self.assertIn("Tier 3", block)
-        self.assertIn("upgrade securely from WhatsApp", block)
+        self.assertIn("review your verification status", block)
+        self.assertIn("Zitch Support", block)
+        self.assertNotIn("upgrade securely from WhatsApp", block)
         self.assertIn("https://zitch.ng", block)
 
     @override_settings(ZITCH_LINKS=LINKS)

@@ -200,7 +200,7 @@ jobs:
 
           This build supports the return to Wema Partnership on the app and WhatsApp. Live availability follows the server configuration and each customer's account status. VAS enrollment and VAS-funded bill purchases are closed. Profiles with a VAS balance, held receipt or unresolved bill remain in review until that exposure is resolved. Do not fund 711 validation accounts.
 
-          Tier 1 supports BVN or NIN with bank SMS OTP or the bank-hosted face route. Address verification remains pending until the bank confirms completion. New Tier 2 upgrades remain unavailable until Prembly's interactive live-session integration is validated. This build does not certify go-live readiness.
+          Tier 1 supports BVN or NIN with bank SMS OTP or the bank-hosted face route. New Tier 2 upgrades remain unavailable until Prembly's interactive live-session integration is validated. New Tier 3 upgrades remain unavailable until Wema's completion evidence can be tied to the submitted address; existing pending requests stay in review. This build does not certify go-live readiness.
 
           SHA256SUMS.txt verifies the downloaded APK. build-info.json records its source commit, version, and signing certificate.
           NOTES

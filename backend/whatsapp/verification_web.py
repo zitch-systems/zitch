@@ -213,6 +213,13 @@ def _bank_address_unavailable():
     return kyc_provider() == "wema" and not wema.address_verify_live()
 
 
+def _pending_page(request):
+    from wallet.address_verification import tier3_address_capability
+
+    return _page(request, "pending", status=202, can_refresh=True,
+                 needs_review=tier3_address_capability()["tier3_address_available"] is False)
+
+
 def _form(request, pa, user, *, message="", status=200, values=None, refresh_status=True):
     if not _has_proof(request, pa, user):
         if pa.state == REVIEW:
@@ -232,9 +239,15 @@ def _form(request, pa, user, *, message="", status=200, values=None, refresh_sta
     if address_status.get("address_verified"):
         return _page(request, "complete")
     if address_status.get("address_verification_pending"):
-        return _page(request, "pending", status=202, can_refresh=True)
+        return _pending_page(request)
     if pa.state == REVIEW:
         return _page(request, "review", status=503)
+    from wallet.address_verification import tier3_address_capability
+
+    capability = tier3_address_capability()
+    if capability["tier3_address_available"] is False:
+        return _page(request, "unavailable", status=503,
+                     message=capability["tier3_address_unavailable_reason"])
     if not (user.bvn_verified and user.nin_verified and user.face_verified
             and user.email_verified and user.phone_verified and user.tier >= 2):
         return _page(request, "unavailable", status=409,
@@ -371,7 +384,11 @@ def _submit(request, claims):
         if user.address_verified:
             return _page(request, "complete")
         if user.address_verification_pending:
-            return _page(request, "pending", status=202, can_refresh=True)
+            return _pending_page(request)
+        from wallet.address_verification import tier3_address_capability
+
+        if tier3_address_capability()["tier3_address_available"] is False:
+            return _form(request, pa, user, refresh_status=False)
         if _bank_address_unavailable():
             return _form(request, pa, user, refresh_status=False)
         data, values, error = _address_data(request)
@@ -400,7 +417,7 @@ def _submit(request, claims):
     if result.status_code == 202 and isinstance(body, dict) and body.get("pending") is True:
         pa.payload["address_pending"] = True
         PendingAction.objects.filter(pk=pa.pk, state=PROCESSING).update(state=REVIEW, payload=pa.payload)
-        return _page(request, "pending", status=202, can_refresh=True)
+        return _pending_page(request)
     if result.status_code in (400, 403, 409, 413, 422, 429):
         # Only an explicit rejection permits correction/retry. Never echo raw
         # provider messages; they may contain identity numbers or uploaded data.

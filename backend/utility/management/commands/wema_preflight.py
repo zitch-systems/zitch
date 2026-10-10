@@ -8,6 +8,7 @@ read-only and moves no money: the same live self-tests as /wema-diagnose and
 
 HARD gates block real money and cause a nonzero exit:
   * full-scope customer products have bank-backed settlement
+  * full-scope KYC has verified live sessions and request-bound address completion
   * partner bank live keys present (channel id + wallet + per-product keys)
   * pointed at the LIVE host, not apiplayground (the sandbox)
   * simulation off, test-OTP bypass off, simulated-deposit token unset
@@ -34,6 +35,7 @@ from utility import wema
 from utility.liveness import tier2_face_available
 from utility.providers import (card_issuer_live, card_provider, kyc_provider,
                                payment_provider, payout_provider, vas_provider)
+from wallet.address_verification import tier3_address_capability
 
 
 def _face_host() -> str:
@@ -95,6 +97,16 @@ class Command(BaseCommand):
                  "unavailable: Prembly SDK session verification is not implemented; image API keys, "
                  "photographs and client callbacks cannot certify Tier 2 or the full Tier 3 journey"),
             ))
+            address_capability = tier3_address_capability()
+            address_ready = address_capability.get("tier3_address_available") is True
+            checks.append((
+                True, "Tier 3 bank address completion correlation",
+                PASS if address_ready else FAIL,
+                ("authenticated bank completion is bound to the submitted address and request"
+                 if address_ready else
+                 "unavailable: the bank account status cannot identify the submitted address or "
+                 "verification request; an account-level Completed status cannot certify Tier 3"),
+            ))
         else:
             checks.append((
                 False, "Core launch exclusions", INFO,
@@ -104,7 +116,8 @@ class Command(BaseCommand):
             checks.append((
                 False, "Core verification scope", INFO,
                 "Tier 1 uses verified BVN or NIN. Tier 2 and Tier 3 upgrades are outside "
-                "this core readiness certification; a core GO does not certify higher tiers",
+                "this core readiness certification; a core GO does not certify higher tiers. "
+                "Tier 3 requires bank completion tied to the submitted address and request",
             ))
 
         d = wema.wema_diagnostics()
@@ -356,9 +369,9 @@ class Command(BaseCommand):
         else:
             checks.append((False, "Face biometric (Partner-bank)", WARN,
                            "no channel id or WEMA_FACE_VERIFY_URL — Tier 1 uses SMS OTP"))
-        checks.append((False, "Address verification (Partner-bank)",
+        checks.append((False, "Address verification API subscription (Partner-bank)",
                        PASS if address_verify_live() else WARN,
-                       "bank-verified (Tier 3 upgrade)" if address_verify_live()
+                       "configured; key presence does not certify Tier 3 address completion" if address_verify_live()
                        else "WEMA_UPGRADE_KEY unset — bank address verification is unavailable"))
 
         prembly_keyed = bool(settings.PREMBLY.get("API_KEY") and settings.PREMBLY.get("APP_ID"))

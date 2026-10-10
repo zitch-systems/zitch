@@ -39,6 +39,8 @@ type Status = {
   tier2_face_rail?: 'prembly' | 'wema';
   tier2_face_available?: boolean;
   tier2_unavailable_reason?: string;
+  tier3_address_available?: boolean;
+  tier3_address_unavailable_reason?: string;
   address_rail?: 'document' | 'wema' | 'none';
   // Set once the bank has opened the account number: from then on it will not
   // accept a lone BVN or NIN, only all of it at once. Read here so the menu can
@@ -217,6 +219,7 @@ const Kyc = () => {
   const hasTier1Identity = !!(status?.bvn_verified || status?.nin_verified);
   const needsBankUpgrade = !!status?.bank_upgrade_required || needsUpgrade;
   const tier2Unavailable = status?.tier2_face_available === false;
+  const tier3Unavailable = status?.tier3_address_available === false;
   const addressPending = status?.address_verification_pending === true || status?.address_verification_state === 'pending';
   const addressVerificationAvailable = status?.account_provider !== 'wema_vas'
     && status?.address_verification_required !== false
@@ -613,9 +616,18 @@ const Kyc = () => {
   </View>;
 
   const AddressPending = () => <View style={{ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
-    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>Address verification in progress</Text>
-    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>Your address has been submitted. You do not need to submit it again. Tier 3 becomes available after confirmation.</Text>
+    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>{tier3Unavailable ? 'Address verification needs review' : 'Address verification in progress'}</Text>
+    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>{tier3Unavailable
+      ? (status?.tier3_address_unavailable_reason || 'Your saved address verification needs a support review. You do not need to submit your address again.')
+      : 'Your address has been submitted. You do not need to submit it again. Tier 3 becomes available after confirmation.'}</Text>
+    {tier3Unavailable && <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="ghost" onPress={() => router.push('/support')} /></View>}
     <View style={{ marginTop: 12 }}><Btn label="Check address status" variant="ghost" onPress={() => void load()} /></View>
+  </View>;
+
+  const Tier3Unavailable = () => <View style={{ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
+    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>Address verification is temporarily unavailable</Text>
+    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>{status?.tier3_address_unavailable_reason || 'Your current verification is saved. Contact support for help with Tier 3.'}</Text>
+    <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="ghost" onPress={() => router.push('/support')} /></View>
   </View>;
 
   if (loadingStatus || statusError || !status) {
@@ -692,7 +704,8 @@ const Kyc = () => {
             ? <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Tier 2 · Face verification" sub="Confirm your identity details and take a selfie" />
             : <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Tier 2 · Prembly verification" done={!!status.face_verified} />)}
           {addressVerificationAvailable && status?.tier !== undefined && status.tier >= 2 && (addressPending
-            ? <AddressPending /> : <MethodCard id="address" icon="home" color={C_BVN} title="Address verification" sub="Tier 3" done={!!status?.address_verified} />)}
+            ? <AddressPending /> : tier3Unavailable && !status.address_verified
+              ? <Tier3Unavailable /> : <MethodCard id="address" icon="home" color={C_BVN} title="Address verification" sub="Tier 3" done={!!status?.address_verified} />)}
           <Footer />
         </View>
       )}
@@ -848,7 +861,9 @@ const Kyc = () => {
       )}
 
       {method === 'address' && addressPending && <AddressPending />}
-      {method === 'address' && addressVerificationAvailable && !addressPending && (
+      {method === 'address' && !addressPending && !status.address_verified && tier3Unavailable && <Tier3Unavailable />}
+      {method === 'address' && !addressPending && status.address_verified && <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>Your address is verified. Your current tier is shown on the verification menu.</Text>}
+      {method === 'address' && addressVerificationAvailable && !addressPending && !tier3Unavailable && !status.address_verified && (
         <View>
           <Hero icon="home" color={C_BVN} title="Address verification" sub="Tier 3" />
           <Field label="Building number" value={address.buildingNumber} onChangeText={(value) => setAddressField('buildingNumber', value)} />
