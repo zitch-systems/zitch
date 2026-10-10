@@ -557,8 +557,16 @@ def link_status(request):
 @api
 @require_user
 def link_unlink(request):
-    """POST /api/whatsapp/link/unlink/ {access_token} -> {success}"""
-    request.user_obj.whatsapp_links.filter(status=WhatsAppLink.ACTIVE).delete()
+    """POST /api/whatsapp/link/unlink/ {access_token} -> {success}
+
+    Unlinking is how a customer cuts off a phone they no longer hold, so a
+    payment that phone already armed must not stay confirmable from the
+    secure Flow or the app hand-off after the link is gone."""
+    from .router import retire_unsubmitted_actions
+
+    active = request.user_obj.whatsapp_links.filter(status=WhatsAppLink.ACTIVE)
+    retire_unsubmitted_actions(request.user_obj, active.values_list("wa_msisdn", flat=True))
+    active.delete()
     return ok(success=True, message="WhatsApp unlinked")
 
 
@@ -731,7 +739,11 @@ def approve_execute(request):
         logging.getLogger("whatsapp").exception("approve_execute failed for pa=%s", pa.id)
         return fail("Something went wrong completing that. If you were charged it will auto-reverse.",
                     status=502)
-    return ok(success=True, message=outcome)
+    # `success` means the approval was accepted and the action ran; `outcome` is
+    # what happened to the money (success / pending / failed, or done when the
+    # executor did not say). A failed transfer is still a completed approval, so
+    # the app needs both to avoid showing "Payment approved" over a refusal.
+    return ok(success=True, message=outcome, outcome=getattr(outcome, "status", "done"))
 
 
 def approve_handoff(request, token: str):

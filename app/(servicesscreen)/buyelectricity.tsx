@@ -11,6 +11,7 @@ import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { MIN_ELECTRICITY } from '@/lib/amounts';
 
 // Disco id mapping follows the backend's numeric convention.
 const DISCOS = [
@@ -54,7 +55,7 @@ const BuyElectricity = () => {
   const amount = Number(amt || 0);
   const validationKey = `${disco}|${meterType}|${meter.trim()}`;
   const verifiedCustomer = validatedFor === validationKey ? customerName : '';
-  const valid = billPaymentsAvailable === true && meter.length >= 8 && !!verifiedCustomer && amount >= 500 && amount <= balance;
+  const valid = billPaymentsAvailable === true && meter.length >= 8 && !!verifiedCustomer && amount >= MIN_ELECTRICITY && amount <= balance;
 
   const validateMeter = async () => {
     if (meter.trim().length < 8) { notify('Error', 'Enter a valid meter number.'); return; }
@@ -231,7 +232,7 @@ const BuyElectricity = () => {
         prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
       <View style={{ height: 6 }} />
-      <BalanceHint amount={amount} balance={balance} />
+      <BalanceHint amount={amount} balance={balance} min={MIN_ELECTRICITY} />
       {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />

@@ -12,6 +12,7 @@ import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { purchasablePhoneNumber } from '@/lib/phone';
+import { MIN_AIRTIME } from '@/lib/amounts';
 
 const NETWORKS = [
   { id: '1', name: 'MTN', color: '#FFCC00', logo: require('@/assets/images/providers/mtn.png') },
@@ -45,7 +46,7 @@ const BuyAirtime = () => {
 
   const network = NETWORKS.find((n) => n.id === net)!;
   const amount = Number(amt || 0);
-  const valid = billPaymentsAvailable === true && /^0[789]\d{9}$/.test(phone) && amount >= 100 && amount <= balance;
+  const valid = billPaymentsAvailable === true && /^0[789]\d{9}$/.test(phone) && amount >= MIN_AIRTIME && amount <= balance;
 
   const purchase = async (enteredPin: string) => {
     if (!valid || done || purchaseInFlight.current) return;
@@ -153,7 +154,7 @@ const BuyAirtime = () => {
         prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
       <View style={{ height: 6 }} />
-      <BalanceHint amount={amount} balance={balance} />
+      <BalanceHint amount={amount} balance={balance} min={MIN_AIRTIME} />
       {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />

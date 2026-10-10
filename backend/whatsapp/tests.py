@@ -3902,6 +3902,70 @@ class IdleReauthTests(TestCase):
         with override_settings(WA_REAUTH_IDLE_MINUTES=15):
             self.assertIn("confirm it's you", self._say("balance").lower())
 
+    def test_every_statement_alias_is_gated(self):
+        """"pdf" sends the same statement file "statement" does, so it cannot be
+        the alias that walks past the challenge."""
+        for alias in ("statement", "download statement", "bank statement",
+                      "account statement", "pdf"):
+            with self.subTest(alias=alias):
+                PendingAction.objects.filter(msisdn=MSISDN).delete()
+                out = self._say(alias)
+                self.assertIn("confirm it's you", out.lower())
+                self.assertNotIn("₦", out)
+
+    def _with_ai(self, intent):
+        WhatsAppLink.objects.filter(wa_msisdn=MSISDN).update(ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+        return patch("whatsapp.ai.extract_intent", return_value=intent)
+
+    @override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+    def test_a_model_routed_read_is_gated_like_the_keyword(self):
+        """"How much do I have?" reaches the same balance "balance" does."""
+        for name in ("check_balance", "transaction_history", "account_details"):
+            with self.subTest(intent=name), self._with_ai({"name": name, "input": {}}):
+                PendingAction.objects.filter(msisdn=MSISDN).delete()
+                out = self._say("how much money is in there")
+                self.assertIn("confirm it's you", out.lower())
+                self.assertNotIn("₦", out)
+                pa = PendingAction.objects.get(msisdn=MSISDN, action_type="unlock")
+                self.assertEqual(pa.payload["resume_intent"]["name"], name)
+
+    @override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+    def test_unlocking_answers_the_parsed_question_without_asking_the_model_again(self):
+        from whatsapp.router import run_flow_execution
+
+        with self._with_ai({"name": "check_balance", "input": {}}) as extract:
+            self._say("could you please tell me how much money I currently have left in my wallet")
+            pa = PendingAction.objects.get(msisdn=MSISDN, action_type="unlock")
+            run_flow_execution(pa, self.user)
+        self.assertEqual(extract.call_count, 1)
+        out = WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+        self.assertIn("₦", out)
+        self.assertIsNotNone(ConversationState.objects.get(msisdn=MSISDN).last_verified)
+
+    @override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+    def test_a_resumed_lookup_keeps_its_filters(self):
+        from whatsapp.router import run_flow_execution
+
+        intent = {"name": "transaction_history", "input": {"amount": 987654, "days_ago": 2}}
+        with self._with_ai(intent):
+            self._say("did my transfer two days ago go through")
+            pa = PendingAction.objects.get(msisdn=MSISDN, action_type="unlock")
+            run_flow_execution(pa, self.user)
+        out = WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+        # A lookup, not the generic list: it reports what it searched for.
+        self.assertIn("couldn't find", out.lower())
+
+    @override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+    def test_a_warm_conversation_reads_through_the_model_unchallenged(self):
+        ConversationState.objects.update_or_create(
+            msisdn=MSISDN, defaults={"last_verified": timezone.now()})
+        with self._with_ai({"name": "check_balance", "input": {}}):
+            self.assertIn("₦", self._say("how much do I have"))
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="unlock").exists())
+
 
 class ChatLockPromptTests(TestCase):
     def test_signup_tells_new_customers_how_to_lock_the_thread(self):
@@ -5592,3 +5656,39 @@ class SavedPeopleTests(TestCase):
         with patch.object(router, "send_cta_url", return_value={"success": True}) as cta:
             router._start_qr_scan(self.user, MSISDN)
         self.assertIn("photo", cta.call_args.args[1].lower())
+
+
+class SpendableBalanceMessageTests(TestCase):
+    """A refusal must quote the balance it refused against. Held or historical
+    funds are part of the wallet total but cannot be spent, so "Insufficient
+    balance. You have ₦50,000" for a ₦5,000 transfer contradicts itself."""
+
+    def setUp(self):
+        self.user, _ = make_user(balance="50000")
+        give_account(self.user)
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_the_guided_amount_step_checks_and_quotes_the_spendable_balance(self):
+        with patch("whatsapp.router.customer_spendable_balance", return_value=Decimal("100")):
+            self._say("2")
+            out = self._say("5000")
+        self.assertIn("Insufficient balance", out)
+        self.assertIn("₦100.00", out)
+        self.assertNotIn("50,000", out)
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="transfer")
+        self.assertEqual(pa.state, "amount")
+
+    def test_a_pasted_transfer_quotes_the_spendable_balance(self):
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#000", active=True)
+        with patch("whatsapp.router.customer_spendable_balance", return_value=Decimal("100")):
+            out = self._say("0123456789 GTBank John Doe 5000")
+        self.assertIn("Insufficient balance", out)
+        self.assertIn("₦100.00", out)
+        self.assertNotIn("50,000", out)

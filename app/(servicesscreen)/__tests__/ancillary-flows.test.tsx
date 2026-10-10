@@ -1,6 +1,6 @@
 import React, { type ReactNode } from 'react';
 import renderer, { act } from 'react-test-renderer';
-import { AppState, Linking, Pressable, Share } from 'react-native';
+import { Alert, AppState, Linking, Pressable, Share } from 'react-native';
 import { Btn, Field, PinSheet, PillTabs, PickerSheet } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import LinkWhatsApp from '@/app/(servicesscreen)/linkwhatsapp';
@@ -113,6 +113,23 @@ it('shows a retry after WhatsApp status fails instead of claiming the account is
   mockApiJson.mockResolvedValue({ success: true, linked: true, masked_number: '••••1234' });
   await press('Try again');
   expect(output()).toContain('WhatsApp connected');
+});
+
+it('asks before unlinking WhatsApp and unlinks only on confirmation', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path.endsWith('/unlink/')
+    ? { success: true }
+    : { success: true, linked: true, masked_number: '••••1234' });
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  await render(<LinkWhatsApp />);
+  await press('Unlink WhatsApp');
+  expect(alert).toHaveBeenCalledTimes(1);
+  expect(mockApiJson.mock.calls.some(([path]) => path.endsWith('/unlink/'))).toBe(false);
+  const buttons = alert.mock.calls[0][2] as { text: string; onPress?: () => void }[];
+  buttons.find((b) => b.text === 'Cancel')?.onPress?.();
+  expect(mockApiJson.mock.calls.some(([path]) => path.endsWith('/unlink/'))).toBe(false);
+  await act(async () => { buttons.find((b) => b.text === 'Unlink')!.onPress!(); });
+  expect(mockApiJson).toHaveBeenCalledWith('/api/whatsapp/link/unlink/', {}, 15000);
+  expect(output()).toContain('Generate link code');
 });
 
 it('rejects impossible statement dates and accepts a real leap day without rollover', async () => {

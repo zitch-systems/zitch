@@ -16,6 +16,7 @@ import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { paymentDestination } from '@/lib/phone';
+import { MIN_TRANSFER } from '@/lib/amounts';
 
 const AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 // Mirrors backend User.LARGE_TXN_THRESHOLD — drives the device biometric step-up.
@@ -160,7 +161,7 @@ const SendMoney = () => {
     ? acct.length === 10 && !!bank && !!activeBankName
     : !!activeResolvedName;
   const recipientName = picked ? picked.name : mode === 'bank' ? activeBankName : activeResolvedName;
-  const valid = transfersAvailable === true && (pickedReady || acctReady) && amount >= 10 && amount <= balance;
+  const valid = transfersAvailable === true && (pickedReady || acctReady) && amount >= MIN_TRANSFER && amount <= balance;
 
   const resolveZitch = async () => {
     const requestedIdentifier = identifier.trim();
@@ -251,8 +252,9 @@ const SendMoney = () => {
       // Defense-in-depth: a device biometric step-up for large transfers, on top
       // of the transaction PIN and the server-side face_verified gate. If the
       // device has no enrolled biometrics, the PIN + server checks still apply.
+      // Biometric-only: the phone's unlock passcode must not stand in for it.
       if (amount >= LARGE_TXN && (await isBiometricAvailable())) {
-        const okScan = await authenticate(`Authorize ${money(amount)} transfer`);
+        const okScan = await authenticate(`Authorize ${money(amount)} transfer`, true);
         if (!okScan) { setStep(null); return; }
       }
       // Persist before delivery. A retry after an app restart therefore presents
@@ -472,7 +474,7 @@ const SendMoney = () => {
       <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
       <Field value={amt} onChangeText={(v) => setAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
       <View style={{ height: 6 }} />
-      <BalanceHint amount={amount} balance={balance} />
+      <BalanceHint amount={amount} balance={balance} min={MIN_TRANSFER} />
       {transfersAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Transfers are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Field label="Narration (optional)" value={note} onChangeText={setNote} placeholder="What's it for?" />

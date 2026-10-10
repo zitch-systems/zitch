@@ -33,7 +33,7 @@ from wallet.services import credit, get_or_create_wallet
 from . import flows
 from .flows import (FLOW_PIN_STATE, RESULT_SCREEN, SUCCESS_SCREEN, handle_flow_request,
                     sign_flow_token)
-from .models import PendingAction
+from .models import PendingAction, WhatsAppLink
 
 User = get_user_model()
 MSISDN = "2348011112222"
@@ -87,6 +87,8 @@ def _make_user(balance="50000"):
     user.save()
     get_or_create_wallet(user)
     credit(user, Decimal(balance), "Seed")
+    # Every armed action belongs to a linked channel; execution re-checks it.
+    WhatsAppLink.objects.create(user=user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
     return user
 
 
