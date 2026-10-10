@@ -252,8 +252,9 @@ const SendMoney = () => {
       // Defense-in-depth: a device biometric step-up for large transfers, on top
       // of the transaction PIN and the server-side face_verified gate. If the
       // device has no enrolled biometrics, the PIN + server checks still apply.
+      // Biometric-only: the phone's unlock passcode must not stand in for it.
       if (amount >= LARGE_TXN && (await isBiometricAvailable())) {
-        const okScan = await authenticate(`Authorize ${money(amount)} transfer`);
+        const okScan = await authenticate(`Authorize ${money(amount)} transfer`, true);
         if (!okScan) { setStep(null); return; }
       }
       // Persist before delivery. A retry after an app restart therefore presents

@@ -410,6 +410,8 @@ describe('SendMoney recipient response binding', () => {
     });
     await act(async () => { await control(tree, 'Submit PIN').props.onPress(); });
 
+    // The step-up is a money prompt: the device passcode may not satisfy it.
+    expect(mockAuthenticate).toHaveBeenCalledWith(expect.any(String), true);
     expect(mockAcquireSpendAttempt).not.toHaveBeenCalled();
     expect(mockSendLegacy).not.toHaveBeenCalled();
     expect(mockNotify).toHaveBeenCalledWith(
