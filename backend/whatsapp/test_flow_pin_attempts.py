@@ -293,6 +293,25 @@ class SetPinAttemptsTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_transaction_pin("1234"))   # unchanged
 
+    def test_a_frozen_account_cannot_finish_a_reset_left_open(self):
+        """Freezing is the incident lever. A reset already on screen must not
+        plant a PIN that outlives the freeze."""
+        pa = self._armed()
+        self.assertEqual(self._submit(pa, "246810"), PIN_CONFIRM)
+        User.objects.filter(pk=self.user.pk).update(is_active=False)
+        self.assertEqual(self._submit(pa, "246810"), RESULT_SCREEN)
+        self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_transaction_pin("1234"))   # unchanged
+
+    def test_an_unlinked_number_cannot_finish_a_reset(self):
+        pa = self._armed()
+        self.assertEqual(self._submit(pa, "246810"), PIN_CONFIRM)
+        WhatsAppLink.objects.filter(user=self.user).delete()
+        self.assertEqual(self._submit(pa, "246810"), RESULT_SCREEN)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_transaction_pin("1234"))   # unchanged
+
     def test_a_second_confirm_mismatch_terminates(self):
         pa = self._armed()
         screens = [self._submit(pa, "246810"),
