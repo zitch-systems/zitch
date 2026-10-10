@@ -10,8 +10,8 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if limit_msg:
             _clear_actions(msisdn)
             return _limit_reply(msisdn, user, limit_msg)
-        if get_or_create_wallet(user).balance < amount:
-            return reply(msisdn, f"Insufficient balance. You have {_money(get_or_create_wallet(user).balance)}. "
+        if _insufficient(user, amount):
+            return reply(msisdn, f"Insufficient balance. You have {_money(_fresh_wallet_balance(user))} available. "
                                  "Enter a lower amount, or \"cancel\".")
         pa.payload["amount"] = str(amount)
         _touch(pa, state="account", payload=pa.payload)
@@ -724,7 +724,7 @@ def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_que
         _limit_reply(msisdn, user, limit_msg)
         return True
     if _insufficient(user, amount):
-        reply(msisdn, f"Insufficient balance. You have {_money(get_or_create_wallet(user).balance)}.")
+        reply(msisdn, f"Insufficient balance. You have {_money(_fresh_wallet_balance(user))} available.")
         return True
     pa = _new_flow(user, msisdn, "transfer", "bank",
                    {"amount": str(amount), "account": acct, "pin_attempts": 0})
@@ -1881,6 +1881,15 @@ def vas_text_intent(text: str):
                       "phone": phone_match.group(0) if phone_match else None}}
 
 
+#: Model intents that read what _SENSITIVE_READS protects, with the keyword each
+#: one would have been typed as.
+_GATED_INTENTS = {
+    "check_balance": "balance",
+    "transaction_history": "history",
+    "account_details": "account details",
+}
+
+
 def dispatch_intent(user, msisdn: str, intent: dict, text: str = "") -> bool:
     """Map one LLM tool call to a deterministic flow. Returns False for
     clarify/unknown so the caller shows the menu. Money still requires the
@@ -1897,6 +1906,13 @@ def dispatch_intent(user, msisdn: str, intent: dict, text: str = "") -> bool:
         for key, value in lookup_hints(text).items():
             if p.get(key) in (None, ""):
                 p = {**p, key: value}
+    # The same idle gate the keywords pass through. "What's my balance?" reaches
+    # the balance as surely as "balance" does, so it cannot skip the challenge
+    # merely because the model, not the keyword table, recognised it. Savings
+    # and loan reads gate themselves in savings_loans.
+    if name in _GATED_INTENTS and _needs_reauth(ConversationState.for_msisdn(msisdn)):
+        _send_unlock(user, msisdn, _GATED_INTENTS[name], intent={"name": name, "input": p})
+        return True
     # Cleaned here, at the boundary, so a model that returns a newline or 300
     # characters cannot put either into a payload, a bank statement or a
     # rendered receipt. Reset in the finally below: a narration is a fact about
@@ -2174,6 +2190,10 @@ def _exec_convert(pa: PendingAction, user, msisdn: str) -> str:
 # AFTER verifying the PIN, so a Flow-confirmed action runs the exact same money
 # path as the chat PIN path.
 # --------------------------------------------------------------------------- #
+_UNLINKED_CHANNEL = ("This WhatsApp number is no longer connected to your Zitch account, "
+                     "so nothing was sent and you were not charged.")
+
+
 def authorise_flow_execution(pa: PendingAction, user) -> str:
     """The PIN just passed. Get the money OFF Meta's clock.
 
@@ -2195,6 +2215,11 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     """
     if getattr(settings, "WHATSAPP_PROCESS_INLINE", False):
         return run_flow_execution(pa, user)
+    # Checked before the action becomes `executing`, which run_flow_execution
+    # treats as already authorised.
+    if not _channel_linked(user, pa.msisdn):
+        PendingAction.objects.filter(pk=pa.pk).exclude(state=EXECUTING_STATE).delete()
+        return Outcome(_UNLINKED_CHANNEL, OUTCOME_FAILED)
 
     from .jobs import drain_in_background, enqueue_flow_execution
 
@@ -2346,6 +2371,11 @@ def run_flow_execution(pa: PendingAction, user) -> str:
             live.delete()
             return Outcome("Your Zitch account is currently suspended. Please contact support.",
                            OUTCOME_FAILED)
+        # Unlinking cuts off the phone that armed this. An already-authorised
+        # payment still completes; an unconfirmed one does not.
+        if live.state != EXECUTING_STATE and not _channel_linked(live_user, live.msisdn):
+            live.delete()
+            return Outcome(_UNLINKED_CHANNEL, OUTCOME_FAILED)
 
         pa = live
         user = live_user

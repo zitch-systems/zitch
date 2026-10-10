@@ -2096,9 +2096,8 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
     from transfers.models import Bank
     from utility.providers import payout_resolve_account
 
-    from .router import (_clear_actions, _flow_fields, _insufficient, _touch,
-                         nuban_bank_candidates)
-    from wallet.services import get_or_create_wallet
+    from .router import (_clear_actions, _flow_fields, _fresh_wallet_balance, _insufficient,
+                         _touch, nuban_bank_candidates)
 
     pa = resolve_flow_token(token)
     if pa is None:
@@ -2147,8 +2146,8 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
     if limit_msg:
         return _transfer_form_screen(error=limit_msg)
     if _insufficient(user, amount):
-        balance = get_or_create_wallet(user).balance
-        return _transfer_form_screen(error=f"Insufficient balance - you have NGN {balance:,.2f}.")
+        balance = _fresh_wallet_balance(user)
+        return _transfer_form_screen(error=f"Insufficient balance - you have NGN {balance:,.2f} available.")
 
     # One bank field serves both search and selection. New Flow clients submit
     # a human bank name ("Wema", "Kuda", "GTBank"); an already-open legacy Flow

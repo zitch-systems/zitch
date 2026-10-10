@@ -159,6 +159,7 @@ class ApproveEndpointTests(TestCase):
                                "transaction_pin": "1234"})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["success"])
+        self.assertEqual(body["outcome"], "success")
         self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("45000"))
         # Execution cleared the action: the same hand-off cannot be redeemed twice.
         self.assertIsNone(resolve_approve_token(self.handoff))
@@ -166,6 +167,23 @@ class ApproveEndpointTests(TestCase):
                             {"access_token": self.token, "token": self.handoff,
                              "transaction_pin": "1234"})
         self.assertEqual(res2.status_code, 410)
+
+    def test_a_refused_payment_reports_its_outcome_not_just_the_approval(self):
+        """The approval ran, so `success` stays true for older app builds, but the
+        money did not move and the app must not show "Payment approved"."""
+        from unittest.mock import patch
+
+        from transfers.services import PayoutError
+
+        with patch("whatsapp.router.execute_payout",
+                   side_effect=PayoutError("provider", "The bank declined it.")):
+            res, body = self.post("/api/whatsapp/approve/execute/",
+                                  {"access_token": self.token, "token": self.handoff,
+                                   "transaction_pin": "1234"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["success"])
+        self.assertEqual(body["outcome"], "failed")
+        self.assertIn("failed", body["message"])
 
     def test_execute_refuses_a_different_users_session(self):
         _, other_token = _user(phone="08020000002", email="bob@zitch.test",
@@ -364,3 +382,79 @@ class HealthFlowReadinessTests(TestCase):
             body = _C().get("/healthz").json()["integrations"]
         self.assertTrue(body["whatsapp_flow_key_ok"])   # key is fine…
         self.assertFalse(body["whatsapp_flow_ready"])   # …Flow just isn't published
+
+
+@override_settings(WHATSAPP=_WA_ON)
+class UnlinkRetiresArmedActionsTests(TestCase):
+    """Unlinking is how a customer cuts off a phone they no longer hold. The chat
+    already refuses an unlinked number, but a confirm that phone armed must not
+    stay redeemable through the secure Flow or the app hand-off either."""
+
+    def setUp(self):
+        self.client = Client()
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#e30613", active=True)
+        self.user, self.token = _user()
+        self.pa = _armed_transfer(self.user)
+
+    def post(self, path, payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def test_unlinking_in_the_app_retires_what_the_phone_armed(self):
+        from .flows import sign_flow_token, resolve_flow_token
+
+        handoff, flow_token = sign_approve_token(self.pa), sign_flow_token(self.pa)
+        res, _ = self.post("/api/whatsapp/link/unlink/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(resolve_approve_token(handoff))
+        self.assertIsNone(resolve_flow_token(flow_token))
+        res, _ = self.post("/api/whatsapp/approve/execute/",
+                           {"access_token": self.token, "token": handoff, "transaction_pin": "1234"})
+        self.assertEqual(res.status_code, 410)
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000"))
+
+    def test_an_already_authorised_payment_survives_the_unlink(self):
+        from .router import EXECUTING_STATE
+
+        PendingAction.objects.filter(pk=self.pa.pk).update(state=EXECUTING_STATE)
+        before = PendingAction.objects.get(pk=self.pa.pk).expires_at
+        self.post("/api/whatsapp/link/unlink/", {"access_token": self.token})
+        live = PendingAction.objects.get(pk=self.pa.pk)
+        self.assertEqual(live.state, EXECUTING_STATE)
+        self.assertEqual(live.expires_at, before)
+
+    def test_execution_refuses_an_unconfirmed_action_from_an_unlinked_number(self):
+        """Defence in depth for any removal path that does not retire actions."""
+        from .router import run_flow_execution
+
+        WhatsAppLink.objects.filter(user=self.user).delete()
+        outcome = run_flow_execution(self.pa, self.user)
+        self.assertEqual(outcome.status, "failed")
+        self.assertIn("no longer connected", outcome)
+        self.assertFalse(PendingAction.objects.filter(pk=self.pa.pk).exists())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000"))
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_the_queued_path_refuses_before_marking_it_authorised(self):
+        from .models import WaMessageLog
+        from .router import authorise_flow_execution
+
+        WhatsAppLink.objects.filter(user=self.user).delete()
+        outcome = authorise_flow_execution(self.pa, self.user)
+        self.assertEqual(outcome.status, "failed")
+        self.assertFalse(PendingAction.objects.filter(pk=self.pa.pk).exists())
+        self.assertFalse(WaMessageLog.objects.filter(wa_message_id=f"flowexec-{self.pa.pk}").exists())
+
+    def test_relinking_another_number_retires_the_old_numbers_actions(self):
+        from .router import handle_inbound
+
+        new_msisdn = "2348010000001"
+        link = WhatsAppLink.objects.create(user=self.user, status=WhatsAppLink.PENDING,
+                                           link_code="ABCDEF0123456789ABCDEF0123456789",
+                                           expires_at=timezone.now() + timedelta(minutes=30))
+        handoff = sign_approve_token(self.pa)
+        handle_inbound(new_msisdn, f"LINK {link.link_code}")
+        link.refresh_from_db()
+        self.assertEqual(link.status, WhatsAppLink.ACTIVE)
+        self.assertFalse(WhatsAppLink.objects.filter(user=self.user, wa_msisdn=MSISDN).exists())
+        self.assertIsNone(resolve_approve_token(handoff))

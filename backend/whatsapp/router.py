@@ -7,6 +7,7 @@ hands it the same structured actions, so money never depends on the AI being up.
 """
 import contextvars
 import hashlib
+import json
 import logging
 import re
 import secrets
@@ -1224,6 +1225,27 @@ def _clear_actions(msisdn: str, *, include_web: bool = False) -> None:
     rows.delete()
 
 
+def retire_unsubmitted_actions(user, msisdns) -> int:
+    """Expire what a number armed once it stops being this customer's channel.
+
+    The chat refuses an unlinked number, but a confirm it armed while linked
+    stays reachable through the secure Flow and the app hand-off until its own
+    deadline. An authorised (executing) payment keeps running, as does browser
+    verification, which checks its own link binding.
+    """
+    numbers = [m for m in set(msisdns) if m]
+    if not numbers:
+        return 0
+    return (PendingAction.objects.filter(user=user, msisdn__in=numbers)
+            .exclude(state=EXECUTING_STATE).exclude(action_type="verification_web")
+            .update(expires_at=timezone.now()))
+
+
+def _channel_linked(user, msisdn: str) -> bool:
+    return WhatsAppLink.objects.filter(user=user, wa_msisdn=msisdn,
+                                       status=WhatsAppLink.ACTIVE).exists()
+
+
 #: States in which a payment is armed and waiting for the customer to authorise
 #: it - the chat PIN/SMS-code step, and the secure Flow's PIN pad.
 _AWAITING_PIN_STATES = {"pin", FLOW_PIN_STATE}
@@ -1665,6 +1687,8 @@ _SENSITIVE_READS = {
     "7", "account", "account details", "my account", "account number",
     "details", "my details",
     "statement", "history", "transactions", "my transactions", "9", "recent",
+    # The statement-file aliases send the same PDF "statement" does.
+    "download statement", "bank statement", "account statement", "pdf",
     # The address book names people and their account numbers, which is
     # strictly more than the account details already behind this gate.
     "12", "beneficiaries", "beneficiary", "saved", "saved people",
@@ -1711,15 +1735,22 @@ def _mark_verified(msisdn: str) -> None:
     convo.save(update_fields=["last_verified"])
 
 
-def _send_unlock(user, msisdn: str, resume: str) -> None:
+def _send_unlock(user, msisdn: str, resume: str, intent: dict | None = None) -> None:
     """Ask the customer to prove it is them before revealing anything, then run
     what they originally asked for.
 
     Reuses the confirm machinery unchanged, so unlocking offers the same
     biometric-first hand-off into the app with the encrypted PIN Flow behind it -
     the two things we can actually prove happened.
+
+    `intent` is a read the model already parsed. It is resumed as parsed rather
+    than by replaying the text: the text is cut to 64 characters, and asking the
+    model a second time could answer a different question than the one gated.
     """
-    pa = _new_flow(user, msisdn, "unlock", "pin", {"pin_attempts": 0, "resume": resume[:64]})
+    payload = {"pin_attempts": 0, "resume": resume[:64]}
+    if intent:
+        payload["resume_intent"] = json.loads(json.dumps(intent, default=str))
+    pa = _new_flow(user, msisdn, "unlock", "pin", payload)
     if not _arm_confirm(pa, user):
         return
     _send_confirm(pa, msisdn, "🔒 *Welcome back.* It's been a while, so confirm it's you "
@@ -1731,9 +1762,12 @@ def _exec_unlock(pa: PendingAction, user, msisdn: str) -> str:
     if pa.payload.get("vas_reregister") is True:
         return _finish_vas_reregistration(pa, user, msisdn)
     resume = str(pa.payload.get("resume") or "").strip()
+    intent = pa.payload.get("resume_intent")
     PendingAction.objects.filter(pk=pa.pk).delete()
     _mark_verified(msisdn)
-    if resume:
+    if isinstance(intent, dict) and intent.get("name") in _GATED_INTENTS:
+        dispatch_intent(user, msisdn, intent)
+    elif resume:
         handle_inbound(msisdn, resume)
     return "Unlocked ✅ - see the chat."
 
@@ -1790,10 +1824,13 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
             return reply(msisdn, message + (f"\n\n{support}" if support else ""))
         # Re-linking is a sign-in to this banking channel, not permission to
         # leave an older phone connected forever. Retire the user's previous
-        # active channel before activating the freshly proved one.
-        WhatsAppLink.objects.filter(
+        # active channel, and anything it left armed, before activating the
+        # freshly proved one.
+        previous = WhatsAppLink.objects.filter(
             user=link.user, status=WhatsAppLink.ACTIVE
-        ).exclude(pk=link.pk).delete()
+        ).exclude(pk=link.pk)
+        retire_unsubmitted_actions(link.user, previous.values_list("wa_msisdn", flat=True))
+        previous.delete()
         link.wa_msisdn = msisdn
         link.status = WhatsAppLink.ACTIVE
         link.link_code = ""
