@@ -565,7 +565,10 @@ class KycTierTests(TestCase):
         with patch("accounts.views.verify_tier2_liveness", return_value={"success": True}):
             face = self.post("/api/kyc/face/", {"access_token": self.token})[1]
         self.assertEqual(face["tier"], 2)
-        b2 = self.post("/api/kyc/address/", {"access_token": self.token, "address": "12 Allen Avenue", "city": "Ikeja", "state": "Lagos", "document": "ZmFrZQ=="})[1]
+        # This exercises the document ladder, not a fallback from unavailable
+        # bank verification. Select that route only for the address request.
+        with override_settings(KYC_PROVIDER="prembly"):
+            b2 = self.post("/api/kyc/address/", {"access_token": self.token, "address": "12 Allen Avenue", "city": "Ikeja", "state": "Lagos", "document": "ZmFrZQ=="})[1]
         self.assertEqual(b2["tier"], 3)
         self.assertFalse(b2["id_document_verified"])
         self.assertTrue(b2["address_verified"] and b2["face_verified"])
@@ -581,9 +584,10 @@ class KycTierTests(TestCase):
         self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
         with patch("accounts.views.verify_tier2_liveness", return_value={"success": True}):
             self.post("/api/kyc/face/", {"access_token": self.token})
-        res, body = self.post("/api/kyc/address/", {
-            "access_token": self.token, "address": "12 Allen Avenue",
-            "city": "Ikeja", "state": "Lagos"})
+        with override_settings(KYC_PROVIDER="prembly"):
+            res, body = self.post("/api/kyc/address/", {
+                "access_token": self.token, "address": "12 Allen Avenue",
+                "city": "Ikeja", "state": "Lagos"})
         self.assertEqual(res.status_code, 400)
         self.assertIn("proof of address", body["message"].lower())
         self.user.refresh_from_db()
@@ -597,7 +601,7 @@ class KycTierTests(TestCase):
         self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
         self.user.recompute_tier()
         self.user.save(update_fields=["bvn_verified", "nin_verified", "face_verified", "tier"])
-        with patch.object(views, "MAX_KYC_IMAGE_BASE64", 8):
+        with override_settings(KYC_PROVIDER="prembly"), patch.object(views, "MAX_KYC_IMAGE_BASE64", 8):
             res, body = self.post("/api/kyc/address/", {
                 "access_token": self.token, "address": "12 Allen Avenue",
                 "document": "A" * 64})
@@ -610,9 +614,10 @@ class KycTierTests(TestCase):
         self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
         self.user.recompute_tier()
         self.user.save(update_fields=["bvn_verified", "nin_verified", "face_verified", "tier"])
-        self.post("/api/kyc/address/", {"access_token": self.token,
-                                        "address": "12 Allen Avenue",
-                                        "document": "ZmFrZXByb29m"})
+        with override_settings(KYC_PROVIDER="prembly"):
+            self.post("/api/kyc/address/", {"access_token": self.token,
+                                            "address": "12 Allen Avenue",
+                                            "document": "ZmFrZXByb29m"})
         self.user.refresh_from_db()
         self.assertTrue(self.user.address_verified)
         blob = " ".join(str(v) for v in vars(self.user).values())
@@ -903,13 +908,24 @@ class FullJourneyE2ETests(TestCase):
         # the >=₦100k face step-up, so the same transfer now goes through.
         with patch("accounts.views.verify_tier2_liveness", return_value={"success": True}):
             self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
-        self.assertEqual(self.post("/api/kyc/address/", access_token=tok,
-                                   address="12 Allen Avenue", city="Ikeja", state="Lagos",
-                                   document="ZmFrZQ==")[1]["tier"], 3)
-        # Bank and application tiers are independent; model the matching bank
-        # confirmation before the journey's large spend.
-        wallet.bank_tier = 3
+        # Model the independent Tier 2 bank prerequisite, then require its
+        # completed address readback before the journey's large spend.
+        wallet.bank_tier = 2
         wallet.save(update_fields=["bank_tier"])
+        with override_settings(KYC_PROVIDER="wema"), \
+                patch("utility.wema.address_verify_live", return_value=True), \
+                patch("utility.wema.upgrade_tier3", return_value={"success": True}) as upgrade, \
+                patch("utility.wema.get_kyc_status", return_value={
+                    "success": True, "tier": "Tier 3", "address_verification": "Completed",
+                }) as status:
+            address_status, address_body = self.post("/api/kyc/address/", access_token=tok,
+                                                     address="12 Allen Avenue", city="Ikeja", state="Lagos")
+        self.assertEqual(address_status, 200)
+        self.assertEqual(address_body["tier"], 3)
+        upgrade.assert_called_once()
+        status.assert_called_once_with(wallet.account_number)
+        wallet.refresh_from_db()
+        self.assertEqual(wallet.bank_tier, 3)
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
                                    amount="150000", transaction_pin="246810",
                                    idempotency_key="journey-p2p-large-1")[0], 200)

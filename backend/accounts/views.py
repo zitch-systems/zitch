@@ -1392,6 +1392,7 @@ def transaction_limits(request):
 
 
 @api
+@ratelimit("kyc_status", limit=120, window=600)
 @require_user
 def kyc_status(request):
     """POST /api/kyc/status/ {access_token} -> tier + verification flags"""

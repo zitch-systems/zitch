@@ -1601,8 +1601,8 @@ class FxSettlementGateTests(TestCase):
         quote = self._quote("10000")
         # The quote was priced while verified; the account then lost it (an
         # email/phone change clears the flag and re-derives the tier).
-        self.user.bvn_verified = False
-        self.user.save(update_fields=["bvn_verified"])
+        self.user.bvn_verified = self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
         with self.assertRaises(FxError):
             execute_fx(self.user, quote.quote_ref)
 
