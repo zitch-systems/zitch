@@ -203,6 +203,11 @@ class User(AbstractUser):
     # string for support/records and a verified flag the tier logic reads.
     address = models.CharField(max_length=255, blank=True, default="")
     address_verified = models.BooleanField(default=False)
+    # An accepted bank request is not completed address proof. Retain its state
+    # so reopening app/chat cannot submit the same verification again.
+    address_verification_pending = models.BooleanField(default=False)
+    address_verification_requested_at = models.DateTimeField(null=True, blank=True)
+    address_verification_account_number = models.CharField(max_length=20, blank=True, default="")
     # Chat-onboarded accounts carry credentials collected over WhatsApp: name,
     # email and PIN, but never a password and never a verified contact channel.
     # The flag gates the app-side upgrade: KYC (and therefore any tier above the
@@ -331,9 +336,14 @@ class User(AbstractUser):
     def daily_bill_limit(self) -> Decimal:
         return self.DAILY_BILL_LIMITS.get(self.tier, self.DAILY_BILL_LIMITS[0])
 
+    @property
+    def tier1_identity_verified(self) -> bool:
+        """Either completed bank-supported identity satisfies Tier 1."""
+        return self.bvn_verified or self.nin_verified
+
     def recompute_tier(self) -> None:
         """Derive the KYC tier from the verifications completed (ascending):
-        Tier 1 needs verified contact details and BVN; Tier 2
+        Tier 1 needs verified contact details and either BVN or NIN; Tier 2
         needs both identities and liveness; Tier 3 adds address verification.
 
         Both contact requirements apply to every account, however it signed up.
@@ -351,7 +361,7 @@ class User(AbstractUser):
             self.tier = 3
         elif has_both_identities and self.face_verified:
             self.tier = 2
-        elif self.bvn_verified:
+        elif self.tier1_identity_verified:
             self.tier = 1
         else:
             self.tier = 0

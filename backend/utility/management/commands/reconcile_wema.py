@@ -250,6 +250,10 @@ class Command(BaseCommand):
         history_windows = 0
         pnd_lifted = 0
         pnd_failures = 0
+        address_checks = 0
+        addresses_verified = 0
+        pending_address_wallets = set(Wallet.objects.filter(
+            user__address_verification_pending=True).values_list("pk", flat=True))
         shape_logged = False
 
         def log_history_shape(row):
@@ -261,6 +265,12 @@ class Command(BaseCommand):
 
         for wallet in wema_provisioned_wallets():
             scanned += 1
+            if wallet.pk in pending_address_wallets:
+                from wallet.address_verification import refresh_address_verification
+
+                address_checks += 1
+                if refresh_address_verification(wallet.user, wallet=wallet):
+                    addresses_verified += 1
             # Account creation and PND lifting are separate bank calls. A transient
             # failure in the second must not permanently strand outgoing funds.
             if not wallet.pnd_lifted:
@@ -385,6 +395,8 @@ class Command(BaseCommand):
                             "history_windows": history_windows,
                             "history_blocked": history_blocked,
                             "history_backlog": history_backlog,
+                            "address_checks": address_checks,
+                            "addresses_verified": addresses_verified,
                             "pnd_lifted": pnd_lifted, "pnd_failures": pnd_failures})
 
         # Systemic-outage signal: individual transient failures are expected and

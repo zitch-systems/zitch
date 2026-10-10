@@ -145,7 +145,7 @@ def _decode(token):
     return None
 
 
-def _resolve(claims, *, lock=False):
+def _resolve(claims, *, lock=False, status_only=False):
     """Called inside an atomic block when mutating: user -> link -> action locks."""
     if claims is None:
         return None, None
@@ -161,8 +161,10 @@ def _resolve(claims, *, lock=False):
                         wa_msisdn=pa.msisdn, status=WhatsAppLink.ACTIVE).first()
     if lock:
         pa = actions.filter(pk=claims["p"], action_type=ACTION_TYPE).first()
+    readable_pending = bool(pa and status_only and pa.state == REVIEW
+                            and pa.payload.get("address_pending") is True)
     if (not pa or not user or not link or pa.user_id != user.pk or pa.expired
-            or pa.state not in (PIN, READY) or pa.payload.get("tier") not in (2, 3)
+            or (pa.state not in (PIN, READY) and not readable_pending) or pa.payload.get("tier") not in (2, 3)
             or pa.payload.get("link_id") != link.pk or pa.msisdn != link.wa_msisdn
             or pa.payload.get("link_stamp") != _link_stamp(link)
             or not hmac.compare_digest(pa.payload.get("credentials", ""), _credential_stamp(user))
@@ -184,7 +186,8 @@ def _cookie_name(pa):
 def _has_proof(request, pa, user):
     proof = request.COOKIES.get(_cookie_name(pa), "")
     expected = pa.payload.get("browser_proof", "")
-    return bool(pa.state == READY and expected and len(proof) == 43
+    readable_pending = pa.state == REVIEW and pa.payload.get("address_pending") is True
+    return bool((pa.state == READY or readable_pending) and expected and len(proof) == 43
                 and not user.pin_locked and not user.pin_reset_required
                 and hmac.compare_digest(hashlib.sha256(proof.encode()).hexdigest(), expected))
 
@@ -199,21 +202,61 @@ def _page(request, screen="closed", *, status=200, message="", **context):
 def _proof_required():
     # Keep this predicate identical to the shared address service. Re-evaluate
     # for every form display/submission; no client field decides the provider.
+    from accounts.views import kyc_provider
+
+    return kyc_provider() != "wema"
+
+
+def _bank_address_unavailable():
     from accounts.views import kyc_provider, wema
 
-    return not (kyc_provider() == "wema" and wema.address_verify_live())
+    return kyc_provider() == "wema" and not wema.address_verify_live()
 
 
-def _form(request, pa, user, *, message="", status=200, values=None):
+def _pending_page(request):
+    from wallet.address_verification import tier3_address_capability
+
+    return _page(request, "pending", status=202, can_refresh=True,
+                 needs_review=tier3_address_capability()["tier3_address_available"] is False)
+
+
+def _form(request, pa, user, *, message="", status=200, values=None, refresh_status=True):
     if not _has_proof(request, pa, user):
+        if pa.state == REVIEW:
+            return _page(request, status=403)
         return _page(request, "pin", status=status, message=message)
     if pa.payload["tier"] == 2:
         return _page(request, "unavailable", status=status, message=UNAVAILABLE)
+    from accounts.views import _kyc_state
+
+    if refresh_status and user.address_verification_pending:
+        from wallet.address_verification import refresh_address_verification
+
+        refresh_address_verification(user)
+    address_status = (_kyc_state(user) if refresh_status else {
+        "address_verified": user.address_verified,
+        "address_verification_pending": user.address_verification_pending})
+    if address_status.get("address_verified"):
+        return _page(request, "complete")
+    if address_status.get("address_verification_pending"):
+        return _pending_page(request)
+    if pa.state == REVIEW:
+        return _page(request, "review", status=503)
+    from wallet.address_verification import tier3_address_capability
+
+    capability = tier3_address_capability()
+    if capability["tier3_address_available"] is False:
+        return _page(request, "unavailable", status=503,
+                     message=capability["tier3_address_unavailable_reason"])
     if not (user.bvn_verified and user.nin_verified and user.face_verified
             and user.email_verified and user.phone_verified and user.tier >= 2):
         return _page(request, "unavailable", status=409,
                      message="Complete Tier 2 identity verification before verifying your address. "
                              "Return to WhatsApp to continue.")
+    if _bank_address_unavailable():
+        return _page(request, "unavailable", status=503,
+                     message="Address verification is temporarily unavailable. Your address has not been submitted. "
+                             "Please try again later or return to WhatsApp.")
     return _page(request, "address", status=status, message=message,
                  values=values or {}, expires_at=pa.expires_at,
                  proof_required=_proof_required())
@@ -279,11 +322,31 @@ def _run_address_operation(request, user, data):
 
 @sensitive_variables()
 def _submit(request, claims):
+    action = request.POST.get("action", "")
+    if action == "status":
+        # Readback may make a bank GET and lock Wallet -> User. Authenticate in
+        # a short transaction, then release User/Link/Action before that call.
+        with transaction.atomic():
+            pa, user = _resolve(claims, lock=True, status_only=True)
+            if pa is None:
+                return _page(request, status=410)
+            if (pa.payload["tier"] != 3
+                    or set(request.POST) - {"action", "csrfmiddlewaretoken"} or request.FILES
+                    or any(len(request.POST.getlist(k)) != 1 for k in request.POST)):
+                return _page(request, "error", status=400,
+                             message="Use the status button on this page.")
+            if not _has_proof(request, pa, user):
+                return _page(request, "pin", status=403,
+                             message="Enter your transaction PIN to continue.")
+        response = _form(request, pa, user)
+        current, current_user = _resolve(claims, status_only=True)
+        if current is None or not _has_proof(request, current, current_user):
+            return _page(request, status=410)
+        return response
     with transaction.atomic():
         pa, user = _resolve(claims, lock=True)
         if pa is None:
             return _page(request, status=410)
-        action = request.POST.get("action", "")
         if action == "pin":
             if (set(request.POST) - {"action", "pin", "csrfmiddlewaretoken"}
                     or request.FILES or any(len(request.POST.getlist(k)) != 1 for k in request.POST)):
@@ -317,10 +380,20 @@ def _submit(request, claims):
                          message="This action is not available from this verification link.")
         if not (user.bvn_verified and user.nin_verified and user.face_verified
                 and user.email_verified and user.phone_verified and user.tier >= 2):
-            return _form(request, pa, user)
+            return _form(request, pa, user, refresh_status=False)
+        if user.address_verified:
+            return _page(request, "complete")
+        if user.address_verification_pending:
+            return _pending_page(request)
+        from wallet.address_verification import tier3_address_capability
+
+        if tier3_address_capability()["tier3_address_available"] is False:
+            return _form(request, pa, user, refresh_status=False)
+        if _bank_address_unavailable():
+            return _form(request, pa, user, refresh_status=False)
         data, values, error = _address_data(request)
         if error:
-            return _form(request, pa, user, status=400, message=error, values=values)
+            return _form(request, pa, user, status=400, message=error, values=values, refresh_status=False)
         # Commit the claim BEFORE making a provider call. A timeout/crash must not
         # roll back to READY and allow a second external verification. Conditional
         # update also guards DBs where select_for_update is unavailable (SQLite).
@@ -342,8 +415,9 @@ def _submit(request, claims):
         response.delete_cookie(_cookie_name(pa), path=request.path, samesite="Strict")
         return response
     if result.status_code == 202 and isinstance(body, dict) and body.get("pending") is True:
-        PendingAction.objects.filter(pk=pa.pk, state=PROCESSING).update(state=REVIEW)
-        return _page(request, "pending", status=202)
+        pa.payload["address_pending"] = True
+        PendingAction.objects.filter(pk=pa.pk, state=PROCESSING).update(state=REVIEW, payload=pa.payload)
+        return _pending_page(request)
     if result.status_code in (400, 403, 409, 413, 422, 429):
         # Only an explicit rejection permits correction/retry. Never echo raw
         # provider messages; they may contain identity numbers or uploaded data.
@@ -374,10 +448,16 @@ def _protected(request, token):
     claims = _decode(token)
     if request.method == "POST":
         return _submit(request, claims)
-    pa, user = _resolve(claims)
+    pa, user = _resolve(claims, status_only=True)
     if pa is None:
         return _page(request, status=410)
-    return _form(request, pa, user)
+    authenticated = _has_proof(request, pa, user)
+    response = _form(request, pa, user)
+    if authenticated:
+        current, current_user = _resolve(claims, status_only=True)
+        if current is None or not _has_proof(request, current, current_user):
+            return _page(request, status=410)
+    return response
 
 
 @sensitive_post_parameters()

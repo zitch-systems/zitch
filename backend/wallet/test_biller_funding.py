@@ -76,8 +76,8 @@ class RetainedLegacyBillTests(TestCase):
                 debit(self.user, "100", "Airtime — MTN")
                 with self.assertRaises(LimitExceeded):
                     debit(self.user, "100", "Data — MTN")
-        self.user.bvn_verified = False
-        self.user.save(update_fields=["bvn_verified"])
+        self.user.bvn_verified = self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
         with self.assertRaises(LimitExceeded):
             debit(self.user, "10", "Airtime — MTN")
 

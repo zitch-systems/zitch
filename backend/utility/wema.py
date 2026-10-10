@@ -858,8 +858,8 @@ def address_verify_live() -> bool:
     """Whether the bank can verify a residential address for real.
 
     Address verification is the Tier 3 upgrade call, so it rides the Account Upgrade
-    subscription. Unkeyed, the KYC screen falls back to the document rail rather
-    than silently marking addresses verified against a mock.
+    subscription. Partnership verification stays unavailable when unkeyed;
+    a document upload cannot substitute for the bank's completed check.
     """
     return _product_live("upgrade")
 
@@ -1227,16 +1227,25 @@ def get_kyc_status(account_number: str) -> dict:
                     "diagnostic": _product_config_diag("upgrade")}
         return {"success": True, "mock": True, "tier": "", "restriction_status": ""}
     try:
-        data = _get("upgrade", "/api/partnership/partner-account-kyc-status",
-                    {"accountNumber": account_number}).json()
+        response = _get("upgrade", "/api/partnership/partner-account-kyc-status",
+                        {"accountNumber": account_number})
+        if not 200 <= response.status_code < 300 or response.status_code == 202:
+            return {"success": False, "message": "Bank verification status is unavailable"}
+        data = response.json()
+        if not isinstance(data, dict):
+            return {"success": False, "message": "Invalid bank verification status"}
         d = data.get("data", {}) or {}
-        return {"success": _ok(data) and bool(d), "tier": d.get("accountTier", ""),
+        if not isinstance(d, dict):
+            return {"success": False, "message": "Invalid bank verification status"}
+        return {"success": _kyc_ok(data) and bool(d), "tier": d.get("accountTier", ""),
                 "account_status": d.get("accountStatus", ""),
                 "restriction_status": d.get("restrictionStatus", ""),
                 "address_verification": d.get("addressVerificationStatus", ""),
                 "name": d.get("accountName", ""), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
+    except ValueError:
+        return {"success": False, "message": "Invalid bank verification status"}
 
 
 def _residential_address(address) -> dict:

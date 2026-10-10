@@ -20,6 +20,8 @@ type Status = {
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean;
   message?: string;
   address_verified?: boolean;
+  address_verification_pending?: boolean;
+  address_verification_state?: 'pending' | 'verified' | 'not_verified';
   address_verification_required?: boolean;
   email?: string;
   email_verified?: boolean;
@@ -35,11 +37,16 @@ type Status = {
   migration_message?: string;
   face_rail?: 'document' | 'wema';
   tier2_face_rail?: 'prembly' | 'wema';
+  tier2_face_available?: boolean;
+  tier2_unavailable_reason?: string;
+  tier3_address_available?: boolean;
+  tier3_address_unavailable_reason?: string;
   address_rail?: 'document' | 'wema' | 'none';
   // Set once the bank has opened the account number: from then on it will not
   // accept a lone BVN or NIN, only all of it at once. Read here so the menu can
   // send the customer straight to the step that works.
   identity_upgrade_required?: boolean;
+  bank_upgrade_required?: boolean;
 };
 
 type Method = 'menu' | 'email' | 'bvn' | 'nin' | 'selfie' | 'upgrade' | 'address';
@@ -73,6 +80,8 @@ const Kyc = () => {
   }>();
   const [, setToken] = useState('');
   const [status, setStatus] = useState<Status | null>(null);
+  const [loadingStatus, setLoadingStatus] = useState(true);
+  const [statusError, setStatusError] = useState('');
   const [method, setMethod] = useState<Method>('menu');
   useEffect(() => {
     if (params.verify_identity === 'bvn' || params.verify_identity === 'nin') {
@@ -166,9 +175,12 @@ const Kyc = () => {
       const res = await kycService.getStatus();
       if (res.success) {
         setStatus(res);
+        setStatusError('');
         return res;
       }
-    } catch { /* keep */ }
+      setStatusError(res.message || 'We could not load your verification status. Please try again.');
+    } catch { setStatusError('We could not load your verification status. Please try again.'); }
+    finally { setLoadingStatus(false); }
     return null;
   }, []);
   useFocusEffect(useCallback(() => {
@@ -204,6 +216,11 @@ const Kyc = () => {
   // one is verified with us, because the upgrade request carries both.
   const needsUpgrade = !!status?.identity_upgrade_required
     && !(status?.bvn_verified && status?.nin_verified);
+  const hasTier1Identity = !!(status?.bvn_verified || status?.nin_verified);
+  const needsBankUpgrade = !!status?.bank_upgrade_required || needsUpgrade;
+  const tier2Unavailable = status?.tier2_face_available === false;
+  const tier3Unavailable = status?.tier3_address_available === false;
+  const addressPending = status?.address_verification_pending === true || status?.address_verification_state === 'pending';
   const addressVerificationAvailable = status?.account_provider !== 'wema_vas'
     && status?.address_verification_required !== false
     && status?.address_rail !== 'none';
@@ -230,7 +247,7 @@ const Kyc = () => {
     try {
       const res = await kycService.confirmEmail(emailOtp);
       if (res.success && res.email_verified) {
-        notify('Email verified', 'You can now continue with BVN verification.', 'success');
+        notify('Email verified', 'Continue with BVN or NIN verification.', 'success');
         setEmail(''); setEmailOtp(''); setEmailSent(false); setMethod('menu');
         await load();
       } else notify('Verification failed', res.message || 'Check the code and try again.');
@@ -246,6 +263,9 @@ const Kyc = () => {
       const res = await call();
       const outcome = classifyKycResponse(res, requiredFlags);
       if (outcome === 'pending') {
+        setStatus((current) => current ? { ...current, pending: true, message: res.message } : current);
+        setBvn(''); setBvnOtp(''); setBvnSent(false);
+        setNin(''); setNinOtp(''); setNinSent(false);
         notify('Verification processing', res.message || 'The verification service is still processing this submission. Check your status again shortly.', 'info');
       } else if (outcome === 'review') {
         notify('Verification needs review', res.message || 'Your account opened, but the verification service needs to review the identity details.', 'info');
@@ -291,6 +311,7 @@ const Kyc = () => {
     try {
       const res = await kycService.startBvn(bvn);
       if (res.pending) {
+        setStatus((current) => current ? { ...current, pending: true, message: res.message } : current);
         notify('Verification processing', res.message || 'Your BVN verification is still processing. Check your status again shortly.', 'info');
       } else if (res.upgrade_required) {
         setUpBvn(bvn);
@@ -344,7 +365,7 @@ const Kyc = () => {
     } catch { notify('Error', 'Something went wrong.'); }
     finally { endAction(); }
   };
-  const confirmBvn = () => submit(() => kycService.confirmBvn(bvnTrackingId, bvnOtp), 'BVN verified — tier upgraded', ['bvn_verified']);
+  const confirmBvn = () => submit(() => kycService.confirmBvn(bvnTrackingId, bvnOtp), 'BVN verified', ['bvn_verified']);
 
   const startIdentityFaceVerification = async (identity: { bvn?: string; nin?: string }) => {
     if (!beginAction()) return;
@@ -385,6 +406,7 @@ const Kyc = () => {
         return;
       }
       if (started.pending) {
+        setStatus((current) => current ? { ...current, pending: true, message: started.message } : current);
         notify('Verification processing', started.message || 'The verification service is still processing this request. Check your status again shortly.', 'info');
         return;
       }
@@ -426,6 +448,7 @@ const Kyc = () => {
     try {
       const res = await kycService.startNin(nin);
       if (res.pending) {
+        setStatus((current) => current ? { ...current, pending: true, message: res.message } : current);
         notify('Verification processing', res.message || 'Your NIN verification is still processing. Check your status again shortly.', 'info');
       } else if (res.upgrade_required) {
         // Not an error the customer can retry out of: this account can only be
@@ -467,7 +490,7 @@ const Kyc = () => {
   };
   const confirmNin = () => submit(
     () => kycService.confirmNin(ninTrackingId, ninOtp),
-    'NIN verified — tier upgraded',
+    'NIN verified',
     ['nin_verified'],
   );
   const resendNin = async () => {
@@ -492,18 +515,20 @@ const Kyc = () => {
   // --- Selfie: a real captured image for server-side identity verification (NOT device
   // Face ID — KYC must match a face, which the device unlock can't prove). ---
   const captureSelfie = async () => {
-    const perm = await ImagePicker.requestCameraPermissionsAsync();
-    if (!perm.granted) { notify('Camera needed', 'Allow camera access so we can verify your identity.'); return; }
-    beginExternalActivity(); // keep the app-lock from firing while the camera is up
-    let shot;
     try {
-      shot = await ImagePicker.launchCameraAsync({
-        cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.4, allowsEditing: false,
-      });
-    } finally { endExternalActivity(); }
-    if (shot.canceled || !shot.assets?.[0]?.base64) return;
-    const selfie = shot.assets[0].base64;
-    submit(() => kycService.verifyFace(selfie), 'Selfie verification completed', ['face_verified']);
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) { notify('Camera needed', 'Allow camera access so we can verify your identity.'); return; }
+      beginExternalActivity(); // keep the app-lock from firing while the camera is up
+      let shot;
+      try {
+        shot = await ImagePicker.launchCameraAsync({
+          cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.4, allowsEditing: false,
+        });
+      } finally { endExternalActivity(); }
+      if (shot.canceled || !shot.assets?.[0]?.base64) return;
+      const selfie = shot.assets[0].base64;
+      submit(() => kycService.verifyFace(selfie), 'Selfie verification completed', ['face_verified']);
+    } catch { notify('Camera unavailable', 'We could not open the camera. Check camera permission and try again.'); }
   };
   // Show a visible camera guide animation (~2.3s spin) THEN open the front camera.
   const runSelfie = () => {
@@ -584,6 +609,44 @@ const Kyc = () => {
     </Tap>
   );
 
+  const Tier2Unavailable = () => <View style={{ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
+    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>Tier 2 verification is temporarily unavailable</Text>
+    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>{status?.tier2_unavailable_reason || 'Your current verification is saved. Contact support for help with this upgrade.'}</Text>
+    <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="ghost" onPress={() => router.push('/support')} /></View>
+  </View>;
+
+  const AddressPending = () => <View style={{ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
+    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>{tier3Unavailable ? 'Address verification needs review' : 'Address verification in progress'}</Text>
+    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>{tier3Unavailable
+      ? (status?.tier3_address_unavailable_reason || 'Your saved address verification needs a support review. You do not need to submit your address again.')
+      : 'Your address has been submitted. You do not need to submit it again. Tier 3 becomes available after confirmation.'}</Text>
+    {tier3Unavailable && <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="ghost" onPress={() => router.push('/support')} /></View>}
+    <View style={{ marginTop: 12 }}><Btn label="Check address status" variant="ghost" onPress={() => void load()} /></View>
+  </View>;
+
+  const Tier3Unavailable = () => <View style={{ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
+    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>Address verification is temporarily unavailable</Text>
+    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>{status?.tier3_address_unavailable_reason || 'Your current verification is saved. Contact support for help with Tier 3.'}</Text>
+    <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="ghost" onPress={() => router.push('/support')} /></View>
+  </View>;
+
+  if (loadingStatus || statusError || !status) {
+    return <Screen>
+      <Header title="Identity verification" onBack={() => router.back()} />
+      <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{statusError || 'Checking your verification status…'}</Text>
+      {!!statusError && <Btn label="Try again" onPress={() => { setLoadingStatus(true); void load(); }} />}
+    </Screen>;
+  }
+
+  if (status?.pending || status?.account_setup_state === 'processing') {
+    return <Screen>
+      <Header title="Identity verification" onBack={() => router.back()} />
+      <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 18, marginBottom: 12 }}>Verification processing</Text>
+      <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{status.message || 'Your verification is being confirmed. You do not need to start again.'}</Text>
+      <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void load()} /></View>
+    </Screen>;
+  }
+
   if (status?.account_setup_state === 'partnership_review') {
     return <Screen>
       <Header title="Identity verification" onBack={onBack} />
@@ -619,30 +682,30 @@ const Kyc = () => {
 
           {!status?.email_verified ? (
             <MethodCard id="email" icon="remita" color={C_NIN} title="Verify email" sub="Required before Tier 1" badge="First" />
-          ) : needsUpgrade ? (
+          ) : needsUpgrade && !hasTier1Identity ? (
             <>
               <View style={{ flexDirection: 'row', gap: 10, padding: 14, borderRadius: 14, backgroundColor: 'rgba(45,127,249,.10)', marginTop: 14 }}>
                 <ZIcon name="help" size={16} color={C_NIN} />
                 <Text style={{ flex: 1, fontSize: 12.5, color: c.ink2, lineHeight: 19, fontFamily: font.regular }}>
-                  Your Zitch account number is already open, so your bank needs your
-                  BVN, NIN and a selfie together in one step. It can&apos;t take them
-                  one at a time any more.
+                  Your bank has already opened an account number. Confirm your identity details together to finish verification on this account.
                 </Text>
               </View>
-              <MethodCard id="upgrade" icon="insurance" color={C_BVN} title="Verify identity" sub="BVN, NIN and a selfie · about a minute" badge="Finish" />
+              {tier2Unavailable ? <Tier2Unavailable /> : <MethodCard id="upgrade" icon="insurance" color={C_BVN} title="Finish account verification" sub="BVN, NIN and face verification" badge="Finish" />}
             </>
           ) : (
             <>
-              <MethodCard id="bvn" icon="insurance" color={C_BVN} title="BVN verification" sub="Tier 1 · Bank Verification Number" badge="Recommended" done={!!status?.bvn_verified} />
-              {status?.bvn_verified ? <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="Tier 2: NIN and live selfie" done={!!status?.nin_verified} /> : null}
+              {!hasTier1Identity && <Text style={{ color: c.ink2, fontFamily: font.regular, marginTop: 14 }}>Tier 1: choose BVN or NIN. Verify with an SMS code or face verification.</Text>}
+              {(!hasTier1Identity || status.bvn_verified) && <MethodCard id="bvn" icon="insurance" color={C_BVN} title="BVN verification" sub="Tier 1 · SMS code or face verification" done={!!status.bvn_verified} />}
+              {(!hasTier1Identity || status.nin_verified) && <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="Tier 1 · SMS code or face verification" done={!!status.nin_verified} />}
             </>
           )}
-          {status?.bvn_verified && status?.nin_verified && (
-              <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Tier 2: verification service review" done={!!status?.face_verified} />
-          )}
-          {addressVerificationAvailable && status?.tier !== undefined && status.tier >= 2 && (
-            <MethodCard id="address" icon="home" color={C_BVN} title="Address verification" sub="Tier 3" done={!!status?.address_verified} />
-          )}
+          {status.email_verified && hasTier1Identity && (tier2Unavailable && (needsBankUpgrade || !status.face_verified)
+            ? <Tier2Unavailable /> : needsBankUpgrade
+            ? <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Tier 2 · Face verification" sub="Confirm your identity details and take a selfie" />
+            : <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Tier 2 · Prembly verification" done={!!status.face_verified} />)}
+          {addressVerificationAvailable && status?.tier !== undefined && status.tier >= 2 && (addressPending
+            ? <AddressPending /> : tier3Unavailable && !status.address_verified
+              ? <Tier3Unavailable /> : <MethodCard id="address" icon="home" color={C_BVN} title="Address verification" sub="Tier 3" done={!!status?.address_verified} />)}
           <Footer />
         </View>
       )}
@@ -691,6 +754,7 @@ const Kyc = () => {
             </View>
             <View style={{ height: 22 }} />
             <Btn label={busy ? 'Sending code…' : 'Send verification code'} disabled={busy || bvn.length !== 11} onPress={startBvn} />
+            {status.identity_face_available && <View style={{ marginTop: 12 }}><Btn label="Use face verification instead" variant="ghost" disabled={busy || bvn.length !== 11} onPress={() => startIdentityFaceVerification({ bvn })} /></View>}
           </View>
           <Footer />
         </View>
@@ -728,6 +792,7 @@ const Kyc = () => {
             <View style={{ height: 12 }} />
             <View style={{ height: 18 }} />
             <Btn label={busy ? 'Requesting code…' : 'Send NIN verification code'} disabled={busy || nin.length !== 11} onPress={verifyNin} />
+            {status.identity_face_available && <View style={{ marginTop: 12 }}><Btn label="Use face verification instead" variant="ghost" disabled={busy || nin.length !== 11} onPress={() => startIdentityFaceVerification({ nin })} /></View>}
           </View>
           <Footer />
         </View>
@@ -755,10 +820,11 @@ const Kyc = () => {
         </View>
       )}
 
-      {method === 'upgrade' && (
+      {(method === 'upgrade' || method === 'selfie') && tier2Unavailable && <Tier2Unavailable />}
+      {method === 'upgrade' && !tier2Unavailable && (
         <View>
-          <Hero icon="insurance" color={C_BVN} title="Verify identity"
-                sub="Your verification service needs your BVN, NIN and a front-camera selfie together. Nothing is sent until all three are here." />
+          <Hero icon="insurance" color={C_BVN} title="Tier 2 · Face verification"
+                sub="Your bank requires BVN and NIN with your face verification for this upgrade. Tier 1 needs only one identity; these details complete Tier 2." />
           <View style={{ marginTop: 22 }}>
             <Field label="Bank Verification Number (BVN)" placeholder="Enter your 11-digit BVN" keyboardType="number-pad"
                    value={upBvn} onChangeText={(v) => setUpBvn(v.replace(/\D/g, '').slice(0, 11))}
@@ -794,7 +860,10 @@ const Kyc = () => {
         </View>
       )}
 
-      {method === 'address' && addressVerificationAvailable && (
+      {method === 'address' && addressPending && <AddressPending />}
+      {method === 'address' && !addressPending && !status.address_verified && tier3Unavailable && <Tier3Unavailable />}
+      {method === 'address' && !addressPending && status.address_verified && <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>Your address is verified. Your current tier is shown on the verification menu.</Text>}
+      {method === 'address' && addressVerificationAvailable && !addressPending && !tier3Unavailable && !status.address_verified && (
         <View>
           <Hero icon="home" color={C_BVN} title="Address verification" sub="Tier 3" />
           <Field label="Building number" value={address.buildingNumber} onChangeText={(value) => setAddressField('buildingNumber', value)} />
@@ -821,7 +890,7 @@ const Kyc = () => {
         </View>
       )}
 
-      {method === 'selfie' && (
+      {method === 'selfie' && !tier2Unavailable && (
         <View>
           <Hero icon="user" color={C_SELFIE} title="Selfie verification" sub="Hold your phone at eye level and keep your face inside the circle. The verification service reviews the capture after submission." />
           <View style={{ alignItems: 'center', marginVertical: 22 }}>

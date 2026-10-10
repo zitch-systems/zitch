@@ -3,12 +3,11 @@ import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useFocusEffect } from 'expo-router';
-import { Screen, Header, Card, Progress, money, NText, Btn } from '@/components/design/ui';
+import { Screen, Header, Card, money, NText, Btn } from '@/components/design/ui';
 import { Loading } from '@/components/design/Loading';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
-import { useWallet } from '@/lib/wallet';
 import { apiJson } from '@/lib/api';
 import { vasAccountStatusTitle, walletCapabilities, walletCapabilityMessage, walletService, type VirtualAccount } from '@/lib/services/wallet';
 
@@ -21,18 +20,13 @@ type Status = {
   bvn_verified: boolean;
   nin_verified: boolean;
   bank_tier?: number;
+  bank_tier_limits?: { single_inflow?: string | null; daily_spend?: string | null; max_balance?: string | null };
   account_provider?: 'partnership' | 'wema_vas';
 };
 
-// The published Zitch ladder. Kept here as the DISPLAY table only — the tier a
-// customer is actually on, and the limit actually enforced, both come from
-// /api/kyc/status/ below. A table that disagreed with the server would be worse
-// than no table at all.
-const LADDER = [
-  { tier: 1, daily: 50_000, balance: '₦300,000' },
-  { tier: 2, daily: 200_000, balance: '₦500,000' },
-  { tier: 3, daily: 5_000_000, balance: 'Unlimited' },
-];
+const amountLabel = (value: string | undefined | null) => value != null
+  && value !== '' && Number.isFinite(Number(value)) && Number(value) >= 0
+  ? money(Number(value)) : 'Not confirmed';
 
 /** 816 693 8327 — grouped for reading aloud. Copy still uses the raw digits. */
 const grouped = (n: string) => {
@@ -42,7 +36,6 @@ const grouped = (n: string) => {
 
 const AccountLimits = () => {
   const { c, theme } = useTheme();
-  const { accountNumber, accountName } = useWallet();
   const [status, setStatus] = useState<Status | null>(null);
   const [fundingState, setFundingState] = useState<VirtualAccount | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -85,16 +78,15 @@ const AccountLimits = () => {
   // The per-transaction ceiling the server will actually enforce today. The
   // ladder row is what the tier is *entitled* to; this is what it *has*, and on
   // an account mid-upgrade they are not the same number.
-  const limit = Number(status?.transaction_limit ?? 0);
-  const ladderMax = LADDER[LADDER.length - 1].daily;
   const isVas = status?.account_provider === 'wema_vas' || fundingState?.provider === 'wema_vas';
   const capabilities = walletCapabilities(isVas ? { ...fundingState, provider: 'wema_vas' } : fundingState);
-  const fundingReady = fundingState?.provider === 'wema_vas'
-    && fundingState.test_mode !== true && fundingState.available === true
-    && fundingState.has_account === true && fundingState.account_setup_state === 'ready'
-    && !!fundingState.account_number && !/^711/.test(fundingState.account_number);
-  const displayedNumber = isVas ? fundingReady ? fundingState?.account_number || '' : '' : accountNumber;
-  const displayedName = isVas ? fundingReady ? fundingState?.account_name || '' : '' : accountName;
+  const fundingReady = !!fundingState?.account_number && fundingState.available !== false
+    && fundingState.has_account !== false && fundingState.test_mode !== true
+    && !/^711/.test(fundingState.account_number)
+    && (!isVas || (fundingState.available === true && fundingState.has_account === true
+      && fundingState.account_setup_state === 'ready'));
+  const displayedNumber = fundingReady ? fundingState?.account_number || '' : '';
+  const displayedName = fundingReady ? fundingState?.account_name || '' : '';
 
   const copy = async () => {
     if (!displayedNumber) return;
@@ -206,6 +198,9 @@ const AccountLimits = () => {
           {!fundingReady ? <View style={{ marginTop: 14 }}><Btn label="Check account setup" onPress={() => router.push('/addmoney')} /></View> : null}
         </Card>
       ) : <>
+      {!!fundingState?.migration_message && <Card style={{ marginBottom: 14 }}>
+        <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{fundingState.migration_message}</Text>
+      </Card>}
       {/* The backend transaction_limit is per transaction, not a daily limit. */}
       <Card style={{ marginBottom: 14 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 }}>
@@ -222,55 +217,27 @@ const AccountLimits = () => {
           </Pressable>
         </View>
         <View style={{ borderRadius: 16, backgroundColor: c.surface2, padding: 14 }}>
-          <Progress value={limit} max={ladderMax} />
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
-            <NText style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3 }}>Min {money(0)}</NText>
-            <NText style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3 }}>
-              Max <NText style={{ fontFamily: font.bold, color: c.ink2 }}>{money(limit)}</NText>
-            </NText>
-          </View>
+          <NText style={{ fontSize: 20, fontFamily: font.bold, color: c.ink2 }}>{amountLabel(status.transaction_limit)}</NText>
         </View>
       </Card>
-      <Card style={{ marginBottom: 24 }} pad={0}>
-        <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1, padding: 18, paddingBottom: 14 }}>Level Benefit</Text>
-        <View style={{ marginHorizontal: 14, marginBottom: 14, borderRadius: 16, borderWidth: 1, borderColor: c.line, overflow: 'hidden' }}>
-          <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 10, padding: 14, backgroundColor: c.surface2 }}>
-            <Text style={{ flex: 1.1, fontSize: 14, fontFamily: font.bold, color: c.ink1 }}>Tier</Text>
-            <Text style={{ flex: 1.3, fontSize: 11, fontFamily: font.regular, color: c.ink3, textAlign: 'right' }}>Maximum{'\n'}daily transaction limit</Text>
-            <Text style={{ flex: 1, fontSize: 11, fontFamily: font.regular, color: c.ink3, textAlign: 'right' }}>Maximum{'\n'}account balance</Text>
-          </View>
-          {LADDER.map((row, i) => {
-            const current = row.tier === tier;
-            return (
-              <View
-                key={row.tier}
-                style={{
-                  flexDirection: 'row', alignItems: 'center', gap: 10, padding: 14,
-                  backgroundColor: i % 2 ? c.surface2 : c.surface,
-                  borderTopWidth: 1, borderTopColor: c.line,
-                }}
-              >
-                <View style={{ flex: 1.1, flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
-                  <Text style={{ fontSize: 14.5, fontFamily: font.bold, color: c.ink1 }}>Tier {row.tier}</Text>
-                  {current && (
-                    <View style={{ paddingHorizontal: 8, paddingVertical: 2.5, borderRadius: 999, backgroundColor: c.brand }}>
-                      <Text style={{ fontSize: 10, fontFamily: font.bold, color: c.inkOnBrand }}>Current</Text>
-                    </View>
-                  )}
-                </View>
-                <NText style={{ flex: 1.3, fontSize: 13.5, fontFamily: font.semibold, color: c.ink2, textAlign: 'right', fontVariant: ['tabular-nums'] }}>
-                  ₦{row.daily.toLocaleString()}
-                </NText>
-                <NText style={{ flex: 1, fontSize: 13.5, fontFamily: font.semibold, color: c.ink2, textAlign: 'right' }}>
-                  {row.balance}
-                </NText>
-              </View>
-            );
-          })}
-        </View>
-        <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3, lineHeight: 18, paddingHorizontal: 18, paddingBottom: 18 }}>
-          Your partner bank applies its own tier limits alongside these. Where the two differ, the lower one applies.
-        </Text>
+      <Card style={{ marginBottom: 14 }}>
+        <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1, marginBottom: 14 }}>Current daily limits</Text>
+        {[
+          ['Transfers', amountLabel(status.daily_transfer_limit)],
+          ['Bill payments', amountLabel(status.daily_bill_limit)],
+          ['Bank daily spending', amountLabel(status.bank_tier_limits?.daily_spend)],
+          ['Single incoming transfer', amountLabel(status.bank_tier_limits?.single_inflow)],
+          ['Account balance ceiling', amountLabel(status.bank_tier_limits?.max_balance)],
+        ].map(([label, value]) => <View key={label} style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12, paddingVertical: 9 }}>
+          <Text style={{ flex: 1, color: c.ink2, fontFamily: font.regular }}>{label}</Text>
+          <NText style={{ color: c.ink1, fontFamily: font.semibold }}>{value}</NText>
+        </View>)}
+        <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3, lineHeight: 18, marginTop: 12 }}>These are your current confirmed limits. Your personal limit and bank restrictions also apply.</Text>
+      </Card>
+      <Card style={{ marginBottom: 24 }}>
+        <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1, marginBottom: 14 }}>Verification steps</Text>
+        {['Tier 1 · BVN or NIN, verified by SMS code or face', 'Tier 2 · Prembly face verification and bank upgrade', 'Tier 3 · Address verification'].map((label) => <Text key={label} style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 22, marginBottom: 8 }}>{label}</Text>)}
+        <Btn label="View verification" variant="ghost" onPress={() => router.push('/kyc')} />
       </Card>
       </>}
     </Screen>

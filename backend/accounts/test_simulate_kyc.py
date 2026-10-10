@@ -94,6 +94,17 @@ class SimulateKycTests(TestCase):
         self.assertEqual(body["tier"], 3)
 
     @override_settings(WEMA=_SIM_ON, SIMULATE_DEPOSIT_TOKEN=_TOKEN)
+    def test_requested_tier2_cannot_accidentally_grant_address_or_tier3(self):
+        res, body = self._post({"token": _TOKEN, "phone": _PHONE, "tier": 2})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["tier"], 2)
+        self.assertTrue(body["bvn_verified"] and body["nin_verified"] and body["face_verified"])
+        self.assertFalse(body["address_verified"] or body["id_document_verified"])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 2)
+        self.assertFalse(self.user.address_verified)
+
+    @override_settings(WEMA=_SIM_ON, SIMULATE_DEPOSIT_TOKEN=_TOKEN)
     def test_idempotent_account_number(self):
         _, b1 = self._post({"token": _TOKEN, "phone": _PHONE})
         _, b2 = self._post({"token": _TOKEN, "phone": _PHONE})

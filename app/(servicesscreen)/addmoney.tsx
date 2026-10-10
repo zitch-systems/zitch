@@ -5,7 +5,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { router, useFocusEffect } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import { vasAccountStatusTitle, walletCapabilities, walletCapabilityMessage, walletService, type VasIdentityResult, type VirtualAccount } from '@/lib/services/wallet';
-import { isAccountOtpPending, kycService, resolveIdentityOtpRoute } from '@/lib/services/kyc';
+import { identityOtpKind, isAccountOtpPending, kycService, resolveIdentityOtpRoute } from '@/lib/services/kyc';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Btn, Field } from '@/components/design/ui';
@@ -33,6 +33,9 @@ const AddMoney = () => {
   const [vasIdentityVerified, setVasIdentityVerified] = useState(false);
   const [vasResendWait, setVasResendWait] = useState(0);
   const [bvn, setBvn] = useState('');
+  const [identityKind, setIdentityKind] = useState<'bvn' | 'nin'>('bvn');
+  const [trackingIdentityKind, setTrackingIdentityKind] = useState<'bvn' | 'nin'>('bvn');
+  const [otpDestination, setOtpDestination] = useState('');
   const [creating, setCreating] = useState(false);
   const [trackingId, setTrackingId] = useState('');
   const [otp, setOtp] = useState('');
@@ -47,6 +50,8 @@ const AddMoney = () => {
   const vasSetupAvailable = fundingState?.account_setup_state === 'vas_enrollment_required'
     && (fundingState.enrollment_available || (fundingState.enrollment_status === 'verification_required'
       && fundingState.enrollment_blockers?.every((blocker) => blocker === 'identity_verification')));
+  const reconnectVerifiedAccount = fundingState?.provider === 'partnership'
+    && fundingState.account_setup_state === 'identity_verified' && !fundingState.partnership_setup_required;
 
   const clearVasChallenge = () => {
     setVasChallenge(''); setVasOtp(''); setVasDelivery(''); setVasNotice(''); setVasIdentityVerified(false); setVasResendWait(0);
@@ -83,6 +88,13 @@ const AddMoney = () => {
       setFundingState(r);
       if (r?.success && r.provider === 'partnership' && r.account_setup_state === 'otp_pending' && r.tracking_id) {
         setTrackingId(r.tracking_id);
+        const kind = identityOtpKind(r, 'bvn');
+        setIdentityKind(kind);
+        setTrackingIdentityKind(kind);
+        setOtpDestination(r.delivery || r.otp_destination || '');
+      } else if (r?.success) {
+        setTrackingId('');
+        setOtp('');
       }
       if (r?.success && r.account_number && (r.provider !== 'wema_vas' ||
           (r.test_mode !== true && !/^711/.test(r.account_number) && r.available === true && r.has_account === true && r.account_setup_state === 'ready'))) {
@@ -213,16 +225,20 @@ const AddMoney = () => {
   };
 
   const createAccount = async () => {
-    if (bvn.length !== 11 || !beginAction()) return;
+    if ((!reconnectVerifiedAccount && bvn.length !== 11) || !beginAction()) return;
     try {
-      const r = await walletService.createAccount(bvn);
+      const r = await walletService.createAccount(reconnectVerifiedAccount ? {} : { [identityKind]: bvn });
       if (r?.success && r.account_number) {
+        setFundingState(r);
         setAccount(r as DediAccount);
       } else if (r?.success && r.otp_required && r.tracking_id) {
         setTrackingId(String(r.tracking_id));
-        notify('Verification code sent', r.message || 'Enter the SMS code sent to the phone registered on your BVN.', 'success');
-      } else if (r?.success) {
-        notify('Account creation in progress', r.message || 'Our partner bank is creating your account number. We will update this page when it is ready.', 'success');
+        setTrackingIdentityKind(identityOtpKind(r, identityKind));
+        setOtpDestination(r.delivery || r.otp_destination || '');
+        notify('Verification code sent', r.message || `Enter the SMS code sent to the phone registered on your ${identityKind.toUpperCase()}.`, 'success');
+      } else if (r?.success || r?.pending) {
+        setFundingState((current) => ({ ...current, ...r, provider: 'partnership', account_setup_state: 'processing' }));
+        notify('Account creation in progress', r.message || 'Your account setup is processing. Check again shortly.', 'info');
       } else {
         notify('Error', r?.message || "We couldn't create your account. Please try again.");
       }
@@ -236,11 +252,18 @@ const AddMoney = () => {
   const confirmOtp = async () => {
     if (!trackingId || otp.length !== 6 || !beginAction()) return;
     try {
-      const r = await walletService.verifyWemaOtp(trackingId, otp, { bvn });
-      if (r.success && r.account_number) setAccount(r as DediAccount);
+      // The server owns the pending identity and tracking reference. A resumed
+      // challenge does not need the customer to enter their identity again.
+      const r = await walletService.verifyWemaOtp(trackingId, otp);
+      if (r.success && r.account_number) {
+        setFundingState(r);
+        setAccount(r as DediAccount);
+        setTrackingId(''); setOtp(''); setBvn('');
+      }
       else if (r.success || r.pending) {
-        setTrackingId(''); setOtp('');
-        notify('Identity accepted', r.message || 'Your account number is being created.', 'success');
+        setTrackingId(''); setOtp(''); setBvn('');
+        setFundingState((current) => ({ ...current, ...r, provider: 'partnership', account_setup_state: 'processing' }));
+        notify('Verification processing', r.message || 'Your account setup is processing. Check again shortly.', 'info');
       } else notify('Verification failed', r.message || 'Check the code and try again.');
     } catch { notify('Error', 'Could not confirm the code. Please try again.'); }
     finally { endAction(); }
@@ -256,22 +279,26 @@ const AddMoney = () => {
   };
 
   const useFaceVerification = async () => {
-    if (bvn.length !== 11 || !beginAction()) return;
+    if (bvn.length !== 11) {
+      router.push({ pathname: '/kyc', params: { verify_identity: trackingId ? trackingIdentityKind : identityKind } });
+      return;
+    }
+    if (!beginAction()) return;
     const generation = ++facePollGeneration.current;
     const isCurrent = () => mounted.current && facePollGeneration.current === generation;
     try {
-      const started = await kycService.startIdentityFace({ bvn });
+      const started = await kycService.startIdentityFace({ [identityKind]: bvn });
       if (!isCurrent()) return;
-      const otpRoute = resolveIdentityOtpRoute(started, 'bvn');
+      const otpRoute = resolveIdentityOtpRoute(started, identityKind);
       if (otpRoute) {
-        if (otpRoute.kind === 'nin') {
-          // This screen owns a BVN field and its confirm/resend actions are
-          // consequently BVN-scoped. Never put a NIN tracking reference into
-          // that form; let KYC resume the server-selected identity route.
+        if (otpRoute.kind !== identityKind) {
+          // A previously started challenge can belong to the other identity.
+          // Let KYC resume that exact server-owned route without reusing the
+          // number currently entered in this form.
           router.push({
             pathname: '/kyc',
             params: {
-              pending_identity: 'nin',
+              pending_identity: otpRoute.kind,
               pending_tracking_id: otpRoute.trackingId,
               pending_otp_destination: started.delivery || started.otp_destination || '',
             },
@@ -281,12 +308,19 @@ const AddMoney = () => {
         // A face request may hand back the existing bank OTP attempt. Keep its
         // tracking reference on the SMS form instead of calling it a face outage.
         setTrackingId(otpRoute.trackingId);
+        setTrackingIdentityKind(otpRoute.kind);
+        setOtpDestination(started.delivery || started.otp_destination || '');
         setOtp('');
-        notify('SMS verification required', started.message || 'Enter the bank code sent to the phone registered on your BVN.', 'info');
+        notify('SMS verification required', started.message || `Enter the bank code sent to the phone registered on your ${otpRoute.kind.toUpperCase()}.`, 'info');
         return;
       }
       if (isAccountOtpPending(started)) {
         notify('SMS verification pending', started.message || 'Your bank verification is waiting for an SMS code. Please start the verification again.', 'info');
+        return;
+      }
+      if (started.pending) {
+        setFundingState((current) => ({ ...current, provider: 'partnership', account_setup_state: 'processing' }));
+        notify('Verification processing', started.message || 'Your verification is still processing. Check again shortly.', 'info');
         return;
       }
       if (!started.success || !started.url || !started.session) {
@@ -303,9 +337,14 @@ const AddMoney = () => {
         if (state.status === 'verified') {
           const refreshed = await walletService.getAccount();
           if (!isCurrent()) return;
-          if (refreshed.success && refreshed.account_number) setAccount(refreshed as DediAccount);
-          else notify('Identity verified', 'Our partner bank is creating your account number. We will update it automatically.', 'success');
-          setTrackingId(''); setOtp('');
+          if (refreshed.success && refreshed.account_number) {
+            setFundingState(refreshed);
+            setAccount(refreshed as DediAccount);
+          } else {
+            setFundingState((current) => ({ ...current, ...(refreshed.success ? refreshed : {}), provider: 'partnership', account_setup_state: 'processing' }));
+            notify('Verification processing', 'Your identity check is complete. Check again for your account number.', 'info');
+          }
+          setTrackingId(''); setOtp(''); setBvn('');
           return;
         }
         if (state.status === 'failed' || state.status === 'expired') {
@@ -348,7 +387,7 @@ const AddMoney = () => {
         <View style={{ paddingTop: 12 }}>
           <Label>Account setup is processing</Label>
           <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>
-            Wema accepted your code and is completing your account setup. Your identity verification is saved.
+            Your account setup is being confirmed. You do not need to start again. Check again shortly for your account number.
           </Text>
           <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void loadAccount()} /></View>
         </View>
@@ -357,6 +396,13 @@ const AddMoney = () => {
           <Label>Account review in progress</Label>
           <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{fundingState.migration_message}</Text>
           <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void loadAccount()} /></View>
+        </View>
+      ) : reconnectVerifiedAccount && !trackingId ? (
+        <View style={{ paddingTop: 12 }}>
+          <Label>Your identity is verified</Label>
+          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>We need to confirm your existing bank account number. Your BVN or NIN verification is saved; you do not need to enter it again.</Text>
+          <View style={{ marginTop: 20 }}><Btn label={creating ? 'Checking…' : 'Check my account number'} disabled={creating} onPress={createAccount} /></View>
+          <View style={{ marginTop: 10 }}><Btn label="Contact support" variant="ghost" disabled={creating} onPress={() => router.push('/support')} /></View>
         </View>
       ) : fundingState?.provider === 'wema_vas' && !account ? (
         <View style={{ paddingTop: 12 }}>
@@ -421,7 +467,7 @@ const AddMoney = () => {
             <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular }}>
               {fundingState?.provider === 'wema_vas'
                 ? 'Bank transfers to this account appear in your Zitch wallet after the payment is confirmed.'
-                : 'Transfer any amount to this account from any bank app — your Zitch wallet is credited automatically, usually within seconds.'}
+                : 'Transfer within your account limits from any bank app. Your Zitch balance updates after the payment is confirmed.'}
             </Text>
             {capabilityMessage ? <Text style={{ color: c.ink2, fontFamily: font.semibold, lineHeight: 20, marginTop: 12 }}>{capabilityMessage} {fundingState?.migration_message}</Text> : null}
             <View style={{ height: 1, backgroundColor: c.line, marginVertical: 14 }} />
@@ -480,30 +526,40 @@ const AddMoney = () => {
             </Text>
             <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular, marginTop: 10, textAlign: 'center', lineHeight: 21 }}>
               {fundingState?.partnership_setup_required
-                ? 'Your Zitch identity verification is saved. Enter your BVN securely so Wema can send its account setup code and issue your Partnership account number.'
-                : 'Enter your BVN to get a dedicated account for funding by bank transfer. It is verified securely.'}
+                ? 'Your Zitch identity verification is saved. Confirm the same BVN or NIN with your bank to finish setting up your funding account.'
+                : 'Choose BVN or NIN, then verify by SMS code or face to set up your funding account.'}
             </Text>
           </View>
 
           <View style={{ height: 22 }} />
           {trackingId ? (
-            <Field label="Verification code" value={otp} onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="Enter 6-digit SMS code" />
+            <>
+              <Text style={{ color: c.ink2, fontFamily: font.regular, marginBottom: 12 }}>Enter the SMS code{otpDestination ? ` sent to ${otpDestination}` : ` sent to the phone linked to your ${trackingIdentityKind.toUpperCase()}` }.</Text>
+              <Field label="Verification code" value={otp} onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="Enter 6-digit SMS code" />
+            </>
           ) : (
-            <Field label="Bank Verification Number (BVN)" value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter your 11-digit BVN" />
+            <>
+              <View style={{ flexDirection: 'row', gap: 20, marginBottom: 14 }}>
+                {(['bvn', 'nin'] as const).map((kind) => <Pressable key={kind} accessibilityRole="radio" accessibilityLabel={`Use ${kind.toUpperCase()}`} accessibilityState={{ selected: identityKind === kind }} disabled={creating} onPress={() => { setIdentityKind(kind); setBvn(''); }}>
+                  <Text style={{ color: identityKind === kind ? c.brand : c.ink3, fontFamily: font.bold }}>{kind.toUpperCase()}</Text>
+                </Pressable>)}
+              </View>
+              <Field label={identityKind === 'bvn' ? 'Bank Verification Number (BVN)' : 'National Identification Number (NIN)'} value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder={`Enter your 11-digit ${identityKind.toUpperCase()}`} />
+            </>
           )}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 8, paddingHorizontal: 2 }}>
             <ZIcon name="lock" size={13} color={c.ink3} />
             <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular }}>
-              Dial *565*0# on your registered line to get your BVN.
+              {identityKind === 'bvn' ? 'Dial *565*0# on your registered line to get your BVN.' : 'Use the NIN issued to you. Your identity details are protected.'}
             </Text>
           </View>
 
           <View style={{ height: 22 }} />
           <Btn label={creating ? 'Please wait…' : trackingId ? 'Confirm code' : 'Get my account'} icon="bank" disabled={creating || (trackingId ? otp.length !== 6 : bvn.length !== 11)} onPress={trackingId ? confirmOtp : createAccount} />
+          <View style={{ height: 10 }} />
+          <Btn label="Use face verification instead" variant="ghost" disabled={creating || (!trackingId && bvn.length !== 11)} onPress={useFaceVerification} />
           {trackingId && (
             <>
-              <View style={{ height: 10 }} />
-              <Btn label="Use face verification instead" variant="ghost" disabled={creating} onPress={useFaceVerification} />
               <Pressable disabled={creating} onPress={resendOtp} style={{ marginTop: 14 }}>
                 <Text style={{ textAlign: 'center', color: c.brand, fontFamily: font.semibold }}>Resend SMS code</Text>
               </Pressable>

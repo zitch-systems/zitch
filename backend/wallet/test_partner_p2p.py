@@ -107,13 +107,37 @@ class PartnerBankP2PTests(TestCase):
                     bank_name="Partner Bank (demo)" if condition == "demo" else "Partner Bank",
                 )
                 type(self.recipient).objects.filter(pk=self.recipient.pk).update(
-                    bvn_verified=condition != "unverified", is_active=condition != "inactive")
+                    bvn_verified=condition != "unverified", nin_verified=condition != "unverified",
+                    is_active=condition != "inactive")
                 response, provider = self._send({"success": True, "status": "SUCCESS"})
                 self.assertEqual(response.status_code, 422)
                 self.assertTrue(response.json()["not_charged"])
                 provider.assert_not_called()
                 self.assertEqual(self.balance(self.sender), Decimal("5000"))
         self.assertFalse(Transaction.objects.filter(user=self.sender, direction=Transaction.OUT).exists())
+
+    def test_nin_only_sender_and_recipient_use_their_confirmed_bank_accounts(self):
+        type(self.sender).objects.filter(pk__in=(self.sender.pk, self.recipient.pk)).update(
+            bvn_verified=False, nin_verified=True)
+        response, provider = self._send({"success": True, "status": "SUCCESS"})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()["success"])
+        self.assertEqual(provider.call_args.kwargs["source_account"], "0111111111")
+        self.assertEqual(self.balance(self.sender), Decimal("4000"))
+        self.assertEqual(self.balance(self.recipient), Decimal("0"))
+
+    def test_recipient_identity_revoked_during_enquiry_never_debits(self):
+        def resolve(*args):
+            type(self.recipient).objects.filter(pk=self.recipient.pk).update(
+                bvn_verified=False, nin_verified=False)
+            return {"success": True, "name": "ADA EZE"}
+
+        with patch("utility.providers.payout_resolve_account", side_effect=resolve), \
+                patch("transfers.services.payout_send") as provider:
+            response = self.post()
+        self.assertEqual(response.status_code, 422)
+        provider.assert_not_called()
+        self.assertEqual(self.balance(self.sender), Decimal("5000"))
 
     def test_recipient_name_mismatch_never_debits(self):
         with patch("utility.providers.payout_resolve_account", return_value={"success": True, "name": "SOMEONE ELSE"}), \

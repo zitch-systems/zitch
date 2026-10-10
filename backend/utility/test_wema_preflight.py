@@ -76,7 +76,7 @@ class PreflightObservedCallbackTests(TestCase):
         from whatsapp.models import WebhookEvent
         self._record("135.236.18.76", WebhookEvent.ACCEPTED)
         with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
-            out, code = _run()
+            out, code = _run("--launch-scope", "core")
         self.assertIn("accepted from 1 public source(s)", out)
         self.assertNotIn("NOT READY", out)
 
@@ -124,7 +124,7 @@ class PreflightGoTests(TestCase):
 
     def test_all_pass_is_go(self):
         with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
-            out, code = _run()
+            out, code = _run("--launch-scope", "core")
         self.assertIn("RESULT: GO", out)
         # Asserted line by line because a scope-qualified GO may still include soft
         # warnings: a soft check silently flipping to WARN must not pass unnoticed.
@@ -136,13 +136,13 @@ class PreflightGoTests(TestCase):
 
     def test_soft_warn_alone_is_go_without_strict(self):
         with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_EMPTY):
-            out, code = _run()
-        self.assertIn("RESULT: GO — launch_scope=full", out)
+            out, code = _run("--launch-scope", "core")
+        self.assertIn("RESULT: GO — launch_scope=core", out)
         self.assertEqual(code, 0)
 
     def test_strict_fails_on_soft_warn(self):
         with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_EMPTY):
-            out, code = _run("--strict")
+            out, code = _run("--strict", "--launch-scope", "core")
         self.assertIn("NOT READY (strict)", out)
         self.assertEqual(code, 1)
 
@@ -180,14 +180,45 @@ class PreflightLaunchScopeTests(TestCase):
             self.assertIn(capability, out)
         self.assertIn("must remain disabled", out)
         self.assertIn("RESULT: GO — launch_scope=core", out)
+        self.assertIn("Tier 2 and Tier 3 upgrades are outside", out)
+        self.assertIn("a core GO does not certify higher tiers", out)
+        self.assertIn("Tier 3 requires bank completion tied to the submitted address and request", out)
         self.assertNotIn("Full launch product capabilities", out)
+        self.assertNotIn("[FAIL] GATE Tier 3", out)
 
     def test_full_scope_can_pass_capability_gate_only_when_all_are_available(self):
-        out, code = self.run_with_capabilities(True)
+        # Isolate the product capability gate from both KYC capability gates.
+        with mock.patch("utility.management.commands.wema_preflight.tier2_face_available", return_value=True), \
+                mock.patch("utility.management.commands.wema_preflight.tier3_address_capability",
+                           return_value={"tier3_address_available": True}):
+            out, code = self.run_with_capabilities(True)
 
         self.assertEqual(code, 0)
         self.assertIn("[PASS] GATE Full launch product capabilities", out)
         self.assertIn("RESULT: GO — launch_scope=full", out)
+
+    @override_settings(PREMBLY={"API_KEY": "configured-key", "APP_ID": "configured-app"})
+    def test_full_scope_cannot_pass_without_actual_tier2_session_adapter(self):
+        out, code = self.run_with_capabilities(True)
+        self.assertEqual(code, 1)
+        self.assertIn("[FAIL] GATE Tier 2 provider-verified live session", out)
+        self.assertIn("Prembly SDK session verification is not implemented", out)
+        self.assertIn("RESULT: NOT READY — launch_scope=full", out)
+        self.assertNotIn("RESULT: GO", out)
+
+    def test_full_scope_cannot_pass_without_correlated_tier3_bank_completion(self):
+        # Even if a real Tier 2 adapter existed and the address API were keyed,
+        # account-level status could still describe an older address check.
+        with mock.patch("utility.management.commands.wema_preflight.tier2_face_available", return_value=True), \
+                mock.patch("utility.wema.address_verify_live", return_value=True):
+            out, code = self.run_with_capabilities(True)
+        self.assertEqual(code, 1)
+        self.assertIn("[PASS] GATE Tier 2 provider-verified live session", out)
+        self.assertIn("[FAIL] GATE Tier 3 bank address completion correlation", out)
+        self.assertIn("an account-level Completed status cannot certify Tier 3", out)
+        self.assertIn("key presence does not certify Tier 3 address completion", out)
+        self.assertIn("RESULT: NOT READY — launch_scope=full", out)
+        self.assertNotIn("RESULT: GO", out)
 
 
 @override_settings(
@@ -438,7 +469,7 @@ class PreflightTotpKeyTests(TestCase):
     def test_it_does_not_block_go_live_on_its_own(self):
         with mock.patch(_DIAG, return_value=dict(_LIVE_DIAG)), \
              mock.patch(_PROBE, return_value=_VTU_OK):
-            _, code = _run()
+            _, code = _run("--launch-scope", "core")
         self.assertEqual(code, 0)
 
 

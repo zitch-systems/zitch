@@ -410,6 +410,76 @@ describe('AddMoney face fallback', () => {
     mockPush.mockReset();
   });
 
+  it('starts a new Partnership account with NIN and offers face without first requesting SMS', async () => {
+    mockApiJson.mockResolvedValueOnce({ success: true, provider: 'partnership', has_account: false, account_setup_state: 'identity_required' })
+      .mockResolvedValueOnce({ success: true, otp_required: true, tracking_id: 'nin-otp', using_bvn: false, delivery: '••••4444' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    act(() => findControl(tree, 'Use NIN').props.onPress());
+    act(() => tree.root.findByType(TextInput).props.onChangeText('12345678901'));
+    expect(findControl(tree, 'Use face verification instead').props.disabled).toBe(false);
+    await act(async () => { await findControl(tree, 'Get my account').props.onPress(); });
+    expect(mockApiJson).toHaveBeenCalledWith('/api/wallet/account/create/', { nin: '12345678901' });
+    expect(JSON.stringify(tree.toJSON())).toContain('••••4444');
+    act(() => tree.unmount());
+  });
+
+  it('resumes a NIN challenge and stays on processing after OTP acceptance until the account is ready', async () => {
+    mockApiJson.mockResolvedValueOnce({ success: true, provider: 'partnership', has_account: false, account_setup_state: 'otp_pending',
+      tracking_id: 'saved-nin-otp', using_bvn: false, otp_destination_kind: 'nin', otp_destination: '••••4444' })
+      .mockResolvedValueOnce({ success: true, pending: true, account_setup_state: 'processing' })
+      .mockResolvedValueOnce({ success: true, provider: 'partnership', has_account: true, available: true, account_setup_state: 'ready', account_number: '0454243073', account_name: 'Test Customer', bank_name: 'Wema Bank' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(JSON.stringify(tree.toJSON())).toContain('••••4444');
+    act(() => tree.root.findByType(TextInput).props.onChangeText('123456'));
+    await act(async () => { await findControl(tree, 'Confirm code').props.onPress(); });
+    expect(mockApiJson).toHaveBeenCalledWith('/api/wallet/wema/verify-otp/', { tracking_id: 'saved-nin-otp', otp: '123456' });
+    expect(JSON.stringify(tree.toJSON())).toContain('Account setup is processing');
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+    await act(async () => { await findControl(tree, 'Check again').props.onPress(); });
+    expect(JSON.stringify(tree.toJSON())).toContain('Fund by bank transfer');
+    expect(JSON.stringify(tree.toJSON())).not.toContain('Account setup is processing');
+    act(() => tree.unmount());
+  });
+
+  it('provides a working face route when a resumed OTP has no identity number in memory', async () => {
+    mockApiJson.mockResolvedValue({ success: true, provider: 'partnership', account_setup_state: 'otp_pending', tracking_id: 'nin-otp', using_bvn: false });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    await act(async () => { await findControl(tree, 'Use face verification instead').props.onPress(); });
+    expect(mockPush).toHaveBeenCalledWith({ pathname: '/kyc', params: { verify_identity: 'nin' } });
+    expect(mockApiJson).toHaveBeenCalledTimes(1);
+    act(() => tree.unmount());
+  });
+
+  it('reconnects an already verified account without repeating BVN or NIN verification', async () => {
+    mockApiJson.mockResolvedValueOnce({ success: true, provider: 'partnership', has_account: false,
+      account_setup_state: 'identity_verified', nin_verified: true, partnership_setup_required: false })
+      .mockResolvedValueOnce({ success: true, provider: 'partnership', account_number: '0454243073', account_name: 'Test Customer', bank_name: 'Wema Bank' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+    await act(async () => { await findControl(tree, 'Check my account number').props.onPress(); });
+    expect(mockApiJson).toHaveBeenLastCalledWith('/api/wallet/account/create/', {});
+    expect(JSON.stringify(tree.toJSON())).toContain('Fund by bank transfer');
+    expect(JSON.stringify(tree.toJSON())).not.toContain('Get my account');
+    act(() => tree.unmount());
+  });
+
+  it('retains funding details and shows review guidance when bank spending is held', async () => {
+    mockApiJson.mockResolvedValue({ success: true, provider: 'partnership', account_setup_state: 'bank_history_review',
+      account_number: '0454243073', account_name: 'Test Customer', bank_name: 'Wema Bank', available: true, has_account: true,
+      spending_available: false, transfers_available: false, bill_payments_available: false,
+      migration_message: 'Your account balance needs review before you can spend. Please contact Zitch Support.' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    expect(findControl(tree, 'Copy account number')).toBeTruthy();
+    expect(JSON.stringify(tree.toJSON())).toContain('Your account balance needs review before you can spend.');
+    expect(JSON.stringify(tree.toJSON())).not.toContain('Get my account');
+    act(() => tree.unmount());
+  });
+
   it('hands a server-selected NIN OTP attempt to KYC instead of BVN confirmation', async () => {
     mockApiJson
       .mockResolvedValueOnce({ success: true, provider: 'partnership', has_account: false, account_setup_state: 'identity_required' })

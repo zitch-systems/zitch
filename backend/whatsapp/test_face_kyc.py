@@ -68,7 +68,8 @@ class FaceStepLadderTests(TestCase):
             pa = PendingAction.objects.get(user=u, action_type="kyc")
             self.assertEqual(pa.state, router.BVN_METHOD_STATE)
             self.assertEqual(buttons.call_args.args[2],
-                             [("bvn_face", "Verify BVN with face")])
+                             [("bvn_face", "Verify BVN with face"),
+                              ("use_nin", "Use NIN instead")])
             with patch.object(router, "_send_identity_flow", return_value=True) as flow:
                 router._advance_kyc(pa, u, MSISDN, "bvn_face")
             flow.assert_called_once_with(pa, "bvn", fallback_state=router.FACE_ID_STATE)
@@ -483,7 +484,7 @@ class BvnMethodChoiceTests(TestCase):
         self.assertIn(("bvn_sms", "SMS OTP"), offered)
         self.assertIn(("bvn_face", "Face verification"), offered)
 
-    def test_sms_tier1_requires_bvn_and_redirects_stale_nin_choice(self):
+    def test_sms_tier1_can_select_nin_without_starting_bvn(self):
         self.pa.payload["attempted"] = []
         self.pa.save(update_fields=["payload"])
         with patch.object(router, "_face_step_available", return_value=False), \
@@ -492,13 +493,13 @@ class BvnMethodChoiceTests(TestCase):
                 patch.object(router, "reply_buttons") as buttons:
             router._kyc_next(self.pa, self.user, MSISDN)
             self.assertEqual(buttons.call_args.args[2], [
-                ("bvn_sms", "SMS OTP")])
+                ("bvn_sms", "SMS OTP"), ("use_nin", "Use NIN instead")])
             router._advance_kyc(self.pa, self.user, MSISDN, "use_nin")
             self.assertEqual(buttons.call_args.args[2], [
-                ("bvn_sms", "SMS OTP")])
+                ("nin_sms", "SMS OTP"), ("use_bvn", "Use BVN instead")])
         with patch.object(router, "_send_identity_flow", return_value=True) as flow:
-            router._advance_kyc(self.pa, self.user, MSISDN, "bvn_sms")
-        flow.assert_called_once_with(self.pa, "bvn", fallback_state="bvn")
+            router._advance_kyc(self.pa, self.user, MSISDN, "nin_sms")
+        flow.assert_called_once_with(self.pa, "nin", fallback_state="nin")
 
     # These two assert on the IN-MEMORY payload, deliberately, and must not go
     # back to refresh_from_db(). Persisting it is _send_identity_flow's job — it
@@ -536,7 +537,8 @@ class BvnMethodChoiceTests(TestCase):
             router._advance_kyc(self.pa, self.user, MSISDN, "something else")
         offered = buttons.call_args.args[2]
         self.assertEqual(offered, [
-            ("bvn_sms", "SMS OTP"), ("bvn_face", "Face verification")])
+            ("bvn_sms", "SMS OTP"), ("bvn_face", "Face verification"),
+            ("use_nin", "Use NIN instead")])
 
 
     def test_selected_face_method_never_falls_back_to_sms(self):
@@ -555,13 +557,13 @@ class BvnMethodChoiceTests(TestCase):
                 self.assertFalse(self.user.bvn_verified)
                 self.assertFalse(self.user.nin_verified)
 
-    def test_nin_verified_customer_still_needs_bvn_for_tier1(self):
+    def test_nin_verified_customer_does_not_repeat_bvn_for_tier1(self):
         self.user.nin_verified = True
         self.user.save(update_fields=["nin_verified"])
-        self.assertEqual(router._kyc_outstanding(self.user), ["bvn"])
+        self.assertEqual(router._kyc_outstanding(self.user), [])
         self.user.refresh_from_db()
         self.assertTrue(self.user.nin_verified)
-        self.assertEqual(self.user.tier, 0)
+        self.assertIn("✅ NIN", router._kyc_status_lines(self.user))
 
     def test_verified_bvn_completes_tier1_without_requesting_nin(self):
         self.user.bvn_verified = True

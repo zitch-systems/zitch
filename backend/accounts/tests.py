@@ -556,19 +556,25 @@ class KycTierTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.email_verified)
 
-    def test_full_kyc_ladder_to_tier_3(self):
-        # BVN -> Tier 1; NIN + liveness -> Tier 2; address -> Tier 3.
+    def test_kyc_ladder_stops_at_unavailable_tier_3(self):
+        # Isolate Tier 1/2 proofs; the unavailable address adapter cannot grant Tier 3.
         self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
         b1 = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})[1]
         self.assertEqual(b1["tier"], 1)
-        face = self.post("/api/kyc/face/", {"access_token": self.token})[1]
+        # Isolate the local ladder from the unconfigured provider-session rail.
+        with patch("accounts.views.verify_tier2_liveness", return_value={"success": True}):
+            face = self.post("/api/kyc/face/", {"access_token": self.token})[1]
         self.assertEqual(face["tier"], 2)
-        b2 = self.post("/api/kyc/address/", {"access_token": self.token, "address": "12 Allen Avenue", "city": "Ikeja", "state": "Lagos", "document": "ZmFrZQ=="})[1]
-        self.assertEqual(b2["tier"], 3)
-        self.assertFalse(b2["id_document_verified"])
-        self.assertTrue(b2["address_verified"] and b2["face_verified"])
+        # Changing the KYC provider cannot bypass the Partnership address gate.
+        with override_settings(KYC_PROVIDER="prembly"):
+            response, b2 = self.post("/api/kyc/address/", {"access_token": self.token, "address": "12 Allen Avenue", "city": "Ikeja", "state": "Lagos", "document": "ZmFrZQ=="})
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(b2["tier3_address_available"])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 2)
+        self.assertFalse(self.user.address_verified)
         b3 = self.post("/api/kyc/id/", {"access_token": self.token, "image": "ZmFrZQ==", "doc_type": "passport"})[1]
-        self.assertEqual(b3["tier"], 3)
+        self.assertEqual(b3["tier"], 2)
         self.assertTrue(b3["id_document_verified"])
 
     def test_address_without_proof_document_is_refused(self):
@@ -577,41 +583,42 @@ class KycTierTests(TestCase):
         that the user typed seven characters."""
         self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
         self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
-        self.post("/api/kyc/face/", {"access_token": self.token})
-        res, body = self.post("/api/kyc/address/", {
-            "access_token": self.token, "address": "12 Allen Avenue",
-            "city": "Ikeja", "state": "Lagos"})
-        self.assertEqual(res.status_code, 400)
-        self.assertIn("proof of address", body["message"].lower())
+        with patch("accounts.views.verify_tier2_liveness", return_value={"success": True}):
+            self.post("/api/kyc/face/", {"access_token": self.token})
+        with override_settings(KYC_PROVIDER="prembly"):
+            res, body = self.post("/api/kyc/address/", {
+                "access_token": self.token, "address": "12 Allen Avenue",
+                "city": "Ikeja", "state": "Lagos"})
+        self.assertEqual(res.status_code, 503)
+        self.assertIn("unavailable", body["message"].lower())
         self.user.refresh_from_db()
         self.assertFalse(self.user.address_verified)
         self.assertEqual(self.user.tier, 2)
 
-    def test_address_proof_too_large_is_refused_by_size_not_absence(self):
-        """A document IS present, so the message must name the real problem —
-        the size cap, not a missing upload. (The cap is patched down so the test
-        exercises our check rather than Django's request-body limit.)"""
+    def test_address_does_not_request_a_different_document_when_unavailable(self):
+        """A disabled verifier must not ask the customer to upload another file."""
         self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
         self.user.recompute_tier()
         self.user.save(update_fields=["bvn_verified", "nin_verified", "face_verified", "tier"])
-        with patch.object(views, "MAX_KYC_IMAGE_BASE64", 8):
+        with override_settings(KYC_PROVIDER="prembly"), patch.object(views, "MAX_KYC_IMAGE_BASE64", 8):
             res, body = self.post("/api/kyc/address/", {
                 "access_token": self.token, "address": "12 Allen Avenue",
                 "document": "A" * 64})
-        self.assertEqual(res.status_code, 400)
-        self.assertIn("too large", body["message"].lower())
+        self.assertEqual(res.status_code, 503)
+        self.assertIn("unavailable", body["message"].lower())
 
     def test_address_proof_is_not_retained(self):
-        """Same promise as the NIN slip and government ID: the flag survives,
-        the image does not."""
+        """Unavailable verification retains neither a new address nor its image."""
         self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
         self.user.recompute_tier()
         self.user.save(update_fields=["bvn_verified", "nin_verified", "face_verified", "tier"])
-        self.post("/api/kyc/address/", {"access_token": self.token,
-                                        "address": "12 Allen Avenue",
-                                        "document": "ZmFrZXByb29m"})
+        with override_settings(KYC_PROVIDER="prembly"):
+            self.post("/api/kyc/address/", {"access_token": self.token,
+                                            "address": "12 Allen Avenue",
+                                            "document": "ZmFrZXByb29m"})
         self.user.refresh_from_db()
-        self.assertTrue(self.user.address_verified)
+        self.assertFalse(self.user.address_verified)
+        self.assertEqual(self.user.address, "")
         blob = " ".join(str(v) for v in vars(self.user).values())
         self.assertNotIn("ZmFrZXByb29m", blob)
 
@@ -696,10 +703,17 @@ class KycTierTests(TestCase):
         res, _ = self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "123"})
         self.assertEqual(res.status_code, 400)
 
-    def test_face_verification_sets_durable_flag(self):
-        res, body = self.post("/api/kyc/face/", {"access_token": self.token})
-        self.assertEqual(res.status_code, 200)
-        self.assertTrue(body["face_verified"])
+    def test_face_submission_cannot_set_durable_flag_without_verified_session(self):
+        with patch("utility.providers.kyc_verify_face", return_value={"success": True}) as image:
+            res, body = self.post("/api/kyc/face/", {
+                "access_token": self.token, "selfie": "ZmFrZQ==",
+                "session_id": "untrusted-session", "verified": True,
+            })
+        self.assertEqual(res.status_code, 503)
+        self.assertEqual(body["code"], "tier2_liveness_unavailable")
+        image.assert_not_called()
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.face_verified)
 
 
 class ClientIpTests(TestCase):
@@ -889,16 +903,41 @@ class FullJourneyE2ETests(TestCase):
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
                                    amount="150000", transaction_pin="246810",
                                    idempotency_key="journey-p2p-tier-blocked")[0], 403)
-        # ...face raises the user to Tier 2 and address to Tier 3, satisfying
-        # the >=₦100k face step-up, so the same transfer now goes through.
-        self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
-        self.assertEqual(self.post("/api/kyc/address/", access_token=tok,
-                                   address="12 Allen Avenue", city="Ikeja", state="Lagos",
-                                   document="ZmFrZQ==")[1]["tier"], 3)
-        # Bank and application tiers are independent; model the matching bank
-        # confirmation before the journey's large spend.
-        wallet.bank_tier = 3
+        # Model the independent Tier 2 proof; its existing limit covers this
+        # transfer. The unavailable address adapter must not manufacture Tier 3.
+        with patch("accounts.views.verify_tier2_liveness", return_value={"success": True}):
+            self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
+        wallet.bank_tier = 2
         wallet.save(update_fields=["bank_tier"])
+        with override_settings(KYC_PROVIDER="wema"), \
+                patch("utility.wema.address_verify_live", return_value=True), \
+                patch("utility.wema.upgrade_tier3", return_value={"success": True}) as upgrade, \
+                patch("utility.wema.get_kyc_status", return_value={
+                    "success": True, "tier": "Tier 3", "address_verification": "Completed",
+                }) as status:
+            address_status, address_body = self.post("/api/kyc/address/", access_token=tok,
+                                                     address="12 Allen Avenue", city="Ikeja", state="Lagos")
+        self.assertEqual(address_status, 503)
+        self.assertFalse(address_body["tier3_address_available"])
+        upgrade.assert_not_called()
+        status.assert_not_called()
+        wallet.refresh_from_db()
+        user_obj.refresh_from_db()
+        self.assertFalse(user_obj.address_verified)
+        self.assertEqual(user_obj.tier, 2)
+        self.assertEqual(wallet.bank_tier, 2)
+        self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
+                                   amount="150000", transaction_pin="246810",
+                                   idempotency_key="journey-p2p-bank-tier-blocked")[0], 403)
+        # An independent account-tier read may update the bank's spending cap;
+        # its uncorrelated address status must never grant our local Tier 3.
+        from wallet.services import sync_bank_tier
+        with patch("utility.wema.get_kyc_status", return_value={"success": True,
+                   "tier": "Tier 3", "address_verification": "Completed"}):
+            self.assertEqual(sync_bank_tier(wallet), 3)
+        user_obj.refresh_from_db()
+        self.assertEqual(user_obj.tier, 2)
+        self.assertFalse(user_obj.address_verified)
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
                                    amount="150000", transaction_pin="246810",
                                    idempotency_key="journey-p2p-large-1")[0], 200)

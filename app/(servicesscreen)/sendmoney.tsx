@@ -333,7 +333,7 @@ const SendMoney = () => {
             : recovered
               ? 'This confirms your earlier transfer. No new transfer was made. Authorize a new transfer to send again.'
             : `${money(amount)} sent to ${recipientName || 'recipient'}.`}
-          rows={[['Recipient', recipientName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Total', money(amount), true]]}
+          rows={[['Recipient', recipientName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Transfer amount', money(amount), true]]}
           reference={txnRef}
           status={pending ? (underReview ? 'Under review' : 'Processing') : 'Successful'}
           footer={pending ? (

@@ -216,15 +216,13 @@ def daily_kind_for(service: str) -> str:
 #: a customer completes them. Spelled out rather than expressed as a tier so the
 #: refusal can name the specific step that is missing, not a tier number.
 #:
-#: NIN belongs to Tier 2, together with provider-verified liveness. Tier 1 and
-#: the first-spend floor both require BVN plus verified contact details.
-#:
-#: BVN stays: the bank name-matches it while opening the account, so it is
-#: verified in the ordinary course of signup with nobody in the loop.
+#: The bank supports either BVN or NIN ownership proof for Tier 1. Tier 2 adds
+#: the other identity and provider-verified liveness. Keep the spending floor
+#: aligned with account creation so a verified NIN account can actually be used.
 _FIRST_SPEND_CHECKS = (
     ("email_verified", "email address"),
     ("phone_verified", "phone number"),
-    ("bvn_verified", "BVN"),
+    ("tier1_identity_verified", "BVN or NIN"),
 )
 
 

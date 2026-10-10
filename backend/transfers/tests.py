@@ -51,10 +51,22 @@ class BankTransferTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(body["fee"], "25.00")
 
-    def test_transfer_charge_defaults_to_zero_when_unavailable(self):
+    def test_transfer_charge_is_retryable_when_schedule_unavailable(self):
         with patch("transfers.views.payout_charge", return_value=None):
             res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
+        self.assertEqual(res.status_code, 503)
+        self.assertFalse(body["success"])
+        self.assertEqual(body["code"], "transfer_fee_unavailable")
+        self.assertTrue(body["retryable"])
+        self.assertNotIn("fee", body)
+        self.assertEqual(self.balance(), Decimal("50000"))
+        self.assertFalse(Transaction.objects.filter(user=self.user, direction=Transaction.OUT).exists())
+
+    def test_transfer_charge_preserves_confirmed_zero_fee(self):
+        with patch("transfers.views.payout_charge", return_value=Decimal("0.00")):
+            res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
         self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["success"])
         self.assertEqual(body["fee"], "0.00")
 
     def test_transfer_below_50_rejected(self):
