@@ -56,6 +56,13 @@ class InboundQueueIndexTests(TestCase):
                          processed_at=timezone.now())
             for i in range(300)
         ])
+        if connection.vendor == "postgresql":
+            # Plan against this history, not whatever autovacuum last sampled.
+            # Mid-suite the table can be analysed while it holds a handful of
+            # rows, and those stale statistics make a sequential scan look
+            # cheapest regardless of the indexes this test is checking.
+            with connection.cursor() as cur:
+                cur.execute(f"ANALYZE {connection.ops.quote_name(WaMessageLog._meta.db_table)}")
 
     def test_declared_on_the_model(self):
         """Both partial indexes survive, with the predicate that makes them tiny."""
