@@ -210,6 +210,19 @@ describe('SendMoney recipient response binding', () => {
     act(() => tree.unmount());
   });
 
+  it('holds Continue below the server transfer minimum and releases it at the minimum', async () => {
+    mockSearchParams = { identifier: '08012345678', mode: 'zitch' };
+    mockResolveLegacy.mockResolvedValue({ success: true, name: 'Ada Eze', recipient_key: 'acct-1' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<SendMoney />); });
+    await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
+    await act(async () => { control(tree, 'Enter amount').props.onChangeText('49'); });
+    expect(control(tree, 'Continue').props.disabled).toBe(true);
+    await act(async () => { control(tree, 'Enter amount').props.onChangeText('50'); });
+    expect(control(tree, 'Continue').props.disabled).toBe(false);
+    act(() => tree.unmount());
+  });
+
   it('requires saved Zitch aliases to resolve to an immutable recipient before a send', async () => {
     loadBankCatalogue();
     mockApiPost.mockResolvedValue({ json: async () => ({ beneficiaries: [{ id: 1, name: 'Saved Recipient', account_number: '08012345678', bank_name: 'Zitch', initials: 'SR' }] }) });

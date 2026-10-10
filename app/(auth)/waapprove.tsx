@@ -33,6 +33,19 @@ import { Loading } from '@/components/design/Loading';
  * The WhatsApp thread receives the receipt itself (executors reply to the
  * msisdn), so this screen only needs to close the loop locally.
  */
+type OutcomeStatus = 'success' | 'pending' | 'failed' | 'done';
+
+const outcomeStatusOf = (value: unknown): OutcomeStatus =>
+  value === 'success' || value === 'pending' || value === 'failed' ? value : 'done';
+
+/** The closing heading. Older servers send no outcome and read as `done`. */
+const outcomeView = (status: OutcomeStatus, actionType: string, c: { lime: string; amber: string; red: string }) => {
+  if (actionType === 'unlock') return { title: 'Identity confirmed', icon: 'check', color: c.lime };
+  if (status === 'failed') return { title: 'Payment not completed', icon: 'x', color: c.red };
+  if (status === 'pending') return { title: 'Payment processing', icon: 'history', color: c.amber };
+  return { title: 'Payment approved', icon: 'check', color: c.lime };
+};
+
 const WaApprove = () => {
   const { c } = useTheme();
   const params = useLocalSearchParams<{ token?: string }>();
@@ -41,6 +54,10 @@ const WaApprove = () => {
   const [phase, setPhase] = useState<'loading' | 'confirm' | 'busy' | 'done' | 'dead'>('loading');
   const [summary, setSummary] = useState('');
   const [outcome, setOutcome] = useState('');
+  // What happened to the money, as the executor reported it. An accepted
+  // approval can still end in a refused or still-processing payment.
+  const [outcomeStatus, setOutcomeStatus] = useState<OutcomeStatus>('done');
+  const [actionType, setActionType] = useState('');
   const [deadReason, setDeadReason] = useState('');
   // Where the customer came FROM. They approved a chat payment with a fingerprint
   // and should land back in that chat, not stranded on a screen in the app they
@@ -79,6 +96,7 @@ const WaApprove = () => {
       if (!alive) return;
       if (res?.success) {
         setSummary(res.summary || 'Confirm your payment');
+        setActionType(typeof res.action_type === 'string' ? res.action_type : '');
         setReturnTo(typeof res.return_to === 'string' && /^https:\/\/wa\.me\/\d+(?:\?|$)/.test(res.return_to) ? res.return_to : '');
         setPhase('confirm');
       } else {
@@ -103,6 +121,7 @@ const WaApprove = () => {
     const res = await apiJson('/api/whatsapp/approve/execute/', { token, transaction_pin: pin });
     if (res?.success) {
       setOutcome(res.message || 'Done ✅');
+      setOutcomeStatus(outcomeStatusOf(res.outcome));
       setPhase('done');
       clearPendingWhatsAppApproval().catch(() => {});
       return;
@@ -132,6 +151,8 @@ const WaApprove = () => {
     } finally { approving.current = false; }
   };
 
+  const ending = outcomeView(outcomeStatus, actionType, c);
+
   return (
     <Screen scroll={phase === 'confirm' || phase === 'busy'}>
       <Header title="Approve payment" sub="Started in WhatsApp" onBack={() => router.back()} />
@@ -157,10 +178,10 @@ const WaApprove = () => {
 
       {phase === 'done' && (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 30 }}>
-          <View style={{ width: 84, height: 84, borderRadius: 42, backgroundColor: c.lime, alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
-            <ZIcon name="check" size={40} color="#fff" stroke={3} />
+          <View style={{ width: 84, height: 84, borderRadius: 42, backgroundColor: ending.color, alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
+            <ZIcon name={ending.icon} size={40} color="#fff" stroke={3} />
           </View>
-          <Text style={{ fontSize: 19, fontFamily: font.extrabold, color: c.ink1, textAlign: 'center' }}>Payment approved</Text>
+          <Text style={{ fontSize: 19, fontFamily: font.extrabold, color: c.ink1, textAlign: 'center' }}>{ending.title}</Text>
           <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular, marginTop: 10, textAlign: 'center', lineHeight: 21 }}>{outcome}</Text>
           <View style={{ marginTop: 26, alignSelf: 'stretch', gap: 10 }}>
             <Btn label="Back to WhatsApp" icon="chat" onPress={backToWhatsApp} />

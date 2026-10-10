@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Linking, ActivityIndicator, AppState } from 'react-native';
+import { View, Text, Pressable, Linking, ActivityIndicator, AppState, Alert } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { Screen, Header, Card, Btn, PinSheet } from '@/components/design/ui';
@@ -147,6 +147,20 @@ const LinkWhatsApp = () => {
     } catch { notify('Could not copy', 'Open WhatsApp to use the prefilled link code.'); }
   };
 
+  // Unlinking also cancels any payment started on that number but not yet
+  // confirmed, so it is not a one-tap action.
+  const confirmUnlink = () => {
+    if (actionBusy.current) return;
+    Alert.alert(
+      'Unlink WhatsApp?',
+      'You will no longer be able to bank from that WhatsApp number. Any payment started there that you have not confirmed will be cancelled.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Unlink', style: 'destructive', onPress: () => { void unlink(); } },
+      ],
+    );
+  };
+
   const unlink = async () => {
     if (actionBusy.current) return;
     actionBusy.current = true;
@@ -243,7 +257,7 @@ const LinkWhatsApp = () => {
           <View style={{ height: 18 }} />
           <Btn label="Open WhatsApp" variant="primary" onPress={() => openWa()} />
           <View style={{ height: 10 }} />
-          <Btn label={busy ? 'Unlinking…' : 'Unlink WhatsApp'} variant="outline" onPress={unlink} disabled={busy} />
+          <Btn label={busy ? 'Unlinking…' : 'Unlink WhatsApp'} variant="outline" onPress={confirmUnlink} disabled={busy} />
         </>
       )}
       <PinSheet open={pinOpen} onClose={() => { if (!busy) setPinOpen(false); }} onComplete={generate}

@@ -255,9 +255,17 @@ export const PlanList = ({
 };
 
 // Balance hint / insufficient-funds warning under an amount field.
-export const BalanceHint = ({ amount, balance }: { amount: number; balance: number }) => {
+export const BalanceHint = ({ amount, balance, min = 0 }: { amount: number; balance: number; min?: number }) => {
   const { c } = useTheme();
   const short = amount > 0 && amount > balance;
+  // Say why Continue is disabled rather than leaving a valid-looking amount inert.
+  if (amount > 0 && amount < min) {
+    return (
+      <Text style={{ fontSize: 12, fontFamily: font.semibold, color: c.red, marginTop: 2, marginBottom: 14 }}>
+        Minimum amount is <NText style={{ fontFamily: font.bold, color: c.red }}>{money(min)}</NText>
+      </Text>
+    );
+  }
   if (short) {
     return (
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2, marginBottom: 14 }}>
