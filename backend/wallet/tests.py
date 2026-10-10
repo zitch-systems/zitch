@@ -1254,7 +1254,7 @@ class FxLimitParityTests(TestCase):
 
 
 class FirstSpendVerificationTests(TestCase):
-    """Email, phone, BVN and NIN must all be proved before ANY money leaves an
+    """Email, phone and either BVN or NIN must be proved before ANY money leaves an
     account. Together they are exactly Tier 1, but the refusal names the missing
     step rather than a tier number — "you are Tier 0" tells a customer nothing
     about what to do next."""
@@ -1268,7 +1268,7 @@ class FirstSpendVerificationTests(TestCase):
         self.user.save(update_fields=list(fields))
 
     def test_a_debit_is_refused_until_every_check_passes(self):
-        self._unverify("bvn_verified")
+        self._unverify("bvn_verified", "nin_verified")
         with self.assertRaises(LimitExceeded) as ctx:
             debit(self.user, Decimal("1000"), "transfer")
         self.assertIn("BVN", str(ctx.exception))
@@ -1277,7 +1277,7 @@ class FirstSpendVerificationTests(TestCase):
         self.assertIn("app", str(ctx.exception).lower())
 
     def test_the_refusal_names_every_missing_check_not_just_the_first(self):
-        self._unverify("bvn_verified", "email_verified")
+        self._unverify("bvn_verified", "nin_verified", "email_verified")
         msg = unverified_error(self.user) or ""
         self.assertIn("BVN", msg)
         self.assertIn("email", msg)
@@ -1294,6 +1294,13 @@ class FirstSpendVerificationTests(TestCase):
         self.assertIsNone(unverified_error(self.user))
         debit(self.user, Decimal("1000"), "transfer")   # does not raise
 
+    def test_nin_only_account_can_spend_at_tier_one(self):
+        self._unverify("bvn_verified")
+        self.assertIsNone(unverified_error(self.user))
+        self.assertEqual(self.user.tier, 1)
+        debit(self.user, Decimal("1000"), "transfer")
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("49000"))
+
     def test_funding_is_still_allowed_while_unverified(self):
         """Blocking a deposit would strand money in a NUBAN its owner cannot then
         use — and money arriving is how a customer gets to the point of verifying."""
@@ -1305,7 +1312,7 @@ class FirstSpendVerificationTests(TestCase):
         """FX reaches the ledger through _move, not debit(), so it does not
         inherit spend_limit_error's gate and has to state it — otherwise an
         unverified account could still move value by converting it."""
-        self._unverify("bvn_verified")
+        self._unverify("bvn_verified", "nin_verified")
         with self.assertRaises(FxError) as ctx:
             create_fx_quote(self.user, "NGN", "USD", Decimal("1000"))
         self.assertIn("BVN", str(ctx.exception.message))

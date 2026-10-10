@@ -115,11 +115,11 @@ const Home = () => {
             <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
           </Pressable>
         </View>
-        {fundingProvider === 'wema_vas' ? (
+        {balanceLoaded && (fundingProvider === 'wema_vas' || totalBalance > balance) ? (
           <View style={{ gap: 3, marginTop: 10 }}>
             <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Total balance: {showBal ? money(totalBalance) : '₦ ••••••'}</NText>
-            <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Historical funds: {showBal ? money(historicalBalance) : '₦ ••••••'}</NText>
-            {historicalBalance > 0 ? <Text style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.regular }}>Historical funds are not available for new payments.</Text> : null}
+            <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>{fundingProvider === 'wema_vas' ? 'Historical funds' : 'Funds under review'}: {showBal ? money(fundingProvider === 'wema_vas' ? historicalBalance : totalBalance - balance) : '₦ ••••••'}</NText>
+            {fundingProvider === 'wema_vas' && historicalBalance > 0 ? <Text style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.regular }}>Historical funds are not available for new payments.</Text> : null}
           </View>
         ) : null}
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, gap: 10 }}>

@@ -29,8 +29,10 @@ from common.ratelimit import (
 
 log = logging.getLogger("zitch.security")
 from utility import wema
+from utility.liveness import (TIER2_LIVENESS_UNAVAILABLE, tier2_face_available,
+                              verify_tier2_liveness)
 from utility.providers import (
-    email_live, kyc_verify_address, kyc_verify_face, kyc_verify_id_document,
+    email_live, kyc_verify_address, kyc_verify_id_document,
     kyc_provider, kyc_verify_nin_document, mock_disabled_in_prod, send_email, send_sms,
     sms_live,
     verify_bvn, verify_nin,
@@ -1239,6 +1241,9 @@ def _kyc_state(user) -> dict:
         "nin_verified": user.nin_verified,
         "face_verified": user.face_verified,
         "address_verified": user.address_verified,
+        "address_verification_pending": user.address_verification_pending,
+        "address_verification_state": ("verified" if user.address_verified else
+                                       "pending" if user.address_verification_pending else "not_verified"),
         "address_verification_required": not migrating,
         "account_provider": funding.get("provider", "partnership"),
         "identity_upgrade_required": identity_upgrade_required,
@@ -1276,13 +1281,15 @@ def _kyc_state(user) -> dict:
                                           else ["sms_otp"]),
         "face_rail": "document",
         "tier2_face_rail": "prembly",
+        "tier2_face_available": tier2_face_available(),
+        "tier2_unavailable_reason": "" if tier2_face_available() else TIER2_LIVENESS_UNAVAILABLE,
         "address_rail": ("none" if migrating else
-                         "wema" if (kyc_provider() == "wema" and wema.address_verify_live()) else "document"),
+                         "wema" if kyc_provider() == "wema" else "document"),
         **({key: value for key, value in funding.items()
             if key in {"provider", "has_account", "account_setup_state", "available",
                        "spending_available", "bill_payments_available", "transfers_available",
                        "enrollment_available", "migration_message"}}
-           if migrating else {}),
+           if migrating or funding.get("account_setup_state") == "bank_history_review" else {}),
     }
 
 
@@ -1388,6 +1395,12 @@ def transaction_limits(request):
 @require_user
 def kyc_status(request):
     """POST /api/kyc/status/ {access_token} -> tier + verification flags"""
+    # Read the bank outside callers' user/action locks. _kyc_state is also used
+    # inside email verification, where taking Wallet -> User locks would invert
+    # that caller's lock order and hold a transaction over provider I/O.
+    if request.user_obj.address_verification_pending:
+        from wallet.address_verification import refresh_address_verification
+        refresh_address_verification(request.user_obj)
     return ok(success=True, **_kyc_state(request.user_obj))
 
 
@@ -1430,7 +1443,7 @@ def apply_simulated_kyc(user, tier: int = 3) -> tuple[str, dict]:
         raise ValueError("tier must be 1, 2, or 3")
 
     # Set the flags recompute_tier() derives the tier from (see User.recompute_tier):
-    # tier 1 = BVN+NIN, tier 2 += face+address, tier 3 += ID document. Deterministic,
+    # tier 1 = either identity, tier 2 = both identities + face, tier 3 += address. Deterministic,
     # namespaced hashes populate audit/support fields without inventing real IDs.
     # Namespace simulation hashes away from the real 11-digit identity domain, so
     # a test customer can never collide with a legitimate BVN/NIN by chance.
@@ -1443,7 +1456,7 @@ def apply_simulated_kyc(user, tier: int = 3) -> tuple[str, dict]:
     user.bvn_verified = True
     user.nin_verified = True
     user.face_verified = tier >= 2
-    user.address_verified = tier >= 2
+    user.address_verified = tier >= 3
     user.id_document_verified = tier >= 3
     user.recompute_tier()
     # Persist the contact flags too. The old endpoint assigned them in memory but
@@ -1933,8 +1946,26 @@ def kyc_face_start(request):
     gate = _email_gate(user)
     if gate:
         return gate
-    bvn = (request.data.get("bvn") or "").strip()
-    nin = (request.data.get("nin") or "").strip()
+    from wallet.identity import accepted_identity_pending
+    has_account = Wallet.objects.filter(user=user).exclude(account_number="").exists()
+    if (accepted_identity_pending(user)
+            or not has_account and WemaProvisioningAttempt.objects.filter(
+                user=user, status=WemaProvisioningAttempt.PENDING,
+                otp_verified_at__isnull=False).exists()):
+        return JsonResponse({**_kyc_state(user), "success": True, "status": "processing",
+                             "pending": True, "otp_required": False, "account_setup_state": "processing",
+                             "message": "Your identity check is accepted. Your bank account is still being prepared."}, status=202)
+    if (not has_account
+            and WemaFaceSession.objects.filter(user=user, status=WemaFaceSession.VERIFIED).exists()):
+        return fail("Your identity check is complete, but your funding account needs review. "
+                    "Please do not repeat verification.", status=409,
+                    code="account_issuance_review", account_setup_state="review_required")
+    bvn, nin = request.data.get("bvn") or "", request.data.get("nin") or ""
+    if not isinstance(bvn, str) or not isinstance(nin, str):
+        return fail("Enter your 11-digit BVN or NIN")
+    bvn, nin = bvn.strip(), nin.strip()
+    if bvn and nin:
+        return fail("Choose BVN or NIN for this identity check.")
     prefer_face = str(request.data.get("prefer_face") or "").strip().lower() in ("1", "true", "yes", "on")
     # NO blanket "BVN already verified -> 409" here, deliberately.
     #
@@ -1982,14 +2013,14 @@ def kyc_face_start(request):
         # above. Pointing someone at a code they have already told us never
         # arrived is what made this screen a dead end in the first place.
         if pending is not None and not prefer_face:
-            return ok(success=True, status="account_otp_pending", already=True,
-                      otp_required=True, tracking_id=pending.tracking_id,
-                      using_bvn=identity_type == "bvn",
-                      otp_destination="", otp_destination_kind=identity_type,
-                      account_setup_state="otp_pending",
-                      message=(f"{identity_type.upper()} is verified. Enter the bank code from "
-                               "the phone registered on it to finish creating your account."),
-                      **_kyc_state(user))
+            return ok(**{"success": True, "status": "account_otp_pending", "already": True,
+                         "otp_required": True, "tracking_id": pending.tracking_id,
+                         "using_bvn": identity_type == "bvn",
+                         "otp_destination": "", "otp_destination_kind": identity_type,
+                         "account_setup_state": "otp_pending",
+                         "message": (f"{identity_type.upper()} is verified. Enter the bank code from "
+                                     "the phone registered on it to finish creating your account."),
+                         **_kyc_state(user)})
         try:
             recovered, _detail = attach_existing_bank_account(
                 user, using_bvn=identity_type == "bvn")
@@ -2022,13 +2053,51 @@ def kyc_face_start(request):
         # step-up on nothing at all.
         return fail("Face verification is temporarily unavailable. Please try again later.",
                     status=503)
-    session = WemaFaceSession.objects.create(
-        user=user,
-        state=secrets.token_urlsafe(32)[:64],
-        identity_type=identity_type,
-        identity_hash=hash_identifier(raw),
-        expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
-    )
+    # Recovery reads above may take time. Recheck current account/proof state
+    # under the same wallet -> user lock order used by account completion before
+    # inserting another challenge. No provider read runs inside this block.
+    wallet = get_or_create_wallet(user)
+    with db_transaction.atomic():
+        wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
+        user = User.objects.select_for_update().get(pk=user.pk)
+        if not user.is_active or not partnership_new_business_allowed(user):
+            return fail("This identity check is unavailable for your account.", status=409)
+        # OTP validation commits acceptance under the attempt lock before it
+        # acquires wallet/user locks. Wait for that decision rather than reading
+        # its pre-acceptance row while a bank response is being committed.
+        list(WemaProvisioningAttempt.objects.select_for_update().filter(
+            user=user, status=WemaProvisioningAttempt.PENDING))
+        waiting = (accepted_identity_pending(user)
+                   or not wallet.account_number and WemaProvisioningAttempt.objects.filter(
+                       user=user, status=WemaProvisioningAttempt.PENDING,
+                       otp_verified_at__isnull=False).exists())
+        completed_without_account = (not wallet.account_number and WemaFaceSession.objects.filter(
+            user=user, status=WemaFaceSession.VERIFIED).exists())
+        if completed_without_account and not waiting:
+            return fail("Your identity check is complete, but your funding account needs review. "
+                        "Please do not repeat verification.", status=409,
+                        code="account_issuance_review", account_setup_state="review_required")
+        binding = face_identity_error(user, identity_type, raw)
+        if binding:
+            return fail(binding, status=400)
+        if _identity_owned_by_another_user(user, identity_type, raw):
+            return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
+        already_verified = bool(wallet.account_number and getattr(user, f"{identity_type}_verified"))
+        if not waiting and not already_verified:
+            session = WemaFaceSession.objects.create(
+                user=user,
+                state=secrets.token_urlsafe(32)[:64],
+                identity_type=identity_type,
+                identity_hash=hash_identifier(raw),
+                expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
+            )
+    if waiting:
+        return JsonResponse({**_kyc_state(user), "success": True, "status": "processing",
+                             "pending": True, "otp_required": False, "account_setup_state": "processing",
+                             "message": "Your identity check is accepted. Your bank account is still being prepared."}, status=202)
+    if already_verified:
+        return ok(success=True, status="verified", already=True, account_number=wallet.account_number,
+                  message=f"{identity_type.upper()} is already verified", **_kyc_state(user))
     url = wema.face_verification_url(identity_type, raw, _face_callback_url(session.state))
     log.info("wema_face_start user=%s type=%s session=%s", user.id, identity_type, session.state[:8])
     return ok(success=True, url=url, session=session.state,
@@ -2065,9 +2134,9 @@ def kyc_face_status(request):
     elif (account_state == "awaiting_callback"
           and session.updated < timezone.now() - timedelta(hours=1)):
         account_state = "review_required"
-    return ok(success=True, status=status, account_setup_state=account_state,
-              account_review_required=account_state in ("review_required", "rejected", "unknown"),
-              **_kyc_state(user))
+    return ok(**{"success": True, "status": status, "account_setup_state": account_state,
+                 "account_review_required": account_state in ("review_required", "rejected", "unknown"),
+                 **_kyc_state(user)})
 
 
 @api
@@ -2076,25 +2145,24 @@ def kyc_face_status(request):
 def kyc_face(request):
     """POST /api/kyc/face/ {access_token, selfie?}
 
-    Verifies liveness via the KYC provider (mock-accepts offline) and, only on
-    success, marks the user face-verified. Large transfers gate on this
-    server-side flag, so it must never be a bare client claim.
+    Require server-attested interactive liveness; an image or client callback
+    cannot authorize a tier upgrade, including in simulation.
     """
     user = request.user_obj
     gate = _email_gate(user)
     if gate:
         return gate
     selfie = request.data.get("selfie") or request.data.get("image") or ""
-    # Empty remains valid only insofar as the configured provider accepts it (the
-    # offline test provider does; production providers fail closed). When a client
-    # does send an image, bound it before decoding/forwarding it.
+    # Bound legacy image submissions without treating them as live-session proof.
     if selfie:
         image_error = _kyc_image_error(selfie)
         if image_error:
             return fail(image_error)
-    result = kyc_verify_face(selfie)
+    result = verify_tier2_liveness(user, request.data)
     if not result.get("success"):
-        return fail(result.get("message", "Face verification failed"), status=400)
+        return fail(result.get("message", "Face verification failed"),
+                    status=503 if result.get("unavailable") else 400,
+                    code=result.get("code", "face_verification_failed"))
     user.face_verified = True
     user.recompute_tier()  # face is a Tier 2 requirement
     user.save(update_fields=["face_verified", "tier"])
@@ -2124,6 +2192,26 @@ def verify_kyc_address(user, data):
             and user.phone_verified and user.email_verified):
         return fail("Complete Tier 2 identity and liveness verification before verifying your address.",
                     status=409, upgrade_required=True, required_tier=2)
+    from utility.providers import partnership_new_business_allowed
+    from wallet.address_verification import address_request_rejected, refresh_address_verification
+
+    bank_rail = partnership_new_business_allowed(user) and kyc_provider() == "wema"
+    if user.address_verified:
+        return ok(success=True, message="Address verified", **_kyc_state(user))
+    if bank_rail and user.address_verification_pending:
+        # Never replay an accepted or ambiguous bank instruction. Poll its status
+        # before asking the customer to submit anything again.
+        if refresh_address_verification(user):
+            return ok(success=True, message="Address verified", **_kyc_state(user))
+        if not user.address_verification_pending:
+            return fail("Your address could not be verified. Check your address and try again.",
+                        status=400, code="address_verification_rejected", **_kyc_state(user))
+        return JsonResponse({**_kyc_state(user), "success": False, "pending": True,
+                             "message": "Your address verification is in progress. We will update you once it is complete."},
+                            status=202)
+    if bank_rail and not wema.address_verify_live():
+        return fail("Address verification is temporarily unavailable. Please try again later.",
+                    status=503, code="address_verification_unavailable", retryable=True)
     supplied = data.get("residentialAddress", data.get("address", ""))
     if not isinstance(supplied, (str, dict)):
         return fail("Enter your full residential address")
@@ -2156,8 +2244,6 @@ def verify_kyc_address(user, data):
         return fail("Enter a full residential address of at most 255 characters")
     address_fields["country"] = address_fields["country"] or "Nigeria"
     document = data.get("document") or data.get("image") or ""
-    from utility.providers import partnership_new_business_allowed
-    bank_rail = partnership_new_business_allowed(user) and kyc_provider() == "wema" and wema.address_verify_live()
     if bank_rail:
         # The BANK verifies the address and lifts the NUBAN to its Tier 3 on the
         # strength of it. That is a stronger control than a document we OCR, so the
@@ -2177,13 +2263,64 @@ def verify_kyc_address(user, data):
             if wallet.bank_tier < 2:
                 return fail("Complete your bank's Tier 2 upgrade before verifying your address.",
                             status=409, upgrade_required=True, required_tier=2)
-        result = wema.upgrade_tier3(acct, address_fields)
-        if result.get("pending"):
-            return JsonResponse({"success": False, "pending": True,
-                                 "message": "Your bank is still verifying your address.",
-                                 **_kyc_state(user)}, status=202)
-        if not result.get("success"):
-            return fail(result.get("message") or "Couldn't verify your address", status=400)
+        with db_transaction.atomic():
+            locked_wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
+            locked = User.objects.select_for_update().get(pk=user.pk)
+            if not locked_wallet.account_number or locked_wallet.bank_tier < 2:
+                return fail("Complete your bank's Tier 2 upgrade before verifying your address.",
+                            status=409, upgrade_required=True, required_tier=2)
+            if not (locked.bvn_verified and locked.nin_verified and locked.face_verified
+                    and locked.phone_verified and locked.email_verified):
+                return fail("Complete Tier 2 identity and liveness verification before verifying your address.",
+                            status=409, upgrade_required=True, required_tier=2)
+            acct = locked_wallet.account_number
+            wallet.account_number = acct
+            already_pending = locked.address_verification_pending
+            if not already_pending and not locked.address_verified:
+                # Commit intent before sending: a timeout or process restart
+                # must not make the next customer request repeat this POST.
+                locked.set_address(full)
+                locked.address_verification_pending = True
+                locked.address_verification_requested_at = timezone.now()
+                locked.address_verification_account_number = acct
+                locked.save(update_fields=["address", "address_verification_pending",
+                                           "address_verification_requested_at", "address_verification_account_number"])
+            user.address = locked.address
+            user.address_verified = locked.address_verified
+            user.address_verification_pending = locked.address_verification_pending
+            user.address_verification_requested_at = locked.address_verification_requested_at
+            user.address_verification_account_number = locked.address_verification_account_number
+            requested_at = locked.address_verification_requested_at
+        if user.address_verified:
+            return ok(success=True, message="Address verified", **_kyc_state(user))
+        if not already_pending:
+            try:
+                result = wema.upgrade_tier3(acct, address_fields)
+            except Exception:  # Unknown delivery is pending, never permission to replay.
+                log.exception("wema_address_submission_unknown user=%s", user.pk)
+                result = {"success": False, "pending": True}
+            if address_request_rejected(result):
+                # Only this exact rejected request may be released for retry.
+                with db_transaction.atomic():
+                    locked = User.objects.select_for_update().get(pk=user.pk)
+                    if (locked.address_verification_pending
+                            and locked.address_verification_account_number == acct
+                            and locked.address_verification_requested_at == requested_at):
+                        locked.address_verification_pending = False
+                        locked.save(update_fields=["address_verification_pending"])
+                        user.address_verification_pending = False
+                return fail(result.get("message") or "Your address could not be verified. Check your address and try again.",
+                            status=400, code="address_verification_rejected", **_kyc_state(user))
+        # Generic success means accepted, not that the bank finished its visit.
+        # Completion requires the authenticated account-status readback.
+        if refresh_address_verification(user, wallet=wallet):
+            return ok(success=True, message="Address verified", **_kyc_state(user))
+        if not user.address_verification_pending:
+            return fail("Your address could not be verified. Check your address and try again.",
+                        status=400, code="address_verification_rejected", **_kyc_state(user))
+        return JsonResponse({**_kyc_state(user), "success": False, "pending": True,
+                             "message": "Your address verification is in progress. We will update you once it is complete."},
+                            status=202)
     else:
         image_error = _kyc_image_error(document)
         if image_error:
@@ -2197,12 +2334,8 @@ def verify_kyc_address(user, data):
     user.recompute_tier()
     with db_transaction.atomic():
         user.save(update_fields=["address", "address_verified", "tier"])
-        if bank_rail:
-            wallet.bank_tier = 3
-            wallet.save(update_fields=["bank_tier", "updated"])
-    if not bank_rail:
-        # Document rail: still sync the bank-side tier, best-effort as before.
-        _sync_wema_tier3(user, address_fields)
+    # Document rail: still sync the bank-side tier, best-effort as before.
+    _sync_wema_tier3(user, address_fields)
     return ok(success=True, message="Address verified", **_kyc_state(user))
 
 

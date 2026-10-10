@@ -22,9 +22,10 @@ from common.http import (
     mask_pii, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
-from utility.providers import (funding_initialize, funding_verify, kyc_verify_face,
+from utility.providers import (funding_initialize, funding_verify,
                                payment_provider, partnership_new_business_allowed)
 from utility import wema as wema_provider
+from utility.liveness import verify_tier2_liveness
 
 from .models import FundingIntent, Transaction, Wallet, WemaProvisioningAttempt
 from .services import (
@@ -126,7 +127,8 @@ def _account_setup_state(user, wallet) -> dict:
     from .identity import accepted_identity_pending
 
     funding = customer_funding_account(user)
-    if funding.get("provider") != "partnership" or funding.get("account_setup_state") == "partnership_review":
+    if (funding.get("provider") != "partnership"
+            or funding.get("account_setup_state") in {"partnership_review", "bank_history_review"}):
         return {"account_setup_state": funding.get("account_setup_state", "migration_pending"),
                 "otp_required": False,
                 "identity_verified": bool(user.bvn_verified or user.nin_verified)}
@@ -204,6 +206,8 @@ def wallet_account_create(request):
     from wema_vas.partnership import first_partnership_setup
     if user.bvn_verified and bvn and not first_partnership_setup(user):
         return fail("Your BVN is already verified. You do not need to enter it again.", status=409)
+    if user.nin_verified and nin and not first_partnership_setup(user):
+        return fail("Your NIN is already verified. You do not need to enter it again.", status=409)
     if user.bvn_verified and nin and not wallet.account_number:
         # A missing BVN NUBAN must not dead-end the customer. Try the provider
         # read-back first, but if Wema has not returned the account, continue
@@ -230,12 +234,13 @@ def wallet_account_create(request):
             wallet, tier=user.tier, bvn_verified=user.bvn_verified, nin_verified=user.nin_verified))
 
     if len(bvn) != 11 and len(nin) != 11:
-        if user.bvn_verified:
-            recovered, _detail = attach_existing_bank_account(user, using_bvn=True)
+        if user.tier1_identity_verified:
+            identity_label = "BVN" if user.bvn_verified else "NIN"
+            recovered, _detail = attach_existing_bank_account(user, using_bvn=user.bvn_verified)
             if recovered is not None and recovered.account_number:
                 return ok(**_account_payload(
                     recovered, already=True, tier=user.tier,
-                    bvn_verified=True, nin_verified=user.nin_verified,
+                    bvn_verified=user.bvn_verified, nin_verified=user.nin_verified,
                     message="Your verified bank account has been reconnected."))
             state = _account_setup_state(user, wallet)
             if state.get("account_setup_state") == "otp_pending":
@@ -246,20 +251,21 @@ def wallet_account_create(request):
                 )
                 state["otp_resent"] = bool(resend.get("success"))
                 message = (
-                    "Your BVN is already verified. Our partner bank accepted the request to resend "
+                    f"Your {identity_label} is already verified. Our partner bank accepted the request to resend "
                     "the account setup code; enter it to finish issuing your account number."
                     if resend.get("success") else
-                    "Your BVN is already verified. Enter the existing partner-bank account "
+                    f"Your {identity_label} is already verified. Enter the existing partner-bank account "
                     "setup code to finish issuing your account number."
                 )
             else:
                 message = (
-                    "Your BVN is already verified. We are syncing your partner-bank account "
-                    "number; you will not be asked to enter the BVN again."
+                    f"Your {identity_label} is already verified. We are syncing your partner-bank account "
+                    f"number; you will not be asked to enter the {identity_label} again."
                 )
             return ok(
                 **state,
-                bvn_verified=True,
+                success=True,
+                bvn_verified=user.bvn_verified,
                 nin_verified=user.nin_verified,
                 holder_name=(user.get_full_name() or "").strip(),
                 message=message,
@@ -596,6 +602,8 @@ def start_wema_identity(user, *, bvn="", nin=""):
     from wema_vas.partnership import first_partnership_setup
     if user.bvn_verified and bvn and not first_partnership_setup(user):
         return fail("Your BVN is already verified. You do not need to enter it again.", status=409)
+    if user.nin_verified and nin and not first_partnership_setup(user):
+        return fail("Your NIN is already verified. You do not need to enter it again.", status=409)
     if user.bvn_verified and nin and not wallet.account_number:
         # A missing BVN NUBAN must not block the independent NIN rail. Read back
         # an existing account first; if Wema has not returned one, continue to
@@ -859,12 +867,13 @@ def upgrade_wema_identity(user, data):
     if _identity_owned_by_another_user(user, WemaProvisioningAttempt.NIN, nin):
         return fail("This NIN is already linked to another Zitch account", status=409)
 
-    # Prembly performs the required liveness/face capture before the combined
-    # Wema Tier 2 upgrade. Do not persist identity or face flags unless both
-    # providers accept the request.
-    biometric = kyc_verify_face(live_image)
+    # An image score or client callback cannot attest the customer's live
+    # presence. Only the shared server-session verifier may authorize Tier 2.
+    biometric = verify_tier2_liveness(user, data)
     if not biometric.get("success"):
-        return fail(biometric.get("message", "We could not verify your live selfie"))
+        return fail(biometric.get("message", "We could not verify your live selfie"),
+                    status=503 if biometric.get("unavailable") else 400,
+                    code=biometric.get("code", "liveness_not_verified"))
 
     res = wema_provider.upgrade_tier2(wallet.account_number, bvn=bvn, nin=nin,
                                      live_image=live_image)
@@ -875,10 +884,28 @@ def upgrade_wema_identity(user, data):
         return fail(res.get("message", "Our partner bank could not upgrade this account right now"),
                     status=502)
 
+    # A successful submission is not proof that the bank completed its upgrade.
+    # Read back the same account before raising either local or bank-side limits.
+    bank_state = wema_provider.get_kyc_status(wallet.account_number)
+    confirmed_tier = str(bank_state.get("tier") or "").strip().casefold()
+    if (not bank_state.get("success") or bank_state.get("mock")
+            or confirmed_tier not in {"2", "tier 2", "tier2", "3", "tier 3", "tier3"}):
+        return JsonResponse({"success": False, "pending": True,
+                             "message": "Your bank is still processing your identity upgrade."}, status=202)
+    if (not bank_state.get("name")
+            or wema_provider.holder_name_mismatch(user.get_full_name(), bank_state["name"])):
+        return fail("We could not confirm your bank account details. Please contact Zitch Support.",
+                    status=409, code="identity_review_required")
+
     try:
         with db_transaction.atomic():
             # Another ownership flow may have completed while the providers were
             # checking the image. Recheck under lock before writing either ID.
+            confirmed_account_number = wallet.account_number
+            wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
+            if wallet.account_number != confirmed_account_number:
+                return fail("Your bank account changed during verification. Please contact Zitch Support.",
+                            status=409, code="identity_review_required")
             user = User.objects.select_for_update().get(pk=user.pk)
             for kind, raw in (("bvn", bvn), ("nin", nin)):
                 if (getattr(user, f"{kind}_verified") and not hmac.compare_digest(

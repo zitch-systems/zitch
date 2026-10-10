@@ -465,16 +465,16 @@ class ChannelTests(TestCase):
         login.assert_called_once_with(MSISDN)
         self.assertFalse(WaMessageLog.objects.filter(text__icontains="first name").exists())
 
-    def test_whatsapp_user_cannot_send_without_bvn(self):
+    def test_whatsapp_user_cannot_send_without_either_verified_identity(self):
         # Encoded the OLD policy ("transact immediately, no BVN gate") until the
         # verification-before-first-transaction requirement landed. It kept
         # passing only because the refusal lived at debit time and this walked
         # no further than "how much" — the gate now answers at the door.
-        self.user.bvn_verified = False
-        self.user.save(update_fields=["bvn_verified"])
+        self.user.bvn_verified = self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
         self.link()
         self.inbound("send", "b1")
-        self.assertIn("verify your bvn", self.last_reply().lower())
+        self.assertIn("bvn or nin", self.last_reply().lower())
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
 
     def test_frozen_user_is_blocked_on_whatsapp(self):
@@ -3963,8 +3963,8 @@ class PinResetTests(TestCase):
             msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
 
     def test_an_unverified_account_is_sent_to_verification_first(self):
-        self.user.email_verified = self.user.bvn_verified = False
-        self.user.save(update_fields=["email_verified", "bvn_verified"])
+        self.user.email_verified = self.user.bvn_verified = self.user.nin_verified = False
+        self.user.save(update_fields=["email_verified", "bvn_verified", "nin_verified"])
         out = self._say("reset pin")
         self.assertIn("email address", out)
         self.assertIn("BVN", out)

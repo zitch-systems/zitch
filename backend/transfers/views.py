@@ -258,13 +258,17 @@ def transfer_charge(request):
     """POST /api/transfers/charge/ {access_token, amount} -> {fee}
 
     The NIP fee the bank levies on an inter-bank transfer of ``amount`` (from Wema's
-    GetNIPCharges schedule). Informational — for display before the user confirms; the
-    send flow itself is unchanged. Returns "0.00" when the schedule isn't available."""
+    GetNIPCharges schedule). Informational — for display before the user confirms;
+    the send flow itself is unchanged. An unavailable quote is not a free transfer.
+    """
     amount = parse_amount(request.data.get("amount"))
     if amount is None:
         return fail("Enter a valid amount")
     fee = payout_charge(amount)
-    return ok(success=True, amount=str(amount), fee=str(fee) if fee is not None else "0.00")
+    if fee is None:
+        return fail("Transfer fees are temporarily unavailable. Please try again shortly.",
+                    status=503, success=False, code="transfer_fee_unavailable", retryable=True)
+    return ok(success=True, amount=str(amount), fee=str(fee))
 
 
 @api

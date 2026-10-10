@@ -1308,7 +1308,14 @@ def _submit_identity(pa, data: dict) -> dict:
         # completes the original account creation. The raw BVN remains inside the
         # encrypted Flow and is passed only to the bank-hosted one-time session.
         if pa.payload.get("id_purpose") in ("account_face", "face"):
-            from .router import _send_identity_face_option
+            from .router import _clear_actions, _face_account_setup_held, _send_identity_face_option
+
+            if _face_account_setup_held(pa.user):
+                _clear_actions(pa.msisdn)
+                return _success_screen(
+                    "Your identity check is already complete or processing. "
+                    "Return to the chat and reply 6 to check your funding account; "
+                    "you do not need to repeat face verification.")
 
             if _send_identity_face_option(pa, pa.user, pa.msisdn, kind, number,
                                           account_setup=pa.payload.get("id_purpose") == "account_face"):
@@ -1332,6 +1339,10 @@ def _submit_identity(pa, data: dict) -> dict:
                 return _success_screen(
                     "Open the secure face-verification link in the chat. "
                     "Your verification changes only after the bank confirms it.")
+            if outcome == "processing":
+                return _success_screen(
+                    "Your bank accepted the verification code. Account setup is processing. "
+                    "You do not need to submit your identity or code again.")
             if outcome == "adopted":
                 return _success_screen("Account found ✅ — see the chat for the bank-upgrade step.")
             if outcome == "upgrade":

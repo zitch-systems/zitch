@@ -561,7 +561,9 @@ class KycTierTests(TestCase):
         self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
         b1 = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})[1]
         self.assertEqual(b1["tier"], 1)
-        face = self.post("/api/kyc/face/", {"access_token": self.token})[1]
+        # Isolate the local ladder from the unconfigured provider-session rail.
+        with patch("accounts.views.verify_tier2_liveness", return_value={"success": True}):
+            face = self.post("/api/kyc/face/", {"access_token": self.token})[1]
         self.assertEqual(face["tier"], 2)
         b2 = self.post("/api/kyc/address/", {"access_token": self.token, "address": "12 Allen Avenue", "city": "Ikeja", "state": "Lagos", "document": "ZmFrZQ=="})[1]
         self.assertEqual(b2["tier"], 3)
@@ -577,7 +579,8 @@ class KycTierTests(TestCase):
         that the user typed seven characters."""
         self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
         self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
-        self.post("/api/kyc/face/", {"access_token": self.token})
+        with patch("accounts.views.verify_tier2_liveness", return_value={"success": True}):
+            self.post("/api/kyc/face/", {"access_token": self.token})
         res, body = self.post("/api/kyc/address/", {
             "access_token": self.token, "address": "12 Allen Avenue",
             "city": "Ikeja", "state": "Lagos"})
@@ -696,10 +699,17 @@ class KycTierTests(TestCase):
         res, _ = self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "123"})
         self.assertEqual(res.status_code, 400)
 
-    def test_face_verification_sets_durable_flag(self):
-        res, body = self.post("/api/kyc/face/", {"access_token": self.token})
-        self.assertEqual(res.status_code, 200)
-        self.assertTrue(body["face_verified"])
+    def test_face_submission_cannot_set_durable_flag_without_verified_session(self):
+        with patch("utility.providers.kyc_verify_face", return_value={"success": True}) as image:
+            res, body = self.post("/api/kyc/face/", {
+                "access_token": self.token, "selfie": "ZmFrZQ==",
+                "session_id": "untrusted-session", "verified": True,
+            })
+        self.assertEqual(res.status_code, 503)
+        self.assertEqual(body["code"], "tier2_liveness_unavailable")
+        image.assert_not_called()
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.face_verified)
 
 
 class ClientIpTests(TestCase):
@@ -891,7 +901,8 @@ class FullJourneyE2ETests(TestCase):
                                    idempotency_key="journey-p2p-tier-blocked")[0], 403)
         # ...face raises the user to Tier 2 and address to Tier 3, satisfying
         # the >=₦100k face step-up, so the same transfer now goes through.
-        self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
+        with patch("accounts.views.verify_tier2_liveness", return_value={"success": True}):
+            self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
         self.assertEqual(self.post("/api/kyc/address/", access_token=tok,
                                    address="12 Allen Avenue", city="Ikeja", state="Lagos",
                                    document="ZmFrZQ==")[1]["tier"], 3)

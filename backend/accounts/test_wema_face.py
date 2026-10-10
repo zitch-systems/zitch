@@ -378,7 +378,9 @@ class AddressRailTests(TestCase):
 
     def test_the_bank_verifies_and_no_document_is_required(self):
         with mock.patch("utility.wema.upgrade_tier3",
-                        return_value={"success": True}) as up:
+                        return_value={"success": True}) as up, \
+                mock.patch("utility.wema.get_kyc_status", return_value={"success": True,
+                           "tier": "Tier 3", "address_verification": "Completed"}):
             res = self._post()
         up.assert_called_once()
         self.user.refresh_from_db()
@@ -387,7 +389,7 @@ class AddressRailTests(TestCase):
 
     def test_a_bank_refusal_is_final_and_a_document_cannot_route_around_it(self):
         with mock.patch("utility.wema.upgrade_tier3",
-                        return_value={"success": False, "message": "Address not found"}), \
+                        return_value={"success": False, "rejected": True, "message": "Address not found"}), \
              mock.patch("utility.providers.kyc_verify_address",
                         return_value={"success": True}) as prembly:
             res = self._post(document="ZmFrZQ==")
@@ -932,6 +934,93 @@ class FaceIsTheWayOutOfAnUndeliveredCodeTests(TestCase):
             res = self._start(nin="44444444444", prefer_face=True)
         self.assertEqual(res.status_code, 409)
         self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 1)
+
+    def test_completed_face_without_flags_cannot_restart_unknown_account_issuance(self):
+        User.objects.filter(pk=self.user.pk).update(nin_verified=False)
+        WemaFaceSession.objects.create(
+            user=self.user, state="completed-without-flags", identity_type="nin",
+            identity_hash=self.user.nin_hash, status=WemaFaceSession.VERIFIED,
+            expires_at=timezone.now() + timedelta(minutes=20))
+        with mock.patch("accounts.views.attach_existing_bank_account") as recover:
+            res = self._start(nin="44444444444", prefer_face=True)
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.json()["code"], "account_issuance_review")
+        self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 1)
+        recover.assert_not_called()
+
+    def test_accepted_otp_without_account_cannot_start_another_face_check(self):
+        from wallet.models import WemaProvisioningAttempt
+
+        User.objects.filter(pk=self.user.pk).update(nin_verified=False)
+        WemaProvisioningAttempt.objects.filter(user=self.user).update(otp_verified_at=timezone.now())
+        with mock.patch("accounts.views.attach_existing_bank_account") as recover:
+            res = self._start(nin="44444444444", prefer_face=True)
+        self.assertEqual(res.status_code, 202)
+        self.assertTrue(res.json()["pending"])
+        self.assertEqual(res.json()["account_setup_state"], "processing")
+        self.assertFalse(WemaFaceSession.objects.filter(user=self.user).exists())
+        recover.assert_not_called()
+
+    def test_accepted_otp_with_existing_identity_flag_is_still_processing(self):
+        from wallet.models import WemaProvisioningAttempt
+
+        WemaProvisioningAttempt.objects.filter(user=self.user).update(otp_verified_at=timezone.now())
+        res = self._start(nin="44444444444")
+        self.assertEqual(res.status_code, 202)
+        self.assertTrue(res.json()["pending"])
+        self.assertFalse(res.json()["otp_required"])
+        self.assertFalse(WemaFaceSession.objects.filter(user=self.user).exists())
+
+    def test_invalid_identity_types_return_client_error_without_creating_session(self):
+        for field, value in (("bvn", ["44444444444"]), ("nin", {"number": "44444444444"}),
+                             ("nin", 44444444444)):
+            with self.subTest(field=field, value=value):
+                res = self._start(**{field: value})
+                self.assertEqual(res.status_code, 400)
+        res = self._start(bvn="22222222222", nin="44444444444")
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(WemaFaceSession.objects.filter(user=self.user).exists())
+
+    def test_otp_accepted_during_recovery_cannot_race_a_new_face_session(self):
+        from wallet.models import WemaProvisioningAttempt
+
+        def accepted_before_insert(*args, **kwargs):
+            WemaProvisioningAttempt.objects.filter(user=self.user).update(otp_verified_at=timezone.now())
+            return None, "awaiting callback"
+
+        with mock.patch("accounts.views.attach_existing_bank_account", side_effect=accepted_before_insert):
+            res = self._start(nin="44444444444", prefer_face=True)
+        self.assertEqual(res.status_code, 202)
+        self.assertTrue(res.json()["pending"])
+        self.assertFalse(WemaFaceSession.objects.filter(user=self.user).exists())
+
+    def test_verified_face_during_recovery_cannot_race_a_new_face_session(self):
+        def completed_before_insert(*args, **kwargs):
+            WemaFaceSession.objects.create(
+                user=self.user, state="concurrent-verified", identity_type="nin",
+                identity_hash=self.user.nin_hash, status=WemaFaceSession.VERIFIED,
+                expires_at=timezone.now() + timedelta(minutes=20))
+            return None, "review required"
+
+        with mock.patch("accounts.views.attach_existing_bank_account", side_effect=completed_before_insert):
+            res = self._start(nin="44444444444", prefer_face=True)
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 1)
+
+    def test_face_status_preserves_bank_history_review_without_duplicate_response_fields(self):
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = "0123456789"
+        wallet.save(update_fields=["account_number"])
+        session = WemaFaceSession.objects.create(
+            user=self.user, state="status-history-review", identity_type="nin",
+            identity_hash=self.user.nin_hash, status=WemaFaceSession.VERIFIED,
+            expires_at=timezone.now() + timedelta(minutes=20))
+        res = self.client.post("/api/kyc/face/status/", {
+            "access_token": self.token, "session": session.state,
+        }, content_type="application/json")
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()["account_setup_state"], "bank_history_review")
+        self.assertFalse(res.json()["spending_available"])
 
     def test_without_asking_the_pending_code_is_still_the_answer(self):
         """The default is unchanged: don't re-prove an identity for nothing."""

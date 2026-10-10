@@ -31,6 +31,7 @@ from django.core.management.base import BaseCommand
 
 from common import products as product_capabilities
 from utility import wema
+from utility.liveness import tier2_face_available
 from utility.providers import (card_issuer_live, card_provider, kyc_provider,
                                payment_provider, payout_provider, vas_provider)
 
@@ -86,11 +87,24 @@ class Command(BaseCommand):
                  if not unavailable else
                  "unavailable pending bank-backed settlement: " + ", ".join(unavailable)),
             ))
+            interactive_ready = tier2_face_available()
+            checks.append((
+                True, "Tier 2 provider-verified live session",
+                PASS if interactive_ready else FAIL,
+                ("server-verified interactive liveness adapter available" if interactive_ready else
+                 "unavailable: Prembly SDK session verification is not implemented; image API keys, "
+                 "photographs and client callbacks cannot certify Tier 2 or the full Tier 3 journey"),
+            ))
         else:
             checks.append((
                 False, "Core launch exclusions", INFO,
                 (", ".join(label for _product, label in launch_capabilities) +
                  " are outside this launch scope and must remain disabled"),
+            ))
+            checks.append((
+                False, "Core verification scope", INFO,
+                "Tier 1 uses verified BVN or NIN. Tier 2 and Tier 3 upgrades are outside "
+                "this core readiness certification; a core GO does not certify higher tiers",
             ))
 
         d = wema.wema_diagnostics()
@@ -286,13 +300,9 @@ class Command(BaseCommand):
                        else "local filesystem only — production avatars return broken URLs and "
                             "disappear on deploy; configure AWS_STORAGE_BUCKET_NAME and S3 credentials"))
 
-        # SOFT — Prembly. partner bank verifies BVN/NIN through account creation, but it has
-        # no image checks, so selfie/liveness, address and ID-document all stay on
-        # Prembly. Unkeyed in production those fail CLOSED (providers.
-        # _kyc_mock_or_unavailable), which is safe but not harmless: Tier 2 and Tier 3
-        # become unreachable and the selfie step-up on transfers at or above the face
-        # threshold refuses every one of them. Nothing here checked that, so a deploy
-        # could pass preflight and still be unable to lift a single customer's tier.
+        # Wema's hosted face product proves Tier-1 identity ownership. It cannot
+        # substitute for the separate Tier-2 interactive-session capability above.
+        # Image API credentials alone do not establish that capability either.
         # Hard gate: the face-biometric web app must not still be Partner-bank's DEV verifier.
         # It answers happily and returns a correlationId, so nothing downstream can
         # tell it apart from the real one — the check simply proves nothing about the
@@ -345,22 +355,18 @@ class Command(BaseCommand):
                 f"evidence" if face_verify_on_nonprod_host() else "live verifier"))
         else:
             checks.append((False, "Face biometric (Partner-bank)", WARN,
-                           "no channel id or WEMA_FACE_VERIFY_URL — the face step falls "
-                           "back to the document rail"))
+                           "no channel id or WEMA_FACE_VERIFY_URL — Tier 1 uses SMS OTP"))
         checks.append((False, "Address verification (Partner-bank)",
                        PASS if address_verify_live() else WARN,
                        "bank-verified (Tier 3 upgrade)" if address_verify_live()
-                       else "WEMA_UPGRADE_KEY unset — address falls back to the document rail"))
+                       else "WEMA_UPGRADE_KEY unset — bank address verification is unavailable"))
 
         prembly_keyed = bool(settings.PREMBLY.get("API_KEY") and settings.PREMBLY.get("APP_ID"))
-        checks.append((False, "Prembly (selfie / address / ID document)",
+        checks.append((False, "Prembly image API credentials",
                        PASS if prembly_keyed else WARN,
-                       "keyed" if prembly_keyed
-                       else "PREMBLY_API_KEY + PREMBLY_APP_ID unset — ID-document (Tier 3) "
-                            "fails closed; face/address are on the bank rail"
-                            if (face_verify_live() and address_verify_live())
-                            else "PREMBLY_API_KEY + PREMBLY_APP_ID unset — Tier 2/3 upgrades and "
-                                 "the large-transfer selfie step-up fail closed"))
+                       "keyed; this does not certify interactive live-session verification" if prembly_keyed
+                       else "PREMBLY_API_KEY + PREMBLY_APP_ID unset; Tier 2 remains separately "
+                            "gated by a server-verified interactive session"))
 
         # SOFT — count only mappings that the purchase route can actually use.
         # Historical unspecified electricity rows cannot select a meter type.

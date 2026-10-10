@@ -160,3 +160,40 @@ it('uses the current ready VAS account for display and preserves available servi
   expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' }).length).toBeGreaterThan(0);
   await act(async () => tree.unmount());
 });
+
+it('uses current Partnership account details and authoritative limits without inventing an unlimited balance', async () => {
+  mockWallet.accountNumber = '0450000000';
+  mockWallet.accountName = 'Stale Account';
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? {
+    ...state, account_provider: 'partnership', daily_transfer_limit: '123456', daily_bill_limit: '65432',
+    bank_tier_limits: { single_inflow: '77777', daily_spend: '222222', max_balance: null },
+  } : { success: true, provider: 'partnership', account_number: '0454243073', account_name: 'Current Account', has_account: true, available: true });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  const output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('045 424 3073');
+  expect(output).not.toContain('045 000 0000');
+  expect(output).toContain('₦123456');
+  expect(output).toContain('₦65432');
+  expect(output).toContain('₦77777');
+  expect(output).toContain('₦222222');
+  expect(output).toContain('Not confirmed');
+  expect(output).not.toContain('Unlimited');
+  expect(output).not.toContain('Level Benefit');
+  act(() => tree.unmount());
+});
+
+it('does not expose a stale cached Partnership number during account review', async () => {
+  mockWallet.accountNumber = '0450000000';
+  mockWallet.accountName = 'Stale Account';
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? {
+    ...state, account_provider: 'partnership',
+  } : { success: true, provider: 'partnership', account_number: '', available: false, has_account: false,
+    account_setup_state: 'partnership_review', migration_message: 'Your account needs review.' });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  expect(JSON.stringify(tree.toJSON())).not.toContain('045 000 0000');
+  expect(JSON.stringify(tree.toJSON())).toContain('Your account needs review.');
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' })).toHaveLength(0);
+  act(() => tree.unmount());
+});

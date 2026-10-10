@@ -99,6 +99,30 @@ class AsyncIdentityTests(TestCase):
         self.assertEqual(status, 202)
         self.assertFalse(result["otp_required"])
 
+    def test_nin_otp_then_callback_earns_tier_one_without_bvn_or_replaying_otp(self):
+        self.attempt.identity_type = "nin"
+        self.attempt.save(update_fields=["identity_type"])
+        self.accept_otp()
+        with patch("utility.wema.validate_wallet_otp") as validate:
+            self.assertEqual(self.callback().status_code, 200)
+        validate.assert_not_called()
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+        self.assertTrue(self.user.nin_verified)
+        self.assertEqual(self.user.tier, 1)
+        self.assertIsNone(unverified_error(self.user))
+        self.assertTrue(IdentityProof.objects.filter(
+            user=self.user, identity_type="nin", source=IdentityProof.WEMA_WALLET_OTP).exists())
+        with patch("utility.views.vtu_purchase", return_value={"success": True}), \
+                patch("utility.providers.vas_can_settle", return_value=(True, "")):
+            response = self.client.post("/api/utility/buyairtime/", {
+                "access_token": self.token, "amount": "100", "network": "1",
+                "phone": self.user.phone, "transaction_pin": "123456",
+                "idempotency_key": "nin-tier-one-airtime",
+            }, content_type="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("400"))
+
     def test_confirmation_reloads_acceptance_after_attempt_lock(self):
         # Model the waiting request acquiring its lock after another request
         # accepted the credential. The locked read, not an earlier snapshot,

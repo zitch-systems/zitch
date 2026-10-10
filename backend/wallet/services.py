@@ -112,6 +112,30 @@ def get_or_create_wallet(user) -> Wallet:
     return wallet
 
 
+BANK_HISTORY_REVIEW_MESSAGE = (
+    "Your account balance needs review before you can spend. "
+    "Please contact Zitch Support. Incoming transfers and refunds "
+    "can still reach your account.")
+
+
+def bank_history_review_required(wallet) -> bool:
+    """Mirror the opening-balance spend hold without changing review evidence.
+
+    An absent checkpoint has the same unverified opening as the checkpoint the
+    authoritative spend guard would create. Reads must show that hold before a
+    customer enters a payment, while keeping the attached funding account usable.
+    """
+    from utility import wema
+    from .models import BankHistoryCheckpoint
+
+    if not wallet.account_number or not wema.wema_live():
+        return False
+    return not BankHistoryCheckpoint.objects.filter(
+        wallet_id=wallet.pk, account_number=wallet.account_number,
+        opening_review_required=False,
+    ).exists()
+
+
 def customer_funding_account(user) -> dict:
     """Customer-visible funding details without replacing legacy account records."""
     from wema_vas.enrollment import customer_account_payload
@@ -144,12 +168,17 @@ def customer_funding_account(user) -> dict:
                                       "Complete secure virtual-account enrollment to continue account setup.")}
     wallet = get_or_create_wallet(user)
     from wema_vas.partnership import first_partnership_setup
+    history_review = bank_history_review_required(wallet)
     return {"account_number": wallet.account_number, "account_name": wallet.account_name,
             "bank_name": wallet.bank_name, "bank_accounts": wallet.bank_accounts or [],
             "bank_tier": wallet.bank_tier, "has_account": bool(wallet.account_number),
             "provider": "partnership", "available": bool(wallet.account_number),
-            "bill_payments_available": biller_spending_available(user), "transfers_available": True,
-            "enrollment_available": False, "migration_message": "", "spending_available": True,
+            "bill_payments_available": not history_review and biller_spending_available(user),
+            "transfers_available": not history_review,
+            "enrollment_available": False,
+            "migration_message": BANK_HISTORY_REVIEW_MESSAGE if history_review else "",
+            "spending_available": not history_review,
+            **({"account_setup_state": "bank_history_review"} if history_review else {}),
             "partnership_setup_required": first_partnership_setup(user)}
 
 
@@ -196,13 +225,17 @@ def wallet_balance_payload(user, wallet=None) -> dict:
     # A 711 test account never migrates or reclassifies real customer funds.
     account = VirtualAccount.objects.filter(user_id=user.pk, mode=VirtualAccount.LIVE).first()
     if account is None:
-        return {"balance": total, "available_balance": total,
-                "historical_balance": Decimal("0.00"), "vas_balance": Decimal("0.00")}
+        history_review = bank_history_review_required(wallet)
+        return {"balance": total, "available_balance": Decimal("0.00") if history_review else total,
+                "historical_balance": total if history_review else Decimal("0.00"),
+                "vas_balance": Decimal("0.00")}
     vas_balance = (max(Decimal("0.00"), account_balance(account))
                    if account.mode == VirtualAccount.LIVE else Decimal("0.00"))
     from wema_vas.partnership import return_enabled, partnership_allowed
     if return_enabled():
-        available = max(Decimal("0.00"), total) if partnership_allowed(user) else Decimal("0.00")
+        available = (max(Decimal("0.00"), total)
+                     if partnership_allowed(user) and not bank_history_review_required(wallet)
+                     else Decimal("0.00"))
         return {"balance": total, "available_balance": available,
                 "historical_balance": max(Decimal("0.00"), total - available), "vas_balance": vas_balance}
     available = (min(max(Decimal("0.00"), total), vas_balance)
@@ -681,7 +714,9 @@ def repair_missing_funding_accounts(*, email: str = "", limit: int = 20) -> dict
 
     User = get_user_model()
     requested = (email or "").strip().lower()
-    users = User.objects.filter(is_active=True, bvn_verified=True).filter(
+    users = User.objects.filter(is_active=True).filter(
+        Q(bvn_verified=True) | Q(nin_verified=True)
+    ).filter(
         Q(wallet__isnull=True) | Q(wallet__account_number="")
     ).order_by("id")
     if requested:
@@ -701,7 +736,7 @@ def repair_missing_funding_accounts(*, email: str = "", limit: int = 20) -> dict
             continue
         checked += 1
         try:
-            wallet, detail = attach_existing_bank_account(user, using_bvn=True)
+            wallet, detail = attach_existing_bank_account(user, using_bvn=user.bvn_verified)
         except Exception:  # noqa: BLE001 - one bank timeout must not stop the sweep
             failed += 1
             log.exception("partner_bank_account_repair_failed user=%s", user.pk)
@@ -2924,7 +2959,7 @@ def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "
     if source is None or not re.fullmatch(r"\d{10}", source.account_number or "") or is_demo_account(source):
         raise PayoutError(
             "source_missing", "Finish your account setup before sending money. No money was taken.")
-    if (not recipient.is_active or not recipient.bvn_verified
+    if (not recipient.is_active or not recipient.tier1_identity_verified
             or not recipient.phone_verified or not recipient.email_verified
             or recipient_wallet is None
             or not re.fullmatch(r"\d{10}", recipient_wallet.account_number or "")
@@ -2947,8 +2982,9 @@ def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "
     if not Wallet.objects.filter(
             pk=recipient_wallet.pk, user_id=recipient.pk,
             account_number=recipient_wallet.account_number,
-            user__is_active=True, user__bvn_verified=True,
-            user__phone_verified=True, user__email_verified=True).exists():
+            user__is_active=True,
+            user__phone_verified=True, user__email_verified=True).filter(
+                Q(user__bvn_verified=True) | Q(user__nin_verified=True)).exists():
         raise PayoutError(
             "recipient_unavailable", "This recipient's account changed. Review it again before sending. No money was taken.")
     outgoing = execute_payout(
@@ -3108,16 +3144,18 @@ def sync_bank_tier(wallet) -> int:
     if not wallet.account_number:
         return 0
     res = wema_provider.get_kyc_status(wallet.account_number)
-    if not res.get("success"):
+    if not isinstance(res, dict) or res.get("success") is not True or res.get("mock"):
         return wallet.bank_tier or 0
-    raw = str(res.get("tier") or "").strip()
-    digits = "".join(ch for ch in raw if ch.isdigit())
-    tier = int(digits) if digits and int(digits) in (1, 2, 3) else 0
+    from wallet.address_verification import bank_tier_number, refresh_address_verification
+
+    tier = bank_tier_number(res.get("tier"))
     if tier and tier != wallet.bank_tier:
         wallet.bank_tier = tier
         wallet.save(update_fields=["bank_tier", "updated"])
         log.info("wema_bank_tier_synced wallet=%s account=%s tier=%s",
                  wallet.pk, wallet.account_number, tier)
+    if wallet.user.address_verification_pending:
+        refresh_address_verification(wallet.user, wallet=wallet, result=res)
     return tier or (wallet.bank_tier or 0)
 
 

@@ -164,8 +164,8 @@ class BankIdentityRoutingTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.nin_verified)
         self.assertFalse(self.user.bvn_verified)
-        self.assertEqual(self.user.tier, 0)
-        self.assertEqual(response.json()["tier"], 0)
+        self.assertEqual(self.user.tier, 1)
+        self.assertEqual(response.json()["tier"], 1)
         self.assertEqual(self.user.nin_hash, hash_identifier(NIN))
         proof = IdentityProof.objects.get(user=self.user)
         self.assertEqual(proof.source, IdentityProof.WEMA_WALLET_OTP)
@@ -203,6 +203,7 @@ class BankUpgradeContractsTests(TestCase):
     def setUp(self):
         cache.clear()
         self.user = User.objects.create_user(username="upgrade", phone="08010000301",
+            first_name="Ada", last_name="Eze",
             email_verified=True, phone_verified=True, bvn_verified=True, nin_verified=True,
             face_verified=True, tier=2)
         self.user.set_bvn(BVN)
@@ -262,7 +263,9 @@ class BankUpgradeContractsTests(TestCase):
             "city": "Ikeja", "town": "Ikeja", "state": "Lagos", "lga": "Ikeja",
             "lcda": "Ikeja", "landmark": "Library", "additionalInformation": "Blue gate",
             "country": "Nigeria", "fullAddress": "12 Allen Avenue, Ikeja, Lagos", "postalCode": "100001"}
-        with patch("utility.wema.upgrade_tier3", return_value={"success": True}) as bank:
+        with patch("utility.wema.upgrade_tier3", return_value={"success": True}) as bank, \
+                patch("utility.wema.get_kyc_status", return_value={"success": True,
+                      "tier": "Tier 3", "address_verification": "Completed"}):
             response = self.post_address(residentialAddress=address)
         self.assertEqual(response.status_code, 200, response.content)
         bank.assert_called_once_with(self.wallet.account_number, address)
@@ -274,8 +277,13 @@ class BankUpgradeContractsTests(TestCase):
         self.assertEqual(response.json()["bank_tier"], 3)
 
     def test_pending_or_failed_bank_address_does_not_grant_tier_or_fall_back(self):
-        for result, code in (({"success": True, "pending": True}, 202), ({"success": False}, 400)):
+        for result, code in (({"success": True, "pending": True}, 202),
+                             ({"success": False}, 202),
+                             ({"success": False, "rejected": True}, 400)):
+            User.objects.filter(pk=self.user.pk).update(address_verification_pending=False)
             with self.subTest(result=result), patch("utility.wema.upgrade_tier3", return_value=result), \
+                    patch("utility.wema.get_kyc_status", return_value={"success": True,
+                          "tier": "Tier 2", "address_verification": "Pending"}), \
                     patch("accounts.views.kyc_verify_address") as document:
                 response = self.post_address(document="ZmFrZQ==")
                 self.assertEqual(response.status_code, code)
@@ -290,7 +298,7 @@ class BankUpgradeContractsTests(TestCase):
                 self.assertEqual(self.user.tier, 2)
 
     def test_tier2_cannot_replace_an_already_verified_nin(self):
-        with patch("wallet.views.kyc_verify_face") as face, patch("utility.wema.upgrade_tier2") as bank:
+        with patch("wallet.views.verify_tier2_liveness") as face, patch("utility.wema.upgrade_tier2") as bank:
             response = upgrade_wema_identity(self.user, {
                 "bvn": BVN, "nin": "44444444444", "live_image": "ZmFrZQ=="})
         self.assertEqual(response.status_code, 409)
@@ -300,19 +308,23 @@ class BankUpgradeContractsTests(TestCase):
     def test_tier2_passes_plain_base64_from_data_url_and_records_confirmed_bank_tier(self):
         self.wallet.bank_tier = 1
         self.wallet.save(update_fields=["bank_tier"])
-        with patch("wallet.views.kyc_verify_face", return_value={"success": True}) as face, \
-                patch("utility.wema.upgrade_tier2", return_value={"success": True}) as bank:
+        # Isolate downstream bank-contract behavior with explicit session proof.
+        with patch("wallet.views.verify_tier2_liveness", return_value={"success": True}) as face, \
+                patch("utility.wema.upgrade_tier2", return_value={"success": True}) as bank, \
+                patch("utility.wema.get_kyc_status", return_value={
+                    "success": True, "tier": "Tier 2", "name": "ADA EZE"}):
             result = upgrade_wema_identity(self.user, {
                 "bvn": BVN, "nin": NIN, "liveImageOfFace": "data:image/jpeg;base64,ZmFrZQ==",
                 "accountNumber": "9999999999"})
         self.assertEqual(result.status_code, 200)
-        face.assert_called_once_with("ZmFrZQ==")
+        self.assertEqual(face.call_count, 1)
+        self.assertEqual(face.call_args.args[0].pk, self.user.pk)
         bank.assert_called_once_with(self.wallet.account_number, bvn=BVN, nin=NIN, live_image="ZmFrZQ==")
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.bank_tier, 2)
 
     @override_settings(PREMBLY={"BASE_URL": "https://kyc.example.test", "API_KEY": "test-key", "APP_ID": "test-app"})
-    def test_native_upgrade_runs_real_liveness_adapter_before_bank_and_only_then_lifts_tier(self):
+    def test_successful_image_api_cannot_attest_a_live_session_or_upgrade_tier(self):
         self.user.face_verified, self.user.tier = False, 1
         self.user.save(update_fields=["face_verified", "tier"])
         self.wallet.bank_tier = 1
@@ -323,14 +335,15 @@ class BankUpgradeContractsTests(TestCase):
             response = self.client.post("/api/wallet/wema/upgrade-tier2/", {
                 "access_token": self.token, "bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="},
                 content_type="application/json")
-        self.assertEqual(response.status_code, 200, response.content)
-        biometric.assert_called_once()
-        bank.assert_called_once_with(self.wallet.account_number, bvn=BVN, nin=NIN, live_image="ZmFrZQ==")
+        self.assertEqual(response.status_code, 503, response.content)
+        self.assertEqual(response.json()["code"], "tier2_liveness_unavailable")
+        biometric.assert_not_called()
+        bank.assert_not_called()
         self.user.refresh_from_db()
         self.wallet.refresh_from_db()
-        self.assertTrue(self.user.face_verified)
-        self.assertEqual(self.user.tier, 2)
-        self.assertEqual(self.wallet.bank_tier, 2)
+        self.assertFalse(self.user.face_verified)
+        self.assertEqual(self.user.tier, 1)
+        self.assertEqual(self.wallet.bank_tier, 1)
 
     @override_settings(PREMBLY={"BASE_URL": "https://kyc.example.test", "API_KEY": "test-key", "APP_ID": "test-app"})
     def test_native_upgrade_rejected_liveness_never_reaches_bank_or_changes_tier(self):
@@ -345,7 +358,7 @@ class BankUpgradeContractsTests(TestCase):
             response = self.client.post("/api/wallet/wema/upgrade-tier2/", {
                 "access_token": self.token, "bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="},
                 content_type="application/json")
-        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.status_code, 503, response.content)
         bank.assert_not_called()
         self.user.refresh_from_db()
         self.wallet.refresh_from_db()
@@ -356,7 +369,7 @@ class BankUpgradeContractsTests(TestCase):
     def test_tier2_pending_cannot_grant_identity_or_liveness(self):
         self.user.nin_verified = self.user.face_verified = False
         self.user.save(update_fields=["nin_verified", "face_verified"])
-        with patch("wallet.views.kyc_verify_face", return_value={"success": True}), \
+        with patch("wallet.views.verify_tier2_liveness", return_value={"success": True}), \
                 patch("utility.wema.upgrade_tier2", return_value={"success": True, "pending": True}):
             response = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="})
         self.assertEqual(response.status_code, 202)
@@ -365,7 +378,7 @@ class BankUpgradeContractsTests(TestCase):
         self.assertFalse(IdentityProof.objects.filter(user=self.user).exists())
 
     def test_tier2_rejects_invalid_base64_and_preserves_liveness_gate(self):
-        with patch("wallet.views.kyc_verify_face", return_value={"success": False}) as face, \
+        with patch("wallet.views.verify_tier2_liveness", return_value={"success": False}) as face, \
                 patch("utility.wema.upgrade_tier2") as bank:
             response = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": "not-base64"})
             self.assertEqual(response.status_code, 400)
@@ -385,8 +398,10 @@ class BankUpgradeContractsTests(TestCase):
                 nin_verified=True, nin_hash=hash_identifier(replacement), nin_last4=replacement[-4:])
             return {"success": True}
 
-        with patch("wallet.views.kyc_verify_face", return_value={"success": True}), \
-                patch("utility.wema.upgrade_tier2", side_effect=bank_result):
+        with patch("wallet.views.verify_tier2_liveness", return_value={"success": True}), \
+                patch("utility.wema.upgrade_tier2", side_effect=bank_result), \
+                patch("utility.wema.get_kyc_status", return_value={
+                    "success": True, "tier": "Tier 2", "name": "ADA EZE"}):
             result = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="})
         self.assertEqual(result.status_code, 409)
         self.user.refresh_from_db()
@@ -401,15 +416,67 @@ class BankUpgradeContractsTests(TestCase):
         with patch("utility.providers.requests.post", return_value=response), \
                 patch("utility.wema.upgrade_tier2") as bank:
             result = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="})
-        self.assertEqual(result.status_code, 400)
+        self.assertEqual(result.status_code, 503)
         bank.assert_not_called()
         self.user.refresh_from_db()
         self.assertFalse(self.user.nin_verified or self.user.face_verified)
+
+    def test_client_session_success_claims_cannot_authorize_tier_two(self):
+        self.user.face_verified, self.user.tier = False, 1
+        self.user.save(update_fields=["face_verified", "tier"])
+        with patch("utility.wema.upgrade_tier2") as bank:
+            response = upgrade_wema_identity(self.user, {
+                "bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ==",
+                "session_id": "client-session", "verified": True,
+                "verification": {"status": "VERIFIED", "reference": "forged"},
+                "liveness_passed": True,
+            })
+        self.assertEqual(response.status_code, 503)
+        bank.assert_not_called()
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.face_verified)
+        self.assertEqual(self.user.tier, 1)
+
+    def test_bank_acknowledgment_without_confirmed_tier_does_not_promote(self):
+        self.user.face_verified, self.user.tier = False, 1
+        self.user.save(update_fields=["face_verified", "tier"])
+        self.wallet.bank_tier = 1
+        self.wallet.save(update_fields=["bank_tier"])
+        with patch("wallet.views.verify_tier2_liveness", return_value={"success": True}), \
+                patch("utility.wema.upgrade_tier2", return_value={"success": True}), \
+                patch("utility.wema.get_kyc_status", return_value={
+                    "success": True, "tier": "Tier 1", "name": "ADA EZE"}):
+            response = upgrade_wema_identity(self.user, {
+                "bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="})
+        self.assertEqual(response.status_code, 202)
+        self.user.refresh_from_db()
+        self.wallet.refresh_from_db()
+        self.assertFalse(self.user.face_verified)
+        self.assertEqual(self.user.tier, 1)
+        self.assertEqual(self.wallet.bank_tier, 1)
 
     def test_anonymous_api_calls_cannot_reach_shared_services(self):
         for path in ("/api/kyc/address/", "/api/wallet/wema/upgrade-tier2/"):
             with self.subTest(path=path):
                 self.assertEqual(self.client.post(path, {}, content_type="application/json").status_code, 401)
+
+    def test_account_changed_during_upgrade_cannot_receive_old_account_proof(self):
+        self.user.face_verified = False
+        self.user.save(update_fields=["face_verified"])
+
+        def bank_result(*args, **kwargs):
+            type(self.wallet).objects.filter(pk=self.wallet.pk).update(account_number="0987654321")
+            return {"success": True}
+
+        with patch("wallet.views.verify_tier2_liveness", return_value={"success": True}), \
+                patch("utility.wema.upgrade_tier2", side_effect=bank_result), \
+                patch("utility.wema.get_kyc_status", return_value={
+                    "success": True, "tier": "Tier 2", "name": "ADA EZE"}):
+            response = upgrade_wema_identity(self.user, {
+                "bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="})
+        self.assertEqual(response.status_code, 409)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.face_verified)
 
 
 @override_settings(WEMA=PILOT)
@@ -753,13 +820,13 @@ class ProviderDocumentEnvelopeTests(SimpleTestCase):
 
 
 class IdentityTierModelTests(SimpleTestCase):
-    def test_bvn_earns_tier_one_and_nin_plus_liveness_earn_tier_two(self):
+    def test_either_identity_earns_tier_one_and_both_plus_liveness_earn_tier_two(self):
         for bvn, nin, face, address, expected in (
                 (False, False, False, False, 0),
                 (True, False, False, False, 1),
-                (False, True, False, False, 0),
+                (False, True, False, False, 1),
                 (True, False, True, True, 1),
-                (False, True, True, True, 0),
+                (False, True, True, True, 1),
                 (True, True, False, True, 1),
                 (True, True, True, False, 2),
                 (True, True, True, True, 3)):
@@ -809,7 +876,7 @@ class TrustedIdentityRehydrationTests(TestCase):
         self.assertTrue(self.user.nin_verified)
         self.assertFalse(self.user.bvn_verified)
         self.assertEqual(self.user.nin_hash, hash_identifier(NIN))
-        self.assertEqual(self.user.tier, 0)
+        self.assertEqual(self.user.tier, 1)
 
     def test_verified_face_session_remains_valid_identity_evidence(self):
         WemaFaceSession.objects.create(user=self.user, state="verified-face", identity_type="nin",
@@ -818,7 +885,7 @@ class TrustedIdentityRehydrationTests(TestCase):
         rehydrate_verified_identity_flags(self.user)
         self.assertTrue(self.user.nin_verified)
         self.assertFalse(self.user.face_verified)
-        self.assertEqual(self.user.tier, 0)
+        self.assertEqual(self.user.tier, 1)
 
     def test_stale_tier_is_recomputed_without_repeating_verified_bvn(self):
         self.user.bvn_verified = True
@@ -831,13 +898,13 @@ class TrustedIdentityRehydrationTests(TestCase):
 
     def test_stale_nin_only_tier_is_recomputed_without_clearing_nin(self):
         self.user.nin_verified = True
-        self.user.tier = 1
+        self.user.tier = 0
         self.user.save(update_fields=["nin_verified", "tier"])
         rehydrate_verified_identity_flags(self.user)
         self.user.refresh_from_db()
         self.assertTrue(self.user.nin_verified)
         self.assertFalse(self.user.bvn_verified)
-        self.assertEqual(self.user.tier, 0)
+        self.assertEqual(self.user.tier, 1)
 
     def test_stale_request_observes_verification_committed_by_callback(self):
         User.objects.filter(pk=self.user.pk).update(bvn_verified=True, tier=1)

@@ -27,7 +27,9 @@ Keep VAS endpoints enabled to process late notifications idempotently.
 The published Flow `1047786551595097` includes Partnership identity, OTP, transfer
 and PIN screens as well as the retained VAS screens; no republish is necessary.
 Disable its VAS entry points through runtime selection. Partnership BVN account
-creation uses Wema; Prembly remains available for the existing biometric steps.
+and NIN account creation use Wema. Tier 2 requires a server-verified Prembly live
+session; the image-only check cannot grant that tier. See the
+[10 October audit](partnership-audit-2026-10-10.md) for the remaining launch gates.
 
 Existing Partnership NUBANs are reused. Customers without one follow the existing
 verified account setup/recovery flow; unknown issuance is never reset or retried

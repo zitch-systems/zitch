@@ -716,12 +716,8 @@ class IdentityFlowTests(TestCase):
         pa.refresh_from_db()
         self.assertEqual(pa.state, "bvn")
 
-    def test_legacy_nin_state_is_stopped_before_collecting(self):
-        """Old secure forms may still be parked on the removed NIN rung.
-
-        The live router must stop those sessions before it asks for, stores, or
-        submits NIN as a standalone Tier 1 step.
-        """
+    def test_nin_state_verifies_the_selected_first_identity(self):
+        """NIN is a valid first ownership proof for Partnership Tier 1."""
         from whatsapp import router
 
         pa = PendingAction.objects.create(
@@ -736,11 +732,23 @@ class IdentityFlowTests(TestCase):
              patch.object(router, "reply_buttons", side_effect=lambda m, t, *a, **k: sent.append(t)):
             router._advance_kyc(pa, self.user, MSISDN, "12345678901")
 
+        submit.assert_called_once_with(pa, self.user, MSISDN, "nin", "12345678901")
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.nin_verified)
+
+    def test_stale_second_identity_state_does_not_restart_tier1(self):
+        from whatsapp import router
+
+        self.user.bvn_verified = True
+        self.user.save(update_fields=["bvn_verified"])
+        pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc", state="nin",
+            payload={}, expires_at=router._flow_deadline("idle"))
+        with patch.object(router, "_kyc_submit_identity") as submit, \
+             patch.object(router, "_kyc_bank_upgrade_notice") as upgrade:
+            router._advance_kyc(pa, self.user, MSISDN, "12345678901")
         submit.assert_not_called()
-        self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
-        body = "\\n".join(sent).lower()
-        self.assertNotIn("enter your nin", body)
-        self.assertIn("upgrade to tier 2", body)
+        upgrade.assert_called_once_with(self.user, MSISDN)
 
 
 class EmailFlowTests(TestCase):

@@ -68,7 +68,7 @@ class VerificationWebTests(TestCase):
             linked_at=timezone.now(),
         )
         # No test can accidentally touch a remote KYC/bank service.
-        self.face = self.enterContext(patch("wallet.views.kyc_verify_face"))
+        self.face = self.enterContext(patch("wallet.views.verify_tier2_liveness"))
         self.tier2 = self.enterContext(patch("wallet.views.wema_provider.upgrade_tier2"))
         self.provider = self.enterContext(patch("accounts.views.kyc_verify_address",
                                                 return_value={"success": True}))
@@ -76,6 +76,8 @@ class VerificationWebTests(TestCase):
         self.enterContext(patch("accounts.views._sync_wema_tier3"))
         self.bank_address = self.enterContext(patch("accounts.views.wema.upgrade_tier3",
                                                    return_value={"success": True}))
+        self.bank_status = self.enterContext(patch("utility.wema.get_kyc_status", return_value={
+            "success": True, "tier": 2, "address_verification": "pending"}))
         self.path = self.start()
 
     def start(self, tier=3):
@@ -746,6 +748,7 @@ class VerificationWebTests(TestCase):
 
     def test_bank_address_receives_structured_fields_and_bank_tier_is_authoritative(self):
         self.unlock()
+        self.bank_status.return_value = {"success": True, "tier": 3, "address_verification": "verified"}
         with patch("accounts.views.kyc_provider", return_value="wema"), \
                 patch("accounts.views.wema.address_verify_live", return_value=True):
             page = self.get()
@@ -765,23 +768,23 @@ class VerificationWebTests(TestCase):
         self.assertEqual(self.user.wallet.bank_tier, 3)
         self.provider.assert_not_called()
 
-    def test_document_fallback_requires_safe_image_even_when_bank_provider_selected(self):
+    def test_unavailable_bank_rail_does_not_collect_or_verify_a_fallback_document(self):
         self.unlock()
         with patch("accounts.views.kyc_provider", return_value="wema"), \
                 patch("accounts.views.wema.address_verify_live", return_value=False):
-            self.assertContains(self.get(), 'name="document"')
-            data = self.address()
-            data.pop("document")
-            self.assertEqual(self.post(data).status_code, 400)
-            self.assertEqual(self.post(self.address(document=document(b"invalid"))).status_code, 400)
-            self.provider.assert_not_called()
-            self.assertEqual(self.post(self.address()).status_code, 200)
-        self.provider.assert_called_once()
+            page = self.get()
+            self.assertNotContains(page, 'name="document"', status_code=503)
+            self.assertContains(page, "temporarily unavailable", status_code=503)
+            self.assertEqual(self.post(self.address()).status_code, 503)
+        self.provider.assert_not_called()
         self.bank_address.assert_not_called()
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.address_verified)
+        self.assertFalse(self.user.address_verification_pending)
 
     def test_bank_rejection_never_requests_a_document_or_falls_back_to_document_provider(self):
         self.unlock()
-        self.bank_address.return_value = {"success": False}
+        self.bank_address.return_value = {"success": False, "rejected": True}
         data = self.address()
         data.pop("document")
         with patch("accounts.views.kyc_provider", return_value="wema"), \
@@ -810,6 +813,7 @@ class VerificationWebTests(TestCase):
         from accounts.views import verify_kyc_address
 
         self.unlock()
+        self.bank_status.return_value = {"success": True, "tier": 3, "address_verification": "verified"}
         self.assertContains(self.get(), 'name="document"')
         with patch("accounts.views.kyc_provider", return_value="wema"), \
                 patch("accounts.views.wema.address_verify_live", return_value=True), \
@@ -843,6 +847,60 @@ class VerificationWebTests(TestCase):
         self.assertEqual(self.user.tier, 2)
         self.assertEqual(self.post(self.address()).status_code, 410)
         self.bank_address.assert_called_once()
+
+    def test_existing_pending_address_only_shows_authenticated_status_refresh(self):
+        self.unlock()
+        User.objects.filter(pk=self.user.pk).update(address_verification_pending=True)
+        with patch("accounts.views._kyc_state", return_value={
+                "address_verified": False, "address_verification_pending": True}):
+            response = self.get()
+            self.assertContains(response, "Check verification status", status_code=202)
+            self.assertNotContains(response, 'name="buildingNumber"', status_code=202)
+            self.assertEqual(self.post(self.address()).status_code, 202)
+            self.assertEqual(self.post({"action": "status"}).status_code, 202)
+        self.provider.assert_not_called()
+        self.bank_address.assert_not_called()
+
+    def test_submitted_pending_link_can_refresh_but_never_submit_address_again(self):
+        self.unlock()
+        with patch("whatsapp.verification_web._run_address_operation",
+                   return_value=JsonResponse({"success": True, "pending": True}, status=202)) as service:
+            self.assertEqual(self.post(self.address()).status_code, 202)
+            self.pa.refresh_from_db()
+            self.assertEqual(self.pa.state, REVIEW)
+            with patch("accounts.views._kyc_state", return_value={
+                    "address_verified": False, "address_verification_pending": True}):
+                self.assertEqual(self.get().status_code, 202)
+                self.assertEqual(self.post({"action": "status"}).status_code, 202)
+                self.assertEqual(self.post({"action": "status"}, csrf=False).status_code, 403)
+                self.assertEqual(self.get(client=Client(enforce_csrf_checks=True)).status_code, 403)
+                self.assertEqual(self.post(self.address()).status_code, 410)
+            with patch("accounts.views._kyc_state", return_value={
+                    "address_verified": True, "address_verification_pending": False}):
+                self.assertContains(self.post({"action": "status"}), "Address verified")
+                self.assertEqual(self.post(self.address()).status_code, 410)
+        service.assert_called_once()
+
+    def test_pending_status_cannot_be_read_after_credential_revocation(self):
+        self.unlock()
+        with patch("whatsapp.verification_web._run_address_operation",
+                   return_value=JsonResponse({"success": True, "pending": True}, status=202)):
+            self.assertEqual(self.post(self.address()).status_code, 202)
+        User.objects.filter(pk=self.user.pk).update(password="changed")
+        self.assertEqual(self.post({"action": "status"}).status_code, 410)
+        self.assertEqual(self.get().status_code, 410)
+
+    def test_status_readback_rechecks_credentials_after_the_bank_call(self):
+        self.unlock()
+        User.objects.filter(pk=self.user.pk).update(address_verification_pending=True)
+
+        def revoke_during_readback(user):
+            User.objects.filter(pk=user.pk).update(password="changed-during-readback")
+            return False
+
+        with patch("wallet.address_verification.refresh_address_verification",
+                   side_effect=revoke_during_readback):
+            self.assertEqual(self.post({"action": "status"}).status_code, 410)
 
     def test_router_cancel_preserves_bank_request_already_pending_review(self):
         from .router import handle_inbound

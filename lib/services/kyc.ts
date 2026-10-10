@@ -23,10 +23,12 @@ export type KycStatus = ApiResult<{
   otp_destination?: string;
   otp_destination_kind?: string;
   using_bvn?: boolean;
-  account_setup_state?: 'ready' | 'otp_pending' | 'processing' | 'identity_verified' | 'identity_required';
+  account_setup_state?: 'ready' | 'otp_pending' | 'processing' | 'identity_verified' | 'identity_required' | 'partnership_review' | 'bank_history_review';
   upgrade_required?: boolean;
   next_step?: string;
   address_verified?: boolean;
+  address_verification_pending?: boolean;
+  address_verification_state?: 'pending' | 'verified' | 'not_verified';
   address_verification_required?: boolean;
   email?: string;
   email_verified?: boolean;
@@ -35,12 +37,15 @@ export type KycStatus = ApiResult<{
   identity_upgrade_required?: boolean;
   bank_upgrade_required?: boolean;
   bank_tier?: number;
+  bank_tier_limits?: { single_inflow: string | null; daily_spend: string | null; max_balance: string | null };
   tier_name?: string;
   daily_transfer_limit?: string;
   daily_bill_limit?: string;
   id_document_verified?: boolean;
   face_rail?: 'document' | 'wema';
   tier2_face_rail?: 'prembly' | 'wema';
+  tier2_face_available?: boolean;
+  tier2_unavailable_reason?: string;
   address_rail?: 'document' | 'wema' | 'none';
 }>;
 
@@ -69,6 +74,15 @@ export const isAccountOtpPending = (response: Pick<KycStatus, 'status' | 'accoun
     ? response.status === 'account_otp_pending'
     : response.account_setup_state === 'otp_pending';
 
+export const identityOtpKind = (
+  response: Pick<KycStatus, 'using_bvn' | 'otp_destination_kind'>,
+  fallbackKind: IdentityOtpKind,
+): IdentityOtpKind => response.using_bvn === true || response.otp_destination_kind === 'bvn'
+  ? 'bvn'
+  : response.using_bvn === false || response.otp_destination_kind === 'nin'
+    ? 'nin'
+    : fallbackKind;
+
 /**
  * Resolve the bank OTP continuation returned by face-start. The tracking
  * reference belongs to the identity named by the server, so it takes
@@ -79,11 +93,7 @@ export const resolveIdentityOtpRoute = (
   fallbackKind: IdentityOtpKind,
 ): { kind: IdentityOtpKind; trackingId: string } | null => {
   if (!isAccountOtpPending(response) || !response.tracking_id) return null;
-  const kind = response.using_bvn === true || response.otp_destination_kind === 'bvn'
-    ? 'bvn'
-    : response.using_bvn === false || response.otp_destination_kind === 'nin'
-      ? 'nin'
-      : fallbackKind;
+  const kind = identityOtpKind(response, fallbackKind);
   return { kind, trackingId: String(response.tracking_id) };
 };
 

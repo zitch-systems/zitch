@@ -86,7 +86,16 @@
     <p class="note">This link is now closed and cannot submit another verification.</p>
   {% elif screen == 'pending' %}
     <h1>Your address is being checked</h1>
-    <p>Your bank is still verifying your address. Your verification tier has not changed yet. Return to WhatsApp to check the result before starting another verification.</p>
+    <p>Your bank is still verifying your address. Your verification tier has not changed yet. You do not need to submit your address again.</p>
+    {% if can_refresh %}
+      <form method="post" autocomplete="off">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="status">
+        <button type="submit" disabled>Check verification status</button>
+        <p class="note" id="progress" role="status" aria-live="polite"></p>
+      </form>
+    {% endif %}
+    <p>After this link expires, return to WhatsApp and reply “8” to check your status.</p>
     <p class="note">This link has submitted your request and cannot submit again.</p>
   {% elif screen == 'review' %}
     <h1>Check your verification status</h1>
