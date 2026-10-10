@@ -6,6 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { storeSession, getToken, getRememberedIdentifier, rememberIdentifier } from '@/lib/secureStore';
 import { enforceHardExpiry, unlockSession } from '@/lib/session';
 import { pendingWhatsAppApproval } from '@/lib/pendingApproval';
+import { registerForPushNotifications } from '@/lib/notifications';
 import { publicPost } from '@/lib/api';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
@@ -41,6 +42,11 @@ const Signin = () => {
 
   const enterAccount = async () => {
     await unlockSession();
+    // Bind this phone's push token to whoever is signing in now. Signup was the
+    // only registration, so a phone that changed hands kept delivering the
+    // previous customer's alerts, and a new phone never received any. No
+    // permission prompt here: it binds only where alerts are already allowed.
+    registerForPushNotifications(false).catch(() => {});
     const token = await pendingWhatsAppApproval();
     router.replace(token ? { pathname: '/waapprove', params: { token } } : '/home');
   };

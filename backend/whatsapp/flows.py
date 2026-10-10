@@ -1706,7 +1706,7 @@ def _hold_open(pa, summary, message: str, status: str = "failed") -> dict:
 def _submit_pin(token: str, data: dict) -> dict:
     from common.http import evaluate_transaction_pin
 
-    from .router import (PIN_FLOW_ATTEMPTS, _clear_actions, _has_live_funds,
+    from .router import (PIN_FLOW_ATTEMPTS, _channel_linked, _clear_actions, _has_live_funds,
                          _unavailable_product_for_action, authorise_flow_execution)
 
     pa = resolve_flow_token(token)
@@ -1726,6 +1726,17 @@ def _submit_pin(token: str, data: dict) -> dict:
                                "in the chat.", status="failed")
 
     user = pa.user
+    # Checked before any branch, because set-PIN writes the credential here
+    # rather than through run_flow_execution, which holds the same two checks
+    # for payments. A reset left open must not plant a PIN on a frozen account
+    # or finish from a phone the customer has since unlinked.
+    if not user.is_active or not _channel_linked(user, pa.msisdn):
+        _clear_actions(pa.msisdn)
+        return _result_screen(
+            "Your Zitch account is currently suspended. Please contact support."
+            if not user.is_active else
+            "This WhatsApp number is no longer connected to your Zitch account. Nothing was changed.",
+            status="failed")
     unavailable = _unavailable_product_for_action(pa)
     if unavailable:
         _clear_actions(pa.msisdn)

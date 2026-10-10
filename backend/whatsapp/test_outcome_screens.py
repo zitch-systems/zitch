@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from whatsapp import flows
 from whatsapp.flows import RESULT_SCREEN, SUCCESS_SCREEN, handle_flow_request
-from whatsapp.models import PendingAction
+from whatsapp.models import PendingAction, WhatsAppLink
 from whatsapp.tests import make_user
 
 TERMINATION = "extension_message_response"
@@ -24,6 +24,9 @@ TERMINATION = "extension_message_response"
 class OutcomeScreenTests(TestCase):
     def setUp(self):
         self.user, _ = make_user(phone="08010000031", email="out@zitch.test")
+        # Every armed action belongs to a linked channel; the PIN submit checks it.
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn="2348011115555",
+                                    status=WhatsAppLink.ACTIVE)
         self.pa = PendingAction.objects.create(
             user=self.user, msisdn="2348011115555", action_type="transfer",
             state=flows.FLOW_PIN_STATE,

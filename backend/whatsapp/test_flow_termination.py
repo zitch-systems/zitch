@@ -59,10 +59,13 @@ class SettledOutcomeTests(TestCase):
 
     def setUp(self):
         from whatsapp.tests import make_user
-        from whatsapp.models import PendingAction
+        from whatsapp.models import PendingAction, WhatsAppLink
         from django.utils import timezone
 
         self.user, _ = make_user()
+        # Every armed action belongs to a linked channel; the PIN submit checks it.
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn="2348011112222",
+                                    status=WhatsAppLink.ACTIVE)
         self.pa = PendingAction.objects.create(
             user=self.user, msisdn="2348011112222", action_type="transfer",
             state=flows.FLOW_PIN_STATE,
