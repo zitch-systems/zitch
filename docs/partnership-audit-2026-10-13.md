@@ -25,6 +25,10 @@ and reconciliation remain active.
 - App notification taps, pending navigation, session changes and async transfer
   preparation are covered by regression tests. Firebase configuration must be
   present in a production Android build; a sideload test APK remains a test build.
+- Malformed deep links use a guarded linear decoder backport compatible with
+  the current navigation library. A compatible server-tool patch and explicit
+  parser-mitigation tests are included. Remaining dependency findings and their
+  observed scope are recorded in the [mobile dependency audit](mobile-dependency-audit-2026-10-13.md).
 
 ## Evidence required to remove the hold
 

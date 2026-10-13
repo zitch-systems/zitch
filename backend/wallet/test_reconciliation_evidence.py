@@ -47,6 +47,9 @@ class ReconciliationEvidenceTests(TestCase):
         self.assertTrue(report["read_only"])
         self.assertEqual(report["ledger_minus_bank_available"], "110.75")
         self.assertEqual(report["balance_field_names"], ["availableBalance", "ledgerBalance"])
+        self.assertEqual(report["reported_bank_balances"], {
+            "availableBalance": "4889.25", "ledgerBalance": "5000.00"})
+        self.assertEqual(report["reported_bank_balance_semantics"], "provider_reported_unverified")
         self.assertEqual(report["bank_debit_observations"][0]["category_hint"], "fee")
         self.assertEqual(report["bank_totals"], [
             {"direction": "debit", "status": "default", "count": 1, "amount": "10.75"}])
@@ -55,6 +58,24 @@ class ReconciliationEvidenceTests(TestCase):
         self.assertEqual(list(Transaction.objects.values("id", "transaction_status", "amount", "meta")), before_txns)
         self.assertEqual(Wallet.objects.get(user=self.user).balance, before_balance)
         self.assertFalse(BankHistoryCheckpoint.objects.exists())
+
+    def test_reported_balances_exclude_malformed_nonfinite_and_unapproved_fields(self):
+        report, text, _, _ = self.run_report(balance={
+            "success": True, "balance_naira": Decimal("25.00"), "raw": {"result": {
+                "availableBalance": "₦25.00", "ledgerBalance": "PRIVATE SECRET",
+                "bookBalance": "NaN", "currentBalance": "Infinity", "holdBalance": {"private": "SECRET"},
+                "lienAmount": "1,250.10", "accountNumber": "0450000123", "unknownAmount": "9000"}}})
+        self.assertEqual(report["reported_bank_balances"], {"availableBalance": "25.00", "lienAmount": "1250.10"})
+        for secret in ("PRIVATE", "SECRET", "0450000123", "unknownAmount", "9000", "Infinity", "NaN"):
+            self.assertNotIn(secret, text)
+
+    def test_failed_or_simulated_balance_response_exposes_no_reported_amounts(self):
+        for flags in ({"success": False}, {"success": True, "mock": True}):
+            with self.subTest(flags=flags):
+                report, _, _, _ = self.run_report(balance={**flags, "balance_naira": Decimal("999"),
+                    "raw": {"result": {"availableBalance": "999", "ledgerBalance": "1000"}}})
+                self.assertEqual(report["reported_bank_balances"], {})
+                self.assertIsNone(report["bank_available_balance"])
 
     def test_reference_match_does_not_assume_fee_is_in_principal(self):
         txn = debit(self.user, Decimal("100"), "Transfer to PRIVATE NAME", reference="LEDGER-REFERENCE",

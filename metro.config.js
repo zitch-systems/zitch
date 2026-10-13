@@ -5,14 +5,11 @@ const { getDefaultConfig } = require('expo/metro-config');
 // image-size <=2.0.2 can loop forever on malformed ICNS, HEIF/AVIF and JPEG-XL
 // headers (GHSA-w3rx-r6r6-pgpr, GHSA-5p2g-fcmc-qvqq). Metro only reads assets
 // from this repository and Zitch does not ship any of those formats, so remove
-// the vulnerable parsers entirely until Expo/Metro publishes a patched release.
-// scripts/check-npm-audit.mjs keeps the temporary advisory exception narrow and
-// expires it; a future unrelated high/critical advisory still fails CI.
-//
-// THIS LINE IS LOAD-BEARING AND VERIFIED. That script loads this file and then
-// asks image-size directly whether each of the four parsers is refused, so
-// removing, commenting out or shortening this call fails CI immediately — it is
-// the entire basis on which two high-severity advisories are accepted.
+// the vulnerable parsers entirely until Metro supports image-size's patched
+// 2.x API (its callable CommonJS 1.x import cannot use that major directly).
+// scripts/test-image-size-mitigation.cjs verifies all four refusals in app CI.
+// See docs/mobile-dependency-audit-2026-10-13.md for the remaining advisories;
+// disabling these parsers does not make the whole dependency tree audit-clean.
 disableTypes(['icns', 'heif', 'jxl', 'jxl-stream']);
 
 const config = getDefaultConfig(__dirname);

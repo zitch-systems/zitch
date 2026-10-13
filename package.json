@@ -11,8 +11,8 @@
     "test": "jest",
     "test:watch": "jest --watchAll",
     "lint": "expo lint",
-    "postinstall": "node scripts/patch-expo-tar.cjs",
-    "test:build-patches": "node --test scripts/test-patch-expo-tar.cjs scripts/test-android-google-services.cjs"
+    "postinstall": "node scripts/patch-expo-tar.cjs && node scripts/patch-uri-decoder.cjs",
+    "test:build-patches": "node --test scripts/test-patch-expo-tar.cjs scripts/test-android-google-services.cjs scripts/test-patch-uri-decoder.cjs scripts/test-image-size-mitigation.cjs"
   },
   "jest": {
     "preset": "jest-expo",
@@ -92,6 +92,9 @@
     "@xmldom/xmldom": "0.8.15",
     "postcss": "8.5.29",
     "fast-xml-parser": "5.11.2",
-    "tar": "7.5.22"
+    "tar": "7.5.22",
+    "@expo/cli": {
+      "send": "0.19.2"
+    }
   }
 }

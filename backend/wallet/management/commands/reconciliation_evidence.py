@@ -118,6 +118,16 @@ def build_evidence(wallet, *, days=90, max_rows=50):
         field for field in ("availableBalance", "ledgerBalance", "bookBalance", "currentBalance",
                             "holdBalance", "lienAmount")
         if isinstance(raw_balance, dict) and field in raw_balance)
+    # Preserve distinct provider-reported amounts for investigation without
+    # assuming that a book balance is available to spend or that a difference
+    # proves a hold. Never print raw strings, unknown fields or failed responses.
+    report["reported_bank_balances"] = {}
+    report["reported_bank_balance_semantics"] = "provider_reported_unverified"
+    if result.get("success") is True and not result.get("mock"):
+        for field in report["balance_field_names"]:
+            amount = wema._naira(raw_balance[field])
+            if amount is not None:
+                report["reported_bank_balances"][field] = _money(amount)
     bank = result.get("balance_naira") if result.get("success") and not result.get("mock") else None
     report.update(bank_available_balance=_money(bank), balance_http_status=_http_status(result),
                   ledger_minus_bank_available=_money(ledger - bank) if bank is not None else None)
