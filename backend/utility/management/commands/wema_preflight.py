@@ -488,6 +488,19 @@ class Command(BaseCommand):
                   "approver, and a large manual credit is refused outright rather "
                   "than routed for approval")))
 
+        from utility.launch_readiness import financial_controls_report
+        financial = financial_controls_report()
+        controls = ", ".join(f"{name}={status}" for name, status in financial["checks"].items())
+        checks.append((
+            True, "Financial reconciliation evidence",
+            PASS if financial["financial_controls_ready"] else FAIL,
+            ("no customer wallets yet; live bank acceptance remains separate"
+             if financial["status"] == "no_wallets" else
+             f"{financial['status']}; opening reviews={financial.get('opening_reviews', 'unknown')}; "
+             f"unverified VAS collection={financial.get('unverified_vas_collection', 'unknown')}; "
+             f"{controls or 'control evidence unavailable'}. This check cannot correct balances"),
+        ))
+
         self.stdout.write("Zitch go-live preflight")
         self.stdout.write("=======================")
         self.stdout.write(f"launch_scope: {launch_scope}")

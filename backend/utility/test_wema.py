@@ -198,6 +198,45 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(r["balance_naira"], Decimal("8420.10"))
         self.assertEqual(mock_get.call_args[1]["headers"]["x-api-key"], "chan-1")  # acct-mgt uses x-api-key
 
+    @patch("utility.wema.requests.get")
+    def test_balance_rejects_malformed_or_missing_balance_without_raising(self, mock_get):
+        for body in ([], None, "upstream error", {"successful": True, "result": []},
+                     {"successful": True, "result": ["invalid"]},
+                     {"successful": True, "result": "invalid"},
+                     {"successful": True, "result": {"availableBalance": "NaN"}},
+                     {"successful": True, "result": {}}):
+            with self.subTest(body=body):
+                mock_get.return_value = _resp(body)
+                result = wema.get_balance("0123456789")
+                self.assertFalse(result["success"])
+                self.assertIsNone(result["balance_naira"])
+
+    @patch("utility.wema.requests.get")
+    def test_balance_invalid_json_is_unreadable_with_http_diagnostic(self, mock_get):
+        mock_get.return_value = _resp(None, status=400)
+        mock_get.return_value.json.side_effect = ValueError("upstream HTML page")
+        result = wema.get_balance("0123456789")
+        self.assertFalse(result["success"])
+        self.assertIsNone(result["balance_naira"])
+        self.assertEqual(result["diagnostic"]["http_status"], 400)
+
+    @patch("utility.wema.requests.get")
+    def test_balance_rejects_success_body_on_http_error(self, mock_get):
+        mock_get.return_value = _resp({
+            "successful": True, "result": {"availableBalance": "5000"}}, status=400)
+        result = wema.get_balance("0123456789")
+        self.assertFalse(result["success"])
+        self.assertIsNone(result["balance_naira"])
+        self.assertEqual(result["diagnostic"]["http_status"], 400)
+
+    @patch("utility.wema.requests.get")
+    def test_zero_available_balance_is_valid_and_never_replaced_with_ledger_balance(self, mock_get):
+        mock_get.return_value = _resp({
+            "successful": True, "result": {"availableBalance": "0.00", "ledgerBalance": "99.00"}})
+        result = wema.get_balance("0123456789")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["balance_naira"], Decimal("0.00"))
+
     @patch("utility.wema.requests.post")
     def test_transaction_history_uses_wema_documented_payload(self, mock_post):
         mock_post.return_value = _resp({
@@ -235,6 +274,17 @@ class WemaLiveTests(SimpleTestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["transactions"], [])
         self.assertTrue(result["empty"])
+
+    @patch("utility.wema.requests.post")
+    def test_transaction_history_http_error_cannot_authorize_credits(self, mock_post):
+        mock_post.return_value = _resp({
+            "successful": True,
+            "result": [{"referenceId": "REJECTED-REFERENCE", "amount": 100,
+                        "creditType": "Credit", "status": "Successful"}],
+        }, status=403)
+        result = wema.get_transactions("0410530975", "2026-07-01", "2026-08-20")
+        self.assertFalse(result["success"])
+        self.assertFalse(result["complete"])
 
     def test_naira_tolerates_formatting(self):
         self.assertEqual(wema._naira("1,000.50"), Decimal("1000.50"))

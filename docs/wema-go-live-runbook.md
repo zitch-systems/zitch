@@ -1,10 +1,11 @@
 # Wema / ALAT go-live runbook
 
-> **Scope: historical Partnership rail.** For the current Virtual Account Service
-> migration, follow [the VAS rollout](wema-vas-rollout.md) and
-> [launch readiness](wema-vas-launch-readiness.md). In this older document,
-> “VAS” can refer to airtime/data services. Do not reactivate Partnership or reuse
-> its account/transfer approval as approval for the new collection rail.
+> **Current route: Wema Partnership, restored at the owner's request on 9 October
+> 2026.** Start with [the Partnership return](wema-partnership-return.md) and
+> [current release gates](partnership-audit-2026-10-13.md). The retained VAS
+> collection rail processes historical accounts and late notifications only;
+> its approval does not establish Partnership payout or bill entitlement.
+> In this document, “VAS” can also mean airtime/data/bill services.
 
 The ordered checks for taking Zitch from **sandbox/mock** to **live money**
 on the Wema/ALAT rail. A passing preflight checks configuration; it does not
@@ -19,7 +20,8 @@ certify provider delivery, financial reconciliation, or a completed migration.
 
 > **One-line status check any time:** `python manage.py wema_preflight`
 > (add `--strict` to also gate on the non-money rails). It exits non-zero until
-> every hard gate passes. `/healthz` shows the same gate as booleans over HTTP.
+> every hard gate passes. Public `/healthz` and `/readyz` only establish service
+> health and dependency reachability; they do not certify banking readiness.
 >
 > **No shell? Start at `/admin/diagnostics/`.** It renders the preflight and every
 > rail probe as a page, using your existing admin login — no token, no terminal. The
@@ -29,6 +31,14 @@ certify provider delivery, financial reconciliation, or a completed migration.
 > (For scripting, the endpoint form is `GET /preflight` with a diagnostic bearer
 > token: same command, same wording, `200` ready / `503` not, `?strict=1` for
 > `--strict`.)
+
+The preflight also requires recent financial-control evidence for an installation
+with wallets: internal integrity and settlement results no older than 26 hours,
+and external balance reconciliation no older than 7 hours. The latest result must
+pass; an older successful run cannot mask a newer failure. Missing evidence,
+unverified opening histories, unreadable balances and inconsistent settlement
+snapshots block both `core` and `full` scope. A passing check is still not a
+substitute for physical-device, SMS, provider and live-settlement acceptance.
 
 ---
 

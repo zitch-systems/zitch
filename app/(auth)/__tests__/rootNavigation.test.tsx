@@ -4,9 +4,15 @@ import renderer, { act } from 'react-test-renderer';
 import RootLayout from '@/app/_layout';
 import { store } from 'expo-router/build/global-state/router-store';
 import { router } from 'expo-router';
-import { enforceHardExpiry } from '@/lib/session';
+import { enforceHardExpiry, isSessionLocked, lockSession } from '@/lib/session';
 
 let mockStackRenders = 0;
+let mockNotificationTap: (coldStart?: boolean) => void;
+const mockTakeNotification = jest.fn();
+jest.mock('@/lib/notifications', () => ({
+  subscribeToNotificationOpens: (callback: (coldStart?: boolean) => void) => { mockNotificationTap = callback; return () => {}; },
+  takePendingNotificationOpen: () => mockTakeNotification(),
+}));
 jest.mock('expo-font', () => ({ useFonts: () => [true, null] }));
 jest.mock('expo-status-bar', () => ({ StatusBar: () => null }));
 jest.mock('react-native-gesture-handler', () => ({ GestureHandlerRootView: ({ children }: { children: ReactNode }) => children }));
@@ -23,9 +29,10 @@ jest.mock('@/lib/session', () => ({
   lockIfAwayTooLong: jest.fn(async () => false),
   enforceIdleTimeout: jest.fn(async () => false),
   isSessionLocked: jest.fn(async () => false),
+  lockSession: jest.fn(async () => {}),
   isExternalActivityActive: () => false,
 }));
-jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => 0 }));
+jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => 0, getToken: async () => 'session' }));
 jest.mock('@/lib/biometrics', () => ({ reconcileCachedPin: async () => {} }));
 jest.mock('@/lib/pendingApproval', () => ({ rememberWhatsAppApprovalUrl: async () => {} }));
 jest.mock('expo-router', () => {
@@ -63,6 +70,9 @@ beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
   mockStackRenders = 0;
+  mockTakeNotification.mockResolvedValue(true);
+  (isSessionLocked as jest.Mock).mockResolvedValue(false);
+  (lockSession as jest.Mock).mockImplementation(async () => { (isSessionLocked as jest.Mock).mockResolvedValue(true); });
   navigationReady = true;
   navigationListeners = new Set();
   store.rootStateSubscribers.clear();
@@ -119,4 +129,41 @@ it('starts enforcement when navigation becomes ready and retains foreground chec
   expect(enforceHardExpiry).toHaveBeenCalledTimes(2);
   act(() => { tree?.unmount(); tree = undefined; });
   expect(navigationListeners.size).toBe(0);
+});
+
+
+it('routes an unlocked notification tap to account activity', async () => {
+  await act(async () => { tree = renderer.create(<RootLayout />); });
+  await act(async () => { mockNotificationTap(); });
+  expect(mockTakeNotification).toHaveBeenCalledTimes(1);
+  expect(router.replace).toHaveBeenCalledWith('/notifications');
+});
+
+it('keeps a notification destination for a locked account until sign-in', async () => {
+  (isSessionLocked as jest.Mock).mockResolvedValue(true);
+  await act(async () => { tree = renderer.create(<RootLayout />); });
+  await act(async () => { mockNotificationTap(); });
+  expect(mockTakeNotification).not.toHaveBeenCalled();
+  expect(router.replace).toHaveBeenCalledWith('/signin');
+});
+
+it('defers cold-start notification navigation until the stack is ready', async () => {
+  navigationReady = false;
+  await act(async () => { tree = renderer.create(<RootLayout />); });
+  await act(async () => { mockNotificationTap(); });
+  expect(router.replace).not.toHaveBeenCalled();
+  await act(async () => {
+    navigationReady = true;
+    navigationListeners.forEach(callback => callback());
+  });
+  expect(router.replace).toHaveBeenCalledWith('/notifications');
+});
+
+
+it('requires unlock for a cold notification even when the saved session was recently active', async () => {
+  await act(async () => { tree = renderer.create(<RootLayout />); });
+  await act(async () => { mockNotificationTap(true); });
+  expect(lockSession).toHaveBeenCalledTimes(1);
+  expect(mockTakeNotification).not.toHaveBeenCalled();
+  expect(router.replace).toHaveBeenCalledWith('/signin');
 });

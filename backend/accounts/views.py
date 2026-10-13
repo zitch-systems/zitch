@@ -110,8 +110,8 @@ def _session_payload(user, request) -> dict:
     pre-emptive renewal doesn't need a second API change to become possible.
     """
     device_id = _session_device_id(request)
-    access = AccessToken.issue(user, device_id=device_id)
     refresh = RefreshToken.issue(user, device_id=device_id)
+    access = AccessToken.issue(user, device_id=device_id, session_started_at=refresh.family_started)
     return {"access_token": access.key,
             "refresh_token": refresh.key,
             "account_namespace": spend_account_namespace(user),
@@ -518,24 +518,29 @@ def password_reset(request):
 
 @api
 @require_user
+@db_transaction.atomic
 def logout(request):
     """POST /api/logout/ {access_token} — revokes the presented token.
 
     Server-side revocation so a signed-out (or otherwise leaked-then-cleared)
     token can't be replayed for the remainder of its TTL.
     """
+    # Serialize logout with notification registration. A registration that was
+    # authenticated before logout must not recreate the revoked subscription.
+    User.objects.select_for_update().only("pk").get(pk=request.user_obj.pk)
     # A signed-out phone must stop receiving private account alerts. Scope the
     # removal to this installation so tablets/other phones stay subscribed.
     device_id = _session_device_id(request)
     if device_id:
-        PushDevice.objects.filter(user=request.user_obj, device_id=device_id).delete()
+        PushDevice.objects.filter(user=request.user_obj, device_id=device_id).update(enabled=False)
     AccessToken.objects.filter(key=AccessToken._hash(resolve_token(request))).delete()
     # Deleting only the access token would leave the refresh chain live, so
     # "sign out" would mean "signed out for a few hours". Revoke the presented
     # chain when the client sends it, and fall back to this install's chains
     # when it doesn't — an older client that has no refresh token to send must
     # still get a real sign-out.
-    presented = (request.data.get("refresh_token") or "").strip()
+    presented = request.data.get("refresh_token") or ""
+    presented = presented.strip() if isinstance(presented, str) else ""
     if presented:
         row = RefreshToken.objects.filter(key=RefreshToken._hash(presented),
                                           user=request.user_obj).first()
@@ -570,7 +575,7 @@ def token_refresh(request):
         log.info("token_refresh_refused reason=%s ip=%s", outcome, client_ip(request))
         return fail("Your session has expired. Please sign in again.", status=401)
     user = outcome
-    access = AccessToken.issue(user, device_id=fresh.device_id)
+    access = AccessToken.issue(user, device_id=fresh.device_id, session_started_at=fresh.family_started)
     return ok(access_token=access.key, refresh_token=fresh.key,
               account_namespace=spend_account_namespace(user),
               expires_in=int(settings.TOKEN_TTL_HOURS) * 3600,
@@ -586,18 +591,62 @@ def push_register(request):
     user. Ownership therefore comes exclusively from the authenticated session;
     a client-supplied user id is never accepted.
     """
-    token = (request.data.get("token") or "").strip()
-    if not re.fullmatch(r"(?:Exponent|Expo)PushToken\[[A-Za-z0-9_-]+\]", token):
+    token = request.data.get("token") or ""
+    if not isinstance(token, str):
         return fail("Invalid push token")
-    platform = (request.data.get("platform") or "").strip().lower()
+    token = token.strip()
+    if len(token) > 255 or not re.fullmatch(r"(?:Exponent|Expo)PushToken\[[A-Za-z0-9_-]+\]", token):
+        return fail("Invalid push token")
+    platform = request.data.get("platform") or ""
+    if not isinstance(platform, str):
+        return fail("Invalid device platform")
+    platform = platform.strip().lower()
     if platform not in ("android", "ios"):
         return fail("Invalid device platform")
     device_id = _session_device_id(request)
-    PushDevice.objects.update_or_create(
-        token=token,
-        defaults={"user": request.user_obj, "device_id": device_id,
-                  "platform": platform, "enabled": True},
-    )
+    with db_transaction.atomic():
+        User.objects.select_for_update().only("pk").get(pk=request.user_obj.pk)
+        raw_session = resolve_token(request)
+        session = AccessToken.objects.select_for_update().filter(
+            key=AccessToken._hash(raw_session), user=request.user_obj,
+            scope=AccessToken.APP).first()
+        if session is None or AccessToken.resolve(
+                raw_session, required_scope=AccessToken.APP, device_id=device_id) is None:
+            return fail("Invalid or expired session", status=401)
+        if not session.device_id:
+            return fail("Sign in again to enable notifications on this device.", status=409,
+                        code="device_session_required")
+        epoch = session.session_started_at or session.created
+        stale = fail("A newer sign-in controls notifications on this device.", status=409,
+                     code="push_session_superseded")
+        if PushDevice.objects.filter(user=request.user_obj, device_id=session.device_id,
+                                      session_started_at__gt=epoch).exists():
+            return stale
+        # The unique token arbitrates first-registration races across different
+        # users. get_or_create retries a concurrent insert; select_for_update
+        # then holds that winning row before examining or changing ownership.
+        device, created = PushDevice.objects.select_for_update().get_or_create(
+            token=token, defaults={"user": request.user_obj, "device_id": session.device_id,
+                                   "platform": platform, "enabled": False,
+                                   "session_started_at": epoch})
+        if not created:
+            watermark = device.session_started_at or device.last_seen
+            legacy_owner = (device.session_started_at is None and device.enabled
+                            and device.user_id == request.user_obj.pk)
+            if not legacy_owner and (watermark > epoch or (not device.enabled and watermark >= epoch)):
+                return stale
+        # Rotation must retire this customer's previous token on this install.
+        # A supplied device header alone cannot remove another customer's token,
+        # or authorize cleanup for older sessions without an installation binding.
+        PushDevice.objects.filter(user=request.user_obj, device_id=session.device_id).exclude(
+            token=token).update(enabled=False, session_started_at=epoch)
+        device.user = request.user_obj
+        device.device_id = session.device_id
+        device.platform = platform
+        device.enabled = True
+        device.session_started_at = epoch
+        device.save(update_fields=["user", "device_id", "platform", "enabled",
+                                   "session_started_at", "last_seen"])
     return ok(message="Notifications enabled")
 
 
@@ -1008,7 +1057,11 @@ def _save_verified_identity(user, identity_type: str, raw: str,
     constraint and inner savepoint close the concurrent-request race.
     """
     User.objects.select_for_update().only("pk").get(pk=user.pk)
-    user.refresh_from_db(fields=[f"{identity_type}_verified", f"{identity_type}_hash"])
+    # A parallel contact/identity verification can complete while this request
+    # is waiting. Recompute the tier from every current prerequisite, rather
+    # than overwriting a newer tier from the caller's stale flags.
+    user.refresh_from_db(fields=["phone_verified", "email_verified", "bvn_verified",
+        "nin_verified", "bvn_hash", "nin_hash", "face_verified", "address_verified", "tier"])
     if (getattr(user, f"{identity_type}_verified") and not hmac.compare_digest(
             getattr(user, f"{identity_type}_hash"), hash_identifier(raw))):
         return False
@@ -1549,7 +1602,8 @@ def _pending_identity_decrypt(kind: str, token: str) -> str:
     from cryptography.fernet import InvalidToken
 
     try:
-        clear = _pending_identity_fernet().decrypt((token or "").encode()).decode()
+        clear = _pending_identity_fernet().decrypt(
+            (token or "").encode(), ttl=_KYC_BVN_TTL).decode()
     except (InvalidToken, UnicodeDecodeError):
         return ""
     prefix = f"{kind}:"
@@ -1627,6 +1681,7 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict,
                 str(result.get(field) or "").strip() for field in ("first_name", "middle_name", "last_name")
             ).strip()) if not simulated else "",
             "attempts": 0,
+            "expires_at": timezone.now().timestamp() + _KYC_BVN_TTL,
         },
         _KYC_BVN_TTL,
     )
@@ -1634,10 +1689,23 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict,
               identity_verification_provider="prembly",
               message=f"We sent a verification code to your {delivery['delivery']}.")
 
+@db_transaction.atomic
 def _confirm_identity_ownership_challenge(user, kind: str, otp: str, *, challenge_key=None, consume=True):
+    if not isinstance(otp, str) or not re.fullmatch(r"[0-9]{6}", otp.strip()):
+        return None, fail("Enter the six-digit verification code.", status=400)
+    otp = otp.strip()
+    # The shared cache's get/set operations are not a compare-and-swap. The
+    # customer row serializes parallel confirmations so wrong attempts are not
+    # lost and a consumed code cannot be returned to two requests.
+    User.objects.select_for_update().only("pk").get(pk=user.pk)
     cache_key = challenge_key or f"kyc_identity:{kind}:{user.id}"
     pending = cache.get(cache_key)
     if not pending:
+        return None, fail(f"Your code expired — start {kind.upper()} verification again", status=400)
+    remaining = int(pending.get("expires_at", timezone.now().timestamp() + _KYC_BVN_TTL)
+                    - timezone.now().timestamp())
+    if remaining <= 0:
+        cache.delete(cache_key)
         return None, fail(f"Your code expired — start {kind.upper()} verification again", status=400)
     if not hmac.compare_digest(pending.get("code_hash", ""), OTP.hash_code(otp)):
         attempts = int(pending.get("attempts", 0)) + 1
@@ -1646,7 +1714,7 @@ def _confirm_identity_ownership_challenge(user, kind: str, otp: str, *, challeng
             return None, fail("Too many incorrect attempts — start verification again",
                               status=429, code="too_many_attempts")
         pending["attempts"] = attempts
-        cache.set(cache_key, pending, _KYC_BVN_TTL)
+        cache.set(cache_key, pending, remaining)
         return None, fail(
             f"Incorrect code. {_KYC_BVN_MAX_ATTEMPTS - attempts} attempt(s) left.",
             status=400,
@@ -1761,7 +1829,7 @@ def kyc_bvn_confirm(request):
     if request.data.get("tracking_id") or _use_wema_identity_flow(user):
         return _confirm_bank_identity(request, "bvn")
     bvn, error = _confirm_identity_ownership_challenge(
-        user, "bvn", (request.data.get("otp") or "").strip()
+        user, "bvn", request.data.get("otp")
     )
     if error:
         return error
@@ -1857,7 +1925,7 @@ def kyc_nin_confirm(request):
     if request.data.get("tracking_id") or _use_wema_identity_flow(user):
         return _confirm_bank_identity(request, "nin")
     nin, error = _confirm_identity_ownership_challenge(
-        user, "nin", (request.data.get("otp") or "").strip()
+        user, "nin", request.data.get("otp")
     )
     if error:
         return error
@@ -1987,7 +2055,7 @@ def kyc_face_start(request):
     # without opening a session, and a DIFFERENT identity is refused outright by
     # face_identity_error.
     identity_type, raw = ("bvn", bvn) if bvn else ("nin", nin)
-    if not raw.isdigit() or len(raw) != 11:
+    if not re.fullmatch(r"[0-9]{11}", raw):
         return fail("Enter your 11-digit BVN or NIN")
     if _identity_owned_by_another_user(user, identity_type, raw):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
@@ -2120,7 +2188,10 @@ def kyc_face_status(request):
     somebody else's verification state.
     """
     user = request.user_obj
-    state = (request.data.get("session") or request.GET.get("session") or "").strip()
+    state = request.data.get("session") or request.GET.get("session") or ""
+    if not isinstance(state, str):
+        return fail("Unknown verification session", status=404)
+    state = state.strip()
     session = WemaFaceSession.objects.filter(user=user, state=state).first() if state else None
     if session is None:
         return fail("Unknown verification session", status=404)

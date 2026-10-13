@@ -40,7 +40,7 @@ class NativePushAlertTests(TestCase):
         self.assertEqual(payload["data"]["reference"], self.txn.reference)
 
     @patch("requests.post")
-    def test_an_uninstalled_device_is_pruned(self, post):
+    def test_an_uninstalled_device_is_disabled_without_losing_ownership_history(self, post):
         response = Mock()
         response.raise_for_status.return_value = None
         response.json.return_value = {"data": [{
@@ -48,4 +48,6 @@ class NativePushAlertTests(TestCase):
         }]}
         post.return_value = response
         _push_alert(self.txn, "Debit alert: ₦500.00")
-        self.assertFalse(PushDevice.objects.filter(pk=self.device.pk).exists())
+        self.device.refresh_from_db()
+        self.assertFalse(self.device.enabled)
+        self.assertEqual(self.device.user_id, self.user.pk)

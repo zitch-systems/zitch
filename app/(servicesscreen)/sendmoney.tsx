@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { getToken } from '@/lib/secureStore';
+import { getToken, getSessionGeneration } from '@/lib/secureStore';
 import { apiPost, publicPost } from '@/lib/api';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
@@ -244,6 +244,7 @@ const SendMoney = () => {
   const send = async (pin: string) => {
     if (!valid || done || sendInFlight.current) return;
     sendInFlight.current = true;
+    const generation = getSessionGeneration();
     const attempt = transferAttempt();
     let requestKey = '';
     let deliveryStarted = false;
@@ -257,9 +258,11 @@ const SendMoney = () => {
         const okScan = await authenticate(`Authorize ${money(amount)} transfer`, true);
         if (!okScan) { setStep(null); return; }
       }
+      if (generation !== getSessionGeneration()) throw new Error('Your session changed');
       // Persist before delivery. A retry after an app restart therefore presents
       // the same key, while a different material recipient/amount gets its own.
       requestKey = await acquireSpendAttempt(attempt.scope, attempt.fingerprint);
+      if (generation !== getSessionGeneration()) throw new Error('Your session changed');
       deliveryStarted = true;
       const res = await postSend(pin, requestKey);
       const outcome = classifySpendResponse(res);

@@ -13,6 +13,15 @@ python manage.py migrate
 # Read-only, redacted evidence for operators while public maintenance is on.
 # This reports configuration gaps; it cannot authorize release or change funds.
 python manage.py vas_deployment_diagnostics
+# Optional incident evidence for a bounded set of internal user IDs. The command
+# reads bank statements and local history only, prints redacted summaries, and
+# never changes balances, checkpoints, KYC state or payment outcomes. Clear the
+# selector after collecting evidence so routine deploys do not repeat bank reads.
+if [ -n "${ZITCH_RECONCILIATION_EVIDENCE_USERS:-}" ]; then
+  python manage.py reconciliation_evidence \
+    --user-ids "$ZITCH_RECONCILIATION_EVIDENCE_USERS" --days 90 --max-rows 50 \
+    || echo "==> Reconciliation evidence unavailable; launch review remains open."
+fi
 python manage.py seed_plans
 
 # Map Wema's VAS catalogue onto our seeded plans, when asked to.

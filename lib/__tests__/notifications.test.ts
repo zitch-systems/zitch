@@ -5,6 +5,9 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true, default: { setItem: jest.fn().mockResolvedValue(undefined), getItem: jest.fn(), removeItem: jest.fn().mockResolvedValue(undefined) },
 }));
 jest.mock('@/lib/api', () => ({ apiJson: jest.fn() }));
+let mockGeneration = 0;
+let mockToken: string | null = 'session';
+jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => mockGeneration, getToken: async () => mockToken }));
 jest.mock('expo-notifications', () => ({
   AndroidImportance: { HIGH: 4 }, setNotificationHandler: jest.fn(),
   setNotificationChannelAsync: jest.fn().mockResolvedValue(undefined),
@@ -21,7 +24,7 @@ import * as Notifications from 'expo-notifications';
 import { apiJson } from '../api';
 import { registerForPushNotifications, subscribeToNotificationOpens, takePendingNotificationOpen } from '../notifications';
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => { jest.clearAllMocks(); mockGeneration = 0; mockToken = 'session'; });
 
 it('recognizes the backend message-only success and stores the registered token', async () => {
   (apiJson as jest.Mock).mockResolvedValue({ message: 'Notifications enabled', _httpOk: true, _httpStatus: 200 });
@@ -67,4 +70,44 @@ it('consumes a recent pending notification marker', async () => {
   (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(String(Date.now()));
   expect(await takePendingNotificationOpen()).toBe(true);
   expect(AsyncStorage.removeItem).toHaveBeenCalledWith('z-pending-notification-open');
+});
+
+
+it('does not bind a delayed native token after the account has changed', async () => {
+  (Notifications.getExpoPushTokenAsync as jest.Mock).mockImplementationOnce(async () => {
+    mockGeneration += 1;
+    return { data: 'ExpoPushToken[old-account]' };
+  });
+  expect(await registerForPushNotifications()).toBe('failed');
+  expect(apiJson).not.toHaveBeenCalled();
+  expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+});
+
+it('requires a signed-in account before requesting push credentials', async () => {
+  mockToken = null;
+  expect(await registerForPushNotifications(true)).toBe('failed');
+  expect(Notifications.getExpoPushTokenAsync).not.toHaveBeenCalled();
+  expect(Notifications.requestPermissionsAsync).not.toHaveBeenCalled();
+  expect(apiJson).not.toHaveBeenCalled();
+});
+
+it('does not persist a registration response belonging to the previous session', async () => {
+  (apiJson as jest.Mock).mockImplementationOnce(async () => {
+    mockGeneration += 1;
+    return { _httpOk: true };
+  });
+  expect(await registerForPushNotifications()).toBe('failed');
+  expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+});
+
+
+it('marks native cold-start taps so navigation requires a fresh unlock', async () => {
+  (Notifications.getLastNotificationResponseAsync as jest.Mock).mockResolvedValueOnce({ notification: {} });
+  const onOpen = jest.fn();
+  const unsubscribe = subscribeToNotificationOpens(onOpen);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(onOpen).toHaveBeenCalledWith(true);
+  unsubscribe();
 });

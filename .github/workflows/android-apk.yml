@@ -80,6 +80,11 @@ jobs:
 
       - run: npm ci
 
+      - name: Configure Android push when Firebase configuration is available
+        env:
+          ANDROID_GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON_BASE64 }}
+        run: node scripts/android-google-services.cjs
+
       - name: Check APK verifier safety gates
         run: python3 -m unittest discover -s scripts/__tests__ -p 'test_android*.py'
 
@@ -197,6 +202,8 @@ jobs:
           This is an internal Android test build, signed with the existing debug/test key. It connects to https://api.zitch.ng and is not a Play Store production release. If Android reports a signing conflict with an existing installation, keep that installation and report the conflict before removing it.
 
           Automated checks cover the exact revision's app tests, native package/version, APK signature, permissions, embedded JavaScript, and emulator startup/sign-in validation. Bank activation, real OTP, push notification delivery, device biometrics, and live money settlement require separate verification.
+
+          build-info.json reports whether Firebase configuration is embedded in this APK. When android_push.firebase_config_present is false, remote push notifications are unavailable in this build. Even when present, live delivery needs the matching FCM v1 credential in the Expo project and a physical-device check.
 
           This build supports the return to Wema Partnership on the app and WhatsApp. Live availability follows the server configuration and each customer's account status. VAS enrollment and VAS-funded bill purchases are closed. Profiles with a VAS balance, held receipt or unresolved bill remain in review until that exposure is resolved. Do not fund 711 validation accounts.
 

@@ -6,7 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { storeSession, getToken, getRememberedIdentifier, rememberIdentifier } from '@/lib/secureStore';
 import { enforceHardExpiry, unlockSession } from '@/lib/session';
 import { pendingWhatsAppApproval } from '@/lib/pendingApproval';
-import { registerForPushNotifications } from '@/lib/notifications';
+import { registerForPushNotifications, takePendingNotificationOpen } from '@/lib/notifications';
 import { publicPost } from '@/lib/api';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
@@ -48,7 +48,8 @@ const Signin = () => {
     // permission prompt here: it binds only where alerts are already allowed.
     registerForPushNotifications(false).catch(() => {});
     const token = await pendingWhatsAppApproval();
-    router.replace(token ? { pathname: '/waapprove', params: { token } } : '/home');
+    const openNotifications = !token && await takePendingNotificationOpen().catch(() => false);
+    router.replace(token ? { pathname: '/waapprove', params: { token } } : openNotifications ? '/notifications' : '/home');
   };
 
   const handleBiometricSignin = async () => {

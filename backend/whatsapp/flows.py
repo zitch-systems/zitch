@@ -14,6 +14,7 @@ import base64
 import hashlib
 import hmac
 import logging
+import re
 import time
 
 from django.conf import settings
@@ -172,18 +173,27 @@ def sign_onboarding_token(ob) -> str:
     return f"{_OB_PREFIX}{ob.id}.{_sig(f'{_OB_PREFIX}{ob.id}:{ob.msisdn}')}"
 
 
+def _parse_signed_handle(token, prefix=""):
+    """Bound untrusted handles before integer conversion or database access."""
+    if not isinstance(token, str) or len(token) > 64:
+        return None
+    match = re.fullmatch(re.escape(prefix) + r"([1-9][0-9]{0,18})\.([A-Za-z0-9_-]{22})",
+                         token.strip())
+    if match is None:
+        return None
+    action_id = int(match[1])
+    return (action_id, match[2]) if action_id < 2**63 else None
+
+
 def resolve_onboarding_token(token: str):
     """Return the live WaOnboarding for a signed onboarding flow_token, or None
     if it is malformed, forged, expired, or no longer in the Flow-PIN step."""
     from .models import WaOnboarding
 
-    raw = (token or "").strip()
-    if not raw.startswith(_OB_PREFIX) or "." not in raw:
+    parsed = _parse_signed_handle(token, _OB_PREFIX)
+    if parsed is None:
         return None
-    head, _, sig = raw.partition(".")
-    pid = head[len(_OB_PREFIX):]
-    if not pid.isdigit():
-        return None
+    pid, sig = parsed
     ob = WaOnboarding.objects.filter(id=int(pid)).first()
     if ob is None or ob.expired or ob.step not in (
             FLOW_PRIVACY_STATE,
@@ -223,13 +233,10 @@ def resolve_approve_token(token: str):
     action leaves no state this resolves in."""
     from .models import PendingAction
 
-    raw = (token or "").strip()
-    if not raw.startswith(_AP_PREFIX) or "." not in raw:
+    parsed = _parse_signed_handle(token, _AP_PREFIX)
+    if parsed is None:
         return None
-    head, _, sig = raw.partition(".")
-    pid = head[len(_AP_PREFIX):]
-    if not pid.isdigit():
-        return None
+    pid, sig = parsed
     pa = PendingAction.objects.filter(id=int(pid)).first()
     if pa is None or pa.state not in _APPROVABLE_STATES or pa.expired:
         return None
@@ -243,13 +250,10 @@ def resolve_identity_token(token: str):
     it is malformed, forged, expired, or no longer in the identity Flow state."""
     from .models import PendingAction
 
-    raw = (token or "").strip()
-    if not raw.startswith(_ID_PREFIX) or "." not in raw:
+    parsed = _parse_signed_handle(token, _ID_PREFIX)
+    if parsed is None:
         return None
-    head, _, sig = raw.partition(".")
-    pid = head[len(_ID_PREFIX):]
-    if not pid.isdigit():
-        return None
+    pid, sig = parsed
     pa = PendingAction.objects.filter(id=int(pid)).first()
     if pa is None or pa.state != FLOW_ID_STATE or pa.expired:
         return None
@@ -298,6 +302,7 @@ def remember_settled(pa, outcome: str) -> None:
         return
     try:
         from django.core.cache import cache
+        _remember_transaction(pa, pa.user_id, shown_status="success")
         cache.set(_settled_key(sign_flow_token(pa)), str(outcome)[:300], _SETTLED_TTL)
     except Exception:  # noqa: BLE001 - a cache miss must never break an execution
         log.warning("wa_flow_settled_not_recorded pa=%s", getattr(pa, "pk", "?"), exc_info=True)
@@ -310,6 +315,99 @@ def _pending_key(token: str) -> str:
     sequential action id from becoming a cross-user status oracle.
     """
     return "wa_flow_pending:" + hashlib.sha256((token or "").encode()).hexdigest()[:32]
+
+
+def _transaction_key(token: str) -> str:
+    return "wa_flow_transaction:" + hashlib.sha256(token.encode()).hexdigest()[:32]
+
+
+def _remember_transaction(pa, user_id, *, shown_status="") -> dict:
+    """Keep the ledger pointer after the one-shot Pending marker is consumed."""
+    from django.core.cache import cache
+
+    action_id = int(pa.pk)
+    action_type = str(pa.action_type or "")
+    token = sign_flow_token(pa)
+    meta = {
+        "action_id": action_id, "user_id": int(user_id), "action_type": action_type,
+        "idempotency_key": f"wa-fx-{action_id}" if action_type == "convert" else f"wa-{action_id}",
+        "shown_status": shown_status,
+    }
+    cache.set(_transaction_key(token), meta, _SETTLED_TTL)
+    return meta
+
+
+def _transaction_meta(token: str) -> dict:
+    from django.core.cache import cache
+
+    try:
+        value = cache.get(_transaction_key(token))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _remember_shown_status(token: str, status: str) -> None:
+    from django.core.cache import cache
+
+    try:
+        meta = _transaction_meta(token)
+        if meta:
+            cache.set(_transaction_key(token), {**meta, "shown_status": status}, _SETTLED_TTL)
+    except Exception:
+        pass
+
+
+def _refresh_recorded_result(token: str, *, closing=False):
+    """A cached receipt is wording, never authority for a later payment status."""
+    meta = _transaction_meta(token)
+    if not meta:
+        return None
+    from wallet.models import Transaction
+    from wallet.review_state import transaction_review_map
+
+    txn = Transaction.objects.filter(
+        user_id=meta.get("user_id"), idempotency_key=meta.get("idempotency_key"),
+    ).only("transaction_status", "reference", "meta").first()
+    if txn is None:
+        from .models import PendingAction
+        from django.core.cache import cache
+        executing = PendingAction.objects.filter(
+            pk=meta.get("action_id"), user_id=meta.get("user_id"), state="executing").exists()
+        if not executing:
+            # A pre-debit refusal can finish without ever creating a ledger row.
+            # A remembered queue pointer alone must not trap Done on Pending.
+            cache.delete(_transaction_key(token))
+            cache.delete(_settled_key(token))
+            return None
+        return _result_screen("We couldn't confirm this payment's current outcome. "
+                              "Check your transaction history before trying again.", status="pending")
+    if txn.pk in transaction_review_map([txn]):
+        _remember_shown_status(token, "review")
+        return _result_screen("This payment is under review. Do not send it again; "
+                              "we will confirm its final outcome in the chat.", status="pending")
+    if txn.transaction_status not in (Transaction.SUCCESS, Transaction.FAILED):
+        _remember_shown_status(token, "pending")
+        return _result_screen("Still processing. Tap Done to check again, or close this form; "
+                              "we will confirm in the chat.", status="pending")
+    status = "success" if txn.transaction_status == Transaction.SUCCESS else "failed"
+    if closing and meta.get("shown_status") == status:
+        return None
+    _remember_shown_status(token, status)
+    if status == "failed":
+        return _result_screen("That payment was not completed. Check your balance and the chat "
+                              "for reversal details.", status="failed")
+    from django.core.cache import cache
+    try:
+        wording = cache.get(_settled_key(token))
+    except Exception:
+        wording = ""
+    message = wording if isinstance(wording, str) else ""
+    if not message:
+        message = "Payment successful - the receipt is in your chat."
+    elif "receipt" not in message.lower():
+        message += "\n\nThe receipt is in your chat."
+    return _result_screen(message, status="success")
 
 
 def remember_pending(pa, user) -> None:
@@ -326,20 +424,14 @@ def remember_pending(pa, user) -> None:
         action_id = getattr(pa, "pk", None)
         if not action_id:
             return
-        action_type = str(getattr(pa, "action_type", "") or "")
-        key = f"wa-fx-{action_id}" if action_type == "convert" else f"wa-{action_id}"
-        cache.set(_pending_key(sign_flow_token(pa)), {
-            "action_id": int(action_id),
-            "user_id": int(user.pk),
-            "action_type": action_type,
-            "idempotency_key": key,
-        }, _SETTLED_TTL)
+        meta = _remember_transaction(pa, user.pk)
+        cache.set(_pending_key(sign_flow_token(pa)), meta, _SETTLED_TTL)
     except Exception:  # noqa: BLE001 - status recovery must never block payment
         log.warning("wa_flow_pending_not_recorded pa=%s", getattr(pa, "pk", "?"),
                     exc_info=True)
 
 
-def forget_pending(token: str) -> None:
+def forget_pending(token: str, *, status="") -> None:
     """Drop the re-check marker once the first Flow response is terminal."""
     raw = (token or "").strip()
     if "." not in raw:
@@ -347,6 +439,8 @@ def forget_pending(token: str) -> None:
     try:
         from django.core.cache import cache
         cache.delete(_pending_key(raw))
+        if status:
+            _remember_shown_status(raw, status)
     except Exception:  # noqa: BLE001
         log.warning("wa_flow_pending_not_cleared", exc_info=True)
 
@@ -379,7 +473,14 @@ def _refresh_pending_result(token: str):
     txn = (Transaction.objects.filter(
         user_id=meta.get("user_id"),
         idempotency_key=meta.get("idempotency_key"),
-    ).only("transaction_status").first())
+    ).only("transaction_status", "reference", "meta").first())
+    if txn is not None:
+        from wallet.review_state import transaction_review_map
+        if txn.pk in transaction_review_map([txn]):
+            return _result_screen(
+                "This payment is under review. Do not send it again; we will confirm its final outcome in the chat.",
+                status="pending",
+            )
     if txn is None:
         # A marker can outlive a test database reset (or a local reset of the
         # action sequence). Do not let it pin a newly-created action with the
@@ -403,7 +504,7 @@ def _refresh_pending_result(token: str):
             status="pending",
         )
 
-    forget_pending(token)
+    forget_pending(token, status="success" if txn.transaction_status == Transaction.SUCCESS else "failed")
     if txn.transaction_status == Transaction.SUCCESS:
         return _result_screen(
             "Payment successful - the receipt is in your chat.",
@@ -426,7 +527,17 @@ def settled_outcome(token: str) -> str:
         return ""
     try:
         from django.core.cache import cache
-        return cache.get(_settled_key(raw)) or ""
+        meta = _transaction_meta(raw)
+        if not meta:
+            return ""
+        from wallet.models import Transaction
+        from wallet.review_state import transaction_review_map
+        txn = Transaction.objects.filter(user_id=meta.get("user_id"),
+                                         idempotency_key=meta.get("idempotency_key")).first()
+        if txn is None or txn.transaction_status != Transaction.SUCCESS or txn.pk in transaction_review_map([txn]):
+            return ""
+        value = cache.get(_settled_key(raw))
+        return value if isinstance(value, str) else ""
     except Exception:  # noqa: BLE001
         return ""
 
@@ -436,13 +547,11 @@ def resolve_flow_token(token: str):
     is malformed, forged, expired, or no longer in the Flow-PIN state."""
     from .models import PendingAction
 
-    raw = (token or "").strip()
-    if "." not in raw:
+    parsed = _parse_signed_handle(token)
+    if parsed is None:
         return None
-    pid, _, sig = raw.partition(".")
-    if not pid.isdigit():
-        return None
-    pa = PendingAction.objects.filter(id=int(pid)).first()
+    pid, sig = parsed
+    pa = PendingAction.objects.filter(id=pid).first()
     if pa is None or pa.state not in (FLOW_PIN_STATE, FLOW_FORM_STATE, FLOW_VTU_STATE) or pa.expired:
         return None
     if not hmac.compare_digest(sig, _sig(f"{pa.id}:{pa.msisdn}")):
@@ -756,6 +865,8 @@ def _handle_flow_request(payload: dict) -> dict:
         return {"data": {"acknowledged": True}}
 
     token = payload.get("flow_token", "")
+    if not isinstance(token, str) or len(token) > 128:
+        return _result_screen("Invalid request. Please start again in the chat.", status="failed")
 
     # A distinct signature domain/state keeps an ordinary KYC/payment token
     # from authorising encrypted identity retention for virtual accounts.
@@ -769,6 +880,9 @@ def _handle_flow_request(payload: dict) -> dict:
     # stays honest, and the next Done exchange closes the Flow normally.
     if data.get("close") and action == "data_exchange":
         refreshed = _refresh_pending_result(token)
+        if refreshed is not None:
+            return refreshed
+        refreshed = _refresh_recorded_result(token, closing=True)
         if refreshed is not None:
             return refreshed
         return _close_flow(token)
@@ -862,9 +976,9 @@ def _handle_flow_request(payload: dict) -> dict:
             refreshed = _refresh_pending_result(token)
             if refreshed is not None:
                 return refreshed
-            done = settled_outcome(token)
-            if done:
-                return _result_screen(done, status="success")
+            recorded = _refresh_recorded_result(token)
+            if recorded is not None:
+                return recorded
             return _success_screen(
                 "This request has ended. Check the chat for its outcome, or start again there.")
         if pa.state == FLOW_FORM_STATE:
@@ -1718,10 +1832,9 @@ def _submit_pin(token: str, data: dict) -> dict:
         refreshed = _refresh_pending_result(token)
         if refreshed is not None:
             return refreshed
-        done = settled_outcome(token)
-        if done:
-            return _result_screen(f"{done}\n\nThe receipt is in your chat.",
-                                  status="success")
+        recorded = _refresh_recorded_result(token)
+        if recorded is not None:
+            return recorded
         return _success_screen("This request expired or was already completed. Start again "
                                "in the chat.", status="failed")
 
@@ -1757,6 +1870,11 @@ def _submit_pin(token: str, data: dict) -> dict:
             return _submit_pin_reset_code(pa, user, str(data.get("number", "") or pin))
         return _submit_new_pin(pa, user, pin)
 
+    # Snapshot BEFORE checking the PIN. A credential/channel change between
+    # proof and durable enqueue must invalidate the unlock, never be adopted.
+    if pa.action_type == "unlock":
+        from .router import _unlock_proof
+        pa._unlock_proof = _unlock_proof(user, pa.msisdn)
     ok, code, message = evaluate_transaction_pin(user, pin)
     if not ok:
         # Lockout is enforced inside evaluate_transaction_pin (row-locked, shared

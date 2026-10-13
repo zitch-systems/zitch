@@ -5,6 +5,7 @@ import Signin from '@/app/(auth)/signin';
 const mockPublicPost = jest.fn();
 const mockStoreSession = jest.fn();
 const mockRegisterPush = jest.fn();
+const mockTakeNotification = jest.fn();
 const mockReplace = jest.fn();
 const mockGetToken = jest.fn();
 const mockBioEnabled = jest.fn();
@@ -32,6 +33,7 @@ jest.mock('@/lib/session', () => ({
 jest.mock('@/lib/pendingApproval', () => ({ pendingWhatsAppApproval: async () => '' }));
 jest.mock('@/lib/notifications', () => ({
   registerForPushNotifications: (...args: unknown[]) => { calls.push('registerPush'); return mockRegisterPush(...args); },
+  takePendingNotificationOpen: () => mockTakeNotification(),
 }));
 jest.mock('@/lib/biometrics', () => ({
   isBiometricAvailable: async () => true,
@@ -65,6 +67,7 @@ beforeEach(() => {
   mockGetToken.mockResolvedValue(null);
   mockBioEnabled.mockResolvedValue(false);
   mockRegisterPush.mockResolvedValue('registered');
+  mockTakeNotification.mockResolvedValue(false);
   mockPublicPost.mockResolvedValue({ ok: true, json: async () => ({ access_token: 'access', refresh_token: 'refresh' }) });
 });
 
@@ -99,4 +102,16 @@ it('does not register for a failed sign-in', async () => {
   await act(async () => { field(tree, 'Password').props.onChangeText('wrong-pass'); });
   await act(async () => { await field(tree, 'Sign in').props.onPress(); });
   expect(mockRegisterPush).not.toHaveBeenCalled();
+});
+
+
+it('resumes a notification tap only after successful account authentication', async () => {
+  mockTakeNotification.mockResolvedValue(true);
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Signin />); });
+  await act(async () => { field(tree, 'Email or phone').props.onChangeText('b@zitch.test'); });
+  await act(async () => { field(tree, 'Password').props.onChangeText('secret-pass'); });
+  await act(async () => { await field(tree, 'Sign in').props.onPress(); });
+  expect(mockReplace).toHaveBeenCalledWith('/notifications');
+  act(() => tree.unmount());
 });

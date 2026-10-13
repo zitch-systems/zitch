@@ -26,6 +26,8 @@ workflows:
     scripts:
       - name: Install dependencies
         script: npm ci
+      - name: Configure Android push
+        script: node scripts/android-google-services.cjs
       - name: Expo prebuild (generate the native android/ project)
         script: npx expo prebuild --platform android --clean
       - name: Build release APK
@@ -58,6 +60,7 @@ workflows:
           - 'package.json'
           - 'package-lock.json'
           - 'app.json'
+          - 'app.config.js'
           - 'eas.json'
           - 'codemagic.yaml'
     # Optional — email the APK link when the build finishes:
@@ -83,6 +86,7 @@ workflows:
         EXPO_PUBLIC_API_URL: "https://api.zitch.ng"
         ZITCH_CONFIGURE_UPLOAD_SIGNING: "true"
         ZITCH_REQUIRE_UPLOAD_KEY: "true"
+        ZITCH_REQUIRE_PUSH_CONFIG: "true"
     cache:
       cache_paths:
         - $CM_BUILD_DIR/node_modules
@@ -93,6 +97,8 @@ workflows:
           test "$CM_BRANCH" = main || { echo 'Production signing requires main.' >&2; exit 1; }
       - name: Install dependencies
         script: npm ci
+      - name: Configure Android push
+        script: node scripts/android-google-services.cjs
       - name: Expo prebuild
         script: npx expo prebuild --platform android --clean
       - name: Build signed production AAB

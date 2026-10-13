@@ -11,6 +11,7 @@ from wema_vas.identity import cipher
 from wema_vas.models import VirtualAccount
 from wema_vas.partnership import return_inventory
 from wema_vas.transaction_query import query_configuration
+from utility.launch_readiness import financial_controls_report
 
 
 def _present(value):
@@ -111,6 +112,7 @@ def deployment_report():
             },
             "vas_readiness": readiness_report(stage),
             "partnership_return": return_inventory(),
+            "financial_controls": financial_controls_report(),
             "scope": "Configuration and local database inspection only. No provider calls, credential values, "
                      "identity values or financial changes. Provider acceptance, SMS delivery, Flow publication "
                      "and bank settlement remain unverified.",

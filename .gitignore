@@ -34,3 +34,6 @@ web-build/
 
 expo-env.d.ts
 # @end expo-cli
+
+# Provided by the build environment; never commit Firebase configuration.
+/google-services.json

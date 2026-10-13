@@ -36,7 +36,7 @@ jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: (...args: unknown[]) => mockRouterPush(...args), replace: jest.fn() },
   useLocalSearchParams: () => mockSearchParams,
 }));
-jest.mock('@/lib/secureStore', () => ({ getToken: (...args: unknown[]) => mockGetToken(...args) }));
+jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => 0, getToken: (...args: unknown[]) => mockGetToken(...args) }));
 jest.mock('@/lib/api', () => ({ publicPost: (path: string, body: unknown) => global.fetch(path, { body: JSON.stringify(body) }), apiPost: (...args: unknown[]) => mockApiPost(...args) }));
 jest.mock('@/lib/pendingSpend', () => ({
   acquireSpendAttempt: (...args: unknown[]) => mockAcquireSpendAttempt(...args),

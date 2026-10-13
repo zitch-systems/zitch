@@ -725,6 +725,9 @@ def approve_execute(request):
     if err:
         return err
     user = request.user_obj
+    if pa.action_type == "unlock":
+        from .router import _unlock_proof
+        pa._unlock_proof = _unlock_proof(user, pa.msisdn)
     pin_ok, pin_code, pin_message = evaluate_transaction_pin(
         user, (request.data.get("transaction_pin") or "").strip())
     if not pin_ok:
@@ -737,7 +740,7 @@ def approve_execute(request):
         import logging
 
         logging.getLogger("whatsapp").exception("approve_execute failed for pa=%s", pa.id)
-        return fail("Something went wrong completing that. If you were charged it will auto-reverse.",
+        return fail("We couldn't confirm the outcome yet. Check your transaction history before trying again, or contact support.",
                     status=502)
     # `success` means the approval was accepted and the action ran; `outcome` is
     # what happened to the money (success / pending / failed, or done when the
