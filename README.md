@@ -95,6 +95,6 @@ npm run test:watch
 
 ## Notes
 
-- Feature availability is determined by the backend and provider readiness. In particular, VAS transfers and VAS-funded bills remain disabled until bank acceptance; an APK build does not activate them.
+- Feature availability is determined by the backend and provider readiness. Wema Partnership is the sole banking integration. Unresolved historical funding remains under review; an APK build does not certify bank settlement or launch readiness.
 - The `docs/design_handoff_zitch_revamp/` bundle is an HTML/React prototype used as the
   visual source of truth for the planned revamp. It is **not** production code.

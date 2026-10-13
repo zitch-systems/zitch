@@ -134,10 +134,10 @@ class PublishFlowCommandTests(SimpleTestCase):
         self.get.return_value = _Resp({"id": "777", "status": "DRAFT"})
         self.post.side_effect = [_Resp({"id": "777"}), _Resp({"success": True}), _Resp({"success": True})]
         self.report.return_value = _report(flow_id="777")
-        output = _run("--create-name", "Zitch reviewed VAS", "--endpoint-uri", ENDPOINT)
+        output = _run("--create-name", "Zitch Partnership", "--endpoint-uri", ENDPOINT)
         create, bind, upload = self.post.call_args_list
         self.assertTrue(create.args[0].endswith("/88/flows"))
-        self.assertEqual(create.kwargs["json"], {"name": "Zitch reviewed VAS", "categories": ["SIGN_UP", "OTHER"]})
+        self.assertEqual(create.kwargs["json"], {"name": "Zitch Partnership", "categories": ["SIGN_UP", "OTHER"]})
         self.assertTrue(bind.args[0].endswith("/777"))
         self.assertEqual(bind.kwargs["files"], {"endpoint_uri": (None, ENDPOINT)})
         self.assertNotIn("json", bind.kwargs)
@@ -150,7 +150,7 @@ class PublishFlowCommandTests(SimpleTestCase):
 
     def test_create_can_use_explicit_waba_without_backend_waba_configuration(self):
         with override_settings(WHATSAPP={k: v for k, v in LIVE["WHATSAPP"].items() if k != "WABA_ID"}):
-            output = _run("--create-name", "New VAS", "--waba-id", "123", "--endpoint-uri", ENDPOINT, "--dry-run")
+            output = _run("--create-name", "New Partnership", "--waba-id", "123", "--endpoint-uri", ENDPOINT, "--dry-run")
         self.assertIn("no requests sent", output)
         self.post.assert_not_called()
         self.get.assert_not_called()

@@ -42,48 +42,10 @@ services:
     # remains available at /healthz for diagnostics without making provider calls.
     healthCheckPath: /readyz
     envVars:
-      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
-      - key: BANK_ACCOUNT_PROVIDER
-        sync: false
+      # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         sync: false
       - key: WEMA_BILLER_MODE
-        sync: false
-      - key: WEMA_VAS_BILLER_ENABLED
-        sync: false
-      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
-        sync: false
-      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
-        sync: false
-      - key: WEMA_VAS_ENABLED
-        sync: false
-      - key: WEMA_VAS_MODE
-        sync: false
-      - key: WEMA_VAS_PREFIX
-        sync: false
-      - key: WEMA_VAS_TOKEN
-        sync: false
-      - key: WEMA_VAS_IDENTITY_KEYS
-        sync: false
-      - key: WEMA_VAS_TRUST_TLS_PROXY
-        sync: false
-      - key: WEMA_VAS_ENABLE_ENROLLMENT
-        sync: false
-      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
-        sync: false
-      - key: WEMA_VAS_RELEASE_PHASE
-        sync: false
-      - key: WEMA_VAS_PILOT_USER_IDS
-        sync: false
-      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
-        sync: false
-      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
-        sync: false
-      - key: WEMA_VAS_COLLECTION_ACCOUNT
-        sync: false
-      - key: WEMA_VAS_NIP_QUERY_URL
-        sync: false
-      - key: WEMA_VAS_ETRANZACT_QUERY_URL
         sync: false
       - key: WHATSAPP_FLOW_ID
         sync: false
@@ -94,10 +56,6 @@ services:
       - key: WHATSAPP_FLOW_CTA
         sync: false
       - key: WHATSAPP_FLOW_PASSWORD_SCREEN
-        sync: false
-      - key: WHATSAPP_FLOW_VAS_ENROLLMENT_ENABLED
-        sync: false
-      - key: WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID
         sync: false
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
@@ -191,7 +149,7 @@ services:
       # cards on CARD_ISSUER (Wema card issuing not wired yet).
       # Optional diagnostics. WEMA_DIAG_TOKEN enables POST /wema-diagnose with a
       # Bearer token and JSON test input (never put BVN/NIN/OTP in a URL).
-      # DIAG_TOKEN protects the VAS, SMS and callback diagnostics. All use bearer
+      # DIAG_TOKEN protects the biller, SMS and callback diagnostics. All use bearer
       # headers; SMS and Wema identity inputs are POST JSON, never URL parameters.
       - key: DIAG_TOKEN
         sync: false
@@ -216,13 +174,9 @@ services:
       # Bank-PAYOUT + recipient name-enquiry rail: "wema" (the sole rail); blank => wema.
       - key: PAYOUT_PROVIDER
         sync: false
-      # Set KYC_PROVIDER=prembly for VAS identity verification.
-      # Consumers share the selection; missing credentials must not fall back to bank KYC.
-      - key: KYC_PROVIDER
-        sync: false
       - key: VAS_PROVIDER
         sync: false
-      # Prembly carries BVN/NIN ownership lookup and other supported identity checks.
+      # Prembly credentials support independently validated higher-tier identity checks.
       # Consumers inherit these values so app and WhatsApp cannot drift.
       - key: PREMBLY_BASE_URL
         sync: false
@@ -307,6 +261,7 @@ services:
         sync: false
       - key: WEMA_AUTH_REQUIRE_SECURITY_INFO
         sync: false
+      # Partnership airtime/data status decoding; this is not virtual-account configuration.
       - key: WEMA_VAS_STATUS_LEGEND
         sync: false
       - key: WEMA_BILLS_STATUS_LEGEND
@@ -438,59 +393,15 @@ services:
     autoDeployTrigger: checksPass
     # Build-time schema gate: a failed candidate is never promoted, so the prior
     # healthy worker keeps running until zitch-api has applied shared migrations.
-    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
-    startCommand: "python manage.py whatsapp_worker --batch-size 50 --poll-seconds 0.5"
+    buildCommand: "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
+    startCommand: "python manage.py migrate --check && python manage.py whatsapp_worker --batch-size 50 --poll-seconds 0.5"
     maxShutdownDelaySeconds: 60
     envVars:
-      - key: WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID}
-      - key: WHATSAPP_FLOW_VAS_ENROLLMENT_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_FLOW_VAS_ENROLLMENT_ENABLED}
-      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
-      - key: BANK_ACCOUNT_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
+      # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
-      - key: WEMA_VAS_BILLER_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
-      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
-      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
-      - key: KYC_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
-      - key: WEMA_VAS_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
-      - key: WEMA_VAS_MODE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_MODE}
-      - key: WEMA_VAS_PREFIX
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PREFIX}
-      - key: WEMA_VAS_TOKEN
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TOKEN}
-      - key: WEMA_VAS_IDENTITY_KEYS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_IDENTITY_KEYS}
-      - key: WEMA_VAS_TRUST_TLS_PROXY
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
-      - key: WEMA_VAS_ENABLE_ENROLLMENT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
-      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
-      - key: WEMA_VAS_RELEASE_PHASE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_RELEASE_PHASE}
-      - key: WEMA_VAS_PILOT_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PILOT_USER_IDS}
-      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_COLLECTION_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
-      - key: WEMA_VAS_NIP_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
-      - key: WEMA_VAS_ETRANZACT_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -557,6 +468,7 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BASE_URL}
       - key: WEMA_SIMULATION
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SIMULATION}
+      # Partnership airtime/data status decoding; this is not virtual-account configuration.
       - key: WEMA_VAS_STATUS_LEGEND
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_STATUS_LEGEND}
       - key: WEMA_BILLS_STATUS_LEGEND
@@ -668,54 +580,14 @@ services:
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
     schedule: "5 1 * * *"   # 01:05 UTC daily, after the :00 reconciliation
-    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
-    startCommand: "python manage.py run_maturities"
+    buildCommand: "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
+    startCommand: "python manage.py migrate --check && python manage.py run_maturities"
     envVars:
-      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
-      - key: BANK_ACCOUNT_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
+      # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
-      - key: WEMA_VAS_BILLER_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
-      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
-      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
-      - key: KYC_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
-      - key: WEMA_VAS_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
-      - key: WEMA_VAS_MODE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_MODE}
-      - key: WEMA_VAS_PREFIX
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PREFIX}
-      - key: WEMA_VAS_TOKEN
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TOKEN}
-      - key: WEMA_VAS_IDENTITY_KEYS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_IDENTITY_KEYS}
-      - key: WEMA_VAS_TRUST_TLS_PROXY
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
-      - key: WEMA_VAS_ENABLE_ENROLLMENT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
-      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
-      - key: WEMA_VAS_RELEASE_PHASE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_RELEASE_PHASE}
-      - key: WEMA_VAS_PILOT_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PILOT_USER_IDS}
-      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_COLLECTION_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
-      - key: WEMA_VAS_NIP_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
-      - key: WEMA_VAS_ETRANZACT_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -776,54 +648,14 @@ services:
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
     schedule: "45 3 * * *"   # 03:45 UTC daily, off the hour the other jobs use
-    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
-    startCommand: "python manage.py purge_expired_sessions"
+    buildCommand: "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
+    startCommand: "python manage.py migrate --check && python manage.py purge_expired_sessions"
     envVars:
-      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
-      - key: BANK_ACCOUNT_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
+      # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
-      - key: WEMA_VAS_BILLER_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
-      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
-      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
-      - key: KYC_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
-      - key: WEMA_VAS_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
-      - key: WEMA_VAS_MODE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_MODE}
-      - key: WEMA_VAS_PREFIX
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PREFIX}
-      - key: WEMA_VAS_TOKEN
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TOKEN}
-      - key: WEMA_VAS_IDENTITY_KEYS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_IDENTITY_KEYS}
-      - key: WEMA_VAS_TRUST_TLS_PROXY
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
-      - key: WEMA_VAS_ENABLE_ENROLLMENT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
-      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
-      - key: WEMA_VAS_RELEASE_PHASE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_RELEASE_PHASE}
-      - key: WEMA_VAS_PILOT_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PILOT_USER_IDS}
-      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_COLLECTION_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
-      - key: WEMA_VAS_NIP_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
-      - key: WEMA_VAS_ETRANZACT_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -863,54 +695,14 @@ services:
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
     schedule: "*/10 * * * *"
-    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
-    startCommand: "python manage.py reconcile_wema"
+    buildCommand: "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
+    startCommand: "python manage.py migrate --check && python manage.py reconcile_wema"
     envVars:
-      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
-      - key: BANK_ACCOUNT_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
+      # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
-      - key: WEMA_VAS_BILLER_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
-      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
-      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
-      - key: KYC_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
-      - key: WEMA_VAS_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
-      - key: WEMA_VAS_MODE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_MODE}
-      - key: WEMA_VAS_PREFIX
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PREFIX}
-      - key: WEMA_VAS_TOKEN
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TOKEN}
-      - key: WEMA_VAS_IDENTITY_KEYS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_IDENTITY_KEYS}
-      - key: WEMA_VAS_TRUST_TLS_PROXY
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
-      - key: WEMA_VAS_ENABLE_ENROLLMENT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
-      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
-      - key: WEMA_VAS_RELEASE_PHASE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_RELEASE_PHASE}
-      - key: WEMA_VAS_PILOT_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PILOT_USER_IDS}
-      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_COLLECTION_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
-      - key: WEMA_VAS_NIP_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
-      - key: WEMA_VAS_ETRANZACT_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -965,6 +757,7 @@ services:
       - key: WEMA_BILLS_KEY
         # Optional override; Wallet Services covers bills here.
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLS_KEY}
+      # Partnership airtime/data status decoding; this is not virtual-account configuration.
       - key: WEMA_VAS_STATUS_LEGEND
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_STATUS_LEGEND}
       - key: WEMA_BILLS_STATUS_LEGEND
@@ -1018,54 +811,14 @@ services:
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
     schedule: "35 2 * * *"   # 02:35 UTC daily, off the reconciliation boundary
-    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
-    startCommand: "python manage.py integrity_check --fail-nonzero"
+    buildCommand: "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
+    startCommand: "python manage.py migrate --check && python manage.py integrity_check --fail-nonzero"
     envVars:
-      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
-      - key: BANK_ACCOUNT_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
+      # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
-      - key: WEMA_VAS_BILLER_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
-      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
-      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
-      - key: KYC_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
-      - key: WEMA_VAS_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
-      - key: WEMA_VAS_MODE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_MODE}
-      - key: WEMA_VAS_PREFIX
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PREFIX}
-      - key: WEMA_VAS_TOKEN
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TOKEN}
-      - key: WEMA_VAS_IDENTITY_KEYS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_IDENTITY_KEYS}
-      - key: WEMA_VAS_TRUST_TLS_PROXY
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
-      - key: WEMA_VAS_ENABLE_ENROLLMENT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
-      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
-      - key: WEMA_VAS_RELEASE_PHASE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_RELEASE_PHASE}
-      - key: WEMA_VAS_PILOT_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PILOT_USER_IDS}
-      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_COLLECTION_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
-      - key: WEMA_VAS_NIP_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
-      - key: WEMA_VAS_ETRANZACT_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -1102,57 +855,17 @@ services:
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
     schedule: "5 */6 * * *"
-    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
+    buildCommand: "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
     # Every non-zero ledger/bank divergence is a finance-review incident. The
     # command remains read-only: this only makes the platform surface it until
     # authenticated bank evidence resolves the case.
-    startCommand: "python manage.py reconcile_balances --fail-nonzero"
+    startCommand: "python manage.py migrate --check && python manage.py reconcile_balances --fail-nonzero"
     envVars:
-      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
-      - key: BANK_ACCOUNT_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
+      # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
-      - key: WEMA_VAS_BILLER_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
-      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
-      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
-      - key: KYC_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
-      - key: WEMA_VAS_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
-      - key: WEMA_VAS_MODE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_MODE}
-      - key: WEMA_VAS_PREFIX
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PREFIX}
-      - key: WEMA_VAS_TOKEN
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TOKEN}
-      - key: WEMA_VAS_IDENTITY_KEYS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_IDENTITY_KEYS}
-      - key: WEMA_VAS_TRUST_TLS_PROXY
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
-      - key: WEMA_VAS_ENABLE_ENROLLMENT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
-      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
-      - key: WEMA_VAS_RELEASE_PHASE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_RELEASE_PHASE}
-      - key: WEMA_VAS_PILOT_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PILOT_USER_IDS}
-      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_COLLECTION_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
-      - key: WEMA_VAS_NIP_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
-      - key: WEMA_VAS_ETRANZACT_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -1221,54 +934,14 @@ services:
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
     schedule: "15 6 * * *"   # 06:15 UTC = 07:15 Lagos, after the balance snapshot
-    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
-    startCommand: "python manage.py settlement_report --fail-on-breach"
+    buildCommand: "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
+    startCommand: "python manage.py migrate --check && python manage.py settlement_report --fail-on-breach"
     envVars:
-      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
-      - key: BANK_ACCOUNT_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
+      # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
-      - key: WEMA_VAS_BILLER_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
-      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
-      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
-      - key: KYC_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
-      - key: WEMA_VAS_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
-      - key: WEMA_VAS_MODE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_MODE}
-      - key: WEMA_VAS_PREFIX
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PREFIX}
-      - key: WEMA_VAS_TOKEN
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TOKEN}
-      - key: WEMA_VAS_IDENTITY_KEYS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_IDENTITY_KEYS}
-      - key: WEMA_VAS_TRUST_TLS_PROXY
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
-      - key: WEMA_VAS_ENABLE_ENROLLMENT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
-      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
-      - key: WEMA_VAS_RELEASE_PHASE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_RELEASE_PHASE}
-      - key: WEMA_VAS_PILOT_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PILOT_USER_IDS}
-      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_COLLECTION_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
-      - key: WEMA_VAS_NIP_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
-      - key: WEMA_VAS_ETRANZACT_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
@@ -1330,54 +1003,14 @@ services:
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
     schedule: "5 5 * * *"   # 05:05 UTC = 06:05 Lagos, before the settlement report
-    buildCommand: "pip install -r requirements.txt && python manage.py migrate --check"
-    startCommand: "python manage.py aml_scan --fail-on-overdue"
+    buildCommand: "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
+    startCommand: "python manage.py migrate --check && python manage.py aml_scan --fail-on-overdue"
     envVars:
-      # VAS release settings are operator-owned; never open a rollout on Blueprint sync.
-      - key: BANK_ACCOUNT_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: BANK_ACCOUNT_PROVIDER}
+      # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
-      - key: WEMA_VAS_BILLER_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_ENABLED}
-      - key: WEMA_VAS_BILLER_SOURCE_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_SOURCE_ACCOUNT}
-      - key: WEMA_VAS_BILLER_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_BILLER_APPROVAL_REFERENCE}
-      - key: KYC_PROVIDER
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: KYC_PROVIDER}
-      - key: WEMA_VAS_ENABLED
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLED}
-      - key: WEMA_VAS_MODE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_MODE}
-      - key: WEMA_VAS_PREFIX
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PREFIX}
-      - key: WEMA_VAS_TOKEN
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TOKEN}
-      - key: WEMA_VAS_IDENTITY_KEYS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_IDENTITY_KEYS}
-      - key: WEMA_VAS_TRUST_TLS_PROXY
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_TRUST_TLS_PROXY}
-      - key: WEMA_VAS_ENABLE_ENROLLMENT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ENABLE_ENROLLMENT}
-      - key: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS}
-      - key: WEMA_VAS_RELEASE_PHASE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_RELEASE_PHASE}
-      - key: WEMA_VAS_PILOT_USER_IDS
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_PILOT_USER_IDS}
-      - key: WEMA_VAS_LIVE_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_LIVE_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_GENERAL_APPROVAL_REFERENCE
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_GENERAL_APPROVAL_REFERENCE}
-      - key: WEMA_VAS_COLLECTION_ACCOUNT
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_COLLECTION_ACCOUNT}
-      - key: WEMA_VAS_NIP_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_NIP_QUERY_URL}
-      - key: WEMA_VAS_ETRANZACT_QUERY_URL
-        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_ETRANZACT_QUERY_URL}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"

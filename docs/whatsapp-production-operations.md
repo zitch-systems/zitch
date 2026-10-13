@@ -1,6 +1,6 @@
 # WhatsApp production operations
 
-Current operating route: **Wema Partnership**. See [the current release review](partnership-audit-2026-10-13.md) and [Partnership return](wema-partnership-return.md) before changing provider configuration. VAS enrollment is closed; historical VAS notifications and reconciliation remain enabled.
+Current operating route: **Wema Partnership only**. See [the current release review](partnership-audit-2026-10-13.md) and [Partnership deployment and historical funds](wema-partnership-return.md). The separate virtual-account integration, enrollment, callbacks and customer screens are removed. Historical records and liability holds remain protected.
 
 ## Runtime and delivery
 
@@ -15,10 +15,10 @@ Public `/healthz` and `/readyz` establish service health only. Use authenticated
 - signed incoming events reach the correct account and number;
 - the dedicated worker is processing current jobs;
 - outgoing messages are accepted and delivered;
-- the configured published Flow contains the screens the backend opens;
+- the configured published Flow matches the reviewed `backend/whatsapp/flow_assets/pin_flow.json`, including removal of retired setup screens and actions;
 - payment and verification callbacks reach the correct live endpoints.
 
-A published Flow or a valid Meta token alone does not prove a complete customer journey. Meta can omit subscribed-field metadata; an omitted field list is unknown, not proof of an absent subscription.
+A backend deploy does not update a published Flow: publish and select the reviewed asset, then verify its live contents. A published Flow or a valid Meta token alone does not prove a complete customer journey. Meta can omit subscribed-field metadata; an omitted field list is unknown, not proof of an absent subscription.
 
 ## Signup and identity
 
@@ -38,7 +38,7 @@ An uncertain account-creation result remains under review. Do not delete the att
 
 PIN authorization and insertion into the execution queue occur atomically. Worker retries use the original durable action/reference and cannot create a second purchase. Queued unlocks require the same current linked channel and credential state; unlinking or changing credentials invalidates the queued unlock.
 
-Opening-history holds, unresolved migration exposures, account suspension and reversal evidence remain effective on both channels. Show total funds, available funds and review status consistently. A bank or provider timeout is not proof of payment failure and must not trigger an assumed refund.
+Opening-history holds, historical funding liabilities, account suspension and reversal evidence remain effective on both channels. A `legacy_funding_review` response hides funding instructions and blocks new spending; obsolete client actions cannot reactivate retired setup. Show total funds, available funds and review status consistently. A bank or provider timeout is not proof of payment failure and must not trigger an assumed refund.
 
 Payment receipts and Flow completion screens must reflect the canonical ledger and any active reversal review. A “Done” screen must not convert an unresolved transaction into success.
 

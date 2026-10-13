@@ -70,6 +70,11 @@ KNOWN_SELF_RENDERS = [
 
 class FlowFileContractTests(SimpleTestCase):
 
+    def test_only_active_partnership_screens_are_publishable(self):
+        self.assertFalse(any(name.startswith("VAS_") for name in BY_ID))
+        self.assertFalse(any(name.startswith("VAS_") for name in ROUTES))
+        self.assertFalse(any(name.startswith("VAS_") for targets in ROUTES.values() for name in targets))
+
     def test_every_declared_property_carries_an_example(self):
         missing = [(s["id"], k) for s in FLOW["screens"]
                    for k, spec in (s.get("data") or {}).items() if "__example__" not in spec]
@@ -145,13 +150,13 @@ class FlowFileContractTests(SimpleTestCase):
                     yield from secret_inputs(v)
 
         found = [inp for s in FLOW["screens"] for inp in secret_inputs(s["layout"])]
-        self.assertEqual(len(found), 15)  # includes four private VAS identity/code pages
+        self.assertEqual(len(found), 11)
         for inp in found:
             # The email ADDRESS rides the same field name but is not digits —
             # it keeps the email keyboard. Everything else is a passcode pad.
             expected = "email" if inp.get("input-type") == "email" else "passcode"
             self.assertEqual(inp.get("input-type"), expected)
-        self.assertEqual(sum(1 for i in found if i.get("input-type") == "passcode"), 14)
+        self.assertEqual(sum(1 for i in found if i.get("input-type") == "passcode"), 10)
 
     def test_identity_fields_are_eleven_and_code_fields_six(self):
         """An incomplete BVN is refused AT THE FIELD (red outline), and a code

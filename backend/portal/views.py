@@ -252,7 +252,7 @@ def _providers() -> list:
 
     rows = [
         ("Wema", "Funding · payouts · KYC", payout_live()),
-        ("partner-bank VAS", "Airtime · data · bills", vtu_live()),
+        ("Bank bill payments", "Airtime · data · bills", vtu_live()),
         ("Fincra", "FX rates & settlement", bool(getattr(st, "FINCRA", {}).get("SECRET_KEY"))),
         ("Meta WhatsApp", "Chat channel", bool(st.WHATSAPP.get("TOKEN"))),
         ("Termii", "SMS / OTP", sms_live()),
@@ -459,10 +459,10 @@ def txn_requery(request):
     if is_bank_payout(txn):
         # A bank transfer settles via the reconcile_wema poller, not a VTU
         # requery — don't query the wrong provider for a reference it never saw.
-        return fail("Bank transfers reconcile via the disbursement webhook, not partner-bank VAS requery", status=409)
+        return fail("Bank transfers reconcile via the disbursement webhook; use bank transfer reconciliation", status=409)
     if not is_vas_purchase(txn):
         return fail(
-            "This transaction belongs to a different provider rail and cannot use VAS requery",
+            "This transaction cannot use bank bill-payment reconciliation",
             status=409,
             code="wrong_reconciliation_rail",
         )

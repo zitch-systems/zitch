@@ -137,49 +137,41 @@ def bank_history_review_required(wallet) -> bool:
 
 
 def customer_funding_account(user) -> dict:
-    """Customer-visible funding details without replacing legacy account records."""
-    from wema_vas.enrollment import customer_account_payload
+    """Return only usable Partnership details; never relabel retired accounts."""
     from utility.providers import partnership_new_business_allowed
+    from wallet.partnership import (REVIEW_MESSAGE, first_partnership_setup,
+                                    legacy_funding_blockers, partnership_account_number)
 
-    payload = customer_account_payload(user)
-    if payload is not None:
-        payload["bill_payments_available"] = biller_spending_available(user)
-        payload["transfers_available"] = False
-        if payload["bill_payments_available"] and not payload.get("test_mode"):
-            payload["migration_message"] = "Bill payments are available. Transfers are unavailable during the bank migration."
-        return payload
-    if not partnership_new_business_allowed(user):
-        from wema_vas.partnership import REVIEW_MESSAGE, return_enabled
-        if return_enabled():
-            return {"account_number": "", "account_name": "", "bank_name": "",
-                    "bank_accounts": [], "bank_tier": 0, "has_account": False,
-                    "account_setup_state": "partnership_review", "provider": "partnership",
-                    "available": False, "spending_available": False,
-                    "bill_payments_available": False, "transfers_available": False,
-                    "enrollment_available": False, "migration_message": REVIEW_MESSAGE}
-        return {"account_number": "", "account_name": "", "bank_name": "",
-                "bank_accounts": [], "bank_tier": 0, "has_account": False,
-                "account_setup_state": "migration_pending", "provider": "wema_vas",
-                "available": False, "spending_available": False,
-                "bill_payments_available": biller_spending_available(user), "transfers_available": False,
-                "enrollment_available": True,
-                "migration_message": ("Bill payments remain available. Complete secure virtual-account enrollment for new funding details."
-                                      if biller_spending_available(user) else
-                                      "Complete secure virtual-account enrollment to continue account setup.")}
     wallet = get_or_create_wallet(user)
-    from wema_vas.partnership import first_partnership_setup
-    history_review = bank_history_review_required(wallet)
-    return {"account_number": wallet.account_number, "account_name": wallet.account_name,
-            "bank_name": wallet.bank_name, "bank_accounts": wallet.bank_accounts or [],
-            "bank_tier": wallet.bank_tier, "has_account": bool(wallet.account_number),
-            "provider": "partnership", "available": bool(wallet.account_number),
-            "bill_payments_available": not history_review and biller_spending_available(user),
-            "transfers_available": not history_review,
-            "enrollment_available": False,
-            "migration_message": BANK_HISTORY_REVIEW_MESSAGE if history_review else "",
-            "spending_available": not history_review,
-            **({"account_setup_state": "bank_history_review"} if history_review else {}),
-            "partnership_setup_required": first_partnership_setup(user)}
+    review = bool(legacy_funding_blockers(user))
+    valid_account = partnership_account_number(wallet.account_number)
+    # A retained retired number in Wallet is evidence to review, not a new NUBAN.
+    invalid_account = bool(wallet.account_number) and not valid_account
+    review = review or invalid_account
+    allowed = user.is_active and not review and partnership_new_business_allowed(user)
+    has_account = allowed and valid_account
+    history_review = has_account and bank_history_review_required(wallet)
+    spending = allowed and not history_review
+    account_state = ("legacy_funding_review" if review else
+                     "bank_history_review" if history_review else
+                     "partnership_unavailable" if not allowed else "ready" if has_account else "")
+    return {"account_number": wallet.account_number if has_account else "",
+            "account_name": wallet.account_name if has_account else "",
+            "bank_name": wallet.bank_name if has_account else "",
+            # The singular bank-confirmed account is the only active funding source.
+            "bank_accounts": ([{"account_number": wallet.account_number,
+                               "account_name": wallet.account_name,
+                               "bank_name": wallet.bank_name}] if has_account else []),
+            "bank_tier": wallet.bank_tier if has_account else 0,
+            "has_account": has_account, "provider": "partnership",
+            "available": has_account, "can_fund": has_account,
+            "legacy_funding_review": review,
+            "bill_payments_available": spending and biller_spending_available(user),
+            "transfers_available": spending, "spending_available": spending,
+            "migration_message": (REVIEW_MESSAGE if review else
+                                  BANK_HISTORY_REVIEW_MESSAGE if history_review else ""),
+            **({"account_setup_state": account_state} if account_state else {}),
+            "partnership_setup_required": allowed and first_partnership_setup(user)}
 
 
 def wallet_expected_balance(user_id) -> Decimal:
@@ -212,37 +204,22 @@ def wallet_expected_balance(user_id) -> Decimal:
 
 
 def wallet_balance_payload(user, wallet=None) -> dict:
-    """Separate retained ledger totals from money available for VAS bills.
-
-    These are display values. Actual debits still resolve and reserve their
-    canonical funding source under the wallet lock.
-    """
-    from wema_vas.models import VirtualAccount
-    from wema_vas.services import account_balance
+    """Keep historical funds visible without making them Partnership money."""
+    from legacy_funding.models import VirtualAccount
+    from wallet.legacy_funding import account_balance
+    from wallet.partnership import partnership_allowed, partnership_account_number
 
     wallet = wallet or get_or_create_wallet(user)
     total = wallet.balance
-    # A 711 test account never migrates or reclassifies real customer funds.
     account = VirtualAccount.objects.filter(user_id=user.pk, mode=VirtualAccount.LIVE).first()
-    if account is None:
-        history_review = bank_history_review_required(wallet)
-        return {"balance": total, "available_balance": Decimal("0.00") if history_review else total,
-                "historical_balance": total if history_review else Decimal("0.00"),
-                "vas_balance": Decimal("0.00")}
-    vas_balance = (max(Decimal("0.00"), account_balance(account))
-                   if account.mode == VirtualAccount.LIVE else Decimal("0.00"))
-    from wema_vas.partnership import return_enabled, partnership_allowed
-    if return_enabled():
-        available = (max(Decimal("0.00"), total)
-                     if partnership_allowed(user) and not bank_history_review_required(wallet)
-                     else Decimal("0.00"))
-        return {"balance": total, "available_balance": available,
-                "historical_balance": max(Decimal("0.00"), total - available), "vas_balance": vas_balance}
-    available = (min(max(Decimal("0.00"), total), vas_balance)
-                 if biller_spending_available(user) else Decimal("0.00"))
+    historical = max(Decimal("0.00"), account_balance(account)) if account else Decimal("0.00")
+    invalid_account = bool(wallet.account_number) and not partnership_account_number(wallet.account_number)
+    held = (not user.is_active or not partnership_allowed(user) or invalid_account
+            or bank_history_review_required(wallet))
+    available = Decimal("0.00") if held else max(Decimal("0.00"), total)
     return {"balance": total, "available_balance": available,
-            "historical_balance": max(Decimal("0.00"), total - vas_balance),
-            "vas_balance": vas_balance}
+            "historical_balance": max(Decimal("0.00"), total - available),
+            "legacy_funding_balance": historical}
 
 
 def customer_spendable_balance(user, *, wallet=None) -> Decimal:
@@ -263,7 +240,7 @@ def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
 
     wallet = get_or_create_wallet(user)
     if not partnership_new_business_allowed(user):
-        wallet.reserve_error = "Complete secure virtual-account enrollment to continue account setup."
+        wallet.reserve_error = "Bank account setup is temporarily unavailable. Please contact support."
         return wallet
     if wallet.account_number:
         return wallet
@@ -1261,12 +1238,15 @@ def wema_provisioned_wallets():
     polled without needing a manual data repair; demo/mock accounts stay
     excluded.
     """
+    from legacy_funding.models import VirtualAccount
+
     return (Wallet.objects
             .filter(Q(account_reference__startswith=WEMA_ACCOUNT_REF_PREFIX)
                     | (Q(account_reference__startswith="ZITCH-WALLET-")
                        & Q(bank_name__icontains="Wema"))
                     | Q(account_number__regex=r"^045[0-9]{7}$"))
             .exclude(account_number="")
+            .exclude(account_number__in=VirtualAccount.objects.values("number"))
             .exclude(bank_name__icontains=DEMO_ACCOUNT_MARKER))
 
 
@@ -2344,7 +2324,11 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
     wallet; when omitted they are looked up.
     """
     from utility import wema
+    from legacy_funding.models import VirtualAccount
 
+    # Retired account receipts cannot enter through the Partnership statement rail.
+    if wallet.account_number and VirtualAccount.objects.filter(number=wallet.account_number).exists():
+        return None
     norm = wema.normalize_transaction(tx)
     if not norm["is_credit"] or not norm["reference"]:
         return None
@@ -3195,35 +3179,16 @@ def bank_spent_today(user) -> Decimal:
     return sum((r.amount for r in rows if debits_bank(r)), Decimal("0"))
 
 
-def vas_reconciliation_scope() -> dict:
-    """Expose the missing VAS collection-bank evidence without inventing assets.
-
-    Account/receipt data is internal evidence. It cannot establish the bank's
-    collection balance or substitute for a production transaction search contract.
-    """
-    from wema_vas.models import VirtualAccount
-    from wema_vas.config import config
-
-    live_accounts = VirtualAccount.objects.filter(mode=VirtualAccount.LIVE).count()
-    values = config()
-    required = bool(live_accounts or (values.get("ENABLED") and values.get("MODE") == "live"))
-    return {"vas_live_accounts": live_accounts,
-            "vas_collection_required": required,
-            "vas_collection_balance": None,
-            "vas_collection_verified": False if required else None}
-
-
 def assert_customer_spending_available(user) -> None:
-    """Deny new spend across all customer channels before any ledger mutation.
-
-    Existing settlement/refund paths never call this guard. Keep the old account
-    and callback configuration available until its outstanding money is settled.
-    """
+    """Deny new spends while preserving historical settlement/refund paths."""
     from utility.providers import partnership_new_business_allowed, PARTNERSHIP_ARCHIVED_MESSAGE
-    from wema_vas.services import assert_can_spend
+    from wallet.partnership import REVIEW_MESSAGE, partnership_allowed, partnership_account_number
 
-    assert_can_spend(user)
-    if not partnership_new_business_allowed(user):
+    wallet = Wallet.objects.get(user=user)
+    if (not partnership_allowed(user)
+            or (wallet.account_number and not partnership_account_number(wallet.account_number))):
+        raise LimitExceeded(REVIEW_MESSAGE)
+    if not user.is_active or not partnership_new_business_allowed(user):
         raise LimitExceeded(PARTNERSHIP_ARCHIVED_MESSAGE)
 
 
@@ -3234,53 +3199,28 @@ def is_biller_service(service) -> bool:
 
 
 def _biller_funding_context(user, amount=Decimal("0"), *, wallet=None):
-    """Resolve eligibility and reserve only customer-attributable money.
-
-    The debit caller holds Wallet's lock. A bank collection total is never a
-    customer balance, and old NUBAN deposits cannot fund a migrated customer's bill.
-    """
+    """Reserve new bills only against the customer's own Partnership account."""
     from utility.providers import biller_enabled, partnership_new_business_allowed
     from utility import wema
-    from wema_vas.config import approval_reference_present, config
-    from wema_vas.enrollment import enrollment_available
-    from wema_vas.models import VirtualAccount
-    from wema_vas.services import account_balance
+    from wallet.partnership import REVIEW_MESSAGE, partnership_allowed, partnership_account_number
 
     if not user.is_active or not biller_enabled():
         raise LimitExceeded("Bill payments are temporarily unavailable.")
+    if not partnership_allowed(user):
+        raise LimitExceeded(REVIEW_MESSAGE)
+    if not partnership_new_business_allowed(user):
+        raise LimitExceeded("Bill payments are temporarily unavailable.")
     wallet = wallet or Wallet.objects.get(user=user)
-    # Retained validation records are not a live cutover or a funding source.
-    account = VirtualAccount.objects.filter(user=user, mode=VirtualAccount.LIVE).first()
-    from wema_vas.partnership import REVIEW_MESSAGE, return_enabled, partnership_allowed
-    if account is not None and return_enabled():
-        if not partnership_allowed(user):
-            raise LimitExceeded(REVIEW_MESSAGE)
-        account = None
-    if account is not None:
-        if not account.active or account.mode != VirtualAccount.LIVE or account.prefix == "711":
-            raise LimitExceeded("Your account is restricted or unavailable for bill payments.")
-        source = getattr(settings, "WEMA_VAS_BILLER_SOURCE_ACCOUNT", "")
-        approval = getattr(settings, "WEMA_VAS_BILLER_APPROVAL_REFERENCE", "")
-        if (getattr(settings, "WEMA_VAS_BILLER_ENABLED", False) is not True
-                or not enrollment_available(user)
-                or not isinstance(source, str) or not re.fullmatch(r"[0-9]{10}", source)
-                or source.startswith("711") or source == account.number
-                or source != config().get("COLLECTION_ACCOUNT")
-                or not approval_reference_present(approval)
-                or Wallet.objects.filter(account_number=source).exists()
-                or VirtualAccount.objects.filter(number=source).exists()):
-            raise LimitExceeded("Bill payments on your new account are awaiting activation.")
-        if account_balance(account) < Decimal(str(amount)):
-            raise LimitExceeded("Your available virtual-account balance cannot cover this bill.")
-        return source, account, approval
     source = wallet.account_number
-    if re.fullmatch(r"[0-9]{10}", source or "") and not source.startswith("711"):
+    if partnership_account_number(source):
         return source, None, ""
-    # Preserve isolated simulated purchases; no unbound live or archived spend.
+    # A retained retired number can never become a simulation funding source.
+    if source:
+        raise LimitExceeded(REVIEW_MESSAGE)
     if ((settings.DEBUG or getattr(settings, "TESTING", False))
-            and not wema.wema_live() and partnership_new_business_allowed(user)):
+            and not wema.wema_live()):
         return None
-    raise LimitExceeded("Your existing bank account is required for bill payments.")
+    raise LimitExceeded("Your Partnership bank account is required for bill payments.")
 
 
 def biller_spending_available(user) -> bool:

@@ -242,6 +242,9 @@ def resolve_approve_token(token: str):
         return None
     if not hmac.compare_digest(sig, _sig(f"{_AP_PREFIX}{pa.id}:{pa.msisdn}:{pa.user_id}")):
         return None
+    from .retired_setup import is_retired_setup
+    if is_retired_setup(pa):
+        return None
     return pa
 
 
@@ -259,14 +262,9 @@ def resolve_identity_token(token: str):
         return None
     if not hmac.compare_digest(sig, _sig(f"{_ID_PREFIX}{pa.id}:{pa.msisdn}")):
         return None
-    if pa.payload.get("vas_identity"):
-        from .vas_identity import bound
-        if not bound(pa, pa.user):
-            return None
-    elif pa.payload.get("vas_contacts"):
-        from .vas_identity import contact_bound
-        if not contact_bound(pa, pa.user):
-            return None
+    from .retired_setup import is_retired_setup
+    if is_retired_setup(pa):
+        return None
     return pa
 
 
@@ -555,6 +553,9 @@ def resolve_flow_token(token: str):
     if pa is None or pa.state not in (FLOW_PIN_STATE, FLOW_FORM_STATE, FLOW_VTU_STATE) or pa.expired:
         return None
     if not hmac.compare_digest(sig, _sig(f"{pa.id}:{pa.msisdn}")):
+        return None
+    from .retired_setup import is_retired_setup
+    if is_retired_setup(pa):
         return None
     return pa
 
@@ -868,12 +869,6 @@ def _handle_flow_request(payload: dict) -> dict:
     if not isinstance(token, str) or len(token) > 128:
         return _result_screen("Invalid request. Please start again in the chat.", status="failed")
 
-    # A distinct signature domain/state keeps an ordinary KYC/payment token
-    # from authorising encrypted identity retention for virtual accounts.
-    from .vas_flow import PREFIX as VAS_PREFIX, handle as handle_vas
-    if str(token).startswith(VAS_PREFIX):
-        return handle_vas(token, action, data, str(payload.get("screen") or ""))
-
     # "Done" normally ends the outcome page. If the first response was pending,
     # however, the rail may have settled after Meta rendered that page. Re-read
     # the ledger first; a terminal result is shown once, a still-pending result
@@ -947,13 +942,6 @@ def _handle_flow_request(payload: dict) -> dict:
             # An armed challenge means this submit is the CODE, not the number:
             # the identity was accepted on the previous exchange of this session.
             if pa.payload.get("id_otp_hash"):
-                if pa.payload.get("vas_identity") and payload.get("screen") in {IDENTITY_SCREEN, IDENTITY_RETRY}:
-                    from accounts.models import hash_identifier
-                    number = data.get("number")
-                    if (isinstance(number, str) and len(number) == 11 and number.isascii() and number.isdigit()
-                            and hmac.compare_digest(hash_identifier(number), str(pa.payload.get("identity_hash") or ""))):
-                        return _identity_otp_screen(pa)
-                    return _success_screen("This identity submission changed. Reply 8 in the chat to start again.")
                 return _submit_identity_otp(pa, data)
             return _submit_identity(pa, data)
         if kind == "email":
@@ -1485,7 +1473,7 @@ def _submit_identity(pa, data: dict) -> dict:
             # and test deployments where Wema account creation is unavailable.
             from wallet import views as wallet_views
 
-            if (not pa.payload.get("vas_identity") and wallet_views._wema_funding_enabled()
+            if (wallet_views._wema_funding_enabled()
                     and not bool((getattr(settings, "WEMA", {}) or {}).get("SIMULATION"))):
                 pa.action_type = "add_account"
                 pa.payload["id_type"] = kind

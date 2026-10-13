@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback, use
 import { getToken, getSessionGeneration, saveDisplayName, saveSpendAccountNamespace } from '@/lib/secureStore';
 import { apiPost, apiJson } from '@/lib/api';
 import type { Txn } from '@/components/design/ui';
-import { walletBalances, walletCapabilities } from '@/lib/services/wallet';
+import { isFundingAccountReady, walletBalances, walletCapabilities } from '@/lib/services/wallet';
 
 // An external bank account the user linked via Mono open banking. Mirrors the
 // backend banklink.views._serialize shape (balance is display-only/cached).
@@ -88,12 +88,12 @@ export const transactionParams = (txn: Txn) => ({
 });
 
 type WalletValue = {
-  /** Spendable funds for existing purchase consumers; never the VAS aggregate. */
+  /** Spendable funds for existing purchase consumers; never funds under review. */
   balance: number;
   availableBalance: number;
   totalBalance: number;
   historicalBalance: number;
-  fundingProvider?: 'partnership' | 'wema_vas';
+  fundingProvider?: 'partnership';
   firstName: string;
   fullName: string;
   avatar: string;
@@ -160,7 +160,7 @@ const WalletContext = createContext<WalletValue>({
 
 export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const [balances, setBalances] = useState(() => walletBalances(undefined));
-  const [fundingProvider, setFundingProvider] = useState<'partnership' | 'wema_vas'>();
+  const [fundingProvider, setFundingProvider] = useState<'partnership'>();
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [avatar, setAvatar] = useState('');
@@ -234,7 +234,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
           setBalances(walletBalances(value));
           setBalanceLoaded(true);
           setBalanceError('');
-          setFundingProvider(value.provider);
+          setFundingProvider(value.provider === 'partnership' ? 'partnership' : undefined);
           const first = String(value.user_first_name || '');
           const last = String(value.user_last_name || '');
           const named = String(first || last
@@ -243,17 +243,15 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
           setLastName(last);
           void saveDisplayName(named).catch(() => {});
           setAvatar(String(value.user_avatar ?? ''));
-          const fundable = value.provider !== 'wema_vas' ||
-            (value.test_mode !== true && !/^711/.test(String(value.account_number ?? ''))
-              && value.available === true && value.has_account === true && value.account_setup_state === 'ready');
-          const account = String(value.account_number ?? '');
-          setAccountNumber(fundable && /^\d{10}$/.test(account) && !/^711/.test(account) ? account : '');
-          setSpendingAvailable(value.provider === 'wema_vas' && value.test_mode === true ? false : value.spending_available !== false);
+          const fundable = isFundingAccountReady(value);
+          setAccountNumber(fundable ? String(value.account_number) : '');
+          const currentCapabilities = walletCapabilities(value);
+          setSpendingAvailable(currentCapabilities.billPaymentsAvailable || currentCapabilities.transfersAvailable);
           setCapabilities(walletCapabilities(value));
           setFundingMessage(String(value.migration_message ?? ''));
           setPhoneNumber(String(value.user_phone_number ?? ''));
-          setAccountName(String(value.account_name ?? ''));
-          setBankName(String(value.bank_name ?? ''));
+          setAccountName(fundable ? String(value.account_name ?? '') : '');
+          setBankName(fundable ? String(value.bank_name ?? '') : '');
         } else {
           setBalanceError('Could not refresh your balance. Check your connection and try again.');
         }

@@ -27,7 +27,8 @@ from decimal import Decimal, InvalidOperation
 from django.core.management.base import BaseCommand, CommandError
 
 from utility import wema
-from wallet.services import wallet_expected_balance, wema_provisioned_wallets, vas_reconciliation_scope
+from wallet.services import wallet_expected_balance, wema_provisioned_wallets
+from wallet.legacy_funding import reconciliation_scope
 
 
 class Command(BaseCommand):
@@ -59,14 +60,14 @@ class Command(BaseCommand):
         if not tolerance.is_finite() or tolerance < 0:
             raise CommandError("Tolerance must be a finite nonnegative amount.")
 
-        vas_scope = vas_reconciliation_scope()
-        if vas_scope["vas_collection_required"]:
+        legacy_scope = reconciliation_scope()
+        if legacy_scope["legacy_funding_required"]:
             self.stdout.write(
-                "VAS collection reconciliation INCOMPLETE: bank collection balance and "
+                "Historical funding reconciliation INCOMPLETE: bank collection balance and "
                 "transaction-search contract are unverified. Migrated wallets require "
                 "manual reconciliation; they are not compared with old individual NUBANs.")
-            alert("reconcile_balances: VAS collection reconciliation requires verified bank evidence",
-                  level="error", **vas_scope)
+            alert("reconcile_balances: Historical funding reconciliation requires verified bank evidence",
+                  level="error", **legacy_scope)
 
         # Only meaningful against live NUBANs. In simulation/mock, get_balance
         # returns 0.00 for everyone, which would mark every funded wallet as
@@ -74,7 +75,7 @@ class Command(BaseCommand):
         if not wema.wema_live():
             self.stdout.write("reconcile_balances: Wema not live (simulation/mock) — no real "
                               "NUBAN balances to compare. Skipping.")
-            if vas_scope["vas_collection_required"] and (options["fail_over"] or options["fail_nonzero"]):
+            if legacy_scope["legacy_funding_required"] and (options["fail_over"] or options["fail_nonzero"]):
                 raise SystemExit(1)
             return
 
@@ -82,16 +83,14 @@ class Command(BaseCommand):
         unreachable = 0
         over = []   # ledger > bank  (dangerous — float risk)
         under = []  # bank > ledger  (operator review; no automatic correction)
-        # A migrated wallet can contain VAS credits and late legacy credits.
+        # A migrated wallet can contain historical credits and late legacy credits.
         # Exact asset attribution is not established by its aggregate balance.
         # Preserve the independent legacy history sweep; this comparison must
         # fail as incomplete rather than invent a ledger-over-bank discrepancy.
-        from wema_vas.models import VirtualAccount
-        from wema_vas.partnership import return_enabled, return_blockers
+        from wallet.partnership import legacy_funding_blockers
         for w in wema_provisioned_wallets().select_related("user"):
-            if VirtualAccount.objects.filter(user_id=w.user_id, mode=VirtualAccount.LIVE).exists():
-                if not return_enabled() or return_blockers(w.user):
-                    continue
+            if legacy_funding_blockers(w.user):
+                continue
             checked += 1
             res = wema.get_balance(w.account_number)
             bank = res.get("balance_naira") if res.get("success") else None
@@ -108,7 +107,7 @@ class Command(BaseCommand):
 
         from whatsapp.ops import record_audit
         record_audit("recon.balance_check", actor_type="system",
-                     after={**vas_scope, "wallets": checked, "unreachable": unreachable,
+                     after={**legacy_scope, "wallets": checked, "unreachable": unreachable,
                             "tolerance": str(tolerance),
                             "ledger_over_bank": len(over), "bank_over_ledger": len(under),
                             "over_sample": over[:25], "under_sample": under[:25]})
@@ -147,7 +146,7 @@ class Command(BaseCommand):
         self.stdout.write(
             f"Balance recon: {checked} wallet(s), {len(over)} over / {len(under)} under / "
             f"{unreachable} unreachable (tolerance {tolerance})")
-        incomplete = unreachable > 0 or vas_scope["vas_collection_required"]
+        incomplete = unreachable > 0 or legacy_scope["legacy_funding_required"]
         if ((incomplete or over or under)
                 and (options["fail_over"] or options["fail_nonzero"])):
             raise SystemExit(1)

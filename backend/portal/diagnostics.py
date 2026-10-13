@@ -60,7 +60,6 @@ def diagnostics_view(request):
     from utility.providers import sms_live, sms_probe, vas_can_settle, vtu_live
 
     parts = []
-    parts.append('<p><a href="../vas-transaction-query/">Verify an incoming NIP or Etranzact transaction</a></p>')
     sent = ""
 
     # --- the one action with a side effect -----------------------------------
@@ -73,15 +72,12 @@ def diagnostics_view(request):
                              "handset rings, the sender ID is not DND-whitelisted.")
 
     # --- readiness ------------------------------------------------------------
-    from wema_vas.config import config as vas_config
-    from wema_vas.diagnostics import readiness_report
+    from utility.launch_readiness import financial_controls_report
 
-    vas_stage = "controlled-live-pilot" if vas_config().get("MODE") == "live" else "validation"
     parts.append(_section(
-        "VAS collections readiness", _json(readiness_report(stage=vas_stage)),
-        note="Read-only local checks for the new virtual-account integration. "
-             "A locally ready result does not certify bank acceptance, real settlement "
-             "or general customer launch. No token or customer identifier is shown."))
+        "Financial controls", _json(financial_controls_report()),
+        note="Read-only integrity, bank reconciliation and settlement evidence. "
+             "Unresolved historical liabilities remain in review."))
 
     buf = io.StringIO()
     ready = True
@@ -92,9 +88,8 @@ def diagnostics_view(request):
     except Exception as exc:                    # noqa: BLE001
         ready = False
         buf.write(f"\npreflight could not run: {type(exc).__name__}: {exc}")
-    legacy_label = "Partnership preflight" if vas_config().get("ENABLED") else "Go-live preflight"
     parts.append(_section(
-        f"{legacy_label} — {'READY' if ready else 'NOT READY'}", buf.getvalue(),
+        f"Partnership preflight — {'READY' if ready else 'NOT READY'}", buf.getvalue(),
         note="The same <code>manage.py wema_preflight</code>. GATE lines block real money; "
              "the rest degrade a non-money feature."))
 
@@ -112,13 +107,13 @@ def diagnostics_view(request):
         note="<code>sms_live: false</code> means mock mode — nothing is sent and the code is "
              "not logged anywhere, so nobody receives an OTP."))
     parts.append(_section(
-        "VAS (airtime / data / bills)",
-        _json({"vas_live": _safe("vas", vtu_live),
+        "Bank bill payments (airtime / data / bills)",
+        _json({"biller_live": _safe("biller", vtu_live),
                "airtime_settleable": _safe("airtime_settleable",
                                            lambda: vas_can_settle("airtime")),
                "bills_settleable": _safe("bills_settleable",
                                          lambda: vas_can_settle("bill"))}),
-        note="The partner bank is the only VAS rail. A <code>settleable</code> that reads "
+        note="Wema Partnership provides these bill-payment services. A <code>settleable</code> that reads "
              "<code>false</code> means purchases of that product are REFUSED before any "
              "debit (the customer is not charged): ALAT's status check answers with a bare "
              "integer this deploy has no legend for, so a <code>PROCESSING</code> purchase "

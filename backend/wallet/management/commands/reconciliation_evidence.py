@@ -48,16 +48,17 @@ def _http_status(result):
 def pool_evidence():
     """One redacted pool/account-contract probe; message classification is a hint."""
     account = str(settings.WEMA.get("SOURCE_ACCOUNT") or "").strip()
-    collection = str(getattr(settings, "WEMA_VAS", {}).get("COLLECTION_ACCOUNT") or "").strip()
     valid = re.fullmatch(r"[0-9]{10}", account) is not None
     report = {"scope": "pool", "read_only": True, "configured": bool(account),
               "ten_digit_format": valid,
               "matches_wallet_account": bool(account) and Wallet.objects.filter(account_number=account).exists(),
-              "matches_vas_collection": bool(account and collection) and account == collection,
               "failure_hint_is_inference": True}
     if not account or not valid or not wema.wema_live():
         return {**report, "status": "not_configured" if not account else
                 "invalid_source_format" if not valid else "bank_not_live"}
+    from wallet.partnership import partnership_account_number
+    if not partnership_account_number(account):
+        return {**report, "status": "invalid_partnership_source"}
     result = wema.get_balance(account)
     status = _http_status(result)
     readable = bool(result.get("success") and not result.get("mock") and result.get("balance_naira") is not None)

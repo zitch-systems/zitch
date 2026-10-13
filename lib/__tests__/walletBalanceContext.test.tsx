@@ -23,10 +23,10 @@ describe('wallet context purchase balance', () => {
   beforeEach(() => { jest.useFakeTimers(); mockApiPost.mockReset(); mockGeneration = 1; jest.clearAllMocks(); });
   afterEach(() => { act(() => { tree?.unmount(); }); jest.useRealTimers(); });
 
-  it.each([true, false])('publishes canonical VAS funds to existing bill consumers, bill gate: %s', async (enabled) => {
+  it.each([true, false])('publishes canonical Partnership funds to existing bill consumers, bill gate: %s', async (enabled) => {
     mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
-      ? { success: true, provider: 'wema_vas', wallet: '6000.00', available_balance: enabled ? '1000.00' : '0.00',
-          historical_balance: '5000.00', vas_balance: '1000.00', bill_payments_available: enabled, transfers_available: false }
+      ? { success: true, provider: 'partnership', wallet: '6000.00', available_balance: enabled ? '1000.00' : '0.00',
+          historical_balance: '5000.00', bill_payments_available: enabled, transfers_available: false }
       : { status: true, all_site_transactions: [] } }));
     act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
     await act(async () => { await current.reload(); });
@@ -37,9 +37,9 @@ describe('wallet context purchase balance', () => {
     expect(current.transfersAvailable).toBe(false);
   });
 
-  it('keeps a test account out of ordinary funding and payment surfaces', async () => {
+  it('keeps a retired account out of ordinary funding and payment surfaces', async () => {
     mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
-      ? { success: true, provider: 'wema_vas', test_mode: true, account_number: '7111234567',
+      ? { success: true, provider: 'wema_vas', can_fund: true, account_number: '7111234567',
           available: true, has_account: true, account_setup_state: 'ready', spending_available: true,
           wallet: '1000.00', available_balance: '1000.00', bill_payments_available: true, transfers_available: true }
       : { status: true, all_site_transactions: [] } }));
@@ -54,12 +54,43 @@ describe('wallet context purchase balance', () => {
 
   it('never publishes a reserved validation-prefix account as a live funding number', async () => {
     mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
-      ? { success: true, provider: 'wema_vas', test_mode: false, account_number: '7111234567',
+      ? { success: true, provider: 'partnership', can_fund: true, account_number: '7111234567',
           available: true, has_account: true, account_setup_state: 'ready' }
       : { status: true, all_site_transactions: [] } }));
     act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
     await act(async () => { await current.reload(); });
     expect(current.accountNumber).toBe('');
+  });
+
+  it.each(['ready', 'bank_history_review'])('publishes a confirmed Partnership destination in state %s', async (state) => {
+    mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
+      ? { success: true, provider: 'partnership', can_fund: true, available: true, has_account: true,
+          account_setup_state: state, account_number: '0454243073', account_name: 'Current Customer', bank_name: 'Wema Bank',
+          wallet: '1000', available_balance: state === 'ready' ? '1000' : '0', spending_available: state === 'ready' }
+      : { status: true, all_site_transactions: [] } }));
+    act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
+    await act(async () => { await current.reload(); });
+    expect(current.accountNumber).toBe('0454243073');
+    expect(current.accountName).toBe('Current Customer');
+    expect(current.balance).toBe(state === 'ready' ? 1000 : 0);
+    expect(current.spendingAvailable).toBe(state === 'ready');
+  });
+
+  it('keeps preserved money visible while suppressing every funding detail during historical review', async () => {
+    mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
+      ? { success: true, provider: 'partnership', can_fund: true, available: true, has_account: true,
+          legacy_funding_review: true, account_setup_state: 'legacy_funding_review',
+          account_number: '7121234567', account_name: 'Retired Account', bank_name: 'Wema Bank',
+          wallet: '1000', available_balance: '1000', spending_available: true }
+      : { status: true, all_site_transactions: [] } }));
+    act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
+    await act(async () => { await current.reload(); });
+    expect(current.totalBalance).toBe(1000);
+    expect(current.balance).toBe(0);
+    expect(current.accountNumber).toBe('');
+    expect(current.accountName).toBe('');
+    expect(current.bankName).toBe('');
+    expect(current.spendingAvailable).toBe(false);
   });
   it('distinguishes an offline first load from an empty wallet and keeps payments gated', async () => {
     mockApiPost.mockRejectedValue(new Error('offline'));

@@ -96,6 +96,15 @@ class PublishedFlowProbeTests(SimpleTestCase):
         self.assertEqual(r["missing_screens"], [])
 
     @override_settings(**LIVE)
+    def test_retired_screens_still_on_meta_are_reported_as_stale(self):
+        with patch("whatsapp.providers.requests.get",
+                   side_effect=_meta(list(_local_screens()) + ["VAS_SETUP", "VAS_IDENTITY"])):
+            report = published_flow_report()
+        self.assertTrue(report["stale"])
+        self.assertEqual(report["missing_screens"], [])
+        self.assertEqual(report["unexpected_screens"], ["VAS_IDENTITY", "VAS_SETUP"])
+
+    @override_settings(**LIVE)
     def test_a_screen_present_on_both_sides_can_still_be_a_publish_behind(self):
         """The outage this probe missed. Every screen id matched, so it reported
         a healthy Flow — while SUCCESS had gained a `status` property here and

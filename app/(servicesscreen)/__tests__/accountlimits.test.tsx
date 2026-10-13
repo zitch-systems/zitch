@@ -35,7 +35,7 @@ jest.mock('@/components/design/ui', () => {
 });
 
 const state = { success: true, tier: 1, transaction_limit: '50000', daily_transfer_limit: '50000',
-  daily_bill_limit: '35000', bvn_verified: true, nin_verified: false, account_provider: 'wema_vas' };
+  daily_bill_limit: '35000', bvn_verified: true, nin_verified: false, account_provider: 'partnership' };
 
 beforeEach(() => {
   mockApiJson.mockReset();
@@ -43,62 +43,33 @@ beforeEach(() => {
   mockWallet.accountName = '';
 });
 
-it('does not promise spendable VAS limits or a legacy tier ladder during testing', async () => {
+it.each([
+  { provider: 'wema_vas', can_fund: true, available: true, has_account: true, account_number: '7121234567' },
+  { provider: 'partnership', legacy_funding_review: true, account_setup_state: 'legacy_funding_review' },
+])('does not advertise held or retired funding or spendable limits: %j', async (funding) => {
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
-    success: true, provider: 'wema_vas', test_mode: true, account_setup_state: 'vas_validation', bill_payments_available: false, transfers_available: false,
+    success: true, ...funding, bill_payments_available: true, transfers_available: true,
   });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
   const output = JSON.stringify(tree.toJSON());
-  expect(output).toContain('Account activation pending');
+  expect(output).toContain('Account review');
   expect(output).toContain('Transfers and bill payments are currently unavailable.');
-  expect(output).not.toMatch(/testing|sample account|test account/i);
-  expect(output).not.toContain('Level Benefit');
+  expect(output).not.toContain('712 123 4567');
   expect(output).not.toContain('₦50000');
-  expect(output).not.toContain('Unlimited');
-  await act(async () => tree.unmount());
-});
-
-it('shows enabled VAS payment capabilities without incidental transaction limits', async () => {
-  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
-    success: true, provider: 'wema_vas', test_mode: false, bill_payments_available: true, transfers_available: false,
-  });
-  let tree!: renderer.ReactTestRenderer;
-  await act(async () => { tree = renderer.create(<AccountLimits />); });
-  const output = JSON.stringify(tree.toJSON());
   expect(output).not.toContain('Per-transaction limit');
-  expect(output).not.toContain('Current daily limits');
-  expect(output).not.toContain('₦50000');
-  expect(output).not.toContain('₦35000');
-  expect(output).toContain('Transfers are currently unavailable.');
-  expect(output).not.toContain('Level Benefit');
-  expect(output).not.toContain('Unlimited');
-  await act(async () => tree.unmount());
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' })).toHaveLength(0);
+  act(() => tree.unmount());
 });
 
-it('keeps VAS limits unavailable when funding capability cannot be fetched', async () => {
+it('keeps account details unavailable when current funding capability cannot be fetched', async () => {
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : { success: false });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
   const output = JSON.stringify(tree.toJSON());
   expect(output).toContain("Couldn't load account details");
-  expect(output).not.toContain('Account activation pending');
-  expect(output).not.toContain('Level Benefit');
   expect(output).not.toContain('₦50000');
-  await act(async () => tree.unmount());
-});
-
-it('shows the real verification step before an account has been allocated', async () => {
-  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
-    success: true, provider: 'wema_vas', test_mode: true, account_setup_state: 'vas_enrollment_required',
-    enrollment_status: 'verification_required', enrollment_message: 'Confirm ownership to finish your account setup.',
-  });
-  let tree!: renderer.ReactTestRenderer;
-  await act(async () => { tree = renderer.create(<AccountLimits />); });
-  expect(JSON.stringify(tree.toJSON())).toContain('Verify your identity');
-  expect(JSON.stringify(tree.toJSON())).toContain('Confirm ownership to finish your account setup.');
-  expect(JSON.stringify(tree.toJSON())).not.toContain('Account activation pending');
-  await act(async () => tree.unmount());
+  act(() => tree.unmount());
 });
 
 it('ends a stalled fetch and lets the customer retry without stale responses replacing the result', async () => {
@@ -111,11 +82,11 @@ it('ends a stalled fetch and lets the customer retry without stale responses rep
     await act(async () => { jest.advanceTimersByTime(8000); });
     expect(JSON.stringify(tree.toJSON())).toContain('taking longer than expected');
     mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
-      success: true, provider: 'wema_vas', account_setup_state: 'vas_validation',
+      success: true, provider: 'partnership', legacy_funding_review: true, account_setup_state: 'legacy_funding_review',
     });
     await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Try again' }).props.onPress(); });
     await act(async () => { resolveOld.forEach((resolve) => resolve({ success: false })); });
-    expect(JSON.stringify(tree.toJSON())).toContain('Account activation pending');
+    expect(JSON.stringify(tree.toJSON())).toContain('Account review');
     expect(JSON.stringify(tree.toJSON())).not.toContain('taking longer than expected');
   } finally {
     act(() => tree.unmount());
@@ -124,41 +95,18 @@ it('ends a stalled fetch and lets the customer retry without stale responses rep
 });
 
 
-it('does not expose an old cached number or a validation number as the VAS funding account', async () => {
+it('never uses a reserved validation prefix even if funding flags claim the account is ready', async () => {
   mockWallet.accountNumber = '7111234567';
-  mockWallet.accountName = 'Zitch/Old Name';
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
-    success: true, provider: 'wema_vas', test_mode: false, available: true, has_account: true,
-    account_setup_state: 'ready', account_number: '7111234567', account_name: 'Zitch/Sample',
+    success: true, provider: 'partnership', available: true, has_account: true, can_fund: true,
+    account_setup_state: 'ready', account_number: '7111234567', account_name: 'Validation Account',
   });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
-  const output = JSON.stringify(tree.toJSON());
-  expect(output).not.toContain('711 123 4567');
-  expect(output).not.toContain('ZITCH/OLD NAME');
-  expect(output).not.toContain('ZITCH/SAMPLE');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('711 123 4567');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('VALIDATION ACCOUNT');
   expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' })).toHaveLength(0);
-  await act(async () => tree.unmount());
-});
-
-it('uses the current ready VAS account for display and preserves available services', async () => {
-  mockWallet.accountNumber = '7111234567';
-  mockWallet.accountName = 'Zitch/Old Name';
-  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
-    success: true, provider: 'wema_vas', test_mode: false, available: true, has_account: true,
-    account_setup_state: 'ready', account_number: '7121234567', account_name: 'Zitch/Current',
-    bill_payments_available: true, transfers_available: true,
-  });
-  let tree!: renderer.ReactTestRenderer;
-  await act(async () => { tree = renderer.create(<AccountLimits />); });
-  const output = JSON.stringify(tree.toJSON());
-  expect(output).toContain('712 123 4567');
-  expect(output).toContain('ZITCH/CURRENT');
-  expect(output).not.toContain('711 123 4567');
-  expect(output).toContain('Bill payments and transfers are available.');
-  expect(output).not.toContain('₦50000');
-  expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' }).length).toBeGreaterThan(0);
-  await act(async () => tree.unmount());
+  act(() => tree.unmount());
 });
 
 it('uses current Partnership account details and authoritative limits without inventing an unlimited balance', async () => {
@@ -167,7 +115,7 @@ it('uses current Partnership account details and authoritative limits without in
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? {
     ...state, account_provider: 'partnership', daily_transfer_limit: '123456', daily_bill_limit: '65432',
     bank_tier_limits: { single_inflow: '77777', daily_spend: '222222', max_balance: null },
-  } : { success: true, provider: 'partnership', account_number: '0454243073', account_name: 'Current Account', has_account: true, available: true });
+  } : { success: true, provider: 'partnership', account_number: '0454243073', account_name: 'Current Account', has_account: true, available: true, can_fund: true, account_setup_state: 'ready' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
   const output = JSON.stringify(tree.toJSON());
@@ -189,7 +137,7 @@ it('does not expose a stale cached Partnership number during account review', as
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? {
     ...state, account_provider: 'partnership',
   } : { success: true, provider: 'partnership', account_number: '', available: false, has_account: false,
-    account_setup_state: 'partnership_review', migration_message: 'Your account needs review.' });
+    legacy_funding_review: true, account_setup_state: 'legacy_funding_review', migration_message: 'Your account needs review.' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
   expect(JSON.stringify(tree.toJSON())).not.toContain('045 000 0000');

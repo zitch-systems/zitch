@@ -40,7 +40,7 @@ const MORE = [
 
 const Home = () => {
   const { c } = useTheme();
-  const { balance, totalBalance, historicalBalance, fundingProvider, firstName, fullName, avatar, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, linked, reloadLinked, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
+  const { balance, totalBalance, firstName, fullName, avatar, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, linked, reloadLinked, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
   const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const [more, setMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -100,7 +100,7 @@ const Home = () => {
             <View style={{ width: 17, height: 17, borderRadius: 9, backgroundColor: 'rgba(255,255,255,.22)', alignItems: 'center', justifyContent: 'center' }}>
               <ZIcon name="check" size={11} color="#fff" stroke={2.6} />
             </View>
-            <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 13, fontFamily: font.medium }}>{fundingProvider === 'wema_vas' ? 'Available for bills' : 'Available Balance'}</Text>
+            <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 13, fontFamily: font.medium }}>Available balance</Text>
           </View>
           <Pressable onPress={() => router.push('/history')} style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
             <Text style={{ color: '#fff', fontSize: 12.5, fontFamily: font.semibold }}>Transaction History</Text>
@@ -115,11 +115,10 @@ const Home = () => {
             <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
           </Pressable>
         </View>
-        {balanceLoaded && (fundingProvider === 'wema_vas' || totalBalance > balance) ? (
+        {balanceLoaded && (totalBalance > balance) ? (
           <View style={{ gap: 3, marginTop: 10 }}>
             <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Total balance: {showBal ? money(totalBalance) : '₦ ••••••'}</NText>
-            <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>{fundingProvider === 'wema_vas' ? 'Historical funds' : 'Funds under review'}: {showBal ? money(fundingProvider === 'wema_vas' ? historicalBalance : totalBalance - balance) : '₦ ••••••'}</NText>
-            {fundingProvider === 'wema_vas' && historicalBalance > 0 ? <Text style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.regular }}>Historical funds are not available for new payments.</Text> : null}
+            <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Funds under review: {showBal ? money(totalBalance - balance) : '₦ ••••••'}</NText>
           </View>
         ) : null}
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, gap: 10 }}>

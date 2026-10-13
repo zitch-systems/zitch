@@ -20,7 +20,7 @@ class PremblyIdentityContractTests(SimpleTestCase):
         response.json.side_effect = error
         response.json.return_value = payload
         with patch("utility.providers.requests.post", return_value=response) as post:
-            result = getattr(providers, "verify_" + kind)("12345678901", name="Ada Eze")
+            result = getattr(providers, "prembly_verify_" + kind)("12345678901", name="Ada Eze")
         post.assert_called_once()
         self.assertEqual(post.call_args.args[0], "https://identity.example.test/verification/" +
                          ("bvn" if kind == "bvn" else "vnin"))
@@ -102,7 +102,7 @@ class PremblyIdentityContractTests(SimpleTestCase):
         self.assertFalse(result["success"])
         self.assertNotIn("12345678901", str(result))
         with patch("utility.providers.requests.post", side_effect=requests.Timeout("PRIVATE 12345678901")) as post:
-            result = providers.verify_bvn("12345678901", name="Ada Eze")
+            result = providers.prembly_verify_bvn("12345678901", name="Ada Eze")
         post.assert_called_once()
         self.assertFalse(result["success"])
         self.assertFalse(result.get("invalid", False))

@@ -12,7 +12,7 @@ import { apiPost } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 import { TERMS_URL, PRIVACY_URL } from '@/components/configFiles/links';
-import { registerForPushNotifications } from '@/lib/notifications';
+import { getPushAvailability, registerForPushNotifications } from '@/lib/notifications';
 
 const Toggle = ({ on, onChange, disabled = false, label }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean; label: string }) => {
   const { c } = useTheme();
@@ -33,6 +33,7 @@ const Settings = () => {
   const notificationLock = useRef(false);
   const [notificationBusy, setNotificationBusy] = useState(false);
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
+  const pushAvailability = getPushAvailability();
 
   useEffect(() => {
     let active = true;
@@ -68,19 +69,27 @@ const Settings = () => {
 
   const enableNotifications = async () => {
     if (notificationLock.current) return;
+    if (pushAvailability !== 'available') {
+      notify('Alerts unavailable', pushAvailability === 'not-configured'
+        ? 'Push alerts are not available in this build. Your activity is still available in Notifications.'
+        : 'Use the installed Zitch app on your phone to register for transaction alerts.');
+      return;
+    }
     notificationLock.current = true;
     setNotificationBusy(true);
     try {
       const result = await registerForPushNotifications(true);
       if (result === 'registered') {
-        notify('Notifications enabled', 'Transaction alerts are enabled for this account on this device.');
+        notify('Device registered', 'This device is registered for transaction alerts. You can also check your activity in Notifications.');
       } else if (result === 'denied') {
         Alert.alert('Notifications are off', 'Enable Zitch notifications in your phone settings, then return here and tap Transaction alerts again.', [
           { text: 'Not now', style: 'cancel' },
           { text: 'Open settings', onPress: () => { void Linking.openSettings().catch(() => notify('Could not open settings', 'Open your phone settings to enable Zitch notifications.')); } },
         ]);
       } else {
-        notify('Alerts unavailable', result === 'unavailable'
+        notify('Alerts unavailable', result === 'not-configured'
+          ? 'Push alerts are not available in this build. Your activity is still available in Notifications.'
+          : result === 'unavailable'
           ? 'Use the installed Zitch app on your phone to enable transaction alerts.'
           : 'We could not enable alerts on this device. Please try again later. Your activity is available in Notifications.');
       }
@@ -154,7 +163,10 @@ const Settings = () => {
             right={<Toggle label="Biometric login" disabled={bioBusy} on={biometrics} onChange={toggleBio} />}
           />
           <ZItem
-            icon="bell" title="Transaction alerts" sub={notificationBusy ? 'Enabling notifications…' : 'Enable notifications on this device'} last
+            icon="bell" title="Transaction alerts" sub={notificationBusy ? 'Registering this device…'
+              : pushAvailability === 'available' ? 'Register this device for notifications'
+              : pushAvailability === 'not-configured' ? 'Push alerts unavailable in this build'
+              : 'Push alerts unavailable on this device'} last
             onPress={() => { void enableNotifications(); }} right={chev}
           />
         </Card>

@@ -48,12 +48,33 @@ def _credit_date(row):
         return None
 
 
+def history_credit_opening_review_required(wallet, row, norm=None, *, baseline=None):
+    """A new historical receipt is not proof of this wallet's opening balance.
+
+    Shared by notification ingestion and the scheduled history sweep. Previously
+    verified credits/reversal evidence keep their idempotent replay path; dates
+    missing from a repeat observation must not erase that durable evidence.
+    """
+    norm = norm if norm is not None else wema.normalize_transaction(row)
+    amount = norm["amount_naira"]
+    if (not norm["is_credit"] or not norm["settled"]
+            or amount is None or amount <= 0 or _credit_accounted_for(wallet, row, norm)):
+        return False
+    bank_date = _credit_date(row)
+    baseline = baseline if baseline is not None else timezone.localdate(wallet.created)
+    return bank_date is None or bank_date < baseline
+
+
 def reconcile_account_history(wallet, *, today=None, overlap_days=2, on_shape=None):
     """Recover missing days in bounded windows, advancing only durable coverage.
 
     No database lock spans a bank request. Repeated windows and crash retries use
     the ledger's existing provider-reference guard, so applied rows stay once-only.
     """
+    from legacy_funding.models import VirtualAccount
+    if VirtualAccount.objects.filter(number=wallet.account_number).exists():
+        return {"credited": 0, "windows": 0, "error_code": "retired_funding_account",
+                "fetch_failed": False, "backlog": False, "diagnostic": {}}
     today = today or timezone.localdate()
     overlap_days = max(1, int(overlap_days))
     window_days = max(1, min(31, int(getattr(settings, "WEMA_HISTORY_WINDOW_DAYS", 7) or 7)))
@@ -110,13 +131,9 @@ def reconcile_account_history(wallet, *, today=None, overlap_days=2, on_shape=No
             if norm["amount_naira"] < 0 or not norm["settled"]:
                 window_error = "history_credit_unsettled"
                 continue
-            if not _credit_accounted_for(wallet, row, norm):
-                bank_date = _credit_date(row)
-                if bank_date is None or bank_date < baseline:
-                    # A gross historical receipt is not an opening balance; it
-                    # may already have been spent before the platform existed.
-                    window_error = "history_credit_opening_review"
-                    continue
+            if history_credit_opening_review_required(wallet, row, norm, baseline=baseline):
+                window_error = "history_credit_opening_review"
+                continue
             if not Wallet.objects.filter(pk=wallet.pk, account_number=account_number).exists():
                 window_error = "history_account_changed"
                 break

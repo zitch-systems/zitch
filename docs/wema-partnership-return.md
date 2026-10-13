@@ -1,59 +1,65 @@
-# Return to Wema Partnership — 9 October 2026
+# Wema Partnership only — 13 October 2026
 
-The owner requested restoration of Partnership on the app and WhatsApp because
-the VAS collection integration does not provide the required payouts.
+Wema Partnership is the sole active account integration on the app and WhatsApp.
+The separate virtual-account integration, its enrollment and callback endpoints,
+operator tools, deployment settings and customer screens are removed. Historical
+provider-selector environment values cannot reactivate it. Removing application
+code does not close an account at the bank or settle an existing liability.
 
-Deploy the return guards before changing runtime selection. On the API, WhatsApp
-worker and every Django cron, merge these environment settings:
+## Deployment and customer journeys
 
-```
-BANK_ACCOUNT_PROVIDER=partnership
-WEMA_PARTNERSHIP_MODE=active
-WEMA_PARTNERSHIP_RESTORE_VAS=true
-KYC_PROVIDER=wema
-WEMA_VAS_ENABLE_ENROLLMENT=false
-WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT=false
-WEMA_VAS_VALIDATION_SELF_SERVICE=false
-WEMA_VAS_RELEASE_PHASE=closed
-WEMA_VAS_BILLER_ENABLED=false
-WHATSAPP_FLOW_VAS_ENROLLMENT_ENABLED=false
-```
+Deploy the same reviewed revision to the API, WhatsApp worker and every Django
+scheduled job. Account and Tier 1 identity selection are fixed to Partnership and
+Wema respectively. `WEMA_PARTNERSHIP_MODE=active` enables new Partnership business;
+any other mode blocks new instructions while allowing accepted Partnership work
+to be resolved. Production acceptance requires `WEMA_SIMULATION=false`, valid
+Partnership credentials and all release evidence in the
+[current review](partnership-audit-2026-10-13.md).
 
-Keep the Wema biller active, and retain all existing bank keys, URLs, callback
-authentication, VAS mode/prefix, identity encryption keys, collection account,
-query URLs and historical records. No balances are moved, erased or reclassified.
-Keep VAS endpoints enabled to process late notifications idempotently.
+Retain the credentials and callback configuration used by the active Partnership
+integration and bank bill payments. Remove obsolete virtual-account configuration
+from deployments. Preserve the keys needed to decrypt historical data and backups;
+removing a provider is not authorization to make its financial evidence unreadable.
 
-The published Flow `1047786551595097` includes Partnership identity, OTP, transfer
-and PIN screens as well as the retained VAS screens; no republish is necessary.
-Disable its VAS entry points through runtime selection. Partnership BVN account
-and NIN account creation use Wema. Tier 2 requires a server-verified Prembly live
-session; the image-only check cannot grant that tier. See the
-[10 October audit](partnership-audit-2026-10-10.md) for the remaining launch gates.
+Publish and select the reviewed `backend/whatsapp/flow_assets/pin_flow.json` asset.
+Its retired setup screens and actions are removed. Confirm that the live Flow and
+all Django services match the reviewed revision; an older published Flow does not
+become current when the backend deploys. Rebuild the app from that same revision.
 
-Existing Partnership NUBANs are reused. Customers without one follow the existing
-verified account setup/recovery flow; unknown issuance is never reset or retried
-blindly. Validation accounts do not affect real funds or block this return.
+Tier 1 uses BVN **or** NIN with bank SMS OTP or the bank-hosted face route.
+Tier 2 requires authenticated Prembly interactive liveness tied to the customer
+and the captured face used for the bank upgrade. Tier 3 requires bank completion
+tied to the account, submitted address and verification request. Higher-tier
+evidence gates stay closed until those contracts and adapters are validated.
 
-VAS-only customers with an independent identity proof and no prior Partnership
-account, bank proof, bank attempt or cutover can explicitly start their first
-Wema account/OTP flow on either channel. The submitted identity must match their
-retained hash. Verification flags stay intact; any bank history keeps the recovery
-path, and existing OTP attempts resume without another creation request.
+Existing validated Partnership NUBANs are reused. Customers without one follow
+verified account setup or recovery. Unknown issuance is never reset or retried
+blindly. Retained independent identity proof may support an eligible customer's
+first Partnership setup, but it does not replace the bank's ownership challenge.
+Any prior bank proof, request or account history keeps the recovery path.
 
-A customer with a live VAS account returns only when it is unrestricted, its
-canonical collection balance is exactly zero, and it has no held receipt or
-unresolved bill. These checks run again under the wallet lock before spending.
-A late collection credit stays in the ledger exactly once and immediately puts
-that profile into Partnership review, with no funding instructions or spending.
-Bank settlement/refund evidence is needed to resolve such cases; changing the
-provider does not move money from the collection account to an individual NUBAN.
+## Historical funds and release evidence
 
-`vas_deployment_diagnostics` reports aggregate return eligibility on each API
-build. Inspect that inventory and deployed configuration after activation.
-Reconciliation continues to flag missing collection-bank evidence; the return is
-not proof of full go-live readiness or Wema production entitlement.
+The `legacy_funding` app preserves the existing financial tables, migrations,
+receipts, reservations and approvals. Its historical Django app label remains
+only for database and migration compatibility. It provides no enrollment, bank
+callback or payment execution surface.
 
-Both channels consume the same provider state. App builds additionally honour
-explicit Partnership available balances and show review status instead of new
-account creation. Rebuild the Android test APK from the merged revision.
+Customers with historical live balances, held receipts, unresolved bill funding
+or account restrictions remain under `legacy_funding_review`. Both channels hide
+funding instructions and block new spending while that hold applies. Historical
+account numbers cannot become Partnership funding destinations. Spending checks
+run again under the wallet lock. Validation records do not represent real funds.
+
+No balance is moved, erased or reclassified by this change. Resolve historical
+liabilities through attributable bank statements, settlement/refund evidence and
+audited reconciliation. Retired callbacks are no longer ingested; obtain bank
+evidence for outstanding or late activity and confirm retirement with the bank
+before considering those liabilities closed.
+
+Run `python manage.py partnership_diagnostics` for read-only configuration,
+historical funding inventory and financial-control evidence. Then run
+`python manage.py wema_preflight --strict` for release gates. Neither command
+proves bank entitlement, live provider delivery or settlement acceptance. Follow
+the [go-live runbook](wema-go-live-runbook.md) and
+[WhatsApp operations guide](whatsapp-production-operations.md) for those checks.

@@ -75,6 +75,7 @@ from .models import ConversationState, PendingAction, SystemSetting, WaMessageLo
 from .providers import (flows_live, send_buttons, send_cta_url, send_flow, send_image,
                         send_list, send_template, send_text)
 from . import savings_loans
+from .retired_setup import is_retired_setup, RETIRED_SETUP_MESSAGE
 
 User = get_user_model()
 log = logging.getLogger("whatsapp")
@@ -160,8 +161,6 @@ def _chat_lock_tip() -> str:
 
 def _upgrade_block(user) -> str:
     """Give the next verification step without requiring an app install."""
-    if customer_funding_account(user).get("provider") == "wema_vas":
-        return "Reply *8* to review your contact and BVN verification securely from WhatsApp."
     if user.tier >= 3:
         tail = ("You're on our highest tier. For a larger one-off payment, "
                 "talk to us.")
@@ -1112,7 +1111,7 @@ def is_awaiting_bvn(msisdn: str) -> bool:
     pa = _current_action(msisdn)
     if pa is None:
         return False
-    if pa.action_type == "vas_enroll":
+    if is_retired_setup(pa):
         return True
     if pa.action_type == "add_account" and pa.state == "bvn":
         return True
@@ -1194,7 +1193,7 @@ def _announce_timeout(msisdn: str) -> bool:
         return False
     armed = stale.state in _AWAITING_PIN_STATES
     expired.delete()
-    if stale.action_type in ("vas_enroll", "kyc", "add_account", "unlock", "setpin"):
+    if is_retired_setup(stale) or stale.action_type in ("kyc", "add_account", "unlock", "setpin"):
         purpose = "identity confirmation" if stale.action_type == "unlock" else "secure setup"
         restart = {
             "kyc": "Reply *8* to continue verification.",
@@ -1488,10 +1487,9 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if _is_simulation_command(low):
         return _handle_simulation_command(user, msisdn, low)
 
-    # Existing customers restart setup on their current profile. This command
-    # can leave an unsubmitted form, but never a payment already being executed.
-    if low in _VAS_REGISTER_COMMANDS:
-        return _start_vas_reregistration(user, msisdn)
+    # Historical setup commands cannot reopen the retired account product.
+    if low in _RETIRED_SETUP_COMMANDS:
+        return reply(msisdn, RETIRED_SETUP_MESSAGE)
 
     pa = _current_action(msisdn)
     if pa is not None:
@@ -1698,7 +1696,7 @@ _SENSITIVE_READS = {
     "14", "loan", "my loan", "loan balance", "my loan balance", "loans",
     "repay loan", "loan repayment", "repay my loan", "pay loan", "pay my loan",
 }
-_VAS_REGISTER_COMMANDS = {"register", "reregister", "re-register", "re register", "vas"}
+_RETIRED_SETUP_COMMANDS = {"register", "reregister", "re-register", "re register", "vas"}
 _REAUTH_SETTING = "wa_reauth_idle_minutes"
 
 
@@ -1737,7 +1735,7 @@ def _mark_verified(msisdn: str) -> None:
 
 def _unlock_proof(user, msisdn: str) -> dict:
     """Snapshot the authenticated credentials; never replace them after proof."""
-    from .vas_identity import credentials
+    from .auth_proof import credentials
 
     link_id = WhatsAppLink.objects.filter(
         user=user, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE).values_list("pk", flat=True).first()
@@ -1768,9 +1766,10 @@ def _send_unlock(user, msisdn: str, resume: str, intent: dict | None = None) -> 
 
 def _exec_unlock(pa: PendingAction, user, msisdn: str) -> str:
     """Identity proven: start the window and run the command that triggered it."""
-    if pa.payload.get("vas_reregister") is True:
-        return _finish_vas_reregistration(pa, user, msisdn)
-    from .vas_identity import credentials
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return Outcome(RETIRED_SETUP_MESSAGE, OUTCOME_FAILED)
+    from .auth_proof import credentials
 
     proof = getattr(pa, "_unlock_proof", None) or pa.payload
     with db_transaction.atomic():
@@ -1780,7 +1779,7 @@ def _exec_unlock(pa: PendingAction, user, msisdn: str) -> str:
         link = WhatsAppLink.objects.select_for_update().filter(
             pk=proof.get("unlock_link_id"), user_id=user.pk,
             wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE).first()
-        valid = (live is not None and current is not None and current.is_active and link is not None
+        valid = (live is not None and not is_retired_setup(live) and current is not None and current.is_active and link is not None
                  and secrets.compare_digest(str(proof.get("unlock_credentials") or ""), credentials(current)))
         if not valid:
             if live is not None:
@@ -1808,6 +1807,8 @@ def _clear_onboarding(msisdn: str) -> None:
 
 
 def _handle_unlinked(msisdn: str, text: str) -> None:
+    if text.strip().lower() in (_RETIRED_SETUP_COMMANDS - {"register"}):
+        return reply(msisdn, RETIRED_SETUP_MESSAGE)
     # 1. Continue an in-progress WhatsApp signup.
     ob = _current_onboarding(msisdn)
     if ob is not None:
@@ -1874,7 +1875,7 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
     # Link is tested first - "i already have an account" names an account but is
     # asking for the opposite of a signup.
     if low in ("2", "link", "link account", "i have an account", "sign in", "login", "log in") \
-            or low in (_VAS_REGISTER_COMMANDS - {"register"}) or LINK_INTENT.search(low):
+            or LINK_INTENT.search(low):
         from .login_flow import start_login
         return start_login(msisdn)
     if low in ("1", "create", "create account", "sign up", "signup", "register", "open account", "new", "get started") \
@@ -2155,14 +2156,6 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
         user=user, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE, linked_at=timezone.now(),
     )
     _clear_onboarding(msisdn)
-    funding = customer_funding_account(user)
-    if funding.get("provider") == "wema_vas":
-        reply(msisdn, f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your sign-in is ready.\n\n"
-              "Next, confirm your registered email and verify your BVN privately here. "
-              "Your email confirmation and identity ownership codes are separate checks.\n\n"
-              "Your wallet starts at ₦0. Account activation is pending.")
-        _start_kyc(user, msisdn)
-        return True
     reply(
         msisdn,
         f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your sign-in is ready.\n\n"
@@ -2272,8 +2265,8 @@ def finish_onboarding_from_flow(ob: WaOnboarding, pin: str) -> str:
 # balance
 # --------------------------------------------------------------------------- #
 def _funding_spending_notice(funding: dict) -> str:
-    """Keep bill eligibility separate from the archived transfer capability."""
-    legacy = funding.get("spending_available") is not False and funding.get("provider") != "wema_vas"
+    """Describe the funding account's current payment capabilities."""
+    legacy = funding.get("spending_available") is not False
     transfers = funding.get("transfers_available", legacy)
     bills = funding.get("bill_payments_available", legacy)
     if transfers and bills:
@@ -2311,129 +2304,18 @@ def _do_balance(user, msisdn: str) -> None:
 # --------------------------------------------------------------------------- #
 # add money - the user's dedicated (reserved) account for bank-transfer funding
 # --------------------------------------------------------------------------- #
-def _vas_identity_refresh_available(user, funding: dict) -> bool:
-    """Allow consent-first setup when identity is the only missing requirement.
-
-    This includes first-time verification and legacy identities missing durable
-    name proof. The allocator still rechecks consent, proof and financial state.
-    """
-    from wema_vas.enrollment import customer_enrollment_available
-
-    return bool(funding.get("provider") == "wema_vas"
-        and funding.get("enrollment_status") == "verification_required"
-        and funding.get("enrollment_blockers") == ["identity_verification"]
-        and funding.get("account_setup_state") == "vas_enrollment_required"
-        and not funding.get("has_account") and not funding.get("available")
-        and not funding.get("validation_account_number")
-        and user.phone_verified and user.email_verified
-        and customer_enrollment_available(user))
-
-
-def _send_vas_setup(user, msisdn: str, funding: dict | None = None) -> None:
-    """Offer the separately approved private setup contract, entirely in chat."""
-    from .vas_flow import start
-    _clear_actions(msisdn)
-    funding = funding if funding is not None else customer_funding_account(user)
-    if funding.get("account_setup_state") == "vas_validation":
-        return reply(msisdn, _vas_account_status(funding))
-    if _kyc_outstanding(user):
-        return _start_kyc(user, msisdn)
-    if funding.get("enrollment_available") or _vas_identity_refresh_available(user, funding):
-        return start(user, msisdn)
-    return reply(msisdn, _vas_account_status(funding))
-
-
-def _vas_account_status(funding: dict) -> str:
-    """Read-only setup status; displaying account details must not open a form."""
-    if funding.get("account_setup_state") == "vas_validation":
-        return "🏦 *Account activation pending*"
-    continuation = ("Reply *6* to continue account setup securely."
-                    if funding.get("enrollment_available") or funding.get("enrollment_status") == "verification_required"
-                    else "Please check again here later.")
-    return ("🏦 *Your Zitch account setup*\n\n"
-            + str(funding.get("enrollment_message") or funding.get("migration_message") or "Account setup is not available yet.")
-            + f"\n\n{continuation} Do not send your BVN or NIN in this chat.")
-
-
-def _vas_reregistration_busy(msisdn: str) -> bool:
-    return (PendingAction.objects.filter(msisdn=msisdn, state=EXECUTING_STATE)
-            .exclude(action_type="unlock").exists()
-            or PendingAction.objects.filter(msisdn=msisdn, action_type="verification_web",
-                state__in=("web_processing", "web_review")).exists())
-
-
-def _start_vas_reregistration(user, msisdn: str) -> None:
-    """Fresh private authentication before continuing the existing profile."""
-    from .vas_identity import credentials
-
-    user.refresh_from_db()
-    link = WhatsAppLink.objects.filter(user=user, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE).first()
-    if link is None or not user.is_active:
-        return reply(msisdn, "Please sign in securely to your existing Zitch account before restarting setup.")
-    if _vas_reregistration_busy(msisdn):
-        return reply(msisdn, "Your earlier payment or submitted verification is still being completed. "
-                     "Wait for its result, then reply *register* to continue account setup.")
-    funding = customer_funding_account(user)
-    if funding.get("provider") != "wema_vas":
-        return reply(msisdn, "Your Zitch profile already exists. Reply *8* to review your verification or *6* for account setup.")
-    pending = _current_action(msisdn)
-    stamp = credentials(user)
-    if (pending is not None and pending.action_type == "unlock"
-            and pending.payload.get("vas_reregister") is True
-            and pending.payload.get("vas_reregister_link_id") == link.pk
-            and secrets.compare_digest(str(pending.payload.get("vas_reregister_credentials") or ""), stamp)):
-        return reply(msisdn, "Confirm your identity on the secure form above to continue your existing account setup. "
-                     "Keep your PIN out of this chat.")
-    pa = _new_flow(user, msisdn, "unlock", "pin", {
-        "pin_attempts": 0, "resume": "vas", "vas_reregister": True,
-        "vas_reregister_link_id": link.pk, "vas_reregister_credentials": stamp,
-    })
-    if not _arm_confirm(pa, user):
-        return None
-    return _send_confirm(pa, msisdn, "Confirm it's you to continue setup on your existing Zitch profile. "
-                         "Your saved verification, balance and transaction history will stay in place.")
-
-
-def _finish_vas_reregistration(pa: PendingAction, user, msisdn: str) -> str:
-    from .vas_identity import credentials
-
-    user.refresh_from_db()
-    valid = (user.is_active and pa.user_id == user.pk and pa.msisdn == msisdn
-             and secrets.compare_digest(str(pa.payload.get("vas_reregister_credentials") or ""), credentials(user))
-             and WhatsAppLink.objects.filter(pk=pa.payload.get("vas_reregister_link_id"),
-                 user=user, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE).exists())
-    PendingAction.objects.filter(pk=pa.pk).delete()
-    if not valid:
-        return "This sign-in changed. Sign in again, then reply register to restart setup securely."
-    if _vas_reregistration_busy(msisdn):
-        return "Your earlier payment or submitted verification is still being completed. Wait for its result, then reply register."
-    funding = customer_funding_account(user)
-    if funding.get("provider") != "wema_vas":
-        return "Account setup changed. Reply 8 to review your verification."
-    _mark_verified(msisdn)
-    if (funding.get("test_mode") is not True and funding.get("has_account")
-            and funding.get("available") and funding.get("account_setup_state") == "ready"):
-        _send_account_details(msisdn, get_or_create_wallet(user))
-    else:
-        _send_vas_setup(user, msisdn, funding)
-    return "Identity confirmed. Continue your account setup in the chat."
 
 
 def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to your wallet*") -> None:
     funding = customer_funding_account(wallet.user)
-    if funding.get("account_setup_state") == "partnership_review":
+    if funding.get("account_setup_state") in {"partnership_review", "legacy_funding_review"}:
         return reply(msisdn, funding["migration_message"])
-    is_vas = funding.get("provider") == "wema_vas"
-    if is_vas and (funding.get("test_mode") is True or not funding.get("has_account") or not funding.get("available")
-                   or funding.get("account_setup_state") != "ready"):
-        return _send_vas_setup(wallet.user, msisdn, funding)
     accts = funding.get("bank_accounts") or []
     if len(accts) > 1:
         body = "\n".join(f"🔢 *{a.get('account_number')}* - {a.get('bank_name')}" for a in accts)
     else:
         body = f"🔢 *{funding.get('account_number', '')}*\n🏛️ {funding.get('bank_name', '')}"
-    timing = ("Your wallet is credited after the payment is confirmed."
-              if is_vas else "Your wallet is credited automatically, usually within seconds.")
+    timing = ('Your wallet is credited automatically, usually within seconds.')
     spending = _funding_spending_notice(funding)
     reply(
         msisdn,
@@ -2455,7 +2337,7 @@ def _do_add_money(user, msisdn: str) -> None:
     yet, run the identity + OTP round-trip right here in the chat."""
     wallet = get_or_create_wallet(user)
     funding = customer_funding_account(user)
-    if funding.get("provider") == "wema_vas" or funding.get("account_setup_state") == "partnership_review":
+    if funding.get("account_setup_state") in {"partnership_review", "legacy_funding_review"}:
         return _send_account_details(msisdn, wallet)
     if wallet.account_number:
         return _send_account_details(msisdn, wallet)
@@ -2976,9 +2858,6 @@ def _face_step_available() -> bool:
 
 def _offer_bvn_verification_method(pa: PendingAction, msisdn: str, kind="bvn") -> None:
     """Offer Tier-1 BVN or NIN verification by bank SMS or hosted face."""
-    funding = customer_funding_account(pa.user)
-    if funding.get("provider") == "wema_vas":
-        return _send_vas_setup(pa.user, msisdn, funding)
     kind = "nin" if kind == "nin" else "bvn"
     other = "bvn" if kind == "nin" else "nin"
     # A callback can attach the NUBAN before the bank's OTP identity round-trip
@@ -3048,13 +2927,11 @@ def _kyc_outstanding(user) -> list:
                               "bvn_verified", "nin_verified", "bvn_hash",
                               "bvn_last4", "nin_hash", "nin_last4", "tier"])
     rehydrate_verified_identity_flags(user)
-    # The archived VAS enrollment contract still requires its independent BVN
-    # check; Partnership Tier 1 accepts either identity.
-    either_identity = customer_funding_account(user).get("provider") != "wema_vas"
+    # Partnership Tier 1 accepts either verified identity.
     done = {
         "phone": user.phone_verified,
         "email": user.email_verified,
-        "bvn": user.bvn_verified or (either_identity and user.nin_verified),
+        "bvn": user.bvn_verified or user.nin_verified,
         "nin": user.nin_verified,
     }
     # Wema hosted face is an ALTERNATIVE way to complete the BVN/NIN item, not a
@@ -3068,9 +2945,8 @@ def _kyc_status_lines(user) -> str:
 
     rehydrate_verified_identity_flags(user)
     mark = lambda ok: "✅" if ok else "⬜"  # noqa: E731
-    is_vas = customer_funding_account(user).get("provider") == "wema_vas"
-    identity_complete = user.bvn_verified or (user.nin_verified and not is_vas)
-    identity = "BVN" if user.bvn_verified or is_vas else "NIN" if user.nin_verified else "BVN or NIN"
+    identity_complete = user.bvn_verified or user.nin_verified
+    identity = "BVN" if user.bvn_verified else "NIN" if user.nin_verified else "BVN or NIN"
     return "\n".join([
         f"{mark(user.phone_verified)} Phone number",
         f"{mark(user.email_verified)} Email address",
@@ -3123,56 +2999,34 @@ def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
     outstanding = _kyc_outstanding(user)
     from wallet.identity import accepted_identity_pending
     funding = customer_funding_account(user)
-    if funding.get("account_setup_state") == "partnership_review":
+    if funding.get("account_setup_state") in {"partnership_review", "legacy_funding_review"}:
         return reply(msisdn, funding["migration_message"])
-    is_vas = funding.get("provider") == "wema_vas"
 
-    if not is_vas and accepted_identity_pending(user):
+    if accepted_identity_pending(user):
         _clear_actions(msisdn)
         return reply(msisdn, "Your bank accepted the verification code. Your identity "
                      "check is still processing. You do not need to submit your BVN "
                      "or the code again. Reply *8* to check your status shortly.")
     if not outstanding:
-        if is_vas:
-            return _vas_verification_status(user, msisdn, funding)
         return _offer_tier_upgrade(user, msisdn)
     # "Let's do the rest now" is a promise, so it must not be made when every
     # outstanding step is one the bank will no longer accept over chat. Send the
     # checklist with the real next step instead of an invitation to a form that
     # cannot be submitted.
-    if not is_vas and all(_bank_upgrade_blocks(user, step) for step in outstanding):
+    if all(_bank_upgrade_blocks(user, step) for step in outstanding):
         _clear_actions(msisdn)
         reply(msisdn, "🪪 *Verify your identity*\n\n" + _kyc_status_lines(user))
         return _kyc_bank_upgrade_notice(user, msisdn)
     _clear_actions(msisdn)
     pa = PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="kyc", state="idle",
-        payload={"attempted": sorted(attempted or set()), **({"vas_contacts": True} if is_vas else {})},
+        payload={"attempted": sorted(attempted or set())},
         expires_at=_flow_deadline("idle"),
     )
-    if is_vas:
-        from .vas_identity import arm_contacts
-        if not arm_contacts(pa, user, msisdn):
-            pa.delete()
-            return reply(msisdn, "This verification session changed. Sign in securely and reply 8 to try again.")
-    next_steps = ("Complete your remaining checks securely." if is_vas
-                  else "These raise your limits. Let's do the rest now -")
+    next_steps = "These raise your limits. Let's do the rest now -"
     reply(msisdn, "🪪 *Verify your identity*\n\n" + _kyc_status_lines(user)
           + "\n\n" + next_steps + ' Reply "cancel" to stop anytime.')
     return _kyc_next(pa, user, msisdn)
-
-
-def _vas_verification_status(user, msisdn: str, funding: dict | None = None) -> None:
-    """VAS account setup has no Partnership tier/address upgrade ladder."""
-    _clear_actions(msisdn)
-    funding = funding if funding is not None else customer_funding_account(user)
-    reply(msisdn, "🪪 *Your verification status*\n\n" + _kyc_status_lines(user)
-          + "\n\nYour completed checks stay saved.")
-    if funding.get("enrollment_available") or _vas_identity_refresh_available(user, funding):
-        return _send_vas_setup(user, msisdn, funding)
-    if funding.get("has_account") and funding.get("available"):
-        return _send_account_details(msisdn, get_or_create_wallet(user))
-    return reply(msisdn, _vas_account_status(funding))
 
 
 _UPGRADE_STEPS = {"bvn", "nin"}
@@ -3204,8 +3058,6 @@ def _bank_upgrade_blocks(user, step: str) -> bool:
 
 def _offer_tier_upgrade(user, msisdn: str) -> None:
     """After Tier 1, option 8 becomes an upgrade entry point, not a dead end."""
-    if customer_funding_account(user).get("provider") == "wema_vas":
-        return _start_kyc(user, msisdn)
     _clear_actions(msisdn)
     user.refresh_from_db(fields=[
         "tier", "phone_verified", "email_verified", "bvn_verified", "nin_verified",
@@ -3265,8 +3117,6 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
 
 def _kyc_bank_upgrade_notice(user, msisdn: str) -> None:
     """Keep verified checks and show the account upgrade requirements."""
-    if customer_funding_account(user).get("provider") == "wema_vas":
-        return _start_kyc(user, msisdn)
     if get_or_create_wallet(user).account_number and not (user.bvn_verified or user.nin_verified):
         _clear_actions(msisdn)
         return reply(msisdn, "Your funding account is open, but identity verification "
@@ -3280,8 +3130,6 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
     from .verification_web import start_verification
     from django.core.exceptions import ImproperlyConfigured
 
-    if customer_funding_account(user).get("provider") == "wema_vas":
-        return _start_kyc(user, msisdn)
     if tier == 3:
         from wallet.address_verification import tier3_address_capability
 
@@ -3312,6 +3160,9 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
     Steps already attempted in this session are skipped. An identity queued for
     review is still "outstanding" (it is not verified), so without this the flow
     would ask for the same number forever."""
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return reply(msisdn, RETIRED_SETUP_MESSAGE)
     attempted = set(pa.payload.get("attempted") or []) & set(_KYC_STEPS)
     # Drop obsolete step names from older sessions. NIN is a Tier-2 step.
     if set(pa.payload.get("attempted") or []) != attempted:
@@ -3321,27 +3172,6 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
     if not outstanding:
         return _kyc_finish(pa, user, msisdn)
     step = outstanding[0]
-    if step in {"bvn", "nin", "face"}:
-        funding = customer_funding_account(user)
-        if funding.get("provider") == "wema_vas":
-            if funding.get("enrollment_available") or _vas_identity_refresh_available(user, funding):
-                # Enter the consent-first enrollment session BEFORE collecting
-                # BVN/NIN. Verifying in the generic KYC form first would discard
-                # its input and make setup ask for the identifier a second time.
-                # Do not call _send_vas_setup here: outstanding identity checks
-                # would route that helper back through _start_kyc recursively.
-                from .vas_flow import start
-                return start(user, msisdn)
-            # Identity proof is independent of an invitation to allocate a test
-            # account. Keep the independent path when enrollment is unavailable.
-            from .vas_identity import arm
-            pa.payload.update({"id_kind": "bvn", "vas_contacts": True,
-                               "attempted": sorted(attempted | {"bvn"})})
-            _touch(pa, payload=pa.payload)
-            if arm(pa, user, msisdn) and _send_identity_flow(pa, "bvn"):
-                return None
-            _clear_actions(msisdn)
-            return reply(msisdn, "Secure BVN verification is temporarily unavailable. Please try again here shortly; keep your BVN out of this chat.")
     pa.payload["attempted"] = sorted(attempted | {step})
     # Check BEFORE the prompt goes out, not after the number comes back.
     if _bank_upgrade_blocks(user, step):
@@ -3379,12 +3209,12 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
 
 
 def _kyc_finish(pa: PendingAction, user, msisdn: str) -> None:
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return reply(msisdn, RETIRED_SETUP_MESSAGE)
     _clear_actions(msisdn)
     user.recompute_tier()
     user.save(update_fields=["tier"])
-    funding = customer_funding_account(user)
-    if funding.get("provider") == "wema_vas":
-        return _vas_verification_status(user, msisdn, funding)
     pending = pa.payload.get("pending_review")
     tail = ""
     if pending:
@@ -3419,6 +3249,9 @@ def _kyc_send_phone_code(pa: PendingAction, user, msisdn: str) -> None:
     silent-success dict when it has no key, so trusting its `success` would
     announce a code that never left the building and leave the customer staring
     at a phone that will never buzz."""
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return reply(msisdn, RETIRED_SETUP_MESSAGE)
     if not sms_live() and not _kyc_test_code(user):
         _clear_actions(msisdn)
         log.warning("wa_kyc_sms_not_configured - TERMII_API_KEY is unset")
@@ -3478,11 +3311,9 @@ def _kyc_mail_code(pa: PendingAction, user) -> bool:
     for this sender (typically FROM_EMAIL on an unverified domain), which used
     to print "We sent a 6-digit code" over mail that never left the building.
     """
-    if pa.payload.get("vas_contacts"):
-        from .vas_identity import contact_bound
-        user.refresh_from_db()
-        if not contact_bound(pa, user):
-            return False
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return False
     target = _email_challenge_target(user)
     code = _kyc_test_code(user) or f"{secrets.randbelow(10**6):06d}"
     # Same branded template the app's OTP emails use - one design, so a customer
@@ -3499,36 +3330,20 @@ def _kyc_mail_code(pa: PendingAction, user) -> bool:
                           note="This code expires in 10 minutes. If you didn't request "
                                "it, you can ignore this email - nothing changes without "
                                "the code."))
-    if not sent.get("success") or (pa.payload.get("vas_contacts") and sent.get("mock")):
+    if not sent.get('success'):
         return False
     challenge = {"code_hash": make_password(code),
                  "code_exp": (timezone.now() + timedelta(minutes=10)).isoformat(),
                  "code_attempts": 0, "code_target": target,
                  "code_target_label": _masked_email(user.email)}
-    if pa.payload.get("vas_contacts"):
-        with db_transaction.atomic():
-            current = User.objects.select_for_update().get(pk=user.pk)
-            locked = PendingAction.objects.select_for_update().filter(pk=pa.pk, user=current).first()
-            if (locked is None or not contact_bound(locked, current)
-                    or not secrets.compare_digest(target, _email_challenge_target(current))):
-                return False
-            locked.payload.update(challenge)
-            locked.save(update_fields=["payload"])
-            pa.payload, pa.user = locked.payload, current
-    else:
-        pa.payload.update(challenge)
+    pa.payload.update(challenge)
     return True
 
 
 def _kyc_send_email_code(pa: PendingAction, user, msisdn: str) -> None:
-    if pa.payload.get("vas_contacts"):
-        from .vas_identity import contact_bound
-        user.refresh_from_db()
-        if not contact_bound(pa, user):
-            return reply(msisdn, "This verification session changed. Reply 8 to start again.")
-    if pa.payload.get("vas_contacts") and not flows_live():
-        _clear_actions(msisdn)
-        return reply(msisdn, "Secure email verification is temporarily unavailable. Please try again here shortly.")
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return reply(msisdn, RETIRED_SETUP_MESSAGE)
     if not user.email:
         if _send_email_flow(pa, "address"):
             return reply(msisdn, "📧 Tap the secure form above to enter your *email address* - "
@@ -3564,6 +3379,9 @@ def _kyc_send_email_code(pa: PendingAction, user, msisdn: str) -> None:
 # "stop" (the attempt is over; the message is the terminal screen).
 # --------------------------------------------------------------------------- #
 def kyc_flow_email_address(pa: PendingAction, email: str) -> tuple[str, str]:
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return "stop", RETIRED_SETUP_MESSAGE
     user = pa.user
     email = (email or "").strip().lower()
     if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
@@ -3575,27 +3393,12 @@ def kyc_flow_email_address(pa: PendingAction, email: str) -> tuple[str, str]:
         _clear_actions(pa.msisdn)
         reply(pa.msisdn, rail_error)
         return "stop", "Email verification is unavailable right now - see the chat."
-    if pa.payload.get("vas_contacts"):
-        from .vas_identity import contact_bound, credentials
-        with db_transaction.atomic():
-            current = User.objects.select_for_update().get(pk=user.pk)
-            locked = PendingAction.objects.select_for_update().filter(pk=pa.pk, user=current).first()
-            if locked is None or not contact_bound(locked, current):
-                return "stop", "This verification session changed. Reply 8 in the chat to start again."
-            if str(current.email or "").strip().lower() != email:
-                current.email_verified = False
-            current.email = email
-            current.save(update_fields=["email", "email_verified"])
-            locked.payload["vas_identity_credentials"] = credentials(current)
-            locked.save(update_fields=["payload"])
-            pa.payload, pa.user, user = locked.payload, current, current
-    else:
-        changed = str(user.email or "").strip().lower() != email
-        user.email = email
-        if changed:
-            # A verified flag belongs to one inbox, not its replacement.
-            user.email_verified = False
-        user.save(update_fields=["email", "email_verified"] if changed else ["email"])
+    changed = str(user.email or "").strip().lower() != email
+    user.email = email
+    if changed:
+        # A verified flag belongs to one inbox, not its replacement.
+        user.email_verified = False
+    user.save(update_fields=["email", "email_verified"] if changed else ["email"])
     if not _kyc_mail_code(pa, user):
         _clear_actions(pa.msisdn)
         reply(pa.msisdn, "⚠️ We couldn't send the email just now. Please try again shortly.")
@@ -3612,6 +3415,9 @@ def kyc_flow_email_address(pa: PendingAction, email: str) -> tuple[str, str]:
 
 
 def kyc_flow_email_code(pa: PendingAction, code: str) -> tuple[str, str]:
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return "stop", RETIRED_SETUP_MESSAGE
     msisdn = pa.msisdn
     code = "".join(ch for ch in str(code) if ch.isdigit())
     if not re.fullmatch(r"\d{6}", code):
@@ -3626,12 +3432,8 @@ def kyc_flow_email_code(pa: PendingAction, code: str) -> tuple[str, str]:
         locked = PendingAction.objects.select_for_update().filter(
             pk=pa.pk, user_id=user.pk, action_type="kyc"
         ).first()
-        if locked is None or locked.expired:
+        if locked is None or locked.expired or is_retired_setup(locked):
             return "stop", "This verification has ended. Reply 8 in the chat to start again."
-        if locked.payload.get("vas_contacts"):
-            from .vas_identity import contact_bound, credentials
-            if not contact_bound(locked, user):
-                return "stop", "This verification session changed. Reply 8 in the chat to start again."
         target = str(locked.payload.get("code_target") or "")
         if (not target
                 or not secrets.compare_digest(target, _email_challenge_target(user))):
@@ -3652,9 +3454,6 @@ def kyc_flow_email_code(pa: PendingAction, code: str) -> tuple[str, str]:
             if verdict == "ok":
                 user.email_verified = True
                 user.save(update_fields=["email_verified"])
-                if locked.payload.get("vas_contacts"):
-                    locked.payload["vas_identity_credentials"] = credentials(user)
-                    locked.save(update_fields=["payload"])
 
     # Keep callers that render a retry from the object they already hold in sync
     # with the row-locked attempt count.
@@ -3723,13 +3522,13 @@ def _kyc_code_ok(pa: PendingAction, msisdn: str, val: str) -> bool | None:
 
 
 def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return reply(msisdn, RETIRED_SETUP_MESSAGE)
     val = text.strip()
     low = val.lower()
     state = pa.state
 
-    if (state in {KYC_UPGRADE_STATE, BVN_METHOD_STATE, FACE_ID_STATE, "bvn", "nin"}
-            and customer_funding_account(user).get("provider") == "wema_vas"):
-        return _start_kyc(user, msisdn)
     if state == KYC_UPGRADE_STATE:
         if low == "nin_face" and user.bvn_verified and not user.nin_verified:
             if not _face_step_available():
@@ -3796,31 +3595,11 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return _kyc_send_phone_code(pa, user, msisdn)
         if not re.fullmatch(r"\d{6}", val):
             return reply(msisdn, "Enter the 6-digit code from the SMS, or reply *resend*.")
-        if pa.payload.get("vas_contacts"):
-            from .vas_identity import contact_bound, credentials
-            with db_transaction.atomic():
-                current = User.objects.select_for_update().get(pk=user.pk)
-                locked = PendingAction.objects.select_for_update().filter(
-                    pk=pa.pk, user=current, msisdn=msisdn,
-                    action_type="kyc", state="phone",
-                ).first()
-                if locked is None or not contact_bound(locked, current):
-                    return reply(msisdn, "This verification session changed. Reply 8 to start again.")
-                if _kyc_code_ok(locked, msisdn, val) is not True:
-                    return
-                current.phone_verified = True
-                current.save(update_fields=["phone_verified"])
-                # This proof deliberately changes a credential bound to the
-                # session. Burn its code and carry only this session forward.
-                locked.payload["vas_identity_credentials"] = credentials(current)
-                locked.save(update_fields=["payload"])
-                pa, user = locked, current
-        else:
-            ok = _kyc_code_ok(pa, msisdn, val)
-            if ok is not True:
-                return
-            user.phone_verified = True
-            user.save(update_fields=["phone_verified"])
+        ok = _kyc_code_ok(pa, msisdn, val)
+        if ok is not True:
+            return
+        user.phone_verified = True
+        user.save(update_fields=["phone_verified"])
         reply(msisdn, "✅ Phone number verified.")
         return _kyc_next(pa, user, msisdn)
 
@@ -3888,13 +3667,12 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
     second one therefore cannot be auto-verified. A provider outage supplies no
     evidence for manual approval, so it never creates a review submission.
     """
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return reply(msisdn, RETIRED_SETUP_MESSAGE)
     from accounts.models import hash_identifier
     from accounts.views import _identity_owned_by_another_user
 
-    funding = customer_funding_account(user)
-    if funding.get("provider") == "wema_vas":
-        from .vas_identity import submit
-        return submit(pa, user, msisdn, kind, digits)
 
     verified_field = f"{kind}_verified"
     fields = ["bvn_hash", "bvn_last4"] if kind == "bvn" else ["nin_hash", "nin_last4"]
@@ -4173,29 +3951,24 @@ def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits:
     return _kyc_next(pa, user, msisdn)
 
 
-def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str, *,
-                           verified_name: str = "", email: str = "", timeout=None,
-                           delivery_deadline=None):
+def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str):
     """Send one ownership code only to provider-returned identity contacts.
 
-    VAS requires accepted SMS delivery and also attempts the same code at the
-    email returned by Prembly. Signup email is a separate contact challenge;
-    it is never a fallback destination or marked verified by this code.
-    Legacy identity challenges keep their existing SMS-only behavior.
+    The code goes to the phone returned by the identity lookup. Email
+    confirmation is a separate contact challenge and is never inferred here.
 
     Returns None when the code is away (the caller chains to the code screen),
     a string when the challenge cannot be run (the caller leaves verification
     retryable), or "" when this deploy has no channel for it at all.
     """
-    is_vas = pa.action_type == "vas_enroll"
-    is_prembly = is_vas or pa.payload.get("vas_identity") is True
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return RETIRED_SETUP_MESSAGE
 
     def failed(category, message):
-        if is_prembly:
-            log.warning("wa_identity_challenge_failed category=%s", category)
         return message
 
-    if not is_prembly and (getattr(settings, "TESTING", False) or settings.DEBUG):
+    if getattr(settings, "TESTING", False) or settings.DEBUG:
         return ""
     if not flows_live():
         # The code is a bearer credential. Collecting it in the thread would undo
@@ -4208,79 +3981,32 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str, *,
     expected_state = pa.state
     # A number typed while its secure form is open follows the legacy BVN
     # handler, which parks the same action at 'bvn' before starting its SMS.
-    allowed_states = (("flow_vas",) if is_vas else
-                      (FLOW_ID_STATE, "bvn") if kind == "bvn" else (FLOW_ID_STATE,))
+    allowed_states = (FLOW_ID_STATE, "bvn") if kind == "bvn" else (FLOW_ID_STATE,)
     if expected_state not in allowed_states:
         return failed("session_changed", "the identity verification step changed")
-    identity_hash = (pa.payload.get("identity_hash", "") if is_prembly
-                     else getattr(user, f"{kind}_hash", ""))
+    identity_hash = getattr(user, f"{kind}_hash", "")
     if not identity_hash:
         return failed("session_changed", "the identity submission changed")
-    if delivery_deadline is not None:
-        from .vas_identity import identity_timeout
-        timeout = identity_timeout(delivery_deadline, 3, read=2)
-        if timeout is None:
-            return failed("sms_budget_exhausted", "the verification delivery budget expired")
     code = f"{secrets.randbelow(10**6):06d}"
     message = (f"Zitch: {code} is your {kind.upper()} verification code. "
                "It expires in 10 minutes. Never share it.")
-    sent = send_sms(phone, message, timeout=timeout) if timeout is not None else send_sms(phone, message)
-    if not sent.get("success") or (is_prembly and (sent.get("success") is not True or sent.get("mock"))):
+    sent = send_sms(phone, message)
+    if not sent.get("success"):
         return failed("sms_not_accepted", "the verification code could not be delivered")
     masked_phone = f"•••••{phone[-4:]}"
-    delivery = None
-    if is_prembly:
-        from accounts.views import _branded_email
-        from utility.providers import _record_email, identity_otp_delivery_payload
-        from urllib3.util import Timeout
-
-        record_email = _record_email({"email": email})
-        email_status = "not_available"
-        if record_email:
-            email_status = "unavailable"
-            if email_live():
-                email_timeout = (identity_timeout(delivery_deadline, 2, read=1)
-                    if delivery_deadline is not None else Timeout(total=2, connect=1, read=1))
-                try:
-                    if email_timeout is not None:
-                        emailed = send_email(record_email, "Your Zitch identity verification code", message,
-                            timeout=email_timeout,
-                            html=_branded_email(
-                                f"Verify your {kind.upper()}",
-                                "Enter this code on the secure WhatsApp screen to verify your identity.",
-                                code=code,
-                                note="This code expires in 10 minutes. Never share it."))
-                        email_status = ("accepted" if emailed.get("success") is True
-                                        and not emailed.get("mock") else "failed")
-                    else:
-                        log.warning("wa_identity_optional_email_skipped category=budget_exhausted")
-                except Exception:
-                    # SMS remains usable. Never put a destination or provider
-                    # exception into a log or the private form response.
-                    email_status = "failed"
-        delivery = identity_otp_delivery_payload(phone, email=record_email, email_status=email_status)
     # The SMS call runs outside locks. Its code proves only the exact identity
     # looked up before delivery, even if another submission changes the user.
     with db_transaction.atomic():
         current = User.objects.select_for_update().get(pk=user.pk)
         locked = PendingAction.objects.select_for_update().filter(
             pk=pa.pk, user_id=current.pk, msisdn=pa.msisdn,
-            action_type="vas_enroll" if is_vas else "kyc", state=expected_state,
+            action_type="kyc", state=expected_state,
         ).first()
-        if (locked is None or locked.expired or not current.is_active
-                or locked.payload.get("id_kind", kind) != kind
-                or (getattr(current, f"{kind}_verified") and not is_prembly)
-                or (is_prembly and getattr(current, f"{kind}_verified")
-                    and not secrets.compare_digest(getattr(current, f"{kind}_hash", ""), identity_hash))
-                or (is_prembly and (not verified_name or locked.payload.get("vas_step") != "processing"))
-                or not secrets.compare_digest(getattr(current, f"{kind}_hash", ""),
-                    str(locked.payload.get("identity_previous_hash", "")) if is_prembly else identity_hash)
-                or (is_prembly and locked.payload.get("identity_hash") != identity_hash)):
+        if (locked is None or locked.expired or is_retired_setup(locked)
+                or not current.is_active or locked.payload.get("id_kind", kind) != kind
+                or getattr(current, f"{kind}_verified")
+                or not secrets.compare_digest(getattr(current, f"{kind}_hash", ""), identity_hash)):
             return failed("session_changed", "the identity submission changed during SMS delivery")
-        if locked.payload.get("vas_identity"):
-            from .vas_identity import bound
-            if not bound(locked, current):
-                return failed("session_changed", "the private verification session changed")
         locked.payload.update({
             "id_otp_hash": make_password(code),
             "id_otp_exp": (timezone.now() + timedelta(minutes=10)).isoformat(),
@@ -4290,20 +4016,15 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str, *,
             "id_otp_subject": current.pk,
             "id_otp_identity_hash": identity_hash,
         })
-        if is_prembly:
-            locked.payload["id_otp_verified_name"] = " ".join(verified_name.split())[:150]
-            locked.payload["id_otp_delivery"] = delivery
-        if is_vas:
-            # The encrypted one-entry handoff is bound to this setup session's
-            # original deadline. Delivery must neither shorten nor extend it.
-            locked.save(update_fields=["payload"])
-        else:
-            _touch(locked, state=FLOW_ID_STATE, payload=locked.payload)
+        _touch(locked, state=FLOW_ID_STATE, payload=locked.payload)
         pa.payload, pa.state, pa.expires_at = locked.payload, locked.state, locked.expires_at
     return None
 
 def kyc_flow_identity_otp(pa: PendingAction, code: str):
     """Check the identity challenge code. ("retry", msg) | ("stop", msg) | ("ok", msg)."""
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return "stop", RETIRED_SETUP_MESSAGE
     from accounts.models import IdentityProof, record_identity_proof
 
     digits = "".join(ch for ch in str(code) if ch.isdigit())
@@ -4311,8 +4032,6 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
         # A five-digit entry is a typo, not a guess - it must not spend one of
         # the three attempts the real challenge gets.
         return "retry", "The code is exactly 6 digits - check your verification message and try again."
-    is_vas = pa.action_type == "vas_enroll"
-    is_prembly = is_vas or pa.payload.get("vas_identity") is True
     challenge_keys = ("id_otp_hash", "id_otp_exp", "id_otp_attempts", "id_otp_to",
                       "id_otp_kind", "id_otp_subject", "id_otp_identity_hash", "id_otp_verified_name",
                       "id_otp_delivery")
@@ -4320,15 +4039,10 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
         user = User.objects.select_for_update().get(pk=pa.user_id)
         locked = PendingAction.objects.select_for_update().filter(
             pk=pa.pk, user_id=user.pk, msisdn=pa.msisdn,
-            action_type="vas_enroll" if is_vas else "kyc",
-            state="flow_vas" if is_vas else FLOW_ID_STATE,
+            action_type="kyc", state=FLOW_ID_STATE,
         ).first()
-        if locked is None or locked.expired or not user.is_active:
+        if locked is None or locked.expired or not user.is_active or is_retired_setup(locked):
             return "stop", "This verification has ended. Reply 8 in the chat to start again."
-        if locked.payload.get("vas_identity"):
-            from .vas_identity import bound
-            if not bound(locked, user):
-                return "stop", "This verification has ended. Reply 8 in the chat to start again."
         kind = locked.payload.get("id_otp_kind")
         challenge_hash = locked.payload.get("id_otp_hash")
         # A stale in-flight confirmation cannot consume a newly issued code.
@@ -4336,12 +4050,10 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
             return "stop", "That code has already been used or replaced. Return to the chat for your current status."
         identity_hash = locked.payload.get("id_otp_identity_hash")
         expires = parse_datetime(str(locked.payload.get("id_otp_exp") or ""))
-        expected_hash = str(locked.payload.get("identity_previous_hash", "")) if is_prembly else identity_hash
         matching = (kind in ("bvn", "nin")
                     and locked.payload.get("id_otp_subject") == user.pk
                     and isinstance(identity_hash, str) and bool(identity_hash)
-                    and secrets.compare_digest(expected_hash, getattr(user, f"{kind}_hash", ""))
-                    and (not is_prembly or locked.payload.get("identity_hash") == identity_hash))
+                    and secrets.compare_digest(identity_hash, getattr(user, f"{kind}_hash", "")))
         if (not matching or not expires or timezone.is_naive(expires)
                 or timezone.now() >= expires):
             for key in challenge_keys:
@@ -4349,7 +4061,7 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
             locked.save(update_fields=["payload"])
             pa.payload = locked.payload
             return "stop", "That code expired or the identity changed. Reply 8 in the chat to try again."
-        if getattr(user, f"{kind}_verified") and not is_prembly:
+        if getattr(user, f"{kind}_verified"):
             for key in challenge_keys:
                 locked.payload.pop(key, None)
             locked.save(update_fields=["payload"])
@@ -4369,32 +4081,7 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
             locked.save(update_fields=["payload"])
             pa.payload = locked.payload
             return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
-        verified_name = " ".join(str(locked.payload.get("id_otp_verified_name") or "").split()) if is_prembly else ""
-        if is_prembly and (not verified_name or locked.payload.get("vas_step") != "code"):
-            return "stop", "This verification has ended. Start again in the chat."
-        if is_prembly:
-            # Blank legacy names are missing evidence, not conflicting legal
-            # names. Compare normalized substantive names before adding the
-            # freshly verified Prembly proof; never clear an existing flag.
-            prior_names = IdentityProof.objects.filter(
-                user=user, identity_type=kind, identity_hash=identity_hash,
-            ).values_list("verified_name", flat=True)
-            if any(name and name != verified_name.casefold()
-                   for name in (" ".join(value.split()).casefold() for value in prior_names)):
-                return "stop", "Your identity details need review. Contact Zitch Support."
         fields = [f"{kind}_verified", "tier"]
-        if is_prembly:
-            if (getattr(user, f"{kind}_verified")
-                    and not secrets.compare_digest(getattr(user, f"{kind}_hash", ""), identity_hash)):
-                return "stop", "Your verified identity changed. Contact Zitch Support."
-            if User.objects.exclude(pk=user.pk).filter(**{f"{kind}_hash": identity_hash}).exists():
-                return "stop", "Those identity details are already linked to another account. Contact Zitch Support."
-            # The candidate lived only in this challenge until SMS ownership
-            # succeeded. Claim it now, with the same database uniqueness guard
-            # as app KYC; abandoned attempts cannot reserve other people's IDs.
-            setattr(user, f"{kind}_hash", identity_hash)
-            setattr(user, f"{kind}_last4", locked.payload.get("identity_last4", ""))
-            fields.extend([f"{kind}_hash", f"{kind}_last4"])
         setattr(user, f"{kind}_verified", True)
         user.recompute_tier()
         from django.db import IntegrityError
@@ -4405,7 +4092,6 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
                     user, kind, identity_hash,
                     source=IdentityProof.IDENTITY_PROVIDER_OTP,
                     provider_reference=f"wa:{locked.id}:{kind}", prehashed=True,
-                    verified_name=verified_name,
                 )
         except IntegrityError:
             return "stop", "Those identity details need review. Contact Zitch Support."
@@ -4421,9 +4107,8 @@ def _do_account_details(user, msisdn: str) -> None:
     """Menu 7: profile and account status, without starting a setup session."""
     wallet = get_or_create_wallet(user)
     funding = customer_funding_account(user)
-    if funding.get("account_setup_state") == "partnership_review":
+    if funding.get("account_setup_state") in {"partnership_review", "legacy_funding_review"}:
         return reply(msisdn, funding["migration_message"])
-    is_vas = funding.get("provider") == "wema_vas"
     lines = [
         "🧾 *My account details*\n",
         f"👤 {user.get_full_name() or user.first_name or '-'}",
@@ -4432,10 +4117,7 @@ def _do_account_details(user, msisdn: str) -> None:
     if user.email:
         lines.append(f"📧 {user.email}" + ("" if user.email_verified else " (unconfirmed)"))
     reply(msisdn, "\n".join(lines))
-    if is_vas and (funding.get("test_mode") is True or not funding.get("has_account")
-                   or not funding.get("available") or funding.get("account_setup_state") != "ready"):
-        return reply(msisdn, _vas_account_status(funding))
-    if is_vas or wallet.account_number:
+    if wallet.account_number:
         return _send_account_details(msisdn, wallet, intro="🏦 *Your funding account*")
     return reply(msisdn, "You don't have a funding account number yet - reply *6* (Add money) to set one up in a minute.")
 
@@ -4466,9 +4148,9 @@ def _resume_account_otp(user, msisdn: str, attempt) -> None:
 
 
 def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
-    from wema_vas.partnership import first_partnership_setup
+    from wallet.partnership import first_partnership_setup
     funding = customer_funding_account(user)
-    if funding.get("provider") == "wema_vas" or funding.get("account_setup_state") == "partnership_review":
+    if funding.get("account_setup_state") in {"partnership_review", "legacy_funding_review"}:
         return _send_account_details(msisdn, get_or_create_wallet(user))
     if not wallet_views._wema_funding_enabled():
         return reply(msisdn, "🏦 Account setup isn't available right now - please try again later.")
@@ -4584,11 +4266,12 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
                   self-contradiction this whole branch exists to remove.
       other     - the account was adopted/created successfully.
     """
-    funding = customer_funding_account(user)
-    if funding.get("provider") == "wema_vas":
-        _send_vas_setup(user, msisdn, funding)
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        reply(msisdn, RETIRED_SETUP_MESSAGE)
         return "fail"
-    if funding.get("account_setup_state") == "partnership_review":
+    funding = customer_funding_account(user)
+    if funding.get("account_setup_state") in {"partnership_review", "legacy_funding_review"}:
         _clear_actions(msisdn)
         reply(msisdn, funding["migration_message"])
         return "fail"
@@ -4602,7 +4285,7 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
     using_bvn = kind == "bvn"
     wallet = get_or_create_wallet(user)
     identity_already_verified = bool(getattr(user, f"{kind}_verified", False))
-    from wema_vas.partnership import first_partnership_setup
+    from wallet.partnership import first_partnership_setup
     if identity_already_verified and not wallet.account_number and not first_partnership_setup(user):
         # A stale WhatsApp action can survive the callback which verifies the
         # identity.  The old guard returned "already verified" here and discarded
@@ -4850,6 +4533,9 @@ def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:
     Delegates to the same completion the chat path uses, so the two cannot drift
     on what a 400 means or on when the pending action is cleared.
     """
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return "done", RETIRED_SETUP_MESSAGE
     user, msisdn = pa.user, pa.msisdn
     code = "".join(ch for ch in str(code) if ch.isdigit())
     if not code:
@@ -4858,10 +4544,6 @@ def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:
         user, code, pa.payload.get("tracking_id", ""))
     if payload.get("success"):
         attempted_identity = "bvn" if pa.payload.get("using_bvn") else "nin"
-        if customer_funding_account(user).get("provider") == "wema_vas":
-            _send_account_details(msisdn, get_or_create_wallet(user))
-            _clear_actions(msisdn)
-            return "done", "Identity confirmed. Reply 6 here to check your funding account."
         _send_account_details(msisdn, get_or_create_wallet(user),
                               intro="🎉 *Your Zitch account number is ready!*")
         # Wema Wallet Service OTP is phone-only. Account creation is complete
@@ -4920,6 +4602,9 @@ def _kyc_rail_ready(user, step: str) -> bool:
 
 
 def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return reply(msisdn, RETIRED_SETUP_MESSAGE)
     val = text.strip()
     if pa.state == FACE_ID_STATE and pa.payload.get("id_purpose") == "account_face":
         kind = "nin" if pa.payload.get("id_type") == "nin" else "bvn"
@@ -5022,7 +4707,6 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
         return None
     _clear_actions(msisdn)
     return send_menu(msisdn)
-
 
 
 # --------------------------------------------------------------------------- #
@@ -5397,15 +5081,9 @@ def _accept_identity_in_chat(pa: PendingAction, user, msisdn: str, text: str) ->
 
 
 def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
-    if pa.action_type == "vas_enroll":
-        from .vas_flow import PRIVATE_ENTRY
-        digits = re.sub(r"\D", "", text or "")
-        if len(digits) >= 4:
-            return reply(msisdn, PRIVATE_ENTRY + _DELETE_TIP)
-        if pa.payload.get("vas_step") == "done" or _is_new_command(text):
-            _clear_actions(msisdn)
-            return handle_inbound(msisdn, text)
-        return reply(msisdn, PRIVATE_ENTRY)
+    if is_retired_setup(pa):
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        return reply(msisdn, RETIRED_SETUP_MESSAGE)
     if pa.state == EXECUTING_STATE:
         # Authorised and in the worker's hands. Every other branch below can end
         # in _clear_actions, and clearing THIS row would delete a payment the
@@ -5461,12 +5139,6 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if kind == ACCOUNT_OTP and low in ("face", "face verification", "use face"):
             _touch(pa, state="otp", payload=pa.payload)
             return _advance_add_account(pa, user, msisdn, text)
-        if pa.payload.get("vas_contacts") and low != "resend":
-            if _is_new_command(text):
-                _clear_actions(msisdn)
-                return handle_inbound(msisdn, text)
-            return reply(msisdn, "Use the secure verification form above. Keep your BVN, NIN and verification codes out of this chat. Reply cancel to stop."
-                         + (_DELETE_TIP if len(re.sub(r"\D", "", text or "")) >= 4 else ""))
         if low == "resend":
             if kind == ACCOUNT_OTP:
                 res = wema_provider.resend_wallet_otp(
@@ -5480,10 +5152,6 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
                 # An expired code with no way to ask for another would strand the
                 # customer inside a dead Flow.
                 return _kyc_send_email_code(pa, user, msisdn)
-            if pa.payload.get("vas_identity") and pa.payload.get("id_otp_hash"):
-                return reply(msisdn, "Your identity code was sent to the contacts on your identity record. "
-                             "You can still enter it on the secure form. For a fresh code, reply cancel, "
-                             "then 8 and re-enter your BVN privately.")
             # No code to re-send at this step. Answered rather than falling
             # through: "resend" is plainly about the step in progress, and the
             # new-instruction hatch below would read it as abandoning it.

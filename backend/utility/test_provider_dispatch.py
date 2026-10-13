@@ -521,11 +521,7 @@ PREMBLY_OFF = {"BASE_URL": "https://api.prembly.com", "API_KEY": "", "APP_ID": "
 
 
 class NinIdentityRailTests(SimpleTestCase):
-    """NIN is the one identity the NUBAN flow cannot verify — it name-matches
-    exactly ONE, in practice the BVN that opened the account. Without a second
-    rail every NIN falls to the operator review queue and nobody can spend until
-    a human clears them. Prembly has the standalone lookup; these pin down that
-    it is used, and that it fails CLOSED, because this result lifts a tier."""
+    """Explicit standalone Prembly adapter fails closed; Tier 1 uses Wema."""
 
     def _resp(self, payload, status=200):
         class R:
@@ -545,7 +541,7 @@ class NinIdentityRailTests(SimpleTestCase):
     def test_a_matching_record_verifies(self):
         payload = {"status": True, "response_code": "00", "data": {"firstName": "ADA", "lastName": "EZE"}}
         with patch("utility.providers.requests.post", return_value=self._resp(payload)) as post:
-            result = P.verify_nin("12345678901", name="Ada Eze")
+            result = P.prembly_verify_nin("12345678901", name="Ada Eze")
         self.assertTrue(result["success"])
         self.assertEqual((result["first_name"], result["last_name"]), ("ADA", "EZE"))
         self.assertEqual(post.call_args.args[0], "https://api.prembly.com/verification/vnin")
@@ -557,7 +553,7 @@ class NinIdentityRailTests(SimpleTestCase):
         person asking — refusing must not tell the asker who they hit."""
         payload = {"status": True, "response_code": "00", "data": {"firstname": "CHINEDU", "surname": "OKAFOR"}}
         with patch("utility.providers.requests.post", return_value=self._resp(payload)):
-            result = P.verify_nin("12345678901", name="Ada Eze")
+            result = P.prembly_verify_nin("12345678901", name="Ada Eze")
         self.assertFalse(result["success"])
         self.assertNotIn("CHINEDU", result["message"])
         self.assertNotIn("OKAFOR", result["message"])
@@ -566,7 +562,7 @@ class NinIdentityRailTests(SimpleTestCase):
     def test_a_record_with_no_name_is_not_a_pass(self):
         payload = {"status": True, "response_code": "00", "data": {"dob": "1990-01-01"}}
         with patch("utility.providers.requests.post", return_value=self._resp(payload)):
-            self.assertFalse(P.verify_nin("12345678901", name="Ada Eze")["success"])
+            self.assertFalse(P.prembly_verify_nin("12345678901", name="Ada Eze")["success"])
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_an_unreachable_or_malformed_provider_fails_closed(self):
@@ -574,16 +570,16 @@ class NinIdentityRailTests(SimpleTestCase):
 
         for effect in (R.RequestException("down"), ValueError("not json")):
             with patch("utility.providers.requests.post", side_effect=effect):
-                self.assertFalse(P.verify_nin("12345678901", name="Ada Eze")["success"])
+                self.assertFalse(P.prembly_verify_nin("12345678901", name="Ada Eze")["success"])
         with patch("utility.providers.requests.post",
                    return_value=self._resp({"status": False, "response_code": "01", "message": "not found"})):
-            self.assertFalse(P.verify_nin("12345678901", name="Ada Eze")["success"])
+            self.assertFalse(P.prembly_verify_nin("12345678901", name="Ada Eze")["success"])
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_gateway_or_credentials_error_is_not_classed_as_bad_identity(self):
         response = self._resp({"status": False, "message": "Unauthorized"}, status=401)
         with patch("utility.providers.requests.post", return_value=response):
-            result = P.verify_nin("12345678901", name="Ada Eze")
+            result = P.prembly_verify_nin("12345678901", name="Ada Eze")
         self.assertFalse(result["success"])
         self.assertFalse(result.get("invalid", False))
         self.assertNotIn("Unauthorized", result["message"])
@@ -591,14 +587,12 @@ class NinIdentityRailTests(SimpleTestCase):
     @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_a_malformed_nin_never_reaches_the_provider(self):
         with patch("utility.providers.requests.post") as post:
-            self.assertFalse(P.verify_nin("123", name="Ada Eze")["success"])
+            self.assertFalse(P.prembly_verify_nin("123", name="Ada Eze")["success"])
         post.assert_not_called()
 
 
 class BvnIdentityRailTests(SimpleTestCase):
-    """Prembly is the live standalone BVN rail. Deploy-wide simulation must
-    bypass it even when credentials remain staged; simulated KYC stores only
-    namespaced fake hashes, so no real identity number leaves Zitch."""
+    """Retained standalone adapter never replaces Wema ownership verification."""
 
     def _resp(self, payload):
         class R:
@@ -629,7 +623,7 @@ class BvnIdentityRailTests(SimpleTestCase):
             "first_name": "ADA", "last_name": "EZE", "phone_number": "08012345678",
         }}
         with patch("utility.providers.requests.post", return_value=self._resp(payload)) as post:
-            result = P.verify_bvn("12345678901", name="Ada Eze")
+            result = P.prembly_verify_bvn("12345678901", name="Ada Eze")
         self.assertTrue(result["success"])
         self.assertEqual(result["phone"], "2348012345678")
         self.assertEqual(post.call_args.args[0], "https://api.prembly.com/verification/bvn")
@@ -639,7 +633,7 @@ class BvnIdentityRailTests(SimpleTestCase):
     def test_a_different_person_is_refused_without_naming_them(self):
         payload = {"status": True, "response_code": "00", "data": {"firstname": "CHINEDU", "surname": "OKAFOR"}}
         with patch("utility.providers.requests.post", return_value=self._resp(payload)):
-            result = P.verify_bvn("12345678901", name="Ada Eze")
+            result = P.prembly_verify_bvn("12345678901", name="Ada Eze")
         self.assertFalse(result["success"])
         self.assertNotIn("CHINEDU", result["message"])
 
@@ -648,13 +642,13 @@ class BvnIdentityRailTests(SimpleTestCase):
         import requests as R
 
         with patch("utility.providers.requests.post", side_effect=R.RequestException("down")):
-            self.assertFalse(P.verify_bvn("12345678901", name="Ada Eze")["success"])
+            self.assertFalse(P.prembly_verify_bvn("12345678901", name="Ada Eze")["success"])
         with patch("utility.providers.requests.post",
                    return_value=self._resp({"status": False, "response_code": "01", "message": "not found"})):
-            self.assertFalse(P.verify_bvn("12345678901", name="Ada Eze")["success"])
+            self.assertFalse(P.prembly_verify_bvn("12345678901", name="Ada Eze")["success"])
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_a_malformed_bvn_never_reaches_the_provider(self):
         with patch("utility.providers.requests.post") as post:
-            self.assertFalse(P.verify_bvn("123", name="Ada Eze")["success"])
+            self.assertFalse(P.prembly_verify_bvn("123", name="Ada Eze")["success"])
         post.assert_not_called()

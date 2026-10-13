@@ -1,15 +1,16 @@
 # Wema / ALAT go-live runbook
 
-> **Current route: Wema Partnership, restored at the owner's request on 9 October
-> 2026.** Start with [the Partnership return](wema-partnership-return.md) and
-> [current release gates](partnership-audit-2026-10-13.md). The retained VAS
-> collection rail processes historical accounts and late notifications only;
-> its approval does not establish Partnership payout or bill entitlement.
-> In this document, “VAS” can also mean airtime/data/bill services.
+> **Current route: Wema Partnership only, as of 13 October 2026.** Start with
+> [Partnership deployment and historical funds](wema-partnership-return.md) and
+> [current release gates](partnership-audit-2026-10-13.md). The separate virtual-account
+> integration, enrollment and callbacks are removed. Historical financial records
+> and liability holds remain protected; obtain bank evidence to resolve them.
+> “VAS” elsewhere in this runbook means the bank's airtime/data/bill products,
+> not the removed account integration.
 
 The ordered checks for taking Zitch from **sandbox/mock** to **live money**
 on the Wema/ALAT rail. A passing preflight checks configuration; it does not
-certify provider delivery, financial reconciliation, or a completed migration.
+certify provider delivery, financial reconciliation, or settlement of historical funds.
 
 > **Historical 17 September 2026 audit:** that audit found production routing to
 > Oregon and an earlier Frankfurt ledger. It is retained as migration evidence,

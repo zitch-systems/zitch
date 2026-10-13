@@ -594,10 +594,6 @@ def _published_flow_report(*, flow_id: str | None = None) -> dict:
         local_document = json.loads(asset.read_text())
         local_digest = hashlib.sha256(json.dumps(local_document, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         local_screens = local_document["screens"]
-        # Shipping the next enrollment contract must not disable the already
-        # published payment/login screens while enrollment is still gated off.
-        if not flow.get("VAS_ENROLLMENT_ENABLED"):
-            local_screens = [screen for screen in local_screens if not screen["id"].startswith("VAS_")]
         expected = [s["id"] for s in local_screens]
         expected_props = {s["id"]: set((s.get("data") or {}).keys()) for s in local_screens}
     except Exception:  # noqa: BLE001
@@ -644,6 +640,7 @@ def _published_flow_report(*, flow_id: str | None = None) -> dict:
                 "detail": type(exc).__name__}
 
     missing = [s for s in expected if s not in published]
+    unexpected = sorted(s for s in published if s not in expected)
     # A screen can be present on BOTH sides and still be one publish behind: the
     # endpoint must supply exactly the properties the published screen declares,
     # so adding one here (SUCCESS gaining `status`) makes Meta reject the answer
@@ -671,7 +668,9 @@ def _published_flow_report(*, flow_id: str | None = None) -> dict:
         "missing_screens": missing,
         # Present on both sides, but their `data` contracts disagree.
         "drifted_screens": drifted,
-        "stale": bool(missing or drifted),
+        # Retired screens must also disappear from the deployed contract.
+        "unexpected_screens": unexpected,
+        "stale": bool(missing or drifted or unexpected),
         "validation_errors": [e.get("error_type") or e.get("message")
                               for e in validation_errors][:5],
     }

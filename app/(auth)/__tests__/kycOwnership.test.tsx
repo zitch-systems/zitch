@@ -50,7 +50,7 @@ jest.mock('@/components/design/ui', () => {
 });
 
 const state = { success: true, tier: 0, transaction_limit: '0', bvn_verified: false, nin_verified: false,
-  face_verified: false, identity_verification_provider: 'prembly' };
+  face_verified: false, account_provider: 'partnership', identity_verification_provider: 'prembly' };
 
 beforeEach(() => {
   mockApiJson.mockReset();
@@ -141,7 +141,7 @@ it('preserves the server-required address step for legacy accounts', async () =>
 
 it('refreshes an already verified BVN on the same profile without resetting verified history', async () => {
   const verifiedState = { ...state, tier: 2, bvn_verified: true, nin_verified: true,
-    face_verified: true, email_verified: true, account_provider: 'wema_vas' };
+    face_verified: true, email_verified: true, account_provider: 'partnership' };
   mockApiJson.mockImplementation(async (path: string) => {
     if (path === EP.kyc.status || path === EP.kyc.bvnConfirm) return verifiedState;
     if (path === EP.kyc.bvnStart) return { success: true, otp_required: true,
@@ -192,17 +192,28 @@ it.each([
 });
 
 
-it('keeps VAS identity status without advertising a per-transaction limit', async () => {
+it('rejects retired provider status without advertising a per-transaction limit', async () => {
   mockParams.verify_identity = '';
   mockApiJson.mockResolvedValue({ ...state, tier: 1, transaction_limit: '50000',
     bvn_verified: true, email_verified: true, account_provider: 'wema_vas' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
   const output = JSON.stringify(tree.toJSON());
-  expect(output).toContain('Current tier');
+  expect(output).toContain('Your account needs review');
   expect(output).not.toContain('Per-transaction limit');
   expect(output).not.toContain('50000');
   await act(async () => tree.unmount());
+});
+
+it('prioritizes the account review hold over stale verification processing', async () => {
+  mockApiJson.mockResolvedValue({ ...state, legacy_funding_review: true, pending: true,
+    account_setup_state: 'processing', migration_message: 'Your account needs a balance review.' });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Your account needs a balance review.');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Verification processing');
+  expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+  act(() => tree.unmount());
 });
 
 it('offers BVN and NIN as alternatives for Tier 1 without requiring BVN first', async () => {

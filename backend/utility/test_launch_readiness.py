@@ -26,7 +26,7 @@ class FinancialControlsReadinessTests(TestCase):
         self.record("recon.integrity_check", {"wallets": 1, "mismatches": 0})
         self.record("recon.balance_check", {"wallets": 0, "unreachable": 0,
                     "ledger_over_bank": 0, "bank_over_ledger": 0,
-                    "vas_collection_required": False, "tolerance": "0.00"})
+                    "legacy_funding_required": False, "tolerance": "0.00"})
         self.record("recon.settlement_report", {"incomplete": False, "nuban_wallets": 0, "held_total": "0.00",
                     "position": "0.00", "ledger_liability": "0.00", "stored_liability": "0.00"})
 
@@ -50,7 +50,7 @@ class FinancialControlsReadinessTests(TestCase):
         self.passing()
         self.record("recon.balance_check", {"wallets": 1, "unreachable": 0,
                     "ledger_over_bank": 1, "bank_over_ledger": 0,
-                    "vas_collection_required": False, "tolerance": "0.00", "over_sample": [{"account": "PRIVATE_ACCOUNT"}]})
+                    "legacy_funding_required": False, "tolerance": "0.00", "over_sample": [{"account": "PRIVATE_ACCOUNT"}]})
         report = financial_controls_report()
         self.assertEqual(report["checks"]["bank_balances"], "failed")
         self.assertFalse(report["financial_controls_ready"])
@@ -93,12 +93,12 @@ class FinancialControlsReadinessTests(TestCase):
             with self.subTest(tolerance=tolerance):
                 self.record("recon.balance_check", {"wallets": 0, "unreachable": 0,
                     "ledger_over_bank": 0, "bank_over_ledger": 0,
-                    "vas_collection_required": False, "tolerance": tolerance})
+                    "legacy_funding_required": False, "tolerance": tolerance})
                 self.assertEqual(financial_controls_report()["checks"]["bank_balances"], "failed")
 
-    def test_new_vas_exposure_blocks_older_passing_controls(self):
+    def test_unresolved_legacy_exposure_blocks_older_passing_controls(self):
         self.passing()
-        with patch("wallet.services.vas_reconciliation_scope", return_value={"vas_collection_required": True}):
+        with patch("wallet.legacy_funding.reconciliation_scope", return_value={"legacy_funding_required": True}):
             self.assertFalse(financial_controls_report()["financial_controls_ready"])
 
     def test_invalid_or_incomplete_settlement_never_passes(self):

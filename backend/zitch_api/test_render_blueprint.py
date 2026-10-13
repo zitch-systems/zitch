@@ -26,9 +26,18 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
         self.assertEqual(sum("generateValue: true" in row for row in secret_blocks), 1)
         self.assertEqual(sum("fromService:" in row for row in secret_blocks), 8)
 
-    def test_non_api_builds_refuse_unapplied_shared_migrations(self):
-        gate = "python manage.py migrate --check"
-        self.assertEqual(self.text.count(gate), 8)
+    def test_non_api_builds_wait_for_api_migrations_and_recheck_before_start(self):
+        for filename in ("render.yaml", "render.frankfurt.yaml"):
+            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
+            builds = re.findall(r'^    buildCommand: "([^"]+)"', text, re.MULTILINE)
+            starts = re.findall(r'^    startCommand: "([^"]+)"', text, re.MULTILINE)
+            self.assertEqual(builds.count("./build.sh"), 1, filename)
+            self.assertEqual(builds.count(
+                "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
+            ), 8, filename)
+            self.assertEqual(sum(command.startswith("python manage.py migrate --check && ")
+                                 for command in starts), 8, filename)
+            self.assertNotRegex(text, r"manage.py migrate(?:[\"\n]| &&)")
 
     def test_only_the_credentialed_worker_owns_terminal_whatsapp_delivery(self):
         """Money crons leave WhatsApp alerts retryable without copying Meta secrets."""
@@ -147,20 +156,18 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
             fixed_minutes = [value.split()[0] for value in schedules if not value.startswith("*/")]
             self.assertNotIn("0", fixed_minutes, filename)
 
-    def test_vas_release_and_identity_configuration_cannot_diverge_between_consumers(self):
-        """A worker with a stale rail selector or key cannot safely enroll users."""
-        keys = ("BANK_ACCOUNT_PROVIDER", "WEMA_PARTNERSHIP_MODE", "WEMA_BILLER_MODE",
-                "WEMA_VAS_BILLER_ENABLED", "WEMA_VAS_BILLER_SOURCE_ACCOUNT",
-                "WEMA_VAS_BILLER_APPROVAL_REFERENCE", "KYC_PROVIDER", "WEMA_VAS_ENABLED",
-                "WEMA_VAS_MODE", "WEMA_VAS_PREFIX", "WEMA_VAS_TOKEN", "WEMA_VAS_IDENTITY_KEYS",
-                "WEMA_VAS_TRUST_TLS_PROXY", "WEMA_VAS_ENABLE_ENROLLMENT", "WEMA_VAS_RELEASE_PHASE",
-                "WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS",
-                "WEMA_VAS_PILOT_USER_IDS", "WEMA_VAS_LIVE_APPROVAL_REFERENCE",
-                "WEMA_VAS_GENERAL_APPROVAL_REFERENCE", "WEMA_VAS_COLLECTION_ACCOUNT")
-        flow_keys = ("WHATSAPP_FLOW_ID", "WHATSAPP_FLOW_PRIVATE_KEY", "WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE",
-                     "WHATSAPP_FLOW_VAS_ENROLLMENT_ENABLED", "WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID")
+    def test_partnership_and_identity_configuration_cannot_diverge_between_consumers(self):
+        """A worker must use the same active Partnership contract as the API."""
+        keys = ("WEMA_PARTNERSHIP_MODE", "WEMA_BILLER_MODE")
+        flow_keys = ("WHATSAPP_FLOW_ID", "WHATSAPP_FLOW_PRIVATE_KEY", "WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE")
         for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
             text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
+            self.assertNotIn("WEMA_VAS_", text.replace("WEMA_VAS_STATUS_LEGEND", "PARTNERSHIP_BILLER_LEGEND"))
+            self.assertEqual(text.count("- key: WEMA_VAS_STATUS_LEGEND"), 3)
+            self.assertNotIn("WHATSAPP_FLOW_VAS_", text)
+            self.assertNotIn("WEMA_PARTNERSHIP_RESTORE_VAS", text)
+            self.assertNotIn("- key: BANK_ACCOUNT_PROVIDER", text)
+            self.assertNotIn("- key: KYC_PROVIDER", text)
             api_name = "zitch-api" + suffix
             services = re.findall(r"^  - type: .*?(?=^  - type: |^databases:|\Z)", text, re.M | re.S)
             for block in services:

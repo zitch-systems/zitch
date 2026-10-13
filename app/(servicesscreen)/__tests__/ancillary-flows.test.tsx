@@ -15,7 +15,11 @@ import { clearSession } from '@/lib/secureStore';
 const mockApiJson = jest.fn();
 const mockApiPost = jest.fn();
 const mockRegisterNotifications = jest.fn();
-jest.mock('@/lib/notifications', () => ({ registerForPushNotifications: (...args: unknown[]) => mockRegisterNotifications(...args) }));
+const mockPushAvailability = jest.fn(() => 'available');
+jest.mock('@/lib/notifications', () => ({
+  registerForPushNotifications: (...args: unknown[]) => mockRegisterNotifications(...args),
+  getPushAvailability: () => mockPushAvailability(),
+}));
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args), apiPost: (...args: unknown[]) => mockApiPost(...args) }));
 jest.mock('@/lib/biometrics', () => ({ isBiometricAvailable: jest.fn(async () => true), isBiometricEnabled: jest.fn(async () => false), setBiometricEnabled: jest.fn(async () => {}), authenticate: jest.fn(async () => true) }));
 jest.mock('@/lib/secureStore', () => ({ clearSession: jest.fn(async () => {}) }));
@@ -51,7 +55,7 @@ jest.mock('@/components/design/ui', () => {
     money: (value: number) => `₦${value}`, Toggle: () => null,
     SelectRow: () => null, PinSheet: () => null, PillTabs: () => null, PickerSheet: () => null,
     Field: (props: object) => ReactActual.createElement(TextInput, props),
-    ZItem: ({ title, onPress, right }: { title: string; onPress: () => void; right?: ReactNode }) => ReactActual.createElement(View, null, ReactActual.createElement(Pressable, { accessibilityLabel: title, onPress }, ReactActual.createElement(Text, null, title)), right),
+    ZItem: ({ title, sub, onPress, right }: { title: string; sub?: string; onPress: () => void; right?: ReactNode }) => ReactActual.createElement(View, null, ReactActual.createElement(Pressable, { accessibilityLabel: title, onPress }, ReactActual.createElement(Text, null, title), ReactActual.createElement(Text, null, sub)), right),
     Btn: ({ label, onPress, disabled }: { label: string; onPress: () => void; disabled?: boolean }) => ReactActual.createElement(Pressable, { accessibilityLabel: label, onPress, disabled }, ReactActual.createElement(Text, null, label)),
   };
 });
@@ -67,6 +71,7 @@ beforeEach(() => {
   mockApiJson.mockReset();
   mockApiPost.mockReset();
   jest.clearAllMocks();
+  mockPushAvailability.mockReturnValue('available');
   AppState.currentState = 'active';
 });
 afterEach(() => { if (tree) act(() => tree!.unmount()); tree = undefined; jest.useRealTimers(); jest.restoreAllMocks(); });
@@ -238,7 +243,16 @@ it('allows returning customers to enable transaction alerts with an explicit per
   await render(<Settings />);
   await act(async () => { tree!.root.findByProps({ accessibilityLabel: 'Transaction alerts' }).props.onPress(); });
   expect(mockRegisterNotifications).toHaveBeenCalledWith(true);
-  expect(notify).toHaveBeenCalledWith('Notifications enabled', expect.any(String));
+  expect(notify).toHaveBeenCalledWith('Device registered', expect.any(String));
+});
+
+it('explains a build without push support before attempting permission or registration', async () => {
+  mockPushAvailability.mockReturnValue('not-configured');
+  await render(<Settings />);
+  expect(output()).toContain('Push alerts unavailable in this build');
+  await act(async () => { tree!.root.findByProps({ accessibilityLabel: 'Transaction alerts' }).props.onPress(); });
+  expect(mockRegisterNotifications).not.toHaveBeenCalled();
+  expect(notify).toHaveBeenCalledWith('Alerts unavailable', expect.stringContaining('not available in this build'));
 });
 
 it('offers phone notification settings when permission was denied', async () => {

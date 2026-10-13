@@ -70,7 +70,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "accounts",
     "wallet",
-    "wema_vas",
+    "legacy_funding.apps.LegacyFundingConfig",
     "utility",
     "exams",
     "loans",
@@ -87,42 +87,11 @@ INSTALLED_APPS = [
     "compliance",
 ]
 
-# VAS is a bank-to-Zitch collections contract, distinct from the retired
-# Partnership client. Roll out schema/code before selecting the new provider.
-BANK_ACCOUNT_PROVIDER = os.environ.get("BANK_ACCOUNT_PROVIDER", "partnership").strip().lower()
+# Wema Partnership is the sole active account and transfer integration.
+# Historical funding records stay read-only for accounting and audit evidence.
+BANK_ACCOUNT_PROVIDER = "partnership"
 WEMA_PARTNERSHIP_MODE = os.environ.get("WEMA_PARTNERSHIP_MODE", "active").strip().lower()
-# Explicit rollback policy; VAS liabilities still fail closed per customer.
-WEMA_PARTNERSHIP_RESTORE_VAS = env_bool("WEMA_PARTNERSHIP_RESTORE_VAS", False)
-# Bill payments are a separately retained bank product, not the account rail.
 WEMA_BILLER_MODE = os.environ.get("WEMA_BILLER_MODE", "active").strip().lower()
-WEMA_VAS_BILLER_ENABLED = env_bool("WEMA_VAS_BILLER_ENABLED", False)
-WEMA_VAS_BILLER_SOURCE_ACCOUNT = os.environ.get("WEMA_VAS_BILLER_SOURCE_ACCOUNT", "").strip()
-WEMA_VAS_BILLER_APPROVAL_REFERENCE = os.environ.get("WEMA_VAS_BILLER_APPROVAL_REFERENCE", "").strip()
-WEMA_VAS = {
-    "ENABLED": env_bool("WEMA_VAS_ENABLED", False),
-    "MODE": os.environ.get("WEMA_VAS_MODE", "validation").strip(),
-    "PREFIX": os.environ.get("WEMA_VAS_PREFIX", "711").strip(),
-    "TOKEN": os.environ.get("WEMA_VAS_TOKEN", ""),
-    "IDENTITY_KEYS": [key.strip() for key in os.environ.get("WEMA_VAS_IDENTITY_KEYS", "").split(",") if key.strip()],
-    "REQUIRE_HTTPS": True,
-    # Enable only behind the controlled TLS-terminating Render proxy.
-    "TRUST_TLS_PROXY": env_bool("WEMA_VAS_TRUST_TLS_PROXY", False),
-    "ENABLE_ENROLLMENT": env_bool("WEMA_VAS_ENABLE_ENROLLMENT", False),
-    # The 711 test ledger remains separate from the bank-approved live pilot.
-    "ENABLE_VALIDATION_ENROLLMENT": env_bool("WEMA_VAS_ENABLE_VALIDATION_ENROLLMENT", False),
-    "VALIDATION_SELF_SERVICE": env_bool("WEMA_VAS_VALIDATION_SELF_SERVICE", False),
-    "VALIDATION_USER_IDS": os.environ.get("WEMA_VAS_VALIDATION_USER_IDS", ""),
-    # Individually reviewed testers only; this never relaxes a live cutover.
-    "VALIDATION_LEGACY_BALANCE_USER_IDS": os.environ.get("WEMA_VAS_VALIDATION_LEGACY_BALANCE_USER_IDS", ""),
-    "RELEASE_PHASE": os.environ.get("WEMA_VAS_RELEASE_PHASE", "closed").strip().lower(),
-    # Preserve malformed entries for the enrollment policy to reject as a whole.
-    "PILOT_USER_IDS": os.environ.get("WEMA_VAS_PILOT_USER_IDS", ""),
-    "LIVE_APPROVAL_REFERENCE": os.environ.get("WEMA_VAS_LIVE_APPROVAL_REFERENCE", "").strip(),
-    "GENERAL_APPROVAL_REFERENCE": os.environ.get("WEMA_VAS_GENERAL_APPROVAL_REFERENCE", "").strip(),
-    "COLLECTION_ACCOUNT": os.environ.get("WEMA_VAS_COLLECTION_ACCOUNT", "").strip(),
-    "NIP_QUERY_URL": os.environ.get("WEMA_VAS_NIP_QUERY_URL", "").strip(),
-    "ETRANZACT_QUERY_URL": os.environ.get("WEMA_VAS_ETRANZACT_QUERY_URL", "").strip(),
-}
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -390,11 +359,11 @@ PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
 # The VAS (airtime/data/bills) rail is the partner bank only. Legacy
 # VAS_PROVIDER values are ignored by utility.providers.vas_provider.
 VAS_PROVIDER = "wema"
-# The BVN/NIN KYC rail — "wema"; blank => wema. ALAT has no standalone identity lookup,
-# so BVN/NIN are verified by the NUBAN account-creation flow (name-matched before the
-# tier lifts). The image / biometric steps (selfie/liveness, address, ID-document) stay
-# on Prembly. See utility.providers.kyc_provider and docs/wema-migration.md.
-KYC_PROVIDER = os.environ.get("KYC_PROVIDER", "").strip().lower()
+# Tier 1 is always Wema Partnership: BVN or NIN with bank OTP/hosted face proof.
+# Tier 2 requires authenticated Prembly interactive liveness and a bank upgrade;
+# Tier 3 requires bank completion tied to the submitted address and request.
+# Unimplemented evidence adapters remain unavailable, regardless of credentials.
+KYC_PROVIDER = "wema"
 # Fraud velocity guard: max outbound money movements per user per 10 minutes
 # (common.http.check_velocity, applied on every send path). 0 disables. Off in
 # tests (suites legitimately hammer one user far faster than any human).
@@ -774,8 +743,6 @@ SOCIAL_LINKS = {name: url for name, url in {
 # request; its public half is uploaded to the WABA once.
 WHATSAPP_FLOW = {
     "FLOW_ID": os.environ.get("WHATSAPP_FLOW_ID", ""),
-    "VAS_ENROLLMENT_ENABLED": env_bool("WHATSAPP_FLOW_VAS_ENROLLMENT_ENABLED", False),
-    "VAS_APPROVED_FLOW_ID": os.environ.get("WHATSAPP_FLOW_VAS_APPROVED_FLOW_ID", "").strip(),
     "PRIVATE_KEY": os.environ.get("WHATSAPP_FLOW_PRIVATE_KEY", ""),
     "PRIVATE_KEY_PASSPHRASE": os.environ.get("WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE", ""),
     "CTA": os.environ.get("WHATSAPP_FLOW_CTA", "Confirm with PIN"),

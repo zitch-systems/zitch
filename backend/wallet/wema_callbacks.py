@@ -862,7 +862,11 @@ def wema_notification_callback(request):
 
     from .models import Wallet
     from .services import apply_wema_credit, self_payout_references
+    from legacy_funding.models import VirtualAccount
 
+    if VirtualAccount.objects.filter(number=account).exists():
+        request.wema_action = "ignored:retired_funding_account"
+        return _notification_ok()
     wallet = Wallet.objects.filter(account_number=account).select_related("user").first()
     if wallet is None:
         log.warning("wema_notify_unknown_account account_suffix=%s ip=%s",
@@ -876,20 +880,27 @@ def wema_notification_callback(request):
         (business_date - timedelta(days=2)).strftime("%Y-%m-%d"),
         (business_date + timedelta(days=1)).strftime("%Y-%m-%d"),
     )
-    if not result.get("success"):
-        log.warning("wema_notify_reconcile_failed account_suffix=%s message=%s",
-                    account[-4:], str(result.get("message") or "")[:160])
+    rows = result.get("transactions") if isinstance(result, dict) else None
+    if (not isinstance(result, dict) or not result.get("success") or result.get("mock")
+            or result.get("complete") is False or not isinstance(rows, list)
+            or any(not isinstance(row, dict) for row in rows)):
+        log.warning("wema_notify_reconcile_failed account_suffix=%s", account[-4:])
         request.wema_action = "pending:history_unavailable"
         return _notification_ok()
 
+    from .reconciliation import history_credit_opening_review_required
     applied = 0
+    opening_review = False
     self_refs = self_payout_references(wallet.user)
-    for row in result.get("transactions", []) or []:
+    for row in rows:
+        if history_credit_opening_review_required(wallet, row):
+            opening_review = True
+            continue
         if apply_wema_credit(wallet, row, self_refs=self_refs) is not None:
             applied += 1
-    request.wema_action = f"reconciled:{applied}"
-    log.info("wema_notify_reconciled account_suffix=%s applied=%s",
-             account[-4:], applied)
+    request.wema_action = ("pending:history_opening_review" if opening_review else f"reconciled:{applied}")
+    log.info("wema_notify_reconciled account_suffix=%s applied=%s opening_review=%s",
+             account[-4:], applied, opening_review)
     return _notification_ok()
 
 

@@ -11,7 +11,22 @@ const TOKEN_KEY = 'z-expo-push-token';
 const PENDING_OPEN_KEY = 'z-pending-notification-open';
 let handlerConfigured = false;
 
-export type PushRegistration = 'registered' | 'denied' | 'unavailable' | 'failed';
+export type PushAvailability = 'available' | 'unavailable' | 'not-configured';
+export type PushRegistration = 'registered' | 'denied' | 'unavailable' | 'not-configured' | 'failed';
+
+function pushProjectId(): string | undefined {
+  return Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+}
+
+/** Known build prerequisites only; this does not test FCM/APNs delivery. */
+export function getPushAvailability(): PushAvailability {
+  if (!['android', 'ios'].includes(Platform.OS) || !Device.isDevice) return 'unavailable';
+  if (!pushProjectId()) return 'not-configured';
+  if (Platform.OS === 'android' && Constants.expoConfig?.extra?.push?.androidConfigured !== true) {
+    return 'not-configured';
+  }
+  return 'available';
+}
 
 /** Show notifications even while the app is in the foreground. */
 export function configureNotificationPresentation(): void {
@@ -33,7 +48,8 @@ export function configureNotificationPresentation(): void {
 export async function registerForPushNotifications(
   requestPermission = false,
 ): Promise<PushRegistration> {
-  if (Platform.OS === 'web' || !Device.isDevice) return 'unavailable';
+  const availability = getPushAvailability();
+  if (availability !== 'available') return availability;
   const generation = getSessionGeneration();
   configureNotificationPresentation();
   try {
@@ -54,8 +70,7 @@ export async function registerForPushNotifications(
     }
     if (permission.status !== 'granted') return 'denied';
 
-    const projectId = Constants.expoConfig?.extra?.eas?.projectId
-      ?? Constants.easConfig?.projectId;
+    const projectId = pushProjectId();
     if (!projectId) return 'failed';
     const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
     // The native permission/token request may outlive signout or an account

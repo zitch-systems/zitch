@@ -36,7 +36,7 @@ def _valid_result(name, data):
         return (tolerance.is_finite() and tolerance == 0
                 and type(data.get("wallets")) is int and data["wallets"] >= 0
                 and _zero_counts(data, "unreachable", "ledger_over_bank", "bank_over_ledger")
-                and data.get("vas_collection_required") is False)
+                and data.get("legacy_funding_required") is False)
     if data.get("incomplete") is not False:
         return False
     try:
@@ -55,9 +55,10 @@ def financial_controls_report():
     """Return counts and fixed status strings only, suitable for build logs."""
     from django.db.models import Exists, OuterRef
     from wallet.models import BankHistoryCheckpoint, Transaction, Wallet
-    from wallet.services import wema_provisioned_wallets, vas_reconciliation_scope
+    from wallet.services import wema_provisioned_wallets
+    from wallet.legacy_funding import reconciliation_scope
     from whatsapp.models import AuditLog
-    from wema_vas.partnership import partnership_allowed
+    from wallet.partnership import partnership_allowed
 
     try:
         wallets = Wallet.objects.count()
@@ -73,7 +74,7 @@ def financial_controls_report():
             opening_cleared=Exists(cleared)).filter(opening_cleared=False).count()
         bank_wallets = list(wema_provisioned_wallets().select_related("user"))
         comparable_wallets = sum(partnership_allowed(wallet.user) for wallet in bank_wallets)
-        unverified_vas = vas_reconciliation_scope()["vas_collection_required"]
+        unverified_legacy = reconciliation_scope()["legacy_funding_required"]
         now = timezone.now()
         checks = {}
         for name, action, max_age in _CONTROLS:
@@ -95,11 +96,11 @@ def financial_controls_report():
             else:
                 status = "passed"
             checks[name] = status
-        ready = (opening_reviews == 0 and not unverified_vas
+        ready = (opening_reviews == 0 and not unverified_legacy
                  and all(s == "passed" for s in checks.values()))
         return {"status": "passed" if ready else "blocked",
                 "financial_controls_ready": ready, "wallets": wallets,
-                "opening_reviews": opening_reviews, "unverified_vas_collection": unverified_vas,
+                "opening_reviews": opening_reviews, "unverified_legacy_funding": unverified_legacy,
                 "checks": checks}
     except Exception:
         # No exception text: database/configuration errors can contain secrets.

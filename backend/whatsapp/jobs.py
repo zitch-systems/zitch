@@ -214,6 +214,11 @@ def _execute_authorised_action(action_id: int, user_id) -> None:
     if pa is None:
         log.info("wa_flow_execution_already_done action=%s", action_id)
         return
+    from .retired_setup import is_retired_setup, RETIRED_SETUP_MESSAGE
+    if is_retired_setup(pa):
+        pa.delete()
+        reply(pa.msisdn, RETIRED_SETUP_MESSAGE)
+        return
     user = get_user_model().objects.filter(pk=user_id or pa.user_id).first()
     if user is None:
         log.warning("wa_flow_execution_no_user action=%s", action_id)
@@ -230,23 +235,23 @@ def process_inbound_message(pk: int, *, raise_errors=False) -> str:
     try:
         payload = _decrypt(row.processing_payload)
         if payload.get("media_id"):
-            from .vas_flow import private_entry_active
-            if private_entry_active(row.msisdn):
+            from .retired_setup import retired_setup_pending
+            if retired_setup_pending(row.msisdn):
                 # A media job can arrive before setup starts, then be claimed
                 # after the private form opens. Recheck before any download or
                 # AI call, and replace the job before replying so even a retry
                 # cannot resurrect its media reference or caption.
-                payload = {"vas_private_input": True}
+                payload = {"retired_setup_input": True}
                 WaMessageLog.objects.filter(pk=row.pk).update(
                     processing_payload=_encrypt(payload), text="[private setup input]")
         if payload.get("execute_action"):
             _execute_authorised_action(int(payload["execute_action"]), payload.get("user_id"))
         elif payload.get("flow_reply"):
             pass
-        elif payload.get("vas_private_input"):
-            from .vas_flow import PRIVATE_ENTRY
+        elif payload.get("retired_setup_input") or payload.get("vas_private_input"):
+            from .retired_setup import RETIRED_SETUP_MESSAGE
             from .router import _DELETE_TIP
-            reply(row.msisdn, PRIVATE_ENTRY + _DELETE_TIP)
+            reply(row.msisdn, RETIRED_SETUP_MESSAGE + _DELETE_TIP)
         elif payload.get("media_id"):
             # Here, not in the webhook: this downloads bytes from Meta and calls
             # a model, which together are the slowest thing the channel does, and

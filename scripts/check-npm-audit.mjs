@@ -1,42 +1,13 @@
 #!/usr/bin/env node
 /**
- * Fail on every production high/critical npm advisory except the two
- * image-size parser findings that are mitigated in metro.config.js.
- *
- * image-size 2.0.3 is fixed, but its named-export API is incompatible with
- * Metro 0.80's callable CommonJS import. The vulnerable parsers are disabled at
- * Metro startup, none of those asset formats exist in this repository, and this
- * exception expires so an upstream fix cannot be forgotten.
- *
- * EXIT CODES.  The caller has to be able to tell "your dependencies are
- * vulnerable" from "we never got an answer out of npm", because those want
- * different reactions from whoever is looking at the red build:
- *
- *   0   clean, or only the mitigated exceptions
- *   1   a real finding — unmitigated advisory, expired exception, or the Metro
- *       mitigation that the exception depends on has been removed
- *   75  npm's advisory service did not return a usable report (EX_TEMPFAIL)
- *
- * 75 still fails the build.  This is a bank's dependency gate: not knowing
- * whether we shipped a critical CVE is not a pass.  The distinction exists so
- * the failure names itself instead of looking like a vulnerability.
+ * Report every production high/critical advisory without exceptions. Locally
+ * patched packages retain truthful versions, so this command intentionally
+ * remains nonzero while upstream advisories remain. Behavioral mitigations are
+ * verified separately by test:build-patches; they do not suppress audit output.
+ * Exit 1: an advisory. Exit 75: the advisory service could not be checked.
  */
 import { spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { setTimeout as sleep } from 'node:timers/promises';
-
-const require = createRequire(import.meta.url);
-
-const ALLOWED = new Set([
-  'https://github.com/advisories/GHSA-w3rx-r6r6-pgpr',
-  'https://github.com/advisories/GHSA-5p2g-fcmc-qvqq',
-]);
-// Re-check Expo/Metro compatibility with the fixed 2.x image-size API by this
-// date. Parser refusal is also covered by the offline app build-patch tests.
-const REVIEW_AFTER = new Date('2026-12-12T00:00:00Z');
-
-// The four parsers the two allowed advisories cover.
-const VULNERABLE_TYPES = ['icns', 'heif', 'jxl', 'jxl-stream'];
 
 // npm's advisory service goes down for minutes at a time, not seconds. The old
 // window was three tries five seconds apart — about ten seconds of tolerance,
@@ -54,101 +25,6 @@ function fail(message) {
   console.error(`ERROR: ${message}`);
   process.exit(EXIT_REAL_FAILURE);
 }
-
-if (new Date() >= REVIEW_AFTER) {
-  const installed = (() => {
-    try { return require('image-size/package.json').version; } catch { return 'unknown'; }
-  })();
-  console.error(`Installed image-size: ${installed}. Advisories cover <=2.0.2.`);
-  console.error('Check `npm view image-size versions` for a release outside that range.');
-  console.error('If there still is not one, extend REVIEW_AFTER — the Metro mitigation below');
-  console.error('is verified on every run, so the exception is not resting on this date alone.');
-  fail('the image-size advisory exception is due for review');
-}
-
-/**
- * Prove the mitigation the exception depends on is actually in force.
- *
- * This used to grep metro.config.js for the four type names. That check passes
- * on a file that merely MENTIONS them — it would have stayed green if
- * disableTypes were deleted, renamed, called with the wrong argument, or if a
- * future image-size stopped honouring it. For a pair of accepted high-severity
- * advisories, "the source contains these four strings" is not evidence.
- *
- * So load the real metro.config.js — the same module Metro loads, which is what
- * calls disableTypes — and then ask the library directly whether each parser is
- * refused. Costs ~10s (getDefaultConfig is not cheap) and buys an assertion
- * about behaviour instead of about text.
- *
- * THE PROBES ARE DELIBERATELY WELL-FORMED, not the malicious inputs from the
- * advisories. A malformed ICNS is precisely the thing that loops forever, so a
- * guard built on one would HANG when the mitigation was missing — the single
- * worst way for a safety check to report a problem. Each probe below is instead
- * the smallest input whose validate() claims it for that parser and whose
- * calculate() terminates, so the run ends either way and the outcome is
- * legible: "disabled file type: x" when the mitigation holds, anything else
- * (a size, a parser error) when it does not.
- */
-function probeFor(type) {
-  const b = Buffer.alloc(64);
-  switch (type) {
-    case 'icns':
-      // One entry whose length lands imageOffset exactly on fileLength, so
-      // calculate() returns rather than looping.
-      b.write('icns', 0, 'ascii'); b.writeUInt32BE(16, 4);
-      b.write('ic09', 8, 'ascii'); b.writeUInt32BE(8, 12);
-      return b;
-    case 'heif':
-      b.write('ftypmif1', 4, 'ascii');
-      return b;
-    case 'jxl':
-      // Container form: signature box, then an ftyp box branded 'jxl '.
-      b.writeUInt32BE(12, 0); b.write('JXL ', 4, 'ascii'); b.writeUInt32BE(0x0d0a870a, 8);
-      b.writeUInt32BE(20, 12); b.write('ftyp', 16, 'ascii'); b.write('jxl ', 20, 'ascii');
-      return b;
-    case 'jxl-stream':
-      b[0] = 0xff; b[1] = 0x0a;
-      return b;
-    default:
-      throw new Error(`no probe defined for ${type}`);
-  }
-}
-
-function assertVulnerableParsersDisabled() {
-  try {
-    require('../metro.config.js');
-  } catch (error) {
-    fail(`could not load metro.config.js to verify the image-size mitigation: ${error.message}`);
-  }
-
-  let imageSize;
-  try {
-    ({ imageSize } = require('image-size'));
-  } catch (error) {
-    // No image-size in the tree means no exposure and nothing to mitigate; the
-    // advisory check below will also stop finding the allowed advisories.
-    console.log(`image-size is not installed (${error.code || 'not resolvable'}); mitigation check skipped.`);
-    return;
-  }
-
-  for (const type of VULNERABLE_TYPES) {
-    let outcome;
-    try {
-      outcome = `parsed it and returned ${JSON.stringify(imageSize(probeFor(type)))}`;
-    } catch (error) {
-      if (error.message === `disabled file type: ${type}`) continue;
-      outcome = `reached the parser and threw "${error.message}"`;
-    }
-    fail(
-      `the ${type} parser is NOT disabled — image-size ${outcome}. ` +
-      'metro.config.js must call disableTypes for it, or the advisory exception in ' +
-      'this script is no longer justified and should be removed.'
-    );
-  }
-  console.log(`Mitigation verified: ${VULNERABLE_TYPES.join(', ')} parsers are refused.`);
-}
-
-assertVulnerableParsersDisabled();
 
 /**
  * One attempt at getting an audit report out of npm.
@@ -247,27 +123,10 @@ for (const item of Object.values(report.vulnerabilities)) {
   }
 }
 
-const unexpected = findings.filter((finding) => !ALLOWED.has(finding.url));
-if (unexpected.length) {
-  for (const finding of unexpected) {
+if (findings.length) {
+  for (const finding of findings) {
     console.error(`${finding.severity}: ${finding.title} (${finding.url})`);
   }
-  fail(`${unexpected.length} unmitigated production high/critical npm advisories`);
+  fail(`${findings.length} production high/critical npm advisory records; see the separate mitigation evidence`);
 }
-
-const present = new Set(findings.map((finding) => finding.url));
-for (const allowed of ALLOWED) {
-  if (!present.has(allowed)) {
-    console.log(`Resolved upstream: ${allowed}`);
-  }
-}
-
-if (findings.length) {
-  console.warn(
-    `Accepted temporarily: ${findings.length} image-size build-parser advisories; ` +
-    'affected formats are verified disabled in Metro (above) and this exception is ' +
-    `due for review on ${REVIEW_AFTER.toISOString().slice(0, 10)}.`
-  );
-} else {
-  console.log('No production high/critical npm advisories.');
-}
+console.log('No production high/critical npm advisories.');

@@ -450,13 +450,12 @@ def _process(msg: dict) -> None:
 
     from .jobs import discard_inbound, enqueue_inbound, process_inbound_message
 
-    # VAS identity entry has no chat fallback. A typed secret has nothing to
-    # contribute to processing, so do not even retain it in the encrypted job
-    # queue. The worker receives only a signal to explain private entry.
+    # An old setup form can remain open on a customer's phone after retirement.
+    # Discard its private input; a stale session must not leak it to chat or AI.
     private_setup_input = False
     if not is_flow_reply and (media_id or (is_text and len(re.sub(r"\D", "", body or "")) >= 4)):
-        from .vas_flow import private_entry_active
-        private_setup_input = private_entry_active(frm)
+        from .retired_setup import retired_setup_pending
+        private_setup_input = retired_setup_pending(frm)
         if private_setup_input:
             body, logged = "", "[private setup input]"
             # Images, captions and voice notes can contain identity details too.
@@ -473,7 +472,7 @@ def _process(msg: dict) -> None:
         row, _created = enqueue_inbound(
             message_id=mid, msisdn=frm, logged_text=logged,
             payload={"is_text": is_text, "body": body, "flow_reply": is_flow_reply,
-                     "vas_private_input": private_setup_input,
+                     "retired_setup_input": private_setup_input,
                      "media_kind": msg_type if media_id else "",
                      "media_id": media_id, "media_caption": media_caption},
         )
