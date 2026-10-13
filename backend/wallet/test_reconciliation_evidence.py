@@ -157,8 +157,7 @@ class ReconciliationEvidenceTests(TestCase):
         self.assertNotIn("PRIVATE", out.getvalue())
         self.assertNotIn("0450000123", out.getvalue())
 
-    @override_settings(WEMA={"SOURCE_ACCOUNT": "0450000123"},
-                       WEMA_VAS={"COLLECTION_ACCOUNT": "0450000123"})
+    @override_settings(WEMA={"SOURCE_ACCOUNT": "0450000123"})
     def test_pool_probe_outputs_only_safe_classification_and_account_relationships(self):
         from wallet.management.commands.reconciliation_evidence import pool_evidence
 
@@ -171,7 +170,6 @@ class ReconciliationEvidenceTests(TestCase):
         self.assertEqual(report["failure_hint"], "invalid_account")
         self.assertEqual(report["http_status"], 400)
         self.assertTrue(report["matches_wallet_account"])
-        self.assertTrue(report["matches_vas_collection"])
         self.assertNotIn("PRIVATE", json.dumps(report))
         self.assertNotIn("0450000123", json.dumps(report))
 

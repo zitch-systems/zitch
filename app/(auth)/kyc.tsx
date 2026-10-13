@@ -8,7 +8,7 @@ import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute, resolveOwnershipOtpRoute, type KycStatus, type KycVerificationFlag, type ResidentialAddress } from '@/lib/services/kyc';
-import type { VirtualAccount } from '@/lib/services/wallet';
+import type { FundingAccount } from '@/lib/services/wallet';
 import FaceLivenessModal from '@/components/design/FaceLivenessModal';
 import AuthGuard from '@/components/AuthGuard';
 import ZIcon from '@/components/design/ZIcon';
@@ -32,7 +32,8 @@ type Status = {
   identity_face_available?: boolean;
   identity_verification_methods?: string[];
   identity_verification_provider?: 'prembly' | 'wema';
-  account_provider?: 'partnership' | 'wema_vas';
+  account_provider?: string;
+  legacy_funding_review?: boolean;
   account_setup_state?: string;
   migration_message?: string;
   face_rail?: 'document' | 'wema';
@@ -221,7 +222,7 @@ const Kyc = () => {
   const tier2Unavailable = status?.tier2_face_available === false;
   const tier3Unavailable = status?.tier3_address_available === false;
   const addressPending = status?.address_verification_pending === true || status?.address_verification_state === 'pending';
-  const addressVerificationAvailable = status?.account_provider !== 'wema_vas'
+  const addressVerificationAvailable = status?.account_provider === 'partnership'
     && status?.address_verification_required !== false
     && status?.address_rail !== 'none';
   const setAddressField = (field: keyof ResidentialAddress, value: string) =>
@@ -257,7 +258,7 @@ const Kyc = () => {
 
   // Shared submit: on success update tier status, toast the design copy, reset
   // the sub-flow fields and bounce back to the menu.
-  const submit = async (call: () => Promise<KycStatus | VirtualAccount>, successTitle: string, requiredFlags: KycVerificationFlag[] = []) => {
+  const submit = async (call: () => Promise<KycStatus | FundingAccount>, successTitle: string, requiredFlags: KycVerificationFlag[] = []) => {
     if (!beginAction()) return;
     try {
       const res = await call();
@@ -638,19 +639,20 @@ const Kyc = () => {
     </Screen>;
   }
 
+  if (status?.legacy_funding_review === true || status?.account_setup_state === 'legacy_funding_review'
+      || (status?.account_provider != null && status.account_provider !== 'partnership')) {
+    return <Screen>
+      <Header title="Identity verification" onBack={onBack} />
+      <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{status.migration_message || 'Your account needs review. Contact support before adding or spending money.'}</Text>
+    </Screen>;
+  }
+
   if (status?.pending || status?.account_setup_state === 'processing') {
     return <Screen>
       <Header title="Identity verification" onBack={() => router.back()} />
       <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 18, marginBottom: 12 }}>Verification processing</Text>
       <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{status.message || 'Your verification is being confirmed. You do not need to start again.'}</Text>
       <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void load()} /></View>
-    </Screen>;
-  }
-
-  if (status?.account_setup_state === 'partnership_review') {
-    return <Screen>
-      <Header title="Identity verification" onBack={onBack} />
-      <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{status.migration_message}</Text>
     </Screen>;
   }
 
@@ -671,7 +673,7 @@ const Kyc = () => {
                 <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Current tier</Text>
                 <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1 }}>Tier {status.tier}</Text>
               </View>
-              {status.account_provider !== 'wema_vas' && (
+              {status.account_provider === 'partnership' && (
                 <View style={{ alignItems: 'flex-end' }}>
                   <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Per-transaction limit</Text>
                   <Text style={{ fontSize: 16, fontFamily: font.bold, color: c.brand, fontVariant: ['tabular-nums'] }}>{money(Number(status.transaction_limit))}</Text>

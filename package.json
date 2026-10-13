@@ -11,8 +11,8 @@
     "test": "jest",
     "test:watch": "jest --watchAll",
     "lint": "expo lint",
-    "postinstall": "node scripts/patch-expo-tar.cjs && node scripts/patch-uri-decoder.cjs",
-    "test:build-patches": "node --test scripts/test-patch-expo-tar.cjs scripts/test-android-google-services.cjs scripts/test-patch-uri-decoder.cjs scripts/test-image-size-mitigation.cjs"
+    "postinstall": "node scripts/patch-expo-tar.cjs && node scripts/patch-uri-decoder.cjs && node scripts/patch-tooling-security.cjs && node scripts/patch-forge-braces.cjs",
+    "test:build-patches": "node --test scripts/test-patch-expo-tar.cjs scripts/test-android-google-services.cjs scripts/test-patch-uri-decoder.cjs scripts/test-image-size-mitigation.cjs scripts/test-tooling-security.cjs scripts/test-patch-forge-braces.cjs"
   },
   "jest": {
     "preset": "jest-expo",
@@ -95,6 +95,18 @@
     "tar": "7.5.22",
     "@expo/cli": {
       "send": "0.19.2"
+    },
+    "metro": {
+      "image-size": "2.0.4"
+    },
+    "xcode": {
+      "uuid": "11.1.1"
+    },
+    "@expo/rudder-sdk-node": {
+      "uuid": "11.1.1"
+    },
+    "@expo/bunyan": {
+      "uuid": "11.1.1"
     }
   }
 }

@@ -61,18 +61,12 @@ class PartnershipArchiveTests(SimpleTestCase):
     def test_simulation_cannot_bypass_archive(self):
         self.assert_new_work_refused()
 
-    @override_settings(WEMA_PARTNERSHIP_MODE="active", BANK_ACCOUNT_PROVIDER="wema_vas")
-    def test_selecting_vas_also_refuses_new_partnership_business(self):
-        self.assert_new_work_refused()
-
-    def test_unknown_mode_and_provider_fail_closed(self):
-        for mode, provider in (("archvie", "partnership"), ("active", "typo"), ("", "partnership")):
-            with self.subTest(mode=mode, provider=provider), override_settings(
-                    WEMA_PARTNERSHIP_MODE=mode, BANK_ACCOUNT_PROVIDER=provider):
+    def test_unknown_mode_fails_closed(self):
+        for mode in ("archvie", "", None):
+            with self.subTest(mode=mode), override_settings(WEMA_PARTNERSHIP_MODE=mode):
                 self.assert_new_work_refused()
 
-    @override_settings(WEMA_PARTNERSHIP_MODE="active")
-    def test_active_mode_still_submits_real_instructions(self):
+    def assert_bank_instruction_submitted(self):
         response = mock.Mock(status_code=200)
         response.json.return_value = {"status": True, "data": {"trackingId": "bank-attempt"}}
         with mock.patch.object(wema, "_post", return_value=response) as post:
@@ -80,6 +74,16 @@ class PartnershipArchiveTests(SimpleTestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["tracking_id"], "bank-attempt")
         self.assertEqual(post.call_count, 1)
+
+    @override_settings(WEMA_PARTNERSHIP_MODE="active")
+    def test_active_mode_still_submits_real_instructions(self):
+        self.assert_bank_instruction_submitted()
+
+    @override_settings(WEMA_PARTNERSHIP_MODE="active")
+    def test_obsolete_provider_settings_cannot_redirect_partnership(self):
+        for provider in ("wema_vas", "typo", ""):
+            with self.subTest(provider=provider), override_settings(BANK_ACCOUNT_PROVIDER=provider):
+                self.assert_bank_instruction_submitted()
 
     def test_existing_transfer_can_reach_terminal_status(self):
         response = mock.Mock(status_code=200)

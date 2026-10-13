@@ -4,7 +4,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
 import { router, useFocusEffect } from 'expo-router';
 import { notify } from '@/components/design/Notify';
-import { vasAccountStatusTitle, walletCapabilities, walletCapabilityMessage, walletService, type VasIdentityResult, type VirtualAccount } from '@/lib/services/wallet';
+import { isFundingAccountReady, walletCapabilities, walletCapabilityMessage, walletService, type FundingAccount } from '@/lib/services/wallet';
 import { identityOtpKind, isAccountOtpPending, kycService, resolveIdentityOtpRoute } from '@/lib/services/kyc';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { Loading } from '@/components/design/Loading';
@@ -22,16 +22,7 @@ const AddMoney = () => {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [account, setAccount] = useState<DediAccount | null>(null);
-  const [fundingState, setFundingState] = useState<VirtualAccount | null>(null);
-  const [vasIdentityKind, setVasIdentityKind] = useState<'bvn' | 'nin'>('bvn');
-  const [vasIdentity, setVasIdentity] = useState('');
-  const [vasConsent, setVasConsent] = useState(false);
-  const [vasChallenge, setVasChallenge] = useState('');
-  const [vasOtp, setVasOtp] = useState('');
-  const [vasDelivery, setVasDelivery] = useState('');
-  const [vasNotice, setVasNotice] = useState('');
-  const [vasIdentityVerified, setVasIdentityVerified] = useState(false);
-  const [vasResendWait, setVasResendWait] = useState(0);
+  const [fundingState, setFundingState] = useState<FundingAccount | null>(null);
   const [bvn, setBvn] = useState('');
   const [identityKind, setIdentityKind] = useState<'bvn' | 'nin'>('bvn');
   const [trackingIdentityKind, setTrackingIdentityKind] = useState<'bvn' | 'nin'>('bvn');
@@ -43,19 +34,12 @@ const AddMoney = () => {
   const actionInFlight = useRef(false);
   const facePollGeneration = useRef(0);
   const mounted = useRef(true);
-  const vasGeneration = useRef(0);
   const capabilityMessage = walletCapabilityMessage(walletCapabilities(fundingState));
-  const enrollmentComplete = fundingState?.account_setup_state === 'vas_validation'
-    || fundingState?.enrollment_status === 'enrolled';
-  const vasSetupAvailable = fundingState?.account_setup_state === 'vas_enrollment_required'
-    && (fundingState.enrollment_available || (fundingState.enrollment_status === 'verification_required'
-      && fundingState.enrollment_blockers?.every((blocker) => blocker === 'identity_verification')));
+  const accountReview = fundingState?.provider !== 'partnership' || fundingState.legacy_funding_review === true
+    || fundingState.account_setup_state === 'legacy_funding_review'
+    || (!account && ['ready', 'bank_history_review'].includes(fundingState.account_setup_state || ''));
   const reconnectVerifiedAccount = fundingState?.provider === 'partnership'
     && fundingState.account_setup_state === 'identity_verified' && !fundingState.partnership_setup_required;
-
-  const clearVasChallenge = () => {
-    setVasChallenge(''); setVasOtp(''); setVasDelivery(''); setVasNotice(''); setVasIdentityVerified(false); setVasResendWait(0);
-  };
 
   const beginAction = () => {
     if (actionInFlight.current) return false;
@@ -72,7 +56,7 @@ const AddMoney = () => {
     const generation = ++loadGeneration.current;
     setLoading(true);
     setLoadError('');
-    // Never let a slow/hanging backend (e.g. a slow Monnify call) leave the page
+    // Never let a slow backend leave the page
     // stuck on the spinner: show the screen within a few seconds no matter what.
     // Do not show the BVN setup form when the account state is unknown: that
     // can make an existing customer start provisioning again while offline.
@@ -96,8 +80,7 @@ const AddMoney = () => {
         setTrackingId('');
         setOtp('');
       }
-      if (r?.success && r.account_number && (r.provider !== 'wema_vas' ||
-          (r.test_mode !== true && !/^711/.test(r.account_number) && r.available === true && r.has_account === true && r.account_setup_state === 'ready'))) {
+      if (r?.success && isFundingAccountReady(r)) {
         setAccount(r as DediAccount);
         setLoadError('');
       } else if (r?.success !== true) {
@@ -124,25 +107,14 @@ const AddMoney = () => {
       mounted.current = false;
       loadGeneration.current += 1;
       facePollGeneration.current += 1;
-      vasGeneration.current += 1;
     };
   }, []);
-
-  useEffect(() => {
-    if (!vasChallenge || vasResendWait <= 0) return;
-    const timer = setTimeout(() => setVasResendWait((wait) => Math.max(0, wait - 1)), 1000);
-    return () => clearTimeout(timer);
-  }, [vasChallenge, vasResendWait]);
 
   useFocusEffect(useCallback(() => {
     void loadAccount();
     return () => {
       loadGeneration.current += 1;
       facePollGeneration.current += 1;
-      vasGeneration.current += 1;
-      setVasIdentity('');
-      setVasConsent(false);
-      setVasChallenge(''); setVasOtp(''); setVasDelivery(''); setVasNotice(''); setVasIdentityVerified(false); setVasResendWait(0);
     };
   }, [loadAccount]));
 
@@ -155,82 +127,12 @@ const AddMoney = () => {
   // Display the NUBAN grouped 4-3-3 ("9012 345 678"); copy stays the raw digits.
   const grouped = (n: string) => n.replace(/^(\d{4})(\d{3})(\d{3}).*$/, '$1 $2 $3');
 
-  const handleVasResult = async (result: VasIdentityResult) => {
-    if (result.success && result.otp_required && result.challenge_id) {
-      setVasChallenge(result.challenge_id);
-      setVasOtp('');
-      setVasDelivery(result.delivery || result.otp_destination || 'your verified contact');
-      setVasNotice(result.delivery_notice || '');
-      setVasResendWait(Math.max(0, Math.min(600, Number(result.resend_after) || 0)));
-      return;
-    }
-    if (result.success) {
-      clearVasChallenge(); setVasConsent(false);
-      await loadAccount();
-      return;
-    }
-    if (result.identity_verified && result.retry_available && result.challenge_id) {
-      setVasChallenge(result.challenge_id); setVasOtp(''); setVasIdentityVerified(true);
-      setVasNotice(result.message || 'Your identity is verified. Retry account setup when the review is complete.');
-      return;
-    }
-    if (result.code === 'vas_identity_challenge_expired' || result.retry_available === false) {
-      clearVasChallenge(); setVasConsent(false);
-      // A completion response can be lost after the server consumes its input.
-      // Refresh durable account state before offering a new identity attempt.
-      const refreshed = await loadAccount();
-      if (refreshed?.enrollment_status === 'enrolled' || refreshed?.account_setup_state === 'vas_validation'
-          || refreshed?.account_setup_state === 'ready') return;
-    }
-    notify('Account setup incomplete', result.message || 'We could not finish your account setup. Check your details and try again.');
-  };
-
-  const enrollVas = async () => {
-    if (!vasConsent || vasIdentity.length !== 11 || !vasSetupAvailable || !fundingState || !beginAction()) return;
-    const generation = vasGeneration.current;
-    try {
-      const result = await walletService.startVasIdentity(vasIdentityKind, vasIdentity,
-        { enrollment_mode: fundingState.enrollment_mode, consent_version: fundingState.consent_version },
-      );
-      if (!mounted.current || vasGeneration.current !== generation) return;
-      await handleVasResult(result);
-    } catch {
-      if (mounted.current && vasGeneration.current === generation) notify('Account setup incomplete', 'We could not confirm the result. Refresh your account status before trying again.');
-    } finally {
-      if (mounted.current && vasGeneration.current === generation) setVasIdentity('');
-      endAction();
-    }
-  };
-
-  const confirmVasIdentity = async () => {
-    if (!vasChallenge || (!vasIdentityVerified && vasOtp.length !== 6) || !beginAction()) return;
-    const generation = vasGeneration.current;
-    try {
-      const result = await walletService.confirmVasIdentity(vasChallenge, vasIdentityVerified ? undefined : vasOtp);
-      if (mounted.current && vasGeneration.current === generation) await handleVasResult(result);
-    } catch {
-      if (mounted.current && vasGeneration.current === generation) notify('Could not confirm', 'Check your connection and try again.');
-    } finally { endAction(); }
-  };
-
-  const resendVasIdentity = async () => {
-    if (!vasChallenge || vasIdentityVerified || vasResendWait > 0 || !beginAction()) return;
-    const generation = vasGeneration.current;
-    try {
-      const result = await walletService.resendVasIdentity(vasChallenge);
-      if (mounted.current && vasGeneration.current === generation) await handleVasResult(result);
-    } catch {
-      if (mounted.current && vasGeneration.current === generation) notify('Could not resend code', 'Check your connection and try again.');
-    } finally { endAction(); }
-  };
-
   const createAccount = async () => {
     if ((!reconnectVerifiedAccount && bvn.length !== 11) || !beginAction()) return;
     try {
       const r = await walletService.createAccount(reconnectVerifiedAccount ? {} : { [identityKind]: bvn });
       if (r?.success && r.account_number) {
-        setFundingState(r);
-        setAccount(r as DediAccount);
+        await loadAccount();
       } else if (r?.success && r.otp_required && r.tracking_id) {
         setTrackingId(String(r.tracking_id));
         setTrackingIdentityKind(identityOtpKind(r, identityKind));
@@ -256,8 +158,7 @@ const AddMoney = () => {
       // challenge does not need the customer to enter their identity again.
       const r = await walletService.verifyWemaOtp(trackingId, otp);
       if (r.success && r.account_number) {
-        setFundingState(r);
-        setAccount(r as DediAccount);
+        await loadAccount();
         setTrackingId(''); setOtp(''); setBvn('');
       }
       else if (r.success || r.pending) {
@@ -337,12 +238,17 @@ const AddMoney = () => {
         if (state.status === 'verified') {
           const refreshed = await walletService.getAccount();
           if (!isCurrent()) return;
-          if (refreshed.success && refreshed.account_number) {
+          if (refreshed.success && isFundingAccountReady(refreshed)) {
             setFundingState(refreshed);
             setAccount(refreshed as DediAccount);
           } else {
-            setFundingState((current) => ({ ...current, ...(refreshed.success ? refreshed : {}), provider: 'partnership', account_setup_state: 'processing' }));
-            notify('Verification processing', 'Your identity check is complete. Check again for your account number.', 'info');
+            setFundingState((current) => refreshed.success ? refreshed
+              : { ...current, provider: 'partnership', account_setup_state: 'processing' });
+            if (refreshed.success && (refreshed.legacy_funding_review || refreshed.account_setup_state === 'legacy_funding_review')) {
+              notify('Account review', refreshed.migration_message || 'Your account needs review. Contact support before adding money.', 'info');
+            } else {
+              notify('Verification processing', 'Your identity check is complete. Check again for your account number.', 'info');
+            }
           }
           setTrackingId(''); setOtp(''); setBvn('');
           return;
@@ -383,18 +289,18 @@ const AddMoney = () => {
             <Btn label="Try again" onPress={() => void loadAccount()} />
           </View>
         </View>
+      ) : accountReview ? (
+        <View style={{ paddingTop: 12 }}>
+          <Label>Account review in progress</Label>
+          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{fundingState?.migration_message || 'Your funding account needs review. Contact support before adding money.'}</Text>
+          <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void loadAccount()} /></View>
+        </View>
       ) : fundingState?.provider === 'partnership' && fundingState.account_setup_state === 'processing' ? (
         <View style={{ paddingTop: 12 }}>
           <Label>Account setup is processing</Label>
           <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>
             Your account setup is being confirmed. You do not need to start again. Check again shortly for your account number.
           </Text>
-          <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void loadAccount()} /></View>
-        </View>
-      ) : fundingState?.account_setup_state === 'partnership_review' ? (
-        <View style={{ paddingTop: 12 }}>
-          <Label>Account review in progress</Label>
-          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{fundingState.migration_message}</Text>
           <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void loadAccount()} /></View>
         </View>
       ) : reconnectVerifiedAccount && !trackingId ? (
@@ -404,70 +310,12 @@ const AddMoney = () => {
           <View style={{ marginTop: 20 }}><Btn label={creating ? 'Checking…' : 'Check my account number'} disabled={creating} onPress={createAccount} /></View>
           <View style={{ marginTop: 10 }}><Btn label="Contact support" variant="ghost" disabled={creating} onPress={() => router.push('/support')} /></View>
         </View>
-      ) : fundingState?.provider === 'wema_vas' && !account ? (
-        <View style={{ paddingTop: 12 }}>
-          <Label>{vasAccountStatusTitle(fundingState)}</Label>
-          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>
-            {fundingState.enrollment_message || fundingState.migration_message || 'Your new funding account is not available yet. Please check again shortly.'}
-          </Text>
-          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 12 }}>
-            Continue account setup on this Zitch profile.
-          </Text>
-          <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 12 }}>
-            {capabilityMessage} Only send money when this page shows an active funding account.
-          </Text>
-          {vasChallenge ? (
-            <View style={{ marginTop: 18 }}>
-              <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginBottom: 14 }}>
-                {vasIdentityVerified ? 'Your identity has been verified.' : `Enter the code sent to ${vasDelivery}. You do not need to enter your identity number again.`}
-              </Text>
-              {vasNotice ? <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginBottom: 14 }}>{vasNotice}</Text> : null}
-              {!vasIdentityVerified ? <Field label="Verification code" value={vasOtp} onChangeText={(value) => setVasOtp(value.replace(/\D/g, '').slice(0, 6))} secureTextEntry keyboardType="number-pad" maxLength={6} autoComplete="off" editable={!creating} placeholder="6-digit code" /> : null}
-              <View style={{ marginTop: 14 }}><Btn label={creating ? 'Please wait…' : vasIdentityVerified ? 'Retry account setup' : 'Confirm and set up account'} disabled={creating || (!vasIdentityVerified && vasOtp.length !== 6)} onPress={confirmVasIdentity} /></View>
-              {!vasIdentityVerified ? <Btn label={vasResendWait > 0 ? `Resend code in ${vasResendWait}s` : 'Resend code'} variant="ghost" disabled={creating || vasResendWait > 0} onPress={resendVasIdentity} /> : null}
-              <Btn label="Start again" variant="ghost" disabled={creating} onPress={() => { clearVasChallenge(); setVasConsent(false); }} />
-            </View>
-          ) : vasSetupAvailable ? (
-            <>
-              <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginVertical: 18 }}>
-                Enter your BVN or NIN once to verify your identity and complete account setup.
-              </Text>
-              <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
-                {(['bvn', 'nin'] as const).map((kind) => (
-                  <Pressable key={kind} accessibilityRole="radio" accessibilityLabel={`Use ${kind.toUpperCase()}`} accessibilityState={{ selected: vasIdentityKind === kind }} disabled={creating} onPress={() => { setVasIdentityKind(kind); setVasIdentity(''); }}>
-                    <Text style={{ color: vasIdentityKind === kind ? c.brand : c.ink3, fontFamily: font.bold }}>{kind.toUpperCase()}</Text>
-                  </Pressable>
-                ))}
-              </View>
-              <Field label={vasIdentityKind.toUpperCase()} value={vasIdentity} onChangeText={(value) => setVasIdentity(value.replace(/\D/g, '').slice(0, 11))} secureTextEntry keyboardType="number-pad" maxLength={11} autoComplete="off" autoCorrect={false} editable={!creating} placeholder={`Enter your ${vasIdentityKind.toUpperCase()}`} />
-              <Pressable accessibilityRole="checkbox" accessibilityLabel="Consent to VAS identity storage and sharing" accessibilityState={{ checked: vasConsent }} disabled={creating} onPress={() => setVasConsent(!vasConsent)} style={{ flexDirection: 'row', gap: 10, marginVertical: 18 }}>
-                <Text style={{ color: c.brand, fontFamily: font.bold }}>{vasConsent ? '☑' : '☐'}</Text>
-                <Text style={{ flex: 1, color: c.ink2, fontFamily: font.regular, lineHeight: 20 }}>{fundingState.test_mode === true
-                  ? 'I consent to Prembly identity verification, encrypted storage of my identity details, and sharing them with Wema Bank for integration validation. Account activation remains pending.'
-                  : 'I consent to Prembly identity verification, encrypted storage of my identity details, and sharing them with Wema Bank to operate my account.'}</Text>
-              </Pressable>
-              <Btn label={creating ? 'Please wait…' : 'Set up account'} disabled={creating || !vasConsent || vasIdentity.length !== 11} onPress={enrollVas} />
-            </>
-          ) : null}
-          <View style={{ marginTop: 14 }}>
-            <Btn label="Review verification" variant="ghost" disabled={creating} onPress={() => router.push('/(auth)/kyc')} />
-            {!enrollmentComplete && !vasSetupAvailable && !vasChallenge && fundingState.account_setup_state !== 'restricted' ? (
-              <>
-                <Btn label="Confirm my verified name" variant="ghost" disabled={creating} onPress={() => router.push({ pathname: '/(auth)/kyc', params: { verify_identity: vasIdentityKind } })} />
-                <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 8 }}>If your earlier verification did not retain your legal name, confirm the same identity with a new verification code, then return here. Verification alone does not make an account eligible for setup.</Text>
-              </>
-            ) : null}
-          </View>
-          <View style={{ marginTop: 14 }}><Btn label="Refresh account status" variant="ghost" disabled={creating} onPress={() => void loadAccount()} /></View>
-        </View>
       ) : account ? (
         <>
           <Label>Fund by bank transfer</Label>
           <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18 }}>
             <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular }}>
-              {fundingState?.provider === 'wema_vas'
-                ? 'Bank transfers to this account appear in your Zitch wallet after the payment is confirmed.'
-                : 'Transfer within your account limits from any bank app. Your Zitch balance updates after the payment is confirmed.'}
+              Transfer within your account limits from any bank app. Your Zitch balance updates after the payment is confirmed.
             </Text>
             {capabilityMessage ? <Text style={{ color: c.ink2, fontFamily: font.semibold, lineHeight: 20, marginTop: 12 }}>{capabilityMessage} {fundingState?.migration_message}</Text> : null}
             <View style={{ height: 1, backgroundColor: c.line, marginVertical: 14 }} />
@@ -491,7 +339,7 @@ const AddMoney = () => {
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 18, paddingHorizontal: 4 }}>
             <ZIcon name="check" size={16} color={c.lime} stroke={2.6} />
             <Text style={{ flex: 1, fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
-              {fundingState?.provider === 'wema_vas' ? 'Use the active account shown here for new bank transfers. Check this page for changes before funding.' : 'Save this account — it\'s permanently yours. Transfers reflect automatically, no need to confirm anything here.'}
+              Use the current account shown here for new bank transfers. Check this page before funding.
             </Text>
           </View>
 

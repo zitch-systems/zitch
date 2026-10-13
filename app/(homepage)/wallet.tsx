@@ -14,7 +14,7 @@ import { walletCapabilityMessage } from '@/lib/services/wallet';
 
 const Wallet = () => {
   const { c } = useTheme();
-  const { balance, totalBalance, historicalBalance, fundingProvider, fullName, firstName, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, loading, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
+  const { balance, totalBalance, fullName, firstName, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, loading, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
   const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -67,7 +67,7 @@ const Wallet = () => {
             <Text style={{ fontSize: 10, color: '#fff', fontFamily: font.bold }}>Primary</Text>
           </View>
         </View>
-        <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium, marginTop: 10 }}>{fundingProvider === 'wema_vas' ? 'Available for bills' : 'Available balance'}</Text>
+        <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium, marginTop: 10 }}>Available balance</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 }}>
           <NText style={{ fontSize: 27, fontFamily: font.extrabold, color: '#fff', fontVariant: ['tabular-nums'] }}>
             {!balanceLoaded ? (hydrated ? 'Unavailable' : 'Loading…') : showBal ? money(balance) : '₦ ••••••'}
@@ -76,11 +76,10 @@ const Wallet = () => {
             <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
           </Pressable>
         </View>
-        {balanceLoaded && (fundingProvider === 'wema_vas' || totalBalance > balance) ? (
+        {balanceLoaded && (totalBalance > balance) ? (
           <View style={{ gap: 3, marginTop: 10 }}>
             <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Total balance: {showBal ? money(totalBalance) : '₦ ••••••'}</NText>
-            <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>{fundingProvider === 'wema_vas' ? 'Historical funds' : 'Funds under review'}: {showBal ? money(fundingProvider === 'wema_vas' ? historicalBalance : totalBalance - balance) : '₦ ••••••'}</NText>
-            {fundingProvider === 'wema_vas' && historicalBalance > 0 ? <Text style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.regular }}>Historical funds are not available for new payments.</Text> : null}
+            <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Funds under review: {showBal ? money(totalBalance - balance) : '₦ ••••••'}</NText>
           </View>
         ) : null}
 

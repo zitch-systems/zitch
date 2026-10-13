@@ -57,7 +57,8 @@ from django.utils import timezone
 
 from utility import wema
 from wallet.models import Transaction, Wallet
-from wallet.services import is_bank_payout, wema_provisioned_wallets, vas_reconciliation_scope
+from wallet.services import is_bank_payout, wema_provisioned_wallets
+from wallet.legacy_funding import reconciliation_scope
 
 # The label prefixes that identify which rail a day's movement went out on. These
 # mirror common.http's daily-cap buckets; kept separate because this command
@@ -129,7 +130,10 @@ class Command(BaseCommand):
         pool = None
         pool_failure = None
         pool_http_status = None
-        if pool_account:
+        from wallet.partnership import partnership_account_number
+        if pool_account and not partnership_account_number(pool_account):
+            pool_failure = "invalid_partnership_source"
+        elif pool_account:
             res = wema.get_balance(pool_account)
             pool = res.get("balance_naira") if res.get("success") else None
             if pool is None:
@@ -205,7 +209,7 @@ class Command(BaseCommand):
 
         owed = self._owed()
         movement = self._day_movement()
-        vas_scope = vas_reconciliation_scope()
+        legacy_scope = reconciliation_scope()
 
         if not wema.wema_live():
             # Mock get_balance returns 0.00 for every account, so a position computed
@@ -215,14 +219,14 @@ class Command(BaseCommand):
                 "settlement_report: Wema not live (simulation/mock) — no real balances to "
                 "hold against the ledger, so no position is computed.")
             self._print_owed(owed, movement)
-            if vas_scope["vas_collection_required"]:
-                snapshot = {**vas_scope,
+            if legacy_scope["legacy_funding_required"]:
+                snapshot = {**legacy_scope,
                             **{key: str(value) for key, value in owed.items()},
                             "held_total": None, "position": None, "incomplete": True}
                 record_audit("recon.settlement_report", actor_type="system", after=snapshot)
-                self.stdout.write("VAS COLLECTION UNVERIFIED — complete position unavailable.")
-                alert("settlement_report: VAS collection bank balance and transaction search are "
-                      "unverified; no complete position can be stated", level="error", **vas_scope)
+                self.stdout.write("HISTORICAL FUNDING UNVERIFIED — complete position unavailable.")
+                alert("settlement_report: Historical funding bank balance and transaction search are "
+                      "unverified; no complete position can be stated", level="error", **legacy_scope)
                 if options["fail_on_breach"]:
                     raise SystemExit(1)
             return
@@ -234,12 +238,12 @@ class Command(BaseCommand):
         if not held["pool_in_nuban_total"]:
             rails.append(held["pool_balance"])
         # A rail we could not read makes the position unsound, not merely imprecise.
-        incomplete = (vas_scope["vas_collection_required"] or held["nuban_unreachable"] > 0
+        incomplete = (legacy_scope["legacy_funding_required"] or held["nuban_unreachable"] > 0
                       or (held["pool_account_set"] and held["pool_balance"] is None))
         held_total = sum((r for r in rails if r is not None), Decimal("0"))
         position = None if incomplete else held_total - owed["ledger_liability"]
 
-        snapshot = {**owed, **held, **movement, **vas_scope,
+        snapshot = {**owed, **held, **movement, **legacy_scope,
                     "known_held_total": held_total,
                     "held_total": None if incomplete else held_total,
                     "position": position,
@@ -264,11 +268,11 @@ class Command(BaseCommand):
             self.stdout.write("        pool read   " + held["pool_failure"]
                               + (f" (HTTP {held['pool_http_status']})"
                                  if held["pool_http_status"] is not None else ""))
-        if vas_scope["vas_collection_required"]:
-            self.stdout.write("        VAS collection UNVERIFIED (bank balance/search contract pending)")
+        if legacy_scope["legacy_funding_required"]:
+            self.stdout.write("        Historical funding UNVERIFIED (bank balance/search contract pending)")
         if incomplete:
             self.stdout.write(f"        known assets ₦{held_total:,.2f} (incomplete)")
-            reason = ("VAS collection balance is unverified" if vas_scope["vas_collection_required"]
+            reason = ("Historical funding balance is unverified" if legacy_scope["legacy_funding_required"]
                       else "one or more bank balances are unreadable")
             self.stdout.write(f"POSITION UNAVAILABLE — {reason}.")
         else:
@@ -278,9 +282,9 @@ class Command(BaseCommand):
                 f"({'surplus' if position >= 0 else 'SHORTFALL'})")
 
         breached = False
-        if vas_scope["vas_collection_required"]:
-            alert("settlement_report: VAS collection bank balance and transaction search are "
-                  "unverified; no complete position can be stated", level="error", **vas_scope)
+        if legacy_scope["legacy_funding_required"]:
+            alert("settlement_report: Historical funding bank balance and transaction search are "
+                  "unverified; no complete position can be stated", level="error", **legacy_scope)
             breached = True
         elif incomplete:
             # Not a solvency alert — an observability one. Say which rail.

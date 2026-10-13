@@ -37,3 +37,11 @@ expo-env.d.ts
 
 # Provided by the build environment; never commit Firebase configuration.
 /google-services.json
+
+# Optional EAS local signing credentials and private service-account keys.
+/credentials.json
+/credentials/
+
+# Python caches from backend and Android verification scripts
+__pycache__/
+*.py[cod]

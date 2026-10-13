@@ -21,8 +21,7 @@ class IdentityTimeoutTests(SimpleTestCase):
         }))
 
     def test_existing_callers_keep_thirty_second_timeout(self):
-        for verify in (providers.verify_bvn, providers.verify_nin,
-                       providers.prembly_verify_bvn, providers.prembly_verify_nin):
+        for verify in (providers.prembly_verify_bvn, providers.prembly_verify_nin):
             with self.subTest(verify=verify.__name__), patch(
                 "utility.providers.requests.post", return_value=self.response(),
             ) as post:
@@ -30,8 +29,7 @@ class IdentityTimeoutTests(SimpleTestCase):
                 self.assertEqual(post.call_args.kwargs["timeout"], 30)
 
     def test_custom_deadline_reaches_prembly_unchanged(self):
-        for verify in (providers.verify_bvn, providers.verify_nin,
-                       providers.prembly_verify_bvn, providers.prembly_verify_nin):
+        for verify in (providers.prembly_verify_bvn, providers.prembly_verify_nin):
             for deadline in (3, (1, 2), Timeout(total=3, connect=1, read=2)):
                 with self.subTest(verify=verify.__name__, deadline=deadline), patch(
                     "utility.providers.requests.post", return_value=self.response(),
@@ -40,7 +38,7 @@ class IdentityTimeoutTests(SimpleTestCase):
                     self.assertIs(post.call_args.kwargs["timeout"], deadline)
 
     def test_expired_deadline_is_not_a_verified_or_invalid_identity(self):
-        for verify in (providers.verify_bvn, providers.verify_nin):
+        for verify in (providers.prembly_verify_bvn, providers.prembly_verify_nin):
             with self.subTest(verify=verify.__name__), patch(
                 "utility.providers.requests.post", side_effect=requests.Timeout("deadline exceeded"),
             ):

@@ -577,7 +577,7 @@ class WemaNotificationCallbackTests(TestCase):
     def test_credit_notification_reconciles_authenticated_history(self, history):
         history.return_value = {"success": True, "transactions": [{
             "referenceId": "338135484403", "amount": 100,
-            "creditType": "Credit", "status": "Successfull",
+            "creditType": "Credit", "status": "Successfull", "date": timezone.now().isoformat(),
         }]}
 
         response = self._post({
@@ -598,6 +598,79 @@ class WemaNotificationCallbackTests(TestCase):
         self.assertEqual(history.call_args.args[:3], (
             self.wallet.account_number, "2026-09-12", "2026-09-15",
         ))
+
+    @patch("utility.wema.get_transactions")
+    def test_retired_account_notification_never_uses_partnership_history(self, history):
+        from legacy_funding.models import VirtualAccount
+        VirtualAccount.objects.create(user=self.user, number=self.wallet.account_number,
+            display_name="Zitch/Historical", encrypted_identity="retained", verification_reference="proof",
+            consent_reference="consent", verified_at=timezone.now(), mode="live", prefix="045")
+        response = self._post({"accountNumber": self.wallet.account_number, "transactionType": "Credit"})
+        self.assertEqual(response.status_code, 200)
+        history.assert_not_called()
+        self.assertFalse(Transaction.objects.exists())
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("0"))
+
+    def test_unaccounted_old_or_dateless_history_cannot_create_opening_money(self):
+        from wallet.models import BankHistoryCheckpoint
+        for index, bank_date in enumerate((None, "bad-date", "2001-01-01T10:00:00Z")):
+            row = {"referenceId": f"UNACCOUNTED-{index}", "amount": "500", "creditType": "Credit",
+                   "status": "Successfull", "date": bank_date}
+            with self.subTest(bank_date=bank_date), patch("utility.wema.get_transactions", return_value={
+                    "success": True, "complete": True, "transactions": [row]}):
+                response = self._post({"accountNumber": self.wallet.account_number,
+                    "transactionType": "Credit", "transactionDate": "2001-01-02"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.wsgi_request.wema_action, "pending:history_opening_review")
+        self.assertFalse(Transaction.objects.exists())
+        self.assertFalse(BankHistoryCheckpoint.objects.exists())
+        self.assertEqual(Wallet.objects.get(pk=self.wallet.pk).balance, Decimal("0"))
+
+    def test_mixed_history_applies_only_current_confirmed_credit_and_keeps_existing_hold(self):
+        from wallet.models import BankHistoryCheckpoint
+        checkpoint = BankHistoryCheckpoint.objects.create(wallet=self.wallet,
+            account_number=self.wallet.account_number, opening_review_required=True)
+        rows = [{"referenceId": "OLD-GROSS", "amount": "900", "creditType": "Credit",
+                 "status": "Successfull", "date": "2001-01-01"},
+                {"referenceId": "NEW-CREDIT", "amount": "75", "creditType": "Credit",
+                 "status": "Successfull", "date": timezone.now().isoformat()}]
+        with patch("utility.wema.get_transactions", return_value={"success": True, "complete": True, "transactions": rows}):
+            for _ in range(2):
+                self.assertEqual(self._post({"accountNumber": self.wallet.account_number,
+                    "transactionType": "Credit"}).status_code, 200)
+        self.assertEqual(Transaction.objects.count(), 1)
+        self.assertEqual(Wallet.objects.get(pk=self.wallet.pk).balance, Decimal("75"))
+        checkpoint.refresh_from_db()
+        self.assertTrue(checkpoint.opening_review_required)
+        self.assertIsNone(checkpoint.covered_through)
+
+    def test_previously_verified_credit_replays_without_date_or_duplicate_money(self):
+        from wallet.services import apply_wema_credit
+        row = {"referenceId": "VERIFIED-REPLAY", "amount": "100", "creditType": "Credit",
+               "status": "Successfull", "date": timezone.now().isoformat()}
+        prior = apply_wema_credit(self.wallet, row)
+        row.pop("date")
+        with patch("utility.wema.get_transactions", return_value={"success": True, "complete": True, "transactions": [row]}):
+            response = self._post({"accountNumber": self.wallet.account_number, "transactionType": "Credit"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.wsgi_request.wema_action, "reconciled:0")
+        self.assertEqual(Transaction.objects.get().pk, prior.pk)
+        self.assertEqual(Wallet.objects.get(pk=self.wallet.pk).balance, Decimal("100"))
+
+    def test_untrusted_history_response_cannot_credit_even_current_rows(self):
+        row = {"referenceId": "UNTRUSTED-HISTORY", "amount": "100", "creditType": "Credit",
+               "status": "Successfull", "date": timezone.now().isoformat()}
+        cases = (None, {"success": True, "mock": True, "transactions": [row]},
+                 {"success": True, "complete": False, "transactions": [row]},
+                 {"success": True, "transactions": [row, "invalid-row"]},
+                 {"success": True, "transactions": row})
+        for index, result in enumerate(cases):
+            with self.subTest(case=index), patch("utility.wema.get_transactions", return_value=result):
+                response = self._post({"accountNumber": self.wallet.account_number, "transactionType": "Credit"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.wsgi_request.wema_action, "pending:history_unavailable")
+        self.assertFalse(Transaction.objects.exists())
+        self.assertEqual(Wallet.objects.get(pk=self.wallet.pk).balance, Decimal("0"))
 
     @patch("utility.wema.get_transactions")
     def test_credit_notification_uses_business_date_for_history_window(self, history):

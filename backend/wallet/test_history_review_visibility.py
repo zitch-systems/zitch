@@ -13,11 +13,11 @@ from wallet.services import (
     wallet_expected_balance,
 )
 from wallet.tests import make_user
-from wema_vas.models import VirtualAccount
+from legacy_funding.models import VirtualAccount
 
 
 @override_settings(BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE="active",
-                   WEMA_PARTNERSHIP_RESTORE_VAS=True, WEMA_BILLER_MODE="active")
+                   WEMA_BILLER_MODE="active")
 @patch("utility.wema.wema_live", return_value=True)
 class BankHistoryReviewVisibilityTests(TestCase):
     def setUp(self):
@@ -107,7 +107,7 @@ class BankHistoryReviewVisibilityTests(TestCase):
         self.assertTrue(funding["spending_available"])
         self.assertTrue(funding["transfers_available"])
         self.assertTrue(funding["bill_payments_available"])
-        self.assertNotIn("account_setup_state", funding)
+        self.assertEqual(funding["account_setup_state"], "ready")
         self.assertEqual(wallet_balance_payload(self.user)["available_balance"], Decimal("1000"))
 
     def test_restored_vas_account_keeps_independent_bank_opening_review(self, _live):
@@ -116,7 +116,7 @@ class BankHistoryReviewVisibilityTests(TestCase):
             encrypted_identity="retained", verification_reference="proof-test",
             consent_reference="consent-test", verified_at=timezone.now(), mode="live", prefix="999")
         self.assert_held_payload()
-        self.assertEqual(wallet_balance_payload(self.user)["vas_balance"], Decimal("0"))
+        self.assertEqual(wallet_balance_payload(self.user)["legacy_funding_balance"], Decimal("0"))
 
     def test_missing_account_keeps_normal_onboarding(self, _live):
         self.wallet.account_number = ""
@@ -127,5 +127,5 @@ class BankHistoryReviewVisibilityTests(TestCase):
 
     def test_isolated_simulation_does_not_manufacture_bank_review(self, live):
         live.return_value = False
-        self.assertNotIn("account_setup_state", customer_funding_account(self.user))
+        self.assertEqual(customer_funding_account(self.user)["account_setup_state"], "ready")
         self.assertEqual(wallet_balance_payload(self.user)["available_balance"], Decimal("1000"))

@@ -1,0 +1,92 @@
+[
+  {
+    "package": "metro",
+    "version": "0.80.12",
+    "file": "src/Assets.js",
+    "originalSha256": "c6021f8ff3f249a9724cba5b9c4569a5ecd2ced244e711f6623dbefa702f5f34",
+    "patchedSha256": "bdb80e957862465ed364d7ee0d9952b7a3c77eaeb0985567c217fa52eb4835fb",
+    "provenance": "Local image-size 2.x compatibility adapter: synchronous Buffer dimension calls use named imageSize; async getAssetData file paths await imageSizeFromFile (upstream bounded512KB reads), preserving zip Buffer handling.",
+    "replacements": [
+      [
+        "const getImageSize = require(\"image-size\");",
+        "const { imageSize: getImageSize } = require(\"image-size\");\nconst { imageSizeFromFile } = require(\"image-size/fromFile\");"
+      ],
+      [
+        "  const dimensions = isImage ? getImageSize(isImageInput) : null;",
+        "  const dimensions = isImage\n    ? typeof isImageInput === \"string\"\n      ? await imageSizeFromFile(isImageInput)\n      : getImageSize(isImageInput)\n    : null;"
+      ]
+    ]
+  },
+  {
+    "package": "postcss-selector-parser",
+    "version": "6.1.4",
+    "file": "dist/parser.js",
+    "originalSha256": "0e99653c57b1e037e4391e3c50f5f07a022c3b85ae5477026335d149fb1f18d3",
+    "patchedSha256": "fbc108e74e76772305736f3e33e22aa51d31abd1884ac9d66f14a59eb4e699a3",
+    "provenance": "Backport of upstream 62b191792df0a0bc56062e5a875bc74aae2a51cd (7.1.6), GHSA-rj75-hqrm-r3gf; retains v6 insertion semantics.",
+    "replacements": [
+      [
+        "  var list = Array.prototype.concat.apply([], arguments);\n  return list.filter(function (item, i) {\n    return i === list.indexOf(item);\n  });",
+        "  return Array.from(new Set(Array.prototype.concat.apply([], arguments)));"
+      ],
+      [
+        "    if (interpolations.length) {\n      hasId = hasId.filter(function (hashIndex) {\n        return !~interpolations.indexOf(hashIndex);\n      });\n    }\n    var indices",
+        "    if (interpolations.length) {\n      var interpolationIndexes = new Set(interpolations);\n      hasId = hasId.filter(function (hashIndex) {\n        return !interpolationIndexes.has(hashIndex);\n      });\n    }\n    var classIndexes = new Set(hasClass);\n    var idIndexes = new Set(hasId);\n    var indices"
+      ],
+      [
+        "if (~hasClass.indexOf(ind)) {",
+        "if (classIndexes.has(ind)) {"
+      ],
+      [
+        "} else if (~hasId.indexOf(ind)) {",
+        "} else if (idIndexes.has(ind)) {"
+      ]
+    ]
+  },
+  {
+    "package": "turbo-stream",
+    "version": "2.4.1",
+    "file": "dist/flatten.js",
+    "originalSha256": "91193152bdefd531dd75eade99376ac4752ce9255750c7cd1a7e3cddd489ee72",
+    "patchedSha256": "22483cdbe6f9b123a0a55a3f782bcdf1b60adbdd8a0edd4e4819a363d22c6cc4",
+    "provenance": "Backport of React Router vendored-v2 fix 59811921d3c7d599077b8cadccdcd65a233165e0, GHSA-rxv8-25v2-qmq8.",
+    "replacements": [
+      [
+        "                        if (input.name !== \"Error\") {\n                            str[index] += `,${JSON.stringify(input.name)}`;\n                        }\n",
+        ""
+      ]
+    ]
+  },
+  {
+    "package": "turbo-stream",
+    "version": "2.4.1",
+    "file": "dist/unflatten.js",
+    "originalSha256": "1718e43eab2d3afa88f4fba7ecef08a1734d4ec37dac5c4e7bf0d259b4fd64c0",
+    "patchedSha256": "5c755a72a248795a985b6df587f55a7ca5d7d8d445dba2b7c4febc51c6e6d0df",
+    "provenance": "Backport of React Router vendored-v2 fix 59811921d3c7d599077b8cadccdcd65a233165e0, GHSA-rxv8-25v2-qmq8.",
+    "replacements": [
+      [
+        "                        const [, message, errorType] = value;\n                        let error = errorType && globalObj && globalObj[errorType]\n                            ? new globalObj[errorType](message)\n                            : new Error(message);",
+        "                        const [, message] = value;\n                        let error = new Error(message);"
+      ]
+    ]
+  },
+  {
+    "package": "turbo-stream",
+    "version": "2.4.1",
+    "file": "dist/turbo-stream.mjs",
+    "originalSha256": "9450ac458d3938fe61b831c167956bef458429df064334172611a227c83b3cd5",
+    "patchedSha256": "c2ae3dde76cc2ed2279704f964580ba22a7d75bb1f0507e5d8b119928e90141e",
+    "provenance": "Backport of React Router vendored-v2 fix 59811921d3c7d599077b8cadccdcd65a233165e0, GHSA-rxv8-25v2-qmq8.",
+    "replacements": [
+      [
+        "            if (input2.name !== \"Error\") {\n              str[index2] += `,${JSON.stringify(input2.name)}`;\n            }\n",
+        ""
+      ],
+      [
+        "            const [, message, errorType] = value;\n            let error = errorType && globalObj && globalObj[errorType] ? new globalObj[errorType](message) : new Error(message);",
+        "            const [, message] = value;\n            let error = new Error(message);"
+      ]
+    ]
+  }
+]

@@ -10,9 +10,15 @@ python manage.py collectstatic --no-input
 # check to close the race between this preflight and schema application.
 python manage.py audit_card_uniqueness
 python manage.py migrate
+# Explicit, one-shot Flow administration for plans without a shell. Draft
+# preparation and publication are separate operations; neither selects the
+# customer Flow ID. Missing/incorrect review inputs stop the candidate build.
+if [ -n "${WHATSAPP_FLOW_DEPLOY_OPERATION:-}" ]; then
+  python manage.py deploy_whatsapp_flow
+fi
 # Read-only, redacted evidence for operators while public maintenance is on.
 # This reports configuration gaps; it cannot authorize release or change funds.
-python manage.py vas_deployment_diagnostics
+python manage.py partnership_diagnostics
 # Optional incident evidence for a bounded set of internal user IDs. The command
 # reads bank statements and local history only, prints redacted summaries, and
 # never changes balances, checkpoints, KYC state or payment outcomes. Clear the

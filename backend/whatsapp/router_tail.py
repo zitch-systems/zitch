@@ -2229,6 +2229,9 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
             pk=pa.pk, user_id=user.pk, msisdn=pa.msisdn,
             state__in=(FLOW_PIN_STATE, "pin", EXECUTING_STATE),
         ).first()
+        if live is not None and is_retired_setup(live):
+            live.delete()
+            return Outcome(RETIRED_SETUP_MESSAGE, OUTCOME_FAILED)
         if live is None or (live.expired and live.state != EXECUTING_STATE):
             return Outcome("This request expired or was cancelled. Start again in the chat.",
                            OUTCOME_FAILED)
@@ -2246,7 +2249,7 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
             # An unlock resumes sensitive reads, so its proof belongs to this
             # exact channel and credential snapshot, even if the worker is slow.
             if live.action_type == "unlock":
-                from .vas_identity import credentials
+                from .auth_proof import credentials
                 if (not secrets.compare_digest(str(proof.get("unlock_credentials") or ""), credentials(current))
                         or not WhatsAppLink.objects.filter(pk=proof.get("unlock_link_id"),
                             user=current, wa_msisdn=live.msisdn, status=WhatsAppLink.ACTIVE).exists()):
@@ -2387,6 +2390,9 @@ def run_flow_execution(pa: PendingAction, user) -> str:
             msisdn=pa.msisdn,
             state__in=(FLOW_PIN_STATE, "pin", EXECUTING_STATE),
         ).first()
+        if live is not None and is_retired_setup(live):
+            live.delete()
+            return Outcome(RETIRED_SETUP_MESSAGE, OUTCOME_FAILED)
         if live is None:
             return Outcome("This request expired or was cancelled. Start again in the chat.",
                            OUTCOME_FAILED)
@@ -2418,7 +2424,7 @@ def run_flow_execution(pa: PendingAction, user) -> str:
     # Getting here means the PIN or a verified biometric just passed, so it
     # starts the re-auth window: someone who just authorised a payment should
     # not be challenged again to read their own balance.
-    # Re-registration also binds the proof to the exact active WhatsApp link
+    # Unlock also binds the proof to the exact active WhatsApp link
     # and credential snapshot. Its executor marks the session only after those
     # checks, so a revoked old link cannot authenticate a replacement link.
     if (pa.action_type != "unlock" and pa.state != EXECUTING_STATE

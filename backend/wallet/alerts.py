@@ -138,13 +138,10 @@ def _balance_rows(txn) -> list[tuple[str, str]]:
         available = balances["available_balance"]
         historical = balances["historical_balance"]
         if available != total or historical:
-            history_review = (customer_funding_account(txn.user).get("account_setup_state")
-                              == "bank_history_review")
             lines = [("Total NGN wallet balance", _money(total)),
-                     ("Available balance" if history_review else "Available for bills", _money(available))]
+                     ("Available balance", _money(available))]
             if historical:
-                lines.append(("Funds under review" if history_review else
-                              "Historical funds unavailable for bills", _money(historical)))
+                lines.append(("Funds under review", _money(historical)))
             return lines
         return [("Available balance", _money(available))]
     except Exception:  # noqa: BLE001 — balance reads must never prevent a payment alert
@@ -834,7 +831,7 @@ def _mask_account(number: str) -> str:
 def _transaction_account_number(txn) -> str:
     """Resolve this movement's account without relabelling historical funds."""
     from .models import BillFundingBinding, Wallet
-    from wema_vas.models import Receipt, VirtualAccount
+    from legacy_funding.models import Receipt, VirtualAccount
 
     try:
         receipt = Receipt.objects.select_related("account").filter(transaction_id=txn.pk).first()
@@ -858,7 +855,7 @@ def _transaction_account_number(txn) -> str:
             number = binding.source_account
         else:
             # A late legacy credit belongs to its retained account, even after
-            # the customer has a live VAS account. Mutable metadata is not proof.
+            # the customer has historical funding records. Mutable metadata is not proof.
             number = Wallet.objects.filter(user_id=txn.user_id).values_list("account_number", flat=True).first()
         return number if number and not number.startswith("711") else ""
     except Exception:  # noqa: BLE001 — omit unknown provenance; never guess a funding account
@@ -882,7 +879,7 @@ def _sms_alert(txn, *, reversal: bool = False) -> str:
         balance = _sms_money(balances["available_balance"])
         if balances["available_balance"] != balances["balance"] or balances["historical_balance"]:
             balance_label = ("Avail" if customer_funding_account(txn.user).get("account_setup_state")
-                             == "bank_history_review" else "Avail bills")
+                             in {"bank_history_review", "legacy_funding_review"} else "Available")
     except Exception:  # noqa: BLE001 — an alert must never depend on reading a wallet
         balance = ""
     account = _transaction_account_number(txn)

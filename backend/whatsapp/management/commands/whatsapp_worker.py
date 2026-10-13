@@ -1,7 +1,11 @@
+import hashlib
+import json
+import re
 import signal
 import threading
 import time
 from datetime import timedelta
+from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -10,6 +14,15 @@ from django.utils import timezone
 
 from whatsapp.jobs import process_once
 from whatsapp.providers import wa_live
+
+
+def _local_flow_digest():
+    try:
+        asset = Path(__file__).resolve().parents[2] / "flow_assets" / "pin_flow.json"
+        document = json.loads(asset.read_bytes())
+        return hashlib.sha256(json.dumps(document, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    except (OSError, ValueError, TypeError):
+        return "unreadable"
 
 
 class Command(BaseCommand):
@@ -59,6 +72,13 @@ class Command(BaseCommand):
                 raise CommandError("Production WhatsApp worker requires WHATSAPP_MODE=live")
             if not getattr(settings, "WHATSAPP_QUEUE_KEY", ""):
                 raise CommandError("Production WhatsApp worker requires WHATSAPP_QUEUE_KEY")
+
+        selected = str((getattr(settings, "WHATSAPP_FLOW", {}) or {}).get("FLOW_ID") or "")
+        selected = selected if re.fullmatch(r"[0-9]{1,40}", selected) else "unset"
+        # Evidence from the running worker, not only an API candidate build.
+        # No Graph calls, phone/channel identifiers, keys or tokens are logged.
+        self.stdout.write(f"whatsapp_worker_flow flow_id={selected} contract_sha256={_local_flow_digest()}")
+        self.stdout.flush()
 
         stopped = False
         reconcile_lock = threading.Lock()

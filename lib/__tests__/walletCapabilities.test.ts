@@ -1,87 +1,48 @@
-import { walletBalances, walletCapabilities, walletCapabilityMessage } from '@/lib/services/wallet';
+import { isFundingAccountReady, walletBalances, walletCapabilities, walletCapabilityMessage } from '@/lib/services/wallet';
 
 jest.mock('@/lib/api', () => ({ apiJson: jest.fn() }));
 
-describe('wallet capability display', () => {
-  it('fails closed before a wallet is hydrated and for malformed feature booleans', () => {
-    for (const value of [undefined, null, {}]) expect(walletCapabilities(value)).toEqual({ billPaymentsAvailable: false, transfersAvailable: false });
-    expect(walletCapabilities({ provider: 'wema_vas', bill_payments_available: 'true', transfers_available: 1 } as any)).toEqual({ billPaymentsAvailable: false, transfersAvailable: false });
+const ready = { success: true, provider: 'partnership', can_fund: true, available: true,
+  has_account: true, account_setup_state: 'ready', account_number: '0454243073' };
+
+describe('Partnership account capabilities', () => {
+  it.each([undefined, {}, { provider: 'wema_vas', bill_payments_available: true, transfers_available: true },
+    { provider: 'unknown' }, { provider: 'partnership', legacy_funding_review: true },
+    { provider: 'partnership', account_setup_state: 'legacy_funding_review' },
+    { provider: 'partnership', spending_available: false }])('fails closed for absent, retired or held accounts: %j', (value) => {
+    expect(walletCapabilities(value)).toEqual({ billPaymentsAvailable: false, transfersAvailable: false });
   });
-
-  it('uses separate bill and transfer capabilities over the generic spending flag', () => {
-    const capabilities = walletCapabilities({
-      provider: 'wema_vas', spending_available: false,
-      bill_payments_available: true, transfers_available: false,
-    });
-    expect(capabilities).toEqual({ billPaymentsAvailable: true, transfersAvailable: false });
-    expect(walletCapabilityMessage(capabilities)).toBe('Bill payments are available. Transfers are currently unavailable.');
+  it('honors separate server capabilities for the active provider', () => {
+    expect(walletCapabilities({ provider: 'partnership', bill_payments_available: true, transfers_available: false }))
+      .toEqual({ billPaymentsAvailable: true, transfersAvailable: false });
+    expect(walletCapabilities({ provider: 'partnership' }))
+      .toEqual({ billPaymentsAvailable: true, transfersAvailable: true });
   });
-
-  it('does not infer VAS bill eligibility or transfer availability from a missing capability', () => {
-    expect(walletCapabilities({ provider: 'wema_vas' })).toEqual({
-      billPaymentsAvailable: false, transfersAvailable: false,
-    });
-    expect(walletCapabilities({ provider: 'wema_vas', spending_available: true })).toEqual({
-      billPaymentsAvailable: false, transfersAvailable: false,
-    });
-    expect(walletCapabilities({ provider: 'wema_vas', bill_payments_available: true }).transfersAvailable).toBe(false);
+  it('describes the actual service capabilities', () => {
+    expect(walletCapabilityMessage({ billPaymentsAvailable: true, transfersAvailable: false })).toContain('Transfers are currently unavailable');
+    expect(walletCapabilityMessage({ billPaymentsAvailable: true, transfersAvailable: true })).toBe('');
   });
-
-  it('never enables payments or spendable funds for a VAS validation account', () => {
-    const response = { provider: 'wema_vas' as const, test_mode: true,
-      bill_payments_available: true, transfers_available: true, spending_available: true,
-      wallet: '1000.00', available_balance: '1000.00' };
-    expect(walletCapabilities(response)).toEqual({ billPaymentsAvailable: false, transfersAvailable: false });
-    expect(walletBalances(response).availableBalance).toBe(0);
+  it('preserves total and historical balances while preventing spending of held funds', () => {
+    expect(walletBalances({ provider: 'partnership', wallet: '6000', available_balance: '1000', historical_balance: '5000' }))
+      .toEqual({ totalBalance: 6000, availableBalance: 1000, historicalBalance: 5000 });
+    expect(walletBalances({ provider: 'partnership', legacy_funding_review: true, wallet: '6000', available_balance: '6000' }))
+      .toEqual({ totalBalance: 6000, availableBalance: 0, historicalBalance: 6000 });
+    expect(walletBalances({ provider: 'wema_vas', wallet: '6000', available_balance: '6000' }).availableBalance).toBe(0);
   });
-
-  it('preserves older Partnership responses while respecting explicit per-service restrictions', () => {
-    expect(walletCapabilityMessage(walletCapabilities({ provider: 'partnership' }))).toBe('');
-    expect(walletCapabilities({ spending_available: false })).toEqual({
-      billPaymentsAvailable: false, transfersAvailable: false,
-    });
-    expect(walletCapabilityMessage(walletCapabilities({
-      provider: 'partnership', spending_available: true, bill_payments_available: false,
-    }))).toBe('Bill payments are currently unavailable.');
+  it.each(['invalid', '-10', 'Infinity'])('does not publish invalid available funds: %s', (amount) => {
+    expect(walletBalances({ provider: 'partnership', wallet: '6000', available_balance: amount }).availableBalance).toBe(0);
   });
-});
-
-describe('wallet balance separation', () => {
-  const vas = { provider: 'wema_vas' as const, wallet: '6000.00', vas_balance: '1000.00',
-    historical_balance: '5000.00', bill_payments_available: true, transfers_available: false };
-
-  it('keeps late legacy credits out of VAS affordability checks', () => {
-    expect(walletBalances({ ...vas, available_balance: '1000.00' })).toEqual({
-      totalBalance: 6000, availableBalance: 1000, historicalBalance: 5000,
-    });
+  it('caps available funds to total and preserves the existing Partnership balance fallback', () => {
+    expect(walletBalances({ provider: 'partnership', wallet: '20', available_balance: '100' }).availableBalance).toBe(20);
+    expect(walletBalances({ provider: 'partnership', wallet: '20' }).availableBalance).toBe(20);
   });
-
-  it('preserves both kinds of held funds while a VAS bill gate is disabled', () => {
-    expect(walletBalances({ ...vas, available_balance: '0.00', bill_payments_available: false })).toEqual({
-      totalBalance: 6000, availableBalance: 0, historicalBalance: 5000,
-    });
-    expect(walletBalances({ ...vas, available_balance: '1000.00', bill_payments_available: false }).availableBalance).toBe(0);
-  });
-
-  it('fails closed when VAS available funds are missing or malformed', () => {
-    for (const available_balance of [undefined, 'invalid', '-1']) {
-      expect(walletBalances({ ...vas, available_balance }).availableBalance).toBe(0);
+  it('accepts only a currently confirmed Partnership funding destination', () => {
+    expect(isFundingAccountReady(ready)).toBe(true);
+    expect(isFundingAccountReady({ ...ready, account_setup_state: 'bank_history_review', spending_available: false })).toBe(true);
+    for (const override of [{ provider: 'wema_vas' }, { provider: undefined }, { can_fund: false }, { can_fund: undefined },
+      { available: false }, { has_account: false }, { account_setup_state: 'processing' }, { legacy_funding_review: true },
+      { account_number: '7111234567' }, { account_number: '123' }]) {
+      expect(isFundingAccountReady({ ...ready, ...override })).toBe(false);
     }
-    expect(walletBalances({ ...vas, wallet: '500.00', available_balance: '1000.00' }).availableBalance).toBe(500);
-  });
-
-  it('honours a Partnership review hold rather than exposing VAS funds as spendable', () => {
-    expect(walletBalances({ provider: 'partnership', wallet: '1100', available_balance: '0',
-      historical_balance: '1100', bill_payments_available: false, transfers_available: false })).toEqual({
-      totalBalance: 1100, availableBalance: 0, historicalBalance: 1100,
-    });
-    expect(walletBalances({ provider: 'partnership', wallet: '1000', available_balance: '1000',
-      historical_balance: '0', transfers_available: true }).availableBalance).toBe(1000);
-  });
-
-  it('preserves the legacy wallet balance contract', () => {
-    expect(walletBalances({ wallet: '6000.00' })).toEqual({
-      totalBalance: 6000, availableBalance: 6000, historicalBalance: 0,
-    });
   });
 });

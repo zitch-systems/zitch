@@ -1,11 +1,6 @@
-"""Third-party integration layer.
-
-The client in utility.wema retains the bank biller product independently of the
-archived Partnership account/transfer rail. Prembly verifies identities. Termii handles SMS/OTP, Resend handles email, Prembly/IdentityPass
-handles selfie/liveness + address + ID-document KYC where needed, and Fincra
-handles FX. Each function returns {"success": bool, ...}. In production,
-money/identity mocks fail closed so a misconfigured deploy never fakes money
-movement.
+"""Wema Partnership banking and bank bill payments, with dedicated identity,
+SMS/email and other provider adapters. Production money and identity failures
+never become simulated successes.
 """
 import hashlib
 import logging
@@ -21,14 +16,14 @@ log = logging.getLogger("zitch")
 
 
 PARTNERSHIP_ARCHIVED_MESSAGE = (
-    "Account migration is in progress. New payments are temporarily unavailable; "
+    "Banking services are temporarily unavailable. New payments are unavailable; "
     "your balance has not been debited."
 )
 
 
 def bank_account_provider() -> str:
-    """The explicitly selected new-account service; unknown values fail closed."""
-    return str(getattr(settings, "BANK_ACCOUNT_PROVIDER", "partnership") or "").strip().lower()
+    """Wema Partnership is the only supported account integration."""
+    return "partnership"
 
 
 def partnership_archived() -> bool:
@@ -40,7 +35,7 @@ def partnership_new_business_allowed(user=None) -> bool:
     if partnership_archived() or bank_account_provider() != "partnership":
         return False
     if user is not None:
-        from wema_vas.partnership import partnership_allowed
+        from wallet.partnership import partnership_allowed
         return partnership_allowed(user)
     return True
 
@@ -73,9 +68,9 @@ def _biller_source(reference, *, amount, source_account=""):
 def _partnership_reference_blocked(reference: str | None = None, source_account: str = "") -> bool:
     if not partnership_new_business_allowed():
         return True
-    # A VAS account is never a Partnership debit source. Returning customers
+    # A retired funding account is never a Partnership debit source. Customers
     # must pass the same liability check as the locked reservation path.
-    from wema_vas.models import VirtualAccount
+    from legacy_funding.models import VirtualAccount
     if source_account and VirtualAccount.objects.filter(number=source_account).exists():
         return True
     if source_account:
@@ -913,51 +908,30 @@ def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# KYC — Prembly BVN/NIN, with explicitly selected legacy compatibility
+# KYC — Partnership Tier 1 and explicit standalone Prembly lookup adapters
 #
-# verify_bvn / verify_nin / verify_vnin are the provider-agnostic entry points the
-# rest of the app calls. ALAT has NO standalone identity lookup, so BVN/NIN are
-# verified through Prembly's independent lookup and the registered-phone ownership
-# challenge. An explicitly selected legacy deployment can retain its existing
-# NUBAN account-creation flow. VAS and explicit Prembly selection never fall back
-# to that account-creation route when identity credentials are unavailable.
+# Tier 1 ownership uses the bank's account-creation OTP or hosted face flow.
+# The generic verify_* entry points cannot select another account integration.
+# Explicit Prembly adapters remain separate from Tier 1 routing; an identity
+# lookup alone cannot replace bank ownership proof or interactive Tier 2 liveness.
 # ---------------------------------------------------------------------------
 def kyc_provider() -> str:
-    """Use Prembly for VAS and honour explicit legacy identity selection."""
-    if not partnership_new_business_allowed():
-        return "prembly"
-    choice = (getattr(settings, "KYC_PROVIDER", "") or "").strip().lower()
-    return choice if choice in {"wema", "prembly"} else "wema"
+    """Tier 1 ownership verification uses Wema Partnership exclusively."""
+    return "wema"
 
 
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "", *,
                timeout=REQUEST_TIMEOUT) -> dict:
-    """BVN verification entry point.
-
-    Prembly first when configured and simulation is OFF. During an end-to-end
-    simulation, no identity number may leave Zitch merely because live Prembly
-    credentials are staged in the environment; the dedicated simulated-KYC path
-    supplies namespaced fake hashes without accepting or storing a real BVN.
-
-    An explicit Prembly choice never falls back to bank account creation or a
-    mock when its credentials are missing or the simulation switch is on.
-    """
-    if _prembly_identity_live():
-        return prembly_verify_bvn(bvn, name=name, timeout=timeout)
-    if kyc_provider() == "prembly":
-        return {"success": False, "message": "Identity verification is temporarily unavailable.",
-                "code": "identity_provider_unavailable"}
+    """Direct callers use the bank's ownership flow; live lookup never proves it."""
     from . import wema
     return wema.verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
 
 
 def prembly_verify_bvn(bvn: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> dict:
-    """Look a BVN up at Prembly and name-match the record. Fails CLOSED on every
-    uncertainty, exactly like the NIN path — this result lifts a tier and, unlike
-    NIN, currently gates whether an account may spend at all.
+    """Explicit BVN lookup and name match; uncertainty fails closed.
 
-    Uses Prembly's BVN Advance product because the ownership challenge needs the
-    identity-registered phone number as well as the holder's name.
+    BVN Advance includes the registered phone number and holder's name. This
+    lookup alone is neither bank ownership proof nor interactive liveness.
     """
     if not isinstance(bvn, str) or not re.fullmatch(r"[0-9]{11}", bvn):
         return {"success": False, "invalid": True, "message": "BVN must be 11 digits"}
@@ -965,9 +939,7 @@ def prembly_verify_bvn(bvn: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> 
 
 
 def _prembly_identity_lookup(kind: str, number: str, name: str, *, timeout=REQUEST_TIMEOUT) -> dict:
-    """Shared BVN/NIN lookup: one request shape, one name match, one failure
-    policy. Written once so the two identities cannot drift on what counts as a
-    pass — they gate the same money."""
+    """Shared explicit BVN/NIN lookup with consistent name and response checks."""
     # Prembly's current IdentityPass API does not use the older
     # ``/identitypass/verification/{kind}`` route for these products.  Keep the
     # product routes explicit so a future API change cannot silently make BVN
@@ -1162,22 +1134,7 @@ def identity_otp_delivery_payload(phone: str, *, email: str = "",
 
 
 def verify_nin(nin: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> dict:
-    """NIN verification entry point.
-
-    Prembly first when it is configured: it has the standalone NIN lookup the
-    bank does not. That matters because the NUBAN flow name-matches exactly ONE
-    identity — whichever opened the account, in practice the BVN — so without a
-    second rail every NIN falls to the operator review queue, and nobody can
-    spend until a human clears them.
-
-    An explicit Prembly choice remains unavailable if its credentials are absent;
-    only a selected legacy bank identity flow may use the old provider.
-    """
-    if _prembly_identity_live():
-        return prembly_verify_nin(nin, name=name, timeout=timeout)
-    if kyc_provider() == "prembly":
-        return {"success": False, "message": "Identity verification is temporarily unavailable.",
-                "code": "identity_provider_unavailable"}
+    """Direct callers use Wema Partnership; Prembly liveness is a separate tier."""
     from . import wema
     return wema.verify_nin(nin, name=name)
 
@@ -1185,10 +1142,8 @@ def verify_nin(nin: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> dict:
 def prembly_verify_nin(nin: str, name: str = "", *, timeout=REQUEST_TIMEOUT) -> dict:
     """Look a NIN up at Prembly and name-match the record against `name`.
 
-    Fails CLOSED on every uncertainty — provider down, malformed response, no
-    name on the record, or a name that does not match. A NIN that cannot be
-    checked must land in the review queue rather than be waved through: this
-    result is what lifts a tier.
+    Fails closed on unavailable or malformed responses, absent names and name
+    mismatches. This lookup alone does not lift a tier or prove ownership.
 
     Uses Prembly's NIN Advance endpoint so the result contains sufficient
     holder information for name matching and the registered-line challenge.

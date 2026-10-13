@@ -1,6 +1,6 @@
 jest.mock('react-native', () => ({ Platform: { OS: 'android' } }));
 jest.mock('expo-device', () => ({ isDevice: true }));
-jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: { extra: { eas: { projectId: 'test-project' } } } } }));
+jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: { extra: { eas: { projectId: 'test-project' }, push: { androidConfigured: true } } } } }));
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true, default: { setItem: jest.fn().mockResolvedValue(undefined), getItem: jest.fn(), removeItem: jest.fn().mockResolvedValue(undefined) },
 }));
@@ -20,11 +20,41 @@ jest.mock('expo-notifications', () => ({
 }));
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
+import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { apiJson } from '../api';
 import { registerForPushNotifications, subscribeToNotificationOpens, takePendingNotificationOpen } from '../notifications';
 
-beforeEach(() => { jest.clearAllMocks(); mockGeneration = 0; mockToken = 'session'; });
+beforeEach(() => {
+  jest.clearAllMocks(); mockGeneration = 0; mockToken = 'session';
+  (Platform as { OS: string }).OS = 'android';
+  Constants.expoConfig!.extra = { eas: { projectId: 'test-project' }, push: { androidConfigured: true } };
+});
+
+it.each([false, undefined])('does not ask permission or register an Android build without native push configuration: %s', async (configured) => {
+  Constants.expoConfig!.extra!.push.androidConfigured = configured;
+  expect(await registerForPushNotifications(true)).toBe('not-configured');
+  expect(Notifications.setNotificationChannelAsync).not.toHaveBeenCalled();
+  expect(Notifications.getPermissionsAsync).not.toHaveBeenCalled();
+  expect(Notifications.requestPermissionsAsync).not.toHaveBeenCalled();
+  expect(Notifications.getExpoPushTokenAsync).not.toHaveBeenCalled();
+  expect(apiJson).not.toHaveBeenCalled();
+});
+
+it('does not require Android Firebase configuration for an iOS registration', async () => {
+  (Platform as { OS: string }).OS = 'ios';
+  Constants.expoConfig!.extra!.push.androidConfigured = false;
+  (apiJson as jest.Mock).mockResolvedValue({ _httpOk: true });
+  expect(await registerForPushNotifications()).toBe('registered');
+});
+
+it('does not prompt for push permission before the Expo project is configured', async () => {
+  Constants.expoConfig!.extra!.eas = {};
+  expect(await registerForPushNotifications(true)).toBe('not-configured');
+  expect(Notifications.requestPermissionsAsync).not.toHaveBeenCalled();
+  expect(Notifications.getExpoPushTokenAsync).not.toHaveBeenCalled();
+});
 
 it('recognizes the backend message-only success and stores the registered token', async () => {
   (apiJson as jest.Mock).mockResolvedValue({ message: 'Notifications enabled', _httpOk: true, _httpStatus: 200 });

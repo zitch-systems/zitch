@@ -9,7 +9,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { apiJson } from '@/lib/api';
-import { vasAccountStatusTitle, walletCapabilities, walletCapabilityMessage, walletService, type VirtualAccount } from '@/lib/services/wallet';
+import { isFundingAccountReady, walletCapabilities, walletCapabilityMessage, walletService, type FundingAccount } from '@/lib/services/wallet';
 
 type Status = {
   tier: number;
@@ -21,7 +21,7 @@ type Status = {
   nin_verified: boolean;
   bank_tier?: number;
   bank_tier_limits?: { single_inflow?: string | null; daily_spend?: string | null; max_balance?: string | null };
-  account_provider?: 'partnership' | 'wema_vas';
+  account_provider?: string;
 };
 
 const amountLabel = (value: string | undefined | null) => value != null
@@ -37,7 +37,7 @@ const grouped = (n: string) => {
 const AccountLimits = () => {
   const { c, theme } = useTheme();
   const [status, setStatus] = useState<Status | null>(null);
-  const [fundingState, setFundingState] = useState<VirtualAccount | null>(null);
+  const [fundingState, setFundingState] = useState<FundingAccount | null>(null);
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(true);
   const loadGeneration = useRef(0);
@@ -78,13 +78,10 @@ const AccountLimits = () => {
   // The per-transaction ceiling the server will actually enforce today. The
   // ladder row is what the tier is *entitled* to; this is what it *has*, and on
   // an account mid-upgrade they are not the same number.
-  const isVas = status?.account_provider === 'wema_vas' || fundingState?.provider === 'wema_vas';
-  const capabilities = walletCapabilities(isVas ? { ...fundingState, provider: 'wema_vas' } : fundingState);
-  const fundingReady = !!fundingState?.account_number && fundingState.available !== false
-    && fundingState.has_account !== false && fundingState.test_mode !== true
-    && !/^711/.test(fundingState.account_number)
-    && (!isVas || (fundingState.available === true && fundingState.has_account === true
-      && fundingState.account_setup_state === 'ready'));
+  const capabilities = walletCapabilities(fundingState);
+  const fundingReady = isFundingAccountReady(fundingState);
+  const accountReview = fundingState?.provider !== 'partnership' || fundingState.legacy_funding_review === true
+    || fundingState.account_setup_state === 'legacy_funding_review';
   const displayedNumber = fundingReady ? fundingState?.account_number || '' : '';
   const displayedName = fundingReady ? fundingState?.account_name || '' : '';
 
@@ -119,15 +116,15 @@ const AccountLimits = () => {
   if (loading || !status) {
     return (
       <Screen>
-        <Header title={isVas ? "Account details" : "Account Limits"} onBack={() => router.back()} />
-        <Loading label={isVas ? "Checking your account…" : "Checking your limits…"} />
+        <Header title="Account Limits" onBack={() => router.back()} />
+        <Loading label="Checking your limits…" />
       </Screen>
     );
   }
 
   return (
     <Screen>
-      <Header title={isVas ? "Account details" : "Account Limits"} onBack={() => router.back()} />
+      <Header title="Account Limits" onBack={() => router.back()} />
 
       {/* --- account + tier --- */}
       <LinearGradient
@@ -186,11 +183,11 @@ const AccountLimits = () => {
         <ZIcon name="right" size={17} color={c.ink3} />
       </Card>
 
-      {isVas ? (
+      {accountReview ? (
         <Card style={{ marginBottom: 24 }}>
-          <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>{fundingReady ? 'Available services' : vasAccountStatusTitle(fundingState)}</Text>
-          {!fundingReady && (fundingState?.enrollment_message || fundingState?.migration_message) ? (
-            <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 10 }}>{fundingState.enrollment_message || fundingState.migration_message}</Text>
+          <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>Account review</Text>
+          {fundingState?.migration_message ? (
+            <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 10 }}>{fundingState.migration_message}</Text>
           ) : null}
           <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 10 }}>
             {walletCapabilityMessage(capabilities) || 'Bill payments and transfers are available.'}

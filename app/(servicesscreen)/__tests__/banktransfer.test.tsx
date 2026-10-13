@@ -4,7 +4,7 @@ import BankTransfer from '@/app/(servicesscreen)/banktransfer';
 
 const mockPush = jest.fn();
 const mockWallet = { accountNumber: '', accountName: 'Zitch/Ada', bankName: 'Bank', linked: [],
-  fundingProvider: 'wema_vas', fundingMessage: 'Complete identity verification to set up your account.' };
+  fundingProvider: 'partnership', fundingMessage: 'Complete identity verification to set up your account.' };
 const mockCopy = jest.fn();
 jest.mock('@/lib/wallet', () => ({ useWallet: () => mockWallet }));
 jest.mock('expo-router', () => ({ router: { back: jest.fn(), push: (...args: unknown[]) => mockPush(...args) } }));

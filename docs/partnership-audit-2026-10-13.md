@@ -1,10 +1,34 @@
 # Partnership release review — 13 October 2026
 
 **Launch decision: HOLD until the evidence below is complete.** The active account
-route is Partnership. VAS enrollment remains closed, while historical callbacks
-and reconciliation remain active.
+route is Partnership. The separate virtual-account integration, enrollment,
+callbacks, deployment configuration and app/WhatsApp screens are removed.
+Immutable historical funding records remain for liability review; they cannot
+open accounts, execute bank requests or authorize new payments.
 
 ## Repairs in this review
+
+- Removed the separate virtual-account provider and isolated harness. The
+  `legacy_funding` app retains the exact existing database tables and migrations;
+  its historical Django label is schema compatibility, not an active provider.
+  Users with historical liabilities, held receipts or unresolved bill reservations
+  remain blocked from adding or spending money until independently reconciled.
+- The mobile app exposes only validated Partnership account details. Old clients,
+  cached chat actions and queued setup requests cannot reactivate the retired
+  provider. The WhatsApp Flow source now contains 24 screens; deployment must
+  publish and select that exact reviewed asset before claiming the live Flow is
+  current. Removing application code does not close an account at the bank.
+- Dependency updates remove image-size and uuid findings; source-verified local
+  mitigations cover additional vulnerable transitive code. Unreleased upstream
+  fixes and remaining audit findings are documented rather than suppressed.
+- Dependent Render blueprint builds wait for required migrations and recheck at
+  start. Existing Render services must apply the updated commands; a checked-in
+  blueprint alone does not prove that their live configuration changed.
+- Bank notifications and scheduled reconciliation now share the opening-history
+  check. Missing, malformed or pre-wallet dates cannot create new credits without
+  verified opening evidence; previously recorded credits remain idempotent.
+  Populated retired or invalid account numbers also fail the shared Partnership
+  guard before direct upgrade and verification requests can reach the bank.
 
 - Financial readiness now reads the latest immutable integrity, bank-balance and
   settlement results. Missing, stale, incomplete or failed results and unverified
@@ -37,7 +61,7 @@ and reconciliation remain active.
 | External reconciliation | Bank statements and reference-bound debit/credit/fee entries explaining every ledger/bank difference; append only verified corrections and retain audit evidence. |
 | Opening histories | Attributable account opening balance and complete history coverage before clearing each review flag. |
 | Unknown account issuance | Wema confirms whether the original request created an account and provides the identity-bound result; no blind retry or deletion of the attempt. |
-| Pool and residual VAS balances | Authenticated bank reads/statements and settlement mapping. An individual-account API rejecting a corporate pool is not a zero balance. |
+| Pool and historical funding balances | Authenticated bank reads/statements and settlement mapping. An individual-account API rejecting a corporate pool is not a zero balance. |
 | Fees and reversals | Confirm Partnership fee payer, VAT/duties, principal debit, fee debit and fee refund rules. An informational fee quote is not evidence that fees are ledger-booked. |
 | Tier 2 | Prembly interactive session configuration and an authenticated server result bound to the customer, action, expiry and captured face used in the bank upgrade. |
 | Tier 3 | Wema completion evidence tied to the submitted account, address and verification request. An account-level tier/status alone is insufficient. |

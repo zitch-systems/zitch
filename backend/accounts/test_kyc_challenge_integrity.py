@@ -11,7 +11,7 @@ from accounts import views
 from accounts.models import OTP, User
 
 
-@override_settings(BANK_ACCOUNT_PROVIDER="wema_vas", WEMA_PARTNERSHIP_MODE="archive",
+@override_settings(BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE="active",
                    DEBUG=True, TESTING=True)
 class KycChallengeIntegrityTests(TestCase):
     def setUp(self):

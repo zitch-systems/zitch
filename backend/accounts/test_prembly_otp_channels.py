@@ -15,7 +15,7 @@ RECORD = {"success": True, "provider": "prembly", "phone": PHONE, "email": EMAIL
           "first_name": "Ada", "last_name": "Eze"}
 
 
-@override_settings(BANK_ACCOUNT_PROVIDER="wema_vas", WEMA_PARTNERSHIP_MODE="archive",
+@override_settings(BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE="active",
                    DEBUG=True, TESTING=True)
 class PremblyOtpChannelsTests(TestCase):
     def setUp(self):

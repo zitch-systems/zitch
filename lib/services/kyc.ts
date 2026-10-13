@@ -15,7 +15,8 @@ export type KycStatus = ApiResult<{
   otp_required?: boolean;
   tracking_id?: string;
   identity_verification_provider?: 'prembly' | 'wema';
-  account_provider?: 'partnership' | 'wema_vas';
+  account_provider?: string;
+  legacy_funding_review?: boolean;
   delivery?: string;
   delivery_channels?: ('sms' | 'email')[];
   delivery_partial?: boolean;
@@ -23,7 +24,7 @@ export type KycStatus = ApiResult<{
   otp_destination?: string;
   otp_destination_kind?: string;
   using_bvn?: boolean;
-  account_setup_state?: 'ready' | 'otp_pending' | 'processing' | 'identity_verified' | 'identity_required' | 'partnership_review' | 'bank_history_review';
+  account_setup_state?: 'ready' | 'otp_pending' | 'processing' | 'identity_verified' | 'identity_required' | 'legacy_funding_review' | 'bank_history_review';
   upgrade_required?: boolean;
   next_step?: string;
   address_verified?: boolean;

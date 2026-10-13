@@ -15,11 +15,10 @@ log = logging.getLogger("wallet")
 def accepted_identity_pending(user):
     """Whether a consumed OTP awaits the final account/name check."""
     kinds = [kind for kind in ("bvn", "nin") if not getattr(user, f"{kind}_verified")]
-    from wema_vas.partnership import return_enabled
-    from wema_vas.models import VirtualAccount
-    if (return_enabled() and VirtualAccount.objects.filter(user=user).exists()
+    from legacy_funding.models import VirtualAccount
+    if (VirtualAccount.objects.filter(user=user).exists()
             and not Wallet.objects.filter(user=user).exclude(account_number="").exists()):
-        # Independent VAS verification does not complete Partnership issuance.
+        # Independent historical verification does not complete Partnership issuance.
         # A consumed bank OTP must never be offered for entry/resend again.
         kinds = ["bvn", "nin"]
     return WemaProvisioningAttempt.objects.filter(

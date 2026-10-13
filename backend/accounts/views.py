@@ -997,8 +997,7 @@ def avatar_upload(request):
 
 
 # --------------------------------- KYC ---------------------------------
-# VAS uses Prembly name matching and an SMS to the identity-registered phone.
-# Legacy Partnership OTP/face completions retain their server-bound bank attempts.
+# Partnership OTP/face completions retain their server-bound bank attempts.
 # Only durable proof can mark an identity verified or supply its legal account name.
 def _reserve_wallet_account(user, bvn: str = "", nin: str = "") -> None:
     """Best-effort: mint the user's dedicated funding account once KYC supplies a
@@ -1265,18 +1264,17 @@ def _kyc_state(user) -> dict:
     from wallet.address_verification import tier3_address_capability
 
     funding = customer_funding_account(user)
-    migrating = (funding.get("provider") != "partnership"
-                 or funding.get("account_setup_state") == "partnership_review")
-    identity_processing = False if migrating else accepted_identity_pending(user)
+    held = bool(funding.get("legacy_funding_review"))
+    identity_processing = False if held else accepted_identity_pending(user)
     wallet = Wallet.objects.filter(user=user).only(
         "bank_tier", "account_number", "identity_upgrade_required").first()
-    bank_tier = wallet.bank_tier if wallet and not migrating else 0
+    bank_tier = wallet.bank_tier if wallet and not held else 0
     # Surfaced so the app can offer the combined upgrade BEFORE the customer
     # types an identity that the bank will refuse. Learning this only from a
     # failed submission is what made both the app and WhatsApp ask for a number
     # they could not use.
     identity_upgrade_required = bool(
-        not migrating and wallet and wallet.account_number and wallet.identity_upgrade_required)
+        not held and wallet and wallet.account_number and wallet.identity_upgrade_required)
     bank_limits = {
         key: (str(value) if value is not None else None)
         for key in ("single_inflow", "daily_spend", "max_balance")
@@ -1299,8 +1297,9 @@ def _kyc_state(user) -> dict:
         "address_verification_state": ("verified" if user.address_verified else
                                        "pending" if user.address_verification_pending else "not_verified"),
         **tier3_address_capability(),
-        "address_verification_required": not migrating,
-        "account_provider": funding.get("provider", "partnership"),
+        "address_verification_required": True,
+        "account_provider": "partnership",
+        "legacy_funding_review": held,
         "identity_upgrade_required": identity_upgrade_required,
         "id_document_verified": user.id_document_verified,
         "email": user.email or "",
@@ -1313,8 +1312,8 @@ def _kyc_state(user) -> dict:
         # Separate from Zitch's verification/spend ladder: these are enforced by
         # Wema on the dedicated NUBAN itself.
         "bank_tier": bank_tier,
-        "has_wema_account": bool(not migrating and wallet and wallet.account_number),
-        "bank_upgrade_required": bool(not migrating and wallet and wallet.account_number and (
+        "has_wema_account": bool(not held and wallet and wallet.account_number),
+        "bank_upgrade_required": bool(not held and wallet and wallet.account_number and (
             bank_tier < 2 or not (user.bvn_verified and user.nin_verified and user.face_verified)
         )),
         "bank_tier_limits": bank_limits,
@@ -1329,21 +1328,21 @@ def _kyc_state(user) -> dict:
         # Older app builds understand face_rail=document, which safely keeps the
         # generic Tier-2 face card on Prembly instead of mislabelling Wema identity
         # proof as a Tier-2 face pass.
-        "identity_verification_provider": "wema" if _use_wema_identity_flow(user) else "prembly",
-        "identity_face_available": not migrating and wema.face_verify_live(),
+        "identity_verification_provider": "wema",
+        "identity_face_available": not held and wema.face_verify_live(),
         "identity_verification_methods": (["sms_otp", "wema_face"]
-                                          if not migrating and wema.face_verify_live()
+                                          if not held and wema.face_verify_live()
                                           else ["sms_otp"]),
         "face_rail": "document",
         "tier2_face_rail": "prembly",
         "tier2_face_available": tier2_face_available(),
         "tier2_unavailable_reason": "" if tier2_face_available() else TIER2_LIVENESS_UNAVAILABLE,
-        "address_rail": "none" if migrating else "wema",
+        "address_rail": "wema",
         **({key: value for key, value in funding.items()
             if key in {"provider", "has_account", "account_setup_state", "available",
                        "spending_available", "bill_payments_available", "transfers_available",
-                       "enrollment_available", "migration_message"}}
-           if migrating or funding.get("account_setup_state") == "bank_history_review" else {}),
+                       "can_fund", "legacy_funding_review", "message"}}
+           if held or funding.get("account_setup_state") == "bank_history_review" else {}),
     }
 
 
@@ -1620,8 +1619,7 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict,
     from common.phones import normalize_nigerian_mobile
     from utility.providers import _record_email, identity_otp_delivery_payload
 
-    prembly = (_requires_prembly_identity(user) or kyc_provider() == "prembly"
-               or result.get("provider") == "prembly")
+    prembly = (kyc_provider() == "prembly" or result.get("provider") == "prembly")
     require_real_delivery = prembly or _delivery_must_be_real()
     if result.get("success") is not True or (result.get("mock") and require_real_delivery):
         return fail("Identity verification is temporarily unavailable.", status=503,
@@ -1738,22 +1736,18 @@ def _use_wema_identity_flow(user=None) -> bool:
             (wema.wema_live() or wema.wema_simulation() or mock_disabled_in_prod()))
 
 
-def _requires_prembly_identity(user) -> bool:
-    from utility.providers import partnership_new_business_allowed
-    return not partnership_new_business_allowed(user)
+def _partnership_identity_gate(user):
+    """Historical funding holds cannot select a different identity/account rail."""
+    from wallet.partnership import REVIEW_MESSAGE, partnership_allowed
+    if not partnership_allowed(user):
+        return fail(REVIEW_MESSAGE, status=409, code="legacy_funding_review",
+                    account_provider="partnership", legacy_funding_review=True,
+                    account_setup_state="legacy_funding_review")
+    return None
 
 
 def _lookup_identity(user, kind: str, raw: str) -> dict:
-    """VAS identity never falls back to an archived bank or a mock result."""
-    if _requires_prembly_identity(user):
-        from utility.providers import _prembly_identity_live, prembly_verify_bvn, prembly_verify_nin
-        if not _prembly_identity_live():
-            return {"success": False, "message": "Identity verification is temporarily unavailable."}
-        lookup = prembly_verify_bvn if kind == "bvn" else prembly_verify_nin
-        result = lookup(raw, name=user.get_full_name() or "")
-        if result.get("mock"):
-            return {"success": False, "message": "Identity verification is temporarily unavailable."}
-        return result
+    """Offline identity fixtures; configured deployments use the bank OTP flow."""
     if kind == "bvn":
         return verify_bvn(raw, name=user.get_full_name() or "", mobile=user.phone or "")
     return verify_nin(raw, name=user.get_full_name() or "")
@@ -1799,7 +1793,7 @@ def kyc_bvn_start(request):
     ownership before saving identity proof. The server selects the provider.
     """
     user = request.user_obj
-    gate = _email_gate(user)
+    gate = _email_gate(user) or _partnership_identity_gate(user)
     if gate:
         return gate
     if _use_wema_identity_flow(user):
@@ -1823,7 +1817,7 @@ def kyc_bvn_confirm(request):
     """POST /api/kyc/bvn/confirm {access_token, otp} — confirm the BVN code and
     mark the BVN verified."""
     user = request.user_obj
-    gate = _email_gate(user)
+    gate = _email_gate(user) or _partnership_identity_gate(user)
     if gate:
         return gate
     if request.data.get("tracking_id") or _use_wema_identity_flow(user):
@@ -1845,12 +1839,12 @@ def kyc_bvn_confirm(request):
 def kyc_bvn(request):
     """POST /api/kyc/bvn/ {access_token, bvn} -> verifies BVN, recomputes tier"""
     user = request.user_obj
-    gate = _email_gate(user)
+    gate = _email_gate(user) or _partnership_identity_gate(user)
     if gate:
         return gate
     if _use_wema_identity_flow(user):
         return _start_bank_identity(request, "bvn")
-    if mock_disabled_in_prod() or _requires_prembly_identity(user):
+    if mock_disabled_in_prod():
         return fail(
             "BVN ownership requires a verification code. Update the app and use the BVN verification flow.",
             status=409,
@@ -1877,7 +1871,7 @@ def kyc_bvn(request):
 def kyc_nin(request):
     """POST /api/kyc/nin/ {access_token, nin} -> verifies NIN, recomputes tier"""
     user = request.user_obj
-    gate = _email_gate(user)
+    gate = _email_gate(user) or _partnership_identity_gate(user)
     if gate:
         return gate
     if _use_wema_identity_flow(user):
@@ -1905,7 +1899,7 @@ def kyc_nin(request):
     # Keep the fast mock path only for local/test suites. A production deploy —
     # including the explicit simulation environment — exercises the same OTP
     # state machine as live KYC, with the destination policy above.
-    if _requires_prembly_identity(user) or (not settings.DEBUG and not getattr(settings, "TESTING", False)):
+    if not settings.DEBUG and not getattr(settings, "TESTING", False):
         return _start_identity_ownership_challenge(user, "nin", nin, result)
     if not _save_verified_identity(user, "nin", nin, verified_name=getattr(user, "_provider_verified_name", "")):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
@@ -1919,7 +1913,7 @@ def kyc_nin(request):
 def kyc_nin_confirm(request):
     """Confirm control of the phone registered against the NIN."""
     user = request.user_obj
-    gate = _email_gate(user)
+    gate = _email_gate(user) or _partnership_identity_gate(user)
     if gate:
         return gate
     if request.data.get("tracking_id") or _use_wema_identity_flow(user):
@@ -2011,8 +2005,9 @@ def kyc_face_start(request):
     from utility.providers import partnership_new_business_allowed
     user = request.user_obj
     if not partnership_new_business_allowed(user):
-        return fail("Use SMS identity verification to continue account setup.", status=409,
-                    code="partnership_archived")
+        return (_partnership_identity_gate(user) or
+                fail("Identity verification is temporarily unavailable.", status=503,
+                     code="identity_verification_unavailable"))
     gate = _email_gate(user)
     if gate:
         return gate
@@ -2258,10 +2253,6 @@ def verify_kyc_address(user, data):
     here. This gate also applies to held Partnership customers and alternative
     KYC settings: neither an OCR result nor a provider-mode change can bypass it.
     """
-    if (str(getattr(settings, "BANK_ACCOUNT_PROVIDER", "partnership")).lower() != "partnership"
-            and _requires_prembly_identity(user)):
-        return fail("Address verification is not required for VAS account setup.", status=409,
-                    code="address_not_required", address_verification_required=False, address_rail="none")
     gate = _email_gate(user)
     if gate:
         return gate

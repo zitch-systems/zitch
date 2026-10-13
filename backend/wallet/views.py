@@ -128,8 +128,8 @@ def _account_setup_state(user, wallet) -> dict:
 
     funding = customer_funding_account(user)
     if (funding.get("provider") != "partnership"
-            or funding.get("account_setup_state") in {"partnership_review", "bank_history_review"}):
-        return {"account_setup_state": funding.get("account_setup_state", "migration_pending"),
+            or funding.get("account_setup_state") in {"legacy_funding_review", "bank_history_review", "partnership_unavailable"}):
+        return {"account_setup_state": funding.get("account_setup_state", "partnership_unavailable"),
                 "otp_required": False,
                 "identity_verified": bool(user.bvn_verified or user.nin_verified)}
     if accepted_identity_pending(user):
@@ -187,12 +187,8 @@ def wallet_account_create(request):
     """
     user = request.user_obj
     if not partnership_new_business_allowed(user):
-        from wema_vas.partnership import REVIEW_MESSAGE, return_enabled
-        if return_enabled():
-            return fail(REVIEW_MESSAGE, status=409, code="partnership_review")
-        return fail("Complete secure virtual-account enrollment to continue account setup.",
-                    status=409, code="vas_enrollment_required",
-                    enrollment_endpoint="/api/wallet/vas/enroll/")
+        from wallet.partnership import REVIEW_MESSAGE
+        return fail(REVIEW_MESSAGE, status=409, code="legacy_funding_review")
     wallet = get_or_create_wallet(user)
     if _account_setup_state(user, wallet)["account_setup_state"] == "processing":
         return ok(success=False, pending=True, otp_required=False,
@@ -201,9 +197,9 @@ def wallet_account_create(request):
     bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
 
-    # Retain verified identity and existing bank recovery holds. A VAS-only
+    # Retain verified identity and existing bank recovery holds. An independently verified
     # customer may explicitly start their first Wema ownership/issuance challenge.
-    from wema_vas.partnership import first_partnership_setup
+    from wallet.partnership import first_partnership_setup
     if user.bvn_verified and bvn and not first_partnership_setup(user):
         return fail("Your BVN is already verified. You do not need to enter it again.", status=409)
     if user.nin_verified and nin and not first_partnership_setup(user):
@@ -512,13 +508,11 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
 @db_transaction.atomic
 def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
     """Start and bind an OTP request, returning (provider_result, error)."""
-    # Serialize app/chat starts and VAS credits before selecting a funding rail.
+    # Serialize app/chat starts against historical funding holds.
     Wallet.objects.select_for_update().get(user=user)
     if not partnership_new_business_allowed(user):
-        from wema_vas.partnership import REVIEW_MESSAGE, return_enabled
-        if return_enabled():
-            return None, REVIEW_MESSAGE
-        return None, "Use secure virtual-account enrollment to complete account setup."
+        from wallet.partnership import REVIEW_MESSAGE
+        return None, REVIEW_MESSAGE
     identity_type, raw_identity = _identity_for_attempt(bvn, nin)
     if not re.fullmatch(r"[0-9]{11}", raw_identity):
         return None, "Enter your 11-digit BVN or NIN"
@@ -579,11 +573,8 @@ def wema_wallet_create(request):
 def start_wema_identity(user, *, bvn="", nin=""):
     """Shared authenticated-user entry point for bank identity onboarding."""
     if not partnership_new_business_allowed(user):
-        from wema_vas.partnership import REVIEW_MESSAGE, return_enabled
-        if return_enabled():
-            return fail(REVIEW_MESSAGE, status=409, code="partnership_review")
-        return fail("Use secure virtual-account enrollment to complete account setup.",
-                    status=409, code="partnership_archived", enrollment_endpoint="/api/wallet/vas/enroll/")
+        from wallet.partnership import REVIEW_MESSAGE
+        return fail(REVIEW_MESSAGE, status=409, code="legacy_funding_review")
     if not _wema_funding_enabled():
         return fail("Bank account creation is not available right now")
     wallet = get_or_create_wallet(user)
@@ -599,7 +590,7 @@ def start_wema_identity(user, *, bvn="", nin=""):
         return fail("Enter your 11-digit BVN or NIN")
     if bvn and nin:
         return fail("Choose one identity for account setup; submit both through the Tier 2 upgrade.")
-    from wema_vas.partnership import first_partnership_setup
+    from wallet.partnership import first_partnership_setup
     if user.bvn_verified and bvn and not first_partnership_setup(user):
         return fail("Your BVN is already verified. You do not need to enter it again.", status=409)
     if user.nin_verified and nin and not first_partnership_setup(user):
@@ -813,7 +804,7 @@ def upgrade_wema_identity(user, data):
     """Shared Tier 2 service for authenticated, rate-limited app/portal handlers.
     Account selection and identity ownership remain server-side."""
     if not partnership_new_business_allowed(user):
-        return fail("Bank account upgrades are unavailable during migration.",
+        return fail("Bank account upgrades are temporarily unavailable.",
                     status=409, code="partnership_archived")
     if not _wema_funding_enabled():
         return fail("Bank account upgrade is not available right now")
@@ -1598,7 +1589,8 @@ def wema_statement(request):
 
     user = request.user_obj
     funding = customer_funding_account(user)
-    if funding.get("provider") != "partnership":
+    if not funding.get("can_fund") and funding.get("account_setup_state") in {
+            "legacy_funding_review", "partnership_unavailable"}:
         return fail("Use your Zitch transaction history or request a wallet statement.",
                     status=409, code="wallet_statement_required",
                     statement_endpoint="/api/wallet/statement/request/")

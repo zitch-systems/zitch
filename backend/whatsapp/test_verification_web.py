@@ -158,9 +158,9 @@ class VerificationWebTests(TestCase):
         with self.assertRaises(ValueError):
             start_verification(self.user, MSISDN, 3)
 
-    def test_vas_selection_and_archive_refuse_new_verification_capabilities(self):
+    def test_disabled_partnership_and_archive_refuse_new_verification_capabilities(self):
         count = PendingAction.objects.count()
-        for settings_change in ({"BANK_ACCOUNT_PROVIDER": "wema_vas"},
+        for settings_change in ({"WEMA_PARTNERSHIP_MODE": "disabled"},
                                 {"WEMA_PARTNERSHIP_MODE": "archive"}):
             with self.subTest(settings=settings_change), override_settings(**settings_change):
                 for tier in (2, 3):
@@ -171,7 +171,7 @@ class VerificationWebTests(TestCase):
         self.assertEqual(self.pa.state, PIN)
 
     def test_lifecycle_change_blocks_unsubmitted_pin_and_address_forms(self):
-        for settings_change in ({"BANK_ACCOUNT_PROVIDER": "wema_vas"},
+        for settings_change in ({"WEMA_PARTNERSHIP_MODE": "disabled"},
                                 {"WEMA_PARTNERSHIP_MODE": "archive"}):
             for unlocked in (False, True):
                 with self.subTest(settings=settings_change, unlocked=unlocked):
@@ -192,14 +192,16 @@ class VerificationWebTests(TestCase):
         self.provider.assert_not_called()
         self.bank_address.assert_not_called()
 
-    def test_per_customer_vas_blocks_new_and_existing_address_capabilities(self):
-        from wema_vas.models import VirtualAccount
+    def test_historical_liability_blocks_new_and_existing_address_capabilities(self):
+        from legacy_funding.models import VirtualAccount
+        from wallet.legacy_test_fixtures import retained_receipt
 
         self.unlock()
-        VirtualAccount.objects.create(
+        account = VirtualAccount.objects.create(
             user=self.user, number="7120000042", display_name="Zitch/Test User",
             encrypted_identity="test-encrypted-identity", verification_reference="test-proof",
             consent_reference="test-consent", verified_at=timezone.now(), mode="live", prefix="712")
+        retained_receipt(account, "100")
         count = PendingAction.objects.count()
         with self.assertRaises(ValueError):
             start_verification(self.user, MSISDN, 3)
