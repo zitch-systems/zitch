@@ -1349,17 +1349,25 @@ def get_balance(account_number: str) -> dict:
     try:
         resp = _get("acct_mgt",
                     f"/api/AccountMaintenance/CustomerAccount/GetAccountV2/accountNumber/{account_number}")
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            return {"success": False, "balance_naira": None,
+                    "message": "Invalid bank response",
+                    "diagnostic": {"http_status": resp.status_code}}
         if not isinstance(data, dict):
             return {"success": False, "balance_naira": None,
                     "message": "Request failed", "diagnostic": _response_meta(resp, data),
                     "raw": data}
-        r = data.get("result", {}) or {}
+        r = data.get("result")
+        if not isinstance(r, dict):
+            r = {}
         # GetAccountV2 uses the account-maintenance envelope {result, successful,
         # message} — no status/hasError — so _ok() alone would report every valid
         # read as a failure (same envelope handled in get_transactions).
-        ok = _ok(data)
-        return {"success": ok, "balance_naira": _naira(r.get("availableBalance")),
+        balance = _naira(r.get("availableBalance"))
+        ok = 200 <= resp.status_code < 300 and _ok(data) and balance is not None
+        return {"success": ok, "balance_naira": balance if ok else None,
                 "wallet_status": r.get("walletStatus", ""), "message": _msg(data),
                 "diagnostic": _response_meta(resp, data), "raw": data}
     except requests.RequestException as exc:
@@ -1417,7 +1425,7 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
                     "message": "No transactions found",
                     "diagnostic": _response_meta(resp, data), "raw": data}
         # This envelope uses {successful, result[], message} rather than status/hasError.
-        ok = _ok(data)
+        ok = 200 <= resp.status_code < 300 and _ok(data)
         rows = data.get("result", data.get("data"))
         containers = [data]
         # Account-Maintenance deployments have returned both result[] and

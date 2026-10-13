@@ -24,7 +24,7 @@ on ANY divergence beyond ``--tolerance`` or incomplete bank reads for cron/CI al
 """
 from decimal import Decimal, InvalidOperation
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from utility import wema
 from wallet.services import wallet_expected_balance, wema_provisioned_wallets, vas_reconciliation_scope
@@ -54,8 +54,10 @@ class Command(BaseCommand):
 
         try:
             tolerance = Decimal(options["tolerance"])
-        except (InvalidOperation, TypeError):
-            tolerance = Decimal("0.00")
+        except (InvalidOperation, TypeError, ValueError):
+            raise CommandError("Tolerance must be a finite nonnegative amount.") from None
+        if not tolerance.is_finite() or tolerance < 0:
+            raise CommandError("Tolerance must be a finite nonnegative amount.")
 
         vas_scope = vas_reconciliation_scope()
         if vas_scope["vas_collection_required"]:
@@ -107,6 +109,7 @@ class Command(BaseCommand):
         from whatsapp.ops import record_audit
         record_audit("recon.balance_check", actor_type="system",
                      after={**vas_scope, "wallets": checked, "unreachable": unreachable,
+                            "tolerance": str(tolerance),
                             "ledger_over_bank": len(over), "bank_over_ledger": len(under),
                             "over_sample": over[:25], "under_sample": under[:25]})
 

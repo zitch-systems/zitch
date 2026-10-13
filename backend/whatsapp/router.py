@@ -1735,6 +1735,15 @@ def _mark_verified(msisdn: str) -> None:
     convo.save(update_fields=["last_verified"])
 
 
+def _unlock_proof(user, msisdn: str) -> dict:
+    """Snapshot the authenticated credentials; never replace them after proof."""
+    from .vas_identity import credentials
+
+    link_id = WhatsAppLink.objects.filter(
+        user=user, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE).values_list("pk", flat=True).first()
+    return {"unlock_credentials": credentials(user), "unlock_link_id": link_id}
+
+
 def _send_unlock(user, msisdn: str, resume: str, intent: dict | None = None) -> None:
     """Ask the customer to prove it is them before revealing anything, then run
     what they originally asked for.
@@ -1747,7 +1756,7 @@ def _send_unlock(user, msisdn: str, resume: str, intent: dict | None = None) -> 
     than by replaying the text: the text is cut to 64 characters, and asking the
     model a second time could answer a different question than the one gated.
     """
-    payload = {"pin_attempts": 0, "resume": resume[:64]}
+    payload = {"pin_attempts": 0, "resume": resume[:64], **_unlock_proof(user, msisdn)}
     if intent:
         payload["resume_intent"] = json.loads(json.dumps(intent, default=str))
     pa = _new_flow(user, msisdn, "unlock", "pin", payload)
@@ -1761,10 +1770,27 @@ def _exec_unlock(pa: PendingAction, user, msisdn: str) -> str:
     """Identity proven: start the window and run the command that triggered it."""
     if pa.payload.get("vas_reregister") is True:
         return _finish_vas_reregistration(pa, user, msisdn)
-    resume = str(pa.payload.get("resume") or "").strip()
-    intent = pa.payload.get("resume_intent")
-    PendingAction.objects.filter(pk=pa.pk).delete()
-    _mark_verified(msisdn)
+    from .vas_identity import credentials
+
+    proof = getattr(pa, "_unlock_proof", None) or pa.payload
+    with db_transaction.atomic():
+        live = PendingAction.objects.select_for_update().filter(
+            pk=pa.pk, user_id=user.pk, msisdn=msisdn, action_type="unlock").first()
+        current = get_user_model().objects.select_for_update().filter(pk=user.pk).first()
+        link = WhatsAppLink.objects.select_for_update().filter(
+            pk=proof.get("unlock_link_id"), user_id=user.pk,
+            wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE).first()
+        valid = (live is not None and current is not None and current.is_active and link is not None
+                 and secrets.compare_digest(str(proof.get("unlock_credentials") or ""), credentials(current)))
+        if not valid:
+            if live is not None:
+                live.delete()
+            return Outcome("This sign-in changed. Request your details again in the chat.", OUTCOME_FAILED)
+        resume = str(live.payload.get("resume") or "").strip()
+        intent = live.payload.get("resume_intent")
+        _mark_verified(msisdn)
+        live.delete()
+        user = current
     if isinstance(intent, dict) and intent.get("name") in _GATED_INTENTS:
         dispatch_intent(user, msisdn, intent)
     elif resume:

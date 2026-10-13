@@ -3,7 +3,7 @@
 Since VAS moved to the partner bank there are exactly two pots: the customer NUBANs
 and the pool account. The invariants pinned here are (a) the pool counts toward what
 we hold even though no per-wallet check ever reads it, (b) a rail we could not read
-makes the position advisory rather than inventing a shortfall out of an outage, and
+makes the position unavailable rather than inventing a shortfall out of an outage, and
 (c) VAS spend now debits the buyer's OWN NUBAN, so it drops what we hold and what we
 owe together and leaves the position untouched — which is precisely why the old
 third rail, an externally-held VAS float with a standing sweep obligation, is gone.
@@ -13,6 +13,7 @@ from io import StringIO
 from unittest import mock
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 
 from wallet.models import Transaction, Wallet
@@ -99,6 +100,29 @@ class SettlementReportTests(TestCase):
         alert_mock.assert_not_called()
         self.assertEqual(code, 0)
 
+    def test_pool_that_is_also_a_wallet_nuban_is_counted_once(self):
+        from django.conf import settings as dj_settings
+        from whatsapp.models import AuditLog
+
+        with mock.patch.dict(dj_settings.WEMA, {"SOURCE_ACCOUNT": NUBAN}):
+            out, alert_mock, code = self._run(bank={NUBAN: "5000"})
+        self.assertIn("already included in NUBAN total", out)
+        self.assertIn("POSITION +₦0.00", out)
+        alert_mock.assert_not_called()
+        self.assertEqual(code, 0)
+        audit = AuditLog.objects.get(action="recon.settlement_report").after
+        self.assertEqual(audit["held_total"], "5000.00")
+        self.assertTrue(audit["pool_in_nuban_total"])
+
+    def test_invalid_threshold_cannot_silence_alerts(self):
+        from whatsapp.models import AuditLog
+
+        for option in ("--max-shortfall=NaN", "--max-shortfall=Infinity", "--max-shortfall=-1",
+                       "--max-surplus=bad", "--max-surplus=Infinity", "--max-surplus=-1"):
+            with self.subTest(option=option), self.assertRaises(CommandError):
+                self._run(option)
+        self.assertFalse(AuditLog.objects.filter(action="recon.settlement_report").exists())
+
     def test_surplus_pages_only_above_the_configured_ceiling(self):
         out, alert_mock, code = self._run(bank={NUBAN: "9000"})
         self.assertIn("POSITION +₦4,000.00 (surplus)", out)
@@ -118,7 +142,7 @@ class SettlementReportTests(TestCase):
         alert_mock.assert_not_called()
         self.assertEqual(code, 0)
 
-    # --- an unreadable rail makes the position advisory, not authoritative --
+    # --- an unreadable rail makes the position unavailable -----------------
 
     def test_unreadable_pool_rail_is_flagged_not_silently_zeroed(self):
         # The pool is configured but its balance would not read. Counting an unreadable
@@ -134,6 +158,34 @@ class SettlementReportTests(TestCase):
         self.assertTrue(any("unreadable rail" in m for m in messages))
         # and it must NOT have paged a shortfall off the back of the missing rail
         self.assertFalse(any("SHORTFALL" in m for m in messages))
+
+    def test_unreadable_pool_does_not_invent_shortfall_or_complete_audit_total(self):
+        from django.conf import settings as dj_settings
+        from whatsapp.models import AuditLog
+
+        with mock.patch.dict(dj_settings.WEMA, {"SOURCE_ACCOUNT": POOL}):
+            out, alert_mock, code = self._run("--fail-on-breach", bank={NUBAN: "1000"})
+        self.assertEqual(code, 1)
+        self.assertIn("known assets ₦1,000.00 (incomplete)", out)
+        self.assertIn("POSITION UNAVAILABLE", out)
+        self.assertNotIn("SHORTFALL", out)
+        self.assertFalse(any("SHORTFALL" in call.args[0] for call in alert_mock.call_args_list))
+        audit = AuditLog.objects.get(action="recon.settlement_report").after
+        self.assertTrue(audit["incomplete"])
+        self.assertIsNone(audit["position"])
+        self.assertIsNone(audit["held_total"])
+        self.assertEqual(audit["known_held_total"], "1000.00")
+
+    def test_unreadable_pool_does_not_page_surplus_off_partial_assets(self):
+        from django.conf import settings as dj_settings
+
+        with mock.patch.dict(dj_settings.WEMA, {"SOURCE_ACCOUNT": POOL}):
+            out, alert_mock, code = self._run(
+                "--fail-on-breach", "--max-surplus=100", bank={NUBAN: "9000"})
+        self.assertEqual(code, 1)
+        self.assertIn("POSITION UNAVAILABLE", out)
+        alert_mock.assert_called_once()
+        self.assertIn("unreadable rail", alert_mock.call_args.args[0])
 
     def test_pool_failure_exposes_safe_http_status_without_bank_message(self):
         from django.conf import settings as dj_settings
@@ -152,9 +204,17 @@ class SettlementReportTests(TestCase):
         self.assertNotIn(rejected["message"], str(kwargs))
 
     def test_unreachable_nuban_is_flagged(self):
-        out, alert_mock, code = self._run(bank={})  # NUBAN itself unreadable
+        from whatsapp.models import AuditLog
+
+        out, alert_mock, code = self._run("--fail-on-breach", bank={})
         self.assertIn("1 unreachable", out)
+        self.assertIn("POSITION UNAVAILABLE", out)
+        self.assertNotIn("SHORTFALL", out)
+        self.assertEqual(code, 1)
         self.assertTrue(any("unreadable rail" in c[0][0] for c in alert_mock.call_args_list))
+        audit = AuditLog.objects.get(action="recon.settlement_report").after
+        self.assertIsNone(audit["position"])
+        self.assertIsNone(audit["held_total"])
 
     # --- rail attribution -------------------------------------------------
 

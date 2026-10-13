@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
 
 import { newIdempotencyKey } from '@/lib/api';
-import { getSpendAccountNamespace } from '@/lib/secureStore';
+import { getSpendAccountNamespace, getSessionGeneration } from '@/lib/secureStore';
 
 type StoredAttempt = {
   key: string;
@@ -49,10 +49,19 @@ async function requireAccountNamespace(): Promise<string> {
  * where two handlers could otherwise both create a key before storage settles.
  */
 export async function acquireSpendAttempt(scope: string, fingerprint: string): Promise<string> {
+  const generation = getSessionGeneration();
+  const requireSameSession = () => {
+    if (generation !== getSessionGeneration()) throw new Error('Your session changed. Please authorize this payment again.');
+  };
   const accountNamespace = await requireAccountNamespace();
+  requireSameSession();
   const lock = `${accountNamespace}\u0000${scope}\u0000${fingerprint}`;
   const current = acquiring.get(lock);
-  if (current) return current;
+  if (current) {
+    const key = await current;
+    requireSameSession();
+    return key;
+  }
 
   const pending = (async () => {
     const itemKey = await storageKey(accountNamespace, scope, fingerprint);
@@ -77,7 +86,11 @@ export async function acquireSpendAttempt(scope: string, fingerprint: string): P
   })();
   acquiring.set(lock, pending);
   try {
-    return await pending;
+    const key = await pending;
+    // Storage/native hashing can finish after logout. Never let that old PIN
+    // callback continue into an API request authenticated as the next account.
+    requireSameSession();
+    return key;
   } finally {
     if (acquiring.get(lock) === pending) acquiring.delete(lock);
   }

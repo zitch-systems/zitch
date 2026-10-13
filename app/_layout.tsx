@@ -9,11 +9,12 @@ import { router, SplashScreen, Stack, useNavigationContainerRef, usePathname } f
 import { ThemeProvider, appFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
 import { NotifyHost } from "@/components/design/Notify";
-import { enforceHardExpiry, enforceIdleTimeout, isSessionLocked, lockIfAwayTooLong, markBackgrounded, isExternalActivityActive } from "@/lib/session";
+import { enforceHardExpiry, enforceIdleTimeout, isSessionLocked, lockSession, lockIfAwayTooLong, markBackgrounded, isExternalActivityActive } from "@/lib/session";
 import { getToken, getSessionGeneration } from "@/lib/secureStore";
 import { FONT_WAIT_MS, splashReady } from "@/lib/boot";
 import { reconcileCachedPin } from "@/lib/biometrics";
 import { rememberWhatsAppApprovalUrl } from "@/lib/pendingApproval";
+import { subscribeToNotificationOpens, takePendingNotificationOpen } from "@/lib/notifications";
 
 // Default every Text/TextInput to Manrope so nothing can fall back to the
 // platform font. An explicit fontFamily on a component still wins, since the
@@ -74,6 +75,54 @@ const RootLayout = () => {
     });
     return () => subscription.remove();
   }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    let active = true;
+    let pending = false;
+    let opening = false;
+    let mustUnlock = false;
+    const openNotification = async () => {
+      if (!active || !pending || opening || !navigation.isReady()) return;
+      opening = true;
+      const generation = getSessionGeneration();
+      try {
+        await enforceHardExpiry();
+        await lockIfAwayTooLong();
+        await enforceIdleTimeout();
+        const token = await getToken();
+        // A killed app must authenticate on reopen even if its previous idle
+        // stamp is recent. A notification cannot bypass the normal entry gate.
+        if (token && mustUnlock && generation === getSessionGeneration()) await lockSession();
+        mustUnlock = false;
+        const locked = await isSessionLocked();
+        if (!active) return;
+        if (generation !== getSessionGeneration()) {
+          // Expiry/account replacement must pass through sign-in; retain the
+          // marker so the authenticated account can open its own activity.
+          pending = false;
+          router.replace('/signin');
+          return;
+        }
+        pending = false;
+        if (!token || locked) {
+          router.replace('/signin');
+        } else if (await takePendingNotificationOpen() && active && generation === getSessionGeneration()) {
+          router.replace('/notifications');
+        }
+      } catch {
+        // Keep the persisted destination for sign-in to resume safely.
+        if (active) { pending = false; router.replace('/signin'); }
+      } finally { opening = false; }
+    };
+    const unsubscribe = subscribeToNotificationOpens((coldStart) => {
+      pending = true;
+      mustUnlock = mustUnlock || coldStart === true;
+      void openNotification();
+    });
+    const unsubscribeNavigation = navigation.addListener('state', () => { void openNotification(); });
+    return () => { active = false; unsubscribe(); unsubscribeNavigation(); };
+  }, [ready, navigation]);
 
   // Inactivity timeout: lock a session idle past the limit and bounce to the
   // sign-in / unlock screen. Checked on launch, whenever the app returns to the

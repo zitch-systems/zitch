@@ -14,6 +14,8 @@ import { clearSession } from '@/lib/secureStore';
 
 const mockApiJson = jest.fn();
 const mockApiPost = jest.fn();
+const mockRegisterNotifications = jest.fn();
+jest.mock('@/lib/notifications', () => ({ registerForPushNotifications: (...args: unknown[]) => mockRegisterNotifications(...args) }));
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args), apiPost: (...args: unknown[]) => mockApiPost(...args) }));
 jest.mock('@/lib/biometrics', () => ({ isBiometricAvailable: jest.fn(async () => true), isBiometricEnabled: jest.fn(async () => false), setBiometricEnabled: jest.fn(async () => {}), authenticate: jest.fn(async () => true) }));
 jest.mock('@/lib/secureStore', () => ({ clearSession: jest.fn(async () => {}) }));
@@ -228,4 +230,23 @@ it('clears the local session even when logout cannot reach the server, with dupl
   expect(mockApiPost).toHaveBeenCalledTimes(1);
   await act(async () => { rejectLogout(new Error('Network unavailable')); });
   expect(clearSession).toHaveBeenCalledTimes(1);
+});
+
+
+it('allows returning customers to enable transaction alerts with an explicit permission request', async () => {
+  mockRegisterNotifications.mockResolvedValue('registered');
+  await render(<Settings />);
+  await act(async () => { tree!.root.findByProps({ accessibilityLabel: 'Transaction alerts' }).props.onPress(); });
+  expect(mockRegisterNotifications).toHaveBeenCalledWith(true);
+  expect(notify).toHaveBeenCalledWith('Notifications enabled', expect.any(String));
+});
+
+it('offers phone notification settings when permission was denied', async () => {
+  mockRegisterNotifications.mockResolvedValue('denied');
+  const alert = jest.spyOn(Alert, 'alert');
+  await render(<Settings />);
+  await act(async () => { tree!.root.findByProps({ accessibilityLabel: 'Transaction alerts' }).props.onPress(); });
+  expect(alert).toHaveBeenCalledWith('Notifications are off', expect.any(String), expect.arrayContaining([
+    expect.objectContaining({ text: 'Open settings', onPress: expect.any(Function) }),
+  ]));
 });

@@ -21,6 +21,23 @@ SIGNER = f'Number of signers: 1\nSigner #1 certificate DN: C=US, O=Android, CN=A
 
 
 class AndroidApkVerificationTests(unittest.TestCase):
+    def test_push_metadata_comes_from_nonempty_compiled_firebase_resources(self):
+        resources = '''
+        resource 0x7f110081 com.zitch.app:string/google_app_id: t=0x03 d=0x0010
+          (string8) "1:123456:android:ab91"
+        resource 0x7f110082 com.zitch.app:string/gcm_defaultSenderId: t=0x03 d=0x0011
+          (string8) "123456"
+        resource 0x7f110083 com.zitch.app:string/other: t=0x03 d=0x0012
+          (string8) "Other"
+        '''
+        self.assertEqual(verifier.verify_push_resources(resources, 'upload'),
+                         {'firebase_config_present': True, 'live_delivery_verified': False})
+        self.assertFalse(verifier.verify_push_resources('', 'preview')['firebase_config_present'])
+        with self.assertRaisesRegex(ValueError, 'Firebase'):
+            verifier.verify_push_resources(resources.replace('"123456"', '""'), 'upload')
+        with self.assertRaisesRegex(ValueError, 'Firebase'):
+            verifier.verify_push_resources(resources.replace('1:123456:android:', '1:999:android:'), 'upload')
+
     def test_valid_native_policy(self):
         self.assertEqual(verifier.verify_manifest(BADGING, MANIFEST, CONFIG), ['android.permission.INTERNET'])
 

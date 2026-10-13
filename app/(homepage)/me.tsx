@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { apiPost } from '@/lib/api';
@@ -38,6 +38,8 @@ const Me = () => {
   const { totalBalance, firstName, avatar, showBal, fundingProvider, accountNumber, balanceLoaded, hydrated, reload: reloadWallet } = useWallet();
   const [biometrics, setBiometrics] = useState(false);
   const [tier, setTier] = useState<number | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const logoutLock = useRef(false);
 
   useEffect(() => {
     isBiometricEnabled().then(setBiometrics).catch(() => {});
@@ -83,11 +85,21 @@ const Me = () => {
   };
 
   const handleLogout = async () => {
+    if (logoutLock.current) return;
+    logoutLock.current = true;
+    setLoggingOut(true);
     // Revoke the token server-side first so a leaked copy can't be replayed;
     // best-effort — a network error must not block signing out locally.
-    try { await apiPost(EP.auth.logout); } catch { /* fall through to local clear */ }
-    await clearSession();
-    router.replace('/signin');
+    try {
+      try { await apiPost(EP.auth.logout, {}, 5000); } catch { /* fall through to local clear */ }
+      await clearSession();
+      router.replace('/signin');
+    } catch {
+      notify('Could not finish signing out', 'Please try again to clear this device session.');
+    } finally {
+      logoutLock.current = false;
+      setLoggingOut(false);
+    }
   };
 
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
@@ -215,8 +227,8 @@ const Me = () => {
 
       {/* logout */}
       <View style={{ paddingHorizontal: 16, paddingTop: 16 }}>
-        <Pressable onPress={handleLogout} style={{ paddingVertical: 14, borderRadius: 16, backgroundColor: 'rgba(255,59,59,.1)', alignItems: 'center' }}>
-          <Text style={{ color: c.red, fontFamily: font.bold }}>Log out</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Log out" disabled={loggingOut} onPress={handleLogout} style={{ paddingVertical: 14, borderRadius: 16, backgroundColor: 'rgba(255,59,59,.1)', alignItems: 'center' }}>
+          <Text style={{ color: c.red, fontFamily: font.bold }}>{loggingOut ? 'Logging out…' : 'Log out'}</Text>
         </Pressable>
       </View>
     </Screen>

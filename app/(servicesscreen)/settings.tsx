@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Linking } from 'react-native';
+import { View, Text, Pressable, Linking, Alert } from 'react-native';
 import { router } from 'expo-router';
 import Constants from 'expo-constants';
 import { Screen, Header, Card, ZItem } from '@/components/design/ui';
@@ -12,6 +12,7 @@ import { apiPost } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 import { TERMS_URL, PRIVACY_URL } from '@/components/configFiles/links';
+import { registerForPushNotifications } from '@/lib/notifications';
 
 const Toggle = ({ on, onChange, disabled = false, label }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean; label: string }) => {
   const { c } = useTheme();
@@ -29,6 +30,8 @@ const Settings = () => {
   const [loggingOut, setLoggingOut] = useState(false);
   const bioLock = useRef(false);
   const logoutLock = useRef(false);
+  const notificationLock = useRef(false);
+  const [notificationBusy, setNotificationBusy] = useState(false);
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
 
   useEffect(() => {
@@ -62,6 +65,32 @@ const Settings = () => {
   };
 
   const openUrl = (url: string) => Linking.openURL(url).catch(() => notify('Error', 'Could not open this link.'));
+
+  const enableNotifications = async () => {
+    if (notificationLock.current) return;
+    notificationLock.current = true;
+    setNotificationBusy(true);
+    try {
+      const result = await registerForPushNotifications(true);
+      if (result === 'registered') {
+        notify('Notifications enabled', 'Transaction alerts are enabled for this account on this device.');
+      } else if (result === 'denied') {
+        Alert.alert('Notifications are off', 'Enable Zitch notifications in your phone settings, then return here and tap Transaction alerts again.', [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Open settings', onPress: () => { void Linking.openSettings().catch(() => notify('Could not open settings', 'Open your phone settings to enable Zitch notifications.')); } },
+        ]);
+      } else {
+        notify('Alerts unavailable', result === 'unavailable'
+          ? 'Use the installed Zitch app on your phone to enable transaction alerts.'
+          : 'We could not enable alerts on this device. Please try again later. Your activity is available in Notifications.');
+      }
+    } catch {
+      notify('Alerts unavailable', 'We could not enable alerts on this device. Please try again later.');
+    } finally {
+      notificationLock.current = false;
+      setNotificationBusy(false);
+    }
+  };
 
   const handleLogout = async () => {
     if (logoutLock.current) return;
@@ -121,8 +150,12 @@ const Settings = () => {
             right={<Toggle label="Dark mode" on={theme === 'dark'} onChange={(v) => setTheme(v ? 'dark' : 'light')} />}
           />
           <ZItem
-            icon="faceid" title="Biometric login" sub="Unlock Zitch with your face or fingerprint" last
+            icon="faceid" title="Biometric login" sub="Unlock Zitch with your face or fingerprint"
             right={<Toggle label="Biometric login" disabled={bioBusy} on={biometrics} onChange={toggleBio} />}
+          />
+          <ZItem
+            icon="bell" title="Transaction alerts" sub={notificationBusy ? 'Enabling notifications…' : 'Enable notifications on this device'} last
+            onPress={() => { void enableNotifications(); }} right={chev}
           />
         </Card>
 

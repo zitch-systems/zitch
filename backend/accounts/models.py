@@ -576,6 +576,9 @@ class AccessToken(models.Model):
     # The identifier is not a hardware ID or a secret, but requiring the same value
     # stops a bearer copied out of logs/storage from working on a different client.
     device_id = models.CharField(max_length=64, blank=True, default="")
+    # Stable across access-token refreshes: orders notification ownership by
+    # authentication, not by the last bearer renewal or network arrival.
+    session_started_at = models.DateTimeField(null=True, blank=True)
     created = models.DateTimeField(auto_now_add=True)
 
     @staticmethod
@@ -583,7 +586,7 @@ class AccessToken(models.Model):
         return hashlib.sha256((raw or "").encode()).hexdigest()
 
     @classmethod
-    def issue(cls, user, scope: str = APP, device_id: str = "") -> "AccessToken":
+    def issue(cls, user, scope: str = APP, device_id: str = "", session_started_at=None) -> "AccessToken":
         """Create a session token. The DB stores only the hash; the returned
         instance carries the RAW token on `.key` (in memory, unsaved) for the
         caller to hand to the client — do not re-save the instance afterwards.
@@ -594,7 +597,8 @@ class AccessToken(models.Model):
         raw = secrets.token_hex(32)
         bound_device = (device_id or "").strip()[:64] if scope == cls.APP else ""
         tok = cls.objects.create(key=cls._hash(raw), user=user, scope=scope,
-                                 device_id=bound_device)
+                                 device_id=bound_device,
+                                 session_started_at=session_started_at or timezone.now())
         tok.key = raw  # transient: expose the raw token to the caller without persisting it
         return tok
 
@@ -926,6 +930,9 @@ class PushDevice(models.Model):
     device_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
     platform = models.CharField(max_length=16, blank=True, default="")
     enabled = models.BooleanField(default=True)
+    # Retained even when disabled so delayed requests cannot restore an older
+    # customer's binding after logout, rotation, or provider invalidation.
+    session_started_at = models.DateTimeField(null=True, blank=True)
     created = models.DateTimeField(auto_now_add=True)
     last_seen = models.DateTimeField(auto_now=True)
 

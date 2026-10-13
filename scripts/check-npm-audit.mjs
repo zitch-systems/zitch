@@ -3,8 +3,8 @@
  * Fail on every production high/critical npm advisory except the two
  * image-size parser findings that are mitigated in metro.config.js.
  *
- * npm currently offers no fixed image-size release; `npm audit fix --force`
- * proposes downgrading Expo 57 to 53.  The vulnerable parsers are disabled at
+ * image-size 2.0.3 is fixed, but its named-export API is incompatible with
+ * Metro 0.80's callable CommonJS import. The vulnerable parsers are disabled at
  * Metro startup, none of those asset formats exist in this repository, and this
  * exception expires so an upstream fix cannot be forgotten.
  *
@@ -31,13 +31,8 @@ const ALLOWED = new Set([
   'https://github.com/advisories/GHSA-w3rx-r6r6-pgpr',
   'https://github.com/advisories/GHSA-5p2g-fcmc-qvqq',
 ]);
-// Pushed out from 2026-09-12. Every published image-size is still in the
-// advisory range (`latest` is 2.0.2; the advisories cover <=2.0.2), so the old
-// date was going to fire into a wall — there was nothing to upgrade TO, and the
-// only available action would have been to move the date anyway. What changed
-// is that the mitigation is now PROVEN on every run rather than asserted (see
-// assertVulnerableParsersDisabled below), so this date is a prompt to re-check
-// upstream, not the only thing standing between us and an unreviewed CVE.
+// Re-check Expo/Metro compatibility with the fixed 2.x image-size API by this
+// date. Parser refusal is also covered by the offline app build-patch tests.
 const REVIEW_AFTER = new Date('2026-12-12T00:00:00Z');
 
 // The four parsers the two allowed advisories cover.

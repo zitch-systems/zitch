@@ -5,6 +5,7 @@ import { acquireSpendAttempt, clearSpendAttempt } from '../pendingSpend';
 import { isRecoveredSpendResponse } from '../spendOutcome';
 
 const mockGetSpendAccountNamespace = jest.fn<Promise<string>, []>();
+let mockSessionGeneration = 0;
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
@@ -18,6 +19,7 @@ jest.mock('expo-crypto', () => ({
 }));
 jest.mock('@/lib/secureStore', () => ({
   getSpendAccountNamespace: () => mockGetSpendAccountNamespace(),
+  getSessionGeneration: () => mockSessionGeneration,
 }));
 
 const asyncStorage = AsyncStorage as jest.Mocked<typeof AsyncStorage>;
@@ -26,6 +28,7 @@ const values = new Map<string, string>();
 
 beforeEach(() => {
   values.clear();
+  mockSessionGeneration = 0;
   jest.clearAllMocks();
   let n = 0;
   let digestNumber = 0;
@@ -145,4 +148,32 @@ describe('durable spend attempts', () => {
     // A later intended purchase of the same value must require a new key.
     expect(await acquireSpendAttempt('airtime', 'mtn|0801|100')).not.toBe(original);
   });
+});
+
+
+it('does not continue an old payment after account replacement during storage', async () => {
+  let finish!: () => void;
+  let started!: () => void;
+  const writing = new Promise<void>(resolve => { started = resolve; });
+  asyncStorage.setItem.mockImplementationOnce(async (key, value) => {
+    values.set(key, value);
+    started();
+    await new Promise<void>(resolve => { finish = resolve; });
+  });
+  const attempt = acquireSpendAttempt('airtime', 'mtn|0801|100');
+  await writing;
+  mockSessionGeneration += 1;
+  finish();
+  await expect(attempt).rejects.toThrow('session changed');
+  // The unresolved marker is still durable for the original customer's retry.
+  expect(values.size).toBe(1);
+});
+
+it('rejects an account change while obtaining its namespace before writing', async () => {
+  mockGetSpendAccountNamespace.mockImplementationOnce(async () => {
+    mockSessionGeneration += 1;
+    return 'new-account-hash';
+  });
+  await expect(acquireSpendAttempt('airtime', 'mtn|0801|100')).rejects.toThrow('session changed');
+  expect(asyncStorage.setItem).not.toHaveBeenCalled();
 });

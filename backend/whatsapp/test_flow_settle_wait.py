@@ -162,7 +162,8 @@ class SettleWaitTests(TestCase):
     def test_identity_unlock_is_done_not_a_pending_payment(self):
         pa = PendingAction.objects.create(
             user=self.user, msisdn=MSISDN, action_type="unlock",
-            state="flow_pin", payload={"resume": "7", "pin_attempts": 0},
+            state="flow_pin", payload={"resume": "7", "pin_attempts": 0,
+                                       **router._unlock_proof(self.user, MSISDN)},
             expires_at=timezone.now() + timedelta(minutes=5))
         with override_settings(WHATSAPP_PROCESS_INLINE=False), \
              patch("whatsapp.jobs.enqueue_flow_execution") as queued, \

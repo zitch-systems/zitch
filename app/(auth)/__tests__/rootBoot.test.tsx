@@ -17,6 +17,7 @@ jest.mock('@/lib/theme', () => ({
 jest.mock('@/lib/wallet', () => ({ WalletProvider: ({ children }: { children: ReactNode }) => children }));
 jest.mock('@/components/design/Notify', () => ({ NotifyHost: () => null }));
 jest.mock('@/lib/session', () => ({}));
+jest.mock('@/lib/notifications', () => ({ subscribeToNotificationOpens: () => () => {} }));
 jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => 0 }));
 jest.mock('@/lib/biometrics', () => ({ reconcileCachedPin: async () => {} }));
 jest.mock('@/lib/pendingApproval', () => ({ rememberWhatsAppApprovalUrl: async () => {} }));

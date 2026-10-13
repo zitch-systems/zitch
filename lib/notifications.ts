@@ -4,6 +4,7 @@ import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { apiJson } from '@/lib/api';
+import { getSessionGeneration, getToken } from '@/lib/secureStore';
 
 const CHANNEL_ID = 'transactions';
 const TOKEN_KEY = 'z-expo-push-token';
@@ -33,8 +34,10 @@ export async function registerForPushNotifications(
   requestPermission = false,
 ): Promise<PushRegistration> {
   if (Platform.OS === 'web' || !Device.isDevice) return 'unavailable';
+  const generation = getSessionGeneration();
   configureNotificationPresentation();
   try {
+    if (!(await getToken()) || generation !== getSessionGeneration()) return 'failed';
     if (Platform.OS === 'android') {
       await Notifications.setNotificationChannelAsync(CHANNEL_ID, {
         name: 'Transaction alerts',
@@ -55,6 +58,9 @@ export async function registerForPushNotifications(
       ?? Constants.easConfig?.projectId;
     if (!projectId) return 'failed';
     const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+    // The native permission/token request may outlive signout or an account
+    // switch. Only the session that started it may bind this installation.
+    if (generation !== getSessionGeneration()) return 'failed';
     const result = await apiJson('/api/push/register/', {
       token,
       platform: Platform.OS,
@@ -62,7 +68,7 @@ export async function registerForPushNotifications(
     // This endpoint returns a successful HTTP response with a message, without
     // a `success` property. Respect an explicit failure but don't report an
     // already-registered device as failed because that optional field is absent.
-    if (result?.success === false || result?._httpOk !== true) return 'failed';
+    if (generation !== getSessionGeneration() || result?.success === false || result?._httpOk !== true) return 'failed';
     await AsyncStorage.setItem(TOKEN_KEY, token);
     return 'registered';
   } catch {
@@ -71,22 +77,22 @@ export async function registerForPushNotifications(
 }
 
 /** Route both warm-app and cold-start notification taps through one callback. */
-export function subscribeToNotificationOpens(onOpen: () => void): () => void {
+export function subscribeToNotificationOpens(onOpen: (coldStart?: boolean) => void): () => void {
   if (Platform.OS === 'web') return () => {};
   let active = true;
-  const open = () => {
+  const open = (coldStart = false) => {
     if (!active) return;
     // Persist before routing: a cold-start guard may immediately consume this
     // marker, so racing a fire-and-forget write can reopen it a second time.
     void AsyncStorage.setItem(PENDING_OPEN_KEY, Date.now().toString())
       .catch(() => {})
-      .then(() => { if (active) onOpen(); });
+      .then(() => { if (active) onOpen(coldStart); });
   };
-  const sub = Notifications.addNotificationResponseReceivedListener(open);
+  const sub = Notifications.addNotificationResponseReceivedListener(() => open(false));
   void Notifications.getLastNotificationResponseAsync().then((last) => {
     if (!active || !last) return;
     void Notifications.clearLastNotificationResponseAsync().catch(() => {});
-    open();
+    open(true);
   }).catch(() => {});
   return () => { active = false; sub.remove(); };
 }

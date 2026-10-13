@@ -94,6 +94,10 @@ class StaleConfirmCardTests(TestCase):
         self.token = flows.sign_flow_token(self.pa)
 
     def test_a_settled_payment_answers_with_what_happened(self):
+        from wallet.models import Transaction
+        Transaction.objects.create(user=self.user, amount=Decimal("3100"),
+            reference="stale-card-settled", idempotency_key=f"wa-{self.pa.pk}",
+            transaction_status=Transaction.SUCCESS, direction=Transaction.OUT, service="Transfer")
         flows.remember_settled(self.pa, "₦3,100.00 sent to ADEYEMI WILLIAM.")
         self.pa.delete()
         res = flows.handle_flow_request({"action": "data_exchange",

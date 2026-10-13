@@ -246,7 +246,7 @@ def _push_alert(txn, subject: str) -> dict:
                        if result.get("status") == "error"
                        and (result.get("details") or {}).get("error") == "DeviceNotRegistered"]
         if invalid_ids:
-            PushDevice.objects.filter(id__in=invalid_ids).delete()
+            PushDevice.objects.filter(id__in=invalid_ids).update(enabled=False)
         # Partial acceptance cannot be retried as one batch without duplicating
         # the devices that accepted it. Keep that case visible for review.
         passed = (isinstance(results, list) and len(results) == len(devices)

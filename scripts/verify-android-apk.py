@@ -57,6 +57,23 @@ def verify_payload(apk):
             raise ValueError('APK is missing x86_64 support for emulator verification')
 
 
+def verify_push_resources(resources, signing):
+    """Inspect the built APK, never infer Firebase inclusion from a CI secret."""
+    def string_values(name):
+        entries = re.findall(rf':string/{name}\b(.*?)(?=\n\s*(?:spec )?resource\b|\Z)',
+                             resources, re.S)
+        return [value for entry in entries
+                for value in re.findall(r'\(string(?:8|16)?\)\s+"([^"\n]+)"', entry)]
+
+    app_ids = string_values('google_app_id')
+    sender_ids = string_values('gcm_defaultSenderId')
+    configured = any(re.fullmatch(r'1:\d+:android:[A-Za-z0-9]+', value)
+                     and value.split(':')[1] in sender_ids for value in app_ids)
+    if signing == 'upload' and not configured:
+        raise ValueError('Production APK is missing Firebase Android push configuration')
+    return {'firebase_config_present': configured, 'live_delivery_verified': False}
+
+
 def verify_signer(output, expected_fingerprint, signing):
     # SDK 37 prints "V2 Signer:" instead of "Signer #1". Key-rotation
     # output also carries SDK ranges, and may repeat one certificate across
@@ -106,6 +123,8 @@ def main():
     manifest = subprocess.check_output([aapt, 'dump', 'xmltree', str(args.apk), 'AndroidManifest.xml'], text=True)
     permissions = verify_manifest(badging, manifest, expo)
     verify_payload(args.apk)
+    resources = subprocess.check_output([aapt, 'dump', '--values', 'resources', str(args.apk)], text=True)
+    push_configuration = verify_push_resources(resources, args.signing)
 
     signer = subprocess.check_output([sdk_tool('apksigner'), 'verify', '--verbose', '--print-certs', str(args.apk)], text=True)
     env = os.environ.copy()
@@ -137,6 +156,7 @@ def main():
         'permissions': permissions,
         'release_mode': True,
         'bundled_javascript': True,
+        'android_push': push_configuration,
     }
     args.metadata.parent.mkdir(parents=True, exist_ok=True)
     args.metadata.write_text(json.dumps(metadata, indent=2) + '\n')

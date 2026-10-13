@@ -12,6 +12,7 @@ from unittest import mock
 
 from django.core.cache import cache
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 
 from wallet.models import Wallet
@@ -148,6 +149,19 @@ class ReconcileBalancesTests(TestCase):
         self.assertIn("0 over / 0 under", out)
         alert_mock.assert_not_called()
         self.assertEqual(code, 0)
+        from whatsapp.models import AuditLog
+        audit = AuditLog.objects.get(action="recon.balance_check")
+        self.assertEqual(audit.after["tolerance"], "1.00")
+
+    def test_invalid_tolerance_cannot_create_passing_evidence(self):
+        from whatsapp.models import AuditLog
+
+        for tolerance in ("NaN", "Infinity", "-Infinity", "-1", "bad"):
+            with self.subTest(tolerance=tolerance), \
+                    mock.patch("utility.wema.get_balance") as bank, self.assertRaises(CommandError):
+                self._run(f"--tolerance={tolerance}")
+            bank.assert_not_called()
+        self.assertFalse(AuditLog.objects.filter(action="recon.balance_check").exists())
 
     def test_skips_when_not_live(self):
         out, err = StringIO(), StringIO()

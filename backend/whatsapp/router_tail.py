@@ -297,8 +297,8 @@ def _transfer_outcome(pa: PendingAction, user, msisdn: str, txn, *, replay: bool
     amount = Decimal(pa.payload["amount"])
     who = pa.payload["name"].upper()
 
-    quarantine = (txn.meta or {}).get("wema_reversal_quarantine") or {}
-    if isinstance(quarantine, dict) and quarantine.get("active") is True:
+    from wallet.review_state import transaction_review_map
+    if txn.pk in transaction_review_map([txn]):
         # A conflicting returned-funds row is awaiting maker/checker review.
         # Regardless of the payout row's pre-existing status, never issue a
         # success receipt or invite another payment while that hold is active.
@@ -2215,33 +2215,61 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     """
     if getattr(settings, "WHATSAPP_PROCESS_INLINE", False):
         return run_flow_execution(pa, user)
-    # Checked before the action becomes `executing`, which run_flow_execution
-    # treats as already authorised.
-    if not _channel_linked(user, pa.msisdn):
-        PendingAction.objects.filter(pk=pa.pk).exclude(state=EXECUTING_STATE).delete()
-        return Outcome(_UNLINKED_CHANNEL, OUTCOME_FAILED)
-
     from .jobs import drain_in_background, enqueue_flow_execution
+    proof = (getattr(pa, "_unlock_proof", None) or pa.payload
+             if pa.action_type == "unlock" else {})
 
-    # Held for the worker: `executing` says authorised-not-yet-done, and the
-    # deadline is pushed out because the short PIN window governs how long the
-    # customer has to CONFIRM, not how long the rail has to settle.
-    pa.state = EXECUTING_STATE
-    pa.expires_at = timezone.now() + EXECUTION_TTL
-    pa.save(update_fields=["state", "expires_at"])
+    # Claim and persist the work in ONE transaction. Committing `executing`
+    # before the queue insert strands an authorised payment if encryption,
+    # insertion or the process fails between them. Re-read the action under a
+    # lock as well: cancellation/expiry must win if it happened during PIN
+    # verification, and stale duplicate submissions must not resurrect it.
+    with db_transaction.atomic():
+        live = PendingAction.objects.select_for_update().filter(
+            pk=pa.pk, user_id=user.pk, msisdn=pa.msisdn,
+            state__in=(FLOW_PIN_STATE, "pin", EXECUTING_STATE),
+        ).first()
+        if live is None or (live.expired and live.state != EXECUTING_STATE):
+            return Outcome("This request expired or was cancelled. Start again in the chat.",
+                           OUTCOME_FAILED)
+        current = get_user_model().objects.select_for_update().filter(pk=user.pk).first()
+        if current is None or not current.is_active:
+            return Outcome("Your Zitch account is currently suspended. Please contact support.",
+                           OUTCOME_FAILED)
+        if not _channel_linked(current, live.msisdn):
+            if live.state != EXECUTING_STATE:
+                live.delete()
+            return Outcome(_UNLINKED_CHANNEL, OUTCOME_FAILED)
+        if live.state != EXECUTING_STATE:
+            live.state = EXECUTING_STATE
+            live.expires_at = timezone.now() + EXECUTION_TTL
+            # An unlock resumes sensitive reads, so its proof belongs to this
+            # exact channel and credential snapshot, even if the worker is slow.
+            if live.action_type == "unlock":
+                from .vas_identity import credentials
+                if (not secrets.compare_digest(str(proof.get("unlock_credentials") or ""), credentials(current))
+                        or not WhatsAppLink.objects.filter(pk=proof.get("unlock_link_id"),
+                            user=current, wa_msisdn=live.msisdn, status=WhatsAppLink.ACTIVE).exists()):
+                    live.delete()
+                    return Outcome("This sign-in changed. Request your details again in the chat.", OUTCOME_FAILED)
+                live.payload.update({key: proof[key] for key in ("unlock_link_id", "unlock_credentials")})
+            else:
+                _mark_verified(live.msisdn)
+            live.save(update_fields=["state", "expires_at", "payload"])
+        enqueue_flow_execution(live)
+        pa, user = live, current
     # The worker may finish after this exchange times out. Keep a short-lived,
     # token-scoped pointer so the published RESULT screen's Done exchange can
     # re-read the ledger instead of closing on stale Pending.
     from .flows import remember_pending
     if pa.action_type != "unlock":
         remember_pending(pa, user)
-    enqueue_flow_execution(pa)
     # Same safety net the webhook uses for a worker that isn't running, and off
     # the request thread so Meta's answer is not held up by it. Not under the
     # test runner, where the suite drives the queue itself and a second thread
     # would only race it.
     if not getattr(settings, "TESTING", False):
-        drain_in_background()
+        db_transaction.on_commit(drain_in_background)
     # Unlock is an authentication result, not a money movement. There is no
     # transaction row for _await_settlement to find, so sending it through the
     # payment-status fallback mislabeled every successful unlock as "Pending".
@@ -2261,7 +2289,8 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     settled = _await_settlement(pa.id, user, pa.action_type)
     if settled is not None:
         from .flows import forget_pending, sign_flow_token
-        forget_pending(sign_flow_token(pa))
+        if getattr(settled, "status", "") != OUTCOME_PENDING:
+            forget_pending(sign_flow_token(pa), status=settled.status)
         return settled
     # Still working. PENDING, emphatically not success: the rail has not answered
     # yet, and a tick here would read as "done" for a payment that may still
@@ -2320,8 +2349,12 @@ def _await_settlement(action_id: int, user, action_type: str = ""):
         # .only() because this runs on the request thread and the ledger row is
         # wide; the status and the reference are all that is read.
         txn = (Transaction.objects.filter(user=user, idempotency_key=key)
-               .only("transaction_status", "reference").first())
+               .only("transaction_status", "reference", "meta").first())
         if txn is not None and txn.transaction_status in (Transaction.SUCCESS, Transaction.FAILED):
+            from wallet.review_state import transaction_review_map
+            if txn.pk in transaction_review_map([txn]):
+                return Outcome("This payment is under review. Do not send it again; "
+                               "we will confirm its final outcome in the chat.", OUTCOME_PENDING)
             if txn.transaction_status == Transaction.SUCCESS:
                 verb = _SETTLED_VERB.get(action_type, "Done")
                 return Outcome(f"{verb} - the receipt is in your chat.", OUTCOME_SUCCESS)
@@ -2373,10 +2406,13 @@ def run_flow_execution(pa: PendingAction, user) -> str:
                            OUTCOME_FAILED)
         # Unlinking cuts off the phone that armed this. An already-authorised
         # payment still completes; an unconfirmed one does not.
-        if live.state != EXECUTING_STATE and not _channel_linked(live_user, live.msisdn):
+        if (live.state != EXECUTING_STATE or live.action_type == "unlock") and not _channel_linked(live_user, live.msisdn):
             live.delete()
             return Outcome(_UNLINKED_CHANNEL, OUTCOME_FAILED)
 
+        proof = getattr(pa, "_unlock_proof", None)
+        if proof is not None:
+            live._unlock_proof = proof
         pa = live
         user = live_user
     # Getting here means the PIN or a verified biometric just passed, so it
@@ -2385,7 +2421,8 @@ def run_flow_execution(pa: PendingAction, user) -> str:
     # Re-registration also binds the proof to the exact active WhatsApp link
     # and credential snapshot. Its executor marks the session only after those
     # checks, so a revoked old link cannot authenticate a replacement link.
-    if not (pa.action_type == "unlock" and pa.payload.get("vas_reregister") is True):
+    if (pa.action_type != "unlock" and pa.state != EXECUTING_STATE
+            and _channel_linked(user, pa.msisdn)):
         _mark_verified(pa.msisdn)
     executors = {
         "transfer": _exec_transfer, "airtime": _exec_airtime, "data": _exec_data,

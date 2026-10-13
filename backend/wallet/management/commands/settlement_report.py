@@ -51,7 +51,7 @@ who owns the response.
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings as dj_settings
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -114,8 +114,10 @@ class Command(BaseCommand):
         position at all, because it looks authoritative."""
         nuban_total = Decimal("0")
         wallets = unreachable = 0
+        nuban_accounts = set()
         for w in wema_provisioned_wallets():
             wallets += 1
+            nuban_accounts.add(w.account_number)
             res = wema.get_balance(w.account_number)
             bank = res.get("balance_naira") if res.get("success") else None
             if bank is None:
@@ -147,6 +149,7 @@ class Command(BaseCommand):
         return {"nuban_total": nuban_total, "nuban_wallets": wallets,
                 "nuban_unreachable": unreachable,
                 "pool_account_set": bool(pool_account), "pool_balance": pool,
+                "pool_in_nuban_total": pool_account in nuban_accounts,
                 "pool_failure": pool_failure, "pool_http_status": pool_http_status}
 
     def _day_movement(self) -> dict:
@@ -188,14 +191,17 @@ class Command(BaseCommand):
         from utility.alerts import alert
         from whatsapp.ops import record_audit
 
-        def _money(raw, default="0.00"):
+        def _money(raw):
             try:
-                return Decimal(raw or default)
-            except (InvalidOperation, TypeError):
-                return Decimal(default)
+                value = Decimal(raw)
+            except (InvalidOperation, TypeError, ValueError):
+                raise CommandError("Settlement thresholds must be finite nonnegative amounts.") from None
+            if not value.is_finite() or value < 0:
+                raise CommandError("Settlement thresholds must be finite nonnegative amounts.")
+            return value
 
         max_shortfall = _money(options["max_shortfall"])
-        max_surplus = _money(options["max_surplus"], "") if options["max_surplus"] else None
+        max_surplus = _money(options["max_surplus"]) if options["max_surplus"] else None
 
         owed = self._owed()
         movement = self._day_movement()
@@ -222,16 +228,20 @@ class Command(BaseCommand):
             return
 
         held = self._held()
-        rails = [held["nuban_total"], held["pool_balance"]]
+        # A configured source can also be a customer's NUBAN. It is one bank
+        # asset even when it has two roles; counting it twice fabricates surplus.
+        rails = [held["nuban_total"]]
+        if not held["pool_in_nuban_total"]:
+            rails.append(held["pool_balance"])
         # A rail we could not read makes the position unsound, not merely imprecise.
         incomplete = (vas_scope["vas_collection_required"] or held["nuban_unreachable"] > 0
                       or (held["pool_account_set"] and held["pool_balance"] is None))
         held_total = sum((r for r in rails if r is not None), Decimal("0"))
-        position = None if vas_scope["vas_collection_required"] else held_total - owed["ledger_liability"]
+        position = None if incomplete else held_total - owed["ledger_liability"]
 
         snapshot = {**owed, **held, **movement, **vas_scope,
                     "known_held_total": held_total,
-                    "held_total": None if vas_scope["vas_collection_required"] else held_total,
+                    "held_total": None if incomplete else held_total,
                     "position": position,
                     "incomplete": incomplete}
         # Money is stored to a fixed 2dp so successive daily snapshots can be diffed
@@ -248,15 +258,19 @@ class Command(BaseCommand):
         self.stdout.write(
             "        pool        " + (f"₦{held['pool_balance']:,.2f}" if held["pool_balance"] is not None
                                       else ("UNREADABLE" if held["pool_account_set"]
-                                            else "not configured (WEMA_SOURCE_ACCOUNT)")))
+                                            else "not configured (WEMA_SOURCE_ACCOUNT)"))
+            + (" (already included in NUBAN total)" if held["pool_in_nuban_total"] else ""))
         if held["pool_failure"]:
             self.stdout.write("        pool read   " + held["pool_failure"]
                               + (f" (HTTP {held['pool_http_status']})"
                                  if held["pool_http_status"] is not None else ""))
         if vas_scope["vas_collection_required"]:
             self.stdout.write("        VAS collection UNVERIFIED (bank balance/search contract pending)")
+        if incomplete:
             self.stdout.write(f"        known assets ₦{held_total:,.2f} (incomplete)")
-            self.stdout.write("POSITION UNAVAILABLE — VAS collection balance is unverified.")
+            reason = ("VAS collection balance is unverified" if vas_scope["vas_collection_required"]
+                      else "one or more bank balances are unreadable")
+            self.stdout.write(f"POSITION UNAVAILABLE — {reason}.")
         else:
             self.stdout.write(f"        total       ₦{held_total:,.2f}")
             self.stdout.write(
@@ -270,8 +284,8 @@ class Command(BaseCommand):
             breached = True
         elif incomplete:
             # Not a solvency alert — an observability one. Say which rail.
-            alert("settlement_report: position computed with an unreadable rail — treat it as "
-                  "advisory until every rail reads", level="warning",
+            alert("settlement_report: unreadable rail — no complete position can be stated "
+                  "until every rail reads", level="warning",
                   nuban_unreachable=held["nuban_unreachable"],
                   pool_readable=held["pool_balance"] is not None,
                   pool_failure=held["pool_failure"],

@@ -2,13 +2,16 @@ import React, { type ReactNode } from 'react';
 import { Pressable } from 'react-native';
 import renderer, { act } from 'react-test-renderer';
 import Me from '@/app/(homepage)/me';
+import { apiPost } from '@/lib/api';
+import { clearSession } from '@/lib/secureStore';
 
 const mockPush = jest.fn();
+const mockReplace = jest.fn();
 let mockProvider = 'wema_vas';
 const mockReload = jest.fn();
 const mockGetStatus = jest.fn().mockResolvedValue({ tier: 1 });
 jest.mock('expo-router', () => ({
-  router: { push: (...args: unknown[]) => mockPush(...args) },
+  router: { push: (...args: unknown[]) => mockPush(...args), replace: (...args: unknown[]) => mockReplace(...args) },
   useFocusEffect: (callback: () => void) => {
     const ReactActual = jest.requireActual<typeof import('react')>('react');
     ReactActual.useEffect(callback, [callback]);
@@ -59,4 +62,21 @@ it.each(['wema_vas', 'partnership'])('offers same-profile VAS setup only for the
   } finally {
     if (tree) act(() => tree.unmount());
   }
+});
+
+
+it('bounds profile logout and clears the device after an offline response with duplicate taps suppressed', async () => {
+  let reject!: (reason: Error) => void;
+  (apiPost as jest.Mock).mockReturnValueOnce(new Promise((_resolve, rejectPromise) => { reject = rejectPromise; }));
+  (clearSession as jest.Mock).mockClear();
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Me />); });
+  const logout = tree.root.findByProps({ accessibilityLabel: 'Log out' });
+  await act(async () => { void logout.props.onPress(); void logout.props.onPress(); });
+  expect(apiPost).toHaveBeenCalledTimes(1);
+  expect(apiPost).toHaveBeenCalledWith('/api/logout/', {}, 5000);
+  await act(async () => { reject(new Error('offline')); });
+  expect(clearSession).toHaveBeenCalledTimes(1);
+  expect(mockReplace).toHaveBeenCalledWith('/signin');
+  act(() => tree.unmount());
 });
