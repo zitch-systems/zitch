@@ -44,6 +44,34 @@ class BankTransferTests(TestCase):
     def balance(self):
         return get_or_create_wallet(self.user).balance
 
+    def test_malformed_account_numbers_are_rejected_before_name_enquiry(self):
+        for account in (1234567890, [], {}, "abcdefghij", "٠١٢٣٤٥٦٧٨٩"):
+            for path in ("/api/transfers/resolve/", "/api/transfers/send/"):
+                with self.subTest(account=account, path=path), patch(
+                        "transfers.views.payout_resolve_account") as resolve:
+                    res, _body = self.post(path, {
+                        "access_token": self.token, "account_number": account,
+                        "bank": "gtb", "name": "John Doe", "amount": "1000",
+                        "transaction_pin": "1234",
+                    })
+                    self.assertEqual(res.status_code, 400)
+                    resolve.assert_not_called()
+        self.assertEqual(self.balance(), Decimal("50000"))
+
+    def test_inactive_bank_cannot_be_used_for_new_enquiry_or_transfer(self):
+        self.bank.active = False
+        self.bank.save(update_fields=["active"])
+        for path in ("/api/transfers/resolve/", "/api/transfers/send/"):
+            with self.subTest(path=path), patch("transfers.views.payout_resolve_account") as resolve:
+                res, _body = self.post(path, {
+                    "access_token": self.token, "account_number": "0123456789",
+                    "bank": "gtb", "name": "John Doe", "amount": "1000",
+                    "transaction_pin": "1234",
+                })
+                self.assertEqual(res.status_code, 404)
+                resolve.assert_not_called()
+        self.assertEqual(self.balance(), Decimal("50000"))
+
     def test_transfer_charge_returns_nip_fee(self):
         from decimal import Decimal
         with patch("transfers.views.payout_charge", return_value=Decimal("25.00")):

@@ -6,7 +6,7 @@ jest.mock('@/lib/session', () => ({ touchActivity: async () => {} }));
 jest.mock('expo-router', () => ({ router: { replace: jest.fn() } }));
 jest.mock('@/components/configFiles/apiConfig', () => ({ __esModule: true, default: 'https://test.local' }));
 
-import { apiJson, newIdempotencyKey } from '@/lib/api';
+import { apiJson, apiPost, newIdempotencyKey } from '@/lib/api';
 import { getSessionGeneration } from '@/lib/secureStore';
 
 const mockFetch = jest.fn();
@@ -67,4 +67,34 @@ it('discards an old account response whose body arrives after an account change'
   (getSessionGeneration as jest.Mock).mockReturnValue(1);
   finishBody(JSON.stringify({ success: true, balance: 9000 }));
   expect(await request).toMatchObject({ success: false, offline: true });
+});
+
+it('rejects a raw JSON response body that completes after an account change', async () => {
+  let finishBody!: (value: unknown) => void;
+  const body = new Promise(resolve => { finishBody = resolve; });
+  mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => body });
+  const response = await apiPost('/api/verify-transaction-pin/');
+  const reading = response.json();
+  (getSessionGeneration as jest.Mock).mockReturnValue(1);
+  finishBody({ success: true });
+  await expect(reading).rejects.toThrow('Session changed');
+});
+
+it('does not consume a raw body after the request session was replaced', async () => {
+  const json = jest.fn(async () => ({ success: true }));
+  mockFetch.mockResolvedValue({ ok: true, status: 200, json });
+  const response = await apiPost('/api/wallet_balance/');
+  expect(response.ok).toBe(true);
+  expect(response.status).toBe(200);
+  (getSessionGeneration as jest.Mock).mockReturnValue(1);
+  await expect(response.json()).rejects.toThrow('Session changed');
+  expect(json).not.toHaveBeenCalled();
+});
+
+it('keeps cloned responses bound to their original session', async () => {
+  const response = { ok: true, status: 200, json: async () => ({ success: true }), clone() { return this; } };
+  mockFetch.mockResolvedValue(response);
+  const clone = (await apiPost('/api/wallet_balance/')).clone();
+  (getSessionGeneration as jest.Mock).mockReturnValue(1);
+  await expect(clone.json()).rejects.toThrow('Session changed');
 });

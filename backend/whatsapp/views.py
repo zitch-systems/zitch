@@ -11,7 +11,6 @@ import json
 import logging
 import re
 import secrets
-from datetime import timedelta
 
 from django.conf import settings
 from django.core.exceptions import RequestDataTooBig
@@ -24,12 +23,12 @@ from common.ratelimit import opaque_cache_identifier, ratelimit
 
 from . import media
 from .flows import resolve_approve_token
+from .linking import LINK_CODE_TTL
 from .models import Broadcast, BroadcastRecipient, ConversationState, WhatsAppLink
 from .ops import record_audit, validate_broadcast_spec
 from .providers import verify_signature, wa_enabled, wa_live
 from .router import is_awaiting_bvn, is_awaiting_pin, reply
 
-LINK_CODE_TTL = timedelta(minutes=30)
 WHATSAPP_WEBHOOK_BODY_MAX = 1024 * 1024
 WHATSAPP_FLOW_BODY_MAX = 1024 * 1024
 
@@ -46,9 +45,9 @@ def webhook(request):
         # Constant-time compare, matching verify_signature and every flow-token
         # check: a plain "==" short-circuits on the first differing byte, which
         # is a (marginal, but avoidable) timing oracle on this public endpoint.
-        token_ok = secrets.compare_digest(
-            str(p.get("hub.verify_token") or ""),
-            str(settings.WHATSAPP.get("VERIFY_TOKEN") or ""),
+        expected = str(settings.WHATSAPP.get("VERIFY_TOKEN") or "")
+        token_ok = bool(expected) and secrets.compare_digest(
+            str(p.get("hub.verify_token") or "").encode("utf-8"), expected.encode("utf-8"),
         )
         if p.get("hub.mode") == "subscribe" and token_ok:
             return HttpResponse(p.get("hub.challenge", ""))
@@ -358,6 +357,10 @@ def _redact_chat_log(text: str) -> str:
     from .ai import _CARD_SHAPE, _luhn_ok
 
     safe = str(text or "")
+    # LINK is a short-lived banking-channel capability, even without a "PIN"
+    # keyword. Keep it only in the encrypted work payload, never support logs.
+    if re.fullmatch(r"(?:LINK\s+)?(?:[A-F0-9][ -]?){32,64}", safe.strip(), re.IGNORECASE):
+        return "[WhatsApp link code]"
 
     def _card(m):
         digits = re.sub(r"\D", "", m.group(0))
@@ -523,16 +526,18 @@ def link_start(request):
     if not wa_enabled():
         return fail("WhatsApp banking is currently unavailable", status=503)
     user = request.user_obj
+    from .auth_proof import credentials
+    from .linking import issue_link
+
+    credential_proof = credentials(user)
     pin_ok, pin_code, pin_message = evaluate_transaction_pin(
         user, (request.data.get("transaction_pin") or "").strip())
     if not pin_ok:
         return fail(pin_message, status=429 if pin_code == "pin_locked" else 400)
-    WhatsAppLink.objects.filter(user=user, status=WhatsAppLink.PENDING).delete()
-    code = secrets.token_hex(16).upper()  # 128-bit, normally opened via prefilled wa.me link
-    WhatsAppLink.objects.create(
-        user=user, status=WhatsAppLink.PENDING, link_code=code,
-        expires_at=timezone.now() + LINK_CODE_TTL,
-    )
+    link = issue_link(user, credential_proof)
+    if link is None:
+        return fail("Your account details changed. Sign in again to connect WhatsApp.", status=409)
+    code = link.link_code
     biz = settings.WHATSAPP.get("BUSINESS_NUMBER", "")
     wa_link = f"https://wa.me/{biz}?text=LINK%20{code}" if biz else ""
     return ok(success=True, code=code, wa_link=wa_link, expires_in=int(LINK_CODE_TTL.total_seconds()))
@@ -561,11 +566,9 @@ def link_unlink(request):
     Unlinking is how a customer cuts off a phone they no longer hold, so a
     payment that phone already armed must not stay confirmable from the
     secure Flow or the app hand-off after the link is gone."""
-    from .router import retire_unsubmitted_actions
+    from .linking import unlink
 
-    active = request.user_obj.whatsapp_links.filter(status=WhatsAppLink.ACTIVE)
-    retire_unsubmitted_actions(request.user_obj, active.values_list("wa_msisdn", flat=True))
-    active.delete()
+    unlink(request.user_obj)
     return ok(success=True, message="WhatsApp unlinked")
 
 

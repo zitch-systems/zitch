@@ -161,11 +161,34 @@ class UserAdmin(BaseUserAdmin):
                 f"audit log and AML cases retained.", messages.SUCCESS)
 
 
+class CredentialAuditAdmin(admin.ModelAdmin):
+    """Inspect credential metadata without creating or rewriting authority.
+
+    These rows are issued, consumed and revoked by the authentication services.
+    Generic forms must never mint a chosen bearer hash, transplant an OTP hash,
+    reopen a consumed challenge, or delete the latest challenge to expose an
+    older one. Keep the existing routes for forensic inspection only.
+    """
+
+    actions = None
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(AccessToken)
-class AccessTokenAdmin(admin.ModelAdmin):
-    list_display = ("user", "masked_key", "created")
+class AccessTokenAdmin(CredentialAuditAdmin):
+    list_display = ("user", "masked_key", "scope", "created")
     search_fields = ("user__phone", "user__email")
-    readonly_fields = ("created",)
+    fields = ("id", "user", "masked_key", "scope", "device_id", "session_started_at", "created")
+    readonly_fields = fields
+    exclude = ("key",)
 
     @admin.display(description="token")
     def masked_key(self, obj):
@@ -175,9 +198,12 @@ class AccessTokenAdmin(admin.ModelAdmin):
 
 
 @admin.register(OTP)
-class OTPAdmin(admin.ModelAdmin):
+class OTPAdmin(CredentialAuditAdmin):
     # Never surface the code (it is stored only as a hash, and showing a live code
     # to staff would defeat the point). Purpose + used are enough to triage.
     list_display = ("phone", "purpose", "used", "created")
     search_fields = ("phone",)
     list_filter = ("used", "purpose")
+    fields = ("id", "phone", "email", "purpose", "used", "attempts", "created")
+    readonly_fields = fields
+    exclude = ("code_hash",)

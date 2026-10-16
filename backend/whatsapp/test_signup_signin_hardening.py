@@ -56,15 +56,13 @@ class WhatsAppSigninHardeningTests(TestCase):
             status=WhatsAppLink.ACTIVE,
             linked_at=timezone.now(),
         )
-        pending = WhatsAppLink.objects.create(
-            user=user,
-            status=WhatsAppLink.PENDING,
-            link_code="A1B2C3D4",
-            expires_at=timezone.now() + timedelta(minutes=30),
-        )
-
+        from whatsapp.auth_proof import credentials
+        from whatsapp.linking import issue_link
+        pending = issue_link(user, credentials(user))
+        # Formatting separators remain accepted when a customer pastes a code.
+        formatted = pending.link_code[:32] + "-" + pending.link_code[32:]
         with patch("whatsapp.router.reply"), patch("whatsapp.router.send_menu"):
-            _handle_unlinked(MSISDN, "LINK A1B2-C3D4")
+            _handle_unlinked(MSISDN, "LINK " + formatted)
 
         pending.refresh_from_db()
         self.assertEqual(pending.status, WhatsAppLink.ACTIVE)

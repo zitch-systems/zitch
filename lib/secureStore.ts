@@ -147,8 +147,12 @@ export async function storeSession(result: {
   access_token?: string;
   refresh_token?: string;
   account_namespace?: string;
-}): Promise<void> {
+}, expectedGeneration = sessionGeneration): Promise<void> {
   if (!result?.access_token) throw new Error('The sign-in response did not contain a session');
+  // Public authentication can finish after a different login or logout. The
+  // response belongs to the state at request start, not whichever account is
+  // current when a slow network finally delivers its body.
+  requireGeneration(expectedGeneration);
   const generation = ++sessionGeneration;
   // A password sign-in / OTP / reset replaces the entire session. Never pair a
   // new customer's access token with another customer's refresh token or PIN.
@@ -325,9 +329,12 @@ export async function getDisplayName(): Promise<string> {
 // somebody else, which overwrites it.
 const LAST_IDENTIFIER_KEY = 'z-last-identifier';
 
-export async function rememberIdentifier(identifier: string): Promise<void> {
+export async function rememberIdentifier(identifier: string, expectedGeneration = sessionGeneration): Promise<void> {
   const clean = (identifier || '').trim();
-  if (clean) await AsyncStorage.setItem(LAST_IDENTIFIER_KEY, clean);
+  if (clean) await mutateSecret(LAST_IDENTIFIER_KEY, async () => {
+    requireGeneration(expectedGeneration);
+    await AsyncStorage.setItem(LAST_IDENTIFIER_KEY, clean);
+  });
 }
 
 export async function getRememberedIdentifier(): Promise<string> {

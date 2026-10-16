@@ -56,6 +56,11 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
+            "--fail-incomplete", action="store_true",
+            default=getattr(settings, "WEMA_RECONCILE_FAIL_INCOMPLETE", False),
+            help="Exit nonzero after completing all phases if coverage, recovery or settlement needs review.",
+        )
+        parser.add_argument(
             "--lookback-days", type=int, default=2,
             help="Overlap days after durable statement coverage (default: 2). Missing older days are recovered.",
         )
@@ -231,14 +236,17 @@ class Command(BaseCommand):
         # Include accounts already attached by a callback whose name lookup failed.
         from wallet.identity import finish_accepted_identity
 
+        identity_pending = 0
         for attempt in (WemaProvisioningAttempt.objects.filter(
                 status=WemaProvisioningAttempt.PENDING,
                 otp_verified_at__isnull=False,
                 user__wallet__account_number__gt="")
                 .order_by("otp_verified_at")[:recovery_limit]):
             try:
-                finish_accepted_identity(attempt)
+                if finish_accepted_identity(attempt) not in {"verified", "ignored"}:
+                    identity_pending += 1
             except Exception:  # noqa: BLE001 — one identity must not stop credits
+                identity_pending += 1
                 log.exception("wema_identity_completion_retry_failed attempt=%s", attempt.pk)
 
         # Phase 1 — inbound funding credits.
@@ -387,11 +395,13 @@ class Command(BaseCommand):
                             "accounts_recovery_skipped": recovery_skipped,
                             "accounts_recovered": recovered_accounts,
                             "account_recovery_pending": recovery_failures,
+                            "identity_completion_pending": identity_pending,
                             "payouts_settled": settled, "payouts_reversed": reversed_,
                             "vas_checked": vas_seen, "vas_settled": vas_settled,
                             "vas_refunded": vas_refunded,
                             "vas_pending": vas_still_pending,
                             "fetch_failures": fetch_failures, "status_failures": status_failures,
+                            "vas_status_failures": vas_status_failures,
                             "history_windows": history_windows,
                             "history_blocked": history_blocked,
                             "history_backlog": history_backlog,
@@ -415,7 +425,6 @@ class Command(BaseCommand):
             alert(f"reconcile_wema: all {scanned} wallet history fetches failed — Wema "
                   f"unreachable or auth rejected; no deposits can be detected",
                   level="error", wallets=scanned)
-            raise SystemExit(1)
         # A payout stuck PENDING is invisible to every other control. It is a
         # pending DEBIT, so integrity_check counts it as owed, reconcile_balances
         # sees only the benign bank-over-ledger direction, and settlement_report
@@ -514,6 +523,7 @@ class Command(BaseCommand):
             f"Wema reconcile: accounts recovered {recovered_accounts}/"
             f"{recovery_checked} checked ({recovery_failures} still pending, "
             f"{recovery_skipped} rate-limited); "
+            f"identity completion pending {identity_pending}; "
             f"{credited} credit(s) / {scanned} wallet(s); "
             f"history windows {history_windows}, review {history_blocked}, "
             f"backlog {history_backlog}; "
@@ -521,3 +531,15 @@ class Command(BaseCommand):
             f"payouts checked {payouts_seen}, settled {settled}, reversed {reversed_}; "
             f"VAS checked {vas_seen}, settled {vas_settled}, refunded {vas_refunded}, "
             f"still pending {vas_still_pending}")
+
+        # Complete every settlement/alert phase before reporting an unhealthy
+        # scheduled run. A successful process exit must not hide known gaps in
+        # statement coverage or overdue money movements. Never infer a refund
+        # or clear a financial hold just to make this operational signal green.
+        if ((scanned and fetch_failures == scanned) or
+            (options.get("fail_incomplete") and any((
+                fetch_failures, history_blocked, history_backlog, pnd_failures,
+                recovery_failures, identity_pending, status_failures, vas_status_failures,
+                stuck, quarantined, unmatched, card_stuck, vas_stuck)))):
+            self.stderr.write("Wema reconcile: INCOMPLETE; financial review or provider recovery required.")
+            raise SystemExit(1)

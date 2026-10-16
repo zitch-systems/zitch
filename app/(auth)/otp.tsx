@@ -5,7 +5,7 @@ import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { publicPost } from '@/lib/api';
 import { unlockSession } from '@/lib/session';
-import { storeSession } from '@/lib/secureStore';
+import { getSessionGeneration, storeSession } from '@/lib/secureStore';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header } from '@/components/design/ui';
 import { Stepper } from '@/components/design/Stepper';
@@ -21,6 +21,12 @@ const OTPVerification = () => {
   const [userPhone, setUserPhone] = useState('');
   const [seconds, setSeconds] = useState(24);
   const inputRef = useRef<TextInput>(null);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   useEffect(() => {
     AsyncStorage.getItem('UserPhone').then((p) => p && setUserPhone(p));
@@ -44,6 +50,7 @@ const OTPVerification = () => {
     if (submittedRef.current === otp) return;
     submittedRef.current = otp;
     setIsCheckingOtp(true);
+    const generation = getSessionGeneration();
     try {
       // Read the name (captured at register) at submit time rather than from
       // async-loaded state, so an instant SMS autofill can't race the load and
@@ -53,14 +60,20 @@ const OTPVerification = () => {
         AsyncStorage.getItem('UserFirstName'),
         AsyncStorage.getItem('UserLastName'),
       ]);
+      if (!mounted.current || generation !== getSessionGeneration()) return;
       const response = await publicPost('/api/verify_otp/', {
         otp, phone: userPhone, first_name: first || '', last_name: last || '',
       });
       const result = await response.json();
+      if (!mounted.current || generation !== getSessionGeneration()) return;
       if (response.ok && result.access_token) {
-        await storeSession(result);
+        await storeSession(result, generation);
+        const authenticatedGeneration = getSessionGeneration();
+        if (!mounted.current) return;
         await unlockSession();
+        if (!mounted.current || authenticatedGeneration !== getSessionGeneration()) return;
         await AsyncStorage.removeItem('otpPending'); // verification done
+        if (!mounted.current || authenticatedGeneration !== getSessionGeneration()) return;
         router.replace('/setpassword');
       } else {
         notify('Error', result.message || 'Failed to verify OTP');

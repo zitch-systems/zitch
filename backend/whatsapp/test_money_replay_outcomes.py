@@ -90,7 +90,7 @@ class DuplicateMoneyOutcomeTests(TestCase):
                 self.assertEqual(outcome.status, outcome_status)
                 self.assertIn(phrase, outcome.lower())
                 self.assertEqual(receipt.called, has_receipt)
-                execute.assert_called_once()
+                execute.assert_not_called()
                 self.assertEqual(
                     Transaction.objects.filter(idempotency_key=f"wa-{pa.pk}").count(), 1)
 

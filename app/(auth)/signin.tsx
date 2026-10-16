@@ -2,8 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router, Link } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { storeSession, getToken, getRememberedIdentifier, rememberIdentifier } from '@/lib/secureStore';
+import { storeSession, getToken, getRememberedIdentifier, rememberIdentifier, getSessionGeneration } from '@/lib/secureStore';
 import { enforceHardExpiry, unlockSession } from '@/lib/session';
 import { pendingWhatsAppApproval } from '@/lib/pendingApproval';
 import { registerForPushNotifications, takePendingNotificationOpen } from '@/lib/notifications';
@@ -23,6 +22,12 @@ const Signin = () => {
   const [bioReady, setBioReady] = useState(false);
   const autoPrompted = useRef(false);
   const signinInFlight = useRef(false);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   // Offer instant sign-in only if the user enabled biometrics, the device
   // supports them, and a previous session token is still on the device.
@@ -40,15 +45,20 @@ const Signin = () => {
     })().catch(() => setBioReady(false));
   }, []);
 
-  const enterAccount = async () => {
+  const enterAccount = async (generation: number) => {
+    const current = () => mounted.current && generation === getSessionGeneration();
+    if (!current()) return;
     await unlockSession();
+    if (!current()) return;
     // Bind this phone's push token to whoever is signing in now. Signup was the
     // only registration, so a phone that changed hands kept delivering the
     // previous customer's alerts, and a new phone never received any. No
     // permission prompt here: it binds only where alerts are already allowed.
     registerForPushNotifications(false).catch(() => {});
     const token = await pendingWhatsAppApproval();
+    if (!current()) return;
     const openNotifications = !token && await takePendingNotificationOpen().catch(() => false);
+    if (!current()) return;
     router.replace(token ? { pathname: '/waapprove', params: { token } } : openNotifications ? '/notifications' : '/home');
   };
 
@@ -59,13 +69,15 @@ const Signin = () => {
       return;
     }
     signinInFlight.current = true;
+    const generation = getSessionGeneration();
     try {
       if (await enforceHardExpiry() || !(await getToken())) {
         setBioReady(false);
         notify('Sign in again', 'Enter your password to start a new session.');
         return;
       }
-      if (await authenticate('Sign in to Zitch')) await enterAccount();
+      if (generation !== getSessionGeneration() || !mounted.current) return;
+      if (await authenticate('Sign in to Zitch')) await enterAccount(generation);
     } catch {
       notify('Sign in again', 'Please sign in with your password.');
     } finally { signinInFlight.current = false; }
@@ -99,18 +111,19 @@ const Signin = () => {
       return;
     }
     try {
+      const generation = getSessionGeneration();
       const response = await publicPost('/api/sigin/', {
         email_or_phone: form.email.trim(),
         password: form.password,
       });
       const result = await response.json().catch(() => ({}));
+      if (!mounted.current || generation !== getSessionGeneration()) return;
       if (response.ok && result.access_token) {
         // Persist the session BEFORE navigating so the auth guard sees a token.
-        await storeSession(result);
-        await AsyncStorage.setItem('userID', form.email);
-        await AsyncStorage.setItem('sessionExpiration', Date.now().toString());
-        await rememberIdentifier(form.email);
-        await enterAccount();
+        await storeSession(result, generation);
+        const authenticatedGeneration = getSessionGeneration();
+        await rememberIdentifier(form.email, authenticatedGeneration);
+        await enterAccount(authenticatedGeneration);
       } else {
         notify('Error', result.message || 'Incorrect Details');
       }

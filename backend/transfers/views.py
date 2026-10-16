@@ -226,13 +226,14 @@ def resolve_account(request):
     are returned, so the app fills the bank in automatically once a 10-digit
     account number is typed (``matches`` lists every hit; usually exactly one).
     """
-    acct = (request.data.get("account_number") or "").strip()
-    if len(acct) != 10 or not acct.isdigit():
+    raw_account = request.data.get("account_number")
+    acct = raw_account.strip() if isinstance(raw_account, str) else ""
+    if not re.fullmatch(r"[0-9]{10}", acct):
         return fail("Enter a valid 10-digit account number")
 
     bank_slug = str(request.data.get("bank", "") or "").strip()
     if bank_slug:  # explicit bank (manual pick / override) — resolve at just that one
-        bank = Bank.objects.filter(code=bank_slug).first()
+        bank = Bank.objects.filter(code=bank_slug, active=True).first()
         if bank is None:
             return fail("Select a bank", status=404)
         res = payout_resolve_account(acct, bank.bank_code)
@@ -280,8 +281,9 @@ def bank_transfer(request):
     -> {success, wallet, reference}
     """
     user, data = request.user_obj, request.data
-    acct = (data.get("account_number") or "").strip()
-    if len(acct) != 10:
+    raw_account = data.get("account_number")
+    acct = raw_account.strip() if isinstance(raw_account, str) else ""
+    if not re.fullmatch(r"[0-9]{10}", acct):
         return fail("Enter a valid 10-digit account number")
     bank_code = str(data.get("bank", ""))
     amount = parse_amount(data.get("amount"))
@@ -308,7 +310,7 @@ def bank_transfer(request):
     pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
     if pin_err:
         return pin_err
-    bank = Bank.objects.filter(code=bank_code).first()
+    bank = Bank.objects.filter(code=bank_code, active=True).first()
     if bank is None:
         return fail("Select a bank", status=404)
 

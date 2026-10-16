@@ -10,8 +10,15 @@ Android 1.0.5 release has no Firebase configuration. Registration and delivery a
 separate checks; a successful registration response proves neither FCM nor APNs
 delivery. No live notification was sent during this audit.
 
-The follow-up Android source version is 1.0.6 (version code 14). Its unavailable
-push state is explicit in Settings when Firebase configuration is absent.
+The current reviewed Android source version is 1.0.7 (version code 15). Its
+unavailable push state is explicit in Settings when Firebase configuration is absent.
+
+On 16 October, the review of [Android run 38419681256](https://github.com/zitch-systems/zitch/actions/runs/38419681256)
+confirmed that its build job logged at 2026-10-13 15:10:59 UTC:
+"Firebase Android configuration absent: this internal test build cannot receive
+remote push notifications." The configuration step succeeded because this was an
+internal build; that success does not establish notification readiness. A new
+release must inspect its own compiled Firebase resources and `build-info.json`.
 
 ## Android
 

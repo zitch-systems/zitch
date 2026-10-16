@@ -98,6 +98,17 @@ describe('authenticated session replacement', () => {
     expect(await getTransactionPin()).toBeNull();
   });
 
+  it('rejects a delayed authentication response before replacing a newer session', async () => {
+    const oldGeneration = getSessionGeneration();
+    await storeSession({ access_token: 'current-access', refresh_token: 'current-refresh' });
+    const currentGeneration = getSessionGeneration();
+    await expect(storeSession({ access_token: 'late-access', refresh_token: 'late-refresh' }, oldGeneration))
+      .rejects.toThrow('Your session changed');
+    expect(getSessionGeneration()).toBe(currentGeneration);
+    expect(await getToken()).toBe('current-access');
+    expect(await getRefreshToken()).toBe('current-refresh');
+  });
+
   it('invalidates in-flight account work before awaiting logout storage', async () => {
     const generation = getSessionGeneration();
     const logout = clearSession();

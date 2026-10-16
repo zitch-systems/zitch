@@ -61,7 +61,7 @@ if RENDER_HOST:
     CSRF_TRUSTED_ORIGINS.append(f"https://{RENDER_HOST}")
 
 INSTALLED_APPS = [
-    "django.contrib.admin",
+    "accounts.admin_config.ZitchAdminConfig",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
@@ -322,9 +322,9 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = API_MAX_BODY_BYTES
 # for local/test compatibility because bodies are routinely captured by WAF and
 # error telemetry while auth headers receive special redaction.
 ALLOW_BODY_ACCESS_TOKEN = env_bool("ALLOW_BODY_ACCESS_TOKEN", DEBUG or TESTING)
-# The stock Django admin is a password-only surface. Keep it available in local
-# development/tests, but require an explicit break-glass opt-in on a deployed
-# host; normal operations use the RBAC + TOTP operator portal instead.
+# The Django admin shares the operator TOTP policy and verifies its session's
+# current factor. Keep this additional privileged surface available locally,
+# but require an explicit deployment opt-in for compliance and recovery work.
 DJANGO_ADMIN_ENABLED = env_bool("DJANGO_ADMIN_ENABLED", DEBUG or TESTING)
 # Detailed rail/provider health data belongs behind authenticated diagnostics.
 # Tests retain it to cover the diagnostic calculations; deployed liveness is
@@ -523,6 +523,7 @@ WEMA = {
 # reports that state. Tunable per environment because the right threshold is a
 # function of how slow the rails actually are in production.
 WEMA_PAYOUT_STUCK_HOURS = int(os.environ.get("WEMA_PAYOUT_STUCK_HOURS", "2") or 2)
+WEMA_RECONCILE_FAIL_INCOMPLETE = env_bool("WEMA_RECONCILE_FAIL_INCOMPLETE", False)
 VTU_PURCHASE_STUCK_HOURS = int(os.environ.get("VTU_PURCHASE_STUCK_HOURS", "2") or 2)
 
 # How far back the Wema reversal matcher looks for a customer's own payout
