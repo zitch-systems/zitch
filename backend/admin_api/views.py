@@ -2048,6 +2048,7 @@ def _mfa_required_for(user) -> bool:
     return staff_role(user) in ("super_admin", "finance")
 
 
+@transaction.atomic
 def _mfa_login_error(user, code):
     """None when the operator may sign in; a failure response otherwise.
 
@@ -2062,7 +2063,7 @@ def _mfa_login_error(user, code):
     from accounts.models import OperatorTotp
     from accounts.totp import verify
 
-    row = OperatorTotp.objects.filter(user=user, confirmed=True).first()
+    row = OperatorTotp.objects.select_for_update().filter(user=user, confirmed=True).first()
     if row is None:
         if _mfa_required_for(user):
             return fail("Two-factor authentication is required for your role. Ask a super "

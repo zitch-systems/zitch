@@ -1,4 +1,6 @@
 from django.contrib import admin, messages
+from django.core.exceptions import PermissionDenied
+from django.db import transaction
 
 from .models import (
     FundingIntent,
@@ -12,13 +14,50 @@ from .models import (
 from .services import attach_existing_bank_account, is_demo_account
 
 
+class _ReadOnlyMoneyAdmin(admin.ModelAdmin):
+    """Keep forensic access; financial writes belong to checked services."""
+
+    def get_readonly_fields(self, request, obj=None):
+        # Include future financial fields automatically. Hiding a save button
+        # alone does not protect against a hand-crafted change-form POST.
+        return tuple(dict.fromkeys([
+            *super().get_readonly_fields(request, obj),
+            *(field.name for field in self.model._meta.fields),
+            *(field.name for field in self.model._meta.many_to_many),
+        ]))
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def save_model(self, request, obj, form, change):
+        raise PermissionDenied("Financial records cannot be edited in Django admin.")
+
+    def delete_model(self, request, obj):
+        raise PermissionDenied("Financial records cannot be deleted in Django admin.")
+
+    def delete_queryset(self, request, queryset):
+        raise PermissionDenied("Financial records cannot be deleted in Django admin.")
+
+
 @admin.register(Wallet)
-class WalletAdmin(admin.ModelAdmin):
+class WalletAdmin(_ReadOnlyMoneyAdmin):
     list_display = ("user", "balance", "account_number", "bank_name", "updated")
     search_fields = ("user__phone", "user__email", "account_number")
     actions = ["clear_demo_account", "reconnect_bank_account"]
 
-    @admin.action(description="Reconnect the bank account the rail already holds")
+    def has_recover_permission(self, request):
+        # Recovery is a separate named capability from generic form editing.
+        # Reuse the existing explicit wallet-change grant without a migration.
+        return bool(request.user.is_active and request.user.is_staff
+                    and request.user.has_perm("wallet.change_wallet"))
+
+    @admin.action(permissions=["recover"], description="Reconnect the bank account the rail already holds")
     def reconnect_bank_account(self, request, queryset):
         """Attach the NUBAN the bank holds for a wallet that has none.
 
@@ -36,7 +75,7 @@ class WalletAdmin(admin.ModelAdmin):
             level = messages.SUCCESS if attached and attached.account_number else messages.WARNING
             self.message_user(request, f"{wallet.user}: {detail}", level)
 
-    @admin.action(description="Clear a test-mode funding account so a real one can be issued")
+    @admin.action(permissions=["recover"], description="Clear a test-mode funding account so a real one can be issued")
     def clear_demo_account(self, request, queryset):
         """Blank a NUBAN the MOCK rail invented, so the user can be re-provisioned.
 
@@ -50,18 +89,21 @@ class WalletAdmin(admin.ModelAdmin):
         The balance is untouched — it is our ledger, not the bank's.
         """
         cleared = skipped = 0
-        for wallet in queryset:
-            if not is_demo_account(wallet):
-                skipped += 1
-                continue
-            wallet.account_number = ""
-            wallet.account_name = ""
-            wallet.bank_name = ""
-            wallet.account_reference = ""
-            wallet.bank_accounts = []
-            wallet.save(update_fields=["account_number", "account_name", "bank_name",
-                                       "account_reference", "bank_accounts", "updated"])
-            cleared += 1
+        with transaction.atomic():
+            # Re-read under the wallet lock: a cached demo row must not erase a
+            # real account attached by a callback after the operator selected it.
+            for wallet in queryset.select_for_update():
+                if not is_demo_account(wallet):
+                    skipped += 1
+                    continue
+                wallet.account_number = ""
+                wallet.account_name = ""
+                wallet.bank_name = ""
+                wallet.account_reference = ""
+                wallet.bank_accounts = []
+                wallet.save(update_fields=["account_number", "account_name", "bank_name",
+                                           "account_reference", "bank_accounts", "updated"])
+                cleared += 1
         if cleared:
             self.message_user(
                 request,
@@ -77,7 +119,7 @@ class WalletAdmin(admin.ModelAdmin):
 
 
 @admin.register(Transaction)
-class TransactionAdmin(admin.ModelAdmin):
+class TransactionAdmin(_ReadOnlyMoneyAdmin):
     list_display = ("reference", "user", "service", "direction", "amount",
                     "transaction_status", "failure_reason", "created")
     list_filter = ("direction", "transaction_status", "created")
@@ -103,19 +145,6 @@ class TransactionAdmin(admin.ModelAdmin):
         unreachable — every failed row looks alike.
         """
         return (obj.meta or {}).get("failure") or "—"
-
-
-class _ReadOnlyMoneyAdmin(admin.ModelAdmin):
-    """Audit records are append-only and changed only by checked services."""
-
-    def has_add_permission(self, request):
-        return False
-
-    def has_change_permission(self, request, obj=None):
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        return False
 
 
 @admin.register(TransactionAlertDelivery)
@@ -172,7 +201,7 @@ class ReversalEvidenceResolutionAdmin(_ReadOnlyMoneyAdmin):
 
 
 @admin.register(FundingIntent)
-class FundingIntentAdmin(admin.ModelAdmin):
+class FundingIntentAdmin(_ReadOnlyMoneyAdmin):
     list_display = ("reference", "user", "amount", "status", "credited", "created")
     list_filter = ("status", "credited", "created")
     search_fields = ("reference", "user__phone", "user__email")

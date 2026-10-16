@@ -41,8 +41,11 @@ enrolment must not lock an operator out of the portal.
 
 ### At login
 
-Both operator login forms enforce it — `/api/ops/login/` and `/api/admin/login` — via
-one shared helper. A gate on one form and not the other is no gate.
+The operator login forms at `/api/ops/login/`, `/api/admin/login` and Django
+`/admin/login/` share the same second-factor policy. Django admin includes an
+authenticator-code field. Its browser session is bound to the authenticated
+operator and current confirmed factor, so an older password-only session cannot
+bypass an enrolled factor, including on `/admin/diagnostics/`.
 
 * Enrolled and no code → `401` with `code: "mfa_required"`, so the client prompts for a
   code instead of showing "wrong password" for a correct one.
@@ -129,7 +132,8 @@ With the flag off, an over-ceiling credit is refused exactly as it is today.
   audited and reversible; a minted balance that has been withdrawn is not. Adding one is
   a `@approvals.register` executor plus a branch in the endpoint.
 * **No portal UI**, as above.
-* **No recovery codes.** An operator who loses their authenticator needs a super admin
-  to clear their `OperatorTotp` row (from `/admin/`). Recovery codes are the usual
-  answer and are a genuine gap — they are also a second credential to store and leak,
-  so the deliberate interim answer is a human with database access.
+* **No recovery codes.** An operator who loses their authenticator needs an
+  independently verified recovery by an authorized administrator with database
+  access. `OperatorTotp` is not exposed as an editable Django admin model. Recovery
+  must not be implemented by disabling MFA for every operator; existing sessions
+  tied to the replaced factor must reauthenticate.

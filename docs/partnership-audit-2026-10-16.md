@@ -65,6 +65,12 @@ result. Production database network access controls were not relaxed.
   Enable `WEMA_RECONCILE_FAIL_INCOMPLETE=true` only on the reconciliation cron.
 - A disabled savings product with no unpaid plans is an audited no-op. Any unpaid
   obligation remains a failure requiring review, with no invented local payout.
+- Apply the operator portal's second-factor policy to Django admin, including
+  diagnostics and existing browser sessions; retain compliance and recovery access.
+  Protect wallet, funding-intent and transaction records from generic admin edits,
+  creation and deletion while retaining checked account-recovery actions. Make
+  token and OTP admin routes read-only, hide credential hashes and retain the
+  authorized issuance, reset and revocation services.
 
 The main app retains WhatsApp. The earlier one-off WhatsApp-free APK is a separate
 build and is not the standard release. Existing pending unsigned WhatsApp link
