@@ -1817,56 +1817,23 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
     raw = text.strip()
     low = raw.lower()
 
-    # 2. Existing account: bind via the app-issued LINK code. Bind only if the
-    # code arrives from the number on the user's Zitch account - the code is shown
-    # in plaintext in the app, so without this a leaked/shoulder-surfed code lets
-    # an attacker's WhatsApp claim the victim's account (SIM-swap protection).
-    # Compare on the national significant number (last 10 digits) so local (080...)
-    # and international (23480...) forms match.
+    # 2. Existing account: atomically consume the credential-bound capability.
+    # Compare the complete canonical Nigerian phone, including country code.
+    from .linking import redeem_link
+
     code = re.sub(r"[^A-Z0-9]", "", raw.upper().replace("LINK ", "", 1))
-    link = (
-        WhatsAppLink.objects.filter(
-            status=WhatsAppLink.PENDING, link_code=code, expires_at__gt=timezone.now()
-        ).first()
-        if code else None
-    )
-    if link is not None:
-        registered = re.sub(r"\D", "", (link.user.phone or ""))
-        sender = re.sub(r"\D", "", msisdn)
-        # Fail CLOSED: `phone` is nullable, so an account with no number on file has
-        # nothing to match against - binding anyway would let a leaked code attach an
-        # attacker's WhatsApp to that account. Require a registered number that matches.
-        if not registered or registered[-10:] != sender[-10:]:
-            # Burn it. A code arriving from a number that is not the account's is
-            # the exact shape of a leaked or shoulder-surfed code being tried from
-            # an attacker's WhatsApp; leaving it live would let them keep trying
-            # from other numbers. The owner can start the private sign-in flow
-            # from the registered number without installing another product.
-            link.link_code = ""
-            link.save(update_fields=["link_code"])
-            support = _support_block()
-            message = ("For your security, send this code from the phone number on your Zitch account. "
-                       "That code has now expired. From the registered number, reply *2* to sign in "
-                       "securely here. If you no longer use that number, contact support.")
-            return reply(msisdn, message + (f"\n\n{support}" if support else ""))
-        # Re-linking is a sign-in to this banking channel, not permission to
-        # leave an older phone connected forever. Retire the user's previous
-        # active channel, and anything it left armed, before activating the
-        # freshly proved one.
-        previous = WhatsAppLink.objects.filter(
-            user=link.user, status=WhatsAppLink.ACTIVE
-        ).exclude(pk=link.pk)
-        retire_unsubmitted_actions(link.user, previous.values_list("wa_msisdn", flat=True))
-        previous.delete()
-        link.wa_msisdn = msisdn
-        link.status = WhatsAppLink.ACTIVE
-        link.link_code = ""
-        link.linked_at = timezone.now()
-        link.save(update_fields=["wa_msisdn", "status", "link_code", "linked_at"])
-        name = (link.user.first_name or "there").strip()
-        # The moment this thread becomes a banking channel is the moment the
-        # chat-lock tip is worth reading, so it rides on the link confirmation
-        # rather than waiting for someone to go looking for it.
+    result, linked_user = redeem_link(code, msisdn)
+    if result == "wrong_number":
+        support = _support_block()
+        message = ("For your security, send this code from the phone number on your Zitch account. "
+                   "That code has now expired. From the registered number, reply *2* to sign in "
+                   "securely here. If you no longer use that number, contact support.")
+        return reply(msisdn, message + (f"\n\n{support}" if support else ""))
+    if result == "revoked":
+        return reply(msisdn, "That link has expired or your Zitch account details changed. "
+                     "Reply *2* from your registered number to sign in securely here.")
+    if result == "linked":
+        name = (linked_user.first_name or "there").strip()
         reply(msisdn, f"✅ *Linked!* Hi {name}, your WhatsApp is now connected to Zitch.\n\n"
                       + _chat_lock_tip())
         return send_menu(msisdn)

@@ -2207,9 +2207,7 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
     re-renders with the candidates leading the dropdown. The name enquiry is
     the real safety net either way.
     """
-    from decimal import Decimal, InvalidOperation
-
-    from common.http import MIN_TRANSFER, daily_limit_error, send_limit_error
+    from common.http import MIN_TRANSFER, daily_limit_error, send_limit_error, parse_amount
     from transfers.models import Bank
     from utility.providers import payout_resolve_account
 
@@ -2250,12 +2248,12 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
                     f'matching "{search}". Pick yours, then tap Continue.')
         return _transfer_form_screen(query=search, hint=hint)
 
-    try:
-        amount = Decimal(str(data.get("amount", "")).strip())
-    except InvalidOperation:
+    amount = parse_amount(data.get("amount"))
+    if amount is None:
         return _transfer_form_screen(error="Enter the amount as a number, e.g. 5000.")
-    account = "".join(ch for ch in str(data.get("account_number", "")) if ch.isdigit())
-    if len(account) != 10:
+    raw_account = data.get("account_number")
+    account = raw_account.strip() if isinstance(raw_account, str) else ""
+    if not re.fullmatch(r"[0-9]{10}", account):
         return _transfer_form_screen(error="The account number should be exactly 10 digits.")
     if amount < MIN_TRANSFER:
         return _transfer_form_screen(error=f"Minimum transfer is NGN {MIN_TRANSFER:,.0f}.")

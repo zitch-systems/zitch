@@ -1,11 +1,12 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { publicPost } from '@/lib/api';
 import { notify } from '@/components/design/Notify';
 import { unlockSession } from '@/lib/session';
 import { usePinScreenProtection } from '@/lib/screenCapture';
-import { storeSession } from '@/lib/secureStore';
+import { getSessionGeneration, storeSession } from '@/lib/secureStore';
+import { registerForPushNotifications } from '@/lib/notifications';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
@@ -19,6 +20,11 @@ const ResetPassword = () => {
   const rawIdent = params.ident ?? params.phone;
   const ident = typeof rawIdent === 'string' ? rawIdent : '';
   const inFlight = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   usePinScreenProtection();
   const [otp, setOtp] = useState('');
   const [p1, setP1] = useState('');
@@ -37,12 +43,21 @@ const ResetPassword = () => {
     }
     inFlight.current = true;
     setBusy(true);
+    const generation = getSessionGeneration();
     try {
       const response = await publicPost('/api/password/reset/', { email_or_phone: ident, otp, password: p1 });
       const result = await response.json();
+      if (!mounted.current || generation !== getSessionGeneration()) return;
       if (response.ok && result.access_token) {
-        await storeSession(result);
+        await storeSession(result, generation);
+        const authenticatedGeneration = getSessionGeneration();
+        if (!mounted.current) return;
         await unlockSession();
+        if (!mounted.current || authenticatedGeneration !== getSessionGeneration()) return;
+        // Recovery also creates a new server session. Rebind already-authorized
+        // alerts just as password sign-in does; otherwise this phone can remain
+        // unsubscribed after the reset revokes its previous session.
+        registerForPushNotifications(false).catch(() => {});
         router.replace('/home');
       } else {
         notify('Error', result.message || 'Could not reset your password');

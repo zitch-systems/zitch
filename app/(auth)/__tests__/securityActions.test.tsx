@@ -12,6 +12,8 @@ const mockUnlock = jest.fn();
 const mockReplace = jest.fn();
 const mockBack = jest.fn();
 const mockEnablePay = jest.fn();
+const mockRegisterPush = jest.fn();
+let mockGeneration = 0;
 const mockParams: { change?: string; ident?: string } = {};
 
 jest.mock('expo-router', () => ({
@@ -24,7 +26,9 @@ jest.mock('@/lib/secureStore', () => ({
   saveRefreshToken: (...args: unknown[]) => mockSaveRefresh(...args),
   saveTransactionPin: (...args: unknown[]) => mockSavePin(...args),
   storeSession: (...args: unknown[]) => mockStoreSession(...args),
+  getSessionGeneration: () => mockGeneration,
 }));
+jest.mock('@/lib/notifications', () => ({ registerForPushNotifications: (...args: unknown[]) => mockRegisterPush(...args) }));
 jest.mock('@/lib/session', () => ({ unlockSession: () => mockUnlock() }));
 jest.mock('@/lib/screenCapture', () => ({ usePinScreenProtection: jest.fn() }));
 jest.mock('@/components/AuthGuard', () => ({ __esModule: true, default: ({ children }: { children: ReactNode }) => children }));
@@ -60,6 +64,8 @@ const field = (tree: renderer.ReactTestRenderer, name: string) => tree.root.find
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockGeneration = 0;
+  mockRegisterPush.mockResolvedValue('registered');
   delete mockParams.change;
   delete mockParams.ident;
   mockPost.mockResolvedValue({ ok: true, json: async () => ({ success: true, refresh_token: 'rotated-refresh' }) });
@@ -99,9 +105,32 @@ it('unlocks a previously locked device after password recovery', async () => {
   await act(async () => { field(tree, 'New password').props.onChangeText('newpass123!'); });
   await act(async () => { field(tree, 'Confirm password').props.onChangeText('newpass123!'); });
   await act(async () => { await field(tree, 'Reset password').props.onPress(); });
-  expect(mockStoreSession).toHaveBeenCalledWith({ access_token: 'new-access', refresh_token: 'new-refresh' });
+  expect(mockStoreSession).toHaveBeenCalledWith({ access_token: 'new-access', refresh_token: 'new-refresh' }, 0);
   expect(mockUnlock).toHaveBeenCalledTimes(1);
+  expect(mockRegisterPush).toHaveBeenCalledWith(false);
   expect(mockUnlock.mock.invocationCallOrder[0]).toBeLessThan(mockReplace.mock.invocationCallOrder[0]);
+  act(() => tree.unmount());
+});
+
+it('does not restore an old password-recovery session after another login', async () => {
+  mockParams.ident = 'ada@example.com';
+  let finish!: (value: unknown) => void;
+  mockPost.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<ResetPassword />); });
+  await act(async () => { field(tree, 'Reset code').props.onChangeText('654321'); });
+  await act(async () => { field(tree, 'New password').props.onChangeText('newpass123!'); });
+  await act(async () => { field(tree, 'Confirm password').props.onChangeText('newpass123!'); });
+  let resetting!: Promise<void>;
+  act(() => { resetting = field(tree, 'Reset password').props.onPress(); });
+  mockGeneration += 1;
+  await act(async () => {
+    finish({ ok: true, json: async () => ({ access_token: 'old-access' }) });
+    await resetting;
+  });
+  expect(mockStoreSession).not.toHaveBeenCalled();
+  expect(mockUnlock).not.toHaveBeenCalled();
+  expect(mockRegisterPush).not.toHaveBeenCalled();
   act(() => tree.unmount());
 });
 

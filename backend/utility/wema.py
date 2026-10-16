@@ -1190,24 +1190,28 @@ def lift_debit_restriction(account_number: str, *, bvn: bool | None = None,
     last = {"success": False, "message": "Request failed"}
     for product in products:
         try:
-            data = _post(product, "/api/CustomerAccount/PartnerDebitRestrictionManagement",
-                         {"pndType": "PlacePnd" if place else "LiftPnd",
-                          "accountNumber": account_number}).json()
-            last = {"success": _ok(data), "message": _msg(data), "raw": data,
+            response = _post(product, "/api/CustomerAccount/PartnerDebitRestrictionManagement",
+                             {"pndType": "PlacePnd" if place else "LiftPnd",
+                              "accountNumber": account_number})
+            data = response.json()
+            last = {"success": (200 <= response.status_code < 300
+                                and response.status_code != 202 and _ok(data)),
+                    "message": _msg(data), "raw": data,
                     "product": product}
             if last["success"]:
                 return last
-        except requests.RequestException as exc:
+        except (requests.RequestException, ValueError) as exc:
             last = _unreachable(exc)
             last["product"] = product
 
-    # The live gateway returns "Resource not found" when this account has no PND
-    # record to mutate. Distinguish that benign absence from a nonexistent NUBAN
-    # using the separately authenticated account-maintenance product. Only a bank-
-    # confirmed account read can turn this into success.
+    # A readable balance proves an account exists, not that the bank permits a
+    # debit. A missing restriction record can also be a routing/entitlement error.
+    # Recover only from an explicit active + unrestricted bank status readback.
     if (not place and "resource not found" in str(last.get("message") or "").casefold()):
-        account = get_balance(account_number)
-        if account.get("success"):
+        account = get_kyc_status(account_number)
+        if (account.get("success") is True and not account.get("mock")
+                and str(account.get("account_status") or "").strip().casefold() == "active"
+                and str(account.get("restriction_status") or "").strip().casefold() == "none"):
             return {"success": True, "already_clear": True,
                     "message": "No debit restriction is registered",
                     "product": last.get("product", ""), "raw": last.get("raw")}
@@ -1563,11 +1567,17 @@ def resolve_account(account_number: str, bank_code: str) -> dict:
     try:
         resp = _get("debit", f"/api/Shared/AccountNameEnquiry/{bank_code}/{account_number}")
         data = resp.json()
-        r = data.get("result", {}) or {}
-        name = r.get("accountName", "")
-        explicit_error = data.get("hasError") is True or data.get("status") is False
-        out = {"success": bool(name) and not explicit_error, "name": name,
-               "bank_code": r.get("bankCode", bank_code), "raw": data}
+        r = data.get("result") if isinstance(data, dict) else None
+        r = r if isinstance(r, dict) else {}
+        raw_name = r.get("accountName")
+        name = raw_name.strip() if isinstance(raw_name, str) else ""
+        returned_bank = str(r.get("bankCode") or bank_code).strip()
+        returned_account = str(r.get("accountNumber") or account_number).strip()
+        out = {"success": (200 <= resp.status_code < 300 and resp.status_code != 202
+                           and _ok(data) and bool(name)
+                           and returned_bank == str(bank_code).strip()
+                           and returned_account == str(account_number).strip()),
+               "name": name, "bank_code": returned_bank, "raw": data}
         if not out["success"]:
             # Carry the gateway's own reason (brand-stripped by _msg) rather than
             # letting the caller fall back to a bare "could not verify". The rail
@@ -1581,7 +1591,7 @@ def resolve_account(account_number: str, bank_code: str) -> dict:
                 bank_code, _mask_account(account_number), _response_meta(resp, data), _trim(data),
             )
         return out
-    except requests.RequestException as exc:
+    except (requests.RequestException, ValueError) as exc:
         return _unreachable(exc)
 
 
@@ -1593,8 +1603,8 @@ TRANSFER_SETTLED_STATUSES = {
 }
 TRANSFER_FAILED_STATUSES = {
     "FAILED", "FAILURE", "REVERSED", "DECLINED", "CANCELLED", "CANCELED",
-    "REJECTED", "RETURNED", "NOT_PROCESSED", "EXPIRED", "TIMED_OUT",
-    "TIMEDOUT", "TIMEOUT", "REFUNDED", "BLOCKED", "INSUFFICIENT_FUNDS",
+    "REJECTED", "RETURNED", "NOT_PROCESSED", "EXPIRED",
+    "REFUNDED", "BLOCKED", "INSUFFICIENT_FUNDS",
     "INSUFFICIENT FUNDS", "INVALID_ACCOUNT", "INVALID ACCOUNT",
     # Wema confirmed the same payment legend used by VAS: 400 is a terminal
     # business failure and 401 is an authentication/API refusal. A 401 returned by
@@ -1602,6 +1612,7 @@ TRANSFER_FAILED_STATUSES = {
     # failure to ask the question is not evidence that the original payment failed.
     "400", "401",
 }
+TRANSFER_AMBIGUOUS_STATUSES = {"TIMED_OUT", "TIMEDOUT", "TIMEOUT"}
 
 
 def classify_transfer_status(status: str, *, envelope_ok: bool = True) -> str:
@@ -1613,9 +1624,13 @@ def classify_transfer_status(status: str, *, envelope_ok: bool = True) -> str:
     A negative APIM envelope is a definitive provider rejection because a response
     was received; transport failures are handled separately as ambiguous.
     """
+    normalized = str(status or "").strip().upper()
+    # A processor timeout can arrive inside a successfully received HTTP/body
+    # response after the recipient was credited. It is not a failed payment.
+    if normalized in TRANSFER_AMBIGUOUS_STATUSES:
+        return "pending"
     if not envelope_ok:
         return "failed"
-    normalized = str(status or "").strip().upper()
     if normalized in TRANSFER_SETTLED_STATUSES:
         return "success"
     if normalized in TRANSFER_FAILED_STATUSES:
@@ -1647,14 +1662,19 @@ def _transfer_payload(data: dict) -> dict:
             continue
         seen.add(id(item))
         keys = {str(k).casefold() for k in item}
-        if keys & {"status", "transactionstatus", "transferstatus"}:
+        # A nested envelope's status:true describes the request, not the money.
+        # Continue to its data/result instead of hiding the actual payment status.
+        # Retain status:false so contradictory failure evidence cannot be skipped.
+        if (keys & {"transactionstatus", "transferstatus"}
+                or any(str(k).casefold() == "status" and (type(v) is not bool or v is False)
+                       for k, v in item.items())):
             return item
         queue.extend(item.get(k) for k in ("data", "result") if isinstance(item.get(k), dict))
     return {}
 
 
 def _transfer_result(data: dict, reference: str, result: dict, *,
-                     lookup: bool = False) -> dict:
+                     lookup: bool = False, http_status: int | None = None) -> dict:
     """Normalise a transfer envelope into success / pending / failed.
 
     ``lookup=True`` for confirm_transfer_status. A negative envelope on the transfer
@@ -1670,9 +1690,30 @@ def _transfer_result(data: dict, reference: str, result: dict, *,
     terminal status. Anything else stays PENDING for the poller, which is what this
     function's caller has always claimed to do on the transport-error path.
     """
-    status = str(_transfer_value(result, "status", "transactionStatus", "transferStatus")).strip().upper()
+    statuses = [value for key, value in result.items()
+                if str(key).casefold() in {"status", "transactionstatus", "transferstatus"}
+                and value not in (None, "")
+                and not (str(key).casefold() == "status" and type(value) is bool)]
+    status = str(statuses[0]).strip().upper() if statuses else ""
+    # Never let field order choose between paid/rejected/in-flight evidence.
+    malformed_status = any(type(value) not in (str, int) for value in statuses)
+    status_outcomes = {classify_transfer_status(value) for value in statuses}
+    conflicting_status = malformed_status or len(status_outcomes) > 1
+    if conflicting_status:
+        status = "CONFLICTING_STATUS"
     envelope = _envelope_outcome(data)
-    if lookup and (envelope is not True or status == "401"):
+    if (conflicting_status or status in TRANSFER_AMBIGUOUS_STATUSES
+            or (envelope is True and _ci_get(result, "status", default=None) is False)):
+        outcome = "pending"
+    elif lookup and (envelope is not True or status == "401"
+                     or (http_status is not None and not 200 <= http_status < 300)):
+        outcome = "pending"
+    elif not lookup and http_status in (400, 401, 403, 404, 422):
+        # A refusal cannot simultaneously prove a successful payment. Contradictory
+        # HTTP/body evidence needs reconciliation; a plain refusal is terminal.
+        outcome = ("pending" if envelope is True or status in TRANSFER_SETTLED_STATUSES
+                   else "failed")
+    elif http_status is not None and not 200 <= http_status < 300:
         outcome = "pending"
     elif envelope is None:
         outcome = "pending"
@@ -1695,8 +1736,12 @@ def _transfer_result(data: dict, reference: str, result: dict, *,
     }
 
 
-def _parse_transfer(data: dict, reference: str) -> dict:
-    return _transfer_result(data, reference, _transfer_payload(data))
+def _parse_transfer(data: dict, reference: str, *, http_status: int | None = None) -> dict:
+    result = _transfer_result(data, reference, _transfer_payload(data), http_status=http_status)
+    if str(result.get("reference") or "").strip() != str(reference).strip():
+        result.update(success=False, pending=True, reference_mismatch=True,
+                      message="Bank response did not identify this transaction")
+    return result
 
 
 @_new_partnership_instruction
@@ -1728,7 +1773,7 @@ def transfer(amount_naira, reference: str, narration: str, *, source_account: st
         }
         resp = _post("debit", "/api/Shared/ProcessClientTransfer", body)
         data = resp.json()
-        out = _parse_transfer(data, reference)
+        out = _parse_transfer(data, reference, http_status=resp.status_code)
         if out.get("pending"):
             log.info(
                 "wema_transfer_pending ref=%s source=%s dest=%s bank_code=%s meta=%s raw=%s",
@@ -1783,7 +1828,7 @@ def confirm_transfer_status(reference: str, *, platform_reference: str = "") -> 
             data = resp.json()
             payload = _transfer_payload(data)
             result = _transfer_result(
-                data, reference, payload, lookup=True)
+                data, reference, payload, lookup=True, http_status=resp.status_code)
             result["lookup_reference"] = lookup_reference
             results.append(result)
 
@@ -1916,8 +1961,8 @@ def credit_wallet(amount_naira, reference: str, narration: str, *, destination_a
             "transactionReference": reference,
             "useCustomNarration": bool(narration),
         }
-        data = _post("credit", "/api/IntraBankTransfer/FundWallet", body).json()
-        return _parse_transfer(data, reference)
+        resp = _post("credit", "/api/IntraBankTransfer/FundWallet", body)
+        return _parse_transfer(resp.json(), reference, http_status=resp.status_code)
     except (requests.RequestException, ValueError) as exc:
         # FundWallet is non-idempotent.  A transport failure or invalid response
         # may happen after ALAT accepted the credit, so never report a retryable
@@ -1932,7 +1977,13 @@ def confirm_credit_status(reference: str) -> dict:
     try:
         resp = _get("credit", f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{reference}")
         data = resp.json()
-        result = _transfer_result(data, reference, _transfer_payload(data), lookup=True)
+        payload = _transfer_payload(data)
+        result = _transfer_result(data, reference, payload, lookup=True,
+                                  http_status=resp.status_code)
+        returned_reference = str(_transfer_value(payload, "transactionReference", "reference")).strip()
+        if not result["pending"] and returned_reference != str(reference).strip():
+            result.update(success=False, pending=True, reference_mismatch=True,
+                          message="Bank status response did not identify this credit")
         if not result["status"]:
             log.warning("wema_credit_status_unresolved ref=%s meta=%s raw=%s",
                         _log_safe(reference), _response_meta(resp, data),

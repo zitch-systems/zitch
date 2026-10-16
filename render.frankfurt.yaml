@@ -698,6 +698,8 @@ services:
     buildCommand: "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
     startCommand: "python manage.py migrate --check && python manage.py reconcile_wema"
     envVars:
+      - key: WEMA_RECONCILE_FAIL_INCOMPLETE
+        value: "true"
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}

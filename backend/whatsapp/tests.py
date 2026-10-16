@@ -80,6 +80,18 @@ class WebhookTests(TestCase):
                               {"hub.mode": "subscribe", "hub.verify_token": "nope", "hub.challenge": "42"})
         self.assertEqual(bad.status_code, 403)
 
+    @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": ""})
+    def test_verify_handshake_requires_a_configured_secret(self):
+        response = self.client.get("/webhooks/whatsapp", {
+            "hub.mode": "subscribe", "hub.challenge": "42"})
+        self.assertEqual(response.status_code, 403)
+
+    @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "configured-token"})
+    def test_verify_handshake_rejects_unicode_token_without_server_error(self):
+        response = self.client.get("/webhooks/whatsapp", {
+            "hub.mode": "subscribe", "hub.verify_token": "错误", "hub.challenge": "42"})
+        self.assertEqual(response.status_code, 403)
+
     @override_settings(WHATSAPP={"VERIFY_TOKEN": "", "TOKEN": "", "APP_SECRET": "shh",
                                  "BASE_URL": "x", "PHONE_NUMBER_ID": "phone-1",
                                  "BUSINESS_NUMBER": "2348000000000", "MODE": "live"})
@@ -3662,12 +3674,12 @@ class ChatLockTipTests(TestCase):
         """The moment the thread becomes a banking channel is when this is worth
         reading — not whenever someone goes looking for it."""
         user, _ = make_user(phone="08010000088", email="lock@zitch.test")
-        WhatsAppLink.objects.create(user=user, status=WhatsAppLink.PENDING,
-                                    link_code="ABC123",
-                                    expires_at=timezone.now() + timedelta(minutes=30))
+        from .auth_proof import credentials
+        from .linking import issue_link
+        link = issue_link(user, credentials(user))
         # Must arrive from the account's own number — the router refuses a code
         # sent from anywhere else.
-        self.inbound("LINK ABC123", "cl-link", msisdn="2348010000088")
+        self.inbound("LINK " + link.link_code, "cl-link", msisdn="2348010000088")
         said = " ".join(
             WaMessageLog.objects.filter(msisdn="2348010000088",
                                         direction=WaMessageLog.OUT)

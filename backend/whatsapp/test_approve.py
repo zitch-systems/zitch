@@ -449,9 +449,9 @@ class UnlinkRetiresArmedActionsTests(TestCase):
         from .router import handle_inbound
 
         new_msisdn = "2348010000001"
-        link = WhatsAppLink.objects.create(user=self.user, status=WhatsAppLink.PENDING,
-                                           link_code="ABCDEF0123456789ABCDEF0123456789",
-                                           expires_at=timezone.now() + timedelta(minutes=30))
+        from .auth_proof import credentials
+        from .linking import issue_link
+        link = issue_link(self.user, credentials(self.user))
         handoff = sign_approve_token(self.pa)
         handle_inbound(new_msisdn, f"LINK {link.link_code}")
         link.refresh_from_db()

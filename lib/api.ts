@@ -54,6 +54,29 @@ let refreshing: Promise<RefreshOutcome> | null = null;
 // two into one boolean turns a subway tunnel into a re-login.
 type RefreshOutcome = 'renewed' | 'rejected' | 'unavailable' | 'changed';
 let refreshingGeneration: number | null = null;
+const RESPONSE_BODY_READERS = new Set<PropertyKey>(['json', 'text', 'blob', 'arrayBuffer', 'formData']);
+
+/** Keep a raw response bound to the session that requested it through body
+ * consumption. fetch resolves at headers: a delayed JSON body can arrive after
+ * logout or another login, even though the checks around fetch already passed.
+ * Every caller, including PIN/profile screens using apiPost directly, must reject
+ * that old result before it can update the current account's local state. */
+function sessionBoundResponse(response: Response, generation: number): Response {
+  return new Proxy(response, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (typeof value !== 'function') return value;
+      if (property === 'clone') return () => sessionBoundResponse(value.call(target), generation);
+      if (RESPONSE_BODY_READERS.has(property)) return async (...args: unknown[]) => {
+        if (generation !== getSessionGeneration()) throw new Error('Session changed');
+        const body = await value.apply(target, args);
+        if (generation !== getSessionGeneration()) throw new Error('Session changed');
+        return body;
+      };
+      return value.bind(target);
+    },
+  });
+}
 
 /** Exchange the stored refresh token for a new pair. */
 async function refreshSession(generation: number): Promise<RefreshOutcome> {
@@ -132,13 +155,13 @@ export async function apiPost(path: string, body: Record<string, any> = {}, time
       if (generation !== getSessionGeneration()) throw new Error('Session changed');
       if (retried.status === 401) await onSessionExpired(generation);
       else void touchActivity();
-      return retried;
+      return sessionBoundResponse(retried, generation);
     }
     if (outcome === 'rejected') await onSessionExpired(generation);
   } else if (token) {
     void touchActivity();
   }
-  return res;
+  return sessionBoundResponse(res, generation);
 }
 
 /** One authenticated attempt: builds the headers from whatever token is stored

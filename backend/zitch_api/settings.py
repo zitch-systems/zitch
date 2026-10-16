@@ -523,6 +523,7 @@ WEMA = {
 # reports that state. Tunable per environment because the right threshold is a
 # function of how slow the rails actually are in production.
 WEMA_PAYOUT_STUCK_HOURS = int(os.environ.get("WEMA_PAYOUT_STUCK_HOURS", "2") or 2)
+WEMA_RECONCILE_FAIL_INCOMPLETE = env_bool("WEMA_RECONCILE_FAIL_INCOMPLETE", False)
 VTU_PURCHASE_STUCK_HOURS = int(os.environ.get("VTU_PURCHASE_STUCK_HOURS", "2") or 2)
 
 # How far back the Wema reversal matcher looks for a customer's own payout

@@ -10,6 +10,7 @@ const mockReplace = jest.fn();
 const mockGetToken = jest.fn();
 const mockBioEnabled = jest.fn();
 const mockAuthenticate = jest.fn();
+let mockGeneration = 0;
 const calls: string[] = [];
 
 jest.mock('expo-router', () => ({
@@ -25,6 +26,7 @@ jest.mock('@/lib/secureStore', () => ({
   getToken: () => mockGetToken(),
   getRememberedIdentifier: async () => '',
   rememberIdentifier: async () => {},
+  getSessionGeneration: () => mockGeneration,
 }));
 jest.mock('@/lib/session', () => ({
   enforceHardExpiry: async () => false,
@@ -64,11 +66,64 @@ const field = (tree: renderer.ReactTestRenderer, label: string) => tree.root.fin
 beforeEach(() => {
   jest.clearAllMocks();
   calls.length = 0;
+  mockGeneration = 0;
   mockGetToken.mockResolvedValue(null);
   mockBioEnabled.mockResolvedValue(false);
   mockRegisterPush.mockResolvedValue('registered');
   mockTakeNotification.mockResolvedValue(false);
   mockPublicPost.mockResolvedValue({ ok: true, json: async () => ({ access_token: 'access', refresh_token: 'refresh' }) });
+});
+
+it('does not replace a newer session with a delayed password sign-in response', async () => {
+  let finish!: (value: unknown) => void;
+  mockPublicPost.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Signin />); });
+  await act(async () => { field(tree, 'Email or phone').props.onChangeText('old@zitch.test'); });
+  await act(async () => { field(tree, 'Password').props.onChangeText('secret-pass'); });
+  let signingIn!: Promise<void>;
+  act(() => { signingIn = field(tree, 'Sign in').props.onPress(); });
+  mockGeneration += 1;
+  await act(async () => {
+    finish({ ok: true, json: async () => ({ access_token: 'old-access' }) });
+    await signingIn;
+  });
+  expect(mockStoreSession).not.toHaveBeenCalled();
+  expect(mockReplace).not.toHaveBeenCalled();
+  act(() => tree.unmount());
+});
+
+it('discards a password response after its sign-in screen was closed', async () => {
+  let finish!: (value: unknown) => void;
+  mockPublicPost.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Signin />); });
+  await act(async () => { field(tree, 'Email or phone').props.onChangeText('old@zitch.test'); });
+  await act(async () => { field(tree, 'Password').props.onChangeText('secret-pass'); });
+  let signingIn!: Promise<void>;
+  act(() => { signingIn = field(tree, 'Sign in').props.onPress(); });
+  act(() => tree.unmount());
+  await act(async () => {
+    finish({ ok: true, json: async () => ({ access_token: 'old-access' }) });
+    await signingIn;
+  });
+  expect(mockStoreSession).not.toHaveBeenCalled();
+  expect(mockReplace).not.toHaveBeenCalled();
+});
+
+it('does not unlock a replacement session when an earlier biometric prompt succeeds', async () => {
+  mockGetToken.mockResolvedValue('old-access');
+  mockBioEnabled.mockResolvedValue(true);
+  let finish!: (value: boolean) => void;
+  mockAuthenticate.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Signin />); });
+  expect(mockAuthenticate).toHaveBeenCalledTimes(1);
+  mockGeneration += 1;
+  await act(async () => { finish(true); });
+  expect(calls).not.toContain('unlockSession');
+  expect(mockReplace).not.toHaveBeenCalled();
+  act(() => tree.unmount());
 });
 
 it('binds the push token to the account that just signed in, without prompting', async () => {

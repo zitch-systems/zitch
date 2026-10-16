@@ -55,7 +55,7 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if not (0 <= idx < len(choices)):
             return _reroute_or_reprompt(pa, msisdn, text,
                                        "That number isn't on the list. Try again, or \"cancel\".")
-        bank = Bank.objects.filter(code=choices[idx]).first()
+        bank = Bank.objects.filter(code=choices[idx], active=True).first()
         if bank is None:
             _clear_actions(msisdn)
             return reply(msisdn, "Something went wrong picking that bank. Reply \"menu\" to start over.")
@@ -361,13 +361,21 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
     """Execute a PIN-confirmed transfer (called by the chat PIN path AND the
     secure Flow endpoint). Sends the chat receipt and returns a short outcome
     line for the Flow success screen."""
+    from wallet.models import Transaction
+
+    # Replay the actual ledger outcome before mutable bank/enquiry/limit state.
+    # A disabled bank or an outage must not relabel an existing payment failed
+    # and invite the customer to send it again with a new reference.
+    prior = Transaction.objects.filter(user=user, idempotency_key=f"wa-{pa.pk}").first()
+    if prior is not None:
+        return _transfer_outcome(pa, user, msisdn, prior, replay=True)
     if velocity_exceeded(user):  # same fraud brake the app enforces (parity)
         _clear_actions(msisdn)
         msg = "Too many transactions in a short time. Please wait a few minutes and try again."
         reply(msisdn, msg)
         return Outcome(msg, OUTCOME_FAILED)
     amount = Decimal(pa.payload["amount"])
-    bank = Bank.objects.filter(bank_code=pa.payload["bank_code"]).first()
+    bank = Bank.objects.filter(bank_code=pa.payload["bank_code"], active=True).first()
     if bank is None:
         _clear_actions(msisdn)
         msg = f"Something went wrong with your {_money(amount)} transfer. Reply \"menu\" to start over."
@@ -380,6 +388,12 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
     # paying against the stale name sends money to the wrong real person.
     confirmed_name = pa.payload["name"]
     fresh = payout_resolve_account(pa.payload["account"], bank.bank_code)
+    if not fresh.get("success") or not str(fresh.get("name") or "").strip():
+        _clear_actions(msisdn)
+        msg = ("We couldn't verify the recipient with the bank. Your transfer was not sent "
+               "and you were not charged. Check the account details and try again shortly.")
+        reply(msisdn, msg)
+        return Outcome(msg, OUTCOME_FAILED)
     if fresh.get("success"):
         fresh_name = (fresh.get("name") or "").strip()
         # Only enforce on a LIVE enquiry: the mock returns a fixed stub, which
