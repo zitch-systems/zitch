@@ -1,9 +1,9 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { apiPost } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
-import { clearTransactionPin, saveTransactionPin } from '@/lib/secureStore';
+import { clearTransactionPin, getSessionGeneration, saveTransactionPin } from '@/lib/secureStore';
 import { isBiometricTxnEnabled } from '@/lib/biometrics';
 import AuthGuard from '@/components/AuthGuard';
 import { usePinScreenProtection } from '@/lib/screenCapture';
@@ -23,9 +23,15 @@ const ResetPin = () => {
   const [pin2, setPin2] = useState('');
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
+  const mounted = useRef(true);
+  const screenGeneration = useRef(getSessionGeneration()).current;
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   usePinScreenProtection();
 
-  const canSubmit = password.length >= 8
+  const canSubmit = password.length > 0
     && pin.length === TRANSACTION_PIN_LENGTH
     && pin === pin2;
 
@@ -37,28 +43,35 @@ const ResetPin = () => {
     }
     inFlight.current = true;
     setBusy(true);
+    const generation = screenGeneration;
+    const current = () => mounted.current && generation === getSessionGeneration();
     try {
+      if (!current()) return;
       const response = await apiPost(EP.auth.setTransactionPin, { pin, password });
       const result = await response.json();
+      if (!current()) return;
       if (response.ok) {
         // Remove the old PIN even if the customer cancels the OS prompt for the
         // replacement. A successful server change must not leave a stale secret.
         const biometricPay = await isBiometricTxnEnabled();
+        if (!current()) return;
         await clearTransactionPin();
+        if (!current()) return;
         if (biometricPay) {
           try { await saveTransactionPin(pin); }
-          catch { notify('Biometric payments paused', 'Your PIN changed. Enable biometric payments again from Security when you are ready.'); }
+          catch { if (current()) notify('Biometric payments paused', 'Your PIN changed. Enable biometric payments again from Security when you are ready.'); }
         }
+        if (!current()) return;
         notify('Done', 'Your transaction PIN has been changed.');
         router.back();
       } else {
         notify('Error', result.message || 'Could not change your PIN');
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
+      if (current()) notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       inFlight.current = false;
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   };
 
@@ -75,6 +88,9 @@ const ResetPin = () => {
           value={password}
           onChangeText={setPassword}
           secureTextEntry
+          editable={!busy}
+          autoComplete="current-password"
+          textContentType="password"
           placeholder="Enter your password"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
@@ -83,6 +99,7 @@ const ResetPin = () => {
           value={pin}
           onChangeText={(v) => setPin(v.replace(/\D/g, '').slice(0, TRANSACTION_PIN_LENGTH))}
           secureTextEntry
+          editable={!busy}
           keyboardType="number-pad"
           maxLength={TRANSACTION_PIN_LENGTH}
           placeholder={`${TRANSACTION_PIN_LENGTH}-digit PIN`}
@@ -93,12 +110,16 @@ const ResetPin = () => {
           value={pin2}
           onChangeText={(v) => setPin2(v.replace(/\D/g, '').slice(0, TRANSACTION_PIN_LENGTH))}
           secureTextEntry
+          editable={!busy}
+          returnKeyType="done"
+          onSubmitEditing={submit}
           keyboardType="number-pad"
           maxLength={TRANSACTION_PIN_LENGTH}
           placeholder="Re-enter PIN"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
       </View>
+      {pin2.length > 0 && pin !== pin2 && <Text accessibilityLiveRegion="polite" style={{ fontSize: 12.5, color: c.red, marginTop: 8, fontFamily: font.regular }}>PINs do not match.</Text>}
 
       <View style={{ marginTop: 26 }}>
         <Btn label={busy ? 'Saving…' : 'Change PIN'} onPress={submit} disabled={!canSubmit || busy} />

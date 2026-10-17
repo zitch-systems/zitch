@@ -24,8 +24,8 @@ type Status = {
   account_provider?: string;
 };
 
-const amountLabel = (value: string | undefined | null) => value != null
-  && value !== '' && Number.isFinite(Number(value)) && Number(value) >= 0
+const amountLabel = (value: unknown) => (typeof value === 'string' || typeof value === 'number')
+  && String(value).trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0
   ? money(Number(value)) : 'Not confirmed';
 
 /** 816 693 8327 — grouped for reading aloud. Copy still uses the raw digits. */
@@ -87,8 +87,10 @@ const AccountLimits = () => {
 
   const copy = async () => {
     if (!displayedNumber) return;
-    await Clipboard.setStringAsync(displayedNumber);
-    notify('Copied', 'Your account number is on the clipboard.');
+    try {
+      await Clipboard.setStringAsync(displayedNumber);
+      notify('Copied', 'Your account number is on the clipboard.');
+    } catch { notify('Could not copy', 'Please try again.'); }
   };
 
   const linkedId = status

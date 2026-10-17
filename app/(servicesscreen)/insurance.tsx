@@ -5,15 +5,14 @@ const Insurance = () => (
   <FeatureScreen
     title="Insurance"
     icon="insurance"
-    tagline="Protect what matters — health, your phone, your car and more, from a few naira a day."
+    tagline="Insurance is not available in Zitch yet. Providers, cover options and prices will be confirmed before you can apply."
     points={[
-      { icon: 'insurance', title: 'Health cover', sub: 'Hospital visits & medication' },
-      { icon: 'card', title: 'Device protection', sub: 'Screen damage, theft & loss' },
-      { icon: 'bills', title: 'Auto & travel', sub: 'Third-party motor and travel plans' },
+      { icon: 'insurance', title: 'Cover options', sub: 'Supported policies will be listed when available' },
+      { icon: 'card', title: 'Pricing and exclusions', sub: 'Review the full policy terms before applying' },
+      { icon: 'help', title: 'Questions', sub: 'Contact support for service availability' },
     ]}
-    primaryLabel="Request a quote"
-    onPrimary={undefined}
-    note="Tell us what you'd like to insure and our team will set you up with a plan."
+    primaryLabel="Contact support"
+    note="No insurance policy or quote is issued from this page."
   />
 );
 

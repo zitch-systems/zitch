@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { apiPost } from '@/lib/api';
+import { getSessionGeneration } from '@/lib/secureStore';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
@@ -12,7 +13,7 @@ import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { purchasablePhoneNumber } from '@/lib/phone';
-import { MIN_AIRTIME } from '@/lib/amounts';
+import { normalizeAmountInput, MIN_AIRTIME } from '@/lib/amounts';
 
 const NETWORKS = [
   { id: '1', name: 'MTN', color: '#FFCC00', logo: require('@/assets/images/providers/mtn.png') },
@@ -25,6 +26,8 @@ type Step = null | 'confirm' | 'pin';
 
 const BuyAirtime = () => {
   const { c } = useTheme();
+  const sessionGeneration = useRef(getSessionGeneration());
+  const isCurrentSession = () => sessionGeneration.current === getSessionGeneration();
   const { balance, reload, billPaymentsAvailable, phoneNumber } = useWallet();
   const params = useLocalSearchParams<{ phone?: string }>();
   const [net, setNet] = useState('1');
@@ -37,6 +40,7 @@ const BuyAirtime = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const purchaseInFlight = useRef(false);
+  const reviewedPayment = useRef<string | null>(null);
   const [done, setDone] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingMessage, setPendingMessage] = useState('');
@@ -49,13 +53,19 @@ const BuyAirtime = () => {
   const valid = billPaymentsAvailable === true && /^0[789]\d{9}$/.test(phone) && amount >= MIN_AIRTIME && amount <= balance;
 
   const purchase = async (enteredPin: string) => {
-    if (!valid || done || purchaseInFlight.current) return;
-    purchaseInFlight.current = true;
+    if (!isCurrentSession() || !valid || done || purchaseInFlight.current) return;
     const fingerprint = [net, phone.trim(), String(amount)].join('|');
+    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([fingerprint, amount])) {
+      setStep('confirm');
+      notify('Review payment again', 'The payment details changed. Check them before entering your PIN.');
+      return;
+    }
+    purchaseInFlight.current = true;
     let deliveryStarted = false;
     setBusy(true);
     try {
       const requestKey = await acquireSpendAttempt('airtime', fingerprint);
+      if (!isCurrentSession()) return;
       deliveryStarted = true;
       const response = await apiPost(EP.utility.buyAirtime, {
         network: net,
@@ -65,9 +75,11 @@ const BuyAirtime = () => {
         idempotency_key: requestKey,
       });
       const result = await response.json();
+      if (!isCurrentSession()) return;
       const outcome = classifySpendResponse(result, response.status);
       if (outcome === 'success') {
         await clearSpendAttempt('airtime', fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         setRecovered(isRecoveredSpendResponse(result, response.status));
         setTxnRef(String(result.reference || ''));
         setStep(null);
@@ -88,10 +100,12 @@ const BuyAirtime = () => {
         setPinError(result.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
         await clearSpendAttempt('airtime', fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         notify('Error', result.message || 'Transaction failed');
         setStep(null);
       }
     } catch {
+      if (!isCurrentSession()) return;
       if (deliveryStarted) {
         // Delivery is unknown: hold the key and stop a fresh authorization.
         setPending(true);
@@ -104,7 +118,7 @@ const BuyAirtime = () => {
       }
     } finally {
       purchaseInFlight.current = false;
-      setBusy(false);
+      if (isCurrentSession()) setBusy(false);
     }
   };
 
@@ -121,6 +135,7 @@ const BuyAirtime = () => {
           rows={[['Type', 'Airtime top-up'], ['Network', network.name], ['Phone', phone], ['Amount', money(amount)], ['Fee', '₦0'], ['Total', money(amount), true]]}
           reference={txnRef}
           status={pending ? 'Processing' : 'Successful'}
+          footer={pending ? <Btn label="Check transaction history" variant="outline" onPress={() => router.push('/history')} /> : undefined}
           onDone={() => router.replace('/home')}
         />
       </Screen>
@@ -148,8 +163,8 @@ const BuyAirtime = () => {
       <Field
         label="Or enter amount"
         value={amt}
-        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
-        keyboardType="number-pad"
+        onChangeText={(v) => { const normalized = normalizeAmountInput(v); if (normalized !== null) setAmt(normalized); }}
+        keyboardType="decimal-pad"
         placeholder="0.00"
         prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
@@ -166,10 +181,10 @@ const BuyAirtime = () => {
         total={amount}
         balance={balance}
         rows={[['Network', network.name], ['Phone', phone], ['Amount', money(amount)]]}
-        onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        onPay={() => { reviewedPayment.current = JSON.stringify([[net, phone.trim(), String(amount)].join('|'), amount]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+      <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>

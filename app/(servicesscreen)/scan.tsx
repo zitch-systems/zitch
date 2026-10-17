@@ -1,5 +1,5 @@
-import React, { useRef, useState } from 'react';
-import { View, Text, Pressable, Platform } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { AppState, Linking, View, Text, Platform } from 'react-native';
 import { router } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Screen, Header, Card, Field, Btn } from '@/components/design/ui';
@@ -11,16 +11,41 @@ import { paymentDestination } from '@/lib/phone';
 
 const Scan = () => {
   const { c } = useTheme();
-  const [permission, requestPermission] = useCameraPermissions();
+  const [permission, requestPermission, refreshPermission] = useCameraPermissions();
   const [manual, setManual] = useState('');
+  const [scanPaused, setScanPaused] = useState(false);
+  const [permissionBusy, setPermissionBusy] = useState(false);
+  const navigated = useRef(false);
   const handled = useRef(false); // guard against the camera firing repeatedly
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void refreshPermission().catch(() => {});
+    });
+    return () => subscription.remove();
+  }, [refreshPermission]);
+
+  const enableCamera = async () => {
+    if (permissionBusy) return;
+    setPermissionBusy(true);
+    try {
+      if (permission?.canAskAgain === false) await Linking.openSettings();
+      else await requestPermission();
+    } catch {
+      notify('Camera unavailable', 'Check camera access in your phone settings, or enter the account or phone number below.');
+    } finally { setPermissionBusy(false); }
+  };
 
   const applyResult = (raw: string) => {
     const destination = paymentDestination(raw);
     if (destination) {
+      if (navigated.current) return;
+      navigated.current = true;
       router.replace({ pathname: '/sendmoney', params: destination });
     } else {
-      handled.current = false; // let them try again
+      // Pause an invalid code until the customer deliberately tries again;
+      // otherwise every camera frame opens another alert for the same code.
+      setScanPaused(true);
       notify('Unrecognised code', "That QR doesn't contain a Zitch account or phone number.");
     }
   };
@@ -32,7 +57,8 @@ const Scan = () => {
   };
 
   const submitManual = () => {
-    if (!manual.trim()) return;
+    if (!paymentDestination(manual) || (handled.current && !scanPaused)) return;
+    handled.current = true;
     applyResult(manual);
   };
 
@@ -67,9 +93,9 @@ const Scan = () => {
             {cameraSupported ? (
               <>
                 <Text style={{ fontSize: 15, color: c.ink2, textAlign: 'center', maxWidth: 280, fontFamily: font.regular }}>
-                  Allow camera access to scan a QR code, or enter the account number below.
+                  {permission?.canAskAgain === false ? 'Camera access is off. Enable it in your phone settings, or enter the account number below.' : 'Allow camera access to scan a QR code, or enter the account number below.'}
                 </Text>
-                <Btn label="Enable camera" icon="scan" full={false} onPress={requestPermission} />
+                <Btn label={permission?.canAskAgain === false ? 'Open camera settings' : 'Enable camera'} icon="scan" full={false} disabled={permissionBusy || !permission} onPress={enableCamera} />
               </>
             ) : (
               <Text style={{ fontSize: 15, color: c.ink2, textAlign: 'center', maxWidth: 280, fontFamily: font.regular }}>
@@ -79,18 +105,20 @@ const Scan = () => {
           </View>
         )}
 
+        {scanPaused ? <View style={{ marginTop: 12 }}><Btn label="Scan again" variant="outline" onPress={() => { handled.current = false; setScanPaused(false); }} /></View> : null}
         {/* Manual fallback — always available so the screen is never a dead end. */}
         <Card style={{ marginTop: 14, marginBottom: 18 }}>
           <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.ink1, marginBottom: 10 }}>Or enter account / phone</Text>
           <Field
             value={manual}
-            onChangeText={(v) => setManual(v.replace(/\D/g, '').slice(0, 11))}
+            label="Account or phone number"
+            onChangeText={(v) => setManual(v.replace(/[^\d+]/g, '').slice(0, 15))}
             keyboardType="number-pad"
             placeholder="10-digit account or 11-digit phone"
             prefix={<ZIcon name="bank" size={18} color={c.ink3} />}
           />
           <View style={{ height: 12 }} />
-          <Btn label="Continue" disabled={manual.replace(/\D/g, '').length < 10} onPress={submitManual} />
+          <Btn label="Continue" disabled={!paymentDestination(manual)} onPress={submitManual} />
         </Card>
       </View>
     </Screen>

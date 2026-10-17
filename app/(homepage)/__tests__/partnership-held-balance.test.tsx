@@ -2,13 +2,14 @@ import React, { type ReactNode } from 'react';
 import renderer, { act } from 'react-test-renderer';
 import Home from '@/app/(homepage)/home';
 import Wallet from '@/app/(homepage)/wallet';
+import * as Clipboard from 'expo-clipboard';
 
 const mockWallet = {
   balance: 0, totalBalance: 1200, historicalBalance: 1200, fundingProvider: 'partnership',
   firstName: 'Test', fullName: 'Test Customer', avatar: '', accountNumber: '0454243073', bankName: 'Wema Bank',
   billPaymentsAvailable: false, transfersAvailable: false,
   fundingMessage: 'Your account balance needs review before you can spend.',
-  txns: [], showBal: true, setShowBal: jest.fn(), reload: jest.fn(), linked: [], reloadLinked: jest.fn(),
+  txns: [] as unknown[], showBal: true, setShowBal: jest.fn(), reload: jest.fn(), linked: [], reloadLinked: jest.fn(),
   hydrated: true, balanceLoaded: true, balanceError: '', historyError: '', loading: false,
 };
 
@@ -43,13 +44,14 @@ jest.mock('@/components/design/widgets', () => {
 });
 jest.mock('@/components/design/ui', () => {
   const ReactActual = jest.requireActual<typeof import('react')>('react');
-  const { Text, View } = jest.requireActual<typeof import('react-native')>('react-native');
+  const { Text, View, Pressable } = jest.requireActual<typeof import('react-native')>('react-native');
   const Container = ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children);
   return { Screen: Container, Card: Container, NText: Text, Sheet: () => null, TxnRow: () => null,
+    Btn: ({ label, ...props }: any) => ReactActual.createElement(Pressable, { ...props, accessibilityLabel: label }),
     money: (value: number) => `₦${value}`, settledTransactionTotal: () => 0 };
 });
 
-beforeEach(() => { mockWallet.showBal = true; });
+beforeEach(() => { mockWallet.showBal = true; mockWallet.historyError = ''; mockWallet.txns = []; });
 
 it.each([['Home', Home], ['Wallet', Wallet]] as const)('%s preserves the total while Partnership funds cannot be spent', async (_name, Page) => {
   let tree!: renderer.ReactTestRenderer;
@@ -71,5 +73,28 @@ it.each([['Home', Home], ['Wallet', Wallet]] as const)('%s respects balance priv
   const output = JSON.stringify(tree.toJSON());
   expect(output).toContain('Funds under review');
   expect(output).not.toContain('₦1200');
+  act(() => tree.unmount());
+});
+
+it.each([['Home', Home], ['Wallet', Wallet]] as const)('%s flags cached history after refresh fails', async (_name, Page) => {
+  mockWallet.txns = [{ id: 'prior-transaction' }];
+  mockWallet.historyError = 'Could not update transactions.';
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Page />); });
+  const output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('Showing previously loaded activity.');
+  expect(output).toContain(mockWallet.historyError);
+  mockWallet.reload.mockClear();
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Refresh account' }).props.onPress(); });
+  expect(mockWallet.reload).toHaveBeenCalledTimes(1);
+  act(() => tree.unmount());
+});
+
+it.each([['Home', Home], ['Wallet', Wallet]] as const)('%s copies only the funding account number', async (_name, Page) => {
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Page />); });
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: `Copy account number ${mockWallet.accountNumber}` }).props.onPress(); });
+  expect(Clipboard.setStringAsync).toHaveBeenCalledWith(mockWallet.accountNumber);
+  expect(JSON.stringify(tree.toJSON())).toContain('Account number copied');
   act(() => tree.unmount());
 });

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { Loading } from '@/components/design/Loading';
 import { useFocusEffect } from 'expo-router';
@@ -8,6 +8,7 @@ import { Screen, Card, NText } from '@/components/design/ui';
 import { Label, QuickAmounts, AmountField } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
+import { notify } from '@/components/design/Notify';
 
 // Larger presets than airtime — this is a money-figure converter, not a top-up.
 const NGN_PRESETS = [1000, 5000, 10000, 50000, 100000, 500000];
@@ -30,15 +31,20 @@ const Convert = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
+  const request = useRef(0);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { request.current += 1; if (copyTimer.current) clearTimeout(copyTimer.current); }, []);
 
   const loadRates = useCallback(async () => {
+    const current = ++request.current;
     setLoading(true);
     setError('');
     try {
       const res = await convertService.getRate();
+      if (current !== request.current) return;
       if (res?.success && Array.isArray(res.currencies) && res.currencies.length) {
         const rates = res.currencies.map((r: any) => ({ ...r, rate: Number(r.rate) }))
-          .filter((r: Currency) => Number.isFinite(r.rate) && r.rate > 0);
+          .filter((r: Currency) => Number.isFinite(r.rate) && r.rate > 0 && typeof r.code === 'string' && typeof r.name === 'string' && typeof r.symbol === 'string');
         if (!rates.length) throw new Error('Rates unavailable');
         setCurrencies(rates);
         setUpdated(typeof res.updated === 'string' ? res.updated : '');
@@ -46,9 +52,9 @@ const Convert = () => {
         setError(res?.message || "Couldn't load live rates.");
       }
     } catch {
-      setError('Network error. Please try again.');
+      if (current === request.current) setError('Could not load rates. Please try again.');
     } finally {
-      setLoading(false);
+      if (current === request.current) setLoading(false);
     }
   }, []);
 
@@ -61,26 +67,30 @@ const Convert = () => {
   );
 
   const amount = Number(amt || 0);
+  const validAmount = Number.isFinite(amount) && amount >= 0;
 
   const copyValue = async (cur: Currency) => {
+    if (!validAmount || amount <= 0 || !Number.isFinite(amount * cur.rate)) return;
     try {
       await Clipboard.setStringAsync(fx(amount * cur.rate, cur.symbol));
       setCopied(cur.code);
-      setTimeout(() => setCopied((prev) => (prev === cur.code ? '' : prev)), 1300);
-    } catch { setError('Could not copy the value. Please try again.'); }
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(''), 1300);
+    } catch { notify('Could not copy', 'Please try again.'); }
   };
 
   return (
     <Screen pad={false} tab>
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Convert</Text>
       <Text style={{ paddingHorizontal: 20, marginTop: 2, fontSize: 13.5, color: c.ink3, fontFamily: font.regular }}>
-        Convert Naira to other currencies at live rates
+        Estimate foreign currency values from Naira. No money is exchanged.
       </Text>
 
       <View style={{ paddingHorizontal: 20, paddingTop: 18 }}>
         <Label>Amount in Naira</Label>
         <QuickAmounts amounts={NGN_PRESETS} value={amt} onPick={setAmt} />
         <AmountField label="Or enter amount" value={amt} onChangeText={setAmt} placeholder="0" />
+        {!validAmount ? <Text accessibilityRole="alert" style={{ color: c.red, marginTop: 8 }}>Enter a valid amount.</Text> : null}
 
         {/* converted values */}
         <View style={{ marginTop: 20 }}>
@@ -88,6 +98,9 @@ const Convert = () => {
             <Label>Converted</Label>
             <Pressable
               onPress={loadRates}
+              accessibilityRole="button"
+              accessibilityLabel="Refresh exchange rates"
+              accessibilityState={{ disabled: loading, busy: loading }}
               disabled={loading}
               hitSlop={8}
               style={{ flexDirection: 'row', alignItems: 'center', gap: 5, opacity: loading ? 0.5 : 1 }}
@@ -105,7 +118,7 @@ const Convert = () => {
           ) : error ? (
             <Card style={{ alignItems: 'center', paddingVertical: 24 }}>
               <Text style={{ fontSize: 13.5, color: c.ink2, fontFamily: font.semibold, textAlign: 'center' }}>{error}</Text>
-              <Pressable onPress={loadRates} style={{ marginTop: 12, paddingVertical: 9, paddingHorizontal: 20, borderRadius: 999, backgroundColor: 'rgba(15,162,149,.12)' }}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Retry loading exchange rates" onPress={loadRates} style={{ marginTop: 12, minHeight: 44, justifyContent: 'center', paddingVertical: 9, paddingHorizontal: 20, borderRadius: 999, backgroundColor: 'rgba(15,162,149,.12)' }}>
                 <Text style={{ color: c.brand, fontFamily: font.bold, fontSize: 13 }}>Retry</Text>
               </Pressable>
             </Card>
@@ -113,13 +126,18 @@ const Convert = () => {
             <Card pad={0} style={{ paddingHorizontal: 16 }}>
               {currencies.map((cur, i) => {
                 const isCopied = copied === cur.code;
+                const converted = amount * cur.rate;
+                const canCopy = validAmount && amount > 0 && Number.isFinite(converted);
                 return (
                   <Pressable
                     key={cur.code}
-                    onPress={() => amount > 0 && copyValue(cur)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Copy ${cur.code} value`}
+                    accessibilityState={{ disabled: !canCopy }}
+                    disabled={!canCopy}
+                    onPress={() => copyValue(cur)}
                     style={({ pressed }) => ({
-                      flexDirection: 'row',
-                      alignItems: 'center',
+                      gap: 10,
                       justifyContent: 'space-between',
                       paddingVertical: 15,
                       borderBottomWidth: i === currencies.length - 1 ? 0 : 1,
@@ -131,7 +149,7 @@ const Convert = () => {
                       <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
                         <Text style={{ fontSize: 17, fontFamily: font.extrabold, color: c.brand }}>{cur.symbol}</Text>
                       </View>
-                      <View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
                         <Text style={{ fontSize: 14.5, fontFamily: font.bold, color: c.ink1 }}>{cur.code} · {cur.name}</Text>
                         <NText style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular, marginTop: 1 }}>
                           {cur.rate > 0 ? `${cur.symbol}1 ≈ ₦${(1 / cur.rate).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : cur.name}
@@ -145,14 +163,19 @@ const Convert = () => {
                       </View>
                     ) : (
                       <Text
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.65}
                         style={{
+                          alignSelf: 'stretch',
+                          textAlign: 'right',
                           fontSize: 18,
                           fontFamily: font.extrabold,
                           color: amount > 0 ? c.ink1 : c.ink3,
                           fontVariant: ['tabular-nums'],
                         }}
                       >
-                        {fx(amount * cur.rate, cur.symbol)}
+                        {validAmount && Number.isFinite(converted) ? fx(converted, cur.symbol) : 'Unavailable'}
                       </Text>
                     )}
                   </Pressable>
@@ -163,7 +186,7 @@ const Convert = () => {
 
           {!loading && !error && (
             <Text style={{ marginTop: 12, fontSize: 11.5, color: c.ink3, fontFamily: font.regular, textAlign: 'center' }}>
-              {amount > 0 ? 'Tap a value to copy · ' : ''}Mid-market rates{updated ? ` · ${prettyTime(updated)}` : ''}
+              {validAmount && amount > 0 ? 'Tap a value to copy · ' : ''}Indicative rates{updated ? ` · ${prettyTime(updated)}` : ''}
             </Text>
           )}
         </View>

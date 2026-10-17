@@ -8,11 +8,11 @@ const Water = () => (
     tagline="Water bill payments are not available yet. Supported providers will appear here when the service launches."
     points={[
       { icon: 'bills', title: 'Water providers', sub: 'Availability will be confirmed at launch' },
-      { icon: 'check', title: 'Verified accounts', sub: 'We confirm your account before paying' },
-      { icon: 'history', title: 'Payment history', sub: 'Every receipt saved for you' },
+      { icon: 'check', title: 'Account requirements', sub: 'Required details will be confirmed before payment' },
+      { icon: 'history', title: 'Payment records', sub: 'Receipt options will be confirmed when available' },
     ]}
-    primaryLabel="Talk to us"
-    note="Water board billers are being connected in your region. Contact support for availability updates."
+    primaryLabel="Contact support"
+    note="Contact support for availability updates. No water bill payment is made from this page."
   />
 );
 

@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
@@ -8,6 +8,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
+import { getSessionGeneration } from '@/lib/secureStore';
 import { useTheme, font } from '@/lib/theme';
 
 // The three consent assurances shown on the link screen (matches design v2).
@@ -17,16 +18,39 @@ const CHECKS: { icon: string; title: string; sub: string }[] = [
   { icon: 'unlink', title: 'Unlink anytime', sub: 'Remove a connected bank whenever you want.' },
 ];
 
+// Bank credentials must only be entered in a secure provider browser session.
+// A callback is accepted only at the exact app route we supplied for this attempt.
+const secureConnectUrl = (value: string): boolean => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && ['link.mono.co', 'connect.mono.co'].includes(url.hostname)
+      && !url.username && !url.password && (!url.port || url.port === '443');
+  } catch { return false; }
+};
+const matchesRedirect = (value: string, redirect: string): boolean => {
+  try {
+    const callback = new URL(value);
+    const expected = new URL(redirect);
+    return callback.protocol === expected.protocol && callback.host === expected.host
+      && callback.pathname === expected.pathname && !callback.username && !callback.password
+      && !callback.hash;
+  } catch { return false; }
+};
+
 const LinkBank = () => {
   const { c } = useTheme();
   const [busy, setBusy] = useState(false);
   const connecting = useRef(false);
+  const active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
 
   // Open the hosted Mono Connect widget, capture the returned auth code, and
   // exchange it server-side. Uses an app deep link as the redirect so the auth
   // session closes back into Zitch.
   const connect = async () => {
     if (connecting.current) return;
+    const generation = getSessionGeneration();
+    const current = () => active.current && generation === getSessionGeneration();
     connecting.current = true;
     setBusy(true);
     try {
@@ -35,26 +59,38 @@ const LinkBank = () => {
         '/api/banklink/connect-init/',
         { redirect_url: redirect },
       );
+      if (!current()) return;
       if (!init.success || !init.mono_url) {
         notify('Error', init.message || "Couldn't start bank linking.");
+        return;
+      }
+      if (!secureConnectUrl(init.mono_url)) {
+        notify('Could not link bank', 'A secure bank connection could not be opened. Please try again later.');
         return;
       }
       beginExternalActivity();
       let result;
       try { result = await WebBrowser.openAuthSessionAsync(init.mono_url, redirect); }
       finally { endExternalActivity(); }
+      if (!current()) return;
       if (result.type !== 'success' || !result.url) return; // user dismissed
+      if (!matchesRedirect(result.url, redirect)) {
+        notify('Could not link bank', 'The bank connection returned to an unexpected address. Please start again.');
+        return;
+      }
       const callbackParams = Linking.parse(result.url).queryParams;
       const code = callbackParams?.code;
       const state = callbackParams?.state;
-      if (!code || !state) {
+      if (typeof code !== 'string' || !code.trim() || typeof state !== 'string'
+          || !state.trim() || state.length > 200) {
         notify('Error', "Bank linking didn't complete. Please try again.");
         return;
       }
       const res = await apiJson<{ success?: boolean; message?: string }>(
         '/api/banklink/connect/',
-        { code: String(code), state: String(state) },
+        { code: code.trim(), state: state.trim() },
       );
+      if (!current()) return;
       if (res.success) {
         notify('Bank linked', 'Your account is now connected.');
         router.replace('/wallet');
@@ -62,10 +98,10 @@ const LinkBank = () => {
         notify('Error', res.message || "Couldn't link your bank.");
       }
     } catch {
-      notify('Error', 'Something went wrong linking your bank.');
+      if (current()) notify('Error', 'Something went wrong linking your bank.');
     } finally {
       connecting.current = false;
-      setBusy(false);
+      if (active.current) setBusy(false);
     }
   };
 

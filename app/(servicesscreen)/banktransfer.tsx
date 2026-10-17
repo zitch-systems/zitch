@@ -169,14 +169,20 @@ const BankTransfer = () => {
   const { c, theme } = useTheme();
   const { accountNumber, accountName, bankName, linked, fundingProvider, fundingMessage } = useWallet();
 
-  const acctNo = digitsOnly(accountNumber);
+  const acctNo = String(accountNumber || '').trim();
   const ready = fundingProvider === 'partnership' && /^\d{10}$/.test(acctNo) && !/^711/.test(acctNo);
   const banks = useMemo(() => bankShortcuts(linked, 9), [linked]);
 
   const copyAccount = async () => {
-    if (!ready) return;
-    await Clipboard.setStringAsync(acctNo);
-    notify('Copied', 'Account number copied to clipboard');
+    if (!ready) return false;
+    try {
+      await Clipboard.setStringAsync(acctNo);
+      notify('Copied', 'Account number copied to clipboard');
+      return true;
+    } catch {
+      notify('Could not copy', 'Please copy the account number shown on this page manually.');
+      return false;
+    }
   };
 
   const shareDetails = async () => {
@@ -197,7 +203,7 @@ const BankTransfer = () => {
   // Copy first, then try to hand the user off to their bank app.
   const openBankApp = async (b: BankShortcut) => {
     if (!ready) return;
-    await copyAccount();
+    if (!(await copyAccount())) return;
     if (!b.url) {
       notify('Open your bank app', `Your account number is copied — paste it in the ${b.name} app.`);
       return;

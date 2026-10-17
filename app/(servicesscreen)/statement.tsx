@@ -216,7 +216,7 @@ const Statement = () => {
             Turn this on when the statement is for a visa, loan or landlord.
           </Text>
         </View>
-        <Toggle on={showAddress} onChange={setShowAddress} />
+        <Toggle accessibilityLabel="Address shown on statement" on={showAddress} onChange={setShowAddress} />
       </Card>}
 
       <Btn

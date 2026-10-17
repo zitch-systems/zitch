@@ -2,7 +2,7 @@ import React, { useState, useCallback, useMemo } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import {
-  Screen, Header, TxnRow, HeaderLink, SelectRow, PickerSheet, Card, NText, money, txnState,
+  Screen, Header, TxnRow, HeaderLink, SelectRow, PickerSheet, Card, Btn, NText, money, txnState,
   settledTransactionTotal,
 } from '@/components/design/ui';
 import { SkeletonRow } from '@/components/design/Skeleton';
@@ -25,7 +25,7 @@ const CATEGORIES = [
 ];
 
 const STATUSES = [
-  { v: 'all', label: 'All Status' },
+  { v: 'all', label: 'All statuses' },
   { v: 'success', label: 'Successful' },
   { v: 'pending', label: 'Pending' },
   { v: 'failed', label: 'Failed' },
@@ -88,7 +88,7 @@ const History = () => {
       // Undated rows would otherwise vanish from a month-grouped list entirely.
       // They get their own bucket at the end rather than being dropped or
       // guessed into the current month.
-      const key = t.ts ? monthKey(t.ts) : 'undated';
+      const key = t.ts != null ? monthKey(t.ts) : 'undated';
       const list = byMonth.get(key);
       if (list) list.push(t); else byMonth.set(key, [t]);
     }
@@ -103,7 +103,7 @@ const History = () => {
         // matched and all ~100 rows re-rendered on every state change on this
         // screen — a filter tap, a pull-to-refresh, the ledger arriving. Built
         // once per (txns, cat, status) instead, the memo actually holds.
-        rows: rows.map((t) => (t.ts ? { ...t, detail: txnDate(t.ts) } : t)),
+        rows: rows.map((t) => (t.ts != null ? { ...t, detail: txnDate(t.ts) } : t)),
         // Only explicitly settled money belongs in movement totals. Pending or
         // unknown rows remain visible below with their non-green status.
         moneyIn: settledTransactionTotal(rows, 'in'),
@@ -112,7 +112,7 @@ const History = () => {
   }, [txns, cat, status]);
 
   const catLabel = CATEGORIES.find((x) => x.v === cat)?.label ?? 'All Categories';
-  const statusLabel = STATUSES.find((x) => x.v === status)?.label ?? 'All Status';
+  const statusLabel = STATUSES.find((x) => x.v === status)?.label ?? 'All statuses';
 
   return (
     <Screen tab onRefresh={onRefresh} refreshing={refreshing}>
@@ -127,7 +127,7 @@ const History = () => {
         <SelectRow compact value={statusLabel} onPress={() => setPicker('status')} />
       </View>
 
-      {historyError ? <Text accessibilityRole="alert" style={{ color: c.amber, fontFamily: font.medium, marginBottom: 12 }}>{txns.length ? 'Showing previously loaded transactions. ' : ''}{historyError} Pull down to retry.</Text> : null}
+      {historyError ? <View style={{ marginBottom: 14, gap: 10 }}><Text accessibilityRole="alert" style={{ color: c.amber, fontFamily: font.medium }}>{txns.length ? 'Showing previously loaded transactions. ' : ''}{historyError}</Text><Btn label="Retry loading transactions" disabled={refreshing} onPress={() => { void onRefresh(); }} /></View> : null}
 
       {!hydrated && txns.length === 0 ? (
         // Before the first fetch returns there is nothing to say about this
@@ -149,10 +149,11 @@ const History = () => {
           </View>
           <Text style={{ color: c.ink2, fontFamily: font.bold, fontSize: 15 }}>{historyError ? 'Transactions unavailable' : 'Nothing to show'}</Text>
           <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 13, marginTop: 4, textAlign: 'center' }}>
-            {historyError ? 'Pull down to retry.' : cat === 'all' && status === 'all'
+            {historyError ? 'Use Retry to check again.' : cat === 'all' && status === 'all'
               ? 'Your transactions will appear here.'
               : 'No transactions match these filters.'}
           </Text>
+          {(cat !== 'all' || status !== 'all') && <View style={{ marginTop: 16 }}><Btn label="Clear filters" variant="outline" onPress={() => { setCat('all'); setStatus('all'); }} /></View>}
         </Card>
       ) : (
         groups.map((g) => {
@@ -164,16 +165,17 @@ const History = () => {
                   onPress={() => setCollapsed((p) => ({ ...p, [g.key]: !p[g.key] }))}
                   accessibilityRole="button"
                   accessibilityLabel={`${g.label}, ${shut ? 'expand' : 'collapse'}`}
-                  style={{ flex: 1 }}
+                  accessibilityState={{ expanded: !shut }}
+                  style={{ flex: 1, minWidth: 0 }}
                   hitSlop={6}
                 >
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={{ fontSize: 19, fontFamily: font.extrabold, color: c.ink1, letterSpacing: -0.2 }}>{g.label}</Text>
+                    <Text style={{ flexShrink: 1, fontSize: 19, fontFamily: font.extrabold, color: c.ink1, letterSpacing: -0.2 }}>{g.label}</Text>
                     <View style={{ transform: [{ rotate: shut ? '-90deg' : '0deg' }] }}>
                       <ZIcon name="down" size={16} color={c.ink2} stroke={2.4} />
                     </View>
                   </View>
-                  <View style={{ flexDirection: 'row', gap: 18, marginTop: 6 }}>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', columnGap: 18, rowGap: 4, marginTop: 6 }}>
                     <NText style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
                       In: <NText style={{ fontFamily: font.bold, color: c.ink2 }}>{money(g.moneyIn)}</NText>
                     </NText>

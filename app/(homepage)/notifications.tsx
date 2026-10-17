@@ -3,7 +3,7 @@ import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
-import { Screen, Header, ZItem, money } from '@/components/design/ui';
+import { Screen, Header, Btn, TxnRow } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 import { transactionParams, useWallet } from '@/lib/wallet';
 import { clearPendingNotificationOpen } from '@/lib/notifications';
@@ -29,7 +29,7 @@ const Notifications = () => {
   return (
     <Screen tab refreshing={loading && hydrated} onRefresh={() => { void reload(); }}>
       <Header title="Notifications" sub="Activity on your account" onBack={() => router.back()} />
-      {historyError ? <Text accessibilityRole="alert" style={{ color: c.amber, marginBottom: 12 }}>{historyError} Pull down to retry.</Text> : null}
+      {historyError ? <View style={{ marginBottom: 14, gap: 10 }}><Text accessibilityRole="alert" style={{ color: c.amber }}>{txns.length ? 'Showing previously loaded activity. ' : ''}{historyError}</Text><Btn label="Retry loading activity" disabled={loading} onPress={() => { void reload(); }} /></View> : null}
       {!hydrated && txns.length === 0 ? (
         <View style={{ paddingVertical: 48 }}>
           <Loading full={false} />
@@ -41,16 +41,14 @@ const Notifications = () => {
           </View>
           <Text style={{ fontSize: 17, fontFamily: font.extrabold, color: c.ink1, marginTop: 18 }}>{historyError ? 'Activity unavailable' : 'Nothing here yet'}</Text>
           <Text style={{ fontSize: 13.5, color: c.ink3, marginTop: 6, textAlign: 'center', maxWidth: 280, fontFamily: font.regular }}>
-            Money in, purchases and transfers will show up here as they happen.
+            {historyError ? 'We could not load your account activity. Use Retry to check again.' : 'Money in, purchases and transfers will show up here as they happen.'}
           </Text>
         </View>
       ) : (
         txns.map((x, i) => (
-          <ZItem
+          <TxnRow
             key={x.id}
-            icon={x.icon}
-            title={`${x.type} · ${(x.dir === 'in' ? '+' : '-') + money(Math.abs(x.amount))}`}
-            sub={[x.status, x.detail].filter(Boolean).join(' · ')}
+            txn={x}
             last={i === txns.length - 1}
             onPress={() =>
               router.push({

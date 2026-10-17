@@ -1,19 +1,16 @@
 import React from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text, Pressable, ScrollView } from 'react-native';
+import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark, ZWordmark, Avatar } from '@/components/design/Brand';
 import { useTheme, font } from '@/lib/theme';
 import { useRailWidth } from '@/lib/device';
+import { BANKING_TABS, selectedBankingTab } from '@/components/navigation/bankingTabs';
+import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 
-const ITEMS: { name: string; icon: string; label: string }[] = [
-  { name: 'home', icon: 'home', label: 'Home' },
-  { name: 'wallet', icon: 'wallet', label: 'Wallet' },
-  { name: 'convert', icon: 'convert', label: 'Convert' },
-  { name: 'cards', icon: 'card', label: 'Cards' },
-  { name: 'me', icon: 'user', label: 'Me' },
-];
+const ITEMS = BANKING_TABS;
 
 /**
  * Left navigation rail for fold/tablet — replaces the bottom nav on wide
@@ -36,27 +33,33 @@ const Sidebar = ({ state, navigation, width }: BottomTabBarProps & { width?: num
         <ZWordmark size={17} color={c.ink1} />
       </View>
 
-      <View style={{ flex: 1, gap: 4 }}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ gap: 4, paddingBottom: 16 }} showsVerticalScrollIndicator={false}>
         {ITEMS.map((it) => {
-          const on = activeName === it.name;
+          const on = selectedBankingTab(activeName) === it.name;
           return (
             <Pressable
               key={it.name}
               onPress={() => {
                 const event = navigation.emit({ type: 'tabPress', target: state.routes.find((route) => route.name === it.name)?.key ?? it.name, canPreventDefault: true });
-                if (!on && !event.defaultPrevented) navigation.navigate(it.name as never);
+                if (activeName !== it.name && !event.defaultPrevented) navigation.navigate(it.name as never);
               }}
+              onLongPress={() => navigation.emit({ type: 'tabLongPress', target: state.routes.find((route) => route.name === it.name)?.key })}
               accessibilityRole="tab"
               accessibilityLabel={it.label}
               accessibilityState={{ selected: on }}
+              aria-selected={on}
               style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, paddingHorizontal: 14, borderRadius: 14, backgroundColor: on ? 'rgba(15,162,149,.12)' : 'transparent' }}
             >
               <ZIcon name={it.icon} size={22} color={on ? c.brand : c.ink2} stroke={on ? 2.1 : 1.7} />
-              <Text style={{ fontSize: 15, fontFamily: on ? font.bold : font.semibold, color: on ? c.brand : c.ink2 }}>{it.label}</Text>
+              <Text style={{ flex: 1, fontSize: 15, fontFamily: on ? font.bold : font.semibold, color: on ? c.brand : c.ink2 }}>{it.label}</Text>
             </Pressable>
           );
         })}
-      </View>
+        <Pressable onPress={() => router.push('/linkwhatsapp')} accessibilityRole="button" accessibilityLabel="Bank on WhatsApp" style={{ flexDirection: 'row', alignItems: 'center', gap: 13, minHeight: 48, paddingVertical: 13, paddingHorizontal: 14, borderRadius: 14 }}>
+          <WhatsAppGlyph size={22} color={c.brand} />
+          <Text style={{ flex: 1, fontSize: 15, fontFamily: font.semibold, color: c.ink2 }}>WhatsApp</Text>
+        </Pressable>
+      </ScrollView>
 
       <Pressable
         onPress={() => navigation.navigate('me' as never)}

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { publicPost } from '@/lib/api';
+import { getSessionGeneration } from '@/lib/secureStore';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { examsService } from '@/lib/services/bills';
@@ -22,6 +23,8 @@ type Step = null | 'confirm' | 'pin';
 
 const Exams = () => {
   const { c } = useTheme();
+  const sessionGeneration = useRef(getSessionGeneration());
+  const isCurrentSession = () => sessionGeneration.current === getSessionGeneration();
   const { balance, reload, billPaymentsAvailable, phoneNumber } = useWallet();
   const [exams, setExams] = useState<Exam[]>([]);
   const [quoteRevision, setQuoteRevision] = useState(0);
@@ -36,6 +39,7 @@ const Exams = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const purchaseInFlight = useRef(false);
+  const reviewedPayment = useRef<string | null>(null);
   const [done, setDone] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingMessage, setPendingMessage] = useState('');
@@ -59,18 +63,26 @@ const Exams = () => {
   const valid = billPaymentsAvailable === true && !!exam && /^0[789]\d{9}$/.test(phone) && Number.isFinite(amount) && amount > 0 && amount <= balance;
 
   const purchase = async (pin: string) => {
-    if (!valid || done || purchaseInFlight.current) return;
-    purchaseInFlight.current = true;
+    if (!isCurrentSession() || !valid || done || purchaseInFlight.current) return;
     const fingerprint = [selected, String(qty), phone.trim()].join('|');
+    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([fingerprint, amount])) {
+      setStep('confirm');
+      notify('Review payment again', 'The payment details changed. Check them before entering your PIN.');
+      return;
+    }
+    purchaseInFlight.current = true;
     let deliveryStarted = false;
     setBusy(true);
     try {
       const requestKey = await acquireSpendAttempt('exam', fingerprint);
+      if (!isCurrentSession()) return;
       deliveryStarted = true;
       const res = await examsService.buy(selected, qty, phone, pin, requestKey, amount);
+      if (!isCurrentSession()) return;
       const outcome = classifySpendResponse(res);
       if (outcome === 'success') {
         await clearSpendAttempt('exam', fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         setRecovered(isRecoveredSpendResponse(res));
         setTxnRef(String(res.reference || ''));
         const delivered = Array.isArray(res.pins)
@@ -93,11 +105,13 @@ const Exams = () => {
         setPinError(res.message || 'Incorrect PIN');
       } else {
         await clearSpendAttempt('exam', fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         if (res.code === 'price_changed') { setExams([]); setQuoteRevision((value) => value + 1); }
         notify('Error', res.message || 'Transaction failed');
         setStep(null);
       }
     } catch {
+      if (!isCurrentSession()) return;
       if (deliveryStarted) {
         setPending(true);
         setPendingMessage('We could not confirm this exam PIN purchase. Check History before trying again.');
@@ -109,7 +123,7 @@ const Exams = () => {
       }
     } finally {
       purchaseInFlight.current = false;
-      setBusy(false);
+      if (isCurrentSession()) setBusy(false);
     }
   };
 
@@ -126,7 +140,7 @@ const Exams = () => {
             ? pendingMessage
             : recovered
               ? 'This confirms your earlier exam PIN purchase. No new purchase was made. Start a new purchase to buy again.'
-            : `Your ${exam.name} ${exam.description} (${qty}) was sent to ${phone}.`}
+            : `Your ${exam.name} ${exam.description} (${qty}) purchase is complete. Keep your PIN details for use.`}
           rows={[
             ['Exam', exam.name],
             ['Item', exam.description],
@@ -137,6 +151,7 @@ const Exams = () => {
           ]}
           reference={txnRef}
           status={pending ? 'Processing' : 'Successful'}
+          footer={pending ? <Btn label="Check transaction history" variant="outline" onPress={() => router.push('/history')} /> : undefined}
           onDone={() => router.replace('/home')}
         />
       </Screen>
@@ -156,6 +171,9 @@ const Exams = () => {
           return (
             <Pressable
               key={e.code}
+              accessibilityRole="radio"
+              accessibilityLabel={`${e.name}, ${e.description}, ${money(Number(e.price))}`}
+              accessibilityState={{ selected: on }}
               onPress={() => setSelected(e.code)}
               style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13, paddingHorizontal: 14, borderRadius: 15, backgroundColor: c.surface, borderWidth: 2, borderColor: on ? c.brand : c.line }}
             >
@@ -172,11 +190,11 @@ const Exams = () => {
 
       <Label>Quantity</Label>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 16 }}>
-        <Pressable onPress={() => setQty((q) => Math.max(1, q - 1))} style={{ width: 46, height: 46, borderRadius: 13, borderWidth: 1.5, borderColor: c.line, backgroundColor: c.surface, alignItems: 'center', justifyContent: 'center' }}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Decrease quantity" accessibilityState={{ disabled: qty <= 1 }} disabled={qty <= 1} onPress={() => setQty((q) => Math.max(1, q - 1))} style={{ width: 46, height: 46, borderRadius: 13, borderWidth: 1.5, borderColor: c.line, backgroundColor: c.surface, alignItems: 'center', justifyContent: 'center' }}>
           <Text style={{ fontSize: 22, fontFamily: font.bold, color: c.ink1 }}>−</Text>
         </Pressable>
         <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1, minWidth: 28, textAlign: 'center' }}>{qty}</Text>
-        <Pressable onPress={() => setQty((q) => Math.min(10, q + 1))} style={{ width: 46, height: 46, borderRadius: 13, borderWidth: 1.5, borderColor: c.line, backgroundColor: c.surface, alignItems: 'center', justifyContent: 'center' }}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Increase quantity" accessibilityState={{ disabled: qty >= 10 }} disabled={qty >= 10} onPress={() => setQty((q) => Math.min(10, q + 1))} style={{ width: 46, height: 46, borderRadius: 13, borderWidth: 1.5, borderColor: c.line, backgroundColor: c.surface, alignItems: 'center', justifyContent: 'center' }}>
           <Text style={{ fontSize: 22, fontFamily: font.bold, color: c.ink1 }}>+</Text>
         </Pressable>
       </View>
@@ -201,10 +219,10 @@ const Exams = () => {
         total={amount}
         balance={balance}
         rows={exam ? [['Exam', exam.name], ['Item', exam.description], ['Quantity', String(qty)], ['Phone', phone]] : []}
-        onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        onPay={() => { reviewedPayment.current = JSON.stringify([[selected, String(qty), phone.trim()].join('|'), amount]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+      <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>

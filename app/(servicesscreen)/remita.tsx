@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { apiJson } from '@/lib/api';
+import { getSessionGeneration } from '@/lib/secureStore';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import ZIcon from '@/components/design/ZIcon';
@@ -16,6 +17,8 @@ type Step = null | 'confirm' | 'pin';
 
 const Remita = () => {
   const { c } = useTheme();
+  const sessionGeneration = useRef(getSessionGeneration());
+  const isCurrentSession = () => sessionGeneration.current === getSessionGeneration();
   const { balance, reload, billPaymentsAvailable } = useWallet();
 
   const [rrr, setRrr] = useState('');
@@ -29,6 +32,7 @@ const Remita = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const purchaseInFlight = useRef(false);
+  const reviewedPayment = useRef<string | null>(null);
   const [done, setDone] = useState(false);
   // The ledger reference the server minted for this transaction — shown on the
   // receipt and carried into the saved/shared file, so a support ticket can name it.
@@ -45,12 +49,13 @@ const Remita = () => {
   const valid = billPaymentsAvailable === true && validated && amount >= 100 && amount <= balance;
 
   const validate = async () => {
+    if (!isCurrentSession()) return;
     const requestedRrr = normalizedRrr;
     const generation = ++validationGeneration.current;
     setValidating(true);
     try {
       const res = await apiJson('/api/utility/validate_rrr/', { rrr: requestedRrr });
-      if (generation !== validationGeneration.current) return;
+      if (!isCurrentSession() || generation !== validationGeneration.current) return;
       if (res.success) {
         setValidatedFor(requestedRrr);
         setPayerName(res.name || '');
@@ -60,11 +65,11 @@ const Remita = () => {
         notify('Not found', res.message || 'Could not validate this RRR.');
       }
     } catch {
-      if (generation === validationGeneration.current) {
+      if (isCurrentSession() && generation === validationGeneration.current) {
         notify('Error', 'Something went wrong. Please try again later.');
       }
     } finally {
-      if (generation === validationGeneration.current) setValidating(false);
+      if (isCurrentSession() && generation === validationGeneration.current) setValidating(false);
     }
   };
 
@@ -79,9 +84,14 @@ const Remita = () => {
   };
 
   const pay = async (pin: string) => {
-    if (!valid || done || purchaseInFlight.current) return;
-    purchaseInFlight.current = true;
+    if (!isCurrentSession() || !valid || done || purchaseInFlight.current) return;
     const fingerprint = [rrr.trim(), String(amount)].join('|');
+    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([fingerprint, amount])) {
+      setStep('confirm');
+      notify('Review payment again', 'The payment details changed. Check them before entering your PIN.');
+      return;
+    }
+    purchaseInFlight.current = true;
     let deliveryStarted = false;
     setBusy(true);
     try {
@@ -89,6 +99,7 @@ const Remita = () => {
       // unresolved retry after restart and prevents a changed biller amount from
       // inheriting the previous amount's in-memory key.
       const requestKey = await acquireSpendAttempt('remita', fingerprint);
+      if (!isCurrentSession()) return;
       deliveryStarted = true;
       const res = await apiJson('/api/utility/payremita/', {
         rrr,
@@ -103,10 +114,12 @@ const Remita = () => {
       // idempotency key was already submitted; the accompanying `success` or
       // `pending` flag remains the authoritative outcome. In particular, a
       // replay of a PENDING ledger row must keep the processing receipt.
+      if (!isCurrentSession()) return;
       const outcome = classifySpendResponse(res);
       if (outcome === 'success' || outcome === 'pending') {
         if (outcome === 'success') {
           await clearSpendAttempt('remita', fingerprint, requestKey);
+          if (!isCurrentSession()) return;
           setRecovered(isRecoveredSpendResponse(res));
         }
         setTxnRef(String(res.reference || ''));
@@ -116,6 +129,7 @@ const Remita = () => {
         setDone(true);
         reload();
       } else if (outcome === 'unknown') {
+        setTxnRef(String(res.reference || ''));
         setPending(true);
         setPendingMessage('We could not confirm this Remita payment. Check History before trying again.');
         setStep(null);
@@ -129,11 +143,13 @@ const Remita = () => {
         // let a retry replay server-side instead of paying twice.
         if (!res.offline) {
           await clearSpendAttempt('remita', fingerprint, requestKey);
+          if (!isCurrentSession()) return;
         }
         notify('Error', res.message || 'Payment could not be completed.');
         setStep(null);
       }
     } catch {
+      if (!isCurrentSession()) return;
       if (deliveryStarted) {
         setPending(true);
         setPendingMessage('We could not confirm this Remita payment. Check History before trying again.');
@@ -145,7 +161,7 @@ const Remita = () => {
       }
     } finally {
       purchaseInFlight.current = false;
-      setBusy(false);
+      if (isCurrentSession()) setBusy(false);
     }
   };
 
@@ -162,6 +178,7 @@ const Remita = () => {
           rows={[['Type', 'Remita bill'], ['RRR', rrr], ...(payerName ? ([['Payer', payerName]] as [string, string][]) : []), ['Amount', money(amount)], ['Fee', '₦0'], ['Total', money(amount), true]]}
           reference={txnRef}
           status={pending ? 'Processing' : 'Successful'}
+          footer={pending ? <Btn label="Check transaction history" variant="outline" onPress={() => router.push('/history')} /> : undefined}
           onDone={() => router.replace('/home')}
         />
       </Screen>
@@ -215,7 +232,7 @@ const Remita = () => {
         total={amount}
         balance={balance}
         rows={[['RRR', rrr], ...(payerName ? ([['Payer', payerName]] as [string, string][]) : []), ['Amount', money(amount)]]}
-        onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        onPay={() => { reviewedPayment.current = JSON.stringify([[rrr.trim(), String(amount)].join('|'), amount]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>

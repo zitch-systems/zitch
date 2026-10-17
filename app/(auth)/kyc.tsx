@@ -5,7 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as WebBrowser from 'expo-web-browser';
 import Svg, { Circle } from 'react-native-svg';
 import { notify } from '@/components/design/Notify';
-import { getToken } from '@/lib/secureStore';
+import { getSessionGeneration, getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute, resolveOwnershipOtpRoute, type KycStatus, type KycVerificationFlag, type ResidentialAddress } from '@/lib/services/kyc';
 import type { FundingAccount } from '@/lib/services/wallet';
@@ -57,6 +57,11 @@ const C_BVN = '#0FA295';
 const C_NIN = '#2D7FF9';
 const C_SELFIE = '#7A5CFF';
 
+const transactionLimitLabel = (value: unknown) => (
+  (typeof value === 'number' || (typeof value === 'string' && value.trim() !== ''))
+  && Number.isFinite(Number(value)) && Number(value) >= 0
+) ? money(Number(value)) : 'Not confirmed';
+
 const EMPTY_ADDRESS: ResidentialAddress = {
   buildingNumber: '', apartment: '', street: '', city: '', town: '', state: '',
   lga: '', lcda: '', landmark: '', additionalInformation: '', country: 'Nigeria',
@@ -79,7 +84,6 @@ const Kyc = () => {
     pending_otp_destination?: string;
     verify_identity?: string;
   }>();
-  const [, setToken] = useState('');
   const [status, setStatus] = useState<Status | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [statusError, setStatusError] = useState('');
@@ -119,15 +123,25 @@ const Kyc = () => {
   const actionInFlight = useRef(false);
   const facePollGeneration = useRef(0);
   const mounted = useRef(true);
+  const screenGeneration = useRef(getSessionGeneration()).current;
+  const captureInFlight = useRef(false);
+  const upgradeCaptureOwner = useRef<(() => boolean) | null>(null);
+  const loadGeneration = useRef(0);
   const selfieTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const bindFlow = () => {
+    const flow = facePollGeneration.current;
+    return () => mounted.current && screenGeneration === getSessionGeneration() && flow === facePollGeneration.current;
+  };
+
   const beginAction = () => {
-    if (actionInFlight.current) return false;
+    if (actionInFlight.current || !mounted.current || screenGeneration !== getSessionGeneration()) return false;
     actionInFlight.current = true;
     setBusy(true);
     return true;
   };
-  const endAction = () => {
+  const endAction = (isCurrent: () => boolean) => {
+    if (!isCurrent()) return;
     actionInFlight.current = false;
     if (mounted.current) setBusy(false);
   };
@@ -150,9 +164,12 @@ const Kyc = () => {
     const identity = params.pending_identity === 'nin' || params.pending_identity === 'bvn'
       ? params.pending_identity
       : '';
-    const trackingId = params.pending_tracking_id || '';
+    const trackingId = typeof params.pending_tracking_id === 'string' ? params.pending_tracking_id : '';
     if (!identity || !trackingId) return;
-    const destination = params.pending_otp_destination || '';
+    const destination = typeof params.pending_otp_destination === 'string' ? params.pending_otp_destination : '';
+    facePollGeneration.current += 1;
+    actionInFlight.current = false;
+    setBusy(false);
     if (identity === 'bvn') {
       setBvnTrackingId(trackingId);
       setBvnOtpDestination(destination);
@@ -169,29 +186,43 @@ const Kyc = () => {
   }, [params.pending_identity, params.pending_otp_destination, params.pending_tracking_id]);
 
   const load = useCallback(async (): Promise<Status | null> => {
-    const t = await getToken();
-    if (!t) return null;
-    setToken(t);
+    const request = ++loadGeneration.current;
+    const current = () => mounted.current && screenGeneration === getSessionGeneration() && request === loadGeneration.current;
     try {
+      const t = await getToken();
+      if (!current()) return null;
+      if (!t) throw new Error('Session unavailable');
       const res = await kycService.getStatus();
+      if (!current()) return null;
       if (res.success) {
         setStatus(res);
         setStatusError('');
         return res;
       }
       setStatusError(res.message || 'We could not load your verification status. Please try again.');
-    } catch { setStatusError('We could not load your verification status. Please try again.'); }
-    finally { setLoadingStatus(false); }
+    } catch { if (current()) setStatusError('We could not load your verification status. Please try again.'); }
+    finally { if (current()) setLoadingStatus(false); }
     return null;
-  }, []);
+  }, [screenGeneration]);
   useFocusEffect(useCallback(() => {
     void load();
-    return () => { facePollGeneration.current += 1; };
-  }, [load]));
+    return () => {
+      facePollGeneration.current += 1;
+      actionInFlight.current = false;
+      upgradeCaptureOwner.current = null;
+      setBusy(false);
+      setScanning(false);
+      setUpgradeCameraOpen(false);
+      if (selfieTimer.current) clearTimeout(selfieTimer.current);
+      spin.stopAnimation();
+    };
+  }, [load, spin]));
 
   // Return to the method menu and clear any in-flight sub-flow state.
   const goMenu = () => {
     facePollGeneration.current += 1;
+    actionInFlight.current = false;
+    upgradeCaptureOwner.current = null;
     if (selfieTimer.current) {
       clearTimeout(selfieTimer.current);
       selfieTimer.current = null;
@@ -231,37 +262,43 @@ const Kyc = () => {
   const startEmail = async () => {
     const target = (email || status?.email || '').trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target) || !beginAction()) return;
+    const isCurrent = bindFlow();
     try {
       const res = await kycService.startEmail(target);
+      if (!isCurrent()) return;
       if (res.success) {
         setEmail(target);
         setEmailOtp('');
         setEmailSent(true);
         notify('Email code sent', res.message || `Enter the code sent to ${target}.`, 'success');
       } else notify('Could not send code', res.message || 'Check the email address and try again.');
-    } catch { notify('Could not send code', 'Check your connection and try again.'); }
-    finally { endAction(); }
+    } catch { if (isCurrent()) notify('Could not send code', 'Check your connection and try again.'); }
+    finally { endAction(isCurrent); }
   };
 
   const confirmEmail = async () => {
     if (emailOtp.length !== 6 || !beginAction()) return;
+    const isCurrent = bindFlow();
     try {
       const res = await kycService.confirmEmail(emailOtp);
+      if (!isCurrent()) return;
       if (res.success && res.email_verified) {
         notify('Email verified', 'Continue with BVN or NIN verification.', 'success');
         setEmail(''); setEmailOtp(''); setEmailSent(false); setMethod('menu');
         await load();
       } else notify('Verification failed', res.message || 'Check the code and try again.');
-    } catch { notify('Verification failed', 'Check your connection and try again.'); }
-    finally { endAction(); }
+    } catch { if (isCurrent()) notify('Verification failed', 'Check your connection and try again.'); }
+    finally { endAction(isCurrent); }
   };
 
   // Shared submit: on success update tier status, toast the design copy, reset
   // the sub-flow fields and bounce back to the menu.
   const submit = async (call: () => Promise<KycStatus | FundingAccount>, successTitle: string, requiredFlags: KycVerificationFlag[] = []) => {
     if (!beginAction()) return;
+    const isCurrent = bindFlow();
     try {
       const res = await call();
+      if (!isCurrent()) return;
       const outcome = classifyKycResponse(res, requiredFlags);
       if (outcome === 'pending') {
         setStatus((current) => current ? { ...current, pending: true, message: res.message } : current);
@@ -279,6 +316,7 @@ const Kyc = () => {
         await load();
       } else if (outcome === 'success' || outcome === 'unverified') {
         const authoritative = requiredFlags.length ? await load() : null;
+        if (!isCurrent()) return;
         const verified = !requiredFlags.length || requiredFlags.every((flag) => authoritative?.[flag] === true);
         if (!verified) {
           notify(
@@ -302,15 +340,17 @@ const Kyc = () => {
         setMethod('menu');
         await load();
       } else notify('Error', res.message || 'Verification failed');
-    } catch { notify('Error', 'Something went wrong.'); }
-    finally { endAction(); }
+    } catch { if (isCurrent()) notify('Error', 'Something went wrong.'); }
+    finally { endAction(isCurrent); }
   };
 
   // --- BVN: enter number -> we send a one-time code -> confirm it ---
   const startBvn = async () => {
     if (!beginAction()) return;
+    const isCurrent = bindFlow();
     try {
       const res = await kycService.startBvn(bvn);
+      if (!isCurrent()) return;
       if (res.pending) {
         setStatus((current) => current ? { ...current, pending: true, message: res.message } : current);
         notify('Verification processing', res.message || 'Your BVN verification is still processing. Check your status again shortly.', 'info');
@@ -332,10 +372,12 @@ const Kyc = () => {
       } else if (res.identity_review_required) {
         notify('Verification needs review', res.message || 'Your account opened, but your BVN needs review.', 'info');
         await load();
+        if (!isCurrent()) return;
         setBvn(''); setBvnOtp(''); setBvnTrackingId(''); setBvnOtpDestination(''); setBvnSent(false);
         setMethod('menu');
       } else if (res.success) {
         const authoritative = await load();
+        if (!isCurrent()) return;
         notify(
           authoritative?.bvn_verified ? 'BVN already verified' : 'Verification submitted',
           authoritative?.bvn_verified
@@ -347,13 +389,15 @@ const Kyc = () => {
         setMethod('menu');
       }
       else notify('Error', res.message || 'Could not start BVN verification');
-    } catch { notify('Error', 'Something went wrong.'); }
-    finally { endAction(); }
+    } catch { if (isCurrent()) notify('Error', 'Something went wrong.'); }
+    finally { endAction(isCurrent); }
   };
   const resendBvn = async () => {
     if (!bvnSent || !beginAction()) return;
+    const isCurrent = bindFlow();
     try {
       const res = await kycService.resendBvn(bvnTrackingId, bvn);
+      if (!isCurrent()) return;
       if (res.success && (bvnTrackingId || resolveOwnershipOtpRoute(res))) {
         if (!bvnTrackingId) setBvnTrackingId(resolveOwnershipOtpRoute(res)!.trackingId);
         setBvnOtp('');
@@ -363,15 +407,15 @@ const Kyc = () => {
       } else if (res.pending) {
         notify('Verification processing', res.message || 'Your BVN verification is still processing. Check your status again shortly.', 'info');
       } else notify('Error', res.message || 'Could not resend the BVN code');
-    } catch { notify('Error', 'Something went wrong.'); }
-    finally { endAction(); }
+    } catch { if (isCurrent()) notify('Error', 'Something went wrong.'); }
+    finally { endAction(isCurrent); }
   };
   const confirmBvn = () => submit(() => kycService.confirmBvn(bvnTrackingId, bvnOtp), 'BVN verified', ['bvn_verified']);
 
   const startIdentityFaceVerification = async (identity: { bvn?: string; nin?: string }) => {
     if (!beginAction()) return;
     const generation = ++facePollGeneration.current;
-    const isCurrent = () => mounted.current && facePollGeneration.current === generation;
+    const isCurrent = () => mounted.current && screenGeneration === getSessionGeneration() && facePollGeneration.current === generation;
     try {
       const started = await kycService.startIdentityFace(identity);
       if (!isCurrent()) return;
@@ -440,14 +484,16 @@ const Kyc = () => {
       notify('Still processing', 'Your bank is still confirming the check. This page will refresh when you return.');
       await load();
     } catch { if (isCurrent()) notify('Error', 'Could not complete face verification. Please use the SMS code or try again.'); }
-    finally { endAction(); }
+    finally { endAction(isCurrent); }
   };
 
   // --- NIN: the server selects identity lookup and its ownership challenge ---
   const startNin = async () => {
     if (!beginAction()) return;
+    const isCurrent = bindFlow();
     try {
       const res = await kycService.startNin(nin);
+      if (!isCurrent()) return;
       if (res.pending) {
         setStatus((current) => current ? { ...current, pending: true, message: res.message } : current);
         notify('Verification processing', res.message || 'Your NIN verification is still processing. Check your status again shortly.', 'info');
@@ -472,10 +518,12 @@ const Kyc = () => {
       } else if (res.identity_review_required) {
         notify('Verification needs review', res.message || 'Your account opened, but your NIN needs review.', 'info');
         await load();
+        if (!isCurrent()) return;
         setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false);
         setMethod('menu');
       } else if (res.success) {
         const authoritative = await load();
+        if (!isCurrent()) return;
         notify(
           authoritative?.nin_verified ? 'NIN verified' : 'Verification submitted',
           authoritative?.nin_verified
@@ -486,8 +534,8 @@ const Kyc = () => {
         setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false);
         setMethod('menu');
       } else notify('Error', res.message || 'Could not start NIN verification');
-    } catch { notify('Error', 'Something went wrong.'); }
-    finally { endAction(); }
+    } catch { if (isCurrent()) notify('Error', 'Something went wrong.'); }
+    finally { endAction(isCurrent); }
   };
   const confirmNin = () => submit(
     () => kycService.confirmNin(ninTrackingId, ninOtp),
@@ -496,8 +544,10 @@ const Kyc = () => {
   );
   const resendNin = async () => {
     if (!ninSent || !beginAction()) return;
+    const isCurrent = bindFlow();
     try {
       const res = await kycService.resendNin(ninTrackingId, nin);
+      if (!isCurrent()) return;
       if (res.success && (ninTrackingId || resolveOwnershipOtpRoute(res))) {
         if (!ninTrackingId) setNinTrackingId(resolveOwnershipOtpRoute(res)!.trackingId);
         setNinOtp('');
@@ -507,8 +557,8 @@ const Kyc = () => {
       } else if (res.pending) {
         notify('Verification processing', res.message || 'Your NIN verification is still processing. Check your status again shortly.', 'info');
       } else notify('Error', res.message || 'Could not resend the NIN code');
-    } catch { notify('Error', 'Something went wrong.'); }
-    finally { endAction(); }
+    } catch { if (isCurrent()) notify('Error', 'Something went wrong.'); }
+    finally { endAction(isCurrent); }
   };
 
   const verifyNin = startNin;
@@ -516,8 +566,12 @@ const Kyc = () => {
   // --- Selfie: a real captured image for server-side identity verification (NOT device
   // Face ID — KYC must match a face, which the device unlock can't prove). ---
   const captureSelfie = async () => {
+    if (captureInFlight.current || actionInFlight.current) return;
+    captureInFlight.current = true;
+    const isCurrent = bindFlow();
     try {
       const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!isCurrent()) return;
       if (!perm.granted) { notify('Camera needed', 'Allow camera access so we can verify your identity.'); return; }
       beginExternalActivity(); // keep the app-lock from firing while the camera is up
       let shot;
@@ -526,19 +580,23 @@ const Kyc = () => {
           cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.4, allowsEditing: false,
         });
       } finally { endExternalActivity(); }
+      if (!isCurrent()) return;
       if (shot.canceled || !shot.assets?.[0]?.base64) return;
       const selfie = shot.assets[0].base64;
-      submit(() => kycService.verifyFace(selfie), 'Selfie verification completed', ['face_verified']);
-    } catch { notify('Camera unavailable', 'We could not open the camera. Check camera permission and try again.'); }
+      await submit(() => kycService.verifyFace(selfie), 'Selfie verification completed', ['face_verified']);
+    } catch { if (isCurrent()) notify('Camera unavailable', 'We could not open the camera. Check camera permission and try again.'); }
+    finally { captureInFlight.current = false; }
   };
   // Show a visible camera guide animation (~2.3s spin) THEN open the front camera.
   const runSelfie = () => {
-    if (scanning || busy) return;
+    if (scanning || busy || captureInFlight.current) return;
+    const isCurrent = bindFlow();
     setScanning(true);
     spin.setValue(0);
     Animated.loop(Animated.timing(spin, { toValue: 1, duration: 1000, easing: Easing.linear, useNativeDriver: true })).start();
     selfieTimer.current = setTimeout(() => {
       selfieTimer.current = null;
+      if (!isCurrent()) return;
       spin.stopAnimation();
       setScanning(false);
       captureSelfie();
@@ -548,7 +606,11 @@ const Kyc = () => {
   // The selfie is captured and HELD rather than posted, because the bank scores
   // it against the two numbers in one request. Posting it alone would spend the
   // verification attempt on a call that cannot complete the upgrade.
-  const captureUpgradeSelfie = () => setUpgradeCameraOpen(true);
+  const captureUpgradeSelfie = () => {
+    if (busy) return;
+    upgradeCaptureOwner.current = bindFlow();
+    setUpgradeCameraOpen(true);
+  };
   const submitUpgrade = () => submit(
     () => kycService.upgradeTier2(upBvn, upNin, upSelfie),
     'Identity verified — tier upgraded',
@@ -556,15 +618,24 @@ const Kyc = () => {
   );
 
   const pickAddressProof = async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your proof of address.'); return; }
-    beginExternalActivity();
+    if (captureInFlight.current || actionInFlight.current) return;
+    captureInFlight.current = true;
+    const isCurrent = bindFlow();
     try {
-      const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.4, allowsEditing: true,
-      });
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!isCurrent()) return;
+      if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your proof of address.'); return; }
+      beginExternalActivity();
+      let res;
+      try {
+        res = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.4, allowsEditing: true,
+        });
+      } finally { endExternalActivity(); }
+      if (!isCurrent()) return;
       if (!res.canceled && res.assets?.[0]?.base64) setAddressDocument(res.assets[0].base64);
-    } finally { endExternalActivity(); }
+    } catch { if (isCurrent()) notify('Could not open photos', 'Check photo permissions and try again.'); }
+    finally { captureInFlight.current = false; }
   };
 
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
@@ -588,7 +659,7 @@ const Kyc = () => {
   );
 
   const MethodCard = ({ id, icon, color, title, sub, badge, done }: { id: Method; icon: string; color: string; title: string; sub: string; badge?: string; done?: boolean }) => (
-    <Tap onPress={() => { if (!done) setMethod(id); }} style={{ marginTop: 12 }}>
+    <Tap accessibilityLabel={`${title}, ${done ? 'Verified' : sub}`} disabled={!!done || busy} onPress={() => { if (!done) setMethod(id); }} style={{ marginTop: 12 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13, padding: 15, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, ...cardShadow }}>
         <View style={{ width: 46, height: 46, borderRadius: 13, backgroundColor: color + '22', alignItems: 'center', justifyContent: 'center' }}>
           <ZIcon name={icon} size={22} color={color} stroke={1.9} />
@@ -644,6 +715,7 @@ const Kyc = () => {
     return <Screen>
       <Header title="Identity verification" onBack={onBack} />
       <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{status.migration_message || 'Your account needs review. Contact support before adding or spending money.'}</Text>
+      <View style={{ marginTop: 20 }}><Btn label="Contact support" onPress={() => router.push('/support')} /></View>
     </Screen>;
   }
 
@@ -676,7 +748,7 @@ const Kyc = () => {
               {status.account_provider === 'partnership' && (
                 <View style={{ alignItems: 'flex-end' }}>
                   <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Per-transaction limit</Text>
-                  <Text style={{ fontSize: 16, fontFamily: font.bold, color: c.brand, fontVariant: ['tabular-nums'] }}>{money(Number(status.transaction_limit))}</Text>
+                  <Text style={{ fontSize: 16, fontFamily: font.bold, color: c.brand, fontVariant: ['tabular-nums'] }}>{transactionLimitLabel(status.transaction_limit)}</Text>
                 </View>
               )}
             </View>
@@ -718,20 +790,21 @@ const Kyc = () => {
           <View style={{ marginTop: 22 }}>
             {!emailSent ? (
               <>
-                <Field label="Email address" placeholder="you@example.com" keyboardType="email-address" autoCapitalize="none"
+                <Field editable={!busy} label="Email address" autoCorrect={false} autoComplete="email" placeholder="you@example.com" keyboardType="email-address" autoCapitalize="none"
                   value={email || status?.email || ''} onChangeText={setEmail} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
                 <View style={{ height: 22 }} />
                 <Btn label={busy ? 'Sending…' : 'Send email code'} disabled={busy || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((email || status?.email || '').trim())} onPress={startEmail} />
               </>
             ) : (
               <>
-                <Field label="Email verification code" placeholder="6-digit code" keyboardType="number-pad" value={emailOtp}
+                <Field editable={!busy} label="Email verification code" textContentType="oneTimeCode" maxLength={6} placeholder="6-digit code" keyboardType="number-pad" value={emailOtp}
                   onChangeText={(value) => setEmailOtp(value.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
                 <Tap
+                  disabled={busy}
                   onPress={() => { setEmailSent(false); setEmailOtp(''); }}
                   accessibilityLabel="Change email or resend code"
                   hitSlop={8}
-                  style={{ alignSelf: 'flex-start', marginTop: 10 }}
+                  style={{ alignSelf: 'flex-start', marginTop: 10, minHeight: 44, justifyContent: 'center' }}
                 >
                   <Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Change email or resend code</Text>
                 </Tap>
@@ -745,11 +818,9 @@ const Kyc = () => {
 
       {method === 'bvn' && !bvnSent && (
         <View>
-          <Hero icon="insurance" color={C_BVN} title="BVN verification" sub={status?.identity_verification_provider === 'prembly'
-            ? 'Enter your 11-digit BVN. We’ll send a code by SMS and, where available, to the email linked to your BVN.'
-            : 'Enter your 11-digit BVN. We’ll send a code to the phone number linked to it.'} />
+          <Hero icon="insurance" color={C_BVN} title="BVN verification" sub="Enter your 11-digit BVN. We’ll send an SMS code to the phone number linked to it." />
           <View style={{ marginTop: 22 }}>
-            <Field label="Bank Verification Number (BVN)" placeholder="Enter your 11-digit BVN" keyboardType="number-pad" value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="insurance" size={18} color={c.ink3} />} />
+            <Field editable={!busy} label="Bank Verification Number (BVN)" placeholder="Enter your 11-digit BVN" keyboardType="number-pad" value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="insurance" size={18} color={c.ink3} />} />
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
               <ZIcon name="help" size={14} color={c.amber} />
               <Text style={{ flex: 1, color: c.ink3, fontSize: 12.5, fontFamily: font.regular }}>Dial *565*0# on your registered line to get your BVN.</Text>
@@ -767,10 +838,10 @@ const Kyc = () => {
           <Hero icon="insurance" color={C_BVN} title="Confirm your BVN" sub={`Enter the 6-digit code${bvnOtpDestination ? ` sent to ${bvnOtpDestination}` : ' sent for your BVN'}.`} />
           {!!bvnDeliveryNotice && <Text accessibilityRole="alert" style={{ marginTop: 12, color: c.ink2, fontFamily: font.regular }}>{bvnDeliveryNotice}</Text>}
           <View style={{ marginTop: 22 }}>
-            <Field label="Verification code" placeholder="6-digit code" keyboardType="number-pad" value={bvnOtp} onChangeText={(v) => setBvnOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
+            <Field editable={!busy} label="Verification code" autoComplete="sms-otp" textContentType="oneTimeCode" maxLength={6} placeholder="6-digit code" keyboardType="number-pad" value={bvnOtp} onChangeText={(v) => setBvnOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
-              <Text onPress={() => { setBvnSent(false); setBvnOtp(''); setBvnTrackingId(''); setBvnOtpDestination(''); }} style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Change BVN</Text>
-              <Text onPress={() => void resendBvn()} style={{ fontSize: 12.5, color: busy ? c.ink3 : c.brand, fontFamily: font.semibold }}>Resend code</Text>
+              <Tap accessibilityLabel="Change BVN" disabled={busy} onPress={() => { setBvnSent(false); setBvnOtp(''); setBvnTrackingId(''); setBvnOtpDestination(''); }} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Change BVN</Text></Tap>
+              <Tap accessibilityLabel="Resend BVN code" disabled={busy} onPress={() => void resendBvn()} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ fontSize: 12.5, color: busy ? c.ink3 : c.brand, fontFamily: font.semibold }}>Resend code</Text></Tap>
             </View>
             <View style={{ height: 22 }} />
             <Btn label={busy ? 'Confirming…' : 'Confirm BVN'} disabled={busy || bvnOtp.length !== 6} onPress={confirmBvn} />
@@ -786,11 +857,9 @@ const Kyc = () => {
 
       {method === 'nin' && !ninSent && (
         <View>
-          <Hero icon="card" color={C_NIN} title="NIN verification" sub={status?.identity_verification_provider === 'prembly'
-            ? 'Enter your 11-digit NIN. We’ll send a code by SMS and, where available, to the email linked to your NIN.'
-            : 'Enter your 11-digit NIN. We’ll send a code to the phone number registered on your NIN.'} />
+          <Hero icon="card" color={C_NIN} title="NIN verification" sub="Enter your 11-digit NIN. We’ll send an SMS code to the phone number registered on it." />
           <View style={{ marginTop: 22 }}>
-            <Field label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad" value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
+            <Field editable={!busy} label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad" value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
             <View style={{ height: 12 }} />
             <View style={{ height: 18 }} />
             <Btn label={busy ? 'Requesting code…' : 'Send NIN verification code'} disabled={busy || nin.length !== 11} onPress={verifyNin} />
@@ -805,10 +874,10 @@ const Kyc = () => {
           <Hero icon="card" color={C_NIN} title="Confirm your NIN" sub={`Enter the 6-digit code${ninOtpDestination ? ` sent to ${ninOtpDestination}` : ' sent for your NIN'}.`} />
           {!!ninDeliveryNotice && <Text accessibilityRole="alert" style={{ marginTop: 12, color: c.ink2, fontFamily: font.regular }}>{ninDeliveryNotice}</Text>}
           <View style={{ marginTop: 22 }}>
-            <Field label="Verification code" placeholder="6-digit code" keyboardType="number-pad" value={ninOtp} onChangeText={(v) => setNinOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
+            <Field editable={!busy} label="Verification code" autoComplete="sms-otp" textContentType="oneTimeCode" maxLength={6} placeholder="6-digit code" keyboardType="number-pad" value={ninOtp} onChangeText={(v) => setNinOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
-              <Text onPress={() => { setNinSent(false); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); }} style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Change NIN</Text>
-              <Text onPress={() => void resendNin()} style={{ fontSize: 12.5, color: busy ? c.ink3 : c.brand, fontFamily: font.semibold }}>Resend code</Text>
+              <Tap accessibilityLabel="Change NIN" disabled={busy} onPress={() => { setNinSent(false); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); }} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Change NIN</Text></Tap>
+              <Tap accessibilityLabel="Resend NIN code" disabled={busy} onPress={() => void resendNin()} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ fontSize: 12.5, color: busy ? c.ink3 : c.brand, fontFamily: font.semibold }}>Resend code</Text></Tap>
             </View>
             <View style={{ height: 22 }} />
             <Btn label={busy ? 'Confirming…' : 'Confirm NIN'} disabled={busy || ninOtp.length !== 6} onPress={confirmNin} />
@@ -828,7 +897,7 @@ const Kyc = () => {
           <Hero icon="insurance" color={C_BVN} title="Tier 2 · Face verification"
                 sub="Your bank requires BVN and NIN with your face verification for this upgrade. Tier 1 needs only one identity; these details complete Tier 2." />
           <View style={{ marginTop: 22 }}>
-            <Field label="Bank Verification Number (BVN)" placeholder="Enter your 11-digit BVN" keyboardType="number-pad"
+            <Field editable={!busy} label="Bank Verification Number (BVN)" placeholder="Enter your 11-digit BVN" keyboardType="number-pad"
                    value={upBvn} onChangeText={(v) => setUpBvn(v.replace(/\D/g, '').slice(0, 11))}
                    prefix={<ZIcon name="insurance" size={18} color={c.ink3} />} />
             {status?.bvn_verified && (
@@ -838,11 +907,11 @@ const Kyc = () => {
               </Text>
             )}
             <View style={{ height: 14 }} />
-            <Field label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad"
+            <Field editable={!busy} label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad"
                    value={upNin} onChangeText={(v) => setUpNin(v.replace(/\D/g, '').slice(0, 11))}
                    prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
             <View style={{ height: 14 }} />
-            <Tap onPress={captureUpgradeSelfie}>
+            <Tap disabled={busy} accessibilityLabel={upSelfie ? 'Retake selfie' : 'Take a selfie'} onPress={captureUpgradeSelfie}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: upSelfie ? C_BVN : c.line, backgroundColor: upSelfie ? 'rgba(15,162,149,.08)' : c.surface2 }}>
                 <View style={{ width: 40, height: 40, borderRadius: 11, backgroundColor: upSelfie ? 'rgba(15,162,149,.16)' : c.surface3, alignItems: 'center', justifyContent: 'center' }}>
                   <ZIcon name={upSelfie ? 'check' : 'user'} size={20} color={upSelfie ? C_BVN : c.ink3} stroke={2.4} />
@@ -868,18 +937,20 @@ const Kyc = () => {
       {method === 'address' && addressVerificationAvailable && !addressPending && !tier3Unavailable && !status.address_verified && (
         <View>
           <Hero icon="home" color={C_BVN} title="Address verification" sub="Tier 3" />
-          <Field label="Building number" value={address.buildingNumber} onChangeText={(value) => setAddressField('buildingNumber', value)} />
-          <Field label="Apartment / flat (optional)" value={address.apartment} onChangeText={(value) => setAddressField('apartment', value)} />
-          <Field label="Street" value={address.street} onChangeText={(value) => setAddressField('street', value)} />
-          <Field label="City" value={address.city} onChangeText={(value) => setAddressField('city', value)} />
-          <Field label="Town (optional)" value={address.town} onChangeText={(value) => setAddressField('town', value)} />
-          <Field label="State" value={address.state} onChangeText={(value) => setAddressField('state', value)} />
-          <Field label="LGA" value={address.lga} onChangeText={(value) => setAddressField('lga', value)} />
-          <Field label="LCDA (optional)" value={address.lcda} onChangeText={(value) => setAddressField('lcda', value)} />
-          <Field label="Landmark (optional)" value={address.landmark} onChangeText={(value) => setAddressField('landmark', value)} />
-          <Field label="Additional information (optional)" value={address.additionalInformation} onChangeText={(value) => setAddressField('additionalInformation', value)} />
-          <Field label="Postal code (optional)" keyboardType="number-pad" value={address.postalCode} onChangeText={(value) => setAddressField('postalCode', value)} />
-          <Pressable onPress={() => void pickAddressProof()} disabled={busy} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: addressDocument ? C_BVN : c.line, backgroundColor: addressDocument ? 'rgba(15,162,149,.08)' : c.surface2, marginBottom: 12 }}>
+          <View style={{ gap: 14, marginTop: 22, marginBottom: 20 }}>
+          <Field editable={!busy} label="Building number" value={address.buildingNumber} onChangeText={(value) => setAddressField('buildingNumber', value)} />
+          <Field editable={!busy} label="Apartment / flat (optional)" value={address.apartment} onChangeText={(value) => setAddressField('apartment', value)} />
+          <Field editable={!busy} label="Street" value={address.street} onChangeText={(value) => setAddressField('street', value)} />
+          <Field editable={!busy} label="City" value={address.city} onChangeText={(value) => setAddressField('city', value)} />
+          <Field editable={!busy} label="Town (optional)" value={address.town} onChangeText={(value) => setAddressField('town', value)} />
+          <Field editable={!busy} label="State" value={address.state} onChangeText={(value) => setAddressField('state', value)} />
+          <Field editable={!busy} label="LGA" value={address.lga} onChangeText={(value) => setAddressField('lga', value)} />
+          <Field editable={!busy} label="LCDA (optional)" value={address.lcda} onChangeText={(value) => setAddressField('lcda', value)} />
+          <Field editable={!busy} label="Landmark (optional)" value={address.landmark} onChangeText={(value) => setAddressField('landmark', value)} />
+          <Field editable={!busy} label="Additional information (optional)" value={address.additionalInformation} onChangeText={(value) => setAddressField('additionalInformation', value)} />
+          <Field editable={!busy} label="Postal code (optional)" keyboardType="number-pad" value={address.postalCode} onChangeText={(value) => setAddressField('postalCode', value)} />
+          </View>
+          <Pressable accessibilityRole="button" accessibilityLabel={addressDocument ? 'Change proof of address' : 'Add proof of address'} accessibilityState={{ disabled: busy }} onPress={() => void pickAddressProof()} disabled={busy} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: addressDocument ? C_BVN : c.line, backgroundColor: addressDocument ? 'rgba(15,162,149,.08)' : c.surface2, marginBottom: 12 }}>
             <ZIcon name={addressDocument ? 'check' : 'file'} size={20} color={addressDocument ? C_BVN : c.ink3} />
             <View style={{ flex: 1 }}>
               <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{addressDocument ? 'Proof of address selected' : 'Add proof of address'}</Text>
@@ -911,15 +982,19 @@ const Kyc = () => {
           <Text style={{ textAlign: 'center', fontSize: 13, color: scanning ? c.brand : c.ink3, fontFamily: scanning ? font.bold : font.regular, marginBottom: 14 }}>
             {scanning ? 'Preparing camera…' : 'Front camera · no Face ID needed'}
           </Text>
-          <Btn label={scanning ? 'Verifying…' : 'Start camera'} disabled={scanning || busy} onPress={runSelfie} />
+          <Btn label={scanning ? 'Opening camera…' : busy ? 'Submitting…' : 'Start camera'} disabled={scanning || busy} onPress={runSelfie} />
           <Footer />
         </View>
       )}
     </Screen>
     <FaceLivenessModal
       visible={upgradeCameraOpen}
-      onClose={() => setUpgradeCameraOpen(false)}
-      onCapture={(image) => { setUpgradeCameraOpen(false); setUpSelfie(image); }}
+      onClose={() => { upgradeCaptureOwner.current = null; setUpgradeCameraOpen(false); }}
+      onCapture={(image) => {
+        if (!upgradeCaptureOwner.current?.()) return;
+        upgradeCaptureOwner.current = null;
+        setUpgradeCameraOpen(false); setUpSelfie(image);
+      }}
     />
     </>
   );

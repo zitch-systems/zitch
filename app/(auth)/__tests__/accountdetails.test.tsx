@@ -1,5 +1,6 @@
 import React, { type ReactNode } from 'react';
 import renderer, { act } from 'react-test-renderer';
+import * as ImagePicker from 'expo-image-picker';
 
 import AccountDetails from '@/app/(auth)/accountdetails';
 
@@ -7,6 +8,7 @@ const mockApiPost = jest.fn();
 const mockGetToken = jest.fn();
 const mockNotify = jest.fn();
 const mockRouterPush = jest.fn();
+let mockGeneration = 0;
 
 jest.mock('expo-router', () => ({
   router: {
@@ -16,7 +18,7 @@ jest.mock('expo-router', () => ({
 }));
 jest.mock('@/components/AuthGuard', () => ({ __esModule: true, default: ({ children }: { children: ReactNode }) => children }));
 jest.mock('@/lib/api', () => ({ apiPost: (...args: unknown[]) => mockApiPost(...args) }));
-jest.mock('@/lib/secureStore', () => ({ getToken: (...args: unknown[]) => mockGetToken(...args) }));
+jest.mock('@/lib/secureStore', () => ({ getToken: (...args: unknown[]) => mockGetToken(...args), getSessionGeneration: () => mockGeneration }));
 jest.mock('@/lib/endpoints', () => ({
   EP: { wallet: { balance: '/balance' }, auth: { updateInfo: '/update', avatar: '/avatar' } },
 }));
@@ -64,6 +66,7 @@ jest.mock('@/components/design/ui', () => {
 
 describe('AccountDetails verified phone protection', () => {
   beforeEach(() => {
+    mockGeneration = 0;
     mockApiPost.mockReset();
     mockGetToken.mockReset().mockResolvedValue('session-token');
     mockNotify.mockReset();
@@ -123,4 +126,39 @@ describe('AccountDetails verified phone protection', () => {
     expect(mockRouterPush).toHaveBeenCalledWith('/support');
     act(() => tree.unmount());
   });
+});
+
+
+it.each(['account switch', 'screen close'])('does not upload a picked photo after %s', async (reason) => {
+  mockGeneration = 0;
+  mockApiPost.mockReset().mockResolvedValue({ ok: true, json: async () => ({ success: true, user_first_name: 'Ada' }) });
+  mockGetToken.mockResolvedValue('session-token');
+  (ImagePicker.requestMediaLibraryPermissionsAsync as jest.Mock).mockResolvedValue({ granted: true });
+  let finish!: (value: unknown) => void;
+  (ImagePicker.launchImageLibraryAsync as jest.Mock).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountDetails />); });
+  let picking!: Promise<void>;
+  await act(async () => { picking = tree.root.findByProps({ accessibilityLabel: 'Change profile photo' }).props.onPress(); });
+  if (reason === 'account switch') mockGeneration += 1;
+  else act(() => tree.unmount());
+  await act(async () => {
+    finish({ canceled: false, assets: [{ uri: 'file://photo.jpg', base64: 'old-customer-image' }] });
+    await picking;
+  });
+  expect(mockApiPost.mock.calls.map(([path]) => path)).toEqual(['/balance']);
+  if (reason === 'account switch') act(() => tree.unmount());
+});
+
+it('offers retry after a profile load failure instead of editable empty account fields', async () => {
+  mockGeneration = 0;
+  mockGetToken.mockResolvedValue('session-token');
+  mockApiPost.mockReset().mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce({ json: async () => ({ success: true, user_first_name: 'Ada', user_phone_number: '08012345678' }) });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountDetails />); });
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Save changes' })).toHaveLength(0);
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Try again' }).props.onPress(); });
+  expect(tree.root.findByProps({ accessibilityLabel: 'Verified phone' }).props.value).toBe('08012345678');
+  act(() => tree.unmount());
 });

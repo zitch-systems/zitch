@@ -5,7 +5,7 @@ import BuyData from '@/app/(servicesscreen)/buydata';
 
 const mockFetch = jest.fn();
 
-jest.mock('@/lib/secureStore', () => ({ getToken: jest.fn(async () => null) }));
+jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => 0, getToken: jest.fn(async () => null) }));
 jest.mock('@/lib/api', () => ({ publicPost: (path: string, body: unknown) => global.fetch(path, { body: JSON.stringify(body) }), apiPost: jest.fn() }));
 jest.mock('@/lib/pendingSpend', () => ({ acquireSpendAttempt: jest.fn(), clearSpendAttempt: jest.fn() }));
 jest.mock('@/lib/spendOutcome', () => ({

@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { Screen, Header, Card, Progress, money, NText, txnState } from '@/components/design/ui';
+import { Screen, Header, Card, Btn, Progress, money, NText, txnState } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font, ICON_COLORS, iconTint } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -25,20 +25,21 @@ const CATEGORY_LABEL: Record<string, string> = {
 
 const Analysis = () => {
   const { c, theme } = useTheme();
-  const { txns, hydrated, historyError, reload } = useWallet();
+  const { txns, loading, hydrated, historyError, reload } = useWallet();
   const { month } = useLocalSearchParams<{ month?: string }>();
   // Read once on mount rather than on every render: the clock is not a prop, and
   // a screen left open across midnight on the 1st should not silently re-scope
   // itself to a different month under the reader.
   const [thisMonth] = useState(() => monthKey(Date.now()));
-  const key = String(month || thisMonth);
+  const requestedMonth = String(month || '');
+  const key = requestedMonth === 'undated' || /^\d{4}-(0[1-9]|1[0-2])$/.test(requestedMonth) ? requestedMonth : thisMonth;
   useFocusEffect(useCallback(() => { void reload(); }, [reload]));
 
   const { rows, spent, received, top } = useMemo(() => {
     // Only explicitly successful transactions are aggregated. Pending/unknown
     // rows have not proved settlement and would inflate spending or receipts.
     const kept = txns.filter(
-      (t) => (key === 'undated' ? t.ts == null : t.ts != null && monthKey(t.ts) === key) && txnState(t.status) === 'success',
+      (t) => Number.isFinite(t.amount) && (key === 'undated' ? t.ts == null : t.ts != null && monthKey(t.ts) === key) && txnState(t.status) === 'success',
     );
     const out = kept.filter((t) => t.dir === 'out');
     const totals = new Map<string, number>();
@@ -57,10 +58,10 @@ const Analysis = () => {
   }, [txns, key]);
 
   return (
-    <Screen tab>
-      <Header title="Analysis" sub={key === 'undated' ? undefined : monthLabel(key)} onBack={() => router.back()} />
+    <Screen tab refreshing={loading && hydrated} onRefresh={() => { void reload(); }}>
+      <Header title="Analysis" sub={key === 'undated' ? 'Transactions without a date' : monthLabel(key)} onBack={() => router.back()} />
 
-      {historyError ? <Text accessibilityRole="alert" style={{ color: c.amber, marginBottom: 12 }}>{historyError}</Text> : null}
+      {historyError ? <View style={{ marginBottom: 14, gap: 10 }}><Text accessibilityRole="alert" style={{ color: c.amber }}>{txns.length ? 'Showing previously loaded activity. ' : ''}{historyError}</Text><Btn label="Retry loading activity" disabled={loading} onPress={() => { void reload(); }} /></View> : null}
       <Card style={{ marginBottom: 14, flexDirection: 'row' }}>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3 }}>Money out</Text>
@@ -76,11 +77,11 @@ const Analysis = () => {
       <Card>
         <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1, marginBottom: 4 }}>Where it went</Text>
         <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3, marginBottom: 18 }}>
-          Your spending in this period, largest first.
+          Completed spending in this period, largest first. Pending transactions are excluded.
         </Text>
         {rows.length === 0 ? (
           <Text style={{ fontSize: 13.5, fontFamily: font.regular, color: c.ink3, paddingVertical: 20, textAlign: 'center' }}>
-            No spending in this period.
+            {!hydrated ? 'Loading spending…' : historyError && !txns.length ? 'Spending is unavailable. Retry to load your activity.' : 'No completed spending in this period.'}
           </Text>
         ) : (
           rows.map((r) => {
@@ -93,8 +94,8 @@ const Analysis = () => {
                     <ZIcon name={r.icon} size={17} color={accent} stroke={2} />
                   </View>
                   <Text style={{ flex: 1, fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{r.label}</Text>
-                  <View style={{ alignItems: 'flex-end' }}>
-                    <NText style={{ fontSize: 14.5, fontFamily: font.bold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{money(r.total)}</NText>
+                  <View style={{ alignItems: 'flex-end', maxWidth: '55%' }}>
+                    <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={{ fontSize: 14.5, fontFamily: font.bold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{money(r.total)}</NText>
                     <Text style={{ fontSize: 11.5, fontFamily: font.regular, color: c.ink3, marginTop: 1 }}>{share}%</Text>
                   </View>
                 </View>

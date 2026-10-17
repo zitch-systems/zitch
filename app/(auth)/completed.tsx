@@ -6,21 +6,28 @@ import ZIcon from '@/components/design/ZIcon';
 import { Screen, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 import { registerForPushNotifications } from '@/lib/notifications';
+import AuthGuard from '@/components/AuthGuard';
+import { getSessionGeneration } from '@/lib/secureStore';
 
 const Completed = () => {
   const { c } = useTheme();
   const [firstName, setFirstName] = useState('');
 
   useEffect(() => {
-    AsyncStorage.getItem('UserFirstName').then((n) => n && setFirstName(n));
+    let active = true;
+    const generation = getSessionGeneration();
+    AsyncStorage.getItem('UserFirstName').then((n) => {
+      if (active && generation === getSessionGeneration() && n) setFirstName(n);
+    }).catch(() => {});
     // Ask only after account creation, when the benefit is concrete and an
     // authenticated token exists to bind this device's push token server-side.
     registerForPushNotifications(true).catch(() => {});
+    return () => { active = false; };
   }, []);
 
   return (
-    <Screen scroll={false}>
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 }}>
+    <Screen>
+      <View style={{ alignItems: 'center', paddingHorizontal: 12, paddingVertical: 40 }}>
         <View style={{ width: 110, height: 110, borderRadius: 55, backgroundColor: 'rgba(0,181,29,.14)', alignItems: 'center', justifyContent: 'center' }}>
           <View style={{ width: 78, height: 78, borderRadius: 39, backgroundColor: c.lime, alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="check" size={40} color="#fff" stroke={3} />
@@ -41,4 +48,4 @@ const Completed = () => {
   );
 };
 
-export default Completed;
+export default function GuardedCompleted() { return <AuthGuard><Completed /></AuthGuard>; }

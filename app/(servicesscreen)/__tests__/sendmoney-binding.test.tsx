@@ -3,6 +3,7 @@ import { Text } from 'react-native';
 import renderer, { act } from 'react-test-renderer';
 import SendMoney from '@/app/(servicesscreen)/sendmoney';
 
+let mockGeneration = 0;
 const mockResolveLegacy = jest.fn();
 const mockResolveBank = jest.fn();
 const mockNotify = jest.fn();
@@ -36,7 +37,7 @@ jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: (...args: unknown[]) => mockRouterPush(...args), replace: jest.fn() },
   useLocalSearchParams: () => mockSearchParams,
 }));
-jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => 0, getToken: (...args: unknown[]) => mockGetToken(...args) }));
+jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => mockGeneration, getToken: (...args: unknown[]) => mockGetToken(...args) }));
 jest.mock('@/lib/api', () => ({ publicPost: (path: string, body: unknown) => global.fetch(path, { body: JSON.stringify(body) }), apiPost: (...args: unknown[]) => mockApiPost(...args) }));
 jest.mock('@/lib/pendingSpend', () => ({
   acquireSpendAttempt: (...args: unknown[]) => mockAcquireSpendAttempt(...args),
@@ -178,6 +179,7 @@ const loadBankCatalogue = () => {
 
 describe('SendMoney recipient response binding', () => {
   beforeEach(() => {
+    mockGeneration = 0;
     mockSearchParams = {};
     mockResolveLegacy.mockReset();
     mockResolveBank.mockReset();
@@ -525,4 +527,48 @@ describe('SendMoney recipient response binding', () => {
     expect(mockClearSpendAttempt).not.toHaveBeenCalled();
     act(() => tree.unmount());
   });
+  it.each(['resolve', 'reject'])('ignores a late transfer %s after the customer signs into another account', async (completion) => {
+    jest.useFakeTimers();
+    mockSearchParams = { identifier: '08012345678', mode: 'zitch' };
+    mockResolveLegacy.mockResolvedValue({ success: true, name: 'Recipient', recipient_key: 'recipient-key' });
+    mockAcquireSpendAttempt.mockResolvedValue('old-account-key');
+    let finish!: (value: unknown) => void;
+    let fail!: (error: Error) => void;
+    mockSendLegacy.mockReturnValue(new Promise((resolve, reject) => { finish = resolve; fail = reject; }));
+    mockClassifySpendResponse.mockReturnValue('success');
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<SendMoney />); });
+    await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
+    await act(async () => { control(tree, 'Enter amount').props.onChangeText('1,000.50'); });
+    expect(control(tree, 'Enter amount').props.value).toBe('1000.50');
+    await act(async () => { control(tree, 'Continue').props.onPress(); });
+    await act(async () => { control(tree, 'Confirm transfer').props.onPress(); jest.advanceTimersByTime(320); });
+    await act(async () => { void control(tree, 'Submit PIN').props.onPress(); });
+    expect(mockSendLegacy).toHaveBeenCalledTimes(1);
+    mockGeneration += 1;
+    await act(async () => {
+      if (completion === 'resolve') finish({ success: true, reference: 'old-account-reference' });
+      else fail(new Error('Session changed'));
+    });
+    expect(mockClearSpendAttempt).not.toHaveBeenCalled();
+    expect(mockReloadWallet).not.toHaveBeenCalled();
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(JSON.stringify(tree.toJSON())).not.toContain('old-account-reference');
+    act(() => tree.unmount());
+  });
+
+  it('offers a bank-list retry after a network failure', async () => {
+    mockGetToken.mockResolvedValue('token');
+    mockApiPost.mockResolvedValue({ json: async () => ({ beneficiaries: [] }) });
+    global.fetch = jest.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ json: async () => ({ banks: [{ code: 'bank-a', name: 'Bank A' }] }) });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<SendMoney />); });
+    await act(async () => { control(tree, 'Select bank').props.onPress(); });
+    expect(control(tree, 'Retry bank list')).toBeTruthy();
+    await act(async () => { control(tree, 'Retry bank list').props.onPress(); });
+    expect(control(tree, 'Bank A')).toBeTruthy();
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Retry bank list' })).toHaveLength(0);
+    act(() => tree.unmount());
+  });
+
 });

@@ -1,9 +1,10 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, Link } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { notify } from '@/components/design/Notify';
 import { publicPost } from '@/lib/api';
+import { getSessionGeneration } from '@/lib/secureStore';
 import { isCompleteRegistrationName, splitRegistrationName } from '@/lib/registration';
 import { PRIVACY_URL, TERMS_URL } from '@/components/configFiles/links';
 import ZIcon from '@/components/design/ZIcon';
@@ -15,6 +16,11 @@ const Register = () => {
   const { c } = useTheme();
   const [isRegistering, setIsRegistering] = useState(false);
   const submitting = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const [form, setForm] = useState({ name: '', email: '', phone: '' });
 
   const nameOk = isCompleteRegistrationName(form.name);
@@ -27,6 +33,8 @@ const Register = () => {
     if (!valid || submitting.current) return;
     submitting.current = true;
     setIsRegistering(true);
+    const generation = getSessionGeneration();
+    const current = () => mounted.current && generation === getSessionGeneration();
     try {
       const { firstName, lastName } = splitRegistrationName(form.name);
       const email = form.email.trim().toLowerCase();
@@ -35,6 +43,7 @@ const Register = () => {
         phone: form.phone,
       });
       const result = await response.json().catch(() => ({}));
+      if (!current()) return;
       if (response.ok) {
         // OTP verification creates the account and reads these exact fields.
         // Persist them before navigating so SMS autofill cannot race the write.
@@ -45,6 +54,7 @@ const Register = () => {
           ['UserLastName', lastName],
           ['otpPending', Date.now().toString()],
         ]);
+        if (!current()) return;
         // Mark OTP as pending so reopening the app mid-verification resumes here
         // instead of dropping back to onboarding (cleared on verify / going back).
         router.push('/otp');
@@ -52,17 +62,17 @@ const Register = () => {
         notify('Error', result.message || 'Failed to register an account');
       }
     } catch (error) {
-      notify('Error', 'Something went wrong. Please try again later.');
+      if (current()) notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       submitting.current = false;
-      setIsRegistering(false);
+      if (mounted.current) setIsRegistering(false);
     }
   };
 
   if (isRegistering) {
     return (
       <Screen scroll={false}>
-        <Loading label="Creating your account…" />
+        <Loading label="Sending your SMS code…" />
       </Screen>
     );
   }
@@ -83,6 +93,8 @@ const Register = () => {
             onChangeText={(e) => setForm({ ...form, name: e })}
             placeholder="William Adeyemi"
             autoCapitalize="words"
+            autoComplete="name"
+            textContentType="name"
             prefix={<ZIcon name="user" size={18} color={c.ink3} />}
           />
           {form.name.length > 0 && !nameOk && (
@@ -95,6 +107,9 @@ const Register = () => {
             value={form.phone}
             onChangeText={(e) => setForm({ ...form, phone: e.replace(/\D/g, '').slice(0, 11) })}
             keyboardType="number-pad"
+            autoComplete="tel"
+            textContentType="telephoneNumber"
+            maxLength={18}
             placeholder="0801 234 5678"
             prefix={<ZIcon name="airtime" size={18} color={c.ink3} />}
           />
@@ -109,6 +124,9 @@ const Register = () => {
             onChangeText={(e) => setForm({ ...form, email: e })}
             keyboardType="email-address"
             autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="email"
+            textContentType="emailAddress"
             placeholder="you@email.com"
             prefix={<ZIcon name="remita" size={18} color={c.ink3} />}
           />

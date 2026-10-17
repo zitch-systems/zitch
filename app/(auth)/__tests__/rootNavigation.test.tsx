@@ -7,6 +7,9 @@ import { router } from 'expo-router';
 import { enforceHardExpiry, isSessionLocked, lockSession } from '@/lib/session';
 
 let mockStackRenders = 0;
+let mockGeneration = 0;
+let mockRouteName = 'signin';
+const mockGetToken = jest.fn();
 let mockNotificationTap: (coldStart?: boolean) => void;
 const mockTakeNotification = jest.fn();
 jest.mock('@/lib/notifications', () => ({
@@ -32,7 +35,7 @@ jest.mock('@/lib/session', () => ({
   lockSession: jest.fn(async () => {}),
   isExternalActivityActive: () => false,
 }));
-jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => 0, getToken: async () => 'session' }));
+jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => mockGeneration, getToken: () => mockGetToken() }));
 jest.mock('@/lib/biometrics', () => ({ reconcileCachedPin: async () => {} }));
 jest.mock('@/lib/pendingApproval', () => ({ rememberWhatsAppApprovalUrl: async () => {} }));
 jest.mock('expo-router', () => {
@@ -62,7 +65,7 @@ const freshNestedState = () => ({
   stale: false as const, type: 'stack', key: 'root-stack', index: 0,
   routeNames: ['index', '(auth)'], routes: [{ key: 'auth-route', name: '(auth)', state: {
     stale: false as const, type: 'stack', key: 'auth-stack', index: 0,
-    routeNames: ['signin'], routes: [{ key: 'signin-route', name: 'signin' }],
+    routeNames: ['signin', 'home'], routes: [{ key: `${mockRouteName}-route`, name: mockRouteName }],
   } }],
 });
 
@@ -70,6 +73,10 @@ beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
   mockStackRenders = 0;
+  mockGeneration = 0;
+  mockRouteName = 'signin';
+  mockGetToken.mockReset().mockResolvedValue('session');
+  (enforceHardExpiry as jest.Mock).mockReset().mockResolvedValue(false);
   mockTakeNotification.mockResolvedValue(true);
   (isSessionLocked as jest.Mock).mockResolvedValue(false);
   (lockSession as jest.Mock).mockImplementation(async () => { (isSessionLocked as jest.Mock).mockResolvedValue(true); });
@@ -79,7 +86,7 @@ beforeEach(() => {
   store.storeSubscribers.clear();
   store.rootState = undefined;
   store.nextState = undefined;
-  store.linking = { config: { screens: { index: '', '(auth)': { path: '(auth)', screens: { signin: 'signin' } } } } } as any;
+  store.linking = { config: { screens: { index: '', '(auth)': { path: '(auth)', screens: { signin: 'signin', home: 'home' } } } } } as any;
   store.routeInfo = store.getRouteInfo(freshNestedState() as any);
   store.navigationRef = {
     isReady: () => navigationReady,
@@ -166,4 +173,51 @@ it('requires unlock for a cold notification even when the saved session was rece
   expect(lockSession).toHaveBeenCalledTimes(1);
   expect(mockTakeNotification).not.toHaveBeenCalled();
   expect(router.replace).toHaveBeenCalledWith('/signin');
+});
+
+
+function startOnHome() {
+  mockRouteName = 'home';
+  store.routeInfo = store.getRouteInfo(freshNestedState() as any);
+}
+
+it.each(['unmount', 'new session'])('discards a delayed lock result after %s', async (reason) => {
+  startOnHome();
+  let finish!: (value: boolean) => void;
+  (isSessionLocked as jest.Mock).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  await act(async () => { tree = renderer.create(<RootLayout />); });
+  expect(isSessionLocked).toHaveBeenCalledTimes(1);
+  if (reason === 'unmount') act(() => { tree?.unmount(); tree = undefined; });
+  else mockGeneration += 1;
+  await act(async () => { finish(true); });
+  expect(router.replace).not.toHaveBeenCalled();
+});
+
+it('still redirects a currently locked account to authentication', async () => {
+  startOnHome();
+  (isSessionLocked as jest.Mock).mockResolvedValue(true);
+  await act(async () => { tree = renderer.create(<RootLayout />); });
+  expect(router.replace).toHaveBeenCalledWith('/signin');
+});
+
+it('still redirects after hard expiry clears and advances the current session', async () => {
+  startOnHome();
+  (enforceHardExpiry as jest.Mock).mockImplementationOnce(async () => {
+    mockGeneration += 1;
+    mockGetToken.mockResolvedValue(null);
+    return true;
+  });
+  await act(async () => { tree = renderer.create(<RootLayout />); });
+  expect(router.replace).toHaveBeenCalledWith('/signin');
+});
+
+it('does not redirect a newer login when an older hard-expiry call completes', async () => {
+  startOnHome();
+  let finish!: (value: boolean) => void;
+  (enforceHardExpiry as jest.Mock).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  await act(async () => { tree = renderer.create(<RootLayout />); });
+  mockGeneration += 1;
+  mockGetToken.mockResolvedValue('new-session');
+  await act(async () => { finish(true); });
+  expect(router.replace).not.toHaveBeenCalled();
 });

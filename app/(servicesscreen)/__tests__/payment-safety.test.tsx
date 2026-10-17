@@ -8,6 +8,10 @@ import Betting from '../betting';
 import Exams from '../exams';
 import Remita from '../remita';
 
+let mockGeneration = 0;
+let mockShowAllSheets = true;
+const mockNotify = jest.fn();
+const mockReceipt = jest.fn();
 const mockSubmit = jest.fn();
 const mockAcquire = jest.fn();
 const mockClear = jest.fn();
@@ -15,6 +19,7 @@ const mockWallet = { balance: 20000, phoneNumber: '+2348012345678', billPayments
 const mockResponse = (body: unknown, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
 
 jest.mock('expo-router', () => ({ router: { back: jest.fn(), push: jest.fn(), replace: jest.fn() }, useLocalSearchParams: () => ({}) }));
+jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => mockGeneration }));
 jest.mock('@/lib/wallet', () => ({ useWallet: () => mockWallet }));
 jest.mock('@/lib/pendingSpend', () => ({ acquireSpendAttempt: (...args: unknown[]) => mockAcquire(...args), clearSpendAttempt: (...args: unknown[]) => mockClear(...args) }));
 jest.mock('@/lib/api', () => ({
@@ -33,8 +38,8 @@ jest.mock('@/lib/services/bills', () => ({
   bettingService: { fund: (...args: unknown[]) => mockSubmit('betting', args) },
   examsService: { buy: (...args: unknown[]) => mockSubmit('exam', args) },
 }));
-jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
-jest.mock('@/components/design/Receipt', () => ({ __esModule: true, default: () => null }));
+jest.mock('@/components/design/Notify', () => ({ notify: (...args: unknown[]) => mockNotify(...args) }));
+jest.mock('@/components/design/Receipt', () => ({ __esModule: true, default: (props: any) => { mockReceipt(props); return props.footer || null; } }));
 jest.mock('@/components/design/Loading', () => ({ Loading: () => null }));
 jest.mock('@/components/design/ZIcon', () => () => null);
 jest.mock('@/lib/theme', () => ({ useTheme: () => ({ c: { ink1: '#111', ink2: '#222', ink3: '#333' } }), font: { regular: 'r', bold: 'b' } }));
@@ -45,7 +50,7 @@ jest.mock('@/components/design/ui', () => {
     Screen: ({ children }: any) => R.createElement(View, null, children), Header: () => null, HeaderLink: () => null,
     Field: ({ label, placeholder, value, onChangeText }: any) => R.createElement(TextInput, { accessibilityLabel: label || placeholder, value, onChangeText }),
     Btn: ({ label, ...props }: any) => R.createElement(Pressable, { ...props, accessibilityLabel: label }, R.createElement(Text, null, label)),
-    Sheet: ({ children }: any) => R.createElement(View, null, children),
+    Sheet: ({ open, children }: any) => mockShowAllSheets || open ? R.createElement(View, null, children) : null,
     PinPad: ({ onComplete }: any) => R.createElement(Pressable, { accessibilityLabel: 'Authorize', onPress: () => onComplete('123456') }),
     money: (value: number) => `₦${value}`, Naira: () => null,
   };
@@ -54,7 +59,7 @@ jest.mock('@/components/design/flowkit', () => {
   const R = jest.requireActual('react');
   const { View, TextInput, Pressable } = jest.requireActual('react-native');
   return {
-    Label: () => null, ProviderGrid: () => null, Segmented: () => null, QuickAmounts: () => null, ConfirmSheet: () => null, BalanceHint: () => null, Monogram: () => null,
+    Label: () => null, ProviderGrid: () => null, Segmented: () => null, QuickAmounts: () => null, ConfirmSheet: ({ open, onPay }: any) => open ? R.createElement(Pressable, { accessibilityLabel: 'Confirm payment', onPress: onPay }) : null, BalanceHint: () => null, Monogram: () => null,
     PlanList: ({ plans, onPick }: any) => R.createElement(View, null, ...plans.map((plan: any) => R.createElement(Pressable, { key: plan.id, accessibilityLabel: plan.label, onPress: () => onPick(plan.id) }))),
     AmountField: ({ value, onChangeText }: any) => R.createElement(TextInput, { accessibilityLabel: 'Remita amount', value, onChangeText }),
   };
@@ -74,6 +79,7 @@ const cases: [string, React.ComponentType, (tree: renderer.ReactTestRenderer) =>
 ];
 
 beforeEach(() => {
+  mockGeneration = 0; mockShowAllSheets = true; mockReceipt.mockClear(); mockNotify.mockClear(); mockWallet.reload.mockClear();
   mockSubmit.mockReset(); mockAcquire.mockReset().mockResolvedValue('durable-attempt'); mockClear.mockReset();
   mockWallet.billPaymentsAvailable = true; mockWallet.balance = 20000; mockWallet.phoneNumber = '+2348012345678';
 });
@@ -130,5 +136,115 @@ it.each([['data', BuyData, 'Data plan'], ['cable', BuyCable, 'TV plan']] as cons
   await tap(tree, 'Authorize');
   expect(mockSubmit).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ expected_amount: '1000', idempotency_key: 'durable-attempt' }));
   expect(mockClear).toHaveBeenCalledTimes(1);
+  act(() => tree.unmount());
+});
+
+describe.each(cases)('%s account session boundaries', (_name, Component, prepare, rawResponse) => {
+  it('does not deliver a request after the account changes while acquiring its retry key', async () => {
+    let finish!: (value: string) => void;
+    mockAcquire.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Component />); });
+    await prepare(tree);
+    await act(async () => { void control(tree, 'Authorize').props.onPress(); });
+    mockGeneration += 1;
+    await act(async () => { finish('original-account-key'); });
+    expect(mockSubmit).not.toHaveBeenCalled();
+    expect(mockClear).not.toHaveBeenCalled();
+    expect(mockReceipt).not.toHaveBeenCalled();
+    expect(mockNotify).not.toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
+
+  it.each(['resolve', 'reject'] as const)('ignores a late %s after an account switch without clearing retry history', async (completion) => {
+    let finish!: (value: unknown) => void;
+    let fail!: (error: Error) => void;
+    mockSubmit.mockReturnValue(new Promise((resolve, reject) => { finish = resolve; fail = reject; }));
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Component />); });
+    await prepare(tree);
+    await act(async () => { void control(tree, 'Authorize').props.onPress(); });
+    expect(mockSubmit).toHaveBeenCalledTimes(1);
+    mockGeneration += 1;
+    await act(async () => {
+      if (completion === 'resolve') finish(rawResponse ? mockResponse({ success: true }) : { success: true });
+      else fail(new Error('Your session changed'));
+    });
+    expect(mockClear).not.toHaveBeenCalled();
+    expect(mockReceipt).not.toHaveBeenCalled();
+    expect(mockWallet.reload).not.toHaveBeenCalled();
+    expect(mockNotify).not.toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
+
+  it('does not repaint a previous account receipt if the session changes during marker cleanup', async () => {
+    mockSubmit.mockResolvedValue(rawResponse ? mockResponse({ success: true }) : { success: true });
+    mockClear.mockImplementation(async () => { mockGeneration += 1; });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Component />); });
+    await prepare(tree);
+    await tap(tree, 'Authorize');
+    expect(mockClear).toHaveBeenCalledTimes(1);
+    expect(mockReceipt).not.toHaveBeenCalled();
+    expect(mockWallet.reload).not.toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
+
+  it('requires review before PIN and routes an unresolved payment to History', async () => {
+    mockShowAllSheets = false;
+    mockSubmit.mockResolvedValue(rawResponse ? mockResponse({ pending: true, reference: 'pending-ref' }) : { pending: true, reference: 'pending-ref' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Component />); });
+    await prepare(tree);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Authorize' })).toHaveLength(0);
+    const continueButton = tree.root.findAll((node) => typeof node.props.accessibilityLabel === 'string' && /^(Continue|Pay)/.test(node.props.accessibilityLabel))[0];
+    expect(continueButton.props.disabled).toBe(false);
+    await act(async () => { continueButton.props.onPress(); });
+    expect(mockSubmit).not.toHaveBeenCalled();
+    jest.useFakeTimers();
+    await tap(tree, 'Confirm payment');
+    await act(async () => { jest.advanceTimersByTime(320); });
+    jest.useRealTimers();
+    await tap(tree, 'Authorize');
+    expect(mockReceipt).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'Processing', reference: 'pending-ref' }));
+    expect(mockClear).not.toHaveBeenCalled();
+    expect(control(tree, 'Check transaction history')).toBeTruthy();
+    act(() => tree.unmount());
+  });
+});
+
+it.each([
+  [BuyAirtime, 'Or enter amount'], [BuyElectricity, 'Enter amount (min 500)'], [Betting, 'Enter amount'],
+] as const)('preserves pasted kobo and rejects ambiguous edits in %s', async (Component, label) => {
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Component />); });
+  await type(tree, label, '1,000.50');
+  expect(control(tree, label).props.value).toBe('1000.50');
+  await type(tree, label, '1e3');
+  expect(control(tree, label).props.value).toBe('1000.50');
+  act(() => tree.unmount());
+});
+
+it.each([
+  [BuyAirtime, 'Or enter amount', '2000', async (_tree: renderer.ReactTestRenderer) => {}],
+  [Betting, 'Enter amount', '2000', async (tree: renderer.ReactTestRenderer) => { await type(tree, 'User ID', '123456'); }],
+] as const)('requires another review if the amount changes during the review-to-PIN transition', async (Component, label, changedAmount, prepare) => {
+  mockShowAllSheets = false;
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Component />); });
+  await prepare(tree);
+  await type(tree, label, '1000');
+  const continueButton = tree.root.findAll((node) => typeof node.props.accessibilityLabel === 'string' && node.props.accessibilityLabel.startsWith('Continue'))[0];
+  await act(async () => { continueButton.props.onPress(); });
+  jest.useFakeTimers();
+  await tap(tree, 'Confirm payment');
+  await type(tree, label, changedAmount);
+  await act(async () => { jest.advanceTimersByTime(320); });
+  jest.useRealTimers();
+  await tap(tree, 'Authorize');
+  expect(mockAcquire).not.toHaveBeenCalled();
+  expect(mockSubmit).not.toHaveBeenCalled();
+  expect(mockNotify).toHaveBeenCalledWith('Review payment again', expect.any(String));
+  expect(control(tree, 'Confirm payment')).toBeTruthy();
   act(() => tree.unmount());
 });

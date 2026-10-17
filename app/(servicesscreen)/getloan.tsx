@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
@@ -15,6 +15,19 @@ import { useWallet } from '@/lib/wallet';
 const PRESETS = [20000, 50000, 100000, 200000, 350000, 500000];
 const TENURES = [15, 30, 60];
 type Step = null | 'confirm' | 'pin';
+type ConfirmedLoan = { principal: number; interest: number; repayment: number; days: number };
+
+const confirmedLoanFrom = (value: unknown): ConfirmedLoan | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const loan = value as Record<string, unknown>;
+  const fields = ['principal', 'interest', 'total_repayment', 'tenure_days'];
+  if (fields.some((key) => (typeof loan[key] !== 'number' && typeof loan[key] !== 'string')
+    || String(loan[key]).trim() === '' || !Number.isFinite(Number(loan[key])))) return null;
+  const result = { principal: Number(loan.principal), interest: Number(loan.interest), repayment: Number(loan.total_repayment), days: Number(loan.tenure_days) };
+  if (result.principal <= 0 || result.interest < 0 || !Number.isInteger(result.days) || result.days <= 0
+    || Math.abs(result.repayment - result.principal - result.interest) > 0.005) return null;
+  return result;
+};
 
 const Row2 = ({ k, v, strong }: { k: string; v: string; strong?: boolean }) => {
   const { c } = useTheme();
@@ -40,31 +53,49 @@ const GetLoan = () => {
   const [pendingMessage, setPendingMessage] = useState('');
   const [recovered, setRecovered] = useState(false);
   const [txnRef, setTxnRef] = useState('');
+  const [confirmedLoan, setConfirmedLoan] = useState<ConfirmedLoan | null>(null);
   const [pinError, setPinError] = useState('');
   const [loadingStatus, setLoadingStatus] = useState(true);
+  const [statusError, setStatusError] = useState('');
   const [productAvailable, setProductAvailable] = useState(false);
   const [unavailableMessage, setUnavailableMessage] = useState('Loans are not available right now.');
   const [hasActiveLoan, setHasActiveLoan] = useState(false);
   const requestInFlight = useRef(false);
-  useEffect(() => {
-    loansService.getStatus()
-        .then((res) => {
-          setProductAvailable(res?.success === true && res.product_available === true
-            && res.quote_rate != null && Number.isFinite(Number(res.quote_rate)) && Number(res.quote_rate) >= 0
-            && Number.isFinite(Number(res.available)) && Number(res.available) > 0);
-          setUnavailableMessage(res?.unavailable_message || 'Loans are not available right now.');
-          if (res.available != null) setAvailable(Number(res.available));
-          if (res.quote_rate) setRate(Number(res.quote_rate));
-          if (res.active_loan) {
-            setHasActiveLoan(true);
-            notify('Active loan', 'You already have an active loan. Repay it from the Loans tab before taking another.');
-          }
-        })
-        .catch(() => setUnavailableMessage('We could not confirm whether loans are available. Please try again later.'))
-        .finally(() => setLoadingStatus(false));
+  const statusInFlight = useRef(false);
+  const loadStatus = useCallback(async () => {
+    if (statusInFlight.current) return;
+    statusInFlight.current = true;
+    setLoadingStatus(true);
+    setProductAvailable(false);
+    try {
+      const res = await loansService.getStatus();
+      if (res?.success !== true || typeof res.product_available !== 'boolean') {
+        throw new Error('Loan availability unknown');
+      }
+      if (res.product_available && (res.quote_rate == null
+        || !Number.isFinite(Number(res.quote_rate)) || Number(res.quote_rate) < 0
+        || res.available == null || !Number.isFinite(Number(res.available)) || Number(res.available) < 0)) {
+        throw new Error('Loan terms unavailable');
+      }
+      setProductAvailable(res.product_available && Number(res.available) > 0);
+      setUnavailableMessage(res.unavailable_message || (res.product_available
+        ? 'You do not have an available credit limit right now.'
+        : 'Loans are not available right now.'));
+      if (res.available != null) setAvailable(Number(res.available));
+      if (res.quote_rate != null) setRate(Number(res.quote_rate));
+      setHasActiveLoan(Boolean(res.active_loan));
+      setStatusError('');
+    } catch {
+      setStatusError('We could not check your loan status. Please try again.');
+    } finally {
+      statusInFlight.current = false;
+      setLoadingStatus(false);
+    }
   }, []);
 
-  const interest = Math.round(amount * rate * (tenure / 30));
+  useEffect(() => { void loadStatus(); }, [loadStatus]);
+
+  const interest = Math.round(amount * rate * (tenure / 30) * 100) / 100;
   const repay = amount + interest;
   const overLimit = amount > available;
   const valid = productAvailable && !hasActiveLoan && Number.isFinite(amount) && amount >= 10000 && !overLimit;
@@ -83,6 +114,7 @@ const GetLoan = () => {
       if (outcome === 'success') {
         await clearSpendAttempt('loan-request', fingerprint, requestKey);
         setRecovered(isRecoveredSpendResponse(res));
+        setConfirmedLoan(confirmedLoanFrom('loan' in res ? res.loan : undefined));
         setTxnRef(String(res.reference || ''));
         setStep(null);
         setDone(true);
@@ -127,12 +159,18 @@ const GetLoan = () => {
           message={pending
             ? pendingMessage
             : recovered
-              ? 'This confirms your earlier loan request. No new loan was issued. Authorize a new request to borrow again.'
-            : `${money(amount)} has been added to your wallet. Repay by the due date to boost your limit.`}
-          rows={[['Loan amount', money(amount)], ['Interest', money(interest)], ['Tenure', `${tenure} days`], ['Repayment', money(repay), true]]}
+              ? 'This confirms your earlier loan request. No new loan was issued. Open Loans to view the confirmed terms and current balance.'
+              : confirmedLoan
+                ? `${money(confirmedLoan.principal)} has been added to your wallet. Open Loans to view the due date and current balance.`
+                : 'Your loan request was confirmed. Open Loans to view the confirmed amounts and repayment terms.'}
+          rows={pending
+            ? [['Requested loan amount', money(amount)], ['Requested tenure', `${tenure} days`]]
+            : confirmedLoan
+              ? [['Loan amount', money(confirmedLoan.principal)], ['Interest', money(confirmedLoan.interest)], ['Tenure', `${confirmedLoan.days} days`], ['Total repayment', money(confirmedLoan.repayment), true]]
+              : [['Confirmed terms', 'View Loans']]}
           reference={txnRef}
           status={pending ? 'Processing' : 'Successful'}
-          onDone={() => router.replace('/home')}
+          onDone={() => router.replace('/loan')}
         />
       </Screen>
     );
@@ -144,6 +182,20 @@ const GetLoan = () => {
         <Header title="Get Loan" onBack={() => router.back()} />
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <Text style={{ color: c.ink3, fontFamily: font.regular }}>Checking loan availability…</Text>
+        </View>
+      </Screen>
+    );
+  }
+
+  if (statusError) {
+    return (
+      <Screen>
+        <Header title="Get Loan" onBack={() => router.back()} />
+        <View style={{ paddingVertical: 36 }}>
+          <Text accessibilityRole="alert" style={{ fontFamily: font.bold, color: c.ink1, fontSize: 18 }}>Unable to check loan status</Text>
+          <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 8, marginBottom: 20 }}>{statusError}</Text>
+          <Btn label="Retry" onPress={() => { void loadStatus(); }} />
+          <View style={{ marginTop: 12 }}><Btn label="View loans" variant="outline" onPress={() => router.replace('/loan')} /></View>
         </View>
       </Screen>
     );
@@ -188,6 +240,10 @@ const GetLoan = () => {
           return (
             <View key={p} style={{ width: '33.33%', padding: 5 }}>
               <Pressable
+                accessibilityRole="radio"
+                accessibilityLabel={money(p)}
+                accessibilityState={{ selected: on, disabled }}
+                disabled={disabled}
                 onPress={() => !disabled && setAmount(p)}
                 style={{ alignItems: 'center', paddingVertical: 13, borderRadius: 13, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line, opacity: disabled ? 0.4 : 1 }}
               >
@@ -221,7 +277,7 @@ const GetLoan = () => {
         {TENURES.map((t) => {
           const on = tenure === t;
           return (
-            <Pressable key={t} onPress={() => setTenure(t)} style={{ flex: 1, alignItems: 'center', paddingVertical: 14, borderRadius: 14, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line }}>
+            <Pressable key={t} onPress={() => setTenure(t)} accessibilityRole="radio" accessibilityLabel={`${t} days`} accessibilityState={{ selected: on }} style={{ flex: 1, alignItems: 'center', paddingVertical: 14, borderRadius: 14, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line }}>
               <Text style={{ fontFamily: font.bold, color: on ? '#fff' : c.ink1 }}>{t} days</Text>
             </Pressable>
           );
@@ -229,9 +285,9 @@ const GetLoan = () => {
       </View>
 
       <View style={{ borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, paddingHorizontal: 16, paddingBottom: 4, marginBottom: 18 }}>
-        <Row2 k="Interest" v={money(interest)} />
+        <Row2 k="Estimated interest" v={money(interest)} />
         <Row2 k="Tenure" v={`${tenure} days`} />
-        <Row2 k="Total repayment" v={money(repay)} strong />
+        <Row2 k="Estimated repayment" v={money(repay)} strong />
       </View>
 
       <Btn label={`Get ${money(amount)}`} disabled={!valid} onPress={() => setStep('confirm')} />
@@ -247,7 +303,7 @@ const GetLoan = () => {
         title="Confirm loan"
         total={amount}
         balance={available}
-        rows={[['Amount', money(amount)], ['Interest', money(interest)], ['Tenure', `${tenure} days`], ['Repay', money(repay)]]}
+        rows={[['Amount', money(amount)], ['Estimated interest', money(interest)], ['Tenure', `${tenure} days`], ['Estimated repayment', money(repay)]]}
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 

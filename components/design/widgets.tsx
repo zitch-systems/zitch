@@ -10,10 +10,10 @@ import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
 export const SectionLabel = ({ children, action, onAction }: { children: string; action?: string; onAction?: () => void }) => {
   const { c } = useTheme();
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-      <Text style={{ fontSize: 17, fontFamily: font.bold, color: c.ink1 }}>{children}</Text>
+    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+      <Text accessibilityRole="header" style={{ flex: 1, fontSize: 17, fontFamily: font.bold, color: c.ink1 }}>{children}</Text>
       {action && (
-        <Tap onPress={onAction}>
+        <Tap onPress={onAction} accessibilityLabel={action} style={{ minHeight: 44, justifyContent: 'center', flexShrink: 0 }}>
           <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.brand }}>{action}</Text>
         </Tap>
       )}
@@ -52,7 +52,7 @@ export const Hero = ({ children, style, watermark = 120 }: { children: React.Rea
 };
 
 export const Badge = ({ label, hot }: { label: string; hot?: boolean }) => {
-  const { c } = useTheme();
+  const { c, theme } = useTheme();
   return (
     <View
       style={{
@@ -65,7 +65,7 @@ export const Badge = ({ label, hot }: { label: string; hot?: boolean }) => {
         backgroundColor: hot ? c.red : c.amber,
       }}
     >
-      <Text style={{ fontSize: 9, fontFamily: font.bold, color: '#fff' }}>{label}</Text>
+      <Text style={{ fontSize: 10, fontFamily: font.bold, color: theme === 'dark' ? c.bg : '#fff' }}>{label}</Text>
     </View>
   );
 };
@@ -89,7 +89,7 @@ export const ServiceTile = ({
   const { c, theme } = useTheme();
   const accent = ICON_COLORS[icon] ?? c.brand;
   return (
-    <Tap onPress={onPress} style={{ alignItems: 'center', gap: 7 }}>
+    <Tap onPress={onPress} accessibilityLabel={[label, badge].filter(Boolean).join(', ')} style={{ alignItems: 'center', gap: 7, minHeight: 76, maxWidth: '100%', flexShrink: 1, paddingHorizontal: 3 }}>
       <View>
         <View
           style={{
@@ -105,7 +105,7 @@ export const ServiceTile = ({
         </View>
         {badge && <Badge label={badge} hot={hot} />}
       </View>
-      <Text style={{ fontSize: 12, fontFamily: font.medium, color: c.ink2 }}>{label}</Text>
+      <Text style={{ fontSize: 12, lineHeight: 18, fontFamily: font.medium, color: c.ink2, textAlign: 'center', flexShrink: 1 }}>{label}</Text>
     </Tap>
   );
 };

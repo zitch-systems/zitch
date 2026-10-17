@@ -4,7 +4,7 @@ import BuyElectricity from '@/app/(servicesscreen)/buyelectricity';
 
 const mockApiPost = jest.fn();
 
-jest.mock('@/lib/secureStore', () => ({ getToken: jest.fn(async () => null) }));
+jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => 0, getToken: jest.fn(async () => null) }));
 jest.mock('@/lib/api', () => ({ apiPost: (...args: unknown[]) => mockApiPost(...args) }));
 jest.mock('@/lib/pendingSpend', () => ({ acquireSpendAttempt: jest.fn(), clearSpendAttempt: jest.fn() }));
 jest.mock('@/lib/spendOutcome', () => ({ classifySpendResponse: jest.fn(), isRecoveredSpendResponse: jest.fn() }));

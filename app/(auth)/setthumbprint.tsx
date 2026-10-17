@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text } from 'react-native';
+import { View, Text, Platform } from 'react-native';
 import { router } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
@@ -12,7 +12,8 @@ import {
   isBiometricTxnEnabled, setBiometricTxnEnabled,
 } from '@/lib/biometrics';
 import { apiPost } from '@/lib/api';
-import { saveTransactionPin } from '@/lib/secureStore';
+import { getSessionGeneration, saveTransactionPin } from '@/lib/secureStore';
+import { TRANSACTION_PIN_LENGTH } from '@/lib/transactionPin';
 
 // Biometrics settings: turn Face ID / fingerprint SIGN-IN and PAYMENT approval on
 // or off with live toggles. The label and icon follow what the device actually
@@ -28,13 +29,22 @@ const SetThumbprint = () => {
   const [busy, setBusy] = useState(false);
   const [pinError, setPinError] = useState('');
   const enablingPay = useRef(false);
+  const toggling = useRef(false);
+  const mounted = useRef(true);
+  const screenGeneration = useRef(getSessionGeneration()).current;
+  const [toggleBusy, setToggleBusy] = useState(false);
+  const paymentSupported = Platform.OS !== 'web';
 
   useEffect(() => {
-    isBiometricAvailable().then(setAvailable).catch(() => setAvailable(false));
-    biometricLabel().then(setKind);
-    isBiometricEnabled().then(setSignIn).catch(() => {});
-    isBiometricTxnEnabled().then(setPay).catch(() => {});
-  }, []);
+    mounted.current = true;
+    const generation = screenGeneration;
+    const current = () => mounted.current && generation === getSessionGeneration();
+    isBiometricAvailable().then(v => { if (current()) setAvailable(v); }).catch(() => { if (current()) setAvailable(false); });
+    biometricLabel().then(v => { if (current()) setKind(v); }).catch(() => {});
+    isBiometricEnabled().then(v => { if (current()) setSignIn(v); }).catch(() => {});
+    if (paymentSupported) isBiometricTxnEnabled().then(v => { if (current()) setPay(v); }).catch(() => {});
+    return () => { mounted.current = false; };
+  }, [paymentSupported, screenGeneration]);
 
   const label = kind === 'face' ? 'Face ID' : kind === 'fingerprint' ? 'Fingerprint' : 'Biometrics';
 
@@ -46,48 +56,84 @@ const SetThumbprint = () => {
 
   // Sign-in toggle — a scan turns it on; off just clears the opt-in.
   const toggleSignIn = async (v: boolean) => {
-    if (!v) { await setBiometricEnabled(false); setSignIn(false); return; }
-    if (!(await guardAvailable())) return;
-    if (await authenticate(`Enable ${label} sign-in`)) {
-      await setBiometricEnabled(true);
-      setSignIn(true);
-      notify('All set', `${label} sign-in is on.`);
+    if (toggling.current || enablingPay.current) return;
+    toggling.current = true;
+    setToggleBusy(true);
+    const generation = screenGeneration;
+    const current = () => mounted.current && generation === getSessionGeneration();
+    try {
+      if (!current()) return;
+      if (v && (!(await guardAvailable()) || !current())) return;
+      if (v && (!(await authenticate(`Enable ${label} sign-in`)) || !current())) return;
+      if (!current()) return;
+      await setBiometricEnabled(v);
+      if (!current()) return;
+      setSignIn(v);
+      if (v) notify('All set', `${label} sign-in is on.`);
+    } catch {
+      if (current()) notify('Could not update biometrics', 'Please try again.');
+    } finally {
+      toggling.current = false;
+      if (mounted.current) setToggleBusy(false);
     }
   };
 
   // Payment-approval toggle — capture the PIN, then SecureStore opens the one OS
   // authentication required to place it behind the keychain biometric ACL.
   const togglePay = async (v: boolean) => {
-    if (!v) { await setBiometricTxnEnabled(false); setPay(false); return; }
-    if (!(await guardAvailable())) return;
-    setPinError('');
-    setPinOpen(true);
+    if (!paymentSupported || toggling.current || enablingPay.current) return;
+    toggling.current = true;
+    setToggleBusy(true);
+    const generation = screenGeneration;
+    const current = () => mounted.current && generation === getSessionGeneration();
+    try {
+      if (!current()) return;
+      if (!v) {
+        await setBiometricTxnEnabled(false);
+        if (current()) setPay(false);
+        return;
+      }
+      if (!(await guardAvailable()) || !current()) return;
+      setPinError('');
+      setPinOpen(true);
+    } catch {
+      if (current()) notify('Could not update biometrics', 'Please try again.');
+    } finally {
+      toggling.current = false;
+      if (mounted.current) setToggleBusy(false);
+    }
   };
 
   const enablePay = async (pin: string) => {
-    if (enablingPay.current) return;
+    if (!paymentSupported || enablingPay.current || toggling.current) return;
     enablingPay.current = true;
     setBusy(true);
     setPinError('');
+    const generation = screenGeneration;
+    const current = () => mounted.current && generation === getSessionGeneration();
     try {
+      if (!current()) return;
       // Never cache a typo: replaying a wrong PIN at each future payment can lock
       // the account across both the mobile app and WhatsApp.
       const response = await apiPost('/api/verify-transaction-pin/', { pin });
       const result = await response.json().catch(() => ({}));
+      if (!current()) return;
       if (!response.ok || !result.success) {
         setPinError(result.message || 'Could not verify your transaction PIN.');
         return;
       }
       await saveTransactionPin(pin);
+      if (!current()) return;
       await setBiometricTxnEnabled(true);
+      if (!current()) return;
       setPinOpen(false);
       setPay(true);
       notify('All set', `${label} payments are on.`);
     } catch {
-      setPinError('Biometric payments were not enabled. Please try again when you are ready.');
+      if (current()) setPinError('Biometric payments were not enabled. Please try again when you are ready.');
     } finally {
       enablingPay.current = false;
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   };
 
@@ -100,12 +146,12 @@ const SetThumbprint = () => {
           <ZIcon name={kind === 'face' ? 'faceid' : 'fingerprint'} size={52} color={c.brand} stroke={1.6} />
         </View>
         <Text style={{ fontSize: 23, fontFamily: font.extrabold, color: c.ink1, marginTop: 24, textAlign: 'center' }}>
-          Enable {label}
+          {label} settings
         </Text>
         <Text style={{ fontSize: 14.5, color: c.ink3, marginTop: 10, lineHeight: 22, textAlign: 'center', fontFamily: font.regular }}>
           {available === false
             ? `No ${label} is set up on this device yet. Add it in your device settings to use this feature.`
-            : `Sign in and approve payments faster and more securely with ${label}.`}
+            : paymentSupported ? `Use ${label} to unlock the app or approve payments on this device.` : `Use ${label} to unlock the app on this device. Enter your transaction PIN to approve payments in a browser.`}
         </Text>
       </View>
 
@@ -114,14 +160,14 @@ const SetThumbprint = () => {
           icon="fingerprint"
           title={`${label} sign-in`}
           sub={`Unlock the app with ${label}`}
-          right={<Toggle on={signIn} onChange={toggleSignIn} disabled={available === false} />}
+          right={<Toggle accessibilityLabel={`${label} sign-in`} on={signIn} onChange={toggleSignIn} disabled={available !== true || toggleBusy || busy} />}
         />
         <ZItem
           icon="faceid"
           title="Approve payments"
-          sub={`Confirm transfers & bills with ${label} instead of your PIN`}
+          sub={paymentSupported ? `Confirm transfers & bills with ${label} instead of your PIN` : 'Available in the mobile app. Use your PIN in this browser.'}
           last
-          right={<Toggle on={pay} onChange={togglePay} disabled={available === false} />}
+          right={<Toggle accessibilityLabel="Approve payments with biometrics" on={pay} onChange={togglePay} disabled={!paymentSupported || available !== true || toggleBusy || busy} />}
         />
       </Card>
 
@@ -135,7 +181,7 @@ const SetThumbprint = () => {
         error={pinError}
         onComplete={enablePay}
         title={`Approve payments with ${label}?`}
-        subtitle={`Enter your 6-digit PIN to approve payments with ${label} too. You can skip and just use it to sign in.`}
+        subtitle={`Enter your ${TRANSACTION_PIN_LENGTH}-digit PIN to approve payments with ${label} too. You can skip and just use it to sign in.`}
       />
     </Screen>
   );

@@ -50,7 +50,8 @@ const Limits = () => {
       const res = await apiJson<LimitState & { success?: boolean; message?: string }>('/api/limits/', {}, 10000);
       if (generation.current !== id) return;
       const amounts = [res?.tier_transaction_limit, res?.transaction_limit, res?.daily_transfer_limit, res?.daily_bill_limit];
-      if (!res?.success || amounts.some((v) => v == null || !Number.isFinite(Number(v)) || Number(v) < 0)) {
+      if (!res?.success || amounts.some((v) => v == null || String(v).trim() === ''
+          || !['string', 'number'].includes(typeof v) || !Number.isFinite(Number(v)) || Number(v) < 0)) {
         setLimits(null);
         setError(res?.message || 'Could not load your current limits. Please try again.');
         return;

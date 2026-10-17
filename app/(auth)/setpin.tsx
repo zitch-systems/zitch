@@ -1,14 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
-import { clearTransactionPin } from '@/lib/secureStore';
+import { clearTransactionPin, getSessionGeneration } from '@/lib/secureStore';
 import AuthGuard from '@/components/AuthGuard';
 import { usePinScreenProtection } from '@/lib/screenCapture';
 import { apiPost } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
 import { notify } from '@/components/design/Notify';
 import { ZMark } from '@/components/design/Brand';
-import { Screen } from '@/components/design/ui';
+import { Screen, Btn } from '@/components/design/ui';
 import { Keypad } from '@/components/design/Keypad';
 import { useTheme, font } from '@/lib/theme';
 import { TRANSACTION_PIN_LENGTH } from '@/lib/transactionPin';
@@ -20,6 +20,12 @@ const SetPin = () => {
   const [err, setErr] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const inFlight = useRef(false);
+  const mounted = useRef(true);
+  const screenGeneration = useRef(getSessionGeneration()).current;
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   usePinScreenProtection();
 
   const active = confirm === null ? pin : confirm;
@@ -29,11 +35,16 @@ const SetPin = () => {
     if (inFlight.current) return;
     inFlight.current = true;
     setSubmitting(true);
+    const generation = screenGeneration;
+    const current = () => mounted.current && generation === getSessionGeneration();
     try {
+      if (!current()) return;
       const response = await apiPost(EP.auth.setTransactionPin, { pin: finalPin });
       const result = await response.json().catch(() => ({}));
+      if (!current()) return;
       if (response.ok) {
         await clearTransactionPin(); // biometric payments require a separate explicit opt-in
+        if (!current()) return;
         router.replace('/completed');
       } else if (result.code === 'password_required') {
         // This account already has a PIN (e.g. re-onboarding the same number);
@@ -46,6 +57,7 @@ const SetPin = () => {
         setSubmitting(false);
       }
     } catch (error) {
+      if (!current()) return;
       notify('Error', 'Something went wrong. Please try again later.');
       setConfirm('');
       setSubmitting(false);
@@ -70,7 +82,8 @@ const SetPin = () => {
   }, [pin, confirm]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onKey = (k: string) => {
-    if (submitting) return;
+    if (submitting || (k !== 'del' && !/^[0-9]$/.test(k))) return;
+    setErr(false);
     if (confirm === null) {
       setPin((p) => (k === 'del' ? p.slice(0, -1) : p.length < TRANSACTION_PIN_LENGTH ? p + k : p));
     } else {
@@ -79,7 +92,7 @@ const SetPin = () => {
   };
 
   return (
-    <Screen scroll={false}>
+    <Screen>
       <View style={{ flex: 1, alignItems: 'center' }}>
         <View style={{ marginTop: 26 }}>
           <ZMark size={44} />
@@ -91,7 +104,7 @@ const SetPin = () => {
           {err ? "PINs don't match, try again" : submitting ? 'Setting up your PIN…' : "You'll use this to authorize payments"}
         </Text>
 
-        <View style={{ flexDirection: 'row', gap: 18, marginVertical: 30 }}>
+        <View accessible accessibilityLabel={`${active.length} of ${TRANSACTION_PIN_LENGTH} PIN digits entered`} style={{ flexDirection: 'row', gap: 18, marginVertical: 30 }}>
           {Array.from({ length: TRANSACTION_PIN_LENGTH }).map((_, k) => {
             const filled = active.length > k;
             const color = err ? c.red : c.brand;
@@ -110,6 +123,9 @@ const SetPin = () => {
             );
           })}
         </View>
+
+        {confirm !== null && <Btn label="Choose a different PIN" variant="ghost" disabled={submitting}
+          onPress={() => { setPin(''); setConfirm(null); setErr(false); }} />}
 
         <View style={{ flex: 1 }} />
         <View style={{ width: '100%', paddingBottom: 24 }}>

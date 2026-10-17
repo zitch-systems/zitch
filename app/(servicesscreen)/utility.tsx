@@ -4,7 +4,7 @@ import { Screen, Header, ZItem, HeaderLink } from '@/components/design/ui';
 
 const Utility = () => {
   const items = [
-    { icon: 'bills', title: 'Electricity', sub: 'Pay your electricity bill in seconds', to: '/buyelectricity' },
+    { icon: 'bills', title: 'Electricity', sub: 'Check supported providers and pay your bill', to: '/buyelectricity' },
     { icon: 'tv', title: 'TV Subscriptions', sub: 'Renew DSTV, GOtv & StarTimes', to: '/buycable' },
     { icon: 'bills', title: 'Water', sub: 'Water payments are coming soon', to: '/water' },
   ];

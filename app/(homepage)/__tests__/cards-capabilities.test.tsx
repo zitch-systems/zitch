@@ -3,6 +3,7 @@ import { Alert } from 'react-native';
 import renderer, { act } from 'react-test-renderer';
 
 import Cards from '@/app/(homepage)/cards';
+import { Screen } from '@/components/design/ui';
 import type { VirtualCard } from '@/lib/services/cards';
 
 const mockList = jest.fn();
@@ -184,6 +185,21 @@ describe('card provider capabilities', () => {
     expect(tree.root.findAllByProps({ accessibilityLabel: 'Create a virtual card' })).toHaveLength(0);
     expect(tree.root.findByProps({ accessibilityLabel: 'Retry loading cards' })).toBeTruthy();
     expect(JSON.stringify(tree.toJSON())).toContain('Could not load your cards');
+    act(() => tree.unmount());
+  });
+
+  it('marks cached cards stale, blocks status changes and recovers after retry', async () => {
+    mockList.mockResolvedValueOnce({ success: true, cards: [card(wemaCapabilities)] })
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ success: true, cards: [card(wemaCapabilities)] });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Cards />); });
+    await act(async () => { tree.root.findByType(Screen).props.onRefresh(); });
+    expect(JSON.stringify(tree.toJSON())).toContain('Showing previously loaded card details');
+    expect(tree.root.findByProps({ accessibilityLabel: 'Block' }).props.disabled).toBe(true);
+    await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Retry loading cards' }).props.onPress(); });
+    expect(tree.root.findByProps({ accessibilityLabel: 'Block' }).props.disabled).toBe(false);
+    expect(JSON.stringify(tree.toJSON())).not.toContain('Showing previously loaded card details');
     act(() => tree.unmount());
   });
 

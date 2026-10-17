@@ -37,12 +37,14 @@ const Loans = () => {
   const [unavailableMessage, setUnavailableMessage] = useState('Loans are not available right now.');
   const repayInFlight = useRef(false);
   const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
+    setLoading(true);
     try {
       const t = await getToken();
-      if (!t) return;
+      if (!t) throw new Error('No session');
       const res = await loansService.getStatus();
       if (res?.success !== true) throw new Error('Loan status unavailable');
       setLoaded(true);
@@ -55,6 +57,8 @@ const Loans = () => {
       setActive(res.active_loan ?? null);
     } catch {
       setLoadError('Could not load your loan details. Please try again.');
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -63,7 +67,7 @@ const Loans = () => {
   const usedPct = limit > 0 ? Math.min(100, Math.round(((limit - available) / limit) * 100)) : 0;
 
   const repay = async (pin: string) => {
-    if (!active || !repaymentAvailable || repayInFlight.current) return;
+    if (!active || !repaymentAvailable || loadError || loading || repayInFlight.current) return;
     repayInFlight.current = true;
     // The repayment endpoint binds idempotency to the amount. Persisting the key
     // under the same fingerprint makes an app-restart retry replay that request.
@@ -127,12 +131,12 @@ const Loans = () => {
   };
 
   return (
-    <Screen pad={false} tab>
+    <Screen pad={false} tab refreshing={loading && loaded} onRefresh={() => { void load(); }}>
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Loans</Text>
 
-      {productAvailable ? <Hero style={{ margin: 16 }}>
+      {!loaded ? <View style={{ margin: 16 }}><Text style={{ color: c.ink3, fontFamily: font.regular }}>{loading ? 'Checking loan availability…' : 'Loan availability could not be confirmed.'}</Text></View> : productAvailable ? <Hero style={{ margin: 16 }}>
         <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>Available credit</Text>
-        <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(available)}</Text>
+        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65} style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(available)}</Text>
         <View style={{ height: 6, borderRadius: 4, backgroundColor: 'rgba(255,255,255,.25)', marginTop: 14, overflow: 'hidden' }}>
           <View style={{ width: `${usedPct}%`, height: '100%', backgroundColor: '#fff' }} />
         </View>
@@ -150,18 +154,18 @@ const Loans = () => {
       {!active && productAvailable && (
         <View style={{ marginHorizontal: 16 }}>
           <Card>
-            <Btn label="Get a new loan" icon="loan" onPress={() => router.push('/getloan')} />
+            <Btn label="Get a new loan" icon="loan" disabled={loading || !!loadError} onPress={() => router.push('/getloan')} />
           </Card>
         </View>
       )}
 
       <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
-        {loadError ? <Text accessibilityRole="alert" style={{ color: c.ink3, marginBottom: 12 }}>{loadError}</Text> : null}
+        {loadError ? <View style={{ gap: 10, marginBottom: 16 }}><Text accessibilityRole="alert" style={{ color: c.amber }}>{loaded ? 'Showing previously loaded details. ' : ''}{loadError}</Text><Btn label="Retry loading loans" disabled={loading} onPress={() => { void load(); }} /></View> : null}
         <SectionLabel>Active loans</SectionLabel>
         {active ? (
           <View style={{ borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 16 }}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-              <View>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ flexShrink: 1 }}>
                 <Text style={{ fontFamily: font.bold, color: c.ink1 }}>Quick loan</Text>
                 <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>Due {active.due_date} · {active.tenure_days} days</Text>
               </View>
@@ -175,9 +179,10 @@ const Loans = () => {
               )}
               <Btn
                 label={repaymentPending ? 'Repayment processing' : repaymentAvailable ? `Repay ${money(Number(active.outstanding))}` : 'Repayment unavailable'}
-                disabled={repaymentPending || !repaymentAvailable}
+                disabled={repaymentPending || !repaymentAvailable || loading || !!loadError}
                 onPress={() => { setPinError(''); setPinOpen(true); }}
               />
+              {!repaymentAvailable ? <View style={{ marginTop: 10 }}><Btn label="Contact support" variant="outline" onPress={() => router.push('/support')} /></View> : null}
             </View>
           </View>
         ) : (

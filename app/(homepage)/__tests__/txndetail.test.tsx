@@ -1,5 +1,7 @@
 import React, { type ReactNode } from 'react';
 import renderer, { act } from 'react-test-renderer';
+import { Share } from 'react-native';
+import { notify } from '@/components/design/Notify';
 
 import TxnDetail from '@/app/(homepage)/txndetail';
 
@@ -84,6 +86,7 @@ describe('transaction-detail pending refresh', () => {
     mockApiJson.mockReset();
     mockClearSpendAttempt.mockReset();
     mockParams.status = 'PENDING';
+    mockParams.amount = '1000';
     mockParams.underReview = '';
     mockParams.statusMessage = '';
     mockParams.reviewKind = '';
@@ -238,6 +241,28 @@ describe('transaction-detail pending refresh', () => {
     await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Copy electricity token' }).props.onPress(); });
     expect(require('expo-clipboard').setStringAsync).toHaveBeenCalledWith('1234-5678-9012-3456-7890');
     act(() => tree.unmount());
+  });
+
+  it('does not turn an unknown amount into a zero-value receipt', async () => {
+    mockParams.amount = '';
+    mockApiJson.mockResolvedValue({ success: false });
+    const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+    expect(JSON.stringify(tree.toJSON())).toContain('Amount unavailable');
+    await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Share status' }).props.onPress(); });
+    expect(share).toHaveBeenCalledWith({ message: expect.stringContaining('Amount: Amount unavailable') });
+    act(() => tree.unmount()); share.mockRestore();
+  });
+
+  it('reports a receipt sharing error instead of silently ignoring it', async () => {
+    mockApiJson.mockResolvedValue(transaction('SUCCESSFUL'));
+    const share = jest.spyOn(Share, 'share').mockRejectedValue(new Error('sharing unavailable'));
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+    await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Share receipt' }).props.onPress(); });
+    expect(notify).toHaveBeenCalledWith('Could not share', 'Please try again.');
+    act(() => tree.unmount()); share.mockRestore();
   });
 
 });

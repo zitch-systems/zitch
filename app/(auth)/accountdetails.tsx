@@ -1,11 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import AuthGuard from '@/components/AuthGuard';
-import { getToken } from '@/lib/secureStore';
+import { getSessionGeneration, getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { apiPost } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
@@ -21,22 +21,33 @@ const AccountDetails = () => {
   const [isUpdating, setIsUpdating] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [avatar, setAvatar] = useState('');
-  const [token, setToken] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [current, setCurrent] = useState({ firstName: '', lastName: '', email: '', phone: '' });
   const [form, setForm] = useState({ firstName: '', lastName: '', email: '' });
   const [password, setPassword] = useState('');
   const inFlight = useRef(false);
   const photoInFlight = useRef(false);
+  const mounted = useRef(true);
+  const screenGeneration = useRef(getSessionGeneration()).current;
 
   useEffect(() => {
-    getToken().then(setToken);
+    mounted.current = true;
+    return () => { mounted.current = false; };
   }, []);
 
-  useEffect(() => {
-    if (!token) return;
-    apiPost(EP.wallet.balance)
-      .then((r) => r.json())
-      .then((data) => {
+  const load = useCallback(async () => {
+    const generation = screenGeneration;
+    const owns = () => mounted.current && generation === getSessionGeneration();
+    setLoading(true);
+    setLoadError('');
+    try {
+      const token = await getToken();
+      if (!owns()) return;
+      if (!token) throw new Error('Session unavailable');
+      const response = await apiPost(EP.wallet.balance);
+      const data = await response.json();
+      if (!owns()) return;
         if (data.success) {
           setCurrent({
             firstName: data.user_first_name ?? '',
@@ -45,17 +56,23 @@ const AccountDetails = () => {
             phone: data.user_phone_number ?? '',
           });
           setAvatar(data.user_avatar ?? '');
-        }
-      })
-      .catch(() => {});
-  }, [token]);
+        } else setLoadError('Your profile could not be loaded. Please try again.');
+    } catch {
+      if (owns()) setLoadError('Your profile could not be loaded. Please try again.');
+    } finally { if (owns()) setLoading(false); }
+  }, [screenGeneration]);
+  useEffect(() => { void load(); }, [load]);
 
   const updatePhoto = async () => {
     if (photoInFlight.current) return;
     photoInFlight.current = true;
+    const generation = screenGeneration;
+    const owns = () => mounted.current && generation === getSessionGeneration();
     const previousAvatar = avatar;
     try {
+      if (!owns()) return;
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!owns()) return;
       if (!perm.granted) { notify('Permission needed', 'Allow photo access to update your picture.'); return; }
       beginExternalActivity();
       let res;
@@ -65,12 +82,14 @@ const AccountDetails = () => {
           aspect: [1, 1], quality: 0.6, base64: true,
         });
       } finally { endExternalActivity(); }
+      if (!owns()) return;
       if (res.canceled || !res.assets?.[0]?.base64) return;
       const asset = res.assets[0];
       setAvatar(asset.uri);
       setUploadingPhoto(true);
       const r = await apiPost(EP.auth.avatar, { image: `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}` });
       const body = await r.json();
+      if (!owns()) return;
       if (r.ok && body.success) {
         setAvatar(body.avatar);
         void reloadWallet();
@@ -79,29 +98,35 @@ const AccountDetails = () => {
         notify('Error', body.message || 'Could not update photo');
       }
     } catch {
+      if (!owns()) return;
       setAvatar(previousAvatar);
       notify('Error', 'Could not update your photo. Please try again.');
     } finally {
       photoInFlight.current = false;
-      setUploadingPhoto(false);
+      if (mounted.current) setUploadingPhoto(false);
     }
   };
 
   // Gate "Save changes": only enable once something changed and the email is valid.
-  const emailOk = !form.email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email);
-  const dirty = !!(form.firstName || form.lastName || form.email);
+  const emailOk = !form.email.trim() || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim());
+  const dirty = !!((form.firstName.trim() && form.firstName.trim() !== current.firstName)
+    || (form.lastName.trim() && form.lastName.trim() !== current.lastName)
+    || (form.email.trim() && form.email.trim().toLowerCase() !== current.email.toLowerCase()));
   const changingEmail = !!form.email.trim() && form.email.trim().toLowerCase() !== current.email.toLowerCase();
-  const canSave = dirty && emailOk && (!changingEmail || !!password);
+  const canSave = !loading && !loadError && dirty && emailOk && (!changingEmail || !!password);
 
   const handleUpdate = async () => {
     if (!canSave || inFlight.current) return;
-    if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
+    if (!emailOk) {
       notify('Invalid email', 'Enter a valid email address.');
       return;
     }
     inFlight.current = true;
     setIsUpdating(true);
+    const generation = screenGeneration;
+    const owns = () => mounted.current && generation === getSessionGeneration();
     try {
+      if (!owns()) return;
       const response = await apiPost(EP.auth.updateInfo, {
         email: form.email.trim() || current.email,
         first_name: form.firstName.trim() || current.firstName,
@@ -109,8 +134,10 @@ const AccountDetails = () => {
         ...(changingEmail ? { password } : {}),
       });
       const result = await response.json();
+      if (!owns()) return;
       if (response.ok) {
         if (form.email) await AsyncStorage.setItem('UserEmail', form.email.trim());
+        if (!owns()) return;
         setCurrent((previous) => ({ ...previous, firstName: form.firstName.trim() || previous.firstName, lastName: form.lastName.trim() || previous.lastName, email: form.email.trim() || previous.email }));
         setForm({ firstName: '', lastName: '', email: '' });
         setPassword('');
@@ -120,16 +147,24 @@ const AccountDetails = () => {
         notify('Error', result.message || 'Failed to update account');
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
+      if (owns()) notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       inFlight.current = false;
-      setIsUpdating(false);
+      if (mounted.current) setIsUpdating(false);
     }
   };
 
+  if (loading || loadError) return (
+    <Screen>
+      <Header title="Account details" onBack={() => router.back()} />
+      <Text accessibilityLiveRegion="polite" style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 20 }}>{loading ? 'Loading your profile…' : loadError}</Text>
+      {!!loadError && <Btn label="Try again" onPress={() => void load()} />}
+    </Screen>
+  );
+
   return (
     <Screen>
-      <Header title="Account Details" sub="Your account profile details" onBack={() => router.back()} />
+      <Header title="Account details" sub="Your account profile details" onBack={() => router.back()} />
 
       <View style={{ alignItems: 'center', marginBottom: 18 }}>
         <View style={{ position: 'relative' }}>
@@ -138,7 +173,7 @@ const AccountDetails = () => {
             <ZIcon name="plus" size={15} color="#fff" stroke={2.6} />
           </View>
         </View>
-        <Tap onPress={updatePhoto} disabled={uploadingPhoto}>
+        <Tap accessibilityLabel="Change profile photo" onPress={updatePhoto} disabled={uploadingPhoto} style={{ minHeight: 44, justifyContent: 'center' }}>
           <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand, marginTop: 10 }}>
             {uploadingPhoto ? 'Uploading…' : 'Change photo'}
           </Text>
@@ -146,9 +181,10 @@ const AccountDetails = () => {
       </View>
 
       <View style={{ gap: 16 }}>
-        <Field label="First name" value={form.firstName} onChangeText={(e) => setForm({ ...form, firstName: e })} placeholder={current.firstName || 'First name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
-        <Field label="Last name" value={form.lastName} onChangeText={(e) => setForm({ ...form, lastName: e })} placeholder={current.lastName || 'Last name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
-        <Field label="Email" value={form.email} onChangeText={(e) => setForm({ ...form, email: e })} keyboardType="email-address" placeholder={current.email || 'you@email.com'} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
+        <Field editable={!isUpdating} autoComplete="given-name" label="First name" value={form.firstName} onChangeText={(e) => setForm({ ...form, firstName: e })} placeholder={current.firstName || 'First name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
+        <Field editable={!isUpdating} autoComplete="family-name" label="Last name" value={form.lastName} onChangeText={(e) => setForm({ ...form, lastName: e })} placeholder={current.lastName || 'Last name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
+        <Field label="Email" value={form.email} onChangeText={(e) => setForm({ ...form, email: e })} editable={!isUpdating} autoCapitalize="none" autoCorrect={false} autoComplete="email" keyboardType="email-address" placeholder={current.email || 'you@email.com'} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
+        {!emailOk && <Text style={{ color: c.red, fontFamily: font.regular, fontSize: 12.5 }}>Enter a valid email address.</Text>}
         {changingEmail && <Field label="Account password" value={password} onChangeText={setPassword}
           secureTextEntry autoComplete="current-password" placeholder="Confirm password to change email" />}
         <View>
@@ -168,7 +204,7 @@ const AccountDetails = () => {
       </View>
 
       <View style={{ marginTop: 26 }}>
-        <Btn label="Save changes" onPress={handleUpdate} disabled={isUpdating || !canSave} />
+        <Btn label={isUpdating ? 'Saving…' : 'Save changes'} onPress={handleUpdate} disabled={isUpdating || !canSave} />
       </View>
     </Screen>
   );
