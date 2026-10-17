@@ -106,6 +106,10 @@ The core changes preserve kobo during amount entry, bind PIN authorization to re
 | water | Already unavailable but claimed regional integration work and existing verification/receipt functions. Reworded as unconfirmed future availability, support-only. | Support-only behavior test passed. No biller payment attempted. |
 | comingsoon | Authenticated placeholder with no payment action. Shared Header provides back navigation; no page-specific defect requiring change. | Static inspection; no code change. |
 
+## CI infrastructure repair
+
+The PostgreSQL job failed before checkout because the public ECR mirror returned a data-limit error on the initial run and one retry. Its service image now uses the official Docker Hub source, pinned to `sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336`. The digest matches the prior successful main job and the current official PostgreSQL 18 manifest. Database contents, version and test coverage are unchanged.
+
 ## Dependency scan
 
 The fresh npm audit reports 95 affected dependency nodes (78 high, 17 moderate, no critical), propagated from six root advisories. Existing reviewed postinstall backports remain in place; all 30 compatibility/mitigation tests pass. The turbo-stream CommonJS/ESM patch hashes and constructor-injection regression were independently verified. npm version metadata does not recognize these source backports, so the raw audit is not clean. Preserve postinstall and its validation gates; a supported framework upgrade remains separate maintenance work.

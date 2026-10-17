@@ -94,9 +94,10 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        # Docker's official mirror avoids Docker Hub rate limits/auth outages.
-        # Same PostgreSQL major and test service; no production configuration.
-        image: public.ecr.aws/docker/library/postgres:18
+        # ECR's public mirror returned a data-limit error before tests could run.
+        # Use Docker Hub's official image, pinned to the exact same digest that
+        # passed the prior main run. No database version or coverage change.
+        image: docker.io/library/postgres:18@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336
         env:
           POSTGRES_USER: zitch_ci
           POSTGRES_PASSWORD: zitch-ci-local-password
