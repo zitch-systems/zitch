@@ -54,7 +54,11 @@ class BackendPostgreSQLWorkflowTests(SimpleTestCase):
 
     def test_postgresql_18_job_uses_the_production_database_engine(self):
         self.assertIn("name: Backend (PostgreSQL)", self.job)
-        self.assertIn("image: public.ecr.aws/docker/library/postgres:18", self.job)
+        self.assertIn(
+            "image: docker.io/library/postgres:18@sha256:"
+            "74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336",
+            self.job,
+        )
         self.assertIn("DATABASE_URL:", self.job)
         self.assertIn("postgresql://", self.job)
         self.assertNotIn("DJANGO_ALLOW_SQLITE", self.job)
