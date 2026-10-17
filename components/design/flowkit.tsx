@@ -370,7 +370,7 @@ export const ConfirmSheet = ({
 
       <View style={{ borderRadius: 16, backgroundColor: c.surface2, paddingHorizontal: 14, paddingBottom: 2, marginBottom: 18 }}>
         {rows.map((r, i) => <Row2 key={i} k={r[0]} v={r[1]} icon={i === 0 ? productIcon : undefined} />)}
-        <Row2 k="Amount" v={money(total)} strong />
+        <Row2 k="Total" v={money(total)} strong />
       </View>
 
       <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1, marginBottom: 10 }}>{methodTitle}</Text>
