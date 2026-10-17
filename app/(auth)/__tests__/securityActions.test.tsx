@@ -1,18 +1,28 @@
 import React, { type ReactNode } from 'react';
+import { Platform, Text } from 'react-native';
 import renderer, { act } from 'react-test-renderer';
 import SetPassword from '@/app/(auth)/setpassword';
 import ResetPassword from '@/app/(auth)/resetpassword';
 import SetThumbprint from '@/app/(auth)/setthumbprint';
+import ResetPin from '@/app/(auth)/resetpin';
+import SecuritySetup from '@/app/(auth)/securitysetup';
+import SetPin from '@/app/(auth)/setpin';
 
 const mockPost = jest.fn();
 const mockSaveRefresh = jest.fn();
 const mockSavePin = jest.fn();
+const mockClearPin = jest.fn();
 const mockStoreSession = jest.fn();
 const mockUnlock = jest.fn();
 const mockReplace = jest.fn();
 const mockBack = jest.fn();
 const mockEnablePay = jest.fn();
 const mockRegisterPush = jest.fn();
+const mockNotify = jest.fn();
+const mockAvailable = jest.fn();
+const mockAuthenticate = jest.fn();
+const mockSetBiometricEnabled = jest.fn();
+const mockIsPayEnabled = jest.fn();
 let mockGeneration = 0;
 const mockParams: { change?: string; ident?: string } = {};
 
@@ -25,6 +35,7 @@ jest.mock('@/lib/api', () => ({ apiPost: (...args: unknown[]) => mockPost(...arg
 jest.mock('@/lib/secureStore', () => ({
   saveRefreshToken: (...args: unknown[]) => mockSaveRefresh(...args),
   saveTransactionPin: (...args: unknown[]) => mockSavePin(...args),
+  clearTransactionPin: (...args: unknown[]) => mockClearPin(...args),
   storeSession: (...args: unknown[]) => mockStoreSession(...args),
   getSessionGeneration: () => mockGeneration,
 }));
@@ -32,15 +43,17 @@ jest.mock('@/lib/notifications', () => ({ registerForPushNotifications: (...args
 jest.mock('@/lib/session', () => ({ unlockSession: () => mockUnlock() }));
 jest.mock('@/lib/screenCapture', () => ({ usePinScreenProtection: jest.fn() }));
 jest.mock('@/components/AuthGuard', () => ({ __esModule: true, default: ({ children }: { children: ReactNode }) => children }));
-jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
+jest.mock('@/components/design/Notify', () => ({ notify: (...args: unknown[]) => mockNotify(...args) }));
 jest.mock('@/components/design/Brand', () => ({ ZMark: () => null }));
 jest.mock('@/components/design/ZIcon', () => () => null);
 jest.mock('@/lib/biometrics', () => ({
-  isBiometricAvailable: async () => true,
+  isBiometricAvailable: (...args: unknown[]) => mockAvailable(...args),
   biometricLabel: async () => 'fingerprint',
   isBiometricEnabled: async () => false,
-  isBiometricTxnEnabled: async () => false,
+  isBiometricTxnEnabled: (...args: unknown[]) => mockIsPayEnabled(...args),
   setBiometricTxnEnabled: (...args: unknown[]) => mockEnablePay(...args),
+  authenticate: (...args: unknown[]) => mockAuthenticate(...args),
+  setBiometricEnabled: (...args: unknown[]) => mockSetBiometricEnabled(...args),
 }));
 jest.mock('@/lib/theme', () => ({
   useTheme: () => ({ c: { brand: '#090', ink1: '#111', ink3: '#333', surface: '#fff' } }),
@@ -55,20 +68,63 @@ jest.mock('@/components/design/ui', () => {
     Header: () => null,
     Field: (props: any) => R.createElement(TextInput, { ...props, accessibilityLabel: props.label }),
     Btn: (props: any) => R.createElement(Pressable, { ...props, accessibilityLabel: props.label }, R.createElement(Text, null, props.label)),
-    Toggle: (props: any) => R.createElement(Pressable, { accessibilityLabel: 'toggle', onPress: () => props.onChange(true) }),
+    Toggle: (props: any) => R.createElement(Pressable, { ...props, accessibilityLabel: 'toggle', onPress: () => props.onChange(true) }),
     ZItem: ({ title, right }: any) => R.createElement(View, { accessibilityLabel: title }, right),
     PinSheet: (props: any) => props.open ? R.createElement(View, { testID: 'pin-sheet', ...props }) : null,
   };
 });
+jest.mock('@/components/design/Keypad', () => {
+  const R = jest.requireActual<typeof import('react')>('react');
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+  return { Keypad: (props: any) => R.createElement(View, { ...props, testID: 'keypad' }) };
+});
 const field = (tree: renderer.ReactTestRenderer, name: string) => tree.root.findByProps({ accessibilityLabel: name });
+const toggle = (tree: renderer.ReactTestRenderer, name: string) => field(tree, name).findByProps({ accessibilityLabel: 'toggle' });
+const output = (tree: renderer.ReactTestRenderer) => tree.root.findAllByType(Text).map((node) => node.props.children).join(' ');
+const originalPlatform = Platform.OS;
+const extraTrees: renderer.ReactTestRenderer[] = [];
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function renderScreen(component: React.ReactElement) {
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(component); });
+  extraTrees.push(tree);
+  return tree;
+}
+
+async function fill(tree: renderer.ReactTestRenderer, values: Record<string, string>) {
+  for (const [label, value] of Object.entries(values)) {
+    await act(async () => { field(tree, label).props.onChangeText(value); });
+  }
+}
 
 beforeEach(() => {
   jest.clearAllMocks();
   mockGeneration = 0;
+  Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatform });
+  mockSaveRefresh.mockReset().mockResolvedValue(undefined);
+  mockSavePin.mockReset().mockResolvedValue(undefined);
+  mockClearPin.mockReset().mockResolvedValue(undefined);
+  mockAvailable.mockReset().mockResolvedValue(true);
+  mockAuthenticate.mockReset().mockResolvedValue(true);
+  mockSetBiometricEnabled.mockReset().mockResolvedValue(undefined);
+  mockIsPayEnabled.mockReset().mockResolvedValue(false);
+  mockEnablePay.mockReset().mockResolvedValue(undefined);
   mockRegisterPush.mockResolvedValue('registered');
   delete mockParams.change;
   delete mockParams.ident;
-  mockPost.mockResolvedValue({ ok: true, json: async () => ({ success: true, refresh_token: 'rotated-refresh' }) });
+  mockPost.mockReset().mockResolvedValue({ ok: true, json: async () => ({ success: true, refresh_token: 'rotated-refresh' }) });
+});
+
+afterEach(() => {
+  act(() => { extraTrees.splice(0).forEach((tree) => tree.unmount()); });
+  Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatform });
+  jest.useRealTimers();
 });
 
 it('changes an existing password with current-password proof and persists the rotated refresh before returning', async () => {
@@ -159,4 +215,254 @@ it('enables biometric payments only after the server verifies the PIN', async ()
   expect(mockPost.mock.invocationCallOrder[0]).toBeLessThan(mockSavePin.mock.invocationCallOrder[0]);
   expect(mockEnablePay).toHaveBeenCalledWith(true);
   act(() => tree.unmount());
+});
+
+it.each(['session change', 'unmount'])('ignores a password-change response after %s', async (event) => {
+  mockParams.change = '1';
+  const response = deferred<unknown>();
+  mockPost.mockReturnValue(response.promise);
+  const tree = await renderScreen(<SetPassword />);
+  await fill(tree, { 'Current password': 'Oldpass12!', Password: 'newpass123!', 'Confirm password': 'newpass123!' });
+  let updating!: Promise<void>;
+  act(() => { updating = field(tree, 'Change password').props.onPress(); });
+  if (event === 'unmount') act(() => tree.unmount());
+  else mockGeneration += 1;
+  await act(async () => {
+    response.resolve({ ok: true, json: async () => ({ refresh_token: 'old-session-refresh' }) });
+    await updating;
+  });
+  expect(mockSaveRefresh).not.toHaveBeenCalled();
+  expect(mockBack).not.toHaveBeenCalled();
+  expect(mockReplace).not.toHaveBeenCalled();
+  expect(mockNotify).not.toHaveBeenCalled();
+});
+
+it('does not return from a password change after the session changes during token storage', async () => {
+  mockParams.change = '1';
+  const storage = deferred<void>();
+  mockSaveRefresh.mockReturnValue(storage.promise);
+  const tree = await renderScreen(<SetPassword />);
+  await fill(tree, { 'Current password': 'Oldpass12!', Password: 'newpass123!', 'Confirm password': 'newpass123!' });
+  let updating!: Promise<void>;
+  await act(async () => { updating = field(tree, 'Change password').props.onPress(); });
+  expect(mockSaveRefresh).toHaveBeenCalledWith('rotated-refresh');
+  mockGeneration += 1;
+  await act(async () => { storage.resolve(); await updating; });
+  expect(mockBack).not.toHaveBeenCalled();
+  expect(mockNotify).not.toHaveBeenCalled();
+});
+
+it('deduplicates password submission from the button and keyboard', async () => {
+  const response = deferred<unknown>();
+  mockPost.mockReturnValue(response.promise);
+  const tree = await renderScreen(<SetPassword />);
+  await fill(tree, { Password: 'newpass123!', 'Confirm password': 'newpass123!' });
+  const submit = field(tree, 'Continue').props.onPress;
+  const keyboardSubmit = field(tree, 'Confirm password').props.onSubmitEditing;
+  let updating!: Promise<void>;
+  await act(async () => { updating = submit(); await keyboardSubmit(); });
+  expect(mockPost).toHaveBeenCalledTimes(1);
+  expect(field(tree, 'Password').props.editable).toBe(false);
+  await act(async () => { response.resolve({ ok: true, json: async () => ({ refresh_token: 'new-refresh' }) }); await updating; });
+  expect(mockReplace).toHaveBeenCalledWith('/setpin');
+});
+
+async function openResetPin() {
+  const tree = await renderScreen(<ResetPin />);
+  await fill(tree, { 'Account password': 'Currentpass12!', 'New PIN': '135790', 'Confirm new PIN': '135790' });
+  return tree;
+}
+
+it('clears the previous cached PIN after a server change without opting into biometric payments', async () => {
+  const tree = await openResetPin();
+  await act(async () => { await field(tree, 'Change PIN').props.onPress(); });
+  expect(mockPost).toHaveBeenCalledWith('/api/set-transaction-pin/', { pin: '135790', password: 'Currentpass12!' });
+  expect(mockClearPin).toHaveBeenCalledTimes(1);
+  expect(mockPost.mock.invocationCallOrder[0]).toBeLessThan(mockClearPin.mock.invocationCallOrder[0]);
+  expect(mockSavePin).not.toHaveBeenCalled();
+  expect(mockBack).toHaveBeenCalledTimes(1);
+});
+
+it('keeps the old cached PIN cleared if replacement biometric storage is canceled', async () => {
+  mockIsPayEnabled.mockResolvedValue(true);
+  mockSavePin.mockRejectedValue(new Error('OS authentication canceled'));
+  const tree = await openResetPin();
+  await act(async () => { await field(tree, 'Change PIN').props.onPress(); });
+  expect(mockClearPin.mock.invocationCallOrder[0]).toBeLessThan(mockSavePin.mock.invocationCallOrder[0]);
+  expect(mockSavePin).toHaveBeenCalledWith('135790');
+  expect(mockNotify).toHaveBeenCalledWith('Biometric payments paused', expect.any(String));
+  expect(mockNotify).toHaveBeenCalledWith('Done', 'Your transaction PIN has been changed.');
+  expect(mockBack).toHaveBeenCalledTimes(1);
+});
+
+it.each(['session change', 'unmount'])('does not mutate cached PINs for a response arriving after %s', async (event) => {
+  const response = deferred<unknown>();
+  mockPost.mockReturnValue(response.promise);
+  const tree = await openResetPin();
+  let updating!: Promise<void>;
+  act(() => { updating = field(tree, 'Change PIN').props.onPress(); });
+  if (event === 'unmount') act(() => tree.unmount());
+  else mockGeneration += 1;
+  await act(async () => { response.resolve({ ok: true, json: async () => ({ success: true }) }); await updating; });
+  expect(mockClearPin).not.toHaveBeenCalled();
+  expect(mockSavePin).not.toHaveBeenCalled();
+  expect(mockBack).not.toHaveBeenCalled();
+  expect(mockNotify).not.toHaveBeenCalled();
+});
+
+it('does not save a replacement PIN after a session change during old-PIN removal', async () => {
+  mockIsPayEnabled.mockResolvedValue(true);
+  const removal = deferred<void>();
+  mockClearPin.mockReturnValue(removal.promise);
+  const tree = await openResetPin();
+  let updating!: Promise<void>;
+  await act(async () => { updating = field(tree, 'Change PIN').props.onPress(); });
+  expect(mockClearPin).toHaveBeenCalledTimes(1);
+  mockGeneration += 1;
+  await act(async () => { removal.resolve(); await updating; });
+  expect(mockSavePin).not.toHaveBeenCalled();
+  expect(mockBack).not.toHaveBeenCalled();
+  expect(mockNotify).not.toHaveBeenCalled();
+});
+
+it('deduplicates PIN changes from keyboard and button submission', async () => {
+  const response = deferred<unknown>();
+  mockPost.mockReturnValue(response.promise);
+  const tree = await openResetPin();
+  const submit = field(tree, 'Change PIN').props.onPress;
+  const keyboardSubmit = field(tree, 'Confirm new PIN').props.onSubmitEditing;
+  let updating!: Promise<void>;
+  await act(async () => { updating = submit(); await keyboardSubmit(); });
+  expect(mockPost).toHaveBeenCalledTimes(1);
+  expect(field(tree, 'Account password').props.editable).toBe(false);
+  await act(async () => { response.resolve({ ok: true, json: async () => ({ success: true }) }); await updating; });
+  expect(mockClearPin).toHaveBeenCalledTimes(1);
+});
+
+it('disables biometric payment setup in a browser even when sign-in biometrics are available', async () => {
+  Object.defineProperty(Platform, 'OS', { configurable: true, value: 'web' });
+  const tree = await renderScreen(<SetThumbprint />);
+  const payments = toggle(tree, 'Approve payments');
+  expect(payments.props.disabled).toBe(true);
+  expect(output(tree)).toContain('Enter your transaction PIN to approve payments in a browser.');
+  await act(async () => { await payments.props.onChange(true); });
+  expect(tree.root.findAllByProps({ testID: 'pin-sheet' })).toHaveLength(0);
+  expect(mockPost).not.toHaveBeenCalled();
+  expect(mockSavePin).not.toHaveBeenCalled();
+  expect(mockEnablePay).not.toHaveBeenCalled();
+  expect(mockIsPayEnabled).not.toHaveBeenCalled();
+});
+
+it.each(['session change', 'unmount'])('does not cache a verified payment PIN after %s', async (event) => {
+  const response = deferred<unknown>();
+  mockPost.mockReturnValue(response.promise);
+  const tree = await openPay();
+  extraTrees.push(tree);
+  let enabling!: Promise<void>;
+  act(() => { enabling = tree.root.findByProps({ testID: 'pin-sheet' }).props.onComplete('135790'); });
+  if (event === 'unmount') act(() => tree.unmount());
+  else mockGeneration += 1;
+  await act(async () => { response.resolve({ ok: true, json: async () => ({ success: true }) }); await enabling; });
+  expect(mockSavePin).not.toHaveBeenCalled();
+  expect(mockEnablePay).not.toHaveBeenCalled();
+  expect(mockNotify).not.toHaveBeenCalled();
+});
+
+it('does not enable payment biometrics after the session changes during the OS keychain prompt', async () => {
+  const keychain = deferred<void>();
+  mockSavePin.mockReturnValue(keychain.promise);
+  const tree = await openPay();
+  extraTrees.push(tree);
+  let enabling!: Promise<void>;
+  await act(async () => { enabling = tree.root.findByProps({ testID: 'pin-sheet' }).props.onComplete('135790'); });
+  expect(mockSavePin).toHaveBeenCalledWith('135790');
+  mockGeneration += 1;
+  await act(async () => { keychain.resolve(); await enabling; });
+  expect(mockEnablePay).not.toHaveBeenCalled();
+  expect(mockNotify).not.toHaveBeenCalled();
+});
+
+it('opens only one keychain prompt when PIN completion fires twice', async () => {
+  const keychain = deferred<void>();
+  mockSavePin.mockReturnValue(keychain.promise);
+  const tree = await openPay();
+  extraTrees.push(tree);
+  const complete = tree.root.findByProps({ testID: 'pin-sheet' }).props.onComplete;
+  let enabling!: Promise<void>;
+  await act(async () => { enabling = complete('135790'); });
+  await act(async () => { await complete('135790'); });
+  expect(mockPost).toHaveBeenCalledTimes(1);
+  expect(mockSavePin).toHaveBeenCalledTimes(1);
+  expect(mockAuthenticate).not.toHaveBeenCalled();
+  await act(async () => { keychain.resolve(); await enabling; });
+  expect(mockEnablePay).toHaveBeenCalledTimes(1);
+});
+
+const signInScreens = [
+  { name: 'biometric settings', component: SetThumbprint, row: 'Fingerprint sign-in' },
+  { name: 'security settings', component: SecuritySetup, row: 'Biometrics' },
+];
+
+describe.each(signInScreens)('$name sign-in biometrics', ({ component: Component, row }) => {
+  it('opens one OS prompt for repeated enable taps', async () => {
+    const authentication = deferred<boolean>();
+    mockAuthenticate.mockReturnValue(authentication.promise);
+    const tree = await renderScreen(<Component />);
+    const enable = toggle(tree, row).props.onPress;
+    let enabling!: Promise<void>;
+    await act(async () => { enabling = enable(); await enable(); });
+    expect(mockAuthenticate).toHaveBeenCalledTimes(1);
+    expect(toggle(tree, row).props.disabled).toBe(true);
+    await act(async () => { authentication.resolve(true); await enabling; });
+    expect(mockSetBiometricEnabled).toHaveBeenCalledTimes(1);
+    expect(mockSetBiometricEnabled).toHaveBeenCalledWith(true);
+  });
+
+  it.each(['session change', 'unmount'])('does not enable sign-in when the OS prompt returns after %s', async (event) => {
+    const authentication = deferred<boolean>();
+    mockAuthenticate.mockReturnValue(authentication.promise);
+    const tree = await renderScreen(<Component />);
+    let enabling!: Promise<void>;
+    await act(async () => { enabling = toggle(tree, row).props.onPress(); });
+    expect(mockAuthenticate).toHaveBeenCalledTimes(1);
+    if (event === 'unmount') act(() => tree.unmount());
+    else mockGeneration += 1;
+    await act(async () => { authentication.resolve(true); await enabling; });
+    expect(mockSetBiometricEnabled).not.toHaveBeenCalled();
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('does not enable sign-in after a canceled biometric prompt', async () => {
+    mockAuthenticate.mockResolvedValue(false);
+    const tree = await renderScreen(<Component />);
+    await act(async () => { await toggle(tree, row).props.onPress(); });
+    expect(mockSetBiometricEnabled).not.toHaveBeenCalled();
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+});
+
+it('cancels a scheduled PIN submission when choosing a different PIN', async () => {
+  jest.useFakeTimers();
+  const tree = await renderScreen(<SetPin />);
+  const enter = async (digits: string) => {
+    for (const digit of digits) {
+      await act(async () => { tree.root.findByProps({ testID: 'keypad' }).props.onKey(digit); });
+    }
+  };
+  await enter('135790');
+  await act(async () => { jest.advanceTimersByTime(180); });
+  await enter('135790');
+  await act(async () => { field(tree, 'Choose a different PIN').props.onPress(); });
+  await act(async () => { jest.advanceTimersByTime(220); });
+  expect(mockPost).not.toHaveBeenCalled();
+  expect(output(tree)).toContain('Create a 6-digit PIN');
+  expect(field(tree, '0 of 6 PIN digits entered')).toBeTruthy();
+  await enter('246801');
+  await act(async () => { jest.advanceTimersByTime(180); });
+  await enter('246801');
+  await act(async () => { jest.advanceTimersByTime(220); });
+  expect(mockPost).toHaveBeenCalledTimes(1);
+  expect(mockPost).toHaveBeenCalledWith('/api/set-transaction-pin/', { pin: '246801' });
+  expect(mockClearPin).toHaveBeenCalledTimes(1);
+  expect(mockReplace).toHaveBeenCalledWith('/completed');
 });

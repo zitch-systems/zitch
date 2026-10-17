@@ -1,13 +1,13 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, Link, useLocalSearchParams } from 'expo-router';
-import { saveRefreshToken } from '@/lib/secureStore';
+import { getSessionGeneration, saveRefreshToken } from '@/lib/secureStore';
 import AuthGuard from '@/components/AuthGuard';
 import { usePinScreenProtection } from '@/lib/screenCapture';
 import { apiPost } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
 import { notify } from '@/components/design/Notify';
-import { PRIVACY_URL } from '@/components/configFiles/links';
+import { PRIVACY_URL, TERMS_URL } from '@/components/configFiles/links';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
@@ -32,6 +32,12 @@ const SetPassword = () => {
   const [changing, setChanging] = useState(params.change === '1');
   const [currentPassword, setCurrentPassword] = useState('');
   const inFlight = useRef(false);
+  const mounted = useRef(true);
+  const screenGeneration = useRef(getSessionGeneration()).current;
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   usePinScreenProtection();
   const [form, setForm] = useState({ password1: '', password2: '' });
 
@@ -51,12 +57,17 @@ const SetPassword = () => {
     }
     inFlight.current = true;
     setIsUpdating(true);
+    const generation = screenGeneration;
+    const current = () => mounted.current && generation === getSessionGeneration();
     try {
+      if (!current()) return;
       const response = await apiPost(EP.auth.setPassword, { password: p1, ...(changing ? { current_password: currentPassword } : {}) });
       const result = await response.json();
+      if (!current()) return;
       if (response.ok) {
         // Password changes revoke the previous refresh chain, including ours.
         await saveRefreshToken(result.refresh_token || '');
+        if (!current()) return;
         if (changing) { notify('Password changed'); router.back(); }
         else router.replace('/setpin');
       } else {
@@ -64,10 +75,10 @@ const SetPassword = () => {
         notify('Error', result.message || 'Could not set your password');
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
+      if (current()) notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       inFlight.current = false;
-      setIsUpdating(false);
+      if (mounted.current) setIsUpdating(false);
     }
   };
 
@@ -84,12 +95,13 @@ const SetPassword = () => {
 
       <View style={{ gap: 16 }}>
         {changing && <Field label="Current password" value={currentPassword} onChangeText={setCurrentPassword}
-          secureTextEntry autoComplete="current-password" textContentType="password" placeholder="Enter current password" />}
+          secureTextEntry editable={!isUpdating} autoComplete="current-password" textContentType="password" placeholder="Enter current password" />}
         <Field
           label="Password"
           value={form.password1}
           onChangeText={(e) => setForm({ ...form, password1: e })}
           secureTextEntry
+          editable={!isUpdating}
           autoComplete="new-password"
           textContentType="newPassword"
           placeholder="Enter password"
@@ -101,6 +113,9 @@ const SetPassword = () => {
             value={form.password2}
             onChangeText={(e) => setForm({ ...form, password2: e })}
             secureTextEntry
+            editable={!isUpdating}
+            returnKeyType="done"
+            onSubmitEditing={handleUpdate}
             autoComplete="new-password"
             textContentType="newPassword"
             placeholder="Re-enter password"
@@ -122,13 +137,14 @@ const SetPassword = () => {
       </View>
 
       <View style={{ marginTop: 26 }}>
-        <Btn label={changing ? "Change password" : "Continue"} disabled={!canSubmit || isUpdating} onPress={handleUpdate} />
+        <Btn label={isUpdating ? 'Saving password…' : changing ? 'Change password' : 'Continue'} disabled={!canSubmit || isUpdating} onPress={handleUpdate} />
       </View>
       <Text style={{ fontSize: 12, color: c.ink3, marginTop: 14, lineHeight: 18, fontFamily: font.regular }}>
         By continuing you agree to our{' '}
         <Link href={PRIVACY_URL as any}>
-          <Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy & Terms</Text>
+          <Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy</Text>
         </Link>
+        {' and '}<Link href={TERMS_URL as any}><Text style={{ color: c.brand, fontFamily: font.semibold }}>Terms</Text></Link>
         .
       </Text>
     </Screen>

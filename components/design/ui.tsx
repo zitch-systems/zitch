@@ -138,7 +138,6 @@ export const Screen = ({
           <ScrollView
             showsVerticalScrollIndicator={false}
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
             // "handled" so the FIRST tap on a button while the keyboard is open
             // activates it, instead of being swallowed to just dismiss the keyboard
             // (which forced a double-tap on every form's submit button).
@@ -187,8 +186,9 @@ export const Header = ({
           accessibilityRole="button"
           accessibilityLabel="Go back"
           style={{
-            width: 42,
-            height: 42,
+            width: 44,
+            height: 44,
+            flexShrink: 0,
             borderRadius: 13,
             backgroundColor: c.surface,
             borderWidth: 1,
@@ -241,9 +241,9 @@ type BtnVariant = 'primary' | 'deep' | 'dark' | 'ghost' | 'outline' | 'cyan';
 type BtnSize = 'lg' | 'md' | 'sm';
 
 const btnSizes: Record<BtnSize, ViewStyle> = {
-  lg: { height: 56, paddingHorizontal: 24 },
-  md: { height: 48, paddingHorizontal: 20 },
-  sm: { height: 40, paddingHorizontal: 16 },
+  lg: { minHeight: 56, paddingHorizontal: 24, paddingVertical: 14 },
+  md: { minHeight: 48, paddingHorizontal: 20, paddingVertical: 12 },
+  sm: { minHeight: 44, paddingHorizontal: 16, paddingVertical: 10 },
 };
 const btnFont: Record<BtnSize, number> = { lg: 16, md: 15, sm: 14 };
 
@@ -302,24 +302,29 @@ export const Btn = ({
       ]}
     >
       {icon && <ZIcon name={icon} size={size === 'lg' ? 20 : 18} color={v.fg} stroke={2.2} />}
-      <NText style={{ color: v.fg, fontFamily: font.bold, fontSize: btnFont[size] }}>{label}</NText>
+      <NText style={{ color: v.fg, fontFamily: font.bold, fontSize: btnFont[size], flexShrink: 1, textAlign: 'center' }}>{label}</NText>
     </Pressable>
   );
 };
 
 // ---- Toggle switch ----
 // Shared on/off switch used across settings and the security screens.
-export const Toggle = ({ on, onChange, disabled }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) => {
+export const Toggle = ({ on, onChange, disabled, accessibilityLabel }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean; accessibilityLabel?: string }) => {
   const { c } = useTheme();
   return (
     <Pressable
       onPress={disabled ? undefined : () => onChange(!on)}
-      hitSlop={{ top: 8, bottom: 8, left: 2, right: 2 }}
+      disabled={disabled}
       accessibilityRole="switch"
+      accessibilityLabel={accessibilityLabel}
       accessibilityState={{ checked: on, disabled: !!disabled }}
-      style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center', opacity: disabled ? 0.5 : 1 }}
+      aria-checked={on}
+      aria-disabled={!!disabled}
+      style={{ width: 50, minHeight: 44, flexShrink: 0, alignItems: 'center', justifyContent: 'center', opacity: disabled ? 0.5 : 1 }}
     >
-      <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', transform: [{ translateX: on ? 18 : 0 }] }} />
+      <View style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center' }}>
+        <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', transform: [{ translateX: on ? 18 : 0 }] }} />
+      </View>
     </Pressable>
   );
 };
@@ -407,7 +412,7 @@ export const ZItem = ({
         </View>
       )}
       <View style={{ flex: 1, minWidth: 0 }}>
-        <NText numberOfLines={1} style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{title}</NText>
+        <NText style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{title}</NText>
         {sub && <NText style={{ fontSize: 12, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{sub}</NText>}
       </View>
       {right}
@@ -436,6 +441,11 @@ export const Field = ({
   autoCorrect,
   inputRef,
   loading = false,
+  accessibilityLabel,
+  accessibilityHint,
+  error,
+  onFocus,
+  onBlur,
 }: {
   label?: string;
   value?: string;
@@ -459,9 +469,15 @@ export const Field = ({
   // While true, the input area shows the small branded Zitch loader in place of
   // the value/placeholder (e.g. the Send-money bank field while auto-detecting).
   loading?: boolean;
+  accessibilityLabel?: string;
+  accessibilityHint?: string;
+  error?: string;
+  onFocus?: () => void;
+  onBlur?: () => void;
 }) => {
   const { c } = useTheme();
   const [show, setShow] = useState(false);
+  const [focused, setFocused] = useState(false);
   const secure = !!secureTextEntry && !show;
   // Passwords/PINs and emails must never be auto-capitalized or auto-corrected —
   // a silently capitalized first character is a classic "wrong password" trap.
@@ -480,10 +496,11 @@ export const Field = ({
           gap: 10,
           backgroundColor: c.surface,
           borderWidth: 1,
-          borderColor: c.line,
+          borderColor: error ? c.red : focused ? c.brand : c.line,
           borderRadius: radius.md,
           paddingHorizontal: 16,
-          height: 56,
+          minHeight: 56,
+          paddingVertical: 12,
         }}
       >
         {prefix}
@@ -503,7 +520,11 @@ export const Field = ({
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder}
-          accessibilityLabel={label || placeholder || 'Input'}
+          accessibilityLabel={accessibilityLabel || label || placeholder || 'Input'}
+          accessibilityHint={error || accessibilityHint}
+          accessibilityState={{ disabled: !editable }}
+          onFocus={() => { setFocused(true); onFocus?.(); }}
+          onBlur={() => { setFocused(false); onBlur?.(); }}
           placeholderTextColor={c.ink3}
           keyboardType={keyboardType}
           secureTextEntry={secure}
@@ -514,7 +535,7 @@ export const Field = ({
           textContentType={textContentType}
           returnKeyType={returnKeyType}
           onSubmitEditing={onSubmitEditing}
-          style={{ flex: 1, fontSize: 16, color: c.ink1, fontFamily: font.medium }}
+          style={{ flex: 1, minWidth: 0, paddingVertical: 0, fontSize: 16, color: c.ink1, fontFamily: font.medium }}
         />
         )}
         {secureTextEntry ? (
@@ -523,11 +544,13 @@ export const Field = ({
             hitSlop={10}
             accessibilityRole="button"
             accessibilityLabel={show ? 'Hide password' : 'Show password'}
+            style={{ minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center', marginVertical: -6, marginRight: -10 }}
           >
             <ZIcon name={show ? 'eyeoff' : 'eye'} size={20} color={c.ink3} />
           </Pressable>
         ) : suffix}
       </View>
+      {error ? <Text accessibilityRole="alert" accessibilityLiveRegion="polite" style={{ color: c.red, fontSize: 13, fontFamily: font.medium, marginTop: 6 }}>{error}</Text> : null}
     </View>
   );
 };
@@ -577,6 +600,8 @@ export const Sheet = ({
           style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(2,16,14,.5)' }]}
         />
         <View
+          accessibilityViewIsModal
+          onAccessibilityEscape={onClose}
           style={{
             width: '100%',
             maxWidth: maxW,
@@ -594,7 +619,12 @@ export const Sheet = ({
           }}
         >
           <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: c.line, alignSelf: 'center', marginBottom: 14 }} />
-          {title && <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, marginBottom: 14 }}>{title}</Text>}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+            <Text accessibilityRole="header" style={{ flex: 1, fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>{title || ''}</Text>
+            <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel={title ? `Close ${title}` : 'Close dialog'} style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: c.surface3, alignItems: 'center', justifyContent: 'center' }}>
+              <ZIcon name="x" size={20} color={c.ink1} />
+            </Pressable>
+          </View>
           {/* "handled": first tap on a row/button inside the sheet activates it
               instead of only dismissing the keyboard. */}
           <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">{children}</ScrollView>
@@ -993,9 +1023,11 @@ export const PillTabs = ({
         onPress={() => onChange(o.v)}
         accessibilityRole="radio"
         accessibilityLabel={o.label}
-        accessibilityState={{ selected: on }}
+        accessibilityState={{ checked: on, selected: on }}
         style={{
           flex: scroll ? undefined : 1,
+          minHeight: 44,
+          minWidth: 0,
           alignItems: 'center',
           justifyContent: 'center',
           paddingHorizontal: check ? 10 : 16,
@@ -1008,8 +1040,7 @@ export const PillTabs = ({
         }}
       >
         <Text
-          numberOfLines={1}
-          style={{ fontSize: 13.5, fontFamily: font.bold, color: on ? (check ? c.brand : c.inkOnBrand) : c.ink3 }}
+          style={{ fontSize: 13.5, fontFamily: font.bold, textAlign: 'center', color: on ? (check ? c.brand : c.inkOnBrand) : c.ink3 }}
         >
           {o.label}
         </Text>
@@ -1063,7 +1094,8 @@ export const SelectRow = ({
           flexDirection: 'row',
           alignItems: 'center',
           gap: 10,
-          height: compact ? 48 : 56,
+          minHeight: compact ? 48 : 56,
+          paddingVertical: 12,
           paddingHorizontal: 16,
           borderRadius: compact ? 14 : radius.sm + 4,
           backgroundColor: compact ? c.surface3 : c.surface,
@@ -1159,7 +1191,8 @@ const PickerSheetBody = ({
             key={o.v}
             onPress={() => { onPick(o.v); onClose(); }}
             accessibilityRole="radio"
-            accessibilityState={{ selected: on }}
+            accessibilityState={{ checked: on, selected: on }}
+            accessibilityLabel={[o.label, o.sub].filter(Boolean).join(', ')}
             style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: c.line }}
           >
             {o.icon ? (
@@ -1256,8 +1289,8 @@ export const TxnRow = React.memo((
         <Text numberOfLines={1} style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{txn.type}</Text>
         <Text numberOfLines={1} style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{txn.detail}</Text>
       </View>
-      <View style={{ alignItems: 'flex-end', gap: 4 }}>
-        <NText style={{ fontSize: 14.5, fontFamily: font.bold, color: inflow ? c.lime : c.ink1, fontVariant: ['tabular-nums'] }}>
+      <View style={{ alignItems: 'flex-end', gap: 4, maxWidth: '47%', flexShrink: 0 }}>
+        <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75} style={{ fontSize: 14.5, fontFamily: font.bold, color: inflow ? c.lime : c.ink1, fontVariant: ['tabular-nums'] }}>
           {(inflow ? '+' : '-') + money(Math.abs(txn.amount))}
         </NText>
         <StatusPill status={txn.status} small />

@@ -23,8 +23,8 @@ const HomeLayout = () => {
       >
         <Tabs.Screen name="home" />
         <Tabs.Screen name="wallet" />
-        <Tabs.Screen name="convert" />
-        <Tabs.Screen name="loan" />
+        <Tabs.Screen name="convert" options={{ href: null }} />
+        <Tabs.Screen name="loan" options={{ href: null }} />
         <Tabs.Screen name="cards" />
         <Tabs.Screen name="me" />
         <Tabs.Screen name="history" options={{ href: null }} />

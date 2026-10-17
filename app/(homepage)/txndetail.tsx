@@ -47,9 +47,9 @@ type TransactionStatusResult = {
 const Row2 = ({ k, v }: { k: string; v: string }) => {
   const { c } = useTheme();
   return (
-    <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.line }}>
-      <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular }}>{k}</Text>
-      <Text selectable style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1, maxWidth: '62%', textAlign: 'right' }}>{v}</Text>
+    <View style={{ flexDirection: 'row', gap: 12, justifyContent: 'space-between', paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.line }}>
+      <Text style={{ flex: 1, fontSize: 14, color: c.ink3, fontFamily: font.regular }}>{k}</Text>
+      <Text selectable style={{ flex: 1.7, fontSize: 14, fontFamily: font.semibold, color: c.ink1, textAlign: 'right' }}>{v}</Text>
     </View>
   );
 };
@@ -166,7 +166,9 @@ const TxnDetail = () => {
   }, [requestStatus]);
 
   const inflow = (liveTxn?.direction || p.dir) === 'in';
-  const amount = Number(liveTxn?.amount ?? p.amount ?? 0);
+  const rawAmount = liveTxn?.amount ?? p.amount;
+  const amount = rawAmount == null || String(rawAmount).trim() === '' ? NaN : Number(rawAmount);
+  const formattedAmount = Number.isFinite(amount) ? (inflow ? '+' : '-') + money(Math.abs(amount)) : 'Amount unavailable';
   const type = String(liveTxn?.service ?? p.type ?? 'Transaction');
   const detail = String(liveTxn?.date ?? p.detail ?? '');
   const reference = String(liveTxn?.reference ?? p.reference ?? '');
@@ -199,8 +201,8 @@ const TxnDetail = () => {
 
       <View style={{ alignItems: 'center', paddingTop: 16 }}>
         <Monogram text={mono} color={inflow ? c.lime : c.brand} size={64} />
-        <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: inflow ? c.lime : c.ink1, marginTop: 14, fontVariant: ['tabular-nums'] }}>
-          {(inflow ? '+' : '-') + money(Math.abs(amount))}
+        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6} style={{ maxWidth: '100%', fontSize: 32, fontFamily: font.extrabold, color: inflow ? c.lime : c.ink1, marginTop: 14, fontVariant: ['tabular-nums'] }}>
+          {formattedAmount}
         </Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: `${statusColor}1F` }}>
           <ZIcon name={statusIcon} size={13} color={statusColor} />
@@ -256,11 +258,10 @@ const TxnDetail = () => {
           icon="share"
           variant="outline"
           onPress={() => {
-            const sign = inflow ? '+' : '-';
             Share.share({
               message: [
                 type,
-                `Amount: ${sign}${money(Math.abs(amount))}`,
+                `Amount: ${formattedAmount}`,
                 `Status: ${status}`,
                 detail ? `Date: ${detail}` : '',
                 `Reference: ${reference || '—'}`,
@@ -268,7 +269,7 @@ const TxnDetail = () => {
                 '',
                 'Sent with Zitch',
               ].filter(Boolean).join('\n'),
-            }).catch(() => {});
+            }).catch(() => notify('Could not share', 'Please try again.'));
           }}
         />
       </View>

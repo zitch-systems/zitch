@@ -5,7 +5,7 @@ import BuyCable from '@/app/(servicesscreen)/buycable';
 const mockFetch = jest.fn();
 const mockApiPost = jest.fn();
 
-jest.mock('@/lib/secureStore', () => ({ getToken: jest.fn(async () => null) }));
+jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => 0, getToken: jest.fn(async () => null) }));
 jest.mock('@/lib/api', () => ({ publicPost: (path: string, body: unknown) => global.fetch(path, { body: JSON.stringify(body) }), apiPost: (...args: unknown[]) => mockApiPost(...args) }));
 jest.mock('@/lib/pendingSpend', () => ({ acquireSpendAttempt: jest.fn(), clearSpendAttempt: jest.fn() }));
 jest.mock('@/lib/spendOutcome', () => ({

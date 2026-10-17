@@ -5,6 +5,8 @@ import Register from '@/app/(auth)/register';
 const mockPublicPost = jest.fn();
 const mockMultiSet = jest.fn();
 const mockPush = jest.fn();
+let mockGeneration = 0;
+jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => mockGeneration }));
 
 jest.mock('@/lib/api', () => ({ publicPost: (...args: unknown[]) => mockPublicPost(...args) }));
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -44,6 +46,7 @@ const control = (tree: renderer.ReactTestRenderer, label: string) =>
 
 describe('registration identity handoff', () => {
   beforeEach(() => {
+    mockGeneration = 0;
     mockPublicPost.mockReset();
     mockMultiSet.mockReset();
     mockPush.mockReset();
@@ -115,4 +118,29 @@ describe('registration identity handoff', () => {
     await act(async () => { control(tree, 'Phone number').props.onChangeText('08012345678'); });
     expect(control(tree, 'Continue').props.disabled).toBe(true);
   });
+});
+
+
+it.each(['session change', 'screen close'])('discards a late registration response after %s', async (reason) => {
+  mockGeneration = 0;
+  mockMultiSet.mockClear();
+  mockPush.mockClear();
+  let finish!: (value: unknown) => void;
+  mockPublicPost.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Register />); });
+  await act(async () => { control(tree, 'Full name').props.onChangeText('Ada Okafor'); });
+  await act(async () => { control(tree, 'Phone number').props.onChangeText('08012345678'); });
+  await act(async () => { control(tree, 'Email address').props.onChangeText('ada@example.com'); });
+  let registering!: Promise<void>;
+  act(() => { registering = control(tree, 'Continue').props.onPress(); });
+  if (reason === 'session change') mockGeneration += 1;
+  else act(() => tree.unmount());
+  await act(async () => {
+    finish({ ok: true, json: async () => ({ success: true }) });
+    await registering;
+  });
+  expect(mockMultiSet).not.toHaveBeenCalled();
+  expect(mockPush).not.toHaveBeenCalled();
+  if (reason === 'session change') act(() => tree.unmount());
 });

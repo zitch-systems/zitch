@@ -131,20 +131,36 @@ const RootLayout = () => {
   // calls, so the timer only trips after a real stretch of inactivity.
   useEffect(() => {
     if (!ready) return;
+    let active = true;
     let checking = false;
     // App lock: re-opening the app (or returning from background) requires a
     // biometric/password unlock — not just after the idle timeout. The token
     // survives the lock so unlock is instant; a full sign-out clears it.
     const check = async () => {
-      if (!navigation.isReady() || checking || isExternalActivityActive()) return;
+      if (!active || !navigation.isReady() || checking || isExternalActivityActive()) return;
       checking = true;
+      const generation = getSessionGeneration();
+      const current = () => active && generation === getSessionGeneration();
       try {
         const expired = await enforceHardExpiry();
+        if (!active) return;
+        if (expired) {
+          // Expiry itself advances the generation. Redirect only while that
+          // cleared session remains empty; a newer login owns its navigation.
+          const expiredGeneration = getSessionGeneration();
+          const token = await getToken();
+          if (active && expiredGeneration === getSessionGeneration() && !token && pathname !== '/signin') router.replace('/signin');
+          return;
+        }
+        if (!current()) return;
         await lockIfAwayTooLong();
+        if (!current()) return;
         await enforceIdleTimeout();
-        if ((expired || await isSessionLocked()) && pathname !== '/signin') router.replace('/signin');
+        if (!current()) return;
+        const locked = await isSessionLocked();
+        if (current() && locked && pathname !== '/signin') router.replace('/signin');
       } catch {
-        if (pathname !== '/signin') router.replace('/signin');
+        if (current() && pathname !== '/signin') router.replace('/signin');
       } finally { checking = false; }
     };
     // The stack may become ready after this effect. Observe readiness without
@@ -157,13 +173,15 @@ const RootLayout = () => {
         // was away at least a minute. Skip while an in-app picker/camera is up,
         // so uploading a photo never bounces to the unlock screen.
         if (isExternalActivityActive()) return;
-        getToken().then(async (t) => { if (t) await markBackgrounded(); }).catch(() => {});
+        const generation = getSessionGeneration();
+        getToken().then(async (t) => { if (active && t && generation === getSessionGeneration()) await markBackgrounded(); }).catch(() => {});
       } else if (s === "active") {
         check();
       }
     });
     const timer = setInterval(check, 30 * 1000);
     return () => {
+      active = false;
       sub.remove();
       unsubscribeNavigation();
       clearInterval(timer);

@@ -14,11 +14,8 @@ import { useTheme, font } from '@/lib/theme';
 // Step 2 of password recovery: enter the reset code + a new password. On success
 // the backend revokes every old session and returns a fresh token, so we save it
 // and drop the user straight into the app.
-const ResetPassword = () => {
+const ResetPassword = ({ ident }: { ident: string }) => {
   const { c } = useTheme();
-  const params = useLocalSearchParams<{ ident?: string; phone?: string }>();
-  const rawIdent = params.ident ?? params.phone;
-  const ident = typeof rawIdent === 'string' ? rawIdent : '';
   const inFlight = useRef(false);
   const mounted = useRef(true);
   useEffect(() => {
@@ -74,14 +71,25 @@ const ResetPassword = () => {
     ? 'your phone'
     : ident.includes('@')
       ? ident
-      : ident.replace(/(\d{4})(\d{3})(\d{0,4})/, '$1 $2 $3');
+      : `${ident.slice(0, 4)} *** ${ident.slice(-4)}`;
+
+  if (!ident) return (
+    <Screen>
+      <Header onBack={() => router.replace('/signin')} />
+      <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1 }}>Request a reset code</Text>
+      <Text style={{ fontSize: 14, color: c.ink3, marginTop: 8, marginBottom: 24, fontFamily: font.regular }}>
+        Start with the email or phone number on your account so we can match your reset code.
+      </Text>
+      <Btn label="Request reset code" onPress={() => router.replace('/forgotpassword')} />
+    </Screen>
+  );
 
   return (
     <Screen>
       <Header onBack={() => router.back()} />
       <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Enter reset code</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 22, fontFamily: font.regular }}>
-        Enter the 6-digit code sent to <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{masked}</Text> and choose a new password.
+        Reset requested for <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{masked}</Text>. If that account exists, use the 6-digit code sent to its registered phone or verified email.
       </Text>
 
       <View style={{ gap: 16 }}>
@@ -92,6 +100,7 @@ const ResetPassword = () => {
           keyboardType="number-pad"
           placeholder="6-digit code"
           maxLength={6}
+          editable={!busy}
           autoComplete="sms-otp"
           textContentType="oneTimeCode"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
@@ -101,6 +110,7 @@ const ResetPassword = () => {
           value={p1}
           onChangeText={setP1}
           secureTextEntry
+          editable={!busy}
           placeholder="Enter new password"
           autoComplete="new-password"
           textContentType="newPassword"
@@ -111,12 +121,17 @@ const ResetPassword = () => {
           value={p2}
           onChangeText={setP2}
           secureTextEntry
+          editable={!busy}
+          returnKeyType="done"
+          onSubmitEditing={reset}
           placeholder="Re-enter new password"
           autoComplete="new-password"
           textContentType="newPassword"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
       </View>
+
+      {p2.length > 0 && !match && <Text accessibilityLiveRegion="polite" style={{ fontSize: 12.5, color: c.red, marginTop: 8, fontFamily: font.regular }}>Passwords do not match.</Text>}
 
       <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 12, fontFamily: font.regular }}>
         At least 8 characters, with a letter, a number and a special character.
@@ -129,4 +144,11 @@ const ResetPassword = () => {
   );
 };
 
-export default ResetPassword;
+export default function ResetPasswordRoute() {
+  const params = useLocalSearchParams<{ ident?: string; phone?: string }>();
+  const rawIdent = params.ident ?? params.phone;
+  const ident = typeof rawIdent === 'string' && rawIdent.length <= 254 ? rawIdent.trim() : '';
+  // A new recovery target must start a new form; a delayed response for the
+  // previous target cannot sign it in over the current recovery attempt.
+  return <ResetPassword key={ident} ident={ident} />;
+}

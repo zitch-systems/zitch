@@ -4,7 +4,7 @@ import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, TxnRow, money, NText, settledTransactionTotal } from '@/components/design/ui';
+import { Screen, Btn, TxnRow, money, NText, settledTransactionTotal } from '@/components/design/ui';
 import { SectionLabel } from '@/components/design/widgets';
 import { ConnectedAccounts } from '@/components/design/ConnectedAccounts';
 import { useTheme, font } from '@/lib/theme';
@@ -50,7 +50,7 @@ const Wallet = () => {
       {/* Primary Zitch wallet card — uses its own distinct wallet gradient (NOT the
           shared Hero/heroGradient) per the design hand-off. */}
       <LinearGradient
-        colors={['#23B1A8', '#00847B', '#004D47']}
+        colors={['#087F77', '#006D65', '#004D47']}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={{ margin: 16, borderRadius: 22, padding: 18, overflow: 'hidden', shadowColor: '#004D47', shadowOpacity: 0.5, shadowRadius: 22, shadowOffset: { width: 0, height: 16 }, elevation: 6 }}
@@ -69,7 +69,7 @@ const Wallet = () => {
         </View>
         <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium, marginTop: 10 }}>Available balance</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 }}>
-          <NText style={{ fontSize: 27, fontFamily: font.extrabold, color: '#fff', fontVariant: ['tabular-nums'] }}>
+          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65} style={{ flexShrink: 1, fontSize: 27, fontFamily: font.extrabold, color: '#fff', fontVariant: ['tabular-nums'] }}>
             {!balanceLoaded ? (hydrated ? 'Unavailable' : 'Loading…') : showBal ? money(balance) : '₦ ••••••'}
           </NText>
           <Pressable accessibilityRole="button" accessibilityLabel={showBal ? 'Hide balance' : 'Show balance'} onPress={() => setShowBal(!showBal)} hitSlop={8}>
@@ -85,7 +85,7 @@ const Wallet = () => {
 
         {/* Two-line account chip — name over "{grouped number} · {bank}", tap to copy. */}
         {accountNumber ? (
-          <View style={{ marginTop: 10, alignSelf: 'flex-start' }}>
+          <View style={{ marginTop: 10, alignSelf: 'stretch' }}>
             {copied && (
               <View style={{ position: 'absolute', bottom: '100%', left: 0, marginBottom: 7, flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 5, paddingHorizontal: 10, borderRadius: 999, backgroundColor: c.ink1 }}>
                 <ZIcon name="check" size={12} color={c.cyan} stroke={2.6} />
@@ -93,10 +93,12 @@ const Wallet = () => {
               </View>
             )}
             <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Copy account number ${accountNumber}`}
               onPress={copyAccount}
               style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 7, paddingHorizontal: 12, borderRadius: 16, backgroundColor: 'rgba(255,255,255,.16)' }}
             >
-              <View>
+              <View style={{ flex: 1, minWidth: 0 }}>
                 <Text numberOfLines={1} style={{ color: '#fff', fontSize: 12.5, fontFamily: font.bold }}>
                   {fullName || firstName || 'Your account'}
                 </Text>
@@ -110,15 +112,16 @@ const Wallet = () => {
         ) : null}
 
         <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-          <Pressable onPress={() => router.push('/addmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 14, backgroundColor: '#fff', alignItems: 'center' }}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Add money" onPress={() => router.push('/addmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 14, backgroundColor: '#fff', alignItems: 'center' }}>
             <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 14 }}>+ Add money</Text>
           </Pressable>
-          <Pressable onPress={() => router.push('/sendmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 14, backgroundColor: 'rgba(255,255,255,.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,.25)', alignItems: 'center' }}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Send money" onPress={() => router.push('/sendmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 14, backgroundColor: 'rgba(255,255,255,.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,.25)', alignItems: 'center' }}>
             <Text style={{ color: '#fff', fontFamily: font.bold, fontSize: 14 }}>Send</Text>
           </Pressable>
         </View>
       </LinearGradient>
       {balanceError ? <Text accessibilityRole="alert" style={{ color: c.amber, marginHorizontal: 16, marginBottom: 12, fontFamily: font.medium }}>{balanceLoaded ? 'Showing your last known balance. ' : ''}{balanceError} Pull down to retry.</Text> : null}
+      {balanceError || historyError ? <View style={{ marginHorizontal: 16, marginBottom: 12 }}><Btn label="Refresh account" disabled={loading} onPress={() => { void reload(); void reloadLinked(); }} /></View> : null}
       {balanceLoaded && capabilityMessage ? (
         <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 20, marginHorizontal: 16, marginBottom: 16 }}>
           {capabilityMessage} {fundingMessage}
@@ -132,7 +135,7 @@ const Wallet = () => {
         ].map((s) => (
           <View key={s.k} style={{ flex: 1, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 16 }}>
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{s.k}</Text>
-            <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: s.color, marginTop: 4, fontVariant: ['tabular-nums'] }}>
+            <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65} style={{ fontSize: 18, fontFamily: font.extrabold, color: s.color, marginTop: 4, fontVariant: ['tabular-nums'] }}>
               {historyError ? 'Unavailable' : !hydrated ? 'Loading…' : showBal ? `${s.sign}${money(s.v)}` : '₦ ••••••'}
             </Text>
           </View>
@@ -144,6 +147,7 @@ const Wallet = () => {
 
       <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
         <SectionLabel action="See all" onAction={() => router.push('/history')}>Recent activity</SectionLabel>
+        {historyError && txns.length > 0 ? <Text accessibilityRole="alert" style={{ color: c.amber, marginBottom: 10 }}>Showing previously loaded activity. {historyError} Pull down to retry.</Text> : null}
         {txns.length === 0 ? (
           <Text accessibilityRole={historyError ? 'alert' : undefined} style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>{!hydrated ? 'Loading transactions…' : historyError || 'No transactions yet'}</Text>
         ) : (

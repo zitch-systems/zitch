@@ -13,16 +13,15 @@ const Ussd = () => (
   <FeatureScreen
     title="Zitch USSD"
     icon="phone"
-    tagline="Bank without internet — check your balance, buy airtime and send money from any phone, on every network."
+    tagline="Zitch USSD is not available yet. There is no active shortcode to dial from this page."
     points={[
-      { icon: 'wallet', title: 'Check wallet balance', sub: 'No data or smartphone needed' },
-      { icon: 'airtime', title: 'Buy airtime & data', sub: 'For yourself or anyone else' },
-      { icon: 'send', title: 'Send money', sub: 'Transfers to any Nigerian bank' },
-      { icon: 'bills', title: 'Pay bills', sub: 'Electricity, TV and more' },
+      { icon: 'phone', title: 'Shortcode', sub: 'The official code will be published when available' },
+      { icon: 'wallet', title: 'Supported services', sub: 'Available transactions will be confirmed at launch' },
+      { icon: 'bills', title: 'Networks and charges', sub: 'Coverage and fees will be published before use' },
     ]}
-    primaryLabel="Chat with us"
+    primaryLabel="Contact support"
     primaryIcon="chat"
-    note="Our USSD shortcode is being registered with the networks. Standard carrier USSD charges will apply once live."
+    note="Use the Zitch app or WhatsApp for services currently available on your account."
   />
 );
 

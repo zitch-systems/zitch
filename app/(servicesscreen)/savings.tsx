@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { View, Text, Pressable, RefreshControl, ScrollView } from 'react-native';
 import { Loading } from '@/components/design/Loading';
 import { router, useFocusEffect } from 'expo-router';
@@ -49,9 +49,11 @@ const PlanCard = ({ plan }: { plan: Plan }) => {
   const progress = lockProgress(matured, plan.duration_days, left);
   const matureLine = matured
     ? 'Matured'
-    : left <= 0
-      ? 'Maturing today'
-      : `${plan.matures_at} · ${left} day${left === 1 ? '' : 's'} left`;
+    : left < 0
+      ? `${plan.matures_at} · Awaiting payout`
+      : left === 0
+        ? 'Maturing today'
+        : `${plan.matures_at} · ${left} day${left === 1 ? '' : 's'} left`;
 
   return (
     <View style={{ borderRadius: 18, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 16, marginBottom: 12 }}>
@@ -87,27 +89,37 @@ const MySavings = () => {
   const [totalLocked, setTotalLocked] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [productAvailable, setProductAvailable] = useState(false);
   const [unavailableMessage, setUnavailableMessage] = useState('Fixed savings is not available right now.');
+  const loadInFlight = useRef(false);
 
   const load = useCallback(async () => {
-    const token = await getToken();
-    if (!token) {
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
+    if (loadInFlight.current) return;
+    loadInFlight.current = true;
+    setRefreshing(true);
     try {
+      const token = await getToken();
+      if (!token) throw new Error('Session unavailable');
       const res = await savingsService.list();
-      setProductAvailable(res?.success === true && res.product_available === true);
-      setUnavailableMessage(res?.unavailable_message || 'Fixed savings is not available right now.');
-      if (Array.isArray(res?.plans)) {
-        setPlans(res.plans);
-        setTotalLocked(Number(res.total_locked ?? 0));
+      if (res?.success !== true || !Array.isArray(res.plans)
+        || typeof res.product_available !== 'boolean' || res.total_locked == null
+        || !Number.isFinite(Number(res.total_locked)) || Number(res.total_locked) < 0) {
+        throw new Error('Savings status unavailable');
       }
+      setProductAvailable(res.product_available);
+      setUnavailableMessage(res?.unavailable_message || 'Fixed savings is not available right now.');
+      setPlans(res.plans);
+      setTotalLocked(Number(res.total_locked));
+      setLoaded(true);
+      setLoadError('');
     } catch {
-      // keep last-known state; the screen stays usable offline
+      // A failed lookup says nothing about whether the customer has savings.
+      // Keep a previously loaded balance/history and clearly mark it as stale.
+      setLoadError('We could not refresh your savings. Please try again.');
     } finally {
+      loadInFlight.current = false;
       setLoading(false);
       setRefreshing(false);
     }
@@ -115,7 +127,7 @@ const MySavings = () => {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const onRefresh = () => { setRefreshing(true); load(); };
+  const onRefresh = () => { void load(); };
 
   const activeCount = plans.filter((p) => p.status === 'active').length;
   const topRate = plans.reduce((m, p) => Math.max(m, Number(p.rate)), 0);
@@ -125,8 +137,10 @@ const MySavings = () => {
       title="My Fixed Saves"
       sub={productAvailable ? 'Locked & earning' : 'Existing plans and status'}
       onBack={() => router.back()}
-      right={productAvailable ? (
+      right={productAvailable && !loadError ? (
         <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Start a fixed save"
           onPress={() => router.push('/fixedsave')}
           style={{ width: 42, height: 42, borderRadius: 13, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}
         >
@@ -147,6 +161,21 @@ const MySavings = () => {
     );
   }
 
+  if (!loaded) {
+    return (
+      <Screen>
+        {header}
+        <View style={{ paddingVertical: 36 }}>
+          <Text accessibilityRole="alert" style={{ fontFamily: font.bold, color: c.ink1, fontSize: 18 }}>Unable to load your savings</Text>
+          <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 8, marginBottom: 20 }}>
+            We could not retrieve your savings balance or plans. Please try again.
+          </Text>
+          <Btn label={refreshing ? 'Retrying…' : 'Retry'} disabled={refreshing} onPress={onRefresh} />
+        </View>
+      </Screen>
+    );
+  }
+
   return (
     <Screen scroll={false}>
       {header}
@@ -155,6 +184,13 @@ const MySavings = () => {
         contentContainerStyle={{ paddingBottom: 28 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={c.brand} colors={[c.brand]} />}
       >
+        {loadError ? (
+          <View style={{ borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 16, marginBottom: 18 }}>
+            <Text accessibilityRole="alert" style={{ fontFamily: font.bold, color: c.ink1 }}>Showing previously loaded savings</Text>
+            <Text style={{ color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginTop: 6, marginBottom: 12 }}>{loadError}</Text>
+            <Btn label={refreshing ? 'Retrying…' : 'Retry'} disabled={refreshing} variant="outline" onPress={onRefresh} />
+          </View>
+        ) : null}
         <Hero style={{ marginBottom: 18 }}>
           <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>Total locked</Text>
           <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(totalLocked)}</Text>
@@ -165,7 +201,7 @@ const MySavings = () => {
           </Text>
         </Hero>
 
-        {!productAvailable && (
+        {!productAvailable && !loadError && (
           <View style={{ borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 16, marginBottom: 18 }}>
             <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>New fixed saves are unavailable</Text>
             <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular, lineHeight: 19, marginTop: 6 }}>{unavailableMessage}</Text>
@@ -183,7 +219,7 @@ const MySavings = () => {
                 ? 'Choose an amount and lock period to start a fixed save.'
                 : 'Any existing fixed saves would appear here.'}
             </Text>
-            {productAvailable ? <Btn label="Start saving" icon="fixed" onPress={() => router.push('/fixedsave')} full={false} /> : null}
+            {productAvailable && !loadError ? <Btn label="Start saving" icon="fixed" onPress={() => router.push('/fixedsave')} full={false} /> : null}
           </View>
         ) : (
           <>

@@ -7,7 +7,7 @@ import { publicPost } from '@/lib/api';
 import { unlockSession } from '@/lib/session';
 import { getSessionGeneration, storeSession } from '@/lib/secureStore';
 import { Loading } from '@/components/design/Loading';
-import { Screen, Header } from '@/components/design/ui';
+import { Screen, Header, Btn } from '@/components/design/ui';
 import { Stepper } from '@/components/design/Stepper';
 import { useTheme, font } from '@/lib/theme';
 
@@ -19,9 +19,12 @@ const OTPVerification = () => {
   const [isCheckingOtp, setIsCheckingOtp] = useState(false);
   const [isResending, setIsResending] = useState(false);
   const [userPhone, setUserPhone] = useState('');
+  const [phoneLoaded, setPhoneLoaded] = useState(false);
   const [seconds, setSeconds] = useState(24);
   const inputRef = useRef<TextInput>(null);
   const mounted = useRef(true);
+  const resending = useRef(false);
+  const verifying = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -29,7 +32,10 @@ const OTPVerification = () => {
   }, []);
 
   useEffect(() => {
-    AsyncStorage.getItem('UserPhone').then((p) => p && setUserPhone(p));
+    const generation = getSessionGeneration();
+    AsyncStorage.getItem('UserPhone').then((p) => {
+      if (mounted.current && generation === getSessionGeneration() && p && /^0[0-9]{10}$/.test(p)) setUserPhone(p);
+    }).catch(() => {}).finally(() => { if (mounted.current) setPhoneLoaded(true); });
   }, []);
 
   useEffect(() => {
@@ -43,12 +49,13 @@ const OTPVerification = () => {
     // SMS autofill can finish before AsyncStorage has restored the phone. Keep
     // the complete code on screen; the effect retries automatically when the
     // phone arrives because this callback depends on userPhone.
-    if (!userPhone) return;
+    if (!userPhone || otp.length !== OTP_LEN || resending.current || verifying.current) return;
     // Verify each complete code at most once. Without this, the auto-submit
     // effect re-fires after isCheckingOtp resets and re-sends the (now-consumed)
     // code, producing a false "invalid OTP" right after a successful verify.
     if (submittedRef.current === otp) return;
     submittedRef.current = otp;
+    verifying.current = true;
     setIsCheckingOtp(true);
     const generation = getSessionGeneration();
     try {
@@ -81,11 +88,13 @@ const OTPVerification = () => {
         submittedRef.current = ''; // let them try a fresh code
       }
     } catch {
+      if (!mounted.current || generation !== getSessionGeneration()) return;
       notify('Error', 'Something went wrong. Please try again later.');
       submittedRef.current = '';
       setOtp('');
     } finally {
-      setIsCheckingOtp(false);
+      verifying.current = false;
+      if (mounted.current) setIsCheckingOtp(false);
     }
   }, [otp, userPhone]);
 
@@ -97,15 +106,19 @@ const OTPVerification = () => {
   }, [otp, handleCheckOtp]);
 
   const handleResendOtp = async () => {
-    if (seconds > 0 || isResending) return;
+    if (seconds > 0 || resending.current || verifying.current) return;
     if (!userPhone) {
       notify('Error', 'Your phone number is still loading. Please try again.');
       return;
     }
     setIsResending(true);
+    resending.current = true;
+    const generation = getSessionGeneration();
+    const current = () => mounted.current && generation === getSessionGeneration();
     try {
       const response = await publicPost('/api/resend_verify_otp/', { phone: userPhone });
       const result = await response.json();
+      if (!current()) return;
       if (response.ok) {
         // A resent code is a fresh attempt. Clear any partial/previous digits,
         // release the one-submit guard, and return focus to the native input so
@@ -114,18 +127,35 @@ const OTPVerification = () => {
         submittedRef.current = '';
         setSeconds(24);
         requestAnimationFrame(() => inputRef.current?.focus());
-        notify('Success', 'OTP has been resent');
+        notify('Code sent', 'A new verification code has been sent by SMS.');
       } else {
         notify('Error', result.message || 'Failed to resend OTP');
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
+      if (current()) notify('Error', 'Something went wrong. Please try again later.');
     } finally {
-      setIsResending(false);
+      resending.current = false;
+      if (mounted.current) setIsResending(false);
     }
   };
 
   const masked = userPhone ? `${userPhone.slice(0, 4)} *** ${userPhone.slice(-4)}` : 'your phone';
+
+  const leave = (route: '/register' | '/signin') => {
+    // Leaving invalidates pending responses immediately, before navigation commits.
+    mounted.current = false;
+    void AsyncStorage.removeItem('otpPending').catch(() => {});
+    router.replace(route);
+  };
+
+  if (phoneLoaded && !userPhone) return (
+    <Screen>
+      <Header onBack={() => leave('/signin')} />
+      <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1 }}>Start phone verification</Text>
+      <Text style={{ fontSize: 14, color: c.ink3, marginTop: 8, marginBottom: 24, fontFamily: font.regular }}>Enter your details to request an SMS code. Your previous phone verification could not be restored.</Text>
+      <Btn label="Enter my details" onPress={() => leave('/register')} />
+    </Screen>
+  );
 
   if (isCheckingOtp) {
     return (
@@ -137,17 +167,17 @@ const OTPVerification = () => {
 
   return (
     <Screen>
-      <Header onBack={() => { AsyncStorage.removeItem('otpPending'); router.replace('/register'); }} />
+      <Header onBack={() => leave('/register')} />
       <Stepper step={2} total={4} label="Step 2 of 4 · Verify phone" />
       <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Verify your number</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular }}>
-        Enter the {OTP_LEN}-digit code sent to <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{masked}</Text>
+        Enter the {OTP_LEN}-digit SMS code sent to <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{masked}</Text>
       </Text>
 
       {/* The boxes are display-only; a hidden numeric TextInput captures input
           from the device keypad (and OS SMS autofill). Tapping the boxes focuses it. */}
       <Pressable onPress={() => inputRef.current?.focus()}>
-        <View style={{ flexDirection: 'row', gap: 10, marginTop: 28, marginBottom: 18 }}>
+        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ flexDirection: 'row', gap: 10, marginTop: 28, marginBottom: 18 }}>
           {Array.from({ length: OTP_LEN }).map((_, k) => (
             <View
               key={k}
@@ -169,6 +199,8 @@ const OTPVerification = () => {
 
         <TextInput
           ref={inputRef}
+          accessibilityLabel="6-digit SMS verification code"
+          accessibilityHint="Your code is verified automatically when all six digits are entered."
           value={otp}
           onChangeText={(t) => setOtp(t.replace(/\D/g, '').slice(0, OTP_LEN))}
           keyboardType="number-pad"
@@ -176,7 +208,7 @@ const OTPVerification = () => {
           maxLength={OTP_LEN}
           autoFocus
           caretHidden
-          editable={!isCheckingOtp}
+          editable={!isCheckingOtp && !isResending}
           textContentType="oneTimeCode"
           autoComplete="sms-otp"
           importantForAutofill="yes"
@@ -207,7 +239,8 @@ const OTPVerification = () => {
       <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 12 }}>
         Already have an account?{' '}
         <Text
-          onPress={() => { AsyncStorage.removeItem('otpPending'); router.replace('/signin'); }}
+          accessibilityRole="link"
+          onPress={() => leave('/signin')}
           style={{ color: c.brand, fontFamily: font.bold }}
         >
           Sign in

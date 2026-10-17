@@ -30,6 +30,7 @@ const Cards = () => {
   const [card, setCard] = useState<VirtualCard | null>(null);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const actionInFlight = useRef(false);
   const screenActive = useRef(false);
@@ -47,9 +48,10 @@ const Cards = () => {
   const [issuanceReference, setIssuanceReference] = useState('');
 
   const load = useCallback(async () => {
+    setLoading(true);
     try {
       const t = await getToken();
-      if (!t) return undefined;
+      if (!t) throw new Error('No session');
       const res = await cardsService.list();
       if (res.success !== true) throw new Error('Card information unavailable');
       setLoaded(true);
@@ -62,6 +64,8 @@ const Cards = () => {
     } catch {
       setLoadError('Could not load your cards. Please try again.');
       return undefined; // keep last state
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -119,7 +123,7 @@ const Cards = () => {
   };
 
   const toggleFreeze = async () => {
-    if (!card || actionInFlight.current) return;
+    if (!card || actionInFlight.current || loadError) return;
     if (card.frozen && card.capabilities.can_unfreeze !== true) {
       notify(
         card.capabilities.permanent_block ? 'Card permanently blocked' : 'Status unavailable',
@@ -169,7 +173,7 @@ const Cards = () => {
   };
 
   const requestStatusChange = () => {
-    if (!card || actionInFlight.current) return;
+    if (!card || actionInFlight.current || loadError) return;
     if (card.capabilities.permanent_block && !card.frozen) {
       Alert.alert(
         'Permanently block this card?',
@@ -205,7 +209,7 @@ const Cards = () => {
   };
 
   const doFund = async (pin: string) => {
-    if (!card || actionInFlight.current) return;
+    if (!card || actionInFlight.current || loadError || !Number.isFinite(Number(fundAmt)) || Number(fundAmt) < 100) return;
     if (card.capabilities.can_fund !== true) {
       setFundPin(false);
       setFundOpen(false);
@@ -305,7 +309,7 @@ const Cards = () => {
       icon: 'plus',
       label: fundPending ? 'Funding…' : 'Fund',
       color: '#16A34A',
-      disabled: busy,
+      disabled: busy || !!loadError,
       go: () => fundPending
         ? notify('Card funding requires review', 'Check History and contact support before starting another funding attempt.', 'info')
         : setFundOpen(true),
@@ -317,7 +321,7 @@ const Cards = () => {
         : (permanentBlock ? (frozen ? 'Blocked' : 'Block') : (frozen ? 'Unfreeze' : 'Freeze')),
       color: '#2D7FF9',
       go: statusPending ? () => { void reloadPendingStatus(); } : requestStatusChange,
-      disabled: busy || (!statusPending && frozen && !canUnfreeze),
+      disabled: busy || (!statusPending && (!!loadError || (frozen && !canUnfreeze))),
     },
     {
       icon: reveal ? 'eyeoff' : 'eye',
@@ -329,28 +333,28 @@ const Cards = () => {
   ];
 
   return (
-    <Screen pad={false} tab>
+    <Screen pad={false} tab refreshing={loading && loaded} onRefresh={() => { if (!busy) void load(); }}>
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Cards</Text>
 
-      {loadError ? <View style={{ margin: 16, gap: 12 }}><Text accessibilityRole="alert" style={{ color: c.ink2 }}>{loadError}</Text><Btn label="Retry loading cards" onPress={() => { void load(); }} /></View> : null}
+      {loadError ? <View style={{ margin: 16, gap: 12 }}><Text accessibilityRole="alert" style={{ color: c.amber }}>{loaded ? 'Showing previously loaded card details. ' : ''}{loadError}</Text><Btn label="Retry loading cards" disabled={loading || busy} onPress={() => { void load(); }} /></View> : null}
       {!loaded && !loadError ? <Text style={{ margin: 24, color: c.ink3 }}>Loading cards…</Text> : !loaded ? null : card ? (
         <>
           {/* card visual */}
           <LinearGradient
-            colors={frozen ? ['#1B463C', '#0B2A24'] : ['#0C5249', '#0FA295', '#5CF5EB']}
+            colors={frozen ? ['#1B463C', '#0B2A24'] : ['#0C5249', '#066E66', '#00847B']}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
-            style={{ margin: 16, borderRadius: 22, padding: 20, height: 200, overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 24, shadowOffset: { width: 0, height: 18 }, elevation: 8 }}
+            style={{ margin: 16, borderRadius: 22, padding: 20, minHeight: 200, overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 24, shadowOffset: { width: 0, height: 18 }, elevation: 8 }}
           >
             <Image source={require('@/assets/images/zitch-mark.png')} style={{ position: 'absolute', right: -20, bottom: -30, width: 160, height: 160, opacity: 0.22 }} resizeMode="contain" />
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <Text style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, fontFamily: font.bold, letterSpacing: 1.3 }}>ZITCH</Text>
               <ZIcon name="wallet" size={22} color="#fff" />
             </View>
-            <Text style={{ color: '#fff', fontSize: 21, letterSpacing: 3, marginTop: 30, fontFamily: font.semibold, fontVariant: ['tabular-nums'] }}>{reveal ? panGroups : card.masked}</Text>
+            <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6} style={{ color: '#fff', fontSize: 21, letterSpacing: 3, marginTop: 30, fontFamily: font.semibold, fontVariant: ['tabular-nums'] }}>{reveal ? panGroups : card.masked}</Text>
             <Text style={{ color: 'rgba(255,255,255,.85)', fontSize: 12.5, marginTop: 8, fontFamily: font.medium, fontVariant: ['tabular-nums'] }}>Balance {money(Number(card.balance))}{reveal ? `   ·   CVV ${reveal.cvv}` : ''}</Text>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 }}>
-              <Text style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, fontFamily: font.semibold }}>{card.holder}</Text>
+            <View style={{ flexDirection: 'row', gap: 12, justifyContent: 'space-between', marginTop: 12 }}>
+              <Text style={{ flex: 1, color: 'rgba(255,255,255,.9)', fontSize: 13, fontFamily: font.semibold }}>{card.holder}</Text>
               <Text style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, fontFamily: font.medium, fontVariant: ['tabular-nums'] }}>{card.expiry}</Text>
             </View>
             {frozen && (
@@ -371,13 +375,14 @@ const Cards = () => {
                 accessibilityLabel={a.label}
                 onPress={a.go}
                 disabled={a.disabled}
+                accessibilityState={{ disabled: !!a.disabled }}
                 style={{ flex: 1, opacity: a.disabled ? 0.55 : 1 }}
               >
                 <View style={{ alignItems: 'center', gap: 8, paddingVertical: 14, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
                   <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: a.color + '22', alignItems: 'center', justifyContent: 'center' }}>
                     <ZIcon name={a.icon} size={20} color={a.color} />
                   </View>
-                  <Text style={{ fontSize: 12, fontFamily: font.semibold, color: c.ink2 }}>{a.label}</Text>
+                  <Text style={{ textAlign: 'center', fontSize: 12, fontFamily: font.semibold, color: c.ink2 }}>{a.label}</Text>
                 </View>
               </Pressable>
             ))}
@@ -388,7 +393,7 @@ const Cards = () => {
               ? (frozen
                 ? 'This card is permanently blocked and cannot be reactivated. Contact support if you need a replacement.'
                 : 'This card cannot be topped up after creation. Blocking it is permanent and cannot be undone.')
-              : 'Use this card for online & USD payments. Fund it from your wallet; tap Details to reveal the number for a purchase.'}
+              : `${canFund ? 'Fund it from your wallet; ' : 'In-app funding is unavailable for this card. ' }tap Details to reveal the number. Merchant and currency acceptance depend on the issuer.`}
           </Text>
         </>
       ) : (
@@ -423,9 +428,9 @@ const Cards = () => {
       {/* Fund: amount sheet -> PIN */}
       <Sheet open={fundOpen} onClose={() => setFundOpen(false)} title="Fund card">
         <QuickAmounts amounts={FUND_AMOUNTS} value={fundAmt} onPick={setFundAmt} />
-        <Field value={fundAmt} onChangeText={(v) => setFundAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
+        <Field label="Amount in Naira (minimum ₦100)" value={fundAmt} onChangeText={(v) => setFundAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
         <View style={{ height: 16 }} />
-        <Btn label={Number(fundAmt) > 0 ? `Fund ${money(Number(fundAmt))}` : 'Fund card'} disabled={Number(fundAmt) < 100} onPress={() => { setFundOpen(false); setPinError(''); setTimeout(() => setFundPin(true), 320); }} />
+        <Btn label={Number.isFinite(Number(fundAmt)) && Number(fundAmt) > 0 ? `Fund ${money(Number(fundAmt))}` : 'Fund card'} disabled={!Number.isFinite(Number(fundAmt)) || Number(fundAmt) < 100} onPress={() => { setFundOpen(false); setPinError(''); setTimeout(() => setFundPin(true), 320); }} />
       </Sheet>
 
       <Sheet open={fundPin} onClose={() => !busy && setFundPin(false)} title="Enter your PIN" protectScreen>

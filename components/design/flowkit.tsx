@@ -3,7 +3,8 @@ import { View, Text, Pressable, Image, ScrollView } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
 import { Sheet, Btn, Money, money, Field } from '@/components/design/ui';
 import { Naira, NText } from '@/components/design/Naira';
-import { formatAmountInput, sanitizeAmount } from '@/lib/format';
+import { formatAmountInput } from '@/lib/format';
+import { normalizeAmountInput } from '@/lib/amounts';
 import { useTheme, font, iconTint } from '@/lib/theme';
 import { router } from 'expo-router';
 
@@ -100,9 +101,9 @@ export const QuickAmounts = ({ amounts, value, onPick }: { amounts: number[]; va
 
 // The one money-amount input used by every transaction flow (transfer, airtime,
 // data, electricity, betting, card funding, savings, Remita, bank link…).
-// Thousands are grouped with commas as the user types and kobo can be entered
-// with a decimal point ("12,500.75"). The caller's state keeps the RAW numeric
-// string ("12500.75"), so `Number(amt)` and the API payload are unchanged.
+// Thousands are grouped when the field is not being edited. Editing uses the
+// raw value so inserted grouping commas cannot block typing or deletion. Kobo
+// and correctly grouped pasted amounts retain their exact monetary value.
 export const AmountField = ({
   label,
   value,
@@ -117,11 +118,14 @@ export const AmountField = ({
   editable?: boolean;
 }) => {
   const { c } = useTheme();
+  const [focused, setFocused] = useState(false);
   return (
     <Field
       label={label}
-      value={formatAmountInput(value)}
-      onChangeText={(v) => onChangeText(sanitizeAmount(v))}
+      value={focused ? value : formatAmountInput(value)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onChangeText={(v) => { const normalized = normalizeAmountInput(v); if (normalized !== null) onChangeText(normalized); }}
       // decimal-pad, not number-pad: number-pad has no "." key on iOS, so kobo
       // would be untypeable there.
       keyboardType="decimal-pad"
@@ -291,15 +295,15 @@ export const BalanceHint = ({ amount, balance, min = 0 }: { amount: number; bala
 const Row2 = ({ k, v, strong, icon }: { k: string; v: string; strong?: boolean; icon?: any }) => {
   const { c } = useTheme();
   return (
-    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.line }}>
-      <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular }}>{k}</Text>
-      <View style={{ flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.line }}>
+      <Text style={{ flexShrink: 1, maxWidth: '35%', fontSize: 14, color: c.ink3, fontFamily: font.regular }}>{k}</Text>
+      <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'flex-start', gap: 8 }}>
         {icon ? (
           <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
             <Image source={icon} resizeMode="contain" style={{ width: 15, height: 15 }} />
           </View>
         ) : null}
-        <NText numberOfLines={1} style={{ fontSize: strong ? 16 : 14, fontFamily: strong ? font.extrabold : font.semibold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{v}</NText>
+        <NText selectable style={{ flexShrink: 1, minWidth: 0, textAlign: 'right', fontSize: strong ? 16 : 14, fontFamily: strong ? font.extrabold : font.semibold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{v}</NText>
       </View>
     </View>
   );
@@ -343,36 +347,24 @@ export const ConfirmSheet = ({
   // anyway, but the user should be blocked here, not after entering their PIN.
   const insufficient = !Number.isFinite(total) || !Number.isFinite(balance) || total <= 0 || total > balance;
   return (
-    <Sheet open={open} onClose={onClose}>
-      {/* An explicit close, and the PIN as a stated choice. The sheet used to be
-          dismissable only by tapping the backdrop — undiscoverable on a panel
-          that covers most of the screen — and the PIN pad arrived unannounced
-          after Pay, so the one control the customer wanted (skip the biometric,
-          just let me type it) had no way to be asked for. */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
-        <Pressable
-          onPress={onClose}
-          accessibilityRole="button"
-          accessibilityLabel="Close"
-          hitSlop={10}
-          style={{ width: 32, height: 32, alignItems: 'flex-start', justifyContent: 'center' }}
-        >
-          <ZIcon name="x" size={20} color={c.ink2} stroke={2.2} />
-        </Pressable>
-        <View style={{ flex: 1 }} />
+    <Sheet open={open} onClose={onClose} title={title}>
+      {/* Sheet owns the single close control. Keep typed PIN approval available
+          before Pay so customers can choose it without a biometric prompt. */}
+      <View style={{ alignItems: 'flex-end', marginBottom: 10 }}>
         <Pressable
           onPress={() => onPay(true)}
           accessibilityRole="button"
           accessibilityLabel="Use payment PIN"
           hitSlop={10}
           disabled={insufficient}
+          accessibilityState={{ disabled: insufficient }}
+          style={{ minHeight: 44, justifyContent: 'center' }}
         >
           <Text style={{ fontSize: 14, fontFamily: font.bold, color: insufficient ? c.ink3 : c.brand }}>Use Payment PIN</Text>
         </Pressable>
       </View>
 
       <View style={{ alignItems: 'center', marginBottom: 18 }}>
-        <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink3 }}>{title}</Text>
         <Money amount={total} size={34} />
       </View>
 

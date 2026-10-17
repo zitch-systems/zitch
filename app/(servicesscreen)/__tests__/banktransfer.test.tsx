@@ -26,7 +26,7 @@ jest.mock('@/components/design/ui', () => {
 
 beforeEach(() => { mockWallet.accountNumber = ''; mockCopy.mockReset(); mockPush.mockReset(); });
 
-it.each(['', '7111234567', '123'])('shows setup instead of funding actions for unavailable number %s', async (number) => {
+it.each(['', '7111234567', '123', 'abc7121234567', '712-123-4567'])('shows setup instead of funding actions for unavailable number %s', async (number) => {
   mockWallet.accountNumber = number;
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<BankTransfer />); });
@@ -51,4 +51,15 @@ it('copies the exact live funding number without promising unrestricted instant 
   await act(async () => { await copy.props.onPress(); });
   expect(mockCopy).toHaveBeenCalledWith('7121234567');
   await act(async () => tree.unmount());
+});
+
+it('handles a clipboard failure without leaving an unhandled action', async () => {
+  mockWallet.accountNumber = '7121234567';
+  mockCopy.mockRejectedValue(new Error('Clipboard unavailable'));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<BankTransfer />); });
+  const copy = tree.root.findAllByProps({ accessibilityLabel: 'Copy Number' }).find((node) => typeof node.type !== 'string')!;
+  await act(async () => { await expect(copy.props.onPress()).resolves.toBe(false); });
+  expect(mockCopy).toHaveBeenCalledTimes(1);
+  act(() => tree.unmount());
 });

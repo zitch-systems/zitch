@@ -9,20 +9,30 @@ import Limits from '@/app/(servicesscreen)/limits';
 import Invite from '@/app/(servicesscreen)/invite';
 import Support from '@/app/(servicesscreen)/support';
 import Settings from '@/app/(servicesscreen)/settings';
-import { setBiometricEnabled, authenticate } from '@/lib/biometrics';
+import Insurance from '@/app/(servicesscreen)/insurance';
+import Junior from '@/app/(servicesscreen)/junior';
+import Movies from '@/app/(servicesscreen)/movies';
+import Ussd from '@/app/(servicesscreen)/ussd';
+import Water from '@/app/(servicesscreen)/water';
+import Bnpl from '@/app/(servicesscreen)/bnpl';
+import SafetyTips from '@/app/(servicesscreen)/safetytips';
+import { router } from 'expo-router';
+import { BANK_WHATSAPP } from '@/components/configFiles/links';
+import { isBiometricAvailable, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 import { clearSession } from '@/lib/secureStore';
 
 const mockApiJson = jest.fn();
 const mockApiPost = jest.fn();
 const mockRegisterNotifications = jest.fn();
 const mockPushAvailability = jest.fn(() => 'available');
+let mockSessionGeneration = 1;
 jest.mock('@/lib/notifications', () => ({
   registerForPushNotifications: (...args: unknown[]) => mockRegisterNotifications(...args),
   getPushAvailability: () => mockPushAvailability(),
 }));
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args), apiPost: (...args: unknown[]) => mockApiPost(...args) }));
 jest.mock('@/lib/biometrics', () => ({ isBiometricAvailable: jest.fn(async () => true), isBiometricEnabled: jest.fn(async () => false), setBiometricEnabled: jest.fn(async () => {}), authenticate: jest.fn(async () => true) }));
-jest.mock('@/lib/secureStore', () => ({ clearSession: jest.fn(async () => {}) }));
+jest.mock('@/lib/secureStore', () => ({ clearSession: jest.fn(async () => { mockSessionGeneration += 1; }), getSessionGeneration: () => mockSessionGeneration }));
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: jest.fn(), replace: jest.fn() },
   useFocusEffect: (callback: () => void) => {
@@ -39,6 +49,7 @@ jest.mock('expo-linear-gradient', () => {
 jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
 jest.mock('@/components/design/ZIcon', () => () => null);
 jest.mock('@/components/design/WhatsAppGlyph', () => ({ WhatsAppGlyph: () => null }));
+jest.mock('@/components/design/widgets', () => ({ Hero: ({ children }: { children: ReactNode }) => children }));
 jest.mock('@/components/AuthGuard', () => ({ children }: { children: ReactNode }) => children);
 jest.mock('@/lib/theme', () => ({
   useTheme: () => ({ c: { brand: '#0FA295', ink1: '#111', ink2: '#222', ink3: '#333', line: '#ddd', surface: '#fff', heroGradient: ['#111', '#222'] }, theme: 'light' }),
@@ -52,7 +63,11 @@ jest.mock('@/components/design/ui', () => {
   return {
     Screen: Container, Card: Container, NText: Text, Header: () => null, HeaderLink: () => null,
     Sheet: ({ children, open }: { children: ReactNode; open: boolean }) => open ? ReactActual.createElement(View, null, children) : null,
-    money: (value: number) => `₦${value}`, Toggle: () => null,
+    money: (value: number) => `₦${value}`,
+    Toggle: ({ on, onChange, disabled, accessibilityLabel }: { on: boolean; onChange: (value: boolean) => void; disabled?: boolean; accessibilityLabel?: string }) => ReactActual.createElement(Pressable, {
+      accessibilityRole: 'switch', accessibilityLabel, accessibilityState: { checked: on, disabled: !!disabled },
+      'aria-checked': on, 'aria-disabled': !!disabled, disabled, onPress: disabled ? undefined : () => onChange(!on),
+    }),
     SelectRow: () => null, PinSheet: () => null, PillTabs: () => null, PickerSheet: () => null,
     Field: (props: object) => ReactActual.createElement(TextInput, props),
     ZItem: ({ title, sub, onPress, right }: { title: string; sub?: string; onPress: () => void; right?: ReactNode }) => ReactActual.createElement(View, null, ReactActual.createElement(Pressable, { accessibilityLabel: title, onPress }, ReactActual.createElement(Text, null, title), ReactActual.createElement(Text, null, sub)), right),
@@ -72,6 +87,8 @@ beforeEach(() => {
   mockApiPost.mockReset();
   jest.clearAllMocks();
   mockPushAvailability.mockReturnValue('available');
+  mockSessionGeneration = 1;
+  (clearSession as jest.Mock).mockReset().mockImplementation(async () => { mockSessionGeneration += 1; });
   AppState.currentState = 'active';
 });
 afterEach(() => { if (tree) act(() => tree!.unmount()); tree = undefined; jest.useRealTimers(); jest.restoreAllMocks(); });
@@ -90,6 +107,39 @@ it('requires a PIN before generating a WhatsApp link and sends the backend trans
   expect(output()).toContain('A'.repeat(32));
   await press('Open WhatsApp');
   expect(open.mock.calls[0][0]).toMatch(/^https:\/\/wa\.me\/\d+\?text=LINK%20A+$/);
+});
+
+it('keeps a private WhatsApp link code bound to the official banking recipient', async () => {
+  const code = 'A'.repeat(64);
+  mockApiJson.mockImplementation(async (path: string) => path.endsWith('/start/')
+    ? { success: true, code, wa_link: `https://wa.me/2348000000000?text=LINK%20${code}`, expires_in: 600 }
+    : { success: true, linked: false });
+  const open = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
+  await render(<LinkWhatsApp />);
+  await press('Generate link code');
+  await act(async () => { await tree!.root.findByType(PinSheet).props.onComplete('246810'); });
+  await press('Open WhatsApp');
+  expect(open).toHaveBeenCalledWith(`https://wa.me/${BANK_WHATSAPP}?text=LINK%20${code}`);
+});
+
+it('does not let an older status response replace a newly generated WhatsApp code', async () => {
+  let resolveOldStatus!: (value: unknown) => void;
+  let generated = 0;
+  mockApiJson.mockImplementation(async (path: string) => path.endsWith('/start/')
+    ? { success: true, code: (++generated === 1 ? 'A' : 'B').repeat(64), expires_in: 600 }
+    : { success: true, linked: false });
+  await render(<LinkWhatsApp />);
+  await press('Generate link code');
+  await act(async () => { await tree!.root.findByType(PinSheet).props.onComplete('246810'); });
+  mockApiJson.mockImplementation((path: string) => path.endsWith('/status/')
+    ? new Promise((resolve) => { resolveOldStatus = resolve; })
+    : Promise.resolve({ success: true, code: 'B'.repeat(64), expires_in: 600 }));
+  await act(async () => { button("I've sent it — check now").props.onPress(); });
+  await press('Generate a new code');
+  await act(async () => { await tree!.root.findByType(PinSheet).props.onComplete('246810'); });
+  await act(async () => { resolveOldStatus({ success: true, linked: true, masked_number: '••••1234' }); });
+  expect(output()).toContain('B'.repeat(64));
+  expect(output()).not.toContain('WhatsApp connected');
 });
 
 it('expires WhatsApp codes using the server TTL and permits regeneration without using the expired code', async () => {
@@ -195,6 +245,35 @@ it('disables limit edits after a failed fetch and provides a retry', async () =>
   expect(tree!.root.findByType(Field).props.editable).toBe(true);
 });
 
+it.each(['', ' ', false])('does not interpret a missing limit %j as a confirmed zero', async (invalid) => {
+  mockApiJson.mockResolvedValue({ ...limitState, transaction_limit: invalid });
+  await render(<Limits />);
+  expect(output()).toContain('Could not load your current limits');
+  expect(button('Save limit').props.disabled).toBe(true);
+});
+
+it.each([
+  ['Insurance', Insurance], ['Junior', Junior], ['Movies', Movies],
+  ['USSD', Ussd], ['Water', Water], ['BNPL', Bnpl],
+] as const)('%s offers support without pretending to submit an unavailable product application', async (_name, Component) => {
+  await render(<Component />);
+  expect(output()).toMatch(/not available (?:in Zitch )?yet/);
+  expect(button('Request a quote')).toBeUndefined();
+  expect(button('Join the waitlist')).toBeUndefined();
+  expect(button('Notify me at launch')).toBeUndefined();
+  await press('Contact support');
+  expect(router.push).toHaveBeenCalledWith('/support');
+  expect(mockApiJson).not.toHaveBeenCalled();
+});
+
+it('lets customers report a mistaken transfer directly from the safety guidance', async () => {
+  await render(<SafetyTips />);
+  expect(output()).toContain('contact support immediately');
+  expect(output()).not.toContain('Payments can’t be reversed once sent');
+  await press('Contact support');
+  expect(router.push).toHaveBeenCalledWith('/support');
+});
+
 it('shares the real website without a fabricated referral code, free-money claim or promised reward', async () => {
   const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
   await render(<Invite />);
@@ -226,6 +305,34 @@ it('does not silently enable biometric sign-in when saving the preference fails'
   expect(toggle().props.disabled).toBe(false);
 });
 
+it.each(['availability', 'authentication'])('ignores an old biometric %s response after an account switch', async (phase) => {
+  let finish!: (value: boolean) => void;
+  const pending = new Promise<boolean>((resolve) => { finish = resolve; });
+  (phase === 'availability' ? isBiometricAvailable as jest.Mock : authenticate as jest.Mock).mockReturnValueOnce(pending);
+  await render(<Settings />);
+  const toggle = () => tree!.root.findAllByType(Pressable).find((p) => p.props.accessibilityRole === 'switch' && p.props.accessibilityLabel === 'Biometric login')!;
+  expect(toggle().props['aria-checked']).toBe(false);
+  await act(async () => { toggle().props.onPress(); });
+  mockSessionGeneration += 1;
+  await act(async () => { finish(true); });
+  expect(setBiometricEnabled).not.toHaveBeenCalled();
+  expect(toggle().props['aria-checked']).toBe(false);
+  expect(notify).not.toHaveBeenCalled();
+  if (phase === 'availability') expect(authenticate).not.toHaveBeenCalled();
+});
+
+it('suppresses a stale notification permission result after an account switch', async () => {
+  let finish!: (result: string) => void;
+  mockRegisterNotifications.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  const alert = jest.spyOn(Alert, 'alert');
+  await render(<Settings />);
+  await act(async () => { tree!.root.findByProps({ accessibilityLabel: 'Transaction alerts' }).props.onPress(); });
+  mockSessionGeneration += 1;
+  await act(async () => { finish('denied'); });
+  expect(alert).not.toHaveBeenCalled();
+  expect(notify).not.toHaveBeenCalled();
+});
+
 it('clears the local session even when logout cannot reach the server, with duplicate taps suppressed', async () => {
   let rejectLogout!: (error: Error) => void;
   mockApiPost.mockImplementation(() => new Promise((_resolve, reject) => { rejectLogout = reject; }));
@@ -235,6 +342,54 @@ it('clears the local session even when logout cannot reach the server, with dupl
   expect(mockApiPost).toHaveBeenCalledTimes(1);
   await act(async () => { rejectLogout(new Error('Network unavailable')); });
   expect(clearSession).toHaveBeenCalledTimes(1);
+  expect(router.replace).toHaveBeenCalledWith('/signin');
+});
+
+it.each(['resolve', 'reject'])('does not clear a replacement session when an older logout request will %s', async (outcome) => {
+  let resolveLogout!: (value: unknown) => void;
+  let rejectLogout!: (error: Error) => void;
+  mockApiPost.mockImplementation(() => new Promise((resolve, reject) => { resolveLogout = resolve; rejectLogout = reject; }));
+  await render(<Settings />);
+  const logout = tree!.root.findAllByType(Pressable).find((p) => p.props.accessibilityRole === 'button' && !p.props.accessibilityLabel)!;
+  await act(async () => { logout.props.onPress(); });
+  mockSessionGeneration += 1;
+  await act(async () => {
+    if (outcome === 'resolve') resolveLogout({ ok: true });
+    else rejectLogout(new Error('The session changed'));
+  });
+  expect(clearSession).not.toHaveBeenCalled();
+  expect(router.replace).not.toHaveBeenCalled();
+  expect(notify).not.toHaveBeenCalled();
+});
+
+it('does not navigate a newly signed-in session away after old logout cleanup completes', async () => {
+  let finishClear!: () => void;
+  mockApiPost.mockResolvedValue({ ok: true });
+  (clearSession as jest.Mock).mockImplementation(() => {
+    mockSessionGeneration += 1;
+    return new Promise<void>((resolve) => { finishClear = resolve; });
+  });
+  await render(<Settings />);
+  const logout = tree!.root.findAllByType(Pressable).find((p) => p.props.accessibilityRole === 'button' && !p.props.accessibilityLabel)!;
+  await act(async () => { logout.props.onPress(); });
+  expect(clearSession).toHaveBeenCalledTimes(1);
+  mockSessionGeneration += 1;
+  await act(async () => { finishClear(); });
+  expect(router.replace).not.toHaveBeenCalled();
+  expect(notify).not.toHaveBeenCalled();
+});
+
+it('does not clear a session after the initiating Settings screen unmounts', async () => {
+  let resolveLogout!: (value: unknown) => void;
+  mockApiPost.mockImplementation(() => new Promise((resolve) => { resolveLogout = resolve; }));
+  await render(<Settings />);
+  const logout = tree!.root.findAllByType(Pressable).find((p) => p.props.accessibilityRole === 'button' && !p.props.accessibilityLabel)!;
+  await act(async () => { logout.props.onPress(); });
+  act(() => { tree!.unmount(); });
+  tree = undefined;
+  await act(async () => { resolveLogout({ ok: true }); });
+  expect(clearSession).not.toHaveBeenCalled();
+  expect(router.replace).not.toHaveBeenCalled();
 });
 
 

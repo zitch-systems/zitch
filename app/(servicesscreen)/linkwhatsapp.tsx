@@ -7,7 +7,6 @@ import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
 import { useTheme, font } from '@/lib/theme';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
-import { safeWhatsAppUrl } from '@/lib/externalLinks';
 import { BANK_WHATSAPP } from '@/components/configFiles/links';
 
 const WA_GREEN = '#25D366';
@@ -15,8 +14,10 @@ const WA_GREEN = '#25D366';
 type Stage = 'loading' | 'error' | 'unlinked' | 'code' | 'linked';
 
 // Open WhatsApp at the Zitch banking number, optionally with prefilled text.
-const openWa = (text?: string, link?: string) => {
-  const url = safeWhatsAppUrl(link) || `https://wa.me/${BANK_WHATSAPP}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
+const openWa = (text?: string) => {
+  // A link code authorises access to the account. Never send it to a different
+  // recipient, even if a response contains a syntactically valid WhatsApp URL.
+  const url = `https://wa.me/${BANK_WHATSAPP}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
   Linking.openURL(url).catch(() => notify('WhatsApp', 'Could not open WhatsApp. Make sure it is installed, then try again.'));
 };
 
@@ -37,7 +38,6 @@ const LinkWhatsApp = () => {
   const [stage, setStage] = useState<Stage>('loading');
   const [masked, setMasked] = useState('');
   const [code, setCode] = useState('');
-  const [waLink, setWaLink] = useState('');
   const [busy, setBusy] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [expiresAt, setExpiresAt] = useState(0);
@@ -48,16 +48,18 @@ const LinkWhatsApp = () => {
   const focusedRef = useRef(false);
   const statusBusy = useRef(false);
   const actionBusy = useRef(false);
+  const statusGeneration = useRef(0);
 
   const refreshStatus = useCallback(async (manual = false): Promise<boolean> => {
-    if (statusBusy.current || !focusedRef.current) return false;
+    if (statusBusy.current || actionBusy.current || !focusedRef.current) return false;
+    const generation = ++statusGeneration.current;
     statusBusy.current = true;
     setChecking(true);
     try {
       const res = await apiJson<{ success?: boolean; linked?: boolean; masked_number?: string; message?: string }>(
         '/api/whatsapp/link/status/', {}, 10000,
       );
-      if (!focusedRef.current) return false;
+      if (!focusedRef.current || generation !== statusGeneration.current) return false;
       if (!res?.success) {
         setError(res?.message || 'Could not check your WhatsApp connection.');
         setStage((s) => s === 'loading' ? 'error' : s);
@@ -67,7 +69,6 @@ const LinkWhatsApp = () => {
       if (res.linked) {
         setMasked(res.masked_number || '');
         setCode('');
-        setWaLink('');
         setStage('linked');
         return true;
       }
@@ -75,14 +76,16 @@ const LinkWhatsApp = () => {
       if (manual) notify('Not linked yet', 'Send the link code in your Zitch WhatsApp chat, then check again.');
       return false;
     } catch {
-      if (focusedRef.current) {
+      if (focusedRef.current && generation === statusGeneration.current) {
         setError('Could not check your WhatsApp connection. Please try again.');
         setStage((s) => s === 'loading' ? 'error' : s);
       }
       return false;
     } finally {
-      statusBusy.current = false;
-      if (focusedRef.current) setChecking(false);
+      if (generation === statusGeneration.current) {
+        statusBusy.current = false;
+        if (focusedRef.current) setChecking(false);
+      }
     }
   }, []);
 
@@ -90,7 +93,12 @@ const LinkWhatsApp = () => {
     focusedRef.current = true;
     setFocused(true);
     void refreshStatus();
-    return () => { focusedRef.current = false; setFocused(false); };
+    return () => {
+      focusedRef.current = false;
+      statusGeneration.current += 1;
+      statusBusy.current = false;
+      setFocused(false);
+    };
   }, [refreshStatus]));
 
   useEffect(() => {
@@ -115,6 +123,9 @@ const LinkWhatsApp = () => {
   const generate = async (pin: string) => {
     if (actionBusy.current) return;
     actionBusy.current = true;
+    statusGeneration.current += 1;
+    statusBusy.current = false;
+    setChecking(false);
     setBusy(true);
     try {
       const res = await apiJson<{ success?: boolean; code?: string; wa_link?: string; expires_in?: number; message?: string }>(
@@ -124,7 +135,6 @@ const LinkWhatsApp = () => {
       setPinOpen(false);
       if (res?.success && res.code) {
         setCode(res.code);
-        setWaLink(res.wa_link || '');
         const seconds = Number(res.expires_in);
         setExpiresAt(Date.now() + (Number.isFinite(seconds) && seconds > 0 ? seconds : 600) * 1000);
         setExpired(false);
@@ -164,12 +174,15 @@ const LinkWhatsApp = () => {
   const unlink = async () => {
     if (actionBusy.current) return;
     actionBusy.current = true;
+    statusGeneration.current += 1;
+    statusBusy.current = false;
+    setChecking(false);
     setBusy(true);
     try {
       const res = await apiJson<{ success?: boolean; message?: string }>('/api/whatsapp/link/unlink/', {}, 15000);
       if (!focusedRef.current) return;
       if (res?.success) {
-        setCode(''); setWaLink(''); setMasked(''); setStage('unlinked');
+        setCode(''); setMasked(''); setStage('unlinked');
         notify('Unlinked', 'Your WhatsApp has been disconnected.');
       } else notify('Could not unlink', res?.message || 'Please try again.');
     } catch {
@@ -219,7 +232,7 @@ const LinkWhatsApp = () => {
           <Card style={{ alignItems: 'center' }}>
             <Text style={{ fontFamily: font.medium, fontSize: 12, color: c.ink3, textTransform: 'uppercase', letterSpacing: 1 }}>Your link code</Text>
             <Text style={{ fontFamily: font.bold, fontSize: 20, color: c.ink1, letterSpacing: 1, marginTop: 8, textAlign: 'center' }}>{code}</Text>
-            <Pressable disabled={expired} accessibilityRole="button" accessibilityLabel="Copy link code" onPress={copyCode} style={{ marginTop: 10, paddingVertical: 7, paddingHorizontal: 15, borderRadius: 999, backgroundColor: c.surface3 }}>
+            <Pressable disabled={expired} accessibilityRole="button" accessibilityLabel="Copy link code" accessibilityState={{ disabled: expired }} onPress={copyCode} style={{ marginTop: 10, paddingVertical: 7, paddingHorizontal: 15, borderRadius: 999, backgroundColor: c.surface3 }}>
               <Text style={{ fontFamily: font.semibold, fontSize: 12.5, color: c.brandDeep }}>Copy “LINK {code}”</Text>
             </Pressable>
             <Text style={{ fontFamily: font.regular, fontSize: 12.5, color: c.ink3, textAlign: 'center', marginTop: 14, lineHeight: 19 }}>
@@ -229,7 +242,7 @@ const LinkWhatsApp = () => {
           <View style={{ height: 16 }} />
           <Btn label="Open WhatsApp" variant="primary" disabled={expired || busy} onPress={() => {
             if (Date.now() >= expiresAt) { setExpired(true); return; }
-            openWa(`LINK ${code}`, waLink);
+            openWa(`LINK ${code}`);
           }} />
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 34, marginTop: 4 }}>
             {!expired && <ActivityIndicator size="small" color={c.ink3} />}

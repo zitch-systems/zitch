@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { publicPost } from '@/lib/api';
+import { getSessionGeneration } from '@/lib/secureStore';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { bettingService } from '@/lib/services/bills';
@@ -12,6 +13,7 @@ import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { normalizeAmountInput } from '@/lib/amounts';
 
 const AMOUNTS = [200, 500, 1000, 2000, 5000, 10000];
 type Platform = { code: string; name: string; color: string };
@@ -19,6 +21,8 @@ type Step = null | 'confirm' | 'pin';
 
 const Betting = () => {
   const { c } = useTheme();
+  const sessionGeneration = useRef(getSessionGeneration());
+  const isCurrentSession = () => sessionGeneration.current === getSessionGeneration();
   const { balance, reload, billPaymentsAvailable } = useWallet();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [quoteRevision, setQuoteRevision] = useState(0);
@@ -29,6 +33,7 @@ const Betting = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const purchaseInFlight = useRef(false);
+  const reviewedPayment = useRef<string | null>(null);
   const [done, setDone] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingMessage, setPendingMessage] = useState('');
@@ -51,18 +56,26 @@ const Betting = () => {
   const valid = billPaymentsAvailable === true && !!platform && userId.length >= 4 && Number.isFinite(amount) && amount >= 100 && amount <= balance;
 
   const fund = async (pin: string) => {
-    if (!valid || done || purchaseInFlight.current) return;
-    purchaseInFlight.current = true;
+    if (!isCurrentSession() || !valid || done || purchaseInFlight.current) return;
     const fingerprint = [selected, userId.trim(), String(amount)].join('|');
+    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([fingerprint, amount])) {
+      setStep('confirm');
+      notify('Review payment again', 'The payment details changed. Check them before entering your PIN.');
+      return;
+    }
+    purchaseInFlight.current = true;
     let deliveryStarted = false;
     setBusy(true);
     try {
       const requestKey = await acquireSpendAttempt('betting', fingerprint);
+      if (!isCurrentSession()) return;
       deliveryStarted = true;
       const res = await bettingService.fund(selected, userId, amt, pin, requestKey);
+      if (!isCurrentSession()) return;
       const outcome = classifySpendResponse(res);
       if (outcome === 'success') {
         await clearSpendAttempt('betting', fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         setRecovered(isRecoveredSpendResponse(res));
         setTxnRef(String(res.reference || ''));
         setStep(null);
@@ -81,10 +94,12 @@ const Betting = () => {
         setPinError(res.message || 'Incorrect PIN');
       } else {
         await clearSpendAttempt('betting', fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         notify('Error', res.message || 'Transaction failed');
         setStep(null);
       }
     } catch {
+      if (!isCurrentSession()) return;
       if (deliveryStarted) {
         setPending(true);
         setPendingMessage('We could not confirm this funding attempt. Check History before trying again.');
@@ -96,7 +111,7 @@ const Betting = () => {
       }
     } finally {
       purchaseInFlight.current = false;
-      setBusy(false);
+      if (isCurrentSession()) setBusy(false);
     }
   };
 
@@ -113,6 +128,7 @@ const Betting = () => {
           rows={[['Platform', platform.name], ['User ID', userId], ['Fee', '₦0'], ['Total', money(amount), true]]}
           reference={txnRef}
           status={pending ? 'Processing' : 'Successful'}
+          footer={pending ? <Btn label="Check transaction history" variant="outline" onPress={() => router.push('/history')} /> : undefined}
           onDone={() => router.replace('/home')}
         />
       </Screen>
@@ -141,8 +157,8 @@ const Betting = () => {
       <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
       <Field
         value={amt}
-        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
-        keyboardType="number-pad"
+        onChangeText={(v) => { const normalized = normalizeAmountInput(v); if (normalized !== null) setAmt(normalized); }}
+        keyboardType="decimal-pad"
         placeholder="Enter amount"
         prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
@@ -159,10 +175,10 @@ const Betting = () => {
         total={amount}
         balance={balance}
         rows={platform ? [['Platform', platform.name], ['User ID', userId]] : []}
-        onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        onPay={() => { reviewedPayment.current = JSON.stringify([[selected, userId.trim(), String(amount)].join('|'), amount]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+      <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>

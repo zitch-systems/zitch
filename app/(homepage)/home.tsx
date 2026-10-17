@@ -4,7 +4,7 @@ import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
-import { Screen, Card, Sheet, TxnRow, money, NText } from '@/components/design/ui';
+import { Screen, Card, Btn, Sheet, TxnRow, money, NText } from '@/components/design/ui';
 import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
 import { useTheme, font } from '@/lib/theme';
@@ -81,7 +81,7 @@ const Home = () => {
         <Pressable accessibilityRole="button" accessibilityLabel="Your profile" onPress={() => router.push('/me')}>
           <Avatar size={38} ring={c.brand} surface={c.surface} uri={avatar} />
         </Pressable>
-        <Text style={{ flex: 1, fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>
+        <Text numberOfLines={2} style={{ flex: 1, minWidth: 0, fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>
           Hi, {firstName || 'there'}
         </Text>
         <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
@@ -95,20 +95,20 @@ const Home = () => {
 
       {/* balance hero */}
       <Hero style={{ margin: 16 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: 10, columnGap: 16, alignItems: 'center', justifyContent: 'space-between' }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
             <View style={{ width: 17, height: 17, borderRadius: 9, backgroundColor: 'rgba(255,255,255,.22)', alignItems: 'center', justifyContent: 'center' }}>
               <ZIcon name="check" size={11} color="#fff" stroke={2.6} />
             </View>
             <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 13, fontFamily: font.medium }}>Available balance</Text>
           </View>
-          <Pressable onPress={() => router.push('/history')} style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
-            <Text style={{ color: '#fff', fontSize: 12.5, fontFamily: font.semibold }}>Transaction History</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel="Transaction history" hitSlop={10} onPress={() => router.push('/history')} style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+            <Text style={{ color: '#fff', fontSize: 12.5, fontFamily: font.semibold }}>History</Text>
             <ZIcon name="right" size={15} color="#fff" />
           </Pressable>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 9 }}>
-          <NText style={{ color: '#fff', fontSize: 32, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
+          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65} style={{ flexShrink: 1, color: '#fff', fontSize: 32, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
             {!balanceLoaded ? (hydrated ? 'Unavailable' : 'Loading…') : showBal ? money(balance) : '₦ ••••••'}
           </NText>
           <Pressable accessibilityRole="button" accessibilityLabel={showBal ? 'Hide balance' : 'Show balance'} hitSlop={10} onPress={() => setShowBal(!showBal)}>
@@ -121,8 +121,8 @@ const Home = () => {
             <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Funds under review: {showBal ? money(totalBalance - balance) : '₦ ••••••'}</NText>
           </View>
         ) : null}
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, gap: 10 }}>
-          {/* The dedicated (Monnify reserved) account number, shown only once the
+        <View style={{ alignItems: 'stretch', marginTop: 12, gap: 12 }}>
+          {/* The dedicated funding account number, shown only once the
               wallet is provisioned with one — never a hardcoded placeholder (it
               could be mistaken for a real account and shared). Tap to copy. */}
           {accountNumber ? (
@@ -135,6 +135,8 @@ const Home = () => {
                 </View>
               )}
               <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Copy account number ${accountNumber}`}
                 onPress={copyAccount}
                 style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 7, paddingHorizontal: 12, borderRadius: 16, backgroundColor: 'rgba(255,255,255,.16)' }}
               >
@@ -152,7 +154,7 @@ const Home = () => {
           ) : (
             <View style={{ flex: 1 }} />
           )}
-          <Pressable onPress={() => router.push('/addmoney')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, backgroundColor: '#fff' }}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Add money" onPress={() => router.push('/addmoney')} style={{ alignSelf: 'flex-end', flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, backgroundColor: '#fff' }}>
             <ZIcon name="plus" size={15} color={c.brandDeep} stroke={2.4} />
             <Text style={{ color: c.brandDeep, fontSize: 13, fontFamily: font.bold }}>Add Money</Text>
           </Pressable>
@@ -160,6 +162,7 @@ const Home = () => {
       </Hero>
 
       {balanceError ? <Text accessibilityRole="alert" style={{ color: c.amber, marginHorizontal: 16, marginBottom: 12, fontFamily: font.medium }}>{balanceLoaded ? 'Showing your last known balance. ' : ''}{balanceError} Pull down to retry.</Text> : null}
+      {balanceError || historyError ? <View style={{ marginHorizontal: 16, marginBottom: 12 }}><Btn label="Refresh account" disabled={refreshing} onPress={() => { void onRefresh(); }} /></View> : null}
 
       {balanceLoaded && capabilityMessage ? (
         <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 20, marginHorizontal: 16, marginBottom: 16 }}>
@@ -172,9 +175,9 @@ const Home = () => {
         {[
           { icon: 'send', label: 'Transfer', go: () => router.push('/sendmoney') },
           { icon: 'airtime', label: 'Airtime', go: () => router.push('/buyairtime') },
-          { icon: 'withdraw', label: 'Withdraw', go: () => router.push('/sendmoney') },
+          { icon: 'data', label: 'Data', go: () => router.push('/buydata') },
         ].map((q) => (
-          <ServiceTile key={q.label} icon={q.icon} label={q.label} onPress={q.go} round />
+          <View key={q.label} style={{ flex: 1, minWidth: 0 }}><ServiceTile icon={q.icon} label={q.label} onPress={q.go} round /></View>
         ))}
       </Card>
 
@@ -192,6 +195,8 @@ const Home = () => {
       {/* linked banks summary — live count of Mono-connected accounts; tap to the
           wallet (where they're managed) or the link flow when none are connected */}
       <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Linked bank accounts"
         onPress={() => router.push(linkedCount && linkedCount > 0 ? '/wallet' : '/linkbank')}
         style={{ marginHorizontal: 16, marginTop: 14 }}
       >
@@ -214,6 +219,7 @@ const Home = () => {
       {/* recent */}
       <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
         <SectionLabel action="See all" onAction={() => router.push('/history')}>Recent activity</SectionLabel>
+        {historyError && txns.length > 0 ? <Text accessibilityRole="alert" style={{ color: c.amber, marginBottom: 10 }}>Showing previously loaded activity. {historyError} Pull down to retry.</Text> : null}
         {txns.length === 0 ? (
           <Text accessibilityRole={historyError ? 'alert' : undefined} style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>{!hydrated ? 'Loading transactions…' : historyError || 'No transactions yet'}</Text>
         ) : (

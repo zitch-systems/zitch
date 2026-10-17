@@ -2,26 +2,21 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, Linking, Alert } from 'react-native';
 import { router } from 'expo-router';
 import Constants from 'expo-constants';
-import { Screen, Header, Card, ZItem } from '@/components/design/ui';
+import { Screen, Header, Card, ZItem, Toggle as SharedToggle } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { useTheme, font } from '@/lib/theme';
-import { clearSession } from '@/lib/secureStore';
+import { clearSession, getSessionGeneration } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 import { TERMS_URL, PRIVACY_URL } from '@/components/configFiles/links';
 import { getPushAvailability, registerForPushNotifications } from '@/lib/notifications';
 
-const Toggle = ({ on, onChange, disabled = false, label }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean; label: string }) => {
-  const { c } = useTheme();
-  return (
-    <Pressable accessibilityRole="switch" accessibilityLabel={label} accessibilityState={{ checked: on, disabled }} disabled={disabled} onPress={() => onChange(!on)} style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center' }}>
-      <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', transform: [{ translateX: on ? 18 : 0 }] }} />
-    </Pressable>
-  );
-};
+const Toggle = ({ label, ...props }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean; label: string }) => (
+  <SharedToggle {...props} accessibilityLabel={label} />
+);
 
 const Settings = () => {
   const { c, theme, setTheme } = useTheme();
@@ -30,6 +25,7 @@ const Settings = () => {
   const [loggingOut, setLoggingOut] = useState(false);
   const bioLock = useRef(false);
   const logoutLock = useRef(false);
+  const mounted = useRef(true);
   const notificationLock = useRef(false);
   const [notificationBusy, setNotificationBusy] = useState(false);
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
@@ -37,38 +33,49 @@ const Settings = () => {
 
   useEffect(() => {
     let active = true;
-    isBiometricEnabled().then((enabled) => { if (active) setBiometrics(enabled); })
-      .catch(() => { if (active) notify('Could not load preferences', 'Please reopen Settings to try again.'); })
-      .finally(() => { if (active) setBioBusy(false); });
-    return () => { active = false; };
+    mounted.current = true;
+    const generation = getSessionGeneration();
+    const current = () => active && generation === getSessionGeneration();
+    isBiometricEnabled().then((enabled) => { if (current()) setBiometrics(enabled); })
+      .catch(() => { if (current()) notify('Could not load preferences', 'Please reopen Settings to try again.'); })
+      .finally(() => { if (current()) setBioBusy(false); });
+    return () => { active = false; mounted.current = false; };
   }, []);
 
   const toggleBio = async (v: boolean) => {
-    if (bioLock.current || bioBusy) return;
+    if (bioLock.current || bioBusy || !mounted.current) return;
+    const generation = getSessionGeneration();
+    const current = () => mounted.current && generation === getSessionGeneration();
     bioLock.current = true;
     setBioBusy(true);
     try {
       if (v) {
-        if (!(await isBiometricAvailable())) {
+        const available = await isBiometricAvailable();
+        if (!current()) return;
+        if (!available) {
           notify('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
           return;
         }
-        if (!(await authenticate('Enable biometric sign-in'))) return;
+        const authenticated = await authenticate('Enable biometric sign-in');
+        if (!current() || !authenticated) return;
       }
+      if (!current()) return;
       await setBiometricEnabled(v);
-      setBiometrics(v);
+      if (current()) setBiometrics(v);
     } catch {
-      notify('Could not save preference', 'Please try again.');
+      if (current()) notify('Could not save preference', 'Please try again.');
     } finally {
       bioLock.current = false;
-      setBioBusy(false);
+      if (current()) setBioBusy(false);
     }
   };
 
   const openUrl = (url: string) => Linking.openURL(url).catch(() => notify('Error', 'Could not open this link.'));
 
   const enableNotifications = async () => {
-    if (notificationLock.current) return;
+    if (notificationLock.current || !mounted.current) return;
+    const generation = getSessionGeneration();
+    const current = () => mounted.current && generation === getSessionGeneration();
     if (pushAvailability !== 'available') {
       notify('Alerts unavailable', pushAvailability === 'not-configured'
         ? 'Push alerts are not available in this build. Your activity is still available in Notifications.'
@@ -79,12 +86,18 @@ const Settings = () => {
     setNotificationBusy(true);
     try {
       const result = await registerForPushNotifications(true);
+      if (!current()) return;
       if (result === 'registered') {
         notify('Device registered', 'This device is registered for transaction alerts. You can also check your activity in Notifications.');
       } else if (result === 'denied') {
         Alert.alert('Notifications are off', 'Enable Zitch notifications in your phone settings, then return here and tap Transaction alerts again.', [
           { text: 'Not now', style: 'cancel' },
-          { text: 'Open settings', onPress: () => { void Linking.openSettings().catch(() => notify('Could not open settings', 'Open your phone settings to enable Zitch notifications.')); } },
+          { text: 'Open settings', onPress: () => {
+            if (!current()) return;
+            void Linking.openSettings().catch(() => {
+              if (current()) notify('Could not open settings', 'Open your phone settings to enable Zitch notifications.');
+            });
+          } },
         ]);
       } else {
         notify('Alerts unavailable', result === 'not-configured'
@@ -94,26 +107,33 @@ const Settings = () => {
           : 'We could not enable alerts on this device. Please try again later. Your activity is available in Notifications.');
       }
     } catch {
-      notify('Alerts unavailable', 'We could not enable alerts on this device. Please try again later.');
+      if (current()) notify('Alerts unavailable', 'We could not enable alerts on this device. Please try again later.');
     } finally {
       notificationLock.current = false;
-      setNotificationBusy(false);
+      if (current()) setNotificationBusy(false);
     }
   };
 
   const handleLogout = async () => {
-    if (logoutLock.current) return;
+    if (logoutLock.current || !mounted.current) return;
+    let generation = getSessionGeneration();
+    const current = () => mounted.current && generation === getSessionGeneration();
     logoutLock.current = true;
     setLoggingOut(true);
     try {
-      try { await apiPost(EP.auth.logout, {}, 5000); } catch { /* still clear the device session */ }
-      await clearSession();
-      router.replace('/signin');
+      try { await apiPost(EP.auth.logout, {}, 5000); } catch { /* clear only the session that requested logout */ }
+      if (!current()) return;
+      const clearing = clearSession();
+      // clearSession advances the generation synchronously. A later login
+      // during secure-store cleanup must not be redirected out by this logout.
+      generation = getSessionGeneration();
+      await clearing;
+      if (current()) router.replace('/signin');
     } catch {
-      notify('Could not finish signing out', 'Please try again to clear this device session.');
+      if (current()) notify('Could not finish signing out', 'Please try again to clear this device session.');
     } finally {
       logoutLock.current = false;
-      setLoggingOut(false);
+      if (current()) setLoggingOut(false);
     }
   };
 
@@ -139,7 +159,7 @@ const Settings = () => {
       <View style={{ paddingHorizontal: 16 }}>
         {/* Bank on WhatsApp — the channel's hero entry */}
         <Card pad={0} style={{ paddingHorizontal: 16, marginBottom: 18 }}>
-          <Pressable onPress={() => router.push('/linkwhatsapp')} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 15, gap: 14 }}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Link WhatsApp" onPress={() => router.push('/linkwhatsapp')} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 15, gap: 14 }}>
             <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: '#25D366', alignItems: 'center', justifyContent: 'center' }}>
               <WhatsAppGlyph size={22} color="#fff" />
             </View>

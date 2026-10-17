@@ -6,110 +6,53 @@ import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import ZIcon from '@/components/design/ZIcon';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { useTheme, font } from '@/lib/theme';
+import { BANKING_TABS, selectedBankingTab } from '@/components/navigation/bankingTabs';
 
-// Tab order + presentation. Only these routes appear in the bar; any other route
-// in the group (convert, loan, history, notifications, …) is reachable but hidden
-// here. Convert lives in Home's quick actions. The four tabs split 2-and-2 around
-// the raised WhatsApp button so it sits in the dead centre.
-const LEFT: { name: string; icon: string; label: string }[] = [
-  { name: 'home', icon: 'home', label: 'Home' },
-  { name: 'wallet', icon: 'wallet', label: 'Wallet' },
-];
-const RIGHT: { name: string; icon: string; label: string }[] = [
-  { name: 'cards', icon: 'card', label: 'Cards' },
-  { name: 'me', icon: 'user', label: 'Me' },
-];
+type TabItem = typeof BANKING_TABS[number];
 
-const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
+const BankingTab = ({ item, state, navigation }: BottomTabBarProps & { item: TabItem }) => {
+  const { c } = useTheme();
+  const current = state.routes[state.index]?.name;
+  const selected = selectedBankingTab(current) === item.name;
+  const target = state.routes.find((route) => route.name === item.name)?.key;
+  return (
+    <Pressable
+      accessibilityRole="tab"
+      accessibilityLabel={item.label}
+      accessibilityState={{ selected }}
+      aria-selected={selected}
+      onPress={() => {
+        const event = navigation.emit({ type: 'tabPress', target, canPreventDefault: true });
+        // A detail page highlights its parent; tapping it returns to the main tab.
+        if (current !== item.name && !event.defaultPrevented) navigation.navigate(item.name as never);
+      }}
+      onLongPress={() => navigation.emit({ type: 'tabLongPress', target })}
+      style={({ pressed }) => ({ flex: 1, minWidth: 0, minHeight: 64, alignItems: 'center', gap: 4, paddingHorizontal: 2, opacity: pressed ? 0.75 : 1 })}
+    >
+      <View style={{ minWidth: 46, height: 38, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: selected ? c.surface3 : 'transparent' }}>
+        <ZIcon name={item.icon} size={24} color={selected ? c.brand : c.ink3} stroke={selected ? 2.2 : 1.8} />
+      </View>
+      <Text style={{ fontSize: 11.5, fontFamily: selected ? font.bold : font.medium, color: selected ? c.brand : c.ink3, textAlign: 'center' }}>{item.label}</Text>
+    </Pressable>
+  );
+};
+
+const BottomNav = (props: BottomTabBarProps) => {
   const { c } = useTheme();
   const insets = useSafeAreaInsets();
-  const activeName = state.routes[state.index]?.name;
-
-  const Tab = ({ it }: { it: { name: string; icon: string; label: string } }) => {
-    const on = activeName === it.name;
-    return (
-      <Pressable
-        key={it.name}
-        accessibilityRole="tab"
-        accessibilityLabel={it.label}
-        accessibilityState={{ selected: on }}
-        onPress={() => {
-          const event = navigation.emit({ type: 'tabPress', target: state.routes.find((route) => route.name === it.name)?.key ?? it.name, canPreventDefault: true });
-          if (!on && !event.defaultPrevented) navigation.navigate(it.name as never);
-        }}
-        // Tactile 3D press: the tab scales down + dims on touch.
-        style={({ pressed }) => ({
-          flex: 1,
-          alignItems: 'center',
-          gap: 5,
-          paddingVertical: 2,
-          transform: [{ scale: pressed ? 0.88 : 1 }],
-          opacity: pressed ? 0.85 : 1,
-        })}
-      >
-        {/* Active tab "lights up" with a highlighted pill behind the icon. */}
-        <View
-          style={{
-            paddingHorizontal: 15,
-            paddingVertical: 6,
-            borderRadius: 15,
-            backgroundColor: on ? 'rgba(15,162,149,.14)' : 'transparent',
-          }}
-        >
-          <ZIcon name={it.icon} size={26} color={on ? c.brand : c.ink3} stroke={on ? 2.2 : 1.8} />
-        </View>
-        <Text style={{ fontSize: 11.5, fontFamily: on ? font.semibold : font.medium, color: on ? c.brand : c.ink3 }}>
-          {it.label}
-        </Text>
-      </Pressable>
-    );
-  };
-
   return (
-    <View style={{ backgroundColor: c.surface, borderTopWidth: 1, borderTopColor: c.line }}>
-      <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-around', paddingTop: 10, paddingBottom: 6, paddingHorizontal: 8 }}>
-        {LEFT.map((it) => <Tab key={it.name} it={it} />)}
-
-        {/* Raised WhatsApp button — opens the in-app Bank-on-WhatsApp screen, dead centre. */}
-        <Pressable
-          onPress={() => router.push('/linkwhatsapp')}
-          accessibilityRole="button"
-          accessibilityLabel="Bank on WhatsApp"
-          style={({ pressed }) => ({
-            flex: 1,
-            alignItems: 'center',
-            gap: 5,
-            transform: [{ scale: pressed ? 0.9 : 1 }],
-          })}
-        >
-          <View
-            style={{
-              width: 58,
-              height: 58,
-              borderRadius: 29,
-              marginTop: -28,
-              backgroundColor: '#25D366',
-              alignItems: 'center',
-              justifyContent: 'center',
-              // 4px surface-coloured ring "notches" the button through the bar.
-              borderWidth: 4,
-              borderColor: c.surface,
-              // Lift it off the bar.
-              shadowColor: '#075E54',
-              shadowOpacity: 0.4,
-              shadowRadius: 10,
-              shadowOffset: { width: 0, height: 6 },
-              elevation: 8,
-            }}
-          >
-            <WhatsAppGlyph size={30} color="#fff" />
+    <View style={{ backgroundColor: c.surface, borderTopWidth: 1, borderTopColor: c.line, paddingBottom: insets.bottom }}>
+      <View style={{ flexDirection: 'row', alignItems: 'stretch', paddingTop: 8, paddingBottom: 4, paddingHorizontal: 8 }}>
+        {BANKING_TABS.slice(0, 2).map((item) => <BankingTab key={item.name} {...props} item={item} />)}
+        <Pressable onPress={() => router.push('/linkwhatsapp')} accessibilityRole="button" accessibilityLabel="Bank on WhatsApp"
+          style={({ pressed }) => ({ flex: 1, minWidth: 0, minHeight: 64, alignItems: 'center', gap: 4, paddingHorizontal: 2, opacity: pressed ? 0.75 : 1 })}>
+          <View style={{ width: 38, height: 38, borderRadius: 14, backgroundColor: '#128C7E', alignItems: 'center', justifyContent: 'center' }}>
+            <WhatsAppGlyph size={25} color="#fff" />
           </View>
-          <Text style={{ fontSize: 10.5, marginTop: -2, fontFamily: font.semibold, color: c.brand }}>WhatsApp</Text>
+          <Text style={{ fontSize: 11.5, fontFamily: font.semibold, color: c.ink2, textAlign: 'center' }}>WhatsApp</Text>
         </Pressable>
-
-        {RIGHT.map((it) => <Tab key={it.name} it={it} />)}
+        {BANKING_TABS.slice(2).map((item) => <BankingTab key={item.name} {...props} item={item} />)}
       </View>
-      <View style={{ height: insets.bottom }} />
     </View>
   );
 };

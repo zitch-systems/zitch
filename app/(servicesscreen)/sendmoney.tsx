@@ -16,7 +16,7 @@ import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { paymentDestination } from '@/lib/phone';
-import { MIN_TRANSFER } from '@/lib/amounts';
+import { normalizeAmountInput, MIN_TRANSFER } from '@/lib/amounts';
 
 const AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 // Mirrors backend User.LARGE_TXN_THRESHOLD — drives the device biometric step-up.
@@ -29,12 +29,16 @@ type PendingAttempt = { scope: string; fingerprint: string; key: string };
 
 const SendMoney = () => {
   const { c } = useTheme();
+  const sessionGeneration = useRef(getSessionGeneration());
+  const isCurrentSession = () => sessionGeneration.current === getSessionGeneration();
   const { balance, reload, transfersAvailable } = useWallet();
   const params = useLocalSearchParams<{ identifier?: string; mode?: string }>();
 
   const initialDestination = paymentDestination(params.identifier);
   const [mode, setMode] = useState<'bank' | 'zitch'>(initialDestination?.mode || 'bank');
   const [banks, setBanks] = useState<Bank[]>([]);
+  const [banksLoading, setBanksLoading] = useState(true);
+  const [bankRevision, setBankRevision] = useState(0);
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
   const [query, setQuery] = useState('');
   const [picked, setPicked] = useState<Beneficiary | null>(null);
@@ -64,15 +68,30 @@ const SendMoney = () => {
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
   const sendInFlight = useRef(false);
+  const reviewedPayment = useRef<string | null>(null);
 
   useEffect(() => {
-    getToken().then((t) => {
-      if (!t) return;
-      publicPost('/api/transfers/banks/', {}, 15000)
-        .then((r) => r.json()).then((res) => res.banks && setBanks(res.banks)).catch(() => {});
-      apiPost(EP.transfers.beneficiaries)
-        .then((r) => r.json()).then((res) => res.beneficiaries && setBeneficiaries(res.beneficiaries)).catch(() => {});
-    });
+    let current = true;
+    setBanksLoading(true);
+    getToken().then(async (token) => {
+      if (!token || !current || !isCurrentSession()) return;
+      const response = await publicPost('/api/transfers/banks/', {}, 15000);
+      if (response.ok === false) throw new Error('Banks unavailable');
+      const result = await response.json();
+      if (current && isCurrentSession() && Array.isArray(result.banks)) setBanks(result.banks);
+    }).catch(() => {}).finally(() => { if (current && isCurrentSession()) setBanksLoading(false); });
+    return () => { current = false; };
+  }, [bankRevision]);
+
+  useEffect(() => {
+    let current = true;
+    getToken().then(async (token) => {
+      if (!token || !current || !isCurrentSession()) return;
+      const response = await apiPost(EP.transfers.beneficiaries);
+      const result = await response.json();
+      if (current && isCurrentSession() && Array.isArray(result.beneficiaries)) setBeneficiaries(result.beneficiaries);
+    }).catch(() => {});
+    return () => { current = false; };
   }, []);
 
   const amount = Number(amt || 0);
@@ -98,7 +117,7 @@ const SendMoney = () => {
   // Auto-detect on a 10-digit account. Keyed on acct only, so the bank it sets
   // (or a manual pick) doesn't re-trigger it; editing the account re-detects.
   useEffect(() => {
-    if (mode !== 'bank') return;
+    if (!isCurrentSession() || mode !== 'bank') return;
     const requestedAccount = acct;
     const generation = ++bankResolveGeneration.current;
     setBank(null); setBankName(''); setBankNameFor(''); setBankErr(''); setMatches([]);
@@ -106,18 +125,19 @@ const SendMoney = () => {
     let cancelled = false;
     setResolvingBank(true);
     const t = setTimeout(async () => {
+      if (!isCurrentSession() || cancelled) return;
       try {
         const res = await transfersService.resolve(requestedAccount); // no bank -> auto-detect
-        if (cancelled || generation !== bankResolveGeneration.current) return;
+        if (!isCurrentSession() || cancelled || generation !== bankResolveGeneration.current) return;
         if (res.success && res.mock !== true && res.matches?.length === 1) applyMatch(res.matches[0], requestedAccount);
         else if (res.success && res.mock !== true && res.matches?.length) setMatches(res.matches);
         else setBankErr(res.message || "Couldn't detect the bank — tap “Bank” to pick it.");
       } catch {
-        if (!cancelled && generation === bankResolveGeneration.current) {
+        if (isCurrentSession() && !cancelled && generation === bankResolveGeneration.current) {
           setBankErr("Couldn't verify this account. Please try again.");
         }
       } finally {
-        if (!cancelled && generation === bankResolveGeneration.current) setResolvingBank(false);
+        if (isCurrentSession() && !cancelled && generation === bankResolveGeneration.current) setResolvingBank(false);
       }
     }, 500);
     return () => { cancelled = true; clearTimeout(t); };
@@ -125,6 +145,7 @@ const SendMoney = () => {
 
   // Manual override: resolve at the specific bank the user picks from the sheet.
   const chooseBank = async (b: Bank) => {
+    if (!isCurrentSession()) return;
     const requestedAccount = acct;
     const generation = ++bankResolveGeneration.current;
     setBank(b); setBankSheet(false); setMatches([]); setBankName(''); setBankNameFor(''); setBankErr('');
@@ -132,19 +153,19 @@ const SendMoney = () => {
     setResolvingBank(true);
     try {
       const res = await transfersService.resolve(requestedAccount, b.code);
-      if (generation !== bankResolveGeneration.current) return;
+      if (!isCurrentSession() || generation !== bankResolveGeneration.current) return;
       if (res.success && res.mock !== true && res.name) {
         setBankName(res.name);
         setBankNameFor(`${requestedAccount}|${b.code}`);
       }
       else setBankErr(res.message || "Couldn't verify this account at that bank.");
     } catch {
-      if (generation === bankResolveGeneration.current) {
+      if (isCurrentSession() && generation === bankResolveGeneration.current) {
         setBankErr("Couldn't verify this account. Please try again.");
       }
     }
     finally {
-      if (generation === bankResolveGeneration.current) setResolvingBank(false);
+      if (isCurrentSession() && generation === bankResolveGeneration.current) setResolvingBank(false);
     }
   };
 
@@ -164,6 +185,7 @@ const SendMoney = () => {
   const valid = transfersAvailable === true && (pickedReady || acctReady) && amount >= MIN_TRANSFER && amount <= balance;
 
   const resolveZitch = async () => {
+    if (!isCurrentSession()) return;
     const requestedIdentifier = identifier.trim();
     if (requestedIdentifier.length < 4) { notify('Error', 'Enter the recipient phone number.'); return; }
     const requestedFor = requestedIdentifier.toLowerCase();
@@ -171,7 +193,7 @@ const SendMoney = () => {
     setResolving(true);
     try {
       const res = await transfersService.resolveLegacy(requestedIdentifier);
-      if (generation !== resolveGeneration.current) return;
+      if (!isCurrentSession() || generation !== resolveGeneration.current) return;
       const recipientKey = String(res.recipient_key || '').trim();
       if (res.success && recipientKey) {
         setResolvedName(res.name);
@@ -186,10 +208,10 @@ const SendMoney = () => {
       }
       else notify('Not found', res.message || 'No Zitch user with that detail.');
     } catch {
-      if (generation === resolveGeneration.current) notify('Error', 'Something went wrong.');
+      if (isCurrentSession() && generation === resolveGeneration.current) notify('Error', 'Something went wrong.');
     }
     finally {
-      if (generation === resolveGeneration.current) setResolving(false);
+      if (isCurrentSession() && generation === resolveGeneration.current) setResolving(false);
     }
   };
 
@@ -242,10 +264,15 @@ const SendMoney = () => {
   };
 
   const send = async (pin: string) => {
-    if (!valid || done || sendInFlight.current) return;
+    if (!isCurrentSession() || !valid || done || sendInFlight.current) return;
+    const attempt = transferAttempt();
+    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([attempt.scope, attempt.fingerprint, note])) {
+      setStep('confirm');
+      notify('Review transfer again', 'The transfer details changed. Check them before entering your PIN.');
+      return;
+    }
     sendInFlight.current = true;
     const generation = getSessionGeneration();
-    const attempt = transferAttempt();
     let requestKey = '';
     let deliveryStarted = false;
     setBusy(true);
@@ -254,8 +281,11 @@ const SendMoney = () => {
       // of the transaction PIN and the server-side face_verified gate. If the
       // device has no enrolled biometrics, the PIN + server checks still apply.
       // Biometric-only: the phone's unlock passcode must not stand in for it.
-      if (amount >= LARGE_TXN && (await isBiometricAvailable())) {
+      const biometricAvailable = amount >= LARGE_TXN && await isBiometricAvailable();
+      if (!isCurrentSession()) return;
+      if (biometricAvailable) {
         const okScan = await authenticate(`Authorize ${money(amount)} transfer`, true);
+        if (!isCurrentSession()) return;
         if (!okScan) { setStep(null); return; }
       }
       if (generation !== getSessionGeneration()) throw new Error('Your session changed');
@@ -265,11 +295,13 @@ const SendMoney = () => {
       if (generation !== getSessionGeneration()) throw new Error('Your session changed');
       deliveryStarted = true;
       const res = await postSend(pin, requestKey);
+      if (!isCurrentSession()) return;
       const outcome = classifySpendResponse(res);
 
       // Large transfers need durable face verification (done once in KYC).
       if (outcome === 'failed' && res.code === 'face_required') {
         await clearSpendAttempt(attempt.scope, attempt.fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         setStep(null);
         Alert.alert(
           'Face verification needed',
@@ -284,6 +316,7 @@ const SendMoney = () => {
 
       if (outcome === 'success') {
         await clearSpendAttempt(attempt.scope, attempt.fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         setRecovered(isRecoveredSpendResponse(res));
         setTxnRef(String(res.reference || ''));
         setStep(null);
@@ -305,10 +338,12 @@ const SendMoney = () => {
       else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
       else {
         await clearSpendAttempt(attempt.scope, attempt.fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         notify('Error', res.message || 'Transfer failed');
         setStep(null);
       }
     } catch {
+      if (!isCurrentSession()) return;
       if (deliveryStarted) {
         setPending(true);
         setUnderReview(false);
@@ -322,7 +357,7 @@ const SendMoney = () => {
       }
     } finally {
       sendInFlight.current = false;
-      setBusy(false);
+      if (isCurrentSession()) setBusy(false);
     }
   };
 
@@ -425,7 +460,7 @@ const SendMoney = () => {
             prefix={<ZIcon name="bank" size={18} color={c.ink3} />}
           />
           <View style={{ height: 14 }} />
-          <Pressable onPress={() => setBankSheet(true)}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Select bank" onPress={() => setBankSheet(true)}>
             <Field
               label="Bank"
               value={bank?.name || ''}
@@ -475,7 +510,7 @@ const SendMoney = () => {
 
       <Label>Amount</Label>
       <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
-      <Field value={amt} onChangeText={(v) => setAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
+      <Field value={amt} onChangeText={(v) => { const normalized = normalizeAmountInput(v); if (normalized !== null) setAmt(normalized); }} keyboardType="decimal-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} min={MIN_TRANSFER} />
       {transfersAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Transfers are currently unavailable. Refresh your wallet or try again later.</Text> : null}
@@ -515,8 +550,9 @@ const SendMoney = () => {
 
       {/* Bank picker */}
       <Sheet open={bankSheet} onClose={() => setBankSheet(false)} title="Select bank">
+        {banksLoading ? <Text style={{ color: c.ink2, marginBottom: 12 }}>Loading banks…</Text> : banks.length === 0 ? <View><Text style={{ color: c.ink2, marginBottom: 12 }}>We could not load the bank list. Check your connection and try again.</Text><Btn label="Retry bank list" variant="outline" onPress={() => setBankRevision((value) => value + 1)} /></View> : null}
         {banks.map((b, i) => (
-          <Pressable key={b.code} onPress={() => chooseBank(b)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}>
+          <Pressable key={b.code} accessibilityRole="button" accessibilityLabel={b.name} onPress={() => chooseBank(b)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}>
             <View style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: b.color, alignItems: 'center', justifyContent: 'center' }}>
               <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: 13 }}>{(b.name || '').replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase()}</Text>
             </View>
@@ -533,10 +569,10 @@ const SendMoney = () => {
         total={amount}
         balance={balance}
         rows={[['To', recipientName || '—'], ['Account', picked ? picked.account_number : mode === 'bank' ? acct : identifier], ['Bank', picked ? picked.bank_name : mode === 'bank' ? bank?.name || '—' : 'Zitch']]}
-        onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        onPay={() => { const attempt = transferAttempt(); reviewedPayment.current = JSON.stringify([attempt.scope, attempt.fingerprint, note]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+      <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Sending…' : `Confirm transfer of ${money(amount)}`}
         </Text>

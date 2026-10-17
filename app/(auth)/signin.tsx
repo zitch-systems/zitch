@@ -34,15 +34,19 @@ const Signin = () => {
   useEffect(() => {
     (async () => {
       await enforceHardExpiry();
+      const generation = getSessionGeneration();
+      const current = () => mounted.current && generation === getSessionGeneration();
       const remembered = await getRememberedIdentifier();
-      if (remembered) setForm((current) => ({ ...current, email: current.email || remembered }));
+      if (!current()) return;
+      if (remembered) setForm((value) => ({ ...value, email: value.email || remembered }));
       const [enabled, available, token] = await Promise.all([
         isBiometricEnabled(),
         isBiometricAvailable(),
         getToken(),
       ]);
+      if (!current()) return;
       setBioReady(enabled && available && !!token);
-    })().catch(() => setBioReady(false));
+    })().catch(() => { if (mounted.current) setBioReady(false); });
   }, []);
 
   const enterAccount = async (generation: number) => {
@@ -172,29 +176,33 @@ const Signin = () => {
           secureTextEntry
           autoComplete="current-password"
           textContentType="password"
+          returnKeyType="go"
+          onSubmitEditing={handleSignin}
           placeholder="Enter password"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
       </View>
-      <Text
+      <Pressable
         onPress={() => router.push('/forgotpassword')}
-        style={{ textAlign: 'right', marginTop: 10, fontSize: 13, fontFamily: font.semibold, color: c.brand }}
+        accessibilityRole="link"
+        accessibilityLabel="Forgot password?"
+        style={{ alignSelf: 'flex-end', minHeight: 44, justifyContent: 'center' }}
       >
-        Forgot password?
-      </Text>
+        <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.brand }}>Forgot password?</Text>
+      </Pressable>
 
       <View style={{ marginTop: 26 }}>
         <Btn label="Sign in" onPress={handleSignin} disabled={ischecking} />
       </View>
 
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 22, marginBottom: 18 }}>
+      {bioReady && <><View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 22, marginBottom: 18 }}>
         <View style={{ flex: 1, height: 1, backgroundColor: c.line }} />
         <Text style={{ fontSize: 12, fontFamily: font.semibold, color: c.ink3 }}>or sign in instantly</Text>
         <View style={{ flex: 1, height: 1, backgroundColor: c.line }} />
       </View>
 
       {/* instant biometric sign-in — auto-prompts on open; tap to retry */}
-      <Pressable onPress={handleBiometricSignin}>
+      <Pressable accessibilityRole="button" accessibilityLabel="Sign in with Face ID or fingerprint" onPress={handleBiometricSignin}>
         <Hero style={{ flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16 }} watermark={0}>
           <View style={{ width: 46, height: 46, borderRadius: 14, backgroundColor: 'rgba(255,255,255,.2)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="faceid" size={26} color="#fff" />
@@ -205,7 +213,7 @@ const Signin = () => {
           </View>
           <ZIcon name="fingerprint" size={24} color="#fff" />
         </Hero>
-      </Pressable>
+      </Pressable></>}
 
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 20 }}>
         <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular }}>New to Zitch?</Text>

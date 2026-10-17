@@ -3,6 +3,7 @@ import { View, Text } from 'react-native';
 import { Loading } from '@/components/design/Loading';
 import { router } from 'expo-router';
 import { apiPost, publicPost } from '@/lib/api';
+import { getSessionGeneration } from '@/lib/secureStore';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
@@ -27,6 +28,8 @@ type Step = null | 'confirm' | 'pin';
 
 const BuyCable = () => {
   const { c } = useTheme();
+  const sessionGeneration = useRef(getSessionGeneration());
+  const isCurrentSession = () => sessionGeneration.current === getSessionGeneration();
   const { balance, reload, billPaymentsAvailable } = useWallet();
   const [prov, setProv] = useState('1');
   const [iuc, setIuc] = useState('');
@@ -44,6 +47,7 @@ const BuyCable = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const purchaseInFlight = useRef(false);
+  const reviewedPayment = useRef<string | null>(null);
   const [done, setDone] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingMessage, setPendingMessage] = useState('');
@@ -122,6 +126,7 @@ const BuyCable = () => {
   }, [iuc, prov, verifiedName, validating]);
 
   const validateIuc = async () => {
+    if (!isCurrentSession()) return;
     if (iuc.trim().length < 8) { notify('Error', 'Enter a valid IUC / smartcard number.'); return; }
     const requestedIuc = iuc.trim();
     const requestedProvider = prov;
@@ -134,7 +139,7 @@ const BuyCable = () => {
         cablenetwork: requestedProvider,
       });
       const result = await response.json();
-      if (generation !== validationGeneration.current) return;
+      if (!isCurrentSession() || generation !== validationGeneration.current) return;
       if (response.ok && result.success === true) {
         setValidatedName(result.customer_name || result.name || 'Verified');
         setValidatedFor(requestedFor);
@@ -142,11 +147,11 @@ const BuyCable = () => {
         notify('Error', result.message || 'Could not verify this IUC number.');
       }
     } catch {
-      if (generation === validationGeneration.current) {
+      if (isCurrentSession() && generation === validationGeneration.current) {
         notify('Error', 'Something went wrong. Please try again later.');
       }
     } finally {
-      if (generation === validationGeneration.current) setValidating(false);
+      if (isCurrentSession() && generation === validationGeneration.current) setValidating(false);
     }
   };
 
@@ -167,13 +172,19 @@ const BuyCable = () => {
   };
 
   const purchase = async (enteredPin: string) => {
-    if (!valid || done || purchaseInFlight.current) return;
-    purchaseInFlight.current = true;
+    if (!isCurrentSession() || !valid || done || purchaseInFlight.current) return;
     const fingerprint = [prov, plan, iuc.trim()].join('|');
+    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([fingerprint, amount])) {
+      setStep('confirm');
+      notify('Review payment again', 'The payment details changed. Check them before entering your PIN.');
+      return;
+    }
+    purchaseInFlight.current = true;
     let deliveryStarted = false;
     setBusy(true);
     try {
       const requestKey = await acquireSpendAttempt('cable', fingerprint);
+      if (!isCurrentSession()) return;
       deliveryStarted = true;
       const response = await apiPost(EP.utility.buyCable, {
         iuc,
@@ -184,9 +195,11 @@ const BuyCable = () => {
         idempotency_key: requestKey,
       });
       const result = await response.json();
+      if (!isCurrentSession()) return;
       const outcome = classifySpendResponse(result, response.status);
       if (outcome === 'success') {
         await clearSpendAttempt('cable', fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         setRecovered(isRecoveredSpendResponse(result, response.status));
         setTxnRef(String(result.reference || ''));
         setStep(null);
@@ -205,11 +218,13 @@ const BuyCable = () => {
         setPinError(result.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
         await clearSpendAttempt('cable', fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         if (result.code === 'price_changed') setQuoteRevision((value) => value + 1);
         notify('Error', result.message || 'Transaction failed');
         setStep(null);
       }
     } catch {
+      if (!isCurrentSession()) return;
       if (deliveryStarted) {
         setPending(true);
         setPendingMessage('We could not confirm this subscription. Check History before trying again.');
@@ -221,7 +236,7 @@ const BuyCable = () => {
       }
     } finally {
       purchaseInFlight.current = false;
-      setBusy(false);
+      if (isCurrentSession()) setBusy(false);
     }
   };
 
@@ -235,9 +250,10 @@ const BuyCable = () => {
             : recovered
               ? 'This confirms your earlier subscription. No new subscription was purchased. Start a new purchase to subscribe again.'
             : `${provider.name} ${planObj?.label || ''} on ${iuc} is now active.`}
-          rows={[['Provider', provider.name], ['Smartcard / IUC', iuc], ['Plan', planObj?.label || '—'], ['Total', money(amount), true]]}
+          rows={[['Customer', verifiedName], ['Provider', provider.name], ['Smartcard / IUC', iuc], ['Plan', planObj?.label || '—'], ['Total', money(amount), true]]}
           reference={txnRef}
           status={pending ? 'Processing' : 'Successful'}
+          footer={pending ? <Btn label="Check transaction history" variant="outline" onPress={() => router.push('/history')} /> : undefined}
           onDone={() => router.replace('/home')}
         />
       </Screen>
@@ -262,7 +278,7 @@ const BuyCable = () => {
         {verifiedName ? (
           <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {verifiedName}</Text>
         ) : (
-          <Btn label="Validate IUC" variant="outline" size="sm" full={false} onPress={validateIuc} disabled={validating} />
+          <Btn label={validating ? 'Validating…' : 'Validate IUC'} variant="outline" size="sm" full={false} onPress={validateIuc} disabled={validating} />
         )}
       </View>
 
@@ -287,11 +303,11 @@ const BuyCable = () => {
         title="Confirm subscription"
         total={amount}
         balance={balance}
-        rows={[['Provider', provider.name], ['Smartcard', iuc], ['Plan', planObj?.label || '—']]}
-        onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        rows={[['Customer', verifiedName], ['Provider', provider.name], ['Smartcard', iuc], ['Plan', planObj?.label || '—']]}
+        onPay={() => { reviewedPayment.current = JSON.stringify([[prov, plan, iuc.trim()].join('|'), amount]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+      <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>

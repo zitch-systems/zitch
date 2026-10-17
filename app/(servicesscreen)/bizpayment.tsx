@@ -24,6 +24,8 @@ const BizPayment = () => {
         </Text>
       </Card>
       <View style={{ height: 18 }} />
+      <Btn label="View funding account" onPress={() => router.push('/addmoney')} />
+      <View style={{ height: 10 }} />
       <Btn label="Go back" variant="outline" onPress={() => router.back()} />
     </Screen>
   );

@@ -6,6 +6,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import { isFundingAccountReady, walletCapabilities, walletCapabilityMessage, walletService, type FundingAccount } from '@/lib/services/wallet';
 import { identityOtpKind, isAccountOtpPending, kycService, resolveIdentityOtpRoute } from '@/lib/services/kyc';
+import { getSessionGeneration } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Btn, Field } from '@/components/design/ui';
@@ -34,6 +35,8 @@ const AddMoney = () => {
   const actionInFlight = useRef(false);
   const facePollGeneration = useRef(0);
   const mounted = useRef(true);
+  const sessionGeneration = useRef(getSessionGeneration());
+  const isCurrentSession = useCallback(() => mounted.current && sessionGeneration.current === getSessionGeneration(), []);
   const capabilityMessage = walletCapabilityMessage(walletCapabilities(fundingState));
   const accountReview = fundingState?.provider !== 'partnership' || fundingState.legacy_funding_review === true
     || fundingState.account_setup_state === 'legacy_funding_review'
@@ -42,17 +45,18 @@ const AddMoney = () => {
     && fundingState.account_setup_state === 'identity_verified' && !fundingState.partnership_setup_required;
 
   const beginAction = () => {
-    if (actionInFlight.current) return false;
+    if (!isCurrentSession() || actionInFlight.current) return false;
     actionInFlight.current = true;
     setCreating(true);
     return true;
   };
   const endAction = () => {
     actionInFlight.current = false;
-    if (mounted.current) setCreating(false);
+    if (isCurrentSession()) setCreating(false);
   };
 
   const loadAccount = useCallback(async () => {
+    if (!isCurrentSession()) return;
     const generation = ++loadGeneration.current;
     setLoading(true);
     setLoadError('');
@@ -61,14 +65,14 @@ const AddMoney = () => {
     // Do not show the BVN setup form when the account state is unknown: that
     // can make an existing customer start provisioning again while offline.
     const guard = setTimeout(() => {
-      if (loadGeneration.current === generation) {
+      if (isCurrentSession() && loadGeneration.current === generation) {
         setLoading(false);
         setLoadError('Your account details are taking longer than expected. Check your connection and try again.');
       }
     }, 8000);
     try {
       const r = await walletService.getAccount();
-      if (loadGeneration.current !== generation) return;
+      if (!isCurrentSession() || loadGeneration.current !== generation) return;
       setFundingState(r);
       if (r?.success && r.provider === 'partnership' && r.account_setup_state === 'otp_pending' && r.tracking_id) {
         setTrackingId(r.tracking_id);
@@ -92,14 +96,14 @@ const AddMoney = () => {
       }
       return r;
     } catch {
-      if (loadGeneration.current === generation) {
+      if (isCurrentSession() && loadGeneration.current === generation) {
         setLoadError('We could not load your funding account. Check your connection and try again.');
       }
     } finally {
       clearTimeout(guard);
-      if (loadGeneration.current === generation) setLoading(false);
+      if (isCurrentSession() && loadGeneration.current === generation) setLoading(false);
     }
-  }, []);
+  }, [isCurrentSession]);
 
   useEffect(() => {
     mounted.current = true;
@@ -119,9 +123,13 @@ const AddMoney = () => {
   }, [loadAccount]));
 
   const copyAccount = async () => {
-    if (!account) return;
-    await Clipboard.setStringAsync(account.account_number);
-    notify('Copied', 'Account number copied to clipboard');
+    if (!isCurrentSession() || !account) return;
+    try {
+      await Clipboard.setStringAsync(account.account_number);
+      if (isCurrentSession()) notify('Copied', 'Account number copied to clipboard');
+    } catch {
+      if (isCurrentSession()) notify('Could not copy', 'Please copy the account number shown on this page manually.');
+    }
   };
 
   // Display the NUBAN grouped 4-3-3 ("9012 345 678"); copy stays the raw digits.
@@ -131,6 +139,7 @@ const AddMoney = () => {
     if ((!reconnectVerifiedAccount && bvn.length !== 11) || !beginAction()) return;
     try {
       const r = await walletService.createAccount(reconnectVerifiedAccount ? {} : { [identityKind]: bvn });
+      if (!isCurrentSession()) return;
       if (r?.success && r.account_number) {
         await loadAccount();
       } else if (r?.success && r.otp_required && r.tracking_id) {
@@ -145,7 +154,7 @@ const AddMoney = () => {
         notify('Error', r?.message || "We couldn't create your account. Please try again.");
       }
     } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
+      if (isCurrentSession()) notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       endAction();
     }
@@ -157,8 +166,10 @@ const AddMoney = () => {
       // The server owns the pending identity and tracking reference. A resumed
       // challenge does not need the customer to enter their identity again.
       const r = await walletService.verifyWemaOtp(trackingId, otp);
+      if (!isCurrentSession()) return;
       if (r.success && r.account_number) {
         await loadAccount();
+        if (!isCurrentSession()) return;
         setTrackingId(''); setOtp(''); setBvn('');
       }
       else if (r.success || r.pending) {
@@ -166,7 +177,7 @@ const AddMoney = () => {
         setFundingState((current) => ({ ...current, ...r, provider: 'partnership', account_setup_state: 'processing' }));
         notify('Verification processing', r.message || 'Your account setup is processing. Check again shortly.', 'info');
       } else notify('Verification failed', r.message || 'Check the code and try again.');
-    } catch { notify('Error', 'Could not confirm the code. Please try again.'); }
+    } catch { if (isCurrentSession()) notify('Error', 'Could not confirm the code. Please try again.'); }
     finally { endAction(); }
   };
 
@@ -174,19 +185,21 @@ const AddMoney = () => {
     if (!trackingId || !beginAction()) return;
     try {
       const r = await walletService.resendWemaOtp(trackingId);
+      if (!isCurrentSession()) return;
       notify(r.success ? 'Code resent' : 'Could not resend code', r.message, r.success ? 'success' : undefined);
-    } catch { notify('Error', 'Could not resend the code.'); }
+    } catch { if (isCurrentSession()) notify('Error', 'Could not resend the code.'); }
     finally { endAction(); }
   };
 
   const useFaceVerification = async () => {
+    if (!isCurrentSession()) return;
     if (bvn.length !== 11) {
       router.push({ pathname: '/kyc', params: { verify_identity: trackingId ? trackingIdentityKind : identityKind } });
       return;
     }
     if (!beginAction()) return;
     const generation = ++facePollGeneration.current;
-    const isCurrent = () => mounted.current && facePollGeneration.current === generation;
+    const isCurrent = () => isCurrentSession() && facePollGeneration.current === generation;
     try {
       const started = await kycService.startIdentityFace({ [identityKind]: bvn });
       if (!isCurrent()) return;
@@ -293,6 +306,7 @@ const AddMoney = () => {
         <View style={{ paddingTop: 12 }}>
           <Label>Account review in progress</Label>
           <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{fundingState?.migration_message || 'Your funding account needs review. Contact support before adding money.'}</Text>
+          <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="outline" onPress={() => router.push('/support')} /></View>
           <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void loadAccount()} /></View>
         </View>
       ) : fundingState?.provider === 'partnership' && fundingState.account_setup_state === 'processing' ? (
@@ -346,10 +360,10 @@ const AddMoney = () => {
           {/* other ways to fund */}
           <Label>Other ways to add money</Label>
           {[
-            { icon: 'bank', title: 'Cash Deposit', sub: 'Deposit cash at a nearby Zitch agent', msg: 'Agent cash deposit is rolling out soon.' },
-            { icon: 'qr', title: 'Show my QR code', sub: 'Let someone scan to pay you', msg: 'Your receive-QR is coming soon.' },
+            { icon: 'bank', title: 'Cash Deposit', sub: 'Coming soon — agent cash deposits are not available yet.' },
+            { icon: 'qr', title: 'Show my QR code', sub: 'Coming soon — use your funding account to receive money.' },
           ].map((m) => (
-            <Pressable key={m.title} onPress={() => notify('Coming soon', m.msg)}>
+            <View key={m.title} accessible accessibilityLabel={`${m.title}. ${m.sub}`}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.surface, borderRadius: 16, borderWidth: 1, borderColor: c.line, padding: 14, marginBottom: 10 }}>
                 <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
                   <ZIcon name={m.icon} size={20} color={c.brand} />
@@ -358,9 +372,8 @@ const AddMoney = () => {
                   <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1 }}>{m.title}</Text>
                   <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{m.sub}</Text>
                 </View>
-                <ZIcon name="right" size={18} color={c.ink3} />
               </View>
-            </Pressable>
+            </View>
           ))}
         </>
       ) : (
@@ -388,7 +401,7 @@ const AddMoney = () => {
           ) : (
             <>
               <View style={{ flexDirection: 'row', gap: 20, marginBottom: 14 }}>
-                {(['bvn', 'nin'] as const).map((kind) => <Pressable key={kind} accessibilityRole="radio" accessibilityLabel={`Use ${kind.toUpperCase()}`} accessibilityState={{ selected: identityKind === kind }} disabled={creating} onPress={() => { setIdentityKind(kind); setBvn(''); }}>
+                {(['bvn', 'nin'] as const).map((kind) => <Pressable key={kind} accessibilityRole="radio" accessibilityLabel={`Use ${kind.toUpperCase()}`} accessibilityState={{ selected: identityKind === kind }} disabled={creating} style={{ minWidth: 64, minHeight: 44, alignItems: 'center', justifyContent: 'center' }} onPress={() => { setIdentityKind(kind); setBvn(''); }}>
                   <Text style={{ color: identityKind === kind ? c.brand : c.ink3, fontFamily: font.bold }}>{kind.toUpperCase()}</Text>
                 </Pressable>)}
               </View>
@@ -397,7 +410,7 @@ const AddMoney = () => {
           )}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 8, paddingHorizontal: 2 }}>
             <ZIcon name="lock" size={13} color={c.ink3} />
-            <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular }}>
+            <Text style={{ flex: 1, fontSize: 11.5, color: c.ink3, fontFamily: font.regular }}>
               {identityKind === 'bvn' ? 'Dial *565*0# on your registered line to get your BVN.' : 'Use the NIN issued to you. Your identity details are protected.'}
             </Text>
           </View>
@@ -408,7 +421,7 @@ const AddMoney = () => {
           <Btn label="Use face verification instead" variant="ghost" disabled={creating || (!trackingId && bvn.length !== 11)} onPress={useFaceVerification} />
           {trackingId && (
             <>
-              <Pressable disabled={creating} onPress={resendOtp} style={{ marginTop: 14 }}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Resend SMS code" accessibilityState={{ disabled: creating }} disabled={creating} onPress={resendOtp} style={{ marginTop: 14, minHeight: 44, justifyContent: 'center' }}>
                 <Text style={{ textAlign: 'center', color: c.brand, fontFamily: font.semibold }}>Resend SMS code</Text>
               </Pressable>
             </>

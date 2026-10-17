@@ -1,12 +1,22 @@
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
+import { getSessionGeneration } from '@/lib/secureStore';
 
 const KEY = 'z-pending-wa-approval';
 const MAX_AGE_MS = 10 * 60 * 1000;
 
 type StoredApproval = { token: string; savedAt: number };
 let webValue = '';
+let storageOperations: Promise<void> = Promise.resolve();
+
+// A new deep link can arrive while native keychain reads/deletes are pending.
+// Serialize both reads and mutations so an older clear cannot erase that link.
+function withStorageLock<T>(operation: () => Promise<T>): Promise<T> {
+  const next = storageOperations.then(operation);
+  storageOperations = next.then(() => undefined, () => undefined);
+  return next;
+}
 
 const KEYCHAIN_OPTS: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
@@ -34,8 +44,9 @@ async function read(): Promise<string> {
   return (await SecureStore.getItemAsync(KEY)) || '';
 }
 
-async function remove(): Promise<void> {
+async function remove(stillOwned: () => boolean = () => true): Promise<void> {
   await purgeLegacyCopy();
+  if (!stillOwned()) return;
   webValue = '';
   if (Platform.OS !== 'web') await SecureStore.deleteItemAsync(KEY);
 }
@@ -79,27 +90,44 @@ export async function rememberWhatsAppApproval(value: unknown): Promise<void> {
   // This token is short-lived and single-use, but it still authorises a money
   // action. Keep it in the native keychain/keystore, never plain AsyncStorage;
   // browser previews hold it only in memory and lose it on reload.
-  await write(JSON.stringify({ token, savedAt: Date.now() } satisfies StoredApproval));
+  await withStorageLock(() => write(JSON.stringify({ token, savedAt: Date.now() } satisfies StoredApproval)));
 }
 
 export async function pendingWhatsAppApproval(): Promise<string> {
-  try {
-    const raw = await read();
-    if (!raw) return '';
-    const stored = JSON.parse(raw) as Partial<StoredApproval>;
-    const token = cleanToken(stored.token);
-    const savedAt = Number(stored.savedAt);
-    if (!token || !Number.isFinite(savedAt) || (savedAt > Date.now() || Date.now() - savedAt > MAX_AGE_MS)) {
+  return withStorageLock(async () => {
+    try {
+      const raw = await read();
+      if (!raw) return '';
+      const stored = JSON.parse(raw) as Partial<StoredApproval>;
+      const token = cleanToken(stored.token);
+      const savedAt = Number(stored.savedAt);
+      if (!token || !Number.isFinite(savedAt) || (savedAt > Date.now() || Date.now() - savedAt > MAX_AGE_MS)) {
+        await remove();
+        return '';
+      }
+      return token;
+    } catch {
       await remove();
       return '';
     }
-    return token;
-  } catch {
-    await remove();
-    return '';
-  }
+  });
 }
 
-export async function clearPendingWhatsAppApproval(): Promise<void> {
-  await remove();
+/** Clear only the completed request/session when supplied. Existing callers can
+ * still explicitly clear everything by omitting both arguments. */
+export async function clearPendingWhatsAppApproval(expectedToken?: string, expectedSessionGeneration?: number): Promise<void> {
+  const token = expectedToken === undefined ? undefined : cleanToken(expectedToken);
+  if (token === '') return;
+  await withStorageLock(async () => {
+    const stillOwned = () => expectedSessionGeneration === undefined
+      || expectedSessionGeneration === getSessionGeneration();
+    if (!stillOwned()) return;
+    if (token !== undefined) {
+      try {
+        const raw = await read();
+        if (!raw || JSON.parse(raw)?.token !== token) return;
+      } catch { return; }
+    }
+    await remove(stillOwned);
+  });
 }

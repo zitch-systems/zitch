@@ -5,6 +5,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
 import { Screen } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
+import AuthGuard from '@/components/AuthGuard';
 
 const SetupRow = ({ icon, title, sub, to }: { icon: string; title: string; sub: string; to: string }) => {
   const { c } = useTheme();
@@ -45,9 +46,9 @@ const Setup = () => {
 
       <SetupRow icon="shield" title="Password" sub="Set your account password" to="/setpassword" />
       <SetupRow icon="lock" title="Transaction PIN" sub="Authorize payments securely" to="/setpin" />
-      <SetupRow icon="fingerprint" title="Thumbprint" sub="Enable biometric sign-in" to="/setthumbprint" />
+      <SetupRow icon="fingerprint" title="Biometrics" sub="Enable Face ID or fingerprint sign-in" to="/setthumbprint" />
     </Screen>
   );
 };
 
-export default Setup;
+export default function GuardedSetup() { return <AuthGuard><Setup /></AuthGuard>; }

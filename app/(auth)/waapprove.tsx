@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
@@ -9,6 +9,7 @@ import AuthGuard from '@/components/AuthGuard';
 import { usePinScreenProtection } from '@/lib/screenCapture';
 import { clearPendingWhatsAppApproval, rememberWhatsAppApproval } from '@/lib/pendingApproval';
 import { Loading } from '@/components/design/Loading';
+import { getSessionGeneration } from '@/lib/secureStore';
 
 /**
  * Deep-link approval for a WhatsApp-armed payment.
@@ -46,10 +47,10 @@ const outcomeView = (status: OutcomeStatus, actionType: string, c: { lime: strin
   return { title: 'Payment approved', icon: 'check', color: c.lime };
 };
 
-const WaApprove = () => {
+type ApprovalRequest = { token: string; sessionGeneration: number; generation: number };
+
+const WaApprove = ({ token }: { token: string }) => {
   const { c } = useTheme();
-  const params = useLocalSearchParams<{ token?: string }>();
-  const token = typeof params.token === 'string' ? params.token : '';
 
   const [phase, setPhase] = useState<'loading' | 'confirm' | 'busy' | 'done' | 'dead'>('loading');
   const [summary, setSummary] = useState('');
@@ -66,6 +67,19 @@ const WaApprove = () => {
   const [returnTo, setReturnTo] = useState('');
   const [pinError, setPinError] = useState('');
   const approving = useRef(false);
+  const requestGeneration = useRef(0);
+  const activeRequest = useRef<ApprovalRequest | null>(null);
+  const previewedRequest = useRef<ApprovalRequest | null>(null);
+  const ownsRequest = useCallback((request: ApprovalRequest) => activeRequest.current === request
+    && request.generation === requestGeneration.current
+    && request.sessionGeneration === getSessionGeneration(), []);
+
+  const rejectChangedSession = useCallback((request: ApprovalRequest) => {
+    if (activeRequest.current !== request || request.sessionGeneration === getSessionGeneration()) return;
+    previewedRequest.current = null;
+    setDeadReason('Your session changed. Open this link again after signing in.');
+    setPhase('dead');
+  }, []);
   usePinScreenProtection(phase === 'confirm' || phase === 'busy');
 
   /** Send them back to the thread they approved from.
@@ -84,46 +98,64 @@ const WaApprove = () => {
   };
 
   useEffect(() => {
-    let alive = true;
+    const request = { token, sessionGeneration: getSessionGeneration(), generation: ++requestGeneration.current };
+    activeRequest.current = request;
+    previewedRequest.current = null;
+    setPhase('loading');
+    setSummary('');
+    setActionType('');
+    setReturnTo('');
+    setPinError('');
     (async () => {
       if (!token) {
         setDeadReason('This approval link is incomplete. Open it again from your WhatsApp chat.');
         setPhase('dead');
         return;
       }
-      await rememberWhatsAppApproval(token);
       const res = await apiJson('/api/whatsapp/approve/preview/', { token });
-      if (!alive) return;
-      if (res?.success) {
-        setSummary(res.summary || 'Confirm your payment');
+      if (!ownsRequest(request)) { rejectChangedSession(request); return; }
+      const previewSummary = typeof res?.summary === 'string' && res.summary.trim() ? res.summary : '';
+      if (res?.success && res._httpOk !== false && previewSummary) {
+        setSummary(previewSummary);
         setActionType(typeof res.action_type === 'string' ? res.action_type : '');
         setReturnTo(typeof res.return_to === 'string' && /^https:\/\/wa\.me\/\d+(?:\?|$)/.test(res.return_to) ? res.return_to : '');
+        previewedRequest.current = request;
         setPhase('confirm');
       } else {
         // Expired, already completed, or not this account's action — the
         // backend deliberately words these identically.
-        setDeadReason(res?.message || 'This request has expired or was already completed.');
+        setDeadReason(res?.success && res._httpOk !== false && !previewSummary
+          ? 'We could not verify the details of this request. Open a new approval link from your WhatsApp chat.'
+          : res?.message || 'This request has expired or was already completed.');
         setPhase('dead');
-        clearPendingWhatsAppApproval().catch(() => {});
+        clearPendingWhatsAppApproval(request.token, request.sessionGeneration).catch(() => {});
       }
     })().catch(() => {
-      if (alive) { setDeadReason('Could not load this request. Open the link again when you are connected.'); setPhase('dead'); }
+      if (ownsRequest(request)) { setDeadReason('Could not load this request. Open the link again when you are connected.'); setPhase('dead'); }
+      else rejectChangedSession(request);
     });
-    return () => { alive = false; };
-  }, [token]);
+    return () => {
+      activeRequest.current = null;
+      previewedRequest.current = null;
+      requestGeneration.current += 1;
+    };
+  }, [token, ownsRequest, rejectChangedSession]);
 
   const approve = async (pin: string) => {
-    if (approving.current) return;
+    const request = previewedRequest.current;
+    if (!request || phase !== 'confirm' || approving.current) return;
+    if (!ownsRequest(request)) { rejectChangedSession(request); return; }
     approving.current = true;
     try {
     setPhase('busy');
     setPinError('');
-    const res = await apiJson('/api/whatsapp/approve/execute/', { token, transaction_pin: pin });
-    if (res?.success) {
+    const res = await apiJson('/api/whatsapp/approve/execute/', { token: request.token, transaction_pin: pin });
+    if (!ownsRequest(request)) { rejectChangedSession(request); return; }
+    if (res?.success && res._httpOk !== false) {
       setOutcome(res.message || 'Done ✅');
       setOutcomeStatus(outcomeStatusOf(res.outcome));
       setPhase('done');
-      clearPendingWhatsAppApproval().catch(() => {});
+      clearPendingWhatsAppApproval(request.token, request.sessionGeneration).catch(() => {});
       return;
     }
     if (res?.offline) {
@@ -140,22 +172,23 @@ const WaApprove = () => {
     if (/locked|expired|completed|unavailable/i.test(message)) {
       setDeadReason(message);
       setPhase('dead');
-      clearPendingWhatsAppApproval().catch(() => {});
+      clearPendingWhatsAppApproval(request.token, request.sessionGeneration).catch(() => {});
     } else {
       setPinError(message);
       setPhase('confirm');
     }
     } catch {
+      if (!ownsRequest(request)) { rejectChangedSession(request); return; }
       setPinError('Could not confirm the payment result. Check your history before trying again.');
       setPhase('confirm');
-    } finally { approving.current = false; }
+    } finally { if (activeRequest.current === request) approving.current = false; }
   };
 
   const ending = outcomeView(outcomeStatus, actionType, c);
 
   return (
-    <Screen scroll={phase === 'confirm' || phase === 'busy'}>
-      <Header title="Approve payment" sub="Started in WhatsApp" onBack={() => router.back()} />
+    <Screen scroll={phase !== 'loading'}>
+      <Header title={actionType === 'unlock' ? 'Confirm identity' : 'Approve payment'} sub="Started in WhatsApp" onBack={() => router.back()} />
 
       {phase === 'loading' && (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -170,14 +203,16 @@ const WaApprove = () => {
             <Text style={{ flex: 1, fontSize: 15, color: c.ink1, fontFamily: font.semibold, lineHeight: 22 }}>{summary}</Text>
           </View>
           <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular, marginBottom: 16 }}>
-            Approving here completes the payment you set up in WhatsApp. The receipt will arrive in that chat.
+            {actionType === 'unlock'
+              ? 'Confirm this request to continue your Zitch conversation in WhatsApp.'
+              : 'Check the recipient and amount before approving. We’ll show the result here and send an update to your WhatsApp chat.'}
           </Text>
           <PinPad onComplete={(p) => approve(p)} busy={phase === 'busy'} error={pinError} />
         </View>
       )}
 
       {phase === 'done' && (
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 30 }}>
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, paddingVertical: 24 }}>
           <View style={{ width: 84, height: 84, borderRadius: 42, backgroundColor: ending.color, alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
             <ZIcon name={ending.icon} size={40} color="#fff" stroke={3} />
           </View>
@@ -191,9 +226,9 @@ const WaApprove = () => {
       )}
 
       {phase === 'dead' && (
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 30 }}>
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, paddingVertical: 24 }}>
           <ZIcon name="help" size={44} color={c.ink3} />
-          <Text style={{ fontSize: 17, fontFamily: font.bold, color: c.ink1, marginTop: 16, textAlign: 'center' }}>Nothing to approve</Text>
+          <Text style={{ fontSize: 17, fontFamily: font.bold, color: c.ink1, marginTop: 16, textAlign: 'center' }}>Approval unavailable</Text>
           <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular, marginTop: 10, textAlign: 'center', lineHeight: 21 }}>{deadReason}</Text>
           <View style={{ marginTop: 26, alignSelf: 'stretch' }}>
             <Btn label="Back to home" onPress={() => router.replace('/home')} />
@@ -208,10 +243,13 @@ const WaApprove = () => {
 // an idle-locked session keeps its token on the device — without the guard, an
 // OS-unlocked phone could open straight onto a live payment approval.
 const Guarded = () => {
-  const { token } = useLocalSearchParams<{ token?: string }>();
+  const params = useLocalSearchParams<{ token?: string }>();
+  const token = typeof params.token === 'string' ? params.token : '';
   // Capture before the guard redirects a locked/signed-out customer to login.
   useEffect(() => { rememberWhatsAppApproval(token).catch(() => {}); }, [token]);
-  return <AuthGuard fresh><WaApprove /></AuthGuard>;
+  // A new link must discard the old summary and PIN/biometric callback together.
+  // Otherwise a new route token can execute while the previous summary is shown.
+  return <AuthGuard fresh><WaApprove key={token} token={token} /></AuthGuard>;
 };
 
 export default Guarded;

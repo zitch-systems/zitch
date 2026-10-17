@@ -9,17 +9,29 @@ const mockParams = { verify_identity: 'bvn' };
 const mockGetToken = jest.fn();
 const mockSessionLocked = jest.fn();
 const mockRedirect = jest.fn();
+const mockNotify = jest.fn();
+const mockPick = jest.fn();
+let mockGeneration = 0;
+let mockBlur: (() => void) | undefined;
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));
-jest.mock('@/lib/secureStore', () => ({ getToken: () => mockGetToken(), getSessionGeneration: () => 0 }));
+jest.mock('@/lib/secureStore', () => ({ getToken: () => mockGetToken(), getSessionGeneration: () => mockGeneration }));
 jest.mock('expo-router', () => ({
   router: { back: jest.fn() }, useLocalSearchParams: () => mockParams,
   Redirect: (props: { href: string }) => { mockRedirect(props.href); return null; },
-  useFocusEffect: (callback: () => void) => {
+  useFocusEffect: (callback: () => (() => void) | void) => {
     const ReactActual = jest.requireActual<typeof import('react')>('react');
-    ReactActual.useEffect(callback, [callback]);
+    ReactActual.useEffect(() => {
+      const cleanup = callback();
+      mockBlur = cleanup || undefined;
+      return cleanup;
+    }, [callback]);
   },
 }));
-jest.mock('expo-image-picker', () => ({}));
+jest.mock('expo-image-picker', () => ({
+  requestMediaLibraryPermissionsAsync: async () => ({ granted: true }),
+  launchImageLibraryAsync: (...args: unknown[]) => mockPick(...args),
+  MediaTypeOptions: { Images: 'Images' },
+}));
 jest.mock('expo-web-browser', () => ({}));
 jest.mock('@/lib/session', () => ({
   beginExternalActivity: jest.fn(), endExternalActivity: jest.fn(),
@@ -28,8 +40,12 @@ jest.mock('@/lib/session', () => ({
   enforceHardExpiry: jest.fn(), enforceIdleTimeout: jest.fn(), lockIfAwayTooLong: jest.fn(),
 }));
 jest.mock('@/components/design/Loading', () => ({ Loading: () => null }));
-jest.mock('@/components/design/FaceLivenessModal', () => () => null);
-jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
+jest.mock('@/components/design/FaceLivenessModal', () => (props: any) => {
+  const R = jest.requireActual<typeof import('react')>('react');
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+  return props.visible ? R.createElement(View, { ...props, testID: 'face-capture' }) : null;
+});
+jest.mock('@/components/design/Notify', () => ({ notify: (...args: unknown[]) => mockNotify(...args) }));
 jest.mock('@/components/design/ZIcon', () => () => null);
 jest.mock('@/lib/theme', () => ({
   useTheme: () => ({ c: { brand: '#0FA295', ink1: '#111', ink2: '#222', ink3: '#333', line: '#ddd', surface: '#fff' } }),
@@ -40,7 +56,7 @@ jest.mock('@/components/design/ui', () => {
   const { Pressable, Text, TextInput, View } = jest.requireActual<typeof import('react-native')>('react-native');
   return {
     Screen: ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children),
-    Header: () => null, money: String,
+    Header: ({ onBack }: { onBack: () => void }) => ReactActual.createElement(Pressable, { accessibilityLabel: 'Go back', onPress: onBack }), money: String,
     Tap: ({ children, ...props }: { children: ReactNode }) => ReactActual.createElement(Pressable, props, children),
     Btn: ({ label, onPress, disabled }: { label: string; onPress: () => void; disabled?: boolean }) => ReactActual.createElement(
       Pressable, { accessibilityLabel: label, onPress, disabled }, ReactActual.createElement(Text, null, label)),
@@ -53,6 +69,9 @@ const state = { success: true, tier: 0, transaction_limit: '0', bvn_verified: fa
   face_verified: false, account_provider: 'partnership', identity_verification_provider: 'prembly' };
 
 beforeEach(() => {
+  mockGeneration = 0;
+  mockNotify.mockReset();
+  mockPick.mockReset();
   mockApiJson.mockReset();
   mockParams.verify_identity = 'bvn';
   mockGetToken.mockReset().mockResolvedValue('test-token');
@@ -106,7 +125,7 @@ it.each(['bvn', 'nin'])('shows accepted %s OTP destinations and refreshes partia
   await act(async () => { await tree.root.findByProps({ accessibilityLabel: kind === 'bvn' ? 'Send verification code' : 'Send NIN verification code' }).props.onPress(); });
   expect(JSON.stringify(tree.toJSON())).toContain('Email delivery failed. Use the code sent by SMS.');
   expect(JSON.stringify(tree.toJSON())).not.toContain('a***@example.com');
-  const resend = tree.root.findAll((node) => node.props.children === 'Resend code' && typeof node.props.onPress === 'function')[0];
+  const resend = tree.root.findByProps({ accessibilityLabel: `Resend ${kind.toUpperCase()} code` });
   await act(async () => { await resend.props.onPress(); });
   expect(JSON.stringify(tree.toJSON())).toContain('registered phone •••••8888 and email a***@example.com');
   expect(JSON.stringify(tree.toJSON())).not.toContain('Email delivery failed. Use the code sent by SMS.');
@@ -337,5 +356,102 @@ it.each(['verified', 'pending'])('preserves an existing %s address when new Tier
     expect(output).not.toContain('Address verification in progress');
     expect(tree.root.findByProps({ accessibilityLabel: 'Contact support' })).toBeTruthy();
   }
+  act(() => tree.unmount());
+});
+
+
+it('does not resume an abandoned identity flow when its challenge arrives late', async () => {
+  let finish!: (value: unknown) => void;
+  mockApiJson.mockImplementation((path: string) => path === EP.kyc.status
+    ? Promise.resolve(state)
+    : new Promise(resolve => { finish = resolve; }));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  await act(async () => { tree.root.findByType(TextInput).props.onChangeText('12345678901'); });
+  let sending!: Promise<void>;
+  act(() => { sending = tree.root.findByProps({ accessibilityLabel: 'Send verification code' }).props.onPress(); });
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Go back' }).props.onPress(); });
+  await act(async () => {
+    finish({ success: true, otp_required: true, identity_verification_provider: 'prembly', delivery: 'old destination' });
+    await sending;
+  });
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Confirm your BVN');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('old destination');
+  expect(mockNotify).not.toHaveBeenCalled();
+  act(() => tree.unmount());
+});
+
+it('does not attach a delayed address image to a replacement session', async () => {
+  mockParams.verify_identity = '';
+  mockApiJson.mockResolvedValue({ ...state, tier: 2, email_verified: true, bvn_verified: true,
+    face_verified: true, address_rail: 'wema', tier3_address_available: true });
+  let finish!: (value: unknown) => void;
+  mockPick.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Address verification, Tier 3' }).props.onPress(); });
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Add proof of address' }).props.onPress(); });
+  mockGeneration += 1;
+  await act(async () => { finish({ canceled: false, assets: [{ base64: 'old-customer-document' }] }); });
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Proof of address selected');
+  expect(mockApiJson).toHaveBeenCalledTimes(1);
+  act(() => tree.unmount());
+});
+
+it('rejects a face capture from a session that no longer owns the KYC screen', async () => {
+  mockParams.verify_identity = '';
+  mockApiJson.mockResolvedValue({ ...state, tier: 1, email_verified: true, bvn_verified: true,
+    bank_upgrade_required: true, tier2_face_available: true });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Tier 2 · Face verification, Confirm your identity details and take a selfie' }).props.onPress(); });
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Take a selfie' }).props.onPress(); });
+  const capture = tree.root.findByProps({ testID: 'face-capture' });
+  mockGeneration += 1;
+  act(() => { capture.props.onCapture('old-customer-face'); });
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Selfie captured');
+  expect(mockApiJson).toHaveBeenCalledTimes(1);
+  act(() => tree.unmount());
+});
+
+
+it('releases an abandoned KYC action on route blur so the preserved form can be used again', async () => {
+  let finish!: (value: unknown) => void;
+  mockApiJson.mockImplementation((path: string) => path === EP.kyc.status
+    ? Promise.resolve(state)
+    : new Promise(resolve => { finish = resolve; }));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  await act(async () => { tree.root.findByType(TextInput).props.onChangeText('12345678901'); });
+  let sending!: Promise<void>;
+  act(() => { sending = tree.root.findByProps({ accessibilityLabel: 'Send verification code' }).props.onPress(); });
+  expect(tree.root.findByProps({ accessibilityLabel: 'Sending code…' }).props.disabled).toBe(true);
+  act(() => { mockBlur?.(); });
+  expect(tree.root.findByProps({ accessibilityLabel: 'Send verification code' }).props.disabled).toBe(false);
+  await act(async () => {
+    finish({ success: true, otp_required: true, identity_verification_provider: 'prembly', delivery: 'abandoned destination' });
+    await sending;
+  });
+  expect(JSON.stringify(tree.toJSON())).not.toContain('abandoned destination');
+  expect(mockNotify).not.toHaveBeenCalled();
+  act(() => tree.unmount());
+});
+
+it.each([undefined, null, false, true, '', ' ', 'invalid', -1])('does not invent a confirmed transaction limit from %j', async (limit) => {
+  mockParams.verify_identity = '';
+  mockApiJson.mockResolvedValue({ ...state, transaction_limit: limit });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Not confirmed');
+  act(() => tree.unmount());
+});
+
+it.each([0, '0', '50000.00'])('preserves an explicitly confirmed transaction limit of %j', async (limit) => {
+  mockParams.verify_identity = '';
+  mockApiJson.mockResolvedValue({ ...state, transaction_limit: limit });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Not confirmed');
+  expect(tree.root.findAllByType(Text).some(node => node.props.children === String(Number(limit)))).toBe(true);
   act(() => tree.unmount());
 });

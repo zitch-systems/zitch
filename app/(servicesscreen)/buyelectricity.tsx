@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { apiPost } from '@/lib/api';
+import { getSessionGeneration } from '@/lib/secureStore';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
@@ -11,7 +12,7 @@ import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
-import { MIN_ELECTRICITY } from '@/lib/amounts';
+import { normalizeAmountInput, MIN_ELECTRICITY } from '@/lib/amounts';
 
 // Disco id mapping follows the backend's numeric convention.
 const DISCOS = [
@@ -31,6 +32,8 @@ type Step = null | 'confirm' | 'pin';
 
 const BuyElectricity = () => {
   const { c } = useTheme();
+  const sessionGeneration = useRef(getSessionGeneration());
+  const isCurrentSession = () => sessionGeneration.current === getSessionGeneration();
   const { balance, reload, billPaymentsAvailable } = useWallet();
   const [disco, setDisco] = useState('1');
   const [meterType, setMeterType] = useState('prepaid');
@@ -50,6 +53,7 @@ const BuyElectricity = () => {
   const [pinError, setPinError] = useState('');
   const validationGeneration = useRef(0);
   const purchaseInFlight = useRef(false);
+  const reviewedPayment = useRef<string | null>(null);
 
   const provider = DISCOS.find((d) => d.id === disco)!;
   const amount = Number(amt || 0);
@@ -58,6 +62,7 @@ const BuyElectricity = () => {
   const valid = billPaymentsAvailable === true && meter.length >= 8 && !!verifiedCustomer && amount >= MIN_ELECTRICITY && amount <= balance;
 
   const validateMeter = async () => {
+    if (!isCurrentSession()) return;
     if (meter.trim().length < 8) { notify('Error', 'Enter a valid meter number.'); return; }
     const requestedMeter = meter.trim();
     const requestedDisco = disco;
@@ -72,7 +77,7 @@ const BuyElectricity = () => {
         meter_type: requestedType,
       });
       const result = await response.json();
-      if (generation !== validationGeneration.current) return;
+      if (!isCurrentSession() || generation !== validationGeneration.current) return;
       if (response.ok && result.success === true) {
         setCustomerName(result.customer_name || result.name || 'Verified');
         setValidatedFor(requestedFor);
@@ -80,11 +85,11 @@ const BuyElectricity = () => {
         notify('Error', result.message || 'Could not verify meter number.');
       }
     } catch {
-      if (generation === validationGeneration.current) {
+      if (isCurrentSession() && generation === validationGeneration.current) {
         notify('Error', 'Something went wrong. Please try again later.');
       }
     } finally {
-      if (generation === validationGeneration.current) setValidating(false);
+      if (isCurrentSession() && generation === validationGeneration.current) setValidating(false);
     }
   };
 
@@ -111,13 +116,19 @@ const BuyElectricity = () => {
   };
 
   const purchase = async (enteredPin: string) => {
-    if (!valid || done || purchaseInFlight.current) return;
-    purchaseInFlight.current = true;
+    if (!isCurrentSession() || !valid || done || purchaseInFlight.current) return;
     const fingerprint = [disco, meterType, meter.trim(), String(amount)].join('|');
+    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([fingerprint, amount])) {
+      setStep('confirm');
+      notify('Review payment again', 'The payment details changed. Check them before entering your PIN.');
+      return;
+    }
+    purchaseInFlight.current = true;
     let deliveryStarted = false;
     setBusy(true);
     try {
       const requestKey = await acquireSpendAttempt('electricity', fingerprint);
+      if (!isCurrentSession()) return;
       deliveryStarted = true;
       const response = await apiPost(EP.utility.buyElectricity, {
         disco,
@@ -128,9 +139,11 @@ const BuyElectricity = () => {
         idempotency_key: requestKey,
       });
       const result = await response.json();
+      if (!isCurrentSession()) return;
       const outcome = classifySpendResponse(result, response.status);
       if (outcome === 'success') {
         await clearSpendAttempt('electricity', fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         setRecovered(isRecoveredSpendResponse(result, response.status));
         setTxnRef(String(result.reference || ''));
         if (result.token) setPurchasedToken(String(result.token));
@@ -150,10 +163,12 @@ const BuyElectricity = () => {
         setPinError(result.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
         await clearSpendAttempt('electricity', fingerprint, requestKey);
+        if (!isCurrentSession()) return;
         notify('Error', result.message || 'Transaction failed');
         setStep(null);
       }
     } catch {
+      if (!isCurrentSession()) return;
       if (deliveryStarted) {
         setPending(true);
         setPendingMessage('We could not confirm this electricity payment. Check History before trying again.');
@@ -165,7 +180,7 @@ const BuyElectricity = () => {
       }
     } finally {
       purchaseInFlight.current = false;
-      setBusy(false);
+      if (isCurrentSession()) setBusy(false);
     }
   };
 
@@ -180,6 +195,7 @@ const BuyElectricity = () => {
               ? 'This confirms your earlier electricity payment. No new payment was made. Start a new purchase to pay again.'
             : `Your ${provider.name} ${meterType} purchase was successful.`}
           rows={[
+            ['Customer', verifiedCustomer],
             ['Disco', provider.name],
             ['Meter', meter],
             ['Type', meterType],
@@ -188,6 +204,7 @@ const BuyElectricity = () => {
           ]}
           reference={txnRef}
           status={pending ? 'Processing' : 'Successful'}
+          footer={pending ? <Btn label="Check transaction history" variant="outline" onPress={() => router.push('/history')} /> : undefined}
           onDone={() => router.replace('/home')}
         />
       </Screen>
@@ -226,8 +243,8 @@ const BuyElectricity = () => {
       <QuickAmounts amounts={ELEC_AMOUNTS} value={amt} onPick={setAmt} />
       <Field
         value={amt}
-        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
-        keyboardType="number-pad"
+        onChangeText={(v) => { const normalized = normalizeAmountInput(v); if (normalized !== null) setAmt(normalized); }}
+        keyboardType="decimal-pad"
         placeholder="Enter amount (min 500)"
         prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
@@ -243,11 +260,11 @@ const BuyElectricity = () => {
         title="Confirm payment"
         total={amount}
         balance={balance}
-        rows={[['Disco', provider.name], ['Meter', meter], ['Type', meterType]]}
-        onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        rows={[['Customer', verifiedCustomer], ['Disco', provider.name], ['Meter', meter], ['Type', meterType]]}
+        onPay={() => { reviewedPayment.current = JSON.stringify([[disco, meterType, meter.trim(), String(amount)].join('|'), amount]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+      <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>

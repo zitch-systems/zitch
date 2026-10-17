@@ -145,3 +145,19 @@ it('does not expose a stale cached Partnership number during account review', as
   expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' })).toHaveLength(0);
   act(() => tree.unmount());
 });
+
+it('does not turn boolean limit values into money while retaining a confirmed zero', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? {
+    ...state, transaction_limit: false, daily_transfer_limit: true, daily_bill_limit: '0.00',
+    bank_tier_limits: { single_inflow: false, daily_spend: true, max_balance: 0 },
+  } : { success: true, provider: 'partnership', account_number: '0454243073',
+    account_name: 'Current Account', has_account: true, available: true, can_fund: true,
+    account_setup_state: 'ready' });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  const output = JSON.stringify(tree.toJSON());
+  expect(output.match(/Not confirmed/g)).toHaveLength(4);
+  expect(output.match(/₦0/g)).toHaveLength(2);
+  expect(output).not.toContain('₦1');
+  act(() => tree.unmount());
+});

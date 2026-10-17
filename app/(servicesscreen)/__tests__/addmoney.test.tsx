@@ -3,11 +3,13 @@ import { TextInput } from 'react-native';
 import renderer, { act } from 'react-test-renderer';
 import AddMoney from '@/app/(servicesscreen)/addmoney';
 
+let mockGeneration = 0;
 const mockApiJson = jest.fn();
 const mockPush = jest.fn();
 let mockFocus: () => void | (() => void);
 let mockBlur: (() => void) | void;
 
+jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => mockGeneration }));
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: (...args: unknown[]) => mockPush(...args) },
@@ -57,6 +59,7 @@ jest.mock('@/components/design/ui', () => {
 
 describe('AddMoney Partnership funding', () => {
   beforeEach(() => {
+    mockGeneration = 0;
     mockApiJson.mockReset();
     mockPush.mockReset();
   });
@@ -134,6 +137,7 @@ const findControl = (tree: renderer.ReactTestRenderer, label: string) =>
 
 describe('AddMoney face fallback', () => {
   beforeEach(() => {
+    mockGeneration = 0;
     mockApiJson.mockReset();
     mockPush.mockReset();
   });
@@ -291,5 +295,45 @@ describe('AddMoney face fallback', () => {
 
     expect(findControl(tree, 'Try again')).toBeTruthy();
     expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+  });
+});
+
+describe('AddMoney current account binding', () => {
+  beforeEach(() => { mockGeneration = 0; mockApiJson.mockReset(); mockPush.mockReset(); });
+
+  it('does not show funding details from an account lookup completed after sign-out', async () => {
+    let finish!: (value: unknown) => void;
+    mockApiJson.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    mockGeneration += 1;
+    await act(async () => { finish({ success: true, provider: 'partnership', can_fund: true, available: true, has_account: true, account_setup_state: 'ready', account_number: '0454243073' }); });
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' })).toHaveLength(0);
+    expect(JSON.stringify(tree.toJSON())).not.toContain('0454');
+    act(() => tree.unmount());
+  });
+
+  it('does not fetch the new customer account after an old provisioning request completes', async () => {
+    let finish!: (value: unknown) => void;
+    mockApiJson.mockResolvedValueOnce({ success: true, provider: 'partnership', account_setup_state: 'identity_required' })
+      .mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    act(() => tree.root.findByType(TextInput).props.onChangeText('12345678901'));
+    await act(async () => { void findControl(tree, 'Get my account').props.onPress(); });
+    mockGeneration += 1;
+    await act(async () => { finish({ success: true, account_number: '0454243073' }); });
+    expect(mockApiJson).toHaveBeenCalledTimes(2);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Copy account number' })).toHaveLength(0);
+    act(() => tree.unmount());
+  });
+
+  it('offers support directly for an account that cannot safely receive funds', async () => {
+    mockApiJson.mockResolvedValue({ success: true, provider: 'partnership', account_setup_state: 'legacy_funding_review', legacy_funding_review: true });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<AddMoney />); });
+    act(() => findControl(tree, 'Contact support').props.onPress());
+    expect(mockPush).toHaveBeenCalledWith('/support');
+    act(() => tree.unmount());
   });
 });
