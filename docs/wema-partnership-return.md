@@ -1,4 +1,4 @@
-# Wema Partnership only — 13 October 2026
+# Wema Partnership only
 
 Wema Partnership is the sole active account integration on the app and WhatsApp.
 The separate virtual-account integration, its enrollment and callback endpoints,
@@ -18,8 +18,21 @@ Partnership credentials and all release evidence in the
 
 Retain the credentials and callback configuration used by the active Partnership
 integration and bank bill payments. Remove obsolete virtual-account configuration
-from deployments. Preserve the keys needed to decrypt historical data and backups;
-removing a provider is not authorization to make its financial evidence unreadable.
+from deployments. Retain historical decryption keys only until the authorized account purge is
+complete; the financial ledger and unsettled payment evidence survive separately.
+
+Remove `WEMA_VAS_*`, `WHATSAPP_FLOW_VAS_*`, `WEMA_PARTNERSHIP_RESTORE_VAS`
+and the obsolete `BANK_ACCOUNT_PROVIDER` selector from the API, worker and every
+Django scheduled job. The two exceptions are `WEMA_VAS_STATUS_LEGEND` and
+`WEMA_VAS_REQUERY_AFTER_SECONDS`: those control Partnership airtime/data settlement.
+Rename the retained historical decryption key to `HISTORICAL_FUNDING_IDENTITY_KEYS`
+without changing its value. This temporary key does not enable account enrollment or provider calls. Remove
+it from runtime configuration after the authorized purge completes.
+
+After deployment, run `python manage.py partnership_diagnostics --require-clean-config`.
+The report lists obsolete variable names only and exits unsuccessfully if any
+remain, including variables with empty values. The old provider-selection runbook
+has been removed; Git history retains the historical decision record.
 
 Publish and select the reviewed `backend/whatsapp/flow_assets/pin_flow.json` asset.
 Its retired setup screens and actions are removed. Confirm that the live Flow and
@@ -38,28 +51,37 @@ blindly. Retained independent identity proof may support an eligible customer's
 first Partnership setup, but it does not replace the bank's ownership challenge.
 Any prior bank proof, request or account history keeps the recovery path.
 
-## Historical funds and release evidence
+## Retired account deletion
 
-The `legacy_funding` app preserves the existing financial tables, migrations,
-receipts, reservations and approvals. Its historical Django app label remains
-only for database and migration compatibility. It provides no enrollment, bank
-callback or payment execution surface.
+After every API, worker and scheduled job is live with wallet migration 0028,
+preview the owner-authorized cleanup using `purge_retired_accounts` with explicit
+`--expected-accounts`, `--expected-receipts`, `--expected-unsettled` and
+`--operator-reference` values. Add `--apply` only after the preview matches.
+The command deletes retired account and receipt rows, including encrypted account
+identity. It rejects held receipts, bill bindings, migration approvals, restricted
+live accounts, mismatched ledger evidence and wallets still using a retired number.
 
-Customers with historical live balances, held receipts, unresolved bill funding
-or account restrictions remain under `legacy_funding_review`. Both channels hide
-funding instructions and block new spending while that hold applies. Historical
-account numbers cannot become Partnership funding destinations. Spending checks
-run again under the wallet lock. Validation records do not represent real funds.
+Real money remains in the existing wallet and transaction ledger. Its payment
+evidence moves into an immutable `UnsettledFunding` hold; no duplicate credit is
+created. This hold blocks funding and spending and remains in reconciliation
+scope until independently evidenced settlement. The old live destination remains
+blocked by its digest, without retaining its plaintext account record. Validation
+accounts with zero exposure are deleted without touching their owners or any
+Partnership wallet. An independent identity proof still permits first Partnership
+setup when there is no prior bank account or issuance history.
 
-No balance is moved, erased or reclassified by this change. Resolve historical
-liabilities through attributable bank statements, settlement/refund evidence and
-audited reconciliation. Retired callbacks are no longer ingested; obtain bank
-evidence for outstanding or late activity and confirm retirement with the bank
-before considering those liabilities closed.
+The purge is atomic and audited. It locks affected wallets and retired tables,
+temporarily permits deletion only on those retired tables, and restores their
+protections before commit. Ledger and audit protections remain enabled throughout.
+Empty historical tables and migration labels remain for deployment compatibility;
+there are no retired enrollment, callback or provider execution routes.
 
-Run `python manage.py partnership_diagnostics` for read-only configuration,
-historical funding inventory and financial-control evidence. Then run
-`python manage.py wema_preflight --strict` for release gates. Neither command
-proves bank entitlement, live provider delivery or settlement acceptance. Follow
-the [go-live runbook](wema-go-live-runbook.md) and
-[WhatsApp operations guide](whatsapp-production-operations.md) for those checks.
+After verifying zero retired account/receipt rows, remove
+`HISTORICAL_FUNDING_IDENTITY_KEYS` from runtime environments. It has no active
+consumer. Database deletion does not close bank-side accounts or settle money;
+bank closure and any late deposits require attributable bank evidence.
+
+Run `python manage.py partnership_diagnostics --require-clean-config`, then
+`python manage.py wema_preflight --strict` for release gates. Neither proves bank
+entitlement, live provider delivery or settlement acceptance. Follow the
+[go-live runbook](wema-go-live-runbook.md) for those checks.

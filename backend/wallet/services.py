@@ -213,6 +213,9 @@ def wallet_balance_payload(user, wallet=None) -> dict:
     total = wallet.balance
     account = VirtualAccount.objects.filter(user_id=user.pk, mode=VirtualAccount.LIVE).first()
     historical = max(Decimal("0.00"), account_balance(account)) if account else Decimal("0.00")
+    from wallet.models import UnsettledFunding
+    historical += UnsettledFunding.objects.filter(user_id=user.pk).aggregate(
+        value=Sum("amount"))["value"] or Decimal("0.00")
     invalid_account = bool(wallet.account_number) and not partnership_account_number(wallet.account_number)
     held = (not user.is_active or not partnership_allowed(user) or invalid_account
             or bank_history_review_required(wallet))
@@ -2324,10 +2327,10 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
     wallet; when omitted they are looked up.
     """
     from utility import wema
-    from legacy_funding.models import VirtualAccount
 
     # Retired account receipts cannot enter through the Partnership statement rail.
-    if wallet.account_number and VirtualAccount.objects.filter(number=wallet.account_number).exists():
+    from wallet.partnership import retired_funding_destination
+    if retired_funding_destination(wallet.account_number):
         return None
     norm = wema.normalize_transaction(tx)
     if not norm["is_credit"] or not norm["reference"]:
@@ -3081,6 +3084,9 @@ def provision_wema_account(user, *, account_number: str, account_name: str = "",
     number — a NUBAN without it is invisible to reconciliation.
     """
     number = (account_number or "").strip()
+    from wallet.partnership import retired_funding_destination
+    if retired_funding_destination(number):
+        return None, "conflict:retired"
     if not number:
         return None, "conflict:blank"
     with db_transaction.atomic():

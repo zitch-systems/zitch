@@ -1,10 +1,11 @@
 """Partnership eligibility with immutable historical funding holds."""
 import re
+import hashlib
 
 from django.db.models import Q
 
 from legacy_funding.models import MigrationApproval, Receipt, VirtualAccount
-from wallet.models import Transaction, Wallet
+from wallet.models import Transaction, Wallet, UnsettledFunding
 
 REVIEW_MESSAGE = (
     "Your account needs a balance review. Your money and transaction history are "
@@ -16,6 +17,8 @@ def legacy_funding_blockers(user):
     """Read-only; spend callers hold the wallet lock before evaluating exposure."""
     from wallet.legacy_funding import account_balance
 
+    if UnsettledFunding.objects.filter(user_id=user.pk).exists():
+        return ["legacy_balance"]
     account = VirtualAccount.objects.filter(user_id=user.pk, mode=VirtualAccount.LIVE).first()
     if account is None:
         return []
@@ -33,11 +36,19 @@ def legacy_funding_blockers(user):
     return blockers
 
 
+def retired_funding_destination(number):
+    """Reject retired destinations even after their account records are deleted."""
+    return bool(isinstance(number, str) and number and (
+        number.startswith("711")
+        or VirtualAccount.objects.filter(number=number).exists()
+        or UnsettledFunding.objects.filter(
+            destination_digest=hashlib.sha256(number.encode()).hexdigest()).exists()))
+
+
 def partnership_account_number(number):
-    """Only a valid number with no retained retired-account identity is usable."""
+    """Only a valid, non-retired bank number is usable for Partnership."""
     return (isinstance(number, str) and bool(re.fullmatch(r"[0-9]{10}", number))
-            and not number.startswith("711")
-            and not VirtualAccount.objects.filter(number=number).exists())
+            and not retired_funding_destination(number))
 
 
 def partnership_allowed(user):
@@ -57,7 +68,7 @@ def first_partnership_setup(user):
     if not partnership_allowed(user):
         return False
     accounts = VirtualAccount.objects.filter(user=user)
-    if not accounts.exists() or accounts.exclude(cutover_reference="").exists():
+    if accounts.exclude(cutover_reference="").exists():
         return False
     if (Wallet.objects.filter(user=user).exclude(account_number="").exists()
             or MigrationApproval.objects.filter(user=user).exists()
