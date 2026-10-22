@@ -264,9 +264,14 @@ def wallet_account_create(request):
                     f"Your {identity_label} remains verified. Complete the bank's face step "
                     "to finish issuing your account number."
                 )
+            elif state.get("account_setup_state") == "processing":
+                message = (
+                    f"Your {identity_label} is already verified. The bank accepted your account setup "
+                    "and is still processing it. Check again shortly for your account number."
+                )
             else:
                 message = (
-                    f"Your {identity_label} is verified, but the bank has not confirmed an account number. "
+                    f"Your {identity_label} is already verified, but the bank has not confirmed an account number. "
                     "Please contact support to recover account setup. Do not restart identity verification."
                 )
             return ok(
