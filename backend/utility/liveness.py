@@ -5,8 +5,8 @@ Authenticated readback: https://docs.prembly.com/docs/api-webhooks
 The bank upgrade has a separate image contract; this adapter never changes
 Wallet.bank_tier or exposes biometric images to the legacy upgrade endpoint.
 """
-import hashlib
 import hmac
+import json
 import re
 import uuid
 from datetime import timedelta
@@ -16,6 +16,7 @@ import requests
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from django.utils.crypto import salted_hmac
 
 from accounts.models import IdentityProof, PremblyFaceSession, User, hash_identifier
 
@@ -37,9 +38,12 @@ def _unavailable():
 
 
 def _stamp(user):
-    return hmac.new(settings.SECRET_KEY.encode(),
-                    f"{user.pk}:{user.phone}:{user.password}:{user.transaction_pin}".encode(),
-                    hashlib.sha256).hexdigest()
+    # Password and PIN values are already Django password hashes. This signed,
+    # purpose-bound fingerprint invalidates sessions when credentials change;
+    # it never stores or verifies a raw password or PIN.
+    value = json.dumps([user.pk, user.phone, user.password, user.transaction_pin])
+    return salted_hmac("accounts.prembly-face.credentials.v1", value,
+                       algorithm="sha256").hexdigest()
 
 
 def _identity(user):
