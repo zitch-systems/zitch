@@ -20,6 +20,8 @@ class RetiredAccountPurgeTests(TestCase):
         self.user, self.account = account_fixture("1")
         self.receipt = retained_receipt(self.account, "100")
         self.other, self.validation = account_fixture("2", mode="validation")
+        VirtualAccount.objects.filter(pk=self.validation.pk).update(
+            active=False, block_reason="Synthetic validation restriction")
         self.wallet = Wallet.objects.get(user=self.other)
         self.wallet.account_number = "0450000002"
         self.wallet.save(update_fields=["account_number"])

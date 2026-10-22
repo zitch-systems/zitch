@@ -59,7 +59,7 @@ preview the owner-authorized cleanup using `purge_retired_accounts` with explici
 `--operator-reference` values. Add `--apply` only after the preview matches.
 The command deletes retired account and receipt rows, including encrypted account
 identity. It rejects held receipts, bill bindings, migration approvals, restricted
-accounts, mismatched ledger evidence and wallets still using a retired number.
+live accounts, mismatched ledger evidence and wallets still using a retired number.
 
 Real money remains in the existing wallet and transaction ledger. Its payment
 evidence moves into an immutable `UnsettledFunding` hold; no duplicate credit is

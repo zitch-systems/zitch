@@ -51,7 +51,8 @@ class Command(BaseCommand):
         for account in accounts:
             receipts = list(account.receipts.select_related("transaction").order_by("pk"))
             balance = account_balance(account)
-            if not account.active or account.block_reason or balance < 0:
+            if (balance < 0 or (account.mode == VirtualAccount.LIVE
+                                and (not account.active or account.block_reason))):
                 raise CommandError("Restricted or negative account requires separate review")
             if any(r.state != Receipt.CREDITED for r in receipts):
                 raise CommandError("Uncredited receipt requires separate evidence review")
