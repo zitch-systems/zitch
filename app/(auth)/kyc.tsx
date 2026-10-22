@@ -38,6 +38,7 @@ type Status = {
   migration_message?: string;
   face_rail?: 'document' | 'wema';
   tier2_face_rail?: 'prembly' | 'wema';
+  tier2_face_flow?: 'prembly_sdk';
   tier2_face_available?: boolean;
   tier2_unavailable_reason?: string;
   tier3_address_available?: boolean;
@@ -115,6 +116,7 @@ const Kyc = () => {
   const [upNin, setUpNin] = useState('');
   const [upSelfie, setUpSelfie] = useState('');
   const [busy, setBusy] = useState(false);
+  const [premblySession, setPremblySession] = useState('');
   const [address, setAddress] = useState<ResidentialAddress>(EMPTY_ADDRESS);
   const [addressDocument, setAddressDocument] = useState('');
   const [upgradeCameraOpen, setUpgradeCameraOpen] = useState(false);
@@ -249,7 +251,8 @@ const Kyc = () => {
   const needsUpgrade = !!status?.identity_upgrade_required
     && !(status?.bvn_verified && status?.nin_verified);
   const hasTier1Identity = !!(status?.bvn_verified || status?.nin_verified);
-  const needsBankUpgrade = !!status?.bank_upgrade_required || needsUpgrade;
+  const sdkFlow = status?.tier2_face_flow === 'prembly_sdk';
+  const needsBankUpgrade = !sdkFlow && (!!status?.bank_upgrade_required || needsUpgrade);
   const tier2Unavailable = status?.tier2_face_available === false;
   const tier3Unavailable = status?.tier3_address_available === false;
   const addressPending = status?.address_verification_pending === true || status?.address_verification_state === 'pending';
@@ -485,6 +488,46 @@ const Kyc = () => {
       await load();
     } catch { if (isCurrent()) notify('Error', 'Could not complete face verification. Please use the SMS code or try again.'); }
     finally { endAction(isCurrent); }
+  };
+
+  const runPrembly = async (checkOnly = false) => {
+    if (!beginAction()) return;
+    const isCurrent = bindFlow();
+    try {
+      let session = premblySession;
+      if (!checkOnly || !session) {
+        const started = await kycService.startLiveness();
+        if (!isCurrent()) return;
+        if (!started.success || !started.session || !started.url) {
+          notify('Face verification', started.message || 'Could not start the live face check.', 'info');
+          return;
+        }
+        const target = new URL(started.url);
+        if (target.origin !== 'https://sdk-live.prembly.com' || target.username || target.password) {
+          notify('Face verification unavailable', 'The verification link could not be confirmed.');
+          return;
+        }
+        session = started.session;
+        setPremblySession(session);
+        beginExternalActivity();
+        try { await WebBrowser.openBrowserAsync(started.url); }
+        finally { endExternalActivity(); }
+        if (!isCurrent()) return;
+      }
+      const result = await kycService.getLivenessStatus(session);
+      if (!isCurrent()) return;
+      if (result.success && result.face_verified && result.status === 'verified') {
+        setStatus(result);
+        setPremblySession('');
+        setMethod('menu');
+        notify('Tier 2 verified', 'Your Prembly live face check is complete.', 'success');
+      } else {
+        if (result.status === 'failed' || result.status === 'expired') setPremblySession('');
+        notify('Face verification', result.message || 'Your result is still being checked. Tap Check verification to refresh.', 'info');
+      }
+    } catch {
+      if (isCurrent()) notify('Face verification', 'Could not check your verification. Please try again.');
+    } finally { endAction(isCurrent); }
   };
 
   // --- NIN: the server selects identity lookup and its ownership challenge ---
@@ -963,7 +1006,16 @@ const Kyc = () => {
         </View>
       )}
 
-      {method === 'selfie' && !tier2Unavailable && (
+      {method === 'selfie' && !tier2Unavailable && sdkFlow && (
+        <View>
+          <Hero icon="user" color={C_SELFIE} title="Tier 2 · Live face verification" sub="Your verified identity is saved. No additional NIN verification is needed. Prembly will guide you through a live camera check." />
+          <Text style={{ marginVertical: 22, color: c.ink2, fontFamily: font.regular }}>Use good lighting and follow the camera instructions. Return here after completing the check.</Text>
+          <Btn label={busy ? 'Please wait…' : 'Open Prembly face verification'} disabled={busy} onPress={() => runPrembly()} />
+          {!!premblySession && <View style={{ marginTop: 12 }}><Btn label="Check verification" variant="ghost" disabled={busy} onPress={() => runPrembly(true)} /></View>}
+          <Footer />
+        </View>
+      )}
+      {method === 'selfie' && !tier2Unavailable && !sdkFlow && (
         <View>
           <Hero icon="user" color={C_SELFIE} title="Selfie verification" sub="Hold your phone at eye level and keep your face inside the circle. The verification service reviews the capture after submission." />
           <View style={{ alignItems: 'center', marginVertical: 22 }}>

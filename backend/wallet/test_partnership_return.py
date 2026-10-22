@@ -194,6 +194,13 @@ class PartnershipReturnTests(TestCase):
         state = self.response("/api/wallet/account/")
         self.assertEqual(state["account_setup_state"], "processing")
         self.assertFalse(state["otp_required"])
+        with patch("wallet.views.attach_existing_bank_account", return_value=(None, "pending")):
+            response = self.client.post("/api/wallet/account/create/", json.dumps({
+                "access_token": self.token}), content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["pending"])
+        self.assertIn("still processing", response.json()["message"])
+        self.assertNotIn("contact support", response.json()["message"])
         with patch.object(router, "reply") as reply, \
                 patch.object(router, "attach_existing_bank_account") as recover, \
                 patch.object(router.wallet_views, "_wema_funding_enabled", return_value=True):

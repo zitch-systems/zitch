@@ -3046,6 +3046,9 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
                          "Your Tier 3 request is already submitted. You do not need to send it again. "
                          "Reply *8* to refresh your verification status.")
         user.refresh_from_db(fields=["tier", "address_verified"])
+    from utility.liveness import refresh_tier2_liveness
+
+    refresh_tier2_liveness(user)
     status = (
         ("✅ *Tier 1 verification is complete.*\n\n" if not _kyc_outstanding(user)
          else "🪪 *Your verification status*\n\n")
@@ -3069,8 +3072,8 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
         return reply_buttons(
             msisdn,
             status + "\n\n*Upgrade to Tier 2*\n"
-            "Tier 2 requires both BVN and NIN verification and a live face check. "
-            "We will show which checks remain.",
+            "Tier 2 adds a Prembly live face check to your verified identity. "
+            "Your verified BVN is enough; no additional NIN verification is needed.",
             [("tier2", "Upgrade to Tier 2"), ("later", "Later")],
         )
     return reply_buttons(
@@ -3097,6 +3100,11 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
     from .verification_web import start_verification
     from django.core.exceptions import ImproperlyConfigured
 
+    if tier == 2:
+        from utility.liveness import tier2_face_available, TIER2_LIVENESS_UNAVAILABLE
+
+        if not tier2_face_available():
+            return reply(msisdn, TIER2_LIVENESS_UNAVAILABLE)
     if tier == 3:
         from wallet.address_verification import tier3_address_capability
 
@@ -3112,10 +3120,15 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
     except (ValueError, ImproperlyConfigured):
         log.warning("WhatsApp verification link unavailable", extra={"tier": tier})
         return reply(msisdn, "The secure verification page could not open. Please try again shortly.")
-    body = ("Verify your address securely. Confirm your Zitch PIN on the page, then "
-            "enter your residential address and provide proof if requested. "
-            "No app installation is needed. The link expires in 15 minutes.")
-    sent = send_cta_url(msisdn, body, url, cta="Verify address",
+    body = (("Complete your Prembly live face check for Tier 2. Confirm your Zitch PIN "
+             "on the secure page, then follow the camera instructions. Your verified "
+             "identity stays saved; no additional NIN verification is needed. "
+             "Return to this page to check the result. The link expires in 15 minutes.")
+            if tier == 2 else
+            ("Verify your address securely. Confirm your Zitch PIN on the page, then "
+             "enter your residential address and provide proof if requested. "
+             "No app installation is needed. The link expires in 15 minutes."))
+    sent = send_cta_url(msisdn, body, url, cta="Verify face" if tier == 2 else "Verify address",
                         footer="Return to WhatsApp when finished")
     if not sent.get("success"):
         reply(msisdn, body + "\n\n" + url)
@@ -3497,31 +3510,14 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
     state = pa.state
 
     if state == KYC_UPGRADE_STATE:
-        if low == "nin_face" and user.bvn_verified and not user.nin_verified:
-            if not _face_step_available():
-                return reply(msisdn, "Face verification is temporarily unavailable. Please try again later.")
-            pa.payload["id_kind"] = "nin"
-            pa.payload["id_purpose"] = "face"
-            if _send_identity_flow(pa, "nin", fallback_state=FACE_ID_STATE):
-                return None
-            return reply(msisdn, "The secure NIN form could not open. Please try again shortly; keep identity numbers out of this chat.")
         if low in ("later", "cancel", "no"):
             _clear_actions(msisdn)
             return reply(msisdn, "No problem. Reply *8* whenever you want to continue upgrading.")
-        if low in ("tier2", "2", "upgrade", "upgrade to tier 2", "tier2_app"):
-            # A hosted ownership face check does not establish Tier-2 liveness.
-            # Keep this explicit until a supported browser liveness contract is
-            # configured; never turn a photo or a button click into verified KYC.
-            if user.bvn_verified and not user.nin_verified and _face_step_available():
-                return reply_buttons(msisdn,
-                    "Your BVN remains verified. You can verify your NIN with the bank's "
-                    "face check. A separate live face check is still required for Tier 2; "
-                    "that final check is not yet available from WhatsApp.",
-                    [("nin_face", "Verify NIN with face"), ("later", "Later")])
-            return reply(msisdn,
-                "Tier 2 requires verified BVN, NIN and a live face check. The final live "
-                "check is not yet available from WhatsApp. Your completed verification "
-                "stays saved. Contact support for help with this step.")
+        if low in ("tier2", "2", "upgrade", "upgrade to tier 2", "tier2_app", "nin_face"):
+            if not user.tier1_identity_verified:
+                return _start_kyc(user, msisdn)
+            _clear_actions(msisdn)
+            return _send_web_verification(user, msisdn, 2)
         if low in ("tier3", "3", "upgrade to tier 3"):
             if user.tier < 2:
                 return reply(msisdn, "Tier 3 starts after Tier 2. Reply *tier2* to review your identity and live face checks.")

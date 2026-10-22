@@ -46,6 +46,8 @@ export const EP = {
     face: '/api/kyc/face/',
     identityFaceStart: '/api/kyc/face/start/',
     identityFaceStatus: '/api/kyc/face/status/',
+    livenessStart: '/api/kyc/liveness/start/',
+    livenessStatus: '/api/kyc/liveness/status/',
   },
   transfers: {
     // Canonical (plural) paths.

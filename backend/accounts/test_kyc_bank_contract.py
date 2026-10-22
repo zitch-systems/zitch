@@ -223,18 +223,24 @@ class BankUpgradeContractsTests(TestCase):
             content_type="application/json")
 
     def test_address_prerequisites_apply_to_bank_and_document_rails_and_shared_service(self):
-        for field in ("bvn_verified", "nin_verified", "face_verified", "email_verified", "phone_verified"):
+        for field in ("identity", "face_verified", "email_verified", "phone_verified"):
             for live in (True, False):
                 with self.subTest(field=field, bank=live), \
                         patch("utility.wema.address_verify_live", return_value=live), \
                         patch("utility.wema.upgrade_tier3") as bank, \
                         patch("accounts.views.kyc_verify_address") as document:
-                    setattr(self.user, field, False)
+                    if field == "identity":
+                        self.user.bvn_verified = self.user.nin_verified = False
+                    else:
+                        setattr(self.user, field, False)
                     result = verify_kyc_address(self.user, {"address": "12 Allen Avenue", "document": "ZmFrZQ=="})
                     self.assertEqual(result.status_code, 409)
                     bank.assert_not_called()
                     document.assert_not_called()
-                    setattr(self.user, field, True)
+                    if field == "identity":
+                        self.user.bvn_verified = self.user.nin_verified = True
+                    else:
+                        setattr(self.user, field, True)
 
     def test_address_gate_does_not_start_bank_upgrade_for_tier_one(self):
         self.wallet.bank_tier = 1
@@ -820,13 +826,15 @@ class ProviderDocumentEnvelopeTests(SimpleTestCase):
 
 
 class IdentityTierModelTests(SimpleTestCase):
-    def test_either_identity_earns_tier_one_and_both_plus_liveness_earn_tier_two(self):
+    def test_either_identity_plus_liveness_earns_tier_two(self):
         for bvn, nin, face, address, expected in (
                 (False, False, False, False, 0),
                 (True, False, False, False, 1),
                 (False, True, False, False, 1),
-                (True, False, True, True, 1),
-                (False, True, True, True, 1),
+                (True, False, True, False, 2),
+                (True, False, True, True, 3),
+                (False, True, True, False, 2),
+                (False, True, True, True, 3),
                 (True, True, False, True, 1),
                 (True, True, True, False, 2),
                 (True, True, True, True, 3)):

@@ -337,3 +337,27 @@ describe('AddMoney current account binding', () => {
     act(() => tree.unmount());
   });
 });
+
+
+it('shows authorized account recovery instead of an indefinite processing state', async () => {
+  mockApiJson.mockReset().mockResolvedValue({ success: true, provider: 'partnership', has_account: false,
+    account_setup_state: 'recovery_ready', account_recovery_available: true, recovery_identity_type: 'bvn', bvn_verified: true });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AddMoney />); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Continue account setup');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Account setup is processing');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Use NIN');
+  expect(tree.root.findByType(TextInput)).toBeTruthy();
+  await act(async () => tree.unmount());
+});
+
+it('does not turn an unconfirmed verified identity into processing after checking for an account', async () => {
+  mockApiJson.mockReset().mockResolvedValue({ success: true, provider: 'partnership', has_account: false,
+    account_setup_state: 'identity_verified', bvn_verified: true });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AddMoney />); });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Check my account number' }).props.onPress(); });
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Account setup is processing');
+  expect(JSON.stringify(tree.toJSON())).toContain('Check my account number');
+  await act(async () => tree.unmount());
+});

@@ -154,9 +154,11 @@ def _account_setup_state(user, wallet) -> dict:
         }
     if user.bvn_verified or user.nin_verified:
         from .account_recovery import active_account_recovery
-        if active_account_recovery(user):
+        recovery = active_account_recovery(user)
+        if recovery:
             return {"account_setup_state": "recovery_ready", "otp_required": False,
-                    "identity_verified": True, "account_recovery_available": True}
+                    "identity_verified": True, "account_recovery_available": True,
+                    "recovery_identity_type": recovery.identity_type}
         return {
             "account_setup_state": "identity_verified",
             "otp_required": False,
@@ -257,10 +259,20 @@ def wallet_account_create(request):
                     f"Your {identity_label} is already verified. Enter the existing partner-bank account "
                     "setup code to finish issuing your account number."
                 )
+            elif state.get("account_setup_state") == "recovery_ready":
+                message = (
+                    f"Your {identity_label} remains verified. Complete the bank's face step "
+                    "to finish issuing your account number."
+                )
+            elif state.get("account_setup_state") == "processing":
+                message = (
+                    f"Your {identity_label} is already verified. The bank accepted your account setup "
+                    "and is still processing it. Check again shortly for your account number."
+                )
             else:
                 message = (
-                    f"Your {identity_label} is already verified. We are syncing your partner-bank account "
-                    f"number; you will not be asked to enter the {identity_label} again."
+                    f"Your {identity_label} is already verified, but the bank has not confirmed an account number. "
+                    "Please contact support to recover account setup. Do not restart identity verification."
                 )
             return ok(
                 **state,

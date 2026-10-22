@@ -34,6 +34,9 @@ class NinAccountRecoveryTests(TestCase):
         self.assertTrue(response.json()["nin_verified"])
         self.assertFalse(response.json()["bvn_verified"])
         self.assertIn("NIN is already verified", response.json()["message"])
+        self.assertEqual(response.json()["account_setup_state"], "identity_verified")
+        self.assertFalse(response.json().get("pending", False))
+        self.assertIn("bank has not confirmed an account number", response.json()["message"])
         create.assert_not_called()
         recover.assert_called_once_with(self.user, using_bvn=False)
 

@@ -24,7 +24,7 @@ export type KycStatus = ApiResult<{
   otp_destination?: string;
   otp_destination_kind?: string;
   using_bvn?: boolean;
-  account_setup_state?: 'ready' | 'otp_pending' | 'processing' | 'identity_verified' | 'identity_required' | 'legacy_funding_review' | 'bank_history_review';
+  account_setup_state?: 'ready' | 'otp_pending' | 'processing' | 'identity_verified' | 'identity_required' | 'recovery_ready' | 'legacy_funding_review' | 'bank_history_review';
   upgrade_required?: boolean;
   next_step?: string;
   address_verified?: boolean;
@@ -45,6 +45,8 @@ export type KycStatus = ApiResult<{
   id_document_verified?: boolean;
   face_rail?: 'document' | 'wema';
   tier2_face_rail?: 'prembly' | 'wema';
+  tier2_face_flow?: 'prembly_sdk';
+  tier2_requires_nin?: boolean;
   tier2_face_available?: boolean;
   tier2_unavailable_reason?: string;
   tier3_address_available?: boolean;
@@ -138,6 +140,8 @@ export const kycService = {
     : apiJson<KycStatus>(EP.kyc.nin, { nin }),
   verifyNin: (nin: string, ninImage: string) => apiJson<KycStatus>(EP.kyc.nin, { nin, nin_image: ninImage }),
   verifyFace: (selfie: string) => apiJson<KycStatus>(EP.kyc.face, { selfie }),
+  startLiveness: () => apiJson<KycStatus & { url?: string; session?: string }>(EP.kyc.livenessStart),
+  getLivenessStatus: (session: string) => apiJson<KycStatus>(EP.kyc.livenessStatus, { session }),
   verifyAddress: (address: ResidentialAddress, document?: string) => {
     const fullAddress = address.fullAddress || [
       [address.buildingNumber, address.apartment, address.street].filter(Boolean).join(' '),

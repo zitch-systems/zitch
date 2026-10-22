@@ -113,8 +113,8 @@ class User(AbstractUser):
 
     # KYC tiers (CBN-style; adjust to your licence). Tier requirements ascend:
     #   Tier 0 — Unverified: email + phone only (sign-up).
-    #   Tier 1 — Verified:   + BVN verified.
-    #   Tier 2 — Enhanced:   + NIN and provider-verified facial/liveness.
+    #   Tier 1 — Verified:   + either BVN or NIN verified.
+    #   Tier 2 — Enhanced:   + provider-verified interactive liveness.
     #   Tier 3 — Premium:    + residential address verified.
     # See recompute_tier(). The per-tier caps below live on the user, so they apply
     # identically in the app and on WhatsApp.
@@ -344,22 +344,22 @@ class User(AbstractUser):
     def recompute_tier(self) -> None:
         """Derive the KYC tier from the verifications completed (ascending):
         Tier 1 needs verified contact details and either BVN or NIN; Tier 2
-        needs both identities and liveness; Tier 3 adds address verification.
+        needs a verified identity and Prembly liveness; Tier 3 adds address verification.
 
         Both contact requirements apply to every account, however it signed up.
         The app earns `phone_verified` at signup (that IS the signup OTP); a
         WhatsApp signup earns it in the chat KYC flow, because a messenger
         session outlives a SIM swap and so is not by itself proof of the
         number."""
-        has_both_identities = self.bvn_verified and self.nin_verified
+        has_identity = self.tier1_identity_verified
 
         # Both contact channels must be proven before any tier above the floor.
         if not (self.email_verified and self.phone_verified):
             self.tier = 0
-        elif (has_both_identities and self.face_verified
+        elif (has_identity and self.face_verified
                 and self.address_verified):
             self.tier = 3
-        elif has_both_identities and self.face_verified:
+        elif has_identity and self.face_verified:
             self.tier = 2
         elif self.tier1_identity_verified:
             self.tier = 1
@@ -392,6 +392,22 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.phone or self.email or self.username
+
+
+class PremblyFaceSession(models.Model):
+    """A server-created live camera session; never stores biometric images."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="prembly_face_sessions")
+    state = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    provider_session_id = models.CharField(max_length=160, unique=True, null=True)
+    widget_id = models.CharField(max_length=128)
+    identity_type = models.CharField(max_length=8)
+    identity_hash = models.CharField(max_length=64)
+    credential_stamp = models.CharField(max_length=64)
+    status = models.CharField(max_length=16, default="starting")
+    created = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    verified_at = models.DateTimeField(null=True)
 
 
 class IdentityProof(models.Model):

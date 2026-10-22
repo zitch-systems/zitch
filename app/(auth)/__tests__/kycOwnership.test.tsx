@@ -11,6 +11,7 @@ const mockSessionLocked = jest.fn();
 const mockRedirect = jest.fn();
 const mockNotify = jest.fn();
 const mockPick = jest.fn();
+const mockOpenBrowser = jest.fn();
 let mockGeneration = 0;
 let mockBlur: (() => void) | undefined;
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));
@@ -32,7 +33,7 @@ jest.mock('expo-image-picker', () => ({
   launchImageLibraryAsync: (...args: unknown[]) => mockPick(...args),
   MediaTypeOptions: { Images: 'Images' },
 }));
-jest.mock('expo-web-browser', () => ({}));
+jest.mock('expo-web-browser', () => ({ openBrowserAsync: (...args: unknown[]) => mockOpenBrowser(...args) }));
 jest.mock('@/lib/session', () => ({
   beginExternalActivity: jest.fn(), endExternalActivity: jest.fn(),
   isSessionLocked: () => mockSessionLocked(),
@@ -454,4 +455,28 @@ it.each([0, '0', '50000.00'])('preserves an explicitly confirmed transaction lim
   expect(JSON.stringify(tree.toJSON())).not.toContain('Not confirmed');
   expect(tree.root.findAllByType(Text).some(node => node.props.children === String(Number(limit)))).toBe(true);
   act(() => tree.unmount());
+});
+
+
+it('opens Prembly for a BVN-verified customer without requesting NIN or using the bank upgrade', async () => {
+  mockParams.verify_identity = '';
+  const verified = { ...state, bvn_verified: true, email_verified: true, phone_verified: true,
+    tier: 1, bank_upgrade_required: true, tier2_face_flow: 'prembly_sdk', tier2_face_available: true };
+  mockOpenBrowser.mockResolvedValue({ type: 'dismiss' });
+  mockApiJson.mockImplementation(async (path: string) => {
+    if (path === EP.kyc.status) return verified;
+    if (path === EP.kyc.livenessStart) return { success: true, session: 'server-bound', url: 'https://sdk-live.prembly.com/?session=opaque' };
+    if (path === EP.kyc.livenessStatus) return { ...verified, success: true, face_verified: true, tier: 2, status: 'verified' };
+    throw new Error(`Unexpected API call: ${path}`);
+  });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Selfie verification, Tier 2 · Prembly verification' }).props.onPress(); });
+  expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+  expect(JSON.stringify(tree.toJSON())).toContain('No additional NIN verification is needed');
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Open Prembly face verification' }).props.onPress(); });
+  expect(mockOpenBrowser).toHaveBeenCalledWith('https://sdk-live.prembly.com/?session=opaque');
+  expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.livenessStatus, { session: 'server-bound' });
+  expect(mockNotify).toHaveBeenCalledWith('Tier 2 verified', expect.any(String), 'success');
+  await act(async () => tree.unmount());
 });

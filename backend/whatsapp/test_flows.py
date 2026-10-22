@@ -1823,7 +1823,7 @@ class BlockedIdentityIsNotRequestedTests(TestCase):
         sent, _flows = self._start_kyc()
         body = "\n".join(sent)
         self.assertIn("Upgrade to Tier 2", body)
-        self.assertIn("both BVN and NIN", body)
+        self.assertIn("no additional NIN verification", body)
         self.assertNotIn("open the app", body.lower())
 
     def test_the_burst_never_contradicts_itself(self):
@@ -1836,7 +1836,7 @@ class BlockedIdentityIsNotRequestedTests(TestCase):
     def test_no_provider_vocabulary_reaches_the_customer(self):
         sent, _flows = self._start_kyc()
         body = "\n".join(sent)
-        for jargon in ("Wallet Service OTP", "NUBAN", "Prembly", "existing-account upgrade", "Wema"):
+        for jargon in ("Wallet Service OTP", "NUBAN", "existing-account upgrade", "Wema"):
             self.assertNotIn(jargon, body)
 
     def test_an_existing_account_uses_upgrade_even_without_legacy_flag(self):
