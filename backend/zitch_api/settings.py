@@ -663,6 +663,12 @@ PREMBLY = {
     "BASE_URL": os.environ.get("PREMBLY_BASE_URL", "https://api.prembly.com"),
     "API_KEY": os.environ.get("PREMBLY_API_KEY", ""),
     "APP_ID": os.environ.get("PREMBLY_APP_ID", ""),
+    # A LIVE SDK workflow containing the interactive Face Liveliness check.
+    # Enable only after validating its authenticated session response contract.
+    "FACE_WIDGET_ID": os.environ.get("PREMBLY_FACE_WIDGET_ID", ""),
+    "FACE_WIDGET_KEY": os.environ.get("PREMBLY_FACE_WIDGET_KEY", ""),
+    "ORGANISATION_ID": os.environ.get("PREMBLY_ORGANISATION_ID", ""),
+    "FACE_SDK_ENABLED": env_bool("PREMBLY_FACE_SDK_ENABLED", False),
 }
 # Prembly supplies BVN/NIN lookup and the registered-phone ownership challenge
 # for VAS, alongside selfie/liveness, address and document-image verification.

@@ -41,6 +41,13 @@ const AddMoney = () => {
   const accountReview = fundingState?.provider !== 'partnership' || fundingState.legacy_funding_review === true
     || fundingState.account_setup_state === 'legacy_funding_review'
     || (!account && ['ready', 'bank_history_review'].includes(fundingState.account_setup_state || ''));
+  const recoveryReady = fundingState?.account_setup_state === 'recovery_ready'
+    && fundingState.account_recovery_available === true;
+  useEffect(() => {
+    if (recoveryReady && fundingState?.recovery_identity_type) {
+      setIdentityKind(fundingState.recovery_identity_type);
+    }
+  }, [recoveryReady, fundingState?.recovery_identity_type]);
   const reconnectVerifiedAccount = fundingState?.provider === 'partnership'
     && fundingState.account_setup_state === 'identity_verified' && !fundingState.partnership_setup_required;
 
@@ -148,8 +155,8 @@ const AddMoney = () => {
         setOtpDestination(r.delivery || r.otp_destination || '');
         notify('Verification code sent', r.message || `Enter the SMS code sent to the phone registered on your ${identityKind.toUpperCase()}.`, 'success');
       } else if (r?.success || r?.pending) {
-        setFundingState((current) => ({ ...current, ...r, provider: 'partnership', account_setup_state: 'processing' }));
-        notify('Account creation in progress', r.message || 'Your account setup is processing. Check again shortly.', 'info');
+        setFundingState((current) => ({ ...current, ...r, provider: 'partnership', account_setup_state: r.account_setup_state || (r.pending ? 'processing' : 'identity_verified') }));
+        notify(r.pending ? 'Account creation in progress' : 'Account setup', r.message || 'Check your account setup status.', 'info');
       } else {
         notify('Error', r?.message || "We couldn't create your account. Please try again.");
       }
@@ -309,6 +316,13 @@ const AddMoney = () => {
           <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="outline" onPress={() => router.push('/support')} /></View>
           <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void loadAccount()} /></View>
         </View>
+      ) : recoveryReady ? (
+        <View style={{ paddingTop: 12 }}>
+          <Label>Finish issuing your account number</Label>
+          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>Your identity is already verified. Complete the bank’s face step to finish account setup. Enter the same verified {identityKind.toUpperCase()} to open the bank’s secure page.</Text>
+          <View style={{ marginTop: 20 }}><Field label={`Verified ${identityKind.toUpperCase()}`} value={bvn} keyboardType="number-pad" maxLength={11} editable={!creating} onChangeText={(value) => setBvn(value.replace(/\D/g, '').slice(0, 11))} /></View>
+          <View style={{ marginTop: 20 }}><Btn label={creating ? 'Opening…' : 'Continue account setup'} disabled={creating || bvn.length !== 11} onPress={useFaceVerification} /></View>
+        </View>
       ) : fundingState?.provider === 'partnership' && fundingState.account_setup_state === 'processing' ? (
         <View style={{ paddingTop: 12 }}>
           <Label>Account setup is processing</Label>
@@ -320,7 +334,7 @@ const AddMoney = () => {
       ) : reconnectVerifiedAccount && !trackingId ? (
         <View style={{ paddingTop: 12 }}>
           <Label>Your identity is verified</Label>
-          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>We need to confirm your existing bank account number. Your BVN or NIN verification is saved; you do not need to enter it again.</Text>
+          <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>Your identity verification is saved, but the bank has not confirmed your account number. Check again or contact support to recover account setup.</Text>
           <View style={{ marginTop: 20 }}><Btn label={creating ? 'Checking…' : 'Check my account number'} disabled={creating} onPress={createAccount} /></View>
           <View style={{ marginTop: 10 }}><Btn label="Contact support" variant="ghost" disabled={creating} onPress={() => router.push('/support')} /></View>
         </View>

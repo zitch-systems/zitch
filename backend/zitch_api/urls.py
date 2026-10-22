@@ -4,6 +4,7 @@ import json
 from django.conf import settings
 from django.contrib import admin
 from django.http import HttpResponse, JsonResponse
+from accounts.views import prembly_face_complete
 from django.urls import include, path
 
 from whatsapp import scan_views as whatsapp_scan
@@ -782,6 +783,7 @@ urlpatterns = [
     # links as tappable, so the chat carries this URL and it forwards into the
     # app scheme (store links as the no-app fallback).
     path("wa/approve/<str:token>", whatsapp_approve_handoff),
+    path("kyc/face/complete/", prembly_face_complete),
     path("wa/verify/<str:token>", whatsapp_verification_page, name="whatsapp_verification"),
     # Wema/ALAT bank-called callbacks. The bank PROFILES these exact URLs, and the
     # rails do not work until it has: account creation is refused without a profiled

@@ -82,6 +82,8 @@ export type TransactionHistory = ApiResult<{
 }>;
 
 export type FundingAccount = ApiResult<CapabilityPayload & {
+  account_recovery_available?: boolean;
+  recovery_identity_type?: 'bvn' | 'nin';
   has_account?: boolean;
   available?: boolean;
   can_fund?: boolean;

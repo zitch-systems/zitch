@@ -92,17 +92,18 @@ class FaceStepLadderTests(TestCase):
         self.assertIn("contact Zitch support", reply.call_args.args[1])
         self.assertNotIn("Tier 2", reply.call_args.args[1])
 
-    def test_tier2_nin_face_uses_nin_without_restarting_bvn(self):
+    def test_old_nin_face_button_routes_to_prembly_without_restarting_identity(self):
         u = _user()
         u.nin_verified = False
         u.save(update_fields=["nin_verified"])
         pa = PendingAction.objects.create(
             user=u, msisdn=MSISDN, action_type="kyc", state=router.KYC_UPGRADE_STATE,
             payload={}, expires_at=router._flow_deadline("idle"))
-        with patch.object(router, "_face_step_available", return_value=True), \
-                patch.object(router, "_send_identity_flow", return_value=True) as flow:
+        with patch.object(router, "_send_web_verification") as web, \
+                patch.object(router, "_send_identity_flow") as flow:
             router._advance_kyc(pa, u, MSISDN, "nin_face")
-        flow.assert_called_once_with(pa, "nin", fallback_state=router.FACE_ID_STATE)
+        web.assert_called_once_with(u, MSISDN, 2)
+        flow.assert_not_called()
         u.refresh_from_db()
         self.assertTrue(u.bvn_verified)
         self.assertFalse(u.nin_verified)
@@ -193,8 +194,8 @@ class FaceLinkTests(TestCase):
         identity_flow.assert_not_called()
         cta.assert_not_called()
         body = str(reply.call_args.args[1])
-        self.assertIn("verified BVN, NIN and a live face check", body)
-        self.assertIn("not yet available from WhatsApp", body)
+        self.assertIn("do not need to verify NIN after BVN", body)
+        self.assertIn("temporarily unavailable", body)
         self.assertFalse(self.user.face_verified)
 
     def test_the_session_binds_the_identity_that_was_entered(self):

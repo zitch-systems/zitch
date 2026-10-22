@@ -24,6 +24,14 @@ from .models import OTP, AccessToken
 User = get_user_model()
 
 
+def completed_liveness(user, _data):
+    # Service fixture: real session completion persists proof and flags together.
+    user.face_verified = True
+    user.recompute_tier()
+    user.save(update_fields=["face_verified", "tier"])
+    return {"success": True, "status": "verified"}
+
+
 class DeviceBoundSessionTests(TestCase):
     def setUp(self):
         self.user = User.objects.create(username="bound", phone="08035550000")
@@ -562,7 +570,7 @@ class KycTierTests(TestCase):
         b1 = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})[1]
         self.assertEqual(b1["tier"], 1)
         # Isolate the local ladder from the unconfigured provider-session rail.
-        with patch("accounts.views.verify_tier2_liveness", return_value={"success": True}):
+        with patch("accounts.views.verify_tier2_liveness", side_effect=completed_liveness):
             face = self.post("/api/kyc/face/", {"access_token": self.token})[1]
         self.assertEqual(face["tier"], 2)
         # Changing the KYC provider cannot bypass the Partnership address gate.
@@ -583,7 +591,7 @@ class KycTierTests(TestCase):
         that the user typed seven characters."""
         self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
         self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
-        with patch("accounts.views.verify_tier2_liveness", return_value={"success": True}):
+        with patch("accounts.views.verify_tier2_liveness", side_effect=completed_liveness):
             self.post("/api/kyc/face/", {"access_token": self.token})
         with override_settings(KYC_PROVIDER="prembly"):
             res, body = self.post("/api/kyc/address/", {
@@ -905,7 +913,7 @@ class FullJourneyE2ETests(TestCase):
                                    idempotency_key="journey-p2p-tier-blocked")[0], 403)
         # Model the independent Tier 2 proof; its existing limit covers this
         # transfer. The unavailable address adapter must not manufacture Tier 3.
-        with patch("accounts.views.verify_tier2_liveness", return_value={"success": True}):
+        with patch("accounts.views.verify_tier2_liveness", side_effect=completed_liveness):
             self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
         wallet.bank_tier = 2
         wallet.save(update_fields=["bank_tier"])

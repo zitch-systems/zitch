@@ -14,7 +14,7 @@ from django.contrib.auth.hashers import make_password
 from django.core.cache import cache
 from django.db import IntegrityError, transaction as db_transaction
 from django.db.models import F, Q
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 
 from common.http import (api, fail, mask_pii, ok, require_user, resolve_token,
@@ -1314,7 +1314,7 @@ def _kyc_state(user) -> dict:
         "bank_tier": bank_tier,
         "has_wema_account": bool(not held and wallet and wallet.account_number),
         "bank_upgrade_required": bool(not held and wallet and wallet.account_number and (
-            bank_tier < 2 or not (user.bvn_verified and user.nin_verified and user.face_verified)
+            bank_tier < 2 or not (user.tier1_identity_verified and user.face_verified)
         )),
         "bank_tier_limits": bank_limits,
         # Which rail each step runs on, so the screen renders what will ACTUALLY
@@ -1335,6 +1335,8 @@ def _kyc_state(user) -> dict:
                                           else ["sms_otp"]),
         "face_rail": "document",
         "tier2_face_rail": "prembly",
+        "tier2_face_flow": "prembly_sdk",
+        "tier2_requires_nin": False,
         "tier2_face_available": tier2_face_available(),
         "tier2_unavailable_reason": "" if tier2_face_available() else TIER2_LIVENESS_UNAVAILABLE,
         "address_rail": "wema",
@@ -1449,6 +1451,9 @@ def transaction_limits(request):
 @require_user
 def kyc_status(request):
     """POST /api/kyc/status/ {access_token} -> tier + verification flags"""
+    from utility.liveness import refresh_tier2_liveness
+
+    refresh_tier2_liveness(request.user_obj)
     # Reload retained address state without treating bank account status as
     # proof for a submitted address. Keep _kyc_state free of provider I/O;
     # callers also use it while holding user/action locks.
@@ -2239,10 +2244,34 @@ def kyc_face(request):
         return fail(result.get("message", "Face verification failed"),
                     status=503 if result.get("unavailable") else 400,
                     code=result.get("code", "face_verification_failed"))
-    user.face_verified = True
-    user.recompute_tier()  # face is a Tier 2 requirement
-    user.save(update_fields=["face_verified", "tier"])
+    # The session service commits proof and flags under the same identity lock.
+    user.refresh_from_db()
     return ok(success=True, message="Face verification recorded", **_kyc_state(user))
+
+
+@api
+@ratelimit("kyc_liveness_start", limit=5, window=600)
+@require_user
+def kyc_liveness_start(request):
+    from utility.liveness import start_tier2_liveness
+
+    gate = _email_gate(request.user_obj)
+    if gate:
+        return gate
+    result = start_tier2_liveness(request.user_obj)
+    return JsonResponse(result, status=503 if result.get("unavailable") else
+                        202 if result.get("pending") else 200 if result.get("success") else 409)
+
+
+@api
+@ratelimit("kyc_liveness_status", limit=60, window=600)
+@require_user
+def kyc_liveness_status(request):
+    user = request.user_obj
+    result = verify_tier2_liveness(user, request.data)
+    user.refresh_from_db()
+    return JsonResponse({**_kyc_state(user), **result}, status=503 if result.get("unavailable") else
+                        202 if result.get("pending") else 200 if result.get("success") else 400)
 
 
 @api
@@ -2279,7 +2308,7 @@ def verify_kyc_address(user, data):
             "code": "address_verification_review_required",
             "message": "Your submitted address verification needs review. Please contact Zitch Support; do not submit it again.",
         }, status=202)
-    if not (user.bvn_verified and user.nin_verified and user.face_verified
+    if not (user.tier1_identity_verified and user.face_verified
             and user.phone_verified and user.email_verified):
         return fail("Complete Tier 2 identity and liveness verification before verifying your address.",
                     status=409, upgrade_required=True, required_tier=2)
@@ -2314,3 +2343,18 @@ def kyc_id_document(request):
     user.recompute_tier()
     user.save(update_fields=["id_document_type", "id_document_verified", "tier"])
     return ok(success=True, message="ID document verified", **_kyc_state(user))
+
+
+def prembly_face_complete(request):
+    """Provider redirect is informational; only authenticated readback grants KYC."""
+    response = HttpResponse(
+        '<!doctype html><html lang="en"><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>Return to Zitch</title><main><h1>Return to Zitch</h1>'
+        '<p>Your camera session has ended. Return to the Zitch app or your secure '
+        'WhatsApp verification page and choose Check verification to confirm your result.</p>'
+        '<p>This page does not confirm a verification result.</p></main></html>')
+    response["Cache-Control"] = "no-store"
+    response["Referrer-Policy"] = "no-referrer"
+    response["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    return response

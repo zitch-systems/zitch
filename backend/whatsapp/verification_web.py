@@ -10,11 +10,9 @@ The API's JSON/bearer
 transport is replaced ONLY here by a bounded form and action-scoped PIN proof.
 No AccessToken is issued, and no caller can choose an endpoint or account.
 
-Tier 2 deliberately fails closed: FaceLivenessModal is native camera capture;
-kyc_verify_face requires explicit provider liveness evidence. Neither supplies a
-browser/provider liveness session attested to this action. Wema's hosted Tier-1
-ownership flow is not a substitute. Do not call wema_wallet_upgrade_tier2 with a
-browser-uploaded still, or expose BVN/NIN inputs, until that contract exists.
+Tier 2 starts a server-created Prembly SDK session after the same PIN gate.
+The provider session is checked by the shared secret-authenticated adapter;
+client callbacks, uploaded stills and NIN inputs cannot authorize the upgrade.
 """
 import base64
 import hashlib
@@ -60,11 +58,8 @@ ADDRESS_FIELDS = {
     "lga": 60, "landmark": 100, "postalCode": 12,
 }
 REQUIRED_ADDRESS_FIELDS = {"buildingNumber", "street", "city", "state", "lga"}
-UNAVAILABLE = (
-    "Tier 2 needs your BVN, NIN and a provider-verified live face check. "
-    "That live check is not available in this browser yet. Your verification "
-    "has not changed. Return to WhatsApp for help with the live verification step."
-)
+from utility.liveness import TIER2_LIVENESS_UNAVAILABLE as UNAVAILABLE
+
 
 
 def _public_origin():
@@ -226,7 +221,14 @@ def _form(request, pa, user, *, message="", status=200, values=None, refresh_sta
             return _page(request, status=403)
         return _page(request, "pin", status=status, message=message)
     if pa.payload["tier"] == 2:
-        return _page(request, "unavailable", status=status, message=UNAVAILABLE)
+        from utility.liveness import tier2_face_available
+
+        if user.face_verified and user.tier >= 2:
+            return _page(request, "face_complete")
+        if not tier2_face_available():
+            return _page(request, "unavailable", status=503, message=UNAVAILABLE)
+        return _page(request, "tier2", status=status, message=message,
+                     face_url=pa.payload.get("face_url", ""))
     from accounts.views import _kyc_state
 
     if refresh_status and user.address_verification_pending:
@@ -248,7 +250,7 @@ def _form(request, pa, user, *, message="", status=200, values=None, refresh_sta
     if capability["tier3_address_available"] is False:
         return _page(request, "unavailable", status=503,
                      message=capability["tier3_address_unavailable_reason"])
-    if not (user.bvn_verified and user.nin_verified and user.face_verified
+    if not (user.tier1_identity_verified and user.face_verified
             and user.email_verified and user.phone_verified and user.tier >= 2):
         return _page(request, "unavailable", status=409,
                      message="Complete Tier 2 identity verification before verifying your address. "
@@ -323,6 +325,39 @@ def _run_address_operation(request, user, data):
 @sensitive_variables()
 def _submit(request, claims):
     action = request.POST.get("action", "")
+    if action in ("tier2", "face_status"):
+        with transaction.atomic():
+            pa, user = _resolve(claims, lock=True)
+            if pa is None:
+                return _page(request, status=410)
+            if (pa.payload["tier"] != 2 or request.FILES
+                    or set(request.POST) - {"action", "csrfmiddlewaretoken"}
+                    or any(len(request.POST.getlist(k)) != 1 for k in request.POST)):
+                return _page(request, "error", status=400, message="Use the face verification buttons on this page.")
+            if not _has_proof(request, pa, user):
+                return _page(request, "pin", status=403, message="Enter your transaction PIN to continue.")
+        from utility.liveness import start_tier2_liveness, verify_tier2_liveness
+
+        def still_authorized():
+            active, owner = _resolve(claims, lock=True)
+            return active is not None and _has_proof(request, active, owner)
+
+        result = (start_tier2_liveness(user) if action == "tier2" else
+                  verify_tier2_liveness(user, {"session": pa.payload.get("face_session", "")},
+                                       authorize=still_authorized))
+        with transaction.atomic():
+            current, current_user = _resolve(claims, lock=True)
+            if current is None or not _has_proof(request, current, current_user):
+                return _page(request, status=410)
+            if action == "tier2" and result.get("success"):
+                current.payload["face_session"] = result["session"]
+                current.payload["face_url"] = result["url"]
+                current.save(update_fields=["payload"])
+            if result.get("status") in ("failed", "expired"):
+                current.payload.pop("face_session", None)
+                current.payload.pop("face_url", None)
+                current.save(update_fields=["payload"])
+            return _form(request, current, current_user, message=result.get("message", ""))
     if action == "status":
         # Readback may make a bank GET and lock Wallet -> User. Authenticate in
         # a short transaction, then release User/Link/Action before that call.
@@ -378,7 +413,7 @@ def _submit(request, claims):
         if action != "address" or pa.payload["tier"] != 3:
             return _page(request, "unavailable", status=400,
                          message="This action is not available from this verification link.")
-        if not (user.bvn_verified and user.nin_verified and user.face_verified
+        if not (user.tier1_identity_verified and user.face_verified
                 and user.email_verified and user.phone_verified and user.tier >= 2):
             return _form(request, pa, user, refresh_status=False)
         if user.address_verified:

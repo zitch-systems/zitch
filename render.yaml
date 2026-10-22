@@ -184,6 +184,13 @@ services:
         sync: false
       - key: PREMBLY_APP_ID
         sync: false
+      # Public live SDK workflow credentials; results still require the secret API key.
+      - key: PREMBLY_FACE_WIDGET_ID
+        sync: false
+      - key: PREMBLY_FACE_WIDGET_KEY
+        sync: false
+      - key: PREMBLY_FACE_SDK_ENABLED
+        sync: false
       # ---------------------------------------------------------------------
       # Wema / ALAT — the SOLE money-movement + Nigeria-KYC rail. Wallet Services,
       # Card, Airtime, Account Upgrade, Remita and BNPL are distinct subscriptions;
@@ -520,6 +527,12 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_API_KEY}
       - key: PREMBLY_APP_ID
         fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_APP_ID}
+      - key: PREMBLY_FACE_WIDGET_ID
+        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_FACE_WIDGET_ID}
+      - key: PREMBLY_FACE_WIDGET_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_FACE_WIDGET_KEY}
+      - key: PREMBLY_FACE_SDK_ENABLED
+        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_FACE_SDK_ENABLED}
       - key: CARD_ISSUER_API_KEY
         fromService: {type: web, name: zitch-api, envVarKey: CARD_ISSUER_API_KEY}
       - key: CARD_ISSUER_BASE_URL

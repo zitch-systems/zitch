@@ -31,6 +31,8 @@ urlpatterns = [
     path("kyc/face/", views.kyc_face),
     path("kyc/face/start/", views.kyc_face_start),
     path("kyc/face/status/", views.kyc_face_status),
+    path("kyc/liveness/start/", views.kyc_liveness_start),
+    path("kyc/liveness/status/", views.kyc_liveness_status),
     path("kyc/address/", views.kyc_address),
     path("kyc/id/", views.kyc_id_document),
     # TEST-ONLY: mark a user KYC-verified (WEMA_SIMULATION + SIMULATE_DEPOSIT_TOKEN only).
