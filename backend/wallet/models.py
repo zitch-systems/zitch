@@ -607,6 +607,8 @@ class WemaFaceSession(models.Model):
         ("unknown", "awaiting_callback", "rejected", "review_required")])
     account_failure_category = models.CharField(max_length=48, blank=True, default="")
     account_http_status = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Explicit, audited operator recovery; historical proof is never reset.
+    is_account_recovery = models.BooleanField(default=False)
     status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
     expires_at = models.DateTimeField()
     created = models.DateTimeField(auto_now_add=True)
