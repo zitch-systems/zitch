@@ -1,4 +1,4 @@
-# Wema Partnership only — 13 October 2026
+# Wema Partnership only
 
 Wema Partnership is the sole active account integration on the app and WhatsApp.
 The separate virtual-account integration, its enrollment and callback endpoints,
@@ -20,6 +20,19 @@ Retain the credentials and callback configuration used by the active Partnership
 integration and bank bill payments. Remove obsolete virtual-account configuration
 from deployments. Preserve the keys needed to decrypt historical data and backups;
 removing a provider is not authorization to make its financial evidence unreadable.
+
+Remove `WEMA_VAS_*`, `WHATSAPP_FLOW_VAS_*`, `WEMA_PARTNERSHIP_RESTORE_VAS`
+and the obsolete `BANK_ACCOUNT_PROVIDER` selector from the API, worker and every
+Django scheduled job. The two exceptions are `WEMA_VAS_STATUS_LEGEND` and
+`WEMA_VAS_REQUERY_AFTER_SECONDS`: those control Partnership airtime/data settlement.
+Rename the retained historical decryption key to `HISTORICAL_FUNDING_IDENTITY_KEYS`
+without changing its value. This key preserves access to archived evidence and
+does not enable account enrollment or provider calls. Keep it secret.
+
+After deployment, run `python manage.py partnership_diagnostics --require-clean-config`.
+The report lists obsolete variable names only and exits unsuccessfully if any
+remain, including variables with empty values. The old provider-selection runbook
+has been removed; Git history retains the historical decision record.
 
 Publish and select the reviewed `backend/whatsapp/flow_assets/pin_flow.json` asset.
 Its retired setup screens and actions are removed. Confirm that the live Flow and
