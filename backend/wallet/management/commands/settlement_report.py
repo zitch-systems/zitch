@@ -56,7 +56,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from utility import wema
-from wallet.models import Transaction, Wallet
+from wallet.models import Transaction, Wallet, RetiredFundingArchive
 from wallet.services import is_bank_payout, wema_provisioned_wallets
 from wallet.legacy_funding import reconciliation_scope
 
@@ -106,7 +106,12 @@ class Command(BaseCommand):
             direction=Transaction.OUT, currency="NGN",
             transaction_status__in=(Transaction.PENDING, Transaction.SUCCESS)))
         stored = (Wallet.objects.aggregate(s=Sum("balance"))["s"] or Decimal("0"))
-        return {"ledger_liability": credits - debits, "stored_liability": stored}
+        archived = RetiredFundingArchive.objects.aggregate(
+            s=Sum("funding__amount"))["s"] or Decimal("0")
+        return {"ledger_liability": credits - debits + archived,
+                "stored_liability": stored + archived,
+                "active_wallet_liability": credits - debits,
+                "archived_liability": archived}
 
     def _held(self) -> dict:
         """What we hold, per asset rail. Unreadable rails are reported as None and
@@ -314,7 +319,10 @@ class Command(BaseCommand):
 
     def _print_owed(self, owed, movement):
         self.stdout.write(f"OWED    ledger liability ₦{owed['ledger_liability']:,.2f} "
-                          f"(stored balances ₦{owed['stored_liability']:,.2f})")
+                          f"(stored balances ₦{owed['stored_liability'] - owed['archived_liability']:,.2f})")
+        if owed["archived_liability"]:
+            self.stdout.write(f"        includes archived liability ₦{owed['archived_liability']:,.2f}; "
+                              "excluded from active wallet balances, not settled or forgiven")
         self.stdout.write(
             f"TODAY   in ₦{movement['funded_in']:,.2f} | bank out ₦{movement['bank_payouts_out']:,.2f} "
             f"| VAS out ₦{movement['vas_out']:,.2f} | internal ₦{movement['internal_transfers_out']:,.2f} "

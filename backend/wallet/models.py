@@ -97,6 +97,28 @@ class UnsettledFunding(models.Model):
         raise ValueError("Unsettled funding requires evidenced resolution")
 
 
+class RetiredFundingArchive(models.Model):
+    """Move an isolated retired balance out of the active wallet, without forgiveness.
+
+    The linked debit is an internal reclassification, never a bank payment. The
+    original funding evidence remains owed and included in settlement reports.
+    """
+    funding = models.OneToOneField(UnsettledFunding, on_delete=models.PROTECT,
+                                   related_name="archive")
+    transaction = models.OneToOneField("Transaction", on_delete=models.PROTECT,
+                                       related_name="funding_archive")
+    operator_reference = models.CharField(max_length=160)
+    created = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValueError("Retired funding archive is immutable")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("Retired funding archive is immutable")
+
+
 class BankHistoryCheckpoint(models.Model):
     """Successful statement coverage for one attached partner-bank account.
 

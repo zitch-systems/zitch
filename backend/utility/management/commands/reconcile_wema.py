@@ -260,6 +260,7 @@ class Command(BaseCommand):
         pnd_failures = 0
         address_checks = 0
         addresses_verified = 0
+        address_failures = 0
         pending_address_wallets = set(Wallet.objects.filter(
             user__address_verification_pending=True).values_list("pk", flat=True))
         shape_logged = False
@@ -277,25 +278,37 @@ class Command(BaseCommand):
                 from wallet.address_verification import refresh_address_verification
 
                 address_checks += 1
-                if refresh_address_verification(wallet.user, wallet=wallet):
-                    addresses_verified += 1
+                try:
+                    if refresh_address_verification(wallet.user, wallet=wallet):
+                        addresses_verified += 1
+                except Exception:
+                    address_failures += 1
+                    log.exception("wema_address_retry_failed wallet=%s", wallet.pk)
             # Account creation and PND lifting are separate bank calls. A transient
             # failure in the second must not permanently strand outgoing funds.
             if not wallet.pnd_lifted:
-                pnd = wema.lift_debit_restriction(wallet.account_number)
-                if pnd.get("success"):
-                    wallet.pnd_lifted = True
-                    wallet.save(update_fields=["pnd_lifted", "updated"])
-                    pnd_lifted += 1
-                else:
+                try:
+                    pnd = wema.lift_debit_restriction(wallet.account_number)
+                    if pnd.get("success"):
+                        wallet.pnd_lifted = True
+                        wallet.save(update_fields=["pnd_lifted", "updated"])
+                        pnd_lifted += 1
+                    else:
+                        pnd_failures += 1
+                        self.stderr.write(f"wema_pnd_lift_retry_failed wallet={wallet.pk}")
+                except Exception:
                     pnd_failures += 1
-                    self.stderr.write(
-                        f"wema_pnd_lift_retry_failed account={wallet.account_number} "
-                        f"message={pnd.get('message', '')}"
-                    )
-            res = reconcile_account_history(
-                wallet, today=today, overlap_days=options["lookback_days"],
-                on_shape=log_history_shape)
+                    log.exception("wema_pnd_retry_failed wallet=%s", wallet.pk)
+            try:
+                res = reconcile_account_history(
+                    wallet, today=today, overlap_days=options["lookback_days"],
+                    on_shape=log_history_shape)
+            except Exception:
+                # Preserve retry coverage and continue other wallets/settlement
+                # phases. The durable report and nonzero exit still expose this.
+                fetch_failures += 1
+                log.exception("wema_history_retry_failed wallet=%s", wallet.pk)
+                continue
             credited += res["credited"]
             history_windows += res["windows"]
             if res["backlog"]:
@@ -305,7 +318,7 @@ class Command(BaseCommand):
                 diag = res.get("diagnostic") or {}
                 self.stderr.write(
                     "wema_history_fetch_failed "
-                    f"account={wallet.account_number} "
+                    f"wallet={wallet.pk} "
                     f"http_status={diag.get('http_status')} "
                     f"gateway_status_code={diag.get('gateway_status_code')} "
                     f"gateway_code={diag.get('gateway_code')} "
@@ -330,34 +343,38 @@ class Command(BaseCommand):
         vas_status_failures = 0
         vas_cutoff = timezone.now() - timedelta(seconds=max(10, int(getattr(settings, "WEMA_VAS_REQUERY_AFTER_SECONDS", 10) or 10)))
         for txn in pending_vas_purchases(vas_cutoff):
-            recorded = recorded_vas_outcome(txn)
-            if recorded is None and not claim_status_lookup(txn):
-                continue
-            vas_seen += 1
-            meta = txn.meta or {}
-            # Through providers.vas_requery, NOT wema.vas_status directly: this cron is
-            # the only automated settlement path, so the retired-rail guard has to sit
-            # on the route it actually takes. The row's meta is passed in because we
-            # already hold it — no second query per row.
-            res = recorded if recorded is not None else vas_requery(txn.reference, meta)
-            if res.get("pending"):
-                self.stdout.write(
-                    "wema_vas_requery_pending "
-                    f"ref={txn.reference} "
-                    f"vas_type={meta.get('vas_type', '')} "
-                    f"status={res.get('status', '')} "
-                    f"message={res.get('message', '')}"
-                )
-            if not res.get("success") and not res.get("pending") and not res.get("status"):
+            try:
+                recorded = recorded_vas_outcome(txn)
+                if recorded is None and not claim_status_lookup(txn):
+                    continue
+                vas_seen += 1
+                meta = txn.meta or {}
+                # Through providers.vas_requery, NOT wema.vas_status directly: this cron is
+                # the only automated settlement path, so the retired-rail guard has to sit
+                # on the route it actually takes. The row's meta is passed in because we
+                # already hold it — no second query per row.
+                res = recorded if recorded is not None else vas_requery(txn.reference, meta)
+                if res.get("pending"):
+                    self.stdout.write(
+                        "wema_vas_requery_pending "
+                        f"ref={txn.reference} "
+                        f"vas_type={meta.get('vas_type', '')} "
+                        f"status={res.get('status', '')} "
+                        f"message={res.get('message', '')}"
+                    )
+                if not res.get("success") and not res.get("pending") and not res.get("status"):
+                    vas_status_failures += 1
+                    continue
+                outcome = settle_or_refund(txn, res)
+                if outcome == "success":
+                    vas_settled += 1
+                elif outcome == "failed":
+                    vas_refunded += 1
+                else:
+                    vas_still_pending += 1
+            except Exception:
                 vas_status_failures += 1
-                continue
-            outcome = settle_or_refund(txn, res)
-            if outcome == "success":
-                vas_settled += 1
-            elif outcome == "failed":
-                vas_refunded += 1
-            else:
-                vas_still_pending += 1
+                log.exception("wema_bill_retry_failed transaction=%s", txn.pk)
 
         # Phase 2 — settle PENDING payouts (only when Wema is the payout rail, so we
         # payout_provider() is wema, the sole rail).
@@ -368,25 +385,29 @@ class Command(BaseCommand):
         if payout_provider() == "wema":
             cutoff = timezone.now() - timedelta(minutes=max(0, options["payout_older_than_minutes"]))
             for txn in pending_bank_payouts(cutoff):
-                if not claim_status_lookup(txn):
-                    continue
-                payouts_seen += 1
-                transfer_meta = (txn.meta or {}).get("wema_transfer") or {}
-                platform_reference = str(
-                    transfer_meta.get("platform_reference") or "")
-                st = wema.confirm_transfer_status(
-                    txn.reference, platform_reference=platform_reference)
-                status = (st.get("status") or "").upper()
-                outcome = wema.classify_transfer_status(status, envelope_ok=True)
-                if st.get("success") and outcome == "success":
-                    if settle_payout(txn.reference) is not None:
-                        settled += 1
-                elif not st.get("pending") and outcome == "failed" and status:
-                    if reverse_transfer(txn.reference) is not None:
-                        reversed_ += 1
-                elif not st.get("pending") and not status:
+                try:
+                    if not claim_status_lookup(txn):
+                        continue
+                    payouts_seen += 1
+                    transfer_meta = (txn.meta or {}).get("wema_transfer") or {}
+                    platform_reference = str(
+                        transfer_meta.get("platform_reference") or "")
+                    st = wema.confirm_transfer_status(
+                        txn.reference, platform_reference=platform_reference)
+                    status = (st.get("status") or "").upper()
+                    outcome = wema.classify_transfer_status(status, envelope_ok=True)
+                    if st.get("success") and outcome == "success":
+                        if settle_payout(txn.reference) is not None:
+                            settled += 1
+                    elif not st.get("pending") and outcome == "failed" and status:
+                        if reverse_transfer(txn.reference) is not None:
+                            reversed_ += 1
+                    elif not st.get("pending") and not status:
+                        status_failures += 1
+                    # Unknown/in-flight/unreachable: leave PENDING for the next run.
+                except Exception:
                     status_failures += 1
-                # Unknown/in-flight/unreachable: leave PENDING for the next run.
+                    log.exception("wema_payout_retry_failed transaction=%s", txn.pk)
 
         from whatsapp.ops import record_audit
         record_audit("recon.wema_run", actor_type="system",
@@ -406,6 +427,7 @@ class Command(BaseCommand):
                             "history_blocked": history_blocked,
                             "history_backlog": history_backlog,
                             "address_checks": address_checks,
+                            "address_failures": address_failures,
                             "addresses_verified": addresses_verified,
                             "pnd_lifted": pnd_lifted, "pnd_failures": pnd_failures})
 
@@ -539,7 +561,7 @@ class Command(BaseCommand):
         if ((scanned and fetch_failures == scanned) or
             (options.get("fail_incomplete") and any((
                 fetch_failures, history_blocked, history_backlog, pnd_failures,
-                recovery_failures, identity_pending, status_failures, vas_status_failures,
+                recovery_failures, identity_pending, status_failures, vas_status_failures, address_failures,
                 stuck, quarantined, unmatched, card_stuck, vas_stuck)))):
             self.stderr.write("Wema reconcile: INCOMPLETE; financial review or provider recovery required.")
             raise SystemExit(1)

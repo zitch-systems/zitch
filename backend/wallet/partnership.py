@@ -17,7 +17,7 @@ def legacy_funding_blockers(user):
     """Read-only; spend callers hold the wallet lock before evaluating exposure."""
     from wallet.legacy_funding import account_balance
 
-    if UnsettledFunding.objects.filter(user_id=user.pk).exists():
+    if UnsettledFunding.objects.filter(user_id=user.pk, archive__isnull=True).exists():
         return ["legacy_balance"]
     account = VirtualAccount.objects.filter(user_id=user.pk, mode=VirtualAccount.LIVE).first()
     if account is None:

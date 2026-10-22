@@ -2,6 +2,7 @@
 from io import StringIO
 from datetime import timedelta
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from django.core.cache import cache
 from django.core.management import call_command
@@ -55,6 +56,82 @@ class ReconciliationExitTests(TestCase):
     def test_complete_sweep_succeeds(self):
         self.run_sweep()
         self.assertEqual(AuditLog.objects.get(action="recon.wema_run").after["history_blocked"], 0)
+
+    @override_settings(WEMA_RECONCILE_FAIL_INCOMPLETE=True)
+    def test_one_history_exception_does_not_stop_other_wallets_or_settlement(self):
+        other, _ = make_user("08033331889", "recon-other@example.test")
+        other_wallet = Wallet.objects.get(user=other)
+        other_wallet.pnd_lifted = True
+        good = dict(credited=1, windows=1, error_code="", fetch_failed=False,
+                    backlog=False, diagnostic={})
+        module = "utility.management.commands.reconcile_wema."
+        with patch(module + "wema_provisioned_wallets", return_value=[self.wallet, other_wallet]), \
+             patch(module + "reconcile_account_history", side_effect=[ValueError("bad provider row"), good]) as history, \
+             patch(module + "pending_vas_purchases", return_value=[]) as bills, \
+             patch("utility.alerts.alert"), self.assertRaises(SystemExit):
+            call_command("reconcile_wema", account_recovery_limit=0,
+                         stdout=StringIO(), stderr=StringIO())
+        self.assertEqual(history.call_count, 2)
+        bills.assert_called()
+        report = AuditLog.objects.get(action="recon.wema_run").after
+        self.assertEqual(report["fetch_failures"], 1)
+        self.assertEqual(report["credited"], 1)
+
+    @override_settings(WEMA_RECONCILE_FAIL_INCOMPLETE=True)
+    def test_restriction_retry_exception_does_not_stop_history(self):
+        self.wallet.pnd_lifted = False
+        module = "utility.management.commands.reconcile_wema."
+        good = dict(credited=0, windows=1, error_code="", fetch_failed=False,
+                    backlog=False, diagnostic={})
+        with patch(module + "wema_provisioned_wallets", return_value=[self.wallet]), \
+             patch(module + "wema.lift_debit_restriction", side_effect=ValueError("bad result")), \
+             patch(module + "reconcile_account_history", return_value=good) as history, \
+             patch("utility.alerts.alert"), self.assertRaises(SystemExit):
+            call_command("reconcile_wema", account_recovery_limit=0,
+                         stdout=StringIO(), stderr=StringIO())
+        history.assert_called_once()
+        self.assertEqual(AuditLog.objects.get(action="recon.wema_run").after["pnd_failures"], 1)
+
+    @override_settings(WEMA_RECONCILE_FAIL_INCOMPLETE=True)
+    def test_failed_payout_lookup_does_not_stop_later_payout(self):
+        module = "utility.management.commands.reconcile_wema."
+        rows = [SimpleNamespace(pk=n, reference=f"PAYOUT-{n}", meta={}) for n in (1, 2)]
+        with patch(module + "wema_provisioned_wallets", return_value=[]), \
+             patch(module + "payout_provider", return_value="wema"), \
+             patch(module + "pending_bank_payouts", side_effect=[rows, []]), \
+             patch(module + "claim_status_lookup", return_value=True), \
+             patch(module + "wema.confirm_transfer_status", side_effect=[
+                 ValueError("malformed"), {"success": True, "status": "SUCCESS"}]), \
+             patch(module + "wema.classify_transfer_status", return_value="success"), \
+             patch(module + "settle_payout", return_value=object()) as settle, \
+             patch(module + "reverse_transfer") as reverse, \
+             patch("utility.alerts.alert"), self.assertRaises(SystemExit):
+            call_command("reconcile_wema", account_recovery_limit=0,
+                         stdout=StringIO(), stderr=StringIO())
+        settle.assert_called_once_with("PAYOUT-2")
+        reverse.assert_not_called()
+        report = AuditLog.objects.get(action="recon.wema_run").after
+        self.assertEqual(report["status_failures"], 1)
+        self.assertEqual(report["payouts_settled"], 1)
+
+    @override_settings(WEMA_RECONCILE_FAIL_INCOMPLETE=True)
+    def test_failed_bill_lookup_does_not_refund_or_stop_later_bill(self):
+        module = "utility.management.commands.reconcile_wema."
+        rows = [SimpleNamespace(pk=n, reference=f"BILL-{n}", meta={}) for n in (1, 2)]
+        result = {"success": True, "status": "SUCCESS"}
+        with patch(module + "wema_provisioned_wallets", return_value=[]), \
+             patch(module + "pending_vas_purchases", side_effect=[rows, []]), \
+             patch(module + "recorded_vas_outcome", return_value=None), \
+             patch(module + "claim_status_lookup", return_value=True), \
+             patch(module + "vas_requery", side_effect=[ValueError("malformed"), result]), \
+             patch(module + "settle_or_refund", return_value="success") as settle, \
+             patch("utility.alerts.alert"), self.assertRaises(SystemExit):
+            call_command("reconcile_wema", account_recovery_limit=0,
+                         stdout=StringIO(), stderr=StringIO())
+        settle.assert_called_once_with(rows[1], result)
+        report = AuditLog.objects.get(action="recon.wema_run").after
+        self.assertEqual(report["vas_status_failures"], 1)
+        self.assertEqual(report["vas_settled"], 1)
 
     @override_settings(WEMA_RECONCILE_FAIL_INCOMPLETE=False)
     def test_interactive_reporting_preserves_existing_opt_in_contract(self):
