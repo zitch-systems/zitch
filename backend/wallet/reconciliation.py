@@ -71,8 +71,8 @@ def reconcile_account_history(wallet, *, today=None, overlap_days=2, on_shape=No
     No database lock spans a bank request. Repeated windows and crash retries use
     the ledger's existing provider-reference guard, so applied rows stay once-only.
     """
-    from legacy_funding.models import VirtualAccount
-    if VirtualAccount.objects.filter(number=wallet.account_number).exists():
+    from wallet.partnership import retired_funding_destination
+    if retired_funding_destination(wallet.account_number):
         return {"credited": 0, "windows": 0, "error_code": "retired_funding_account",
                 "fetch_failed": False, "backlog": False, "diagnostic": {}}
     today = today or timezone.localdate()

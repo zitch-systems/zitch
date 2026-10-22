@@ -70,8 +70,8 @@ def _partnership_reference_blocked(reference: str | None = None, source_account:
         return True
     # A retired funding account is never a Partnership debit source. Customers
     # must pass the same liability check as the locked reservation path.
-    from legacy_funding.models import VirtualAccount
-    if source_account and VirtualAccount.objects.filter(number=source_account).exists():
+    from wallet.partnership import retired_funding_destination
+    if source_account and retired_funding_destination(source_account):
         return True
     if source_account:
         from wallet.models import Wallet

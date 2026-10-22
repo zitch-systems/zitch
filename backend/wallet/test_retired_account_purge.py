@@ -65,6 +65,40 @@ class RetiredAccountPurgeTests(TestCase):
         self.run_purge(apply=True)
         self.assertEqual(UnsettledFunding.objects.count(), 1)
 
+    def test_retired_destination_cannot_reenter_payment_or_callback_paths(self):
+        from utility.providers import _partnership_reference_blocked
+        from wallet.services import provision_wema_account, apply_wema_credit
+        from wallet.reconciliation import reconcile_account_history
+        self.run_purge(apply=True)
+        self.assertTrue(_partnership_reference_blocked(source_account=self.account.number))
+        wallet, outcome = provision_wema_account(self.other,
+            account_number=self.account.number, source="callback")
+        self.assertIsNone(wallet)
+        self.assertEqual(outcome, "conflict:retired")
+        # Even an accidentally imported retired number cannot ingest bank credits.
+        self.wallet.account_number = self.account.number
+        with patch("utility.wema.get_transactions") as history:
+            self.assertEqual(reconcile_account_history(self.wallet)["error_code"],
+                             "retired_funding_account")
+            history.assert_not_called()
+        self.assertIsNone(apply_wema_credit(self.wallet, {}))
+
+    def test_consumed_bank_otp_survives_account_deletion(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from wallet.identity import accepted_identity_pending
+        from wallet.models import WemaProvisioningAttempt
+        self.other.bvn_verified = True
+        self.other.save(update_fields=["bvn_verified"])
+        self.wallet.account_number = ""
+        self.wallet.save(update_fields=["account_number"])
+        WemaProvisioningAttempt.objects.create(user=self.other, tracking_id="accepted-bank-otp",
+            identity_type="bvn", identity_hash="a" * 64, otp_verified_at=timezone.now(),
+            expires_at=timezone.now() + timedelta(minutes=10))
+        self.assertTrue(accepted_identity_pending(self.other))
+        self.run_purge(apply=True)
+        self.assertTrue(accepted_identity_pending(self.other))
+
     def test_changed_inventory_or_amount_fails_closed(self):
         for opts in ({"expected_accounts": 3}, {"expected_receipts": 2},
                      {"expected_unsettled": Decimal("0")}):

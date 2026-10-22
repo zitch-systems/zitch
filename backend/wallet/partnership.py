@@ -36,13 +36,19 @@ def legacy_funding_blockers(user):
     return blockers
 
 
+def retired_funding_destination(number):
+    """Reject retired destinations even after their account records are deleted."""
+    return bool(isinstance(number, str) and number and (
+        number.startswith("711")
+        or VirtualAccount.objects.filter(number=number).exists()
+        or UnsettledFunding.objects.filter(
+            destination_digest=hashlib.sha256(number.encode()).hexdigest()).exists()))
+
+
 def partnership_account_number(number):
-    """Only a valid number with no retained retired-account identity is usable."""
+    """Only a valid, non-retired bank number is usable for Partnership."""
     return (isinstance(number, str) and bool(re.fullmatch(r"[0-9]{10}", number))
-            and not number.startswith("711")
-            and not UnsettledFunding.objects.filter(
-                destination_digest=hashlib.sha256(number.encode()).hexdigest()).exists()
-            and not VirtualAccount.objects.filter(number=number).exists())
+            and not retired_funding_destination(number))
 
 
 def partnership_allowed(user):

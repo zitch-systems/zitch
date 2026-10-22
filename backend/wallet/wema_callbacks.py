@@ -862,9 +862,9 @@ def wema_notification_callback(request):
 
     from .models import Wallet
     from .services import apply_wema_credit, self_payout_references
-    from legacy_funding.models import VirtualAccount
+    from wallet.partnership import retired_funding_destination
 
-    if VirtualAccount.objects.filter(number=account).exists():
+    if retired_funding_destination(account):
         request.wema_action = "ignored:retired_funding_account"
         return _notification_ok()
     wallet = Wallet.objects.filter(account_number=account).select_related("user").first()
