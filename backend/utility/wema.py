@@ -1166,7 +1166,13 @@ def get_account_details(phone: str, *, bvn: bool = False) -> dict:
                  product, resp.status_code,
                  sorted(str(k) for k in data.keys()) if isinstance(data, dict) else type(data).__name__,
                  bool(num))
+        # An empty/malformed success is not evidence that a retry is safe.
+        not_found = (envelope_ok and not num and isinstance(_ci_get(data, "data"), dict)
+                     and not _ci_get(data, "errors", "error")
+                     and _msg(data).strip().casefold().rstrip(".") == "account details not found")
         return {"success": envelope_ok and bool(num), "account_number": num,
+                "http_status": resp.status_code,
+                "account_lookup_state": "found" if envelope_ok and num else "not_found" if not_found else "unknown",
                 "account_name": account_name, "bank_name": "Wema Bank",
                 "email": _ci_get(d, "email", "emailAddress"), "message": _msg(data), "raw": data}
     except requests.RequestException as exc:

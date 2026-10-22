@@ -3844,10 +3844,12 @@ def _face_account_setup_held(user) -> bool:
     """A completed ownership check with unresolved issuance is not a new setup."""
     from wallet.identity import accepted_identity_pending
     from wallet.models import WemaFaceSession
+    from wallet.account_recovery import active_account_recovery
 
     if accepted_identity_pending(user):
         return True
     return (not get_or_create_wallet(user).account_number
+            and active_account_recovery(user) is None
             and WemaFaceSession.objects.filter(user=user, status=WemaFaceSession.VERIFIED).exists())
 
 
@@ -3886,11 +3888,27 @@ def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits:
 
     pa.payload.pop("id_purpose", None)
     pa.payload["attempted"] = sorted(set(pa.payload.get("attempted") or []) | {"face"})
-    session = WemaFaceSession.objects.create(
-        user=user, state=secrets.token_urlsafe(32)[:64], identity_type=kind,
-        identity_hash=hash_identifier(digits),
-        expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
-    )
+    from django.db import transaction
+    from wallet.models import Wallet
+    from wallet.account_recovery import active_account_recovery, start_recovery_session
+    with transaction.atomic():
+        wallet = Wallet.objects.select_for_update().get(user=user)
+        user = type(user).objects.select_for_update().get(pk=user.pk)
+        recovery = active_account_recovery(user, identity_type=kind, identity_hash=hash_identifier(digits))
+        if (wallet.account_number or _face_account_setup_held(user)
+                or active_account_recovery(user) is not None and recovery is None
+                or face_identity_error(user, kind, digits)
+                or not partnership_new_business_allowed(user)):
+            _clear_actions(msisdn)
+            return reply(msisdn, "Your account setup changed. Reply *6* to check its current status.")
+        session = recovery if recovery else WemaFaceSession.objects.create(
+            user=user, state=secrets.token_urlsafe(32)[:64], identity_type=kind,
+            identity_hash=hash_identifier(digits),
+            expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
+        )
+    if recovery:
+        start_recovery_session(session, minutes=FACE_SESSION_TTL_MINUTES)
+    expires_minutes = max(1, int((session.expires_at - timezone.now()).total_seconds() / 60))
     url = wema_provider.face_verification_url(kind, digits, _face_callback_url(session.state))
     # Same reason as kyc_face_start: without the verifier host a failure inside the
     # bank's page leaves no trace on our side at all. Host only - the URL's query
@@ -3907,7 +3925,7 @@ def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits:
         "🤳 *One last step - the face check*\n\n"
         "Your bank runs this check on their own secure page. Your photo never "
         "passes through Zitch or this chat.\n\n"
-        f"_Expires in {FACE_SESSION_TTL_MINUTES} minutes. I'll message you as soon "
+        f"_Expires in {expires_minutes} minutes. I'll message you as soon "
         "as the bank confirms._",
         url, cta="Start face check", footer="Secured by your bank",
         # NEVER paste this one as text. The URL carries the customer's raw BVN in a
@@ -4144,7 +4162,8 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
         # the same creation/re-verification loop. Read-back above remains safe;
         # a missing NUBAN after that needs account recovery, not fresh identity.
         from wallet.models import WemaFaceSession
-        if WemaFaceSession.objects.filter(
+        from wallet.account_recovery import active_account_recovery
+        if active_account_recovery(user) is None and WemaFaceSession.objects.filter(
                 user=user, status=WemaFaceSession.VERIFIED).exists():
             return reply(
                 msisdn,

@@ -2012,6 +2012,7 @@ def kyc_face_start(request):
     if gate:
         return gate
     from wallet.identity import accepted_identity_pending
+    from wallet.account_recovery import active_account_recovery, start_recovery_session
     has_account = Wallet.objects.filter(user=user).exclude(account_number="").exists()
     if (accepted_identity_pending(user)
             or not has_account and WemaProvisioningAttempt.objects.filter(
@@ -2020,7 +2021,8 @@ def kyc_face_start(request):
         return JsonResponse({**_kyc_state(user), "success": True, "status": "processing",
                              "pending": True, "otp_required": False, "account_setup_state": "processing",
                              "message": "Your identity check is accepted. Your bank account is still being prepared."}, status=202)
-    if (not has_account
+    recovery = active_account_recovery(user)
+    if (not has_account and recovery is None
             and WemaFaceSession.objects.filter(user=user, status=WemaFaceSession.VERIFIED).exists()):
         return fail("Your identity check is complete, but your funding account needs review. "
                     "Please do not repeat verification.", status=409,
@@ -2056,6 +2058,9 @@ def kyc_face_start(request):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     stored_hash = getattr(user, f"{identity_type}_hash", "") or ""
     identity_hash = hash_identifier(raw)
+    if recovery is not None and (recovery.identity_type != identity_type
+                                  or recovery.identity_hash != identity_hash):
+        return fail("Use the verified identity approved for account recovery.", status=409)
     if (getattr(user, f"{identity_type}_verified", False)
             and hmac.compare_digest(identity_hash, stored_hash)):
         # Verified identity, but the NUBAN it was supposed to mint never landed
@@ -2099,7 +2104,7 @@ def kyc_face_start(request):
                       bank_name=recovered.bank_name,
                       message="Your bank account was already set up — we've reconnected it.",
                       **_kyc_state(user))
-        if WemaFaceSession.objects.filter(
+        if recovery is None and WemaFaceSession.objects.filter(
                 user=user, identity_type=identity_type, identity_hash=identity_hash,
                 status=WemaFaceSession.VERIFIED).exists():
             return fail(
@@ -2132,13 +2137,14 @@ def kyc_face_start(request):
         # its pre-acceptance row while a bank response is being committed.
         list(WemaProvisioningAttempt.objects.select_for_update().filter(
             user=user, status=WemaProvisioningAttempt.PENDING))
+        recovery = active_account_recovery(user, identity_type=identity_type, identity_hash=identity_hash)
         waiting = (accepted_identity_pending(user)
                    or not wallet.account_number and WemaProvisioningAttempt.objects.filter(
                        user=user, status=WemaProvisioningAttempt.PENDING,
                        otp_verified_at__isnull=False).exists())
         completed_without_account = (not wallet.account_number and WemaFaceSession.objects.filter(
             user=user, status=WemaFaceSession.VERIFIED).exists())
-        if completed_without_account and not waiting:
+        if completed_without_account and not waiting and recovery is None:
             return fail("Your identity check is complete, but your funding account needs review. "
                         "Please do not repeat verification.", status=409,
                         code="account_issuance_review", account_setup_state="review_required")
@@ -2149,7 +2155,7 @@ def kyc_face_start(request):
             return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
         already_verified = bool(wallet.account_number and getattr(user, f"{identity_type}_verified"))
         if not waiting and not already_verified:
-            session = WemaFaceSession.objects.create(
+            session = recovery if recovery else WemaFaceSession.objects.create(
                 user=user,
                 state=secrets.token_urlsafe(32)[:64],
                 identity_type=identity_type,
@@ -2163,10 +2169,12 @@ def kyc_face_start(request):
     if already_verified:
         return ok(success=True, status="verified", already=True, account_number=wallet.account_number,
                   message=f"{identity_type.upper()} is already verified", **_kyc_state(user))
+    if recovery:
+        start_recovery_session(session, minutes=FACE_SESSION_TTL_MINUTES)
     url = wema.face_verification_url(identity_type, raw, _face_callback_url(session.state))
     log.info("wema_face_start user=%s type=%s session=%s", user.id, identity_type, session.state[:8])
     return ok(success=True, url=url, session=session.state,
-              expires_in=FACE_SESSION_TTL_MINUTES * 60,
+              expires_in=max(0, int((session.expires_at - timezone.now()).total_seconds())),
               message="Complete the face check to continue.")
 
 

@@ -1077,6 +1077,27 @@ def wema_face_callback(request, state=""):
         # rows. Serialising here makes the second callback hit the replacement guard.
         user = User.objects.select_for_update().get(pk=session.user_id)
         kind = session.identity_type
+        if session.is_account_recovery:
+            from .account_recovery import active_account_recovery
+            from utility.providers import partnership_new_business_allowed
+            # A delayed/replayed result from the original attempt is not a fresh
+            # customer challenge. Leave the authorized session open for its result.
+            if WemaFaceSession.objects.exclude(pk=session.pk).filter(
+                    user=user, correlation_id=correlation).exists():
+                request.wema_action = "denied:reused_recovery_correlation"
+                return JsonResponse({"status": True}, status=200)
+            active = active_account_recovery(user, identity_type=kind, identity_hash=session.identity_hash)
+            lookup = (wema_provider.get_account_details(user.phone, bvn=kind == "bvn")
+                      if active and active.pk == session.pk else {})
+            if (not partnership_new_business_allowed(user)
+                    or lookup.get("mock") or lookup.get("account_number")
+                    or lookup.get("account_lookup_state") != "not_found"):
+                session.status = WemaFaceSession.FAILED
+                session.account_state = "review_required"
+                session.account_failure_category = "recovery_lookup_unresolved"
+                session.save(update_fields=["status", "account_state", "account_failure_category", "updated"])
+                request.wema_action = "denied:recovery_lookup_unresolved"
+                return JsonResponse({"status": True}, status=200)
         flag_field = f"{kind}_verified"
         hash_field = f"{kind}_hash"
         last4_field = f"{kind}_last4"

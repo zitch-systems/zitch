@@ -153,6 +153,10 @@ def _account_setup_state(user, wallet) -> dict:
             "identity_verified": bool(user.bvn_verified or user.nin_verified),
         }
     if user.bvn_verified or user.nin_verified:
+        from .account_recovery import active_account_recovery
+        if active_account_recovery(user):
+            return {"account_setup_state": "recovery_ready", "otp_required": False,
+                    "identity_verified": True, "account_recovery_available": True}
         return {
             "account_setup_state": "identity_verified",
             "otp_required": False,
