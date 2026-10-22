@@ -213,6 +213,9 @@ def wallet_balance_payload(user, wallet=None) -> dict:
     total = wallet.balance
     account = VirtualAccount.objects.filter(user_id=user.pk, mode=VirtualAccount.LIVE).first()
     historical = max(Decimal("0.00"), account_balance(account)) if account else Decimal("0.00")
+    from wallet.models import UnsettledFunding
+    historical += UnsettledFunding.objects.filter(user_id=user.pk).aggregate(
+        value=Sum("amount"))["value"] or Decimal("0.00")
     invalid_account = bool(wallet.account_number) and not partnership_account_number(wallet.account_number)
     held = (not user.is_active or not partnership_allowed(user) or invalid_account
             or bank_history_review_required(wallet))

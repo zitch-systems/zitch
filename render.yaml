@@ -6,6 +6,11 @@ services:
     region: frankfurt
     runtime: python
     rootDir: backend
+    buildFilter:
+      ignoredPaths:
+        - backend/**/test_*.py
+        - backend/**/tests.py
+        - backend/**/tests/**
     # Money movement must not run on a sleeping/free instance. This takes effect
     # only when an operator deliberately syncs the Blueprint.
     plan: starter
@@ -384,6 +389,11 @@ services:
     region: frankfurt
     runtime: python
     rootDir: backend
+    buildFilter:
+      ignoredPaths:
+        - backend/**/test_*.py
+        - backend/**/tests.py
+        - backend/**/tests/**
     plan: starter
     autoDeployTrigger: checksPass
     # Build-time schema gate: a failed candidate is never promoted, so the prior
@@ -571,6 +581,11 @@ services:
     region: frankfurt
     runtime: python
     rootDir: backend
+    buildFilter:
+      ignoredPaths:
+        - backend/**/test_*.py
+        - backend/**/tests.py
+        - backend/**/tests/**
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
@@ -639,6 +654,11 @@ services:
     region: frankfurt
     runtime: python
     rootDir: backend
+    buildFilter:
+      ignoredPaths:
+        - backend/**/test_*.py
+        - backend/**/tests.py
+        - backend/**/tests/**
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
@@ -686,6 +706,11 @@ services:
     region: frankfurt
     runtime: python
     rootDir: backend
+    buildFilter:
+      ignoredPaths:
+        - backend/**/test_*.py
+        - backend/**/tests.py
+        - backend/**/tests/**
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
@@ -804,6 +829,11 @@ services:
     region: frankfurt
     runtime: python
     rootDir: backend
+    buildFilter:
+      ignoredPaths:
+        - backend/**/test_*.py
+        - backend/**/tests.py
+        - backend/**/tests/**
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
@@ -848,6 +878,11 @@ services:
     region: frankfurt
     runtime: python
     rootDir: backend
+    buildFilter:
+      ignoredPaths:
+        - backend/**/test_*.py
+        - backend/**/tests.py
+        - backend/**/tests/**
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
@@ -927,6 +962,11 @@ services:
     region: frankfurt
     runtime: python
     rootDir: backend
+    buildFilter:
+      ignoredPaths:
+        - backend/**/test_*.py
+        - backend/**/tests.py
+        - backend/**/tests/**
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass
@@ -996,6 +1036,11 @@ services:
     region: frankfurt
     runtime: python
     rootDir: backend
+    buildFilter:
+      ignoredPaths:
+        - backend/**/test_*.py
+        - backend/**/tests.py
+        - backend/**/tests/**
     plan: starter
     # Never deploy scheduled money/compliance jobs before repository CI passes.
     autoDeployTrigger: checksPass

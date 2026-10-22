@@ -71,6 +71,32 @@ class Wallet(models.Model):
         return f"{self.user} · ₦{self.balance}"
 
 
+class UnsettledFunding(models.Model):
+    """Money still owed after a funding integration is removed.
+
+    Independent of provider account records. Resolution requires a separately
+    reviewed, evidence-backed settlement change; deletion is not settlement.
+    """
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    destination_digest = models.CharField(max_length=64, unique=True)
+    evidence = models.JSONField(default=dict)
+    operator_reference = models.CharField(max_length=160)
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(
+            condition=models.Q(amount__gt=0), name="unsettled_funding_positive")]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValueError("Unsettled funding evidence is immutable")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("Unsettled funding requires evidenced resolution")
+
+
 class BankHistoryCheckpoint(models.Model):
     """Successful statement coverage for one attached partner-bank account.
 

@@ -4,7 +4,7 @@ from decimal import Decimal
 from django.db.models import Sum
 
 from legacy_funding.models import Receipt, VirtualAccount
-from wallet.models import BillFundingRefund
+from wallet.models import BillFundingRefund, UnsettledFunding
 
 
 def account_balance(account):
@@ -27,6 +27,7 @@ def reconciliation_scope():
     Keeping the historical account in scope prevents a product removal from
     turning missing bank evidence into a false complete settlement position.
     """
-    count = VirtualAccount.objects.filter(mode=VirtualAccount.LIVE).count()
+    count = (VirtualAccount.objects.filter(mode=VirtualAccount.LIVE).count()
+             + UnsettledFunding.objects.count())
     return {"legacy_funding_accounts": count, "legacy_funding_required": bool(count),
             "legacy_funding_balance": None, "legacy_funding_verified": False if count else None}
