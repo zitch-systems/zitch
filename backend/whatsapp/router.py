@@ -3853,6 +3853,35 @@ def _face_account_setup_held(user) -> bool:
             and WemaFaceSession.objects.filter(user=user, status=WemaFaceSession.VERIFIED).exists())
 
 
+def _face_session_for_link(user, kind, digits):
+    """Reuse an authorized challenge across all WhatsApp face-link entry points."""
+    from django.db import transaction
+    from wallet.models import Wallet, WemaFaceSession
+    from accounts.models import hash_identifier
+    from accounts.views import FACE_SESSION_TTL_MINUTES, face_identity_error, _identity_owned_by_another_user
+    from utility.providers import partnership_new_business_allowed
+    from wallet.account_recovery import active_account_recovery, start_recovery_session
+    with transaction.atomic():
+        wallet = Wallet.objects.select_for_update().get(user=user)
+        user = type(user).objects.select_for_update().get(pk=user.pk)
+        recovery = active_account_recovery(user, identity_type=kind, identity_hash=hash_identifier(digits))
+        if ((wallet.account_number and getattr(user, f"{kind}_verified", False))
+                or _face_account_setup_held(user)
+                or active_account_recovery(user) is not None and recovery is None
+                or face_identity_error(user, kind, digits)
+                or _identity_owned_by_another_user(user, kind, digits)
+                or not partnership_new_business_allowed(user)):
+            return None
+        session = recovery if recovery else WemaFaceSession.objects.create(
+            user=user, state=secrets.token_urlsafe(32)[:64], identity_type=kind,
+            identity_hash=hash_identifier(digits),
+            expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
+        )
+    if recovery:
+        start_recovery_session(session, minutes=FACE_SESSION_TTL_MINUTES)
+    return session
+
+
 def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits: str) -> None:
     """Mint a one-time face session and send the customer the bank's link.
 
@@ -3888,26 +3917,10 @@ def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits:
 
     pa.payload.pop("id_purpose", None)
     pa.payload["attempted"] = sorted(set(pa.payload.get("attempted") or []) | {"face"})
-    from django.db import transaction
-    from wallet.models import Wallet
-    from wallet.account_recovery import active_account_recovery, start_recovery_session
-    with transaction.atomic():
-        wallet = Wallet.objects.select_for_update().get(user=user)
-        user = type(user).objects.select_for_update().get(pk=user.pk)
-        recovery = active_account_recovery(user, identity_type=kind, identity_hash=hash_identifier(digits))
-        if (wallet.account_number or _face_account_setup_held(user)
-                or active_account_recovery(user) is not None and recovery is None
-                or face_identity_error(user, kind, digits)
-                or not partnership_new_business_allowed(user)):
-            _clear_actions(msisdn)
-            return reply(msisdn, "Your account setup changed. Reply *6* to check its current status.")
-        session = recovery if recovery else WemaFaceSession.objects.create(
-            user=user, state=secrets.token_urlsafe(32)[:64], identity_type=kind,
-            identity_hash=hash_identifier(digits),
-            expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
-        )
-    if recovery:
-        start_recovery_session(session, minutes=FACE_SESSION_TTL_MINUTES)
+    session = _face_session_for_link(user, kind, digits)
+    if session is None:
+        _clear_actions(msisdn)
+        return reply(msisdn, "Your account setup changed. Reply *6* to check its current status.")
     expires_minutes = max(1, int((session.expires_at - timezone.now()).total_seconds() / 60))
     url = wema_provider.face_verification_url(kind, digits, _face_callback_url(session.state))
     # Same reason as kyc_face_start: without the verifier host a failure inside the
@@ -4479,13 +4492,9 @@ def _send_identity_face_option(pa: PendingAction, user, msisdn: str,
         return False
     if face_identity_error(user, kind, digits):
         return False
-    session = WemaFaceSession.objects.create(
-        user=user,
-        state=secrets.token_urlsafe(32)[:64],
-        identity_type=kind,
-        identity_hash=hash_identifier(digits),
-        expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
-    )
+    session = _face_session_for_link(user, kind, digits)
+    if session is None:
+        return False
     url = wema_provider.face_verification_url(
         kind, digits, _face_callback_url(session.state))
     result = send_cta_url(
@@ -4505,7 +4514,8 @@ def _send_identity_face_option(pa: PendingAction, user, msisdn: str,
         allow_text_fallback=False,
     )
     if not result.get("success"):
-        session.delete()
+        if not session.is_account_recovery:
+            session.delete()
         return False
     log.info("wa_account_face_option_sent user=%s kind=%s session=%s verifier=%s",
              user.pk, kind, session.state[:8], urlparse(url).hostname or "unset")

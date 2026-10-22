@@ -27,6 +27,8 @@ export function buildMcpServer(config: Config, requestMeta: RequestMeta): McpSer
     { name: 'zitch-meta-connector', version: '1.0.0' },
     {
       capabilities: { tools: {} },
+      // Bound validation work as well as the existing HTTP body-size limit.
+      maxToolInputElements: 10_000,
       instructions:
         'Maintenance and configuration tools for the Zitch WhatsApp Cloud API and Meta ' +
         'Business API. No customer data (PINs, biometrics, balances, transactions, personal ' +

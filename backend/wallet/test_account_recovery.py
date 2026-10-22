@@ -177,6 +177,22 @@ class AccountRecoveryTests(TestCase):
             "success": True, "c_id": correlation, "id": BVN, "id_type": "bvn"},
             content_type="application/json", REMOTE_ADDR="8.8.8.8", HTTP_ORIGIN="https://face.example")
 
+    def test_add_account_face_option_reuses_authorization_even_after_delivery_failure(self):
+        from whatsapp import router
+        session, _ = self.prepare(approve=True)
+        action = PendingAction.objects.create(user=self.user, msisdn="2348012340001",
+            action_type="add_account", state=router.FACE_ID_STATE, payload={"id_purpose": "account_face"},
+            expires_at=timezone.now()+timedelta(minutes=20))
+        with mock.patch.object(router, "_face_step_available", return_value=True), \
+                mock.patch.object(router, "send_cta_url", return_value={"success": False}):
+            self.assertFalse(router._send_identity_face_option(action, self.user, action.msisdn, "bvn", BVN, account_setup=True))
+        self.assertTrue(WemaFaceSession.objects.filter(pk=session.pk).exists())
+        with mock.patch.object(router, "_face_step_available", return_value=True), \
+                mock.patch.object(router, "send_cta_url", return_value={"success": True}):
+            self.assertTrue(router._send_identity_face_option(action, self.user, action.msisdn, "bvn", BVN, account_setup=True))
+        self.assertEqual(WemaFaceSession.objects.count(), 2)
+        self.assertEqual(active_account_recovery(self.user).pk, session.pk)
+
     @override_settings(TESTING=False, DEBUG=False, SECURE_SSL_REDIRECT=False, ALLOWED_HOSTS=["testserver"])
     def test_fresh_callback_submits_once_but_old_correlation_never_replays(self):
         session, _ = self.prepare(approve=True)
