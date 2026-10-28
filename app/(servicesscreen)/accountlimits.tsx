@@ -80,7 +80,7 @@ const AccountLimits = () => {
   // an account mid-upgrade they are not the same number.
   const capabilities = walletCapabilities(fundingState);
   const fundingReady = isFundingAccountReady(fundingState);
-  const accountReview = fundingState?.provider !== 'partnership' || fundingState.legacy_funding_review === true
+  const accountReview = fundingState?.provider !== '9psb' || fundingState.legacy_funding_review === true
     || fundingState.account_setup_state === 'legacy_funding_review';
   const displayedNumber = fundingReady ? fundingState?.account_number || '' : '';
   const displayedName = fundingReady ? fundingState?.account_name || '' : '';

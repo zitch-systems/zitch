@@ -94,7 +94,7 @@ def wallet_account(request):
     wallet = get_or_create_wallet(user)
     return ok(
         success=True,
-        **{**customer_funding_account(user), **_account_setup_state(user, wallet)},
+        **customer_funding_account(user),
         bvn_verified=user.bvn_verified,
         nin_verified=user.nin_verified,
         # The customer's registered legal name, so the Add-money screen can always
@@ -1894,7 +1894,7 @@ def transfer_send(request):
 
     try:
         debit_txn, _ = transfer(sender, recipient, amount, note=data.get("note", ""),
-                                idempotency_key=key, channel="app")
+                                idempotency_key=key, channel="app", expected_fee=data.get("expected_fee"))
     except DuplicateTransaction:
         return idempotent_replay(existing_for_key(sender, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:

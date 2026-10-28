@@ -98,13 +98,9 @@ class Command(BaseCommand):
                 return
             try:
                 close_old_connections()
-                from utility.management.commands.reconcile_wema import Command as WemaCommand
+                from banking.reconciliation import sweep
 
-                WemaCommand()._run(
-                    lookback_days=2,
-                    payout_older_than_minutes=2,
-                    account_recovery_limit=0,
-                )
+                sweep(limit=10, budget_seconds=40)
             except Exception:  # noqa: BLE001 - reconciliation retries on next tick
                 self.stderr.write("background money reconciliation failed; retrying")
             finally:
@@ -120,9 +116,9 @@ class Command(BaseCommand):
                 return
             try:
                 close_old_connections()
-                from wallet.services import repair_missing_funding_accounts
+                from banking.reconciliation import sweep
 
-                repair_missing_funding_accounts(limit=20)
+                sweep(limit=3, budget_seconds=20)
             except Exception:  # noqa: BLE001 - retry on the next scheduled pass
                 self.stderr.write("background partner-bank account repair failed; retrying")
             finally:
@@ -130,7 +126,7 @@ class Command(BaseCommand):
                 account_repair_lock.release()
 
         def retry_transaction_alerts():
-            # Money reconciliation belongs exclusively to the Wema cron. This
+            # Money recovery uses the bank outbox. This
             # worker-owned pass only resumes delivery of alerts that were already
             # claimed safely on terminal ledger rows. It uses the worker's Meta
             # credentials, so the bank cron never needs to hold or duplicate them.
@@ -177,6 +173,7 @@ class Command(BaseCommand):
         next_account_repair = time.monotonic()
         next_alert_retry = time.monotonic()
 
+        idle_poll = poll
         while not stopped:
             now = time.monotonic()
             if run_reconcile and not options["once"] and now >= next_reconcile:
@@ -187,7 +184,7 @@ class Command(BaseCommand):
                 ).start()
                 next_reconcile = now + interval
 
-            if not options["once"] and now >= next_account_repair:
+            if not run_reconcile and not options["once"] and now >= next_account_repair:
                 threading.Thread(
                     target=repair_accounts,
                     name="partner-bank-account-repair",
@@ -208,4 +205,7 @@ class Command(BaseCommand):
                 self.stdout.write(f"inbound={inbound} outbound={outbound}")
                 return
             if inbound == 0 and outbound == 0:
-                time.sleep(poll)
+                time.sleep(idle_poll)
+                idle_poll = min(3.0, max(poll, idle_poll * 1.5))
+            else:
+                idle_poll = poll

@@ -1,152 +1,27 @@
-"""Ledger <-> BANK (Wema NUBAN) balance reconciliation — the EXTERNAL integrity check.
-
-``integrity_check`` compares each wallet's stored balance against its own
-append-only ledger (internal vs internal). This command goes one step further and
-compares the ledger against what the BANK actually holds in the user's Wema NUBAN
-(internal vs external) — the check that catches float leaks, double-credits, and
-any drift between our books and the bank that a purely-internal check cannot see.
-
-Direction matters, so the two are reported separately:
-
-  * ledger > bank  — we think the user has MORE than their NUBAN holds. The
-    dangerous direction (a double-credit, or a debit that never reached the bank).
-    This PAGES via Sentry.
-  * bank > ledger  — the NUBAN holds more than our books show. It can be a
-    transient deposit between sweeps, but a six-hour reconciliation is too late
-    to dismiss as harmless. It is escalated for operator review (rate-limited by
-    the exact discrepancy), without ever changing a customer balance.
-
-Read-only; safe to run any time. It only does work when Wema is LIVE — in
-simulation/mock ``get_balance`` returns 0.00, which would flag every funded wallet
-as diverging, so it no-ops there instead of flooding false positives. Schedule it
-less often than the funding sweep (e.g. hourly/daily). ``--fail-nonzero`` exits 1
-on ANY divergence beyond ``--tolerance`` or incomplete bank reads for cron/CI alerting.
-"""
-from decimal import Decimal, InvalidOperation
-
+"""Read-only 9PSB reconciliation including unresolved archived liabilities."""
+import json
 from django.core.management.base import BaseCommand, CommandError
-
-from utility import wema
-from wallet.services import wallet_expected_balance, wema_provisioned_wallets
-from wallet.funding_holds import reconciliation_scope
+from banking.audit import snapshot
+from whatsapp.ops import record_audit
 
 
 class Command(BaseCommand):
-    help = ("Reconcile each Wema-provisioned wallet's ledger balance against the real "
-            "NUBAN balance at the bank; escalate any non-zero divergence without "
-            "changing money or payment state.")
+    help = "Compare verified bank balances with customer liabilities without moving money."
 
     def add_arguments(self, parser):
-        parser.add_argument(
-            "--tolerance", default="0.00",
-            help="Naira delta to treat as noise, e.g. rounding (default: 0.00).")
-        parser.add_argument(
-            "--fail-nonzero", action="store_true",
-            help="Exit 1 on ANY divergence beyond tolerance (over or under), or an incomplete "
-                 "bank read — for CI/manual audit.")
-        parser.add_argument(
-            "--fail-over", action="store_true",
-            help="Legacy alias for the non-zero reconciliation gate: exit 1 on either "
-                 "discrepancy direction or an incomplete bank read. It never changes a "
-                 "customer balance or payment outcome.")
+        parser.add_argument("--tolerance", default="0.00")
+        parser.add_argument("--fail-nonzero", action="store_true")
+        parser.add_argument("--fail-over", action="store_true")
 
     def handle(self, *args, **options):
-        from utility.alerts import alert
-
+        from decimal import Decimal, InvalidOperation
         try:
-            tolerance = Decimal(options["tolerance"])
-        except (InvalidOperation, TypeError, ValueError):
-            raise CommandError("Tolerance must be a finite nonnegative amount.") from None
-        if not tolerance.is_finite() or tolerance < 0:
-            raise CommandError("Tolerance must be a finite nonnegative amount.")
-
-        legacy_scope = reconciliation_scope()
-        if legacy_scope["legacy_funding_required"]:
-            self.stdout.write(
-                "Historical funding reconciliation INCOMPLETE: bank collection balance and "
-                "transaction-search contract are unverified. Migrated wallets require "
-                "manual reconciliation; they are not compared with old individual NUBANs.")
-            alert("reconcile_balances: Historical funding reconciliation requires verified bank evidence",
-                  level="error", **legacy_scope)
-
-        # Only meaningful against live NUBANs. In simulation/mock, get_balance
-        # returns 0.00 for everyone, which would mark every funded wallet as
-        # diverging — so no-op with a clear message instead of paging noise.
-        if not wema.wema_live():
-            self.stdout.write("reconcile_balances: Wema not live (simulation/mock) — no real "
-                              "NUBAN balances to compare. Skipping.")
-            if legacy_scope["legacy_funding_required"] and (options["fail_over"] or options["fail_nonzero"]):
-                raise SystemExit(1)
-            return
-
-        checked = 0
-        unreachable = 0
-        over = []   # ledger > bank  (dangerous — float risk)
-        under = []  # bank > ledger  (operator review; no automatic correction)
-        # A migrated wallet can contain historical credits and late legacy credits.
-        # Exact asset attribution is not established by its aggregate balance.
-        # Preserve the independent legacy history sweep; this comparison must
-        # fail as incomplete rather than invent a ledger-over-bank discrepancy.
-        from wallet.partnership import legacy_funding_blockers
-        for w in wema_provisioned_wallets().select_related("user"):
-            if legacy_funding_blockers(w.user):
-                continue
-            checked += 1
-            res = wema.get_balance(w.account_number)
-            bank = res.get("balance_naira") if res.get("success") else None
-            if bank is None:
-                unreachable += 1
-                continue
-            ledger = wallet_expected_balance(w.user_id)
-            delta = ledger - bank  # +ve => ledger exceeds bank
-            row = {"user": w.user_id, "ledger": str(ledger), "bank": str(bank), "delta": str(delta)}
-            if delta > tolerance:
-                over.append(row)
-            elif -delta > tolerance:
-                under.append(row)
-
-        from whatsapp.ops import record_audit
-        record_audit("recon.balance_check", actor_type="system",
-                     after={**legacy_scope, "wallets": checked, "unreachable": unreachable,
-                            "tolerance": str(tolerance),
-                            "ledger_over_bank": len(over), "bank_over_ledger": len(under),
-                            "over_sample": over[:25], "under_sample": under[:25]})
-
-        for row in over:
-            self.stderr.write(f"OVER  user={row['user']} ledger={row['ledger']} "
-                              f"bank={row['bank']} delta=+{row['delta']}")
-        for row in under:
-            self.stdout.write(f"under user={row['user']} ledger={row['ledger']} "
-                              f"bank={row['bank']} delta={row['delta']}")
-
-        # Ledger exceeding bank is an immediate float risk. Bank exceeding
-        # ledger is not safe to ignore either once it survives to this
-        # six-hour job: it can be a missed funding credit or other provenance
-        # break. Both incidents only alert; neither branch changes money,
-        # refunds, or resolves a pending transaction.
-        if over:
-            alert("reconcile_balances: ledger exceeds bank NUBAN balance (possible float leak "
-                  "or double-credit)", level="error",
-                  wallets=checked, over=len(over), sample=over[:10])
-        if under:
-            from utility.reconciliation import alert_due
-            fingerprint = [
-                f"{row['user']}:{row['ledger']}:{row['bank']}"
-                for row in under
-            ]
-            if alert_due("balance-bank-over-ledger", fingerprint):
-                alert("reconcile_balances: bank NUBAN balance exceeds ledger; "
-                      "operator provenance review required and no correction was applied",
-                      level="error", wallets=checked, under=len(under), sample=under[:10])
-        # Total outage (every balance read failed) is its own signal.
-        if checked and unreachable == checked:
-            alert(f"reconcile_balances: all {checked} NUBAN balance reads failed — Wema "
-                  f"unreachable or auth rejected", level="error", wallets=checked)
-
-        self.stdout.write(
-            f"Balance recon: {checked} wallet(s), {len(over)} over / {len(under)} under / "
-            f"{unreachable} unreachable (tolerance {tolerance})")
-        incomplete = unreachable > 0 or legacy_scope["legacy_funding_required"]
-        if ((incomplete or over or under)
-                and (options["fail_over"] or options["fail_nonzero"])):
-            raise SystemExit(1)
+            if Decimal(options["tolerance"]) != 0:
+                raise ValueError()
+        except (InvalidOperation, ValueError):
+            raise CommandError("Reconciliation requires exact zero tolerance") from None
+        result = snapshot()
+        record_audit("recon.balance_check", actor_type="system", after=result)
+        self.stdout.write(json.dumps(result, sort_keys=True))
+        if result["incomplete"] and (options["fail_nonzero"] or options["fail_over"]):
+            raise CommandError("Bank balances or historical liabilities require review")

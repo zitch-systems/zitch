@@ -18,7 +18,7 @@ if [ -n "${WHATSAPP_FLOW_DEPLOY_OPERATION:-}" ]; then
 fi
 # Read-only, redacted evidence for operators while public maintenance is on.
 # This reports configuration gaps; it cannot authorize release or change funds.
-python manage.py partnership_diagnostics
+python manage.py bank_preflight --report-only
 # Optional incident evidence for a bounded set of internal user IDs. The command
 # reads bank statements and local history only, prints redacted summaries, and
 # never changes balances, checkpoints, KYC state or payment outcomes. Clear the
@@ -28,33 +28,7 @@ if [ -n "${ZITCH_RECONCILIATION_EVIDENCE_USERS:-}" ]; then
     --user-ids "$ZITCH_RECONCILIATION_EVIDENCE_USERS" --days 90 --max-rows 50 \
     || echo "==> Reconciliation evidence unavailable; launch review remains open."
 fi
-python manage.py seed_plans
-
-# Map Wema's VAS catalogue onto our seeded plans, when asked to.
-#
-# Same reason as the operator bootstrap below: there is no shell on this plan, so
-# a deploy is the only place a one-off management command can run against the
-# production database with the live keys. Gated on an env var rather than run
-# every time, because this is a best-effort NAME MATCH against the bank's
-# catalogue and a wrong match routes somebody's meter number to the wrong
-# distributor — it wants reading before it is trusted, not repeating unattended.
-#
-#   SEED_WEMA_CATALOGUE=dry   report the matches, write nothing
-#   SEED_WEMA_CATALOGUE=billers|data|cable|all   write that catalogue
-#
-# Never fatal. errexit is on, so an unreachable catalogue or a rail hiccup would
-# otherwise fail the build and take the API down with it — a VAS mapping is not
-# worth an outage. An unmapped service is simply not on sale (the purchase is
-# refused before any debit) rather than silently fulfilled on another rail.
-case "${SEED_WEMA_CATALOGUE:-}" in
-  "") ;;
-  dry) python manage.py seed_wema_plans --dry-run || echo "==> catalogue dry-run failed (ignored)" ;;
-  all) python manage.py seed_wema_plans || echo "==> catalogue sync failed (ignored)" ;;
-  billers|data|cable)
-    python manage.py seed_wema_plans --only "$SEED_WEMA_CATALOGUE" \
-      || echo "==> catalogue sync failed (ignored)" ;;
-  *) echo "==> WARNING: SEED_WEMA_CATALOGUE='$SEED_WEMA_CATALOGUE' is not a known value; skipping." ;;
-esac
+python manage.py sync_bank_directory --if-configured
 
 # Auto-provision a super_admin operator from env vars (Render free tier has no
 # shell, so this is the only way to bootstrap admin access without one). Skipped

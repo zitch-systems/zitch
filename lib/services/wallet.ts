@@ -51,13 +51,13 @@ export const walletBalances = (value: BalancePayload | null | undefined): Wallet
 };
 
 export const walletCapabilities = (value: CapabilityPayload | null | undefined): WalletCapabilities => {
-  if (value?.provider !== 'partnership' || value.legacy_funding_review === true
+  if (value?.provider !== '9psb' || value.legacy_funding_review === true
       || value.account_setup_state === 'legacy_funding_review' || value.spending_available === false) {
     return { billPaymentsAvailable: false, transfersAvailable: false };
   }
   return {
-    billPaymentsAvailable: value.bill_payments_available == null ? true : value.bill_payments_available === true,
-    transfersAvailable: value.transfers_available == null ? true : value.transfers_available === true,
+    billPaymentsAvailable: value.bill_payments_available === true,
+    transfersAvailable: value.transfers_available === true,
   };
 };
 
@@ -119,7 +119,7 @@ export type FundingAccount = ApiResult<CapabilityPayload & {
 
 /** Never present an unconfirmed or historical account as a funding destination. */
 export const isFundingAccountReady = (value: FundingAccount | null | undefined): boolean =>
-  value?.provider === 'partnership' && value.can_fund === true
+  value?.provider === '9psb' && value.can_fund === true
   && value.available === true && value.has_account === true
   && value.legacy_funding_review !== true
   && ['ready', 'bank_history_review'].includes(value.account_setup_state || '')

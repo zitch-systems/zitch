@@ -56,7 +56,7 @@ def diagnostics_view(request):
 
     from django.core.management import call_command
 
-    from utility import wema
+    from banking.readiness import report as bank_report
     from utility.providers import sms_live, sms_probe, vas_can_settle, vtu_live
 
     parts = []
@@ -82,22 +82,20 @@ def diagnostics_view(request):
     buf = io.StringIO()
     ready = True
     try:
-        call_command("wema_preflight", stdout=buf, stderr=buf)
+        call_command("bank_preflight", stdout=buf, stderr=buf)
     except SystemExit:
         ready = False
     except Exception as exc:                    # noqa: BLE001
         ready = False
         buf.write(f"\npreflight could not run: {type(exc).__name__}: {exc}")
     parts.append(_section(
-        f"Partnership preflight — {'READY' if ready else 'NOT READY'}", buf.getvalue(),
-        note="The same <code>manage.py wema_preflight</code>. GATE lines block real money; "
+        f"Bank preflight — {'READY' if ready else 'NOT READY'}", buf.getvalue(),
+        note="The same <code>manage.py bank_preflight</code>. GATE lines block real money; "
              "the rest degrade a non-money feature."))
 
     # --- rails ----------------------------------------------------------------
-    parts.append(_section("Wema / ALAT", _json(_safe("wema", wema.wema_diagnostics)),
-                          note="<code>status: simulation</code> means every Wema call is mocked "
-                               "regardless of the keys — clear <code>WEMA_SIMULATION</code> for "
-                               "real calls."))
+    parts.append(_section("9PSB", _json(_safe("banking", bank_report)),
+                          note="Sandbox configuration is not production bank acceptance."))
     parts.append(_section(
         "SMS (Termii)",
         _json({"sms_live": _safe("sms_live", sms_live),

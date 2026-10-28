@@ -10,9 +10,7 @@ from decimal import Decimal
 
 from django.db.models import F
 
-from utility import wema as wema_provider
 from utility.providers import payout_send
-from utility.wema import classify_transfer_status
 from wallet.models import Transaction
 from wallet.services import (
     DuplicateTransaction,
@@ -117,7 +115,7 @@ def _suggest(name: str, leftovers: list[dict], limit: int = 5) -> list:
 def compare_bank_codes(remote: list[dict]) -> dict:
     """Classify our payout bank codes against the rail's own bank list.
 
-    `remote` is `utility.wema.get_banks()["banks"]` — `[{bank_name, bank_code}]`.
+    `remote` is `banking.adapter.get_banks()["banks"]` — `[{bank_name, bank_code}]`.
     Returns `{agree, differ, ambiguous, unmatched, remote_count, ok}`, where the
     three problem lists carry `{name, ours, rail}` rows.
 
@@ -198,59 +196,9 @@ def apply_bank_codes(differ: list[dict]) -> int:
 
 
 def detect_account_banks(account_number: str) -> list[dict]:
-    """Auto-detect which bank(s) a 10-digit NUBAN belongs to.
-
-    A NUBAN can't be mapped to a bank offline, so we run a name-enquiry across the
-    active banks in parallel and keep the ones that resolve, returning
-    ``[{"bank", "bank_name", "name"}]`` (``bank`` is our slug code). Usually one
-    match; a number that's a valid account at two banks (different holders) returns
-    both. Cached briefly per account number so a re-resolve/retry doesn't re-sweep.
-
-    MOCK mode (no payout keys) returns a single deterministic match — fanning out
-    there would make every bank "match" the stub — so the flow stays testable.
-    """
-    from concurrent.futures import ThreadPoolExecutor
-
-    from django.core.cache import cache
-
-    from utility.providers import payout_live, payout_resolve_account
-
-    ckey = f"acctdetect:{account_number}"
-    cached = cache.get(ckey)
-    if cached is not None:
-        return cached
-
-    # Sweep only the `popular` banks (the high-volume set covering nearly all
-    # transfer traffic): each probe is a paid provider name-enquiry, and the
-    # picker now lists ~40+ banks — fanning out to all of them for every typed
-    # account would be slow and expensive. An account at a non-popular bank
-    # just isn't auto-detected; the user picks the bank manually (which
-    # resolves at that one bank). Falls back to every active bank if no bank
-    # is flagged popular (e.g. a stale seed).
-    banks = list(Bank.objects.filter(active=True, popular=True).exclude(bank_code=""))
-    if not banks:
-        banks = list(Bank.objects.filter(active=True).exclude(bank_code=""))
-    if not payout_live():
-        # No live name-enquiry rail: this is a placeholder, NOT a real detection.
-        # Flag it `mock` so callers don't present the stub bank/name as verified.
-        matches = ([{"bank": banks[0].code, "bank_name": banks[0].name,
-                     "name": "ADEYEMI WILLIAM", "mock": True}]
-                   if banks else [])
-        cache.set(ckey, matches, 60)
-        return matches
-
-    def probe(b):
-        res = payout_resolve_account(account_number, b.bank_code)
-        if res.get("success") and res.get("name"):
-            return {"bank": b.code, "bank_name": b.name, "name": res["name"]}
-        return None
-
-    matches = []
-    if banks:
-        with ThreadPoolExecutor(max_workers=min(8, len(banks))) as ex:
-            matches = [r for r in ex.map(probe, banks) if r]
-    cache.set(ckey, matches, 600)
-    return matches
+    # Account numbers are not a unique bank identifier. Avoid a paid multi-bank
+    # sweep for every keystroke; the customer selects one bank for name enquiry.
+    return []
 
 
 class PayoutError(Exception):
@@ -268,225 +216,45 @@ class PayoutError(Exception):
 
 
 def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
-                   note: str = "", idempotency_key: str = "", channel: str = "") -> Transaction:
-    """Debit the wallet, send the payout, settle/refund, and save the beneficiary.
-
-    The caller must already have verified the PIN + tier limits and resolved
-    `name` via the provider's name-enquiry. Raises PayoutError on a duplicate,
-    insufficient funds, or a provider failure (wallet auto-refunded).
-
-    Returns the ledger transaction — **which is not always Successful**. The
-    "pending" branch below returns a row still marked Pending, both for an
-    accepted-but-queued transfer and for the ambiguous send-timeout where Wema
-    may or may not have paid. CHECK `transaction_status` before telling a
-    customer their money arrived: this docstring used to promise a settled row,
-    and the WhatsApp path believed it and issued receipts for transfers that had
-    not gone through.
-
-    `channel`, when set to "whatsapp", is stamped onto the ledger row's meta so
-    the post-save alert knows the customer already saw a receipt and a balance
-    line in that same chat and does not need a second "Debit alert" message.
-    """
-    # A NUBAN minted while the rail was mocked exists nowhere at the bank, but it is
-    # still on the wallet once live keys are set — and it is what we send as the
-    # payout's sourceAccountNumber. The rail's enquiry then fails and blames "the
-    # account number", which reads as the RECIPIENT's. Refuse before the debit:
-    # otherwise every attempt debits, fails at the rail and refunds, leaving a trail
-    # of reversals and a user watching money leave and come back.
-    from utility.providers import payout_live
-    from wallet.services import get_or_create_wallet, is_demo_account
-
-    # Read the wallet from the DB rather than off `user`. The reverse one-to-one
-    # accessor serves a cache pinned to this `user` INSTANCE, and any caller that
-    # already touched the wallet earlier in the same request — provisioning the
-    # NUBAN, lifting its PND, crediting it — holds a different Python object, so
-    # the cached copy still shows the pre-mutation state. Every check below is a
-    # source-account safety gate reading exactly the fields such a caller has just
-    # written: a NUBAN that now exists still reads as missing, and a hold that has
-    # just been lifted still reads as placed. The PND branch then also SAVES this
-    # object, which would write the stale copy back over the fresh row.
-    wallet = get_or_create_wallet(user)
-    from wallet.services import assert_customer_spending_available
+                   note: str = "", idempotency_key: str = "", channel: str = "",
+                   expected_fee=None) -> Transaction:
+    """Reserve principal and confirmed fee atomically with a single-use outbox."""
+    from django.db import transaction
+    from banking.payments import spending_account, bind_instruction, dispatch
+    from banking.fees import transfer_fee
+    from banking.client import money
     try:
-        assert_customer_spending_available(user)
-    except LimitExceeded as exc:
-        raise PayoutError("rail_unavailable", str(exc)) from exc
-    if payout_live() and wallet is not None and is_demo_account(wallet):
-        raise PayoutError(
-            "source_unusable",
-            "Your Zitch account number was issued in test mode and can't send money. "
-            "Contact support to have it reissued — your balance is safe.")
-
-    # No NUBAN of their own AND no shared pool to fall back on: there is no account
-    # to debit, so payout_send would refuse — but only AFTER the debit, and with
-    # "Payouts are temporarily unavailable, please try again shortly". That reads as
-    # a passing outage and invites exactly the one thing that cannot work: waiting.
-    # The account is missing until someone finishes setting it up. Say so, and say it
-    # before taking the money.
-    from django.conf import settings
-
-    if (payout_live() and not getattr(wallet, "account_number", "")
-            and not (settings.WEMA.get("SOURCE_ACCOUNT") or "").strip()):
-        log.warning("payout_no_source user=%s (no wallet NUBAN, WEMA_SOURCE_ACCOUNT unset)",
-                    getattr(user, "id", "?"))
-        raise PayoutError(
-            "source_missing",
-            "Your Zitch account number isn't set up yet, so there's nothing to send from. "
-            "Finish account setup, then try again — your balance is safe.")
-
-    # A freshly issued partnership NUBAN can receive before Wema has removed its
-    # Post-No-Debit hold. Never create a ledger debit until that source account is
-    # confirmed debit-ready. This also repairs accounts whose earlier background
-    # retry used the wrong BVN/NIN product route.
-    if (wema_provider.wema_live() and wallet is not None
-            and getattr(wallet, "account_number", "") and not wallet.pnd_lifted):
-        pnd = wema_provider.lift_debit_restriction(wallet.account_number)
-        if not pnd.get("success"):
-            log.warning("payout_source_pnd_not_lifted user=%s account=%s message=%s",
-                        getattr(user, "id", "?"), wallet.account_number[-4:],
-                        pnd.get("message", ""))
-            raise PayoutError(
-                "source_restricted",
-                "Your Zitch account is still being activated for transfers. "
-                "Please try again shortly — your balance has not been debited.")
-        wallet.pnd_lifted = True
-        wallet.save(update_fields=["pnd_lifted", "updated"])
-
-    narration = " ".join(str(note or "").split())[:60] or f"Transfer to {name}"
-
-    try:
-        txn = debit(
-            user, amount, f"Transfer to {name}",
-            # Pre-flag `reconcile` ATOMICALLY with the debit, BEFORE the provider
-            # call (mirroring run_provider_purchase). The debit commits on its own,
-            # with no lock held across the network I/O, so a worker crash between the
-            # send and the settle write would otherwise orphan a committed PENDING
-            # row the payout sweep (filters meta__reconcile=True) could never find —
-            # money debited, never settled or reversed. Cleared below only on a
-            # definitively delivered result.
-            meta={"account": account_number, "bank": bank.name,
-                  "recipient_name": name, "note": narration, "narration": narration,
-                  "reconcile": True, "channel": channel},
-            idempotency_key=idempotency_key,
-        )
+        source = spending_account(user, refresh=True)
+        fee = transfer_fee(amount)
+        if fee is None:
+            raise LimitExceeded("Transfer fees are unavailable. No money was taken.")
+        if expected_fee is None or Decimal(str(expected_fee)) != fee:
+            raise LimitExceeded("Review the current transfer fee before confirming this payment.")
+        narration = " ".join(str(note or "").split())[:100] or f"Transfer to {name}"[:100]
+        payload = {"source": source.number, "destination": account_number,
+            "bank_code": bank.bank_code, "destination_name": name,
+            "amount": money(amount), "fee": str(fee), "narration": narration}
+        with transaction.atomic():
+            txn = debit(user, amount + fee, f"Transfer to {name}",
+                meta={"provider": "9psb", "account": account_number, "bank": bank.name,
+                      "recipient_name": name, "note": narration, "narration": narration,
+                      "principal": str(amount), "fee": str(fee), "reconcile": True, "channel": channel},
+                idempotency_key=idempotency_key)
+            instruction = bind_instruction(txn, "waas", "OTHER_BANKS", payload)
     except DuplicateTransaction:
-        raise PayoutError("duplicate", "This request was already processed.")
+        raise PayoutError("duplicate", "This request was already processed.") from None
     except InsufficientFunds:
-        raise PayoutError("insufficient", "Insufficient wallet balance.")
-    except LimitExceeded as exc:
-        raise PayoutError("limit_exceeded", str(exc))
-
-    # Wema per-user-balance model: debit the sender's own NUBAN.
-    # Use the same freshly read account that passed the source-readiness checks.
-    # user.wallet may be a cached copy from before provisioning/account repair.
-    sender_source = wallet.account_number or ""
-    result = payout_send(amount, txn.reference, narration,
-                         bank.bank_code, account_number, name, bank_name=bank.name,
-                         source_account=sender_source)
-
-    # Wema callbacks may identify a transfer by its platform reference rather than
-    # echoing our transactionReference. Persist both identifiers immediately so a
-    # later authenticated callback can map to this exact debit.
-    merge_transaction_meta(txn, {"wema_transfer": {
-        "platform_reference": str(result.get("platform_reference") or ""),
-        "status": str(result.get("status") or ""),
-    }})
-
-    if result.get("pending"):
-        outcome = "pending"
-    elif result.get("success"):
-        # APIM accepting a request is not proof the recipient was paid.  Unknown
-        # provider status strings are held for reconciliation; only the explicit
-        # terminal-success legend can settle the ledger.
-        outcome = classify_transfer_status(result.get("status"), envelope_ok=True)
-    else:
-        outcome = "failed"
-
-    if outcome == "success":
-        # Confirmed sent — settle through the locked state machine. A concurrent
-        # callback/reconciler may already have resolved the row; never overwrite
-        # its terminal state from this request's stale in-memory object.
-        settled = settle_or_refund(txn, {"success": True, "status": result.get("status", "")})
-        if settled == "quarantined":
-            # A bank-history sweep found conflicting returned-funds evidence
-            # while this provider response was in flight.  The debit remains on
-            # a durable operator-review hold.  Return the row as under review so
-            # callers preserve their retry key and never invite a second payout.
-            txn.refresh_from_db()
-            txn.provider_outcome = "quarantined"
-            return txn
-        if settled != "success":
-            log.critical("payout_state_conflict ref=%s provider=success ledger=%s",
-                         txn.reference, settled)
-            raise PayoutError(
-                "state_conflict",
-                "The bank response conflicted with the ledger. Your transaction is under review.",
-            )
-    elif outcome == "pending":
-        # Accepted-but-queued (PENDING/PROCESSING), OR an AMBIGUOUS outcome — a send
-        # timeout / lost response on the non-idempotent transfer POST, where Wema may
-        # already have paid the recipient. HOLD the debit: never refund a
-        # maybe-delivered transfer (that would drain the float and, on retry, double-
-        # pay). The row stays PENDING with the reconcile flag pre-set above; the
-        # transfer webhook or the payout reconciler (verify_payout) settles it
-        # (settle_payout) or reverses it (reverse_transfer) once the outcome is known.
-        # The caller reports "processing", not "sent".
-        pass
-    else:
-        # Definitive rejection (validation error / OTP-required misconfig): the
-        # transfer was NOT executed, so refunding the sender is safe.
-        #
-        # Record WHY on the row first, the way settle_or_refund does for VAS. The
-        # reason was previously raised to the user and logged, and nowhere else —
-        # so after the fact, with no shell and no log access, a failed payout was
-        # indistinguishable from any other failed payout. It is the single most
-        # useful field when a rail starts rejecting transfers.
-        settled = settle_or_refund(
-            txn,
-            {"success": False,
-             "message": result.get("message", "") or "Transfer failed",
-             "status": result.get("status", "")},
-        )
-        if settled == "quarantined":
-            # A conflicting returned-credit record beats this stale provider
-            # response. Keep the debit under review and make every caller render
-            # it as non-terminal rather than clearing the durable retry key.
-            txn.refresh_from_db()
-            txn.provider_outcome = "quarantined"
-            return txn
-        # A verified callback/reconciler can win before this stale failure
-        # response returns. Its success is authoritative; refunding would create
-        # free money after the recipient was paid.
-        if settled != "success":
-            raise PayoutError("provider", result.get("message", "Transfer failed"))
-
-    # Record the recipient for next time. This is a RECENT, never a saved
-    # beneficiary: `saved` and `nickname` are absent from `defaults` on purpose,
-    # so a repeat payout to somebody the customer has already saved and named
-    # cannot quietly undo either. Nothing in the payout path decides what belongs
-    # in a customer's address book; only the customer does.
-    row, _ = Beneficiary.objects.get_or_create(
-        user=user, account_number=account_number, bank_name=bank.name,
-        defaults={"name": name, "bank_code": bank.bank_code, "color": bank.color or "#0FA295"},
-    )
-    # Automatic recipient memory is separate from the explicit address book:
-    # every successful/accepted transfer increments the private frequency counter.
-    # After transfer #3 it becomes eligible for account-number search/autofill;
-    # after transfer #51 it is promoted to Beneficiary (saved=True). This is
-    # idempotent for retries because the payout itself is idempotent.
-    Beneficiary.objects.filter(pk=row.pk).update(transfer_count=F("transfer_count") + 1)
-    row.refresh_from_db(fields=["transfer_count", "saved", "name", "bank_code", "color", "nickname"])
-    if row.transfer_count > 50 and not row.saved:
-        row.saved = True
-        row.save(update_fields=["saved"])
+        raise PayoutError("insufficient", "Insufficient available balance for the amount and fee.") from None
+    except (LimitExceeded, ValueError, ArithmeticError) as exc:
+        raise PayoutError("limit_exceeded", str(exc)) from None
+    result = dispatch(instruction)
     txn.refresh_from_db()
-    # Carried on the transaction so the caller can offer "save this recipient"
-    # against the exact row we just wrote, rather than re-deriving it from an
-    # account number — which would cost a second name enquiry to answer a
-    # question we already know the answer to.
-    txn.beneficiary_id = row.id
-    # Carried so the receipt can ask the same question the chat asks, on the
-    # same terms, rather than each surface inventing its own threshold.
-    txn.beneficiary_transfers = row.transfer_count
-    txn.beneficiary_saved = row.saved
+    if txn.transaction_status == Transaction.FAILED:
+        raise PayoutError("provider", result.get("message", "Transfer could not be completed."))
+    row, _ = Beneficiary.objects.get_or_create(user=user, account_number=account_number,
+        bank_name=bank.name, defaults={"name": name, "bank_code": bank.code,
+                                     "color": bank.color or "#0FA295"})
+    Beneficiary.objects.filter(pk=row.pk).update(transfer_count=F("transfer_count") + 1, bank_code=bank.code)
+    row.refresh_from_db()
+    txn.beneficiary_id, txn.beneficiary_transfers, txn.beneficiary_saved = row.pk, row.transfer_count, row.saved
     return txn

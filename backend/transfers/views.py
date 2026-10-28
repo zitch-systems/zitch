@@ -347,7 +347,7 @@ def bank_transfer(request):
 
     try:
         txn = execute_payout(user, amount, acct, bank, name, note=note,
-                             idempotency_key=key, channel="app")
+                             idempotency_key=key, channel="app", expected_fee=data.get("expected_fee"))
     except PayoutError as exc:
         if exc.kind == "duplicate":
             # Try to replay the original outcome (idempotent_replay returns ok(success=True, duplicate=True)).

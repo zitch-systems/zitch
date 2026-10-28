@@ -1,1057 +1,145 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Animated, Easing, Pressable } from 'react-native';
-import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import React, { useEffect, useRef, useState } from 'react';
+import { Text, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import * as WebBrowser from 'expo-web-browser';
-import Svg, { Circle } from 'react-native-svg';
-import { notify } from '@/components/design/Notify';
-import { getSessionGeneration, getToken } from '@/lib/secureStore';
-import { beginExternalActivity, endExternalActivity } from '@/lib/session';
-import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute, resolveOwnershipOtpRoute, type KycStatus, type KycVerificationFlag, type ResidentialAddress } from '@/lib/services/kyc';
-import type { FundingAccount } from '@/lib/services/wallet';
-import FaceLivenessModal from '@/components/design/FaceLivenessModal';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
 import AuthGuard from '@/components/AuthGuard';
-import ZIcon from '@/components/design/ZIcon';
-import { Screen, Header, Field, Btn, Tap, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn } from '@/components/design/ui';
+import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
+import { banking, type BankProfile, type BankStatus } from '@/lib/services/banking';
+import { beginExternalActivity, endExternalActivity } from '@/lib/session';
+import { getSessionGeneration } from '@/lib/secureStore';
 
-type Status = {
-  tier: number; transaction_limit: string;
-  bvn_verified: boolean; nin_verified: boolean; face_verified: boolean;
-  message?: string;
-  address_verified?: boolean;
-  address_verification_pending?: boolean;
-  address_verification_state?: 'pending' | 'verified' | 'not_verified';
-  address_verification_required?: boolean;
-  email?: string;
-  email_verified?: boolean;
-  phone_verified?: boolean;
-  pending?: boolean;
-  identity_review_required?: boolean;
-  id_document_verified?: boolean;
-  identity_face_available?: boolean;
-  identity_verification_methods?: string[];
-  identity_verification_provider?: 'prembly' | 'wema';
-  account_provider?: string;
-  legacy_funding_review?: boolean;
-  account_setup_state?: string;
-  migration_message?: string;
-  face_rail?: 'document' | 'wema';
-  tier2_face_rail?: 'prembly' | 'wema';
-  tier2_face_flow?: 'prembly_sdk';
-  tier2_face_available?: boolean;
-  tier2_unavailable_reason?: string;
-  tier3_address_available?: boolean;
-  tier3_address_unavailable_reason?: string;
-  address_rail?: 'document' | 'wema' | 'none';
-  // Set once the bank has opened the account number: from then on it will not
-  // accept a lone BVN or NIN, only all of it at once. Read here so the menu can
-  // send the customer straight to the step that works.
-  identity_upgrade_required?: boolean;
-  bank_upgrade_required?: boolean;
-};
+const emptyProfile: BankProfile = { lastName: '', otherNames: '', phoneNo: '', email: '', dateOfBirth: '', address: '' };
+const upgradeFields = [
+  ['bvn', 'BVN'], ['nin', 'NIN'], ['idType', 'ID type: 1 NIN, 2 driver licence, 3 voter card, 4 passport'],
+  ['idNumber', 'ID number'], ['idIssueDate', 'ID issue date (YYYY-MM-DD)'], ['idExpiryDate', 'ID expiry date (if applicable)'],
+  ['houseNumber', 'House number'], ['streetName', 'Street'], ['city', 'City'], ['state', 'State'],
+  ['localGovernment', 'Local government area'], ['nearestLandmark', 'Nearest landmark'], ['pep', 'Politically exposed person: YES or NO'],
+] as const;
+const files = [['userPhoto', 'Passport photo', 100000], ['idCardFront', 'ID front', 100000],
+  ['idCardBack', 'ID back', 100000], ['utilityBill', 'Utility bill', 50000], ['customerSignature', 'Signature', 680000]] as const;
 
-type Method = 'menu' | 'email' | 'bvn' | 'nin' | 'selfie' | 'upgrade' | 'address';
-
-// Method accent colours — EXACT per the design handoff.
-const C_BVN = '#0FA295';
-const C_NIN = '#2D7FF9';
-const C_SELFIE = '#7A5CFF';
-
-const transactionLimitLabel = (value: unknown) => (
-  (typeof value === 'number' || (typeof value === 'string' && value.trim() !== ''))
-  && Number.isFinite(Number(value)) && Number(value) >= 0
-) ? money(Number(value)) : 'Not confirmed';
-
-const EMPTY_ADDRESS: ResidentialAddress = {
-  buildingNumber: '', apartment: '', street: '', city: '', town: '', state: '',
-  lga: '', lcda: '', landmark: '', additionalInformation: '', country: 'Nigeria',
-  fullAddress: '', postalCode: '',
-};
-
-const cardShadow = {
-  shadowColor: '#063731',
-  shadowOpacity: 0.12,
-  shadowRadius: 16,
-  shadowOffset: { width: 0, height: 8 },
-  elevation: 3,
-};
-
-const Kyc = () => {
+function KycScreenContent() {
   const { c } = useTheme();
-  const params = useLocalSearchParams<{
-    pending_identity?: string;
-    pending_tracking_id?: string;
-    pending_otp_destination?: string;
-    verify_identity?: string;
-  }>();
-  const [status, setStatus] = useState<Status | null>(null);
-  const [loadingStatus, setLoadingStatus] = useState(true);
-  const [statusError, setStatusError] = useState('');
-  const [method, setMethod] = useState<Method>('menu');
-  useEffect(() => {
-    if (params.verify_identity === 'bvn' || params.verify_identity === 'nin') {
-      setMethod(params.verify_identity);
-    }
-  }, [params.verify_identity]);
-  const [bvn, setBvn] = useState('');
-  const [email, setEmail] = useState('');
-  const [emailOtp, setEmailOtp] = useState('');
-  const [emailSent, setEmailSent] = useState(false);
-  const [bvnOtp, setBvnOtp] = useState('');
-  const [bvnSent, setBvnSent] = useState(false);
-  const [bvnTrackingId, setBvnTrackingId] = useState('');
-  const [bvnOtpDestination, setBvnOtpDestination] = useState('');
-  const [bvnDeliveryNotice, setBvnDeliveryNotice] = useState('');
-  const [nin, setNin] = useState('');
-  const [ninOtp, setNinOtp] = useState('');
-  const [ninTrackingId, setNinTrackingId] = useState('');
-  const [ninOtpDestination, setNinOtpDestination] = useState('');
-  const [ninDeliveryNotice, setNinDeliveryNotice] = useState('');
-  const [ninSent, setNinSent] = useState(false);
-  // Combined existing-account upgrade. The bank scores all three together, so
-  // they are collected before anything is sent — a partial submission is just a
-  // refusal with the customer's identity already handed over.
-  const [upBvn, setUpBvn] = useState('');
-  const [upNin, setUpNin] = useState('');
-  const [upSelfie, setUpSelfie] = useState('');
+  const [status, setStatus] = useState<BankStatus | null>(null);
+  const [profile, setProfile] = useState<BankProfile>(emptyProfile);
+  const [kind, setKind] = useState<'bvn' | 'nin'>('bvn');
+  const [identifier, setIdentifier] = useState('');
+  const [tracking, setTracking] = useState('');
+  const [otp, setOtp] = useState('');
+  const [needsOtp, setNeedsOtp] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [premblySession, setPremblySession] = useState('');
-  const [address, setAddress] = useState<ResidentialAddress>(EMPTY_ADDRESS);
-  const [addressDocument, setAddressDocument] = useState('');
-  const [upgradeCameraOpen, setUpgradeCameraOpen] = useState(false);
-  const [scanning, setScanning] = useState(false); // camera guide animation running
-  const spin = useRef(new Animated.Value(0)).current;
-  const actionInFlight = useRef(false);
-  const facePollGeneration = useRef(0);
-  const mounted = useRef(true);
-  const screenGeneration = useRef(getSessionGeneration()).current;
-  const captureInFlight = useRef(false);
-  const upgradeCaptureOwner = useRef<(() => boolean) | null>(null);
-  const loadGeneration = useRef(0);
-  const selfieTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const bindFlow = () => {
-    const flow = facePollGeneration.current;
-    return () => mounted.current && screenGeneration === getSessionGeneration() && flow === facePollGeneration.current;
-  };
-
-  const beginAction = () => {
-    if (actionInFlight.current || !mounted.current || screenGeneration !== getSessionGeneration()) return false;
-    actionInFlight.current = true;
-    setBusy(true);
-    return true;
-  };
-  const endAction = (isCurrent: () => boolean) => {
-    if (!isCurrent()) return;
-    actionInFlight.current = false;
-    if (mounted.current) setBusy(false);
-  };
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      facePollGeneration.current += 1;
-      if (selfieTimer.current) clearTimeout(selfieTimer.current);
-      spin.stopAnimation();
-    };
-  }, [spin]);
-
-  // Add-money can discover that the bank's pending attempt belongs to NIN
-  // rather than the BVN form that started face verification. Resume that exact
-  // server-owned attempt here so the confirmation and resend actions use the
-  // matching identity route.
-  useEffect(() => {
-    const identity = params.pending_identity === 'nin' || params.pending_identity === 'bvn'
-      ? params.pending_identity
-      : '';
-    const trackingId = typeof params.pending_tracking_id === 'string' ? params.pending_tracking_id : '';
-    if (!identity || !trackingId) return;
-    const destination = typeof params.pending_otp_destination === 'string' ? params.pending_otp_destination : '';
-    facePollGeneration.current += 1;
-    actionInFlight.current = false;
-    setBusy(false);
-    if (identity === 'bvn') {
-      setBvnTrackingId(trackingId);
-      setBvnOtpDestination(destination);
-      setBvnOtp('');
-      setBvnSent(true);
-      setMethod('bvn');
-    } else {
-      setNinTrackingId(trackingId);
-      setNinOtpDestination(destination);
-      setNinOtp('');
-      setNinSent(true);
-      setMethod('nin');
-    }
-  }, [params.pending_identity, params.pending_otp_destination, params.pending_tracking_id]);
-
-  const load = useCallback(async (): Promise<Status | null> => {
-    const request = ++loadGeneration.current;
-    const current = () => mounted.current && screenGeneration === getSessionGeneration() && request === loadGeneration.current;
+  const [message, setMessage] = useState('');
+  const [tab, setTab] = useState<'identity' | 'upgrade' | 'address'>('identity');
+  const [tier, setTier] = useState(2);
+  const [upgrade, setUpgrade] = useState<Record<string, string>>({ pep: 'NO', idType: '1' });
+  const [addressRef, setAddressRef] = useState('');
+  const generation = useRef(getSessionGeneration());
+  const inFlight = useRef(false);
+  const current = () => generation.current === getSessionGeneration();
+  const text = { color: c.ink1, fontFamily: font.regular, lineHeight: 22 };
+  const load = async () => {
     try {
-      const t = await getToken();
-      if (!current()) return null;
-      if (!t) throw new Error('Session unavailable');
-      const res = await kycService.getStatus();
-      if (!current()) return null;
-      if (res.success) {
-        setStatus(res);
-        setStatusError('');
-        return res;
-      }
-      setStatusError(res.message || 'We could not load your verification status. Please try again.');
-    } catch { if (current()) setStatusError('We could not load your verification status. Please try again.'); }
-    finally { if (current()) setLoadingStatus(false); }
-    return null;
-  }, [screenGeneration]);
-  useFocusEffect(useCallback(() => {
-    void load();
-    return () => {
-      facePollGeneration.current += 1;
-      actionInFlight.current = false;
-      upgradeCaptureOwner.current = null;
-      setBusy(false);
-      setScanning(false);
-      setUpgradeCameraOpen(false);
-      if (selfieTimer.current) clearTimeout(selfieTimer.current);
-      spin.stopAnimation();
-    };
-  }, [load, spin]));
-
-  // Return to the method menu and clear any in-flight sub-flow state.
-  const goMenu = () => {
-    facePollGeneration.current += 1;
-    actionInFlight.current = false;
-    upgradeCaptureOwner.current = null;
-    if (selfieTimer.current) {
-      clearTimeout(selfieTimer.current);
-      selfieTimer.current = null;
-    }
-    setMethod('menu');
-    setBvnSent(false);
-    setEmail(''); setEmailOtp(''); setEmailSent(false);
-    setBvnTrackingId(''); setBvnOtpDestination('');
-    setBvnDeliveryNotice('');
-    setNinSent(false);
-    setNinTrackingId(''); setNinOtpDestination('');
-    setNinDeliveryNotice('');
-    setUpBvn(''); setUpNin(''); setUpSelfie('');
-    setAddress(EMPTY_ADDRESS);
-    setAddressDocument('');
-    setUpgradeCameraOpen(false);
-    setScanning(false);
-    setBusy(false);
-    spin.stopAnimation();
+      const result = await banking.status();
+      if (!current()) return;
+      if (result.success) { setStatus(result); setProfile((p) => ({ ...p, ...result.profile })); }
+      else setMessage(result.message || 'Could not load verification status.');
+    } catch { if (current()) setMessage('Could not load verification status. Please try again.'); }
   };
-  const onBack = method === 'menu' ? () => router.back() : goMenu;
-  // Both identities are still outstanding to the BANK in this state even when
-  // one is verified with us, because the upgrade request carries both.
-  const needsUpgrade = !!status?.identity_upgrade_required
-    && !(status?.bvn_verified && status?.nin_verified);
-  const hasTier1Identity = !!(status?.bvn_verified || status?.nin_verified);
-  const sdkFlow = status?.tier2_face_flow === 'prembly_sdk';
-  const needsBankUpgrade = !sdkFlow && (!!status?.bank_upgrade_required || needsUpgrade);
-  const tier2Unavailable = status?.tier2_face_available === false;
-  const tier3Unavailable = status?.tier3_address_available === false;
-  const addressPending = status?.address_verification_pending === true || status?.address_verification_state === 'pending';
-  const addressVerificationAvailable = status?.account_provider === 'partnership'
-    && status?.address_verification_required !== false
-    && status?.address_rail !== 'none';
-  const setAddressField = (field: keyof ResidentialAddress, value: string) =>
-    setAddress((current) => ({ ...current, [field]: value }));
-
-  const startEmail = async () => {
-    const target = (email || status?.email || '').trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target) || !beginAction()) return;
-    const isCurrent = bindFlow();
+  useEffect(() => { generation.current = getSessionGeneration(); void load(); return () => { generation.current = -1; }; }, []);
+  const run = async (action: () => Promise<any>) => {
+    if (!current() || inFlight.current) return;
+    inFlight.current = true; setBusy(true);
     try {
-      const res = await kycService.startEmail(target);
-      if (!isCurrent()) return;
-      if (res.success) {
-        setEmail(target);
-        setEmailOtp('');
-        setEmailSent(true);
-        notify('Email code sent', res.message || `Enter the code sent to ${target}.`, 'success');
-      } else notify('Could not send code', res.message || 'Check the email address and try again.');
-    } catch { if (isCurrent()) notify('Could not send code', 'Check your connection and try again.'); }
-    finally { endAction(isCurrent); }
+      const result = await action();
+      if (!current()) return;
+      setMessage(result.message || (result.success ? 'Verification completed.' : result.pending ? 'Your request is being processed.' : 'We could not complete this request.'));
+      if (result.tracking_id) { setTracking(result.tracking_id); setNeedsOtp(result.otp_required === true); }
+      if (['expired', 'failed'].includes(result.account_setup_state)) { setTracking(''); setNeedsOtp(false); setOtp(''); }
+      if ((result.success || result.pending) && tab === 'upgrade') setUpgrade({ pep: 'NO', idType: '1' });
+      if (result.success) { setOtp(''); setIdentifier(''); setTracking(''); setNeedsOtp(false); await load(); }
+      return result;
+    } catch { if (current()) setMessage('Connection interrupted. Check the request status before submitting again.'); }
+    finally { inFlight.current = false; if (current()) setBusy(false); }
   };
-
-  const confirmEmail = async () => {
-    if (emailOtp.length !== 6 || !beginAction()) return;
-    const isCurrent = bindFlow();
+  const face = async () => {
+    if (!identifier || busy) return;
     try {
-      const res = await kycService.confirmEmail(emailOtp);
-      if (!isCurrent()) return;
-      if (res.success && res.email_verified) {
-        notify('Email verified', 'Continue with BVN or NIN verification.', 'success');
-        setEmail(''); setEmailOtp(''); setEmailSent(false); setMethod('menu');
-        await load();
-      } else notify('Verification failed', res.message || 'Check the code and try again.');
-    } catch { if (isCurrent()) notify('Verification failed', 'Check your connection and try again.'); }
-    finally { endAction(isCurrent); }
-  };
-
-  // Shared submit: on success update tier status, toast the design copy, reset
-  // the sub-flow fields and bounce back to the menu.
-  const submit = async (call: () => Promise<KycStatus | FundingAccount>, successTitle: string, requiredFlags: KycVerificationFlag[] = []) => {
-    if (!beginAction()) return;
-    const isCurrent = bindFlow();
-    try {
-      const res = await call();
-      if (!isCurrent()) return;
-      const outcome = classifyKycResponse(res, requiredFlags);
-      if (outcome === 'pending') {
-        setStatus((current) => current ? { ...current, pending: true, message: res.message } : current);
-        setBvn(''); setBvnOtp(''); setBvnSent(false);
-        setNin(''); setNinOtp(''); setNinSent(false);
-        notify('Verification processing', res.message || 'The verification service is still processing this submission. Check your status again shortly.', 'info');
-      } else if (outcome === 'review') {
-        notify('Verification needs review', res.message || 'Your account opened, but the verification service needs to review the identity details.', 'info');
-        setBvn(''); setBvnOtp(''); setBvnSent(false); setBvnTrackingId(''); setBvnOtpDestination('');
-        setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false);
-        setUpBvn(''); setUpNin(''); setUpSelfie('');
-        setAddressDocument('');
-        setAddress(EMPTY_ADDRESS);
-        setMethod('menu');
-        await load();
-      } else if (outcome === 'success' || outcome === 'unverified') {
-        const authoritative = requiredFlags.length ? await load() : null;
-        if (!isCurrent()) return;
-        const verified = !requiredFlags.length || requiredFlags.every((flag) => authoritative?.[flag] === true);
-        if (!verified) {
-          notify(
-            authoritative?.identity_review_required ? 'Verification needs review' : 'Verification submitted',
-            authoritative?.message || (authoritative?.identity_review_required
-              ? 'The verification service needs to review the identity details.'
-              : authoritative?.pending
-                ? 'The verification service is still processing this submission. Check your status again shortly.'
-                : 'Your submission was received. Check your identity status for the result.'),
-            'info',
-          );
-          setMethod('menu');
-          return;
-        }
-        notify(successTitle, undefined, 'success');
-        setBvn(''); setBvnOtp(''); setBvnSent(false); setBvnTrackingId(''); setBvnOtpDestination('');
-        setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false);
-        setUpBvn(''); setUpNin(''); setUpSelfie('');
-        setAddressDocument('');
-        setAddress(EMPTY_ADDRESS);
-        setMethod('menu');
-        await load();
-      } else notify('Error', res.message || 'Verification failed');
-    } catch { if (isCurrent()) notify('Error', 'Something went wrong.'); }
-    finally { endAction(isCurrent); }
-  };
-
-  // --- BVN: enter number -> we send a one-time code -> confirm it ---
-  const startBvn = async () => {
-    if (!beginAction()) return;
-    const isCurrent = bindFlow();
-    try {
-      const res = await kycService.startBvn(bvn);
-      if (!isCurrent()) return;
-      if (res.pending) {
-        setStatus((current) => current ? { ...current, pending: true, message: res.message } : current);
-        notify('Verification processing', res.message || 'Your BVN verification is still processing. Check your status again shortly.', 'info');
-      } else if (res.upgrade_required) {
-        setUpBvn(bvn);
-        setMethod('upgrade');
-      } else if (res.otp_required) {
-        const challenge = resolveOwnershipOtpRoute(res);
-        if (!challenge) {
-          notify('Error', 'We could not start a secure verification challenge. Please try again.');
-        } else {
-          setBvnTrackingId(challenge.trackingId);
-          setBvnOtp('');
-          setBvnOtpDestination(res.delivery || res.otp_destination || '');
-          setBvnDeliveryNotice(res.delivery_notice || '');
-          setBvnSent(true);
-          notify('BVN code requested', res.message || 'Enter the verification code to finish.', 'success');
-        }
-      } else if (res.identity_review_required) {
-        notify('Verification needs review', res.message || 'Your account opened, but your BVN needs review.', 'info');
-        await load();
-        if (!isCurrent()) return;
-        setBvn(''); setBvnOtp(''); setBvnTrackingId(''); setBvnOtpDestination(''); setBvnSent(false);
-        setMethod('menu');
-      } else if (res.success) {
-        const authoritative = await load();
-        if (!isCurrent()) return;
-        notify(
-          authoritative?.bvn_verified ? 'BVN already verified' : 'Verification submitted',
-          authoritative?.bvn_verified
-            ? (res.message || 'Your BVN is already verified.')
-            : (authoritative?.message || 'Your BVN submission was received. Check your identity status for the result.'),
-          authoritative?.bvn_verified ? 'success' : 'info',
-        );
-        setBvn(''); setBvnOtp(''); setBvnTrackingId(''); setBvnOtpDestination(''); setBvnSent(false);
-        setMethod('menu');
-      }
-      else notify('Error', res.message || 'Could not start BVN verification');
-    } catch { if (isCurrent()) notify('Error', 'Something went wrong.'); }
-    finally { endAction(isCurrent); }
-  };
-  const resendBvn = async () => {
-    if (!bvnSent || !beginAction()) return;
-    const isCurrent = bindFlow();
-    try {
-      const res = await kycService.resendBvn(bvnTrackingId, bvn);
-      if (!isCurrent()) return;
-      if (res.success && (bvnTrackingId || resolveOwnershipOtpRoute(res))) {
-        if (!bvnTrackingId) setBvnTrackingId(resolveOwnershipOtpRoute(res)!.trackingId);
-        setBvnOtp('');
-        setBvnOtpDestination(res.delivery || res.otp_destination || '');
-        setBvnDeliveryNotice(res.delivery_notice || '');
-        notify('BVN code resent', res.message || 'Enter the latest verification code.', 'success');
-      } else if (res.pending) {
-        notify('Verification processing', res.message || 'Your BVN verification is still processing. Check your status again shortly.', 'info');
-      } else notify('Error', res.message || 'Could not resend the BVN code');
-    } catch { if (isCurrent()) notify('Error', 'Something went wrong.'); }
-    finally { endAction(isCurrent); }
-  };
-  const confirmBvn = () => submit(() => kycService.confirmBvn(bvnTrackingId, bvnOtp), 'BVN verified', ['bvn_verified']);
-
-  const startIdentityFaceVerification = async (identity: { bvn?: string; nin?: string }) => {
-    if (!beginAction()) return;
-    const generation = ++facePollGeneration.current;
-    const isCurrent = () => mounted.current && screenGeneration === getSessionGeneration() && facePollGeneration.current === generation;
-    try {
-      const started = await kycService.startIdentityFace(identity);
-      if (!isCurrent()) return;
-      const otpRoute = resolveIdentityOtpRoute(started, identity.bvn ? 'bvn' : 'nin');
-      if (otpRoute) {
-        // Face-start can return the existing bank OTP attempt instead of a URL.
-        // Keep the server's KYC flags and tracking reference, then continue in
-        // the matching confirmation screen so the bank owns the identity state.
-        setStatus((current) => current ? { ...current, ...started } : started);
-        if (otpRoute.kind === 'bvn') {
-          setBvnTrackingId(otpRoute.trackingId);
-          setBvnOtpDestination(started.delivery || started.otp_destination || '');
-          setBvnDeliveryNotice(started.delivery_notice || '');
-          setBvnOtp('');
-          setBvnSent(true);
-          setMethod('bvn');
-        } else {
-          setNinTrackingId(otpRoute.trackingId);
-          setNinOtpDestination(started.delivery || started.otp_destination || '');
-          setNinDeliveryNotice(started.delivery_notice || '');
-          setNinOtp('');
-          setNinSent(true);
-          setMethod('nin');
-        }
-        notify('SMS verification required', started.message || 'Enter the bank code sent to the phone registered on your identity.', 'info');
-        return;
-      }
-      if (isAccountOtpPending(started)) {
-        // Do not label this as a face outage when the server says the account
-        // is waiting on SMS but did not provide a usable tracking reference.
-        setStatus((current) => current ? { ...current, ...started } : started);
-        notify('SMS verification pending', started.message || 'Your bank verification is waiting for an SMS code. Please start the verification again.', 'info');
-        return;
-      }
-      if (started.pending) {
-        setStatus((current) => current ? { ...current, pending: true, message: started.message } : current);
-        notify('Verification processing', started.message || 'The verification service is still processing this request. Check your status again shortly.', 'info');
-        return;
-      }
-      if (!started.success || !started.url || !started.session) {
-        notify('Face verification unavailable', started.message || 'Please use the SMS code for now.');
-        return;
-      }
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) { notify('Camera access needed', 'Allow the camera to take your verification photo.'); return; }
       beginExternalActivity();
-      try { await WebBrowser.openBrowserAsync(started.url); }
-      finally { endExternalActivity(); }
-      if (!isCurrent()) return;
-      for (let attempt = 0; attempt < 15; attempt += 1) {
-        const result = await kycService.getIdentityFaceStatus(started.session);
-        if (!isCurrent()) return;
-        if (result.status === 'verified') {
-          setStatus(result);
-          setBvn(''); setBvnOtp(''); setBvnSent(false); setBvnTrackingId(''); setBvnOtpDestination('');
-          setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false);
-          setMethod('menu');
-          notify('Identity verified', result.message || 'Your bank confirmed the face check.', 'success');
-          return;
-        }
-        if (result.status === 'failed' || result.status === 'expired') {
-          notify('Face verification incomplete', 'The bank did not confirm the check. You can retry or use SMS.');
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        if (!isCurrent()) return;
-      }
-      notify('Still processing', 'Your bank is still confirming the check. This page will refresh when you return.');
-      await load();
-    } catch { if (isCurrent()) notify('Error', 'Could not complete face verification. Please use the SMS code or try again.'); }
-    finally { endAction(isCurrent); }
+      let photo: ImagePicker.ImagePickerResult;
+      try { photo = await ImagePicker.launchCameraAsync({ cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.5 }); } finally { endExternalActivity(); }
+      const data = !photo.canceled ? photo.assets[0]?.base64 : null;
+      if (data && current()) await run(() => banking.identity(kind, identifier, profile, data));
+    } catch { if (current()) setMessage('Could not open the camera. Please try again.'); }
   };
-
-  const runPrembly = async (checkOnly = false) => {
-    if (!beginAction()) return;
-    const isCurrent = bindFlow();
+  const upload = async (key: string, label: string, max: number) => {
     try {
-      let session = premblySession;
-      if (!checkOnly || !session) {
-        const started = await kycService.startLiveness();
-        if (!isCurrent()) return;
-        if (!started.success || !started.session || !started.url) {
-          notify('Face verification', started.message || 'Could not start the live face check.', 'info');
-          return;
-        }
-        const target = new URL(started.url);
-        if (target.origin !== 'https://sdk-live.prembly.com' || target.username || target.password) {
-          notify('Face verification unavailable', 'The verification link could not be confirmed.');
-          return;
-        }
-        session = started.session;
-        setPremblySession(session);
-        beginExternalActivity();
-        try { await WebBrowser.openBrowserAsync(started.url); }
-        finally { endExternalActivity(); }
-        if (!isCurrent()) return;
-      }
-      const result = await kycService.getLivenessStatus(session);
-      if (!isCurrent()) return;
-      if (result.success && result.face_verified && result.status === 'verified') {
-        setStatus(result);
-        setPremblySession('');
-        setMethod('menu');
-        notify('Tier 2 verified', 'Your Prembly live face check is complete.', 'success');
-      } else {
-        if (result.status === 'failed' || result.status === 'expired') setPremblySession('');
-        notify('Face verification', result.message || 'Your result is still being checked. Tap Check verification to refresh.', 'info');
-      }
-    } catch {
-      if (isCurrent()) notify('Face verification', 'Could not check your verification. Please try again.');
-    } finally { endAction(isCurrent); }
+    beginExternalActivity();
+    let result: DocumentPicker.DocumentPickerResult;
+    try { result = await DocumentPicker.getDocumentAsync({ type: key === 'userPhoto' ? ['image/jpeg', 'image/png'] : ['application/pdf', 'image/jpeg', 'image/png'], copyToCacheDirectory: true }); } finally { endExternalActivity(); }
+    if (result.canceled || !current()) return;
+    const file = result.assets[0];
+    if (file.size && file.size > Math.floor(max * 3 / 4)) { notify('File too large', `${label} must be smaller than ${Math.floor(max * 3 / 4096)} KB for the bank.`); return; }
+    const encoded = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.Base64 });
+    if (encoded.length > max) { notify('File too large', 'Compress this document and try again.'); return; }
+    if (current()) setUpgrade((p) => ({ ...p, [key]: encoded }));
+    } catch { if (current()) setMessage('Could not read this document. Please try again.'); }
   };
-
-  // --- NIN: the server selects identity lookup and its ownership challenge ---
-  const startNin = async () => {
-    if (!beginAction()) return;
-    const isCurrent = bindFlow();
-    try {
-      const res = await kycService.startNin(nin);
-      if (!isCurrent()) return;
-      if (res.pending) {
-        setStatus((current) => current ? { ...current, pending: true, message: res.message } : current);
-        notify('Verification processing', res.message || 'Your NIN verification is still processing. Check your status again shortly.', 'info');
-      } else if (res.upgrade_required) {
-        // Not an error the customer can retry out of: this account can only be
-        // finished by the combined upgrade. Carry the NIN they already typed
-        // across so they are not asked for it twice.
-        setUpNin(nin);
-        setMethod('upgrade');
-      } else if (res.otp_required) {
-        const challenge = resolveOwnershipOtpRoute(res);
-        if (!challenge) {
-          notify('Error', 'We could not start a secure verification challenge. Please try again.');
-        } else {
-          setNinTrackingId(challenge.trackingId);
-          setNinOtp('');
-          setNinOtpDestination(res.delivery || res.otp_destination || '');
-          setNinDeliveryNotice(res.delivery_notice || '');
-          setNinSent(true);
-          notify('NIN code requested', res.message || 'Enter the verification code to finish.', 'success');
-        }
-      } else if (res.identity_review_required) {
-        notify('Verification needs review', res.message || 'Your account opened, but your NIN needs review.', 'info');
-        await load();
-        if (!isCurrent()) return;
-        setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false);
-        setMethod('menu');
-      } else if (res.success) {
-        const authoritative = await load();
-        if (!isCurrent()) return;
-        notify(
-          authoritative?.nin_verified ? 'NIN verified' : 'Verification submitted',
-          authoritative?.nin_verified
-            ? (res.message || 'NIN verified successfully')
-            : (authoritative?.message || 'Your NIN submission was received. Check your identity status for the result.'),
-          authoritative?.nin_verified ? 'success' : 'info',
-        );
-        setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false);
-        setMethod('menu');
-      } else notify('Error', res.message || 'Could not start NIN verification');
-    } catch { if (isCurrent()) notify('Error', 'Something went wrong.'); }
-    finally { endAction(isCurrent); }
-  };
-  const confirmNin = () => submit(
-    () => kycService.confirmNin(ninTrackingId, ninOtp),
-    'NIN verified',
-    ['nin_verified'],
-  );
-  const resendNin = async () => {
-    if (!ninSent || !beginAction()) return;
-    const isCurrent = bindFlow();
-    try {
-      const res = await kycService.resendNin(ninTrackingId, nin);
-      if (!isCurrent()) return;
-      if (res.success && (ninTrackingId || resolveOwnershipOtpRoute(res))) {
-        if (!ninTrackingId) setNinTrackingId(resolveOwnershipOtpRoute(res)!.trackingId);
-        setNinOtp('');
-        setNinOtpDestination(res.delivery || res.otp_destination || '');
-        setNinDeliveryNotice(res.delivery_notice || '');
-        notify('NIN code resent', res.message || 'Enter the latest verification code.', 'success');
-      } else if (res.pending) {
-        notify('Verification processing', res.message || 'Your NIN verification is still processing. Check your status again shortly.', 'info');
-      } else notify('Error', res.message || 'Could not resend the NIN code');
-    } catch { if (isCurrent()) notify('Error', 'Something went wrong.'); }
-    finally { endAction(isCurrent); }
-  };
-
-  const verifyNin = startNin;
-
-  // --- Selfie: a real captured image for server-side identity verification (NOT device
-  // Face ID — KYC must match a face, which the device unlock can't prove). ---
-  const captureSelfie = async () => {
-    if (captureInFlight.current || actionInFlight.current) return;
-    captureInFlight.current = true;
-    const isCurrent = bindFlow();
-    try {
-      const perm = await ImagePicker.requestCameraPermissionsAsync();
-      if (!isCurrent()) return;
-      if (!perm.granted) { notify('Camera needed', 'Allow camera access so we can verify your identity.'); return; }
-      beginExternalActivity(); // keep the app-lock from firing while the camera is up
-      let shot;
-      try {
-        shot = await ImagePicker.launchCameraAsync({
-          cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.4, allowsEditing: false,
-        });
-      } finally { endExternalActivity(); }
-      if (!isCurrent()) return;
-      if (shot.canceled || !shot.assets?.[0]?.base64) return;
-      const selfie = shot.assets[0].base64;
-      await submit(() => kycService.verifyFace(selfie), 'Selfie verification completed', ['face_verified']);
-    } catch { if (isCurrent()) notify('Camera unavailable', 'We could not open the camera. Check camera permission and try again.'); }
-    finally { captureInFlight.current = false; }
-  };
-  // Show a visible camera guide animation (~2.3s spin) THEN open the front camera.
-  const runSelfie = () => {
-    if (scanning || busy || captureInFlight.current) return;
-    const isCurrent = bindFlow();
-    setScanning(true);
-    spin.setValue(0);
-    Animated.loop(Animated.timing(spin, { toValue: 1, duration: 1000, easing: Easing.linear, useNativeDriver: true })).start();
-    selfieTimer.current = setTimeout(() => {
-      selfieTimer.current = null;
-      if (!isCurrent()) return;
-      spin.stopAnimation();
-      setScanning(false);
-      captureSelfie();
-    }, 2300);
-  };
-  // --- Combined upgrade: BVN + NIN + a front-camera selfie, submitted together ---
-  // The selfie is captured and HELD rather than posted, because the bank scores
-  // it against the two numbers in one request. Posting it alone would spend the
-  // verification attempt on a call that cannot complete the upgrade.
-  const captureUpgradeSelfie = () => {
-    if (busy) return;
-    upgradeCaptureOwner.current = bindFlow();
-    setUpgradeCameraOpen(true);
-  };
-  const submitUpgrade = () => submit(
-    () => kycService.upgradeTier2(upBvn, upNin, upSelfie),
-    'Identity verified — tier upgraded',
-    ['bvn_verified', 'nin_verified', 'face_verified'],
-  );
-
-  const pickAddressProof = async () => {
-    if (captureInFlight.current || actionInFlight.current) return;
-    captureInFlight.current = true;
-    const isCurrent = bindFlow();
-    try {
-      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!isCurrent()) return;
-      if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your proof of address.'); return; }
-      beginExternalActivity();
-      let res;
-      try {
-        res = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.4, allowsEditing: true,
-        });
-      } finally { endExternalActivity(); }
-      if (!isCurrent()) return;
-      if (!res.canceled && res.assets?.[0]?.base64) setAddressDocument(res.assets[0].base64);
-    } catch { if (isCurrent()) notify('Could not open photos', 'Check photo permissions and try again.'); }
-    finally { captureInFlight.current = false; }
-  };
-
-  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
-
-  // ---- pieces shared by every sub-flow ----
-  const Hero = ({ icon, color, title, sub }: { icon: string; color: string; title: string; sub: string }) => (
-    <View style={{ alignItems: 'center', paddingHorizontal: 8, paddingTop: 4 }}>
-      <View style={{ width: 80, height: 80, borderRadius: 24, backgroundColor: color + '22', alignItems: 'center', justifyContent: 'center' }}>
-        <ZIcon name={icon} size={38} color={color} stroke={1.9} />
-      </View>
-      <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1, marginTop: 14 }}>{title}</Text>
-      <Text style={{ fontSize: 13.5, color: c.ink3, marginTop: 6, lineHeight: 20, textAlign: 'center', maxWidth: 300, fontFamily: font.regular }}>{sub}</Text>
+  if (!status || !status.identity_available) return <Screen header={<Header title="Verify your account" />}>
+    <View style={{ gap: 16 }}><Text style={text}>{message || (!status ? 'Loading verification status…' : 'Bank verification is currently unavailable for this account. Please verify your email and phone number, or contact support.')}</Text>
+      <Btn label="Refresh verification status" variant="outline" onPress={() => void load()} /></View>
+  </Screen>;
+  return <Screen header={<Header title="Verify your account" />}>
+    <View style={{ gap: 16, paddingBottom: 32 }}>
+      <Text style={text}>9PSB verifies your BVN, NIN and face. Prembly verifies your residential address for Tier 3.</Text>
+      {status?.sandbox && <Text style={{ ...text, color: c.brand }}>Test environment — use approved test identities only. No real banking is active.</Text>}
+      <Text style={text}>Bank tier: {status?.bank_tier || 'Not confirmed'} · BVN: {status?.bvn_verified ? 'Verified' : 'Required'} · NIN: {status?.nin_verified ? 'Verified' : 'Not verified'}</Text>
+      <View style={{ gap: 8 }}>{(['identity', 'upgrade', 'address'] as const).map((value) => <Btn key={value} label={value === 'identity' ? 'Identity & account setup' : value === 'upgrade' ? 'Tier upgrade' : 'Tier 3 address'} variant={tab === value ? 'primary' : 'outline'} onPress={() => setTab(value)} disabled={busy} />)}</View>
+      {!!message && <Text accessibilityLiveRegion="polite" style={text}>{message}</Text>}
+      {tab === 'identity' && <>
+        <Field editable={!busy} label="First and other names" value={profile.otherNames} onChangeText={(otherNames) => setProfile({ ...profile, otherNames })} />
+        <Field editable={!busy} label="Last name" value={profile.lastName} onChangeText={(lastName) => setProfile({ ...profile, lastName })} />
+        <Field editable={!busy} label="Phone number" value={profile.phoneNo} keyboardType="phone-pad" onChangeText={(phoneNo) => setProfile({ ...profile, phoneNo })} />
+        <Field editable={!busy} label="Email" value={profile.email} keyboardType="email-address" onChangeText={(email) => setProfile({ ...profile, email })} />
+        <Field editable={!busy} label="Date of birth (DD/MM/YYYY)" value={profile.dateOfBirth} onChangeText={(dateOfBirth) => setProfile({ ...profile, dateOfBirth })} />
+        <View style={{ gap: 8 }}><Text style={text}>Gender required by the bank</Text>{[['Male', 0], ['Female', 1]].map(([label, value]) => <Btn key={label} label={String(label)} variant={profile.gender === value ? 'primary' : 'outline'} onPress={() => setProfile({ ...profile, gender: Number(value) })} />)}</View>
+        <Field editable={!busy} label="Residential address" value={profile.address} maxLength={100} onChangeText={(address) => setProfile({ ...profile, address })} />
+        <View style={{ gap: 8 }}>{(['bvn', 'nin'] as const).map((value) => <Btn key={value} label={value.toUpperCase()} variant={kind === value ? 'primary' : 'outline'} disabled={busy || !!tracking} onPress={() => { setKind(value); setIdentifier(''); }} />)}</View>
+        <Field editable={!busy} label={kind.toUpperCase()} value={identifier} maxLength={11} keyboardType="number-pad" secureTextEntry onChangeText={setIdentifier} />
+        {kind === 'nin' && !status?.account_number && <Field editable={!busy} label="NIN user ID (from NIMC)" value={profile.ninUserId || ''} onChangeText={(ninUserId) => setProfile({ ...profile, ninUserId })} />}
+        {!tracking && <><Btn label={busy ? 'Please wait…' : 'Verify with bank OTP'} disabled={busy || identifier.length !== 11} onPress={() => void run(() => banking.identity(kind, identifier, profile))} /><Btn label="Verify with a face photo" variant="outline" disabled={busy || identifier.length !== 11} onPress={() => void face()} /></>}
+        {needsOtp && <><Field editable={!busy} label="Six-digit bank OTP" value={otp} maxLength={6} keyboardType="number-pad" secureTextEntry onChangeText={setOtp} /><Btn label="Confirm bank OTP" disabled={busy || otp.length !== 6} onPress={() => void run(() => banking.confirm(tracking, otp))} /></>}
+        {!!tracking && <Btn label="Check verification status" variant="outline" disabled={busy} onPress={() => void run(() => banking.progress(tracking))} />}
+        <Text style={text}>Bank OTPs expire after 10 minutes. An accepted request may still be processing; check its status before starting again.</Text>
+      </>}
+      {tab === 'upgrade' && <>
+        <Text style={text}>Tier 2 requires verified BVN and NIN, a utility bill and the documents below. Tier 3 also requires a completed Prembly address check. Your tier changes after bank approval.</Text>
+        {[2, 3].map((value) => <Btn key={value} label={`Tier ${value}`} variant={tier === value ? 'primary' : 'outline'} onPress={() => setTier(value)} disabled={busy} />)}
+        {upgradeFields.map(([key, label]) => <Field editable={!busy} key={key} label={label} value={upgrade[key] || ''} secureTextEntry={key === 'bvn' || key === 'nin'} onChangeText={(value) => setUpgrade((p) => ({ ...p, [key]: value }))} />)}
+        {files.map(([key, label, max]) => <Btn key={key} variant="outline" label={`${upgrade[key] ? 'Attached: ' : 'Upload '}${label}`} disabled={busy} onPress={() => void upload(key, label, max)} />)}
+        {tier === 3 && <Field editable={!busy} label="Prembly address request reference" value={addressRef} onChangeText={setAddressRef} />}
+        <Btn label="Submit for bank review" disabled={busy} onPress={() => void run(() => banking.upgrade(tier, { ...upgrade, accountName: status?.account_name || '', phoneNumber: profile.phoneNo, email: profile.email }, addressRef))} />
+      </>}
+      {tab === 'address' && <>
+        <Text style={text}>Physical verification is completed by Prembly. Submission does not immediately activate Tier 3.</Text>
+        {upgradeFields.filter(([key]) => ['houseNumber', 'streetName', 'city', 'state', 'localGovernment', 'nearestLandmark'].includes(key)).map(([key, label]) => <Field editable={!busy} key={key} label={label} value={upgrade[key] || ''} onChangeText={(value) => setUpgrade((p) => ({ ...p, [key]: value }))} />)}
+        <Field editable={!busy} label="Full residential address" value={profile.address} onChangeText={(address) => setProfile({ ...profile, address })} />
+        {status.address_verification_available !== true && <Text style={text}>Address verification is temporarily unavailable. Please contact support.</Text>}
+        <Btn label="Request address verification" disabled={busy || !status.address_verification_available || (status?.bank_tier || 0) < 2} onPress={() => void run(async () => {
+          const result = await banking.address({ house_number: upgrade.houseNumber || '', street: upgrade.streetName || '', city: upgrade.city || '', state: upgrade.state || '', lga: upgrade.localGovernment || '', landmark: upgrade.nearestLandmark || '', address: profile.address });
+          if (current() && result.reference) setAddressRef(result.reference); return result;
+        })} />
+        <Field editable={!busy} label="Address request reference" value={addressRef} onChangeText={setAddressRef} />
+        <Btn label="Check address status" variant="outline" disabled={busy || !addressRef} onPress={() => void run(() => banking.addressStatus(addressRef))} />
+      </>}
     </View>
-  );
+  </Screen>;
+}
 
-  const Footer = () => (
-    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 18 }}>
-      <ZIcon name="lock" size={13} color={c.ink3} />
-      <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular }}>Your identity details are protected.</Text>
-    </View>
-  );
-
-  const MethodCard = ({ id, icon, color, title, sub, badge, done }: { id: Method; icon: string; color: string; title: string; sub: string; badge?: string; done?: boolean }) => (
-    <Tap accessibilityLabel={`${title}, ${done ? 'Verified' : sub}`} disabled={!!done || busy} onPress={() => { if (!done) setMethod(id); }} style={{ marginTop: 12 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13, padding: 15, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, ...cardShadow }}>
-        <View style={{ width: 46, height: 46, borderRadius: 13, backgroundColor: color + '22', alignItems: 'center', justifyContent: 'center' }}>
-          <ZIcon name={icon} size={22} color={color} stroke={1.9} />
-        </View>
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>{title}</Text>
-          <Text style={{ fontSize: 12.5, color: done ? c.lime : c.ink3, marginTop: 1, fontFamily: font.regular }}>{done ? 'Verified' : sub}</Text>
-        </View>
-        {done ? (
-          <ZIcon name="check" size={20} color={c.lime} stroke={2.6} />
-        ) : badge ? (
-          <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: 'rgba(15,162,149,.14)' }}>
-            <Text style={{ fontSize: 10, fontFamily: font.bold, color: C_BVN }}>{badge}</Text>
-          </View>
-        ) : (
-          <ZIcon name="right" size={18} color={c.ink3} />
-        )}
-      </View>
-    </Tap>
-  );
-
-  const Tier2Unavailable = () => <View style={{ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
-    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>Tier 2 verification is temporarily unavailable</Text>
-    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>{status?.tier2_unavailable_reason || 'Your current verification is saved. Contact support for help with this upgrade.'}</Text>
-    <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="ghost" onPress={() => router.push('/support')} /></View>
-  </View>;
-
-  const AddressPending = () => <View style={{ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
-    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>{tier3Unavailable ? 'Address verification needs review' : 'Address verification in progress'}</Text>
-    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>{tier3Unavailable
-      ? (status?.tier3_address_unavailable_reason || 'Your saved address verification needs a support review. You do not need to submit your address again.')
-      : 'Your address has been submitted. You do not need to submit it again. Tier 3 becomes available after confirmation.'}</Text>
-    {tier3Unavailable && <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="ghost" onPress={() => router.push('/support')} /></View>}
-    <View style={{ marginTop: 12 }}><Btn label="Check address status" variant="ghost" onPress={() => void load()} /></View>
-  </View>;
-
-  const Tier3Unavailable = () => <View style={{ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
-    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>Address verification is temporarily unavailable</Text>
-    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>{status?.tier3_address_unavailable_reason || 'Your current verification is saved. Contact support for help with Tier 3.'}</Text>
-    <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="ghost" onPress={() => router.push('/support')} /></View>
-  </View>;
-
-  if (loadingStatus || statusError || !status) {
-    return <Screen>
-      <Header title="Identity verification" onBack={() => router.back()} />
-      <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{statusError || 'Checking your verification status…'}</Text>
-      {!!statusError && <Btn label="Try again" onPress={() => { setLoadingStatus(true); void load(); }} />}
-    </Screen>;
-  }
-
-  if (status?.legacy_funding_review === true || status?.account_setup_state === 'legacy_funding_review'
-      || (status?.account_provider != null && status.account_provider !== 'partnership')) {
-    return <Screen>
-      <Header title="Identity verification" onBack={onBack} />
-      <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{status.migration_message || 'Your account needs review. Contact support before adding or spending money.'}</Text>
-      <View style={{ marginTop: 20 }}><Btn label="Contact support" onPress={() => router.push('/support')} /></View>
-    </Screen>;
-  }
-
-  if (status?.pending || status?.account_setup_state === 'processing') {
-    return <Screen>
-      <Header title="Identity verification" onBack={() => router.back()} />
-      <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 18, marginBottom: 12 }}>Verification processing</Text>
-      <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{status.message || 'Your verification is being confirmed. You do not need to start again.'}</Text>
-      <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void load()} /></View>
-    </Screen>;
-  }
-
-  return (
-    <>
-    <Screen>
-      <Header title="Identity verification" onBack={onBack} />
-
-      {method === 'menu' && (
-        <View>
-          <Text style={{ fontSize: 13.5, color: c.ink3, lineHeight: 20, marginBottom: 6, fontFamily: font.regular }}>
-            Verify your identity and check the services available to your account.
-          </Text>
-
-          {status && (
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: c.surface3, borderRadius: 16, padding: 16, marginTop: 12 }}>
-              <View>
-                <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Current tier</Text>
-                <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1 }}>Tier {status.tier}</Text>
-              </View>
-              {status.account_provider === 'partnership' && (
-                <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Per-transaction limit</Text>
-                  <Text style={{ fontSize: 16, fontFamily: font.bold, color: c.brand, fontVariant: ['tabular-nums'] }}>{transactionLimitLabel(status.transaction_limit)}</Text>
-                </View>
-              )}
-            </View>
-          )}
-
-          {!status?.email_verified ? (
-            <MethodCard id="email" icon="remita" color={C_NIN} title="Verify email" sub="Required before Tier 1" badge="First" />
-          ) : needsUpgrade && !hasTier1Identity ? (
-            <>
-              <View style={{ flexDirection: 'row', gap: 10, padding: 14, borderRadius: 14, backgroundColor: 'rgba(45,127,249,.10)', marginTop: 14 }}>
-                <ZIcon name="help" size={16} color={C_NIN} />
-                <Text style={{ flex: 1, fontSize: 12.5, color: c.ink2, lineHeight: 19, fontFamily: font.regular }}>
-                  Your bank has already opened an account number. Confirm your identity details together to finish verification on this account.
-                </Text>
-              </View>
-              {tier2Unavailable ? <Tier2Unavailable /> : <MethodCard id="upgrade" icon="insurance" color={C_BVN} title="Finish account verification" sub="BVN, NIN and face verification" badge="Finish" />}
-            </>
-          ) : (
-            <>
-              {!hasTier1Identity && <Text style={{ color: c.ink2, fontFamily: font.regular, marginTop: 14 }}>Tier 1: choose BVN or NIN. Verify with an SMS code or face verification.</Text>}
-              {(!hasTier1Identity || status.bvn_verified) && <MethodCard id="bvn" icon="insurance" color={C_BVN} title="BVN verification" sub="Tier 1 · SMS code or face verification" done={!!status.bvn_verified} />}
-              {(!hasTier1Identity || status.nin_verified) && <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="Tier 1 · SMS code or face verification" done={!!status.nin_verified} />}
-            </>
-          )}
-          {status.email_verified && hasTier1Identity && (tier2Unavailable && (needsBankUpgrade || !status.face_verified)
-            ? <Tier2Unavailable /> : needsBankUpgrade
-            ? <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Tier 2 · Face verification" sub="Confirm your identity details and take a selfie" />
-            : <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Tier 2 · Prembly verification" done={!!status.face_verified} />)}
-          {addressVerificationAvailable && status?.tier !== undefined && status.tier >= 2 && (addressPending
-            ? <AddressPending /> : tier3Unavailable && !status.address_verified
-              ? <Tier3Unavailable /> : <MethodCard id="address" icon="home" color={C_BVN} title="Address verification" sub="Tier 3" done={!!status?.address_verified} />)}
-          <Footer />
-        </View>
-      )}
-
-      {method === 'email' && (
-        <View>
-          <Hero icon="remita" color={C_NIN} title="Verify your email" sub="Tier 1 requires a verified phone number and email address. We’ll send a 6-digit code to your inbox." />
-          <View style={{ marginTop: 22 }}>
-            {!emailSent ? (
-              <>
-                <Field editable={!busy} label="Email address" autoCorrect={false} autoComplete="email" placeholder="you@example.com" keyboardType="email-address" autoCapitalize="none"
-                  value={email || status?.email || ''} onChangeText={setEmail} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
-                <View style={{ height: 22 }} />
-                <Btn label={busy ? 'Sending…' : 'Send email code'} disabled={busy || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((email || status?.email || '').trim())} onPress={startEmail} />
-              </>
-            ) : (
-              <>
-                <Field editable={!busy} label="Email verification code" textContentType="oneTimeCode" maxLength={6} placeholder="6-digit code" keyboardType="number-pad" value={emailOtp}
-                  onChangeText={(value) => setEmailOtp(value.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
-                <Tap
-                  disabled={busy}
-                  onPress={() => { setEmailSent(false); setEmailOtp(''); }}
-                  accessibilityLabel="Change email or resend code"
-                  hitSlop={8}
-                  style={{ alignSelf: 'flex-start', marginTop: 10, minHeight: 44, justifyContent: 'center' }}
-                >
-                  <Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Change email or resend code</Text>
-                </Tap>
-                <View style={{ height: 22 }} />
-                <Btn label={busy ? 'Confirming…' : 'Confirm email'} disabled={busy || emailOtp.length !== 6} onPress={confirmEmail} />
-              </>
-            )}
-          </View>
-        </View>
-      )}
-
-      {method === 'bvn' && !bvnSent && (
-        <View>
-          <Hero icon="insurance" color={C_BVN} title="BVN verification" sub="Enter your 11-digit BVN. We’ll send an SMS code to the phone number linked to it." />
-          <View style={{ marginTop: 22 }}>
-            <Field editable={!busy} label="Bank Verification Number (BVN)" placeholder="Enter your 11-digit BVN" keyboardType="number-pad" value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="insurance" size={18} color={c.ink3} />} />
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
-              <ZIcon name="help" size={14} color={c.amber} />
-              <Text style={{ flex: 1, color: c.ink3, fontSize: 12.5, fontFamily: font.regular }}>Dial *565*0# on your registered line to get your BVN.</Text>
-            </View>
-            <View style={{ height: 22 }} />
-            <Btn label={busy ? 'Sending code…' : 'Send verification code'} disabled={busy || bvn.length !== 11} onPress={startBvn} />
-            {status.identity_face_available && <View style={{ marginTop: 12 }}><Btn label="Use face verification instead" variant="ghost" disabled={busy || bvn.length !== 11} onPress={() => startIdentityFaceVerification({ bvn })} /></View>}
-          </View>
-          <Footer />
-        </View>
-      )}
-
-      {method === 'bvn' && bvnSent && (
-        <View>
-          <Hero icon="insurance" color={C_BVN} title="Confirm your BVN" sub={`Enter the 6-digit code${bvnOtpDestination ? ` sent to ${bvnOtpDestination}` : ' sent for your BVN'}.`} />
-          {!!bvnDeliveryNotice && <Text accessibilityRole="alert" style={{ marginTop: 12, color: c.ink2, fontFamily: font.regular }}>{bvnDeliveryNotice}</Text>}
-          <View style={{ marginTop: 22 }}>
-            <Field editable={!busy} label="Verification code" autoComplete="sms-otp" textContentType="oneTimeCode" maxLength={6} placeholder="6-digit code" keyboardType="number-pad" value={bvnOtp} onChangeText={(v) => setBvnOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
-              <Tap accessibilityLabel="Change BVN" disabled={busy} onPress={() => { setBvnSent(false); setBvnOtp(''); setBvnTrackingId(''); setBvnOtpDestination(''); }} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Change BVN</Text></Tap>
-              <Tap accessibilityLabel="Resend BVN code" disabled={busy} onPress={() => void resendBvn()} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ fontSize: 12.5, color: busy ? c.ink3 : c.brand, fontFamily: font.semibold }}>Resend code</Text></Tap>
-            </View>
-            <View style={{ height: 22 }} />
-            <Btn label={busy ? 'Confirming…' : 'Confirm BVN'} disabled={busy || bvnOtp.length !== 6} onPress={confirmBvn} />
-            {status?.identity_face_available && (
-              <View style={{ marginTop: 12 }}>
-                <Btn label={busy ? 'Opening face verification…' : 'Use face verification instead'} variant="ghost" disabled={busy || bvn.length !== 11} onPress={() => startIdentityFaceVerification({ bvn })} />
-              </View>
-            )}
-          </View>
-          <Footer />
-        </View>
-      )}
-
-      {method === 'nin' && !ninSent && (
-        <View>
-          <Hero icon="card" color={C_NIN} title="NIN verification" sub="Enter your 11-digit NIN. We’ll send an SMS code to the phone number registered on it." />
-          <View style={{ marginTop: 22 }}>
-            <Field editable={!busy} label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad" value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
-            <View style={{ height: 12 }} />
-            <View style={{ height: 18 }} />
-            <Btn label={busy ? 'Requesting code…' : 'Send NIN verification code'} disabled={busy || nin.length !== 11} onPress={verifyNin} />
-            {status.identity_face_available && <View style={{ marginTop: 12 }}><Btn label="Use face verification instead" variant="ghost" disabled={busy || nin.length !== 11} onPress={() => startIdentityFaceVerification({ nin })} /></View>}
-          </View>
-          <Footer />
-        </View>
-      )}
-
-      {method === 'nin' && ninSent && (
-        <View>
-          <Hero icon="card" color={C_NIN} title="Confirm your NIN" sub={`Enter the 6-digit code${ninOtpDestination ? ` sent to ${ninOtpDestination}` : ' sent for your NIN'}.`} />
-          {!!ninDeliveryNotice && <Text accessibilityRole="alert" style={{ marginTop: 12, color: c.ink2, fontFamily: font.regular }}>{ninDeliveryNotice}</Text>}
-          <View style={{ marginTop: 22 }}>
-            <Field editable={!busy} label="Verification code" autoComplete="sms-otp" textContentType="oneTimeCode" maxLength={6} placeholder="6-digit code" keyboardType="number-pad" value={ninOtp} onChangeText={(v) => setNinOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
-              <Tap accessibilityLabel="Change NIN" disabled={busy} onPress={() => { setNinSent(false); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); }} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Change NIN</Text></Tap>
-              <Tap accessibilityLabel="Resend NIN code" disabled={busy} onPress={() => void resendNin()} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ fontSize: 12.5, color: busy ? c.ink3 : c.brand, fontFamily: font.semibold }}>Resend code</Text></Tap>
-            </View>
-            <View style={{ height: 22 }} />
-            <Btn label={busy ? 'Confirming…' : 'Confirm NIN'} disabled={busy || ninOtp.length !== 6} onPress={confirmNin} />
-            {status?.identity_face_available && (
-              <View style={{ marginTop: 12 }}>
-                <Btn label={busy ? 'Opening face verification…' : 'Use face verification instead'} variant="ghost" disabled={busy || nin.length !== 11} onPress={() => startIdentityFaceVerification({ nin })} />
-              </View>
-            )}
-          </View>
-          <Footer />
-        </View>
-      )}
-
-      {(method === 'upgrade' || method === 'selfie') && tier2Unavailable && <Tier2Unavailable />}
-      {method === 'upgrade' && !tier2Unavailable && (
-        <View>
-          <Hero icon="insurance" color={C_BVN} title="Tier 2 · Face verification"
-                sub="Your bank requires BVN and NIN with your face verification for this upgrade. Tier 1 needs only one identity; these details complete Tier 2." />
-          <View style={{ marginTop: 22 }}>
-            <Field editable={!busy} label="Bank Verification Number (BVN)" placeholder="Enter your 11-digit BVN" keyboardType="number-pad"
-                   value={upBvn} onChangeText={(v) => setUpBvn(v.replace(/\D/g, '').slice(0, 11))}
-                   prefix={<ZIcon name="insurance" size={18} color={c.ink3} />} />
-            {status?.bvn_verified && (
-              <Text style={{ fontSize: 12, color: c.ink3, marginTop: 6, lineHeight: 18, fontFamily: font.regular }}>
-                Already verified with us — your bank still needs it inside this one
-                request, so enter it once more. We don&apos;t re-store it.
-              </Text>
-            )}
-            <View style={{ height: 14 }} />
-            <Field editable={!busy} label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad"
-                   value={upNin} onChangeText={(v) => setUpNin(v.replace(/\D/g, '').slice(0, 11))}
-                   prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
-            <View style={{ height: 14 }} />
-            <Tap disabled={busy} accessibilityLabel={upSelfie ? 'Retake selfie' : 'Take a selfie'} onPress={captureUpgradeSelfie}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: upSelfie ? C_BVN : c.line, backgroundColor: upSelfie ? 'rgba(15,162,149,.08)' : c.surface2 }}>
-                <View style={{ width: 40, height: 40, borderRadius: 11, backgroundColor: upSelfie ? 'rgba(15,162,149,.16)' : c.surface3, alignItems: 'center', justifyContent: 'center' }}>
-                  <ZIcon name={upSelfie ? 'check' : 'user'} size={20} color={upSelfie ? C_BVN : c.ink3} stroke={2.4} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{upSelfie ? 'Selfie captured' : 'Take a selfie'}</Text>
-                  <Text style={{ fontSize: 12, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{upSelfie ? 'Tap to retake' : 'Front camera · required for verification'}</Text>
-                </View>
-              </View>
-            </Tap>
-            <View style={{ height: 22 }} />
-            <Btn label={busy ? 'Verifying…' : 'Finish verification'}
-                 disabled={busy || upBvn.length !== 11 || upNin.length !== 11 || !upSelfie}
-                 onPress={submitUpgrade} />
-          </View>
-          <Footer />
-        </View>
-      )}
-
-      {method === 'address' && addressPending && <AddressPending />}
-      {method === 'address' && !addressPending && !status.address_verified && tier3Unavailable && <Tier3Unavailable />}
-      {method === 'address' && !addressPending && status.address_verified && <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>Your address is verified. Your current tier is shown on the verification menu.</Text>}
-      {method === 'address' && addressVerificationAvailable && !addressPending && !tier3Unavailable && !status.address_verified && (
-        <View>
-          <Hero icon="home" color={C_BVN} title="Address verification" sub="Tier 3" />
-          <View style={{ gap: 14, marginTop: 22, marginBottom: 20 }}>
-          <Field editable={!busy} label="Building number" value={address.buildingNumber} onChangeText={(value) => setAddressField('buildingNumber', value)} />
-          <Field editable={!busy} label="Apartment / flat (optional)" value={address.apartment} onChangeText={(value) => setAddressField('apartment', value)} />
-          <Field editable={!busy} label="Street" value={address.street} onChangeText={(value) => setAddressField('street', value)} />
-          <Field editable={!busy} label="City" value={address.city} onChangeText={(value) => setAddressField('city', value)} />
-          <Field editable={!busy} label="Town (optional)" value={address.town} onChangeText={(value) => setAddressField('town', value)} />
-          <Field editable={!busy} label="State" value={address.state} onChangeText={(value) => setAddressField('state', value)} />
-          <Field editable={!busy} label="LGA" value={address.lga} onChangeText={(value) => setAddressField('lga', value)} />
-          <Field editable={!busy} label="LCDA (optional)" value={address.lcda} onChangeText={(value) => setAddressField('lcda', value)} />
-          <Field editable={!busy} label="Landmark (optional)" value={address.landmark} onChangeText={(value) => setAddressField('landmark', value)} />
-          <Field editable={!busy} label="Additional information (optional)" value={address.additionalInformation} onChangeText={(value) => setAddressField('additionalInformation', value)} />
-          <Field editable={!busy} label="Postal code (optional)" keyboardType="number-pad" value={address.postalCode} onChangeText={(value) => setAddressField('postalCode', value)} />
-          </View>
-          <Pressable accessibilityRole="button" accessibilityLabel={addressDocument ? 'Change proof of address' : 'Add proof of address'} accessibilityState={{ disabled: busy }} onPress={() => void pickAddressProof()} disabled={busy} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: addressDocument ? C_BVN : c.line, backgroundColor: addressDocument ? 'rgba(15,162,149,.08)' : c.surface2, marginBottom: 12 }}>
-            <ZIcon name={addressDocument ? 'check' : 'file'} size={20} color={addressDocument ? C_BVN : c.ink3} />
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{addressDocument ? 'Proof of address selected' : 'Add proof of address'}</Text>
-              <Text style={{ fontSize: 12, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{status?.address_rail === 'wema' ? 'Optional for bank verification' : 'Utility bill or bank statement'}</Text>
-            </View>
-            <ZIcon name="right" size={17} color={c.ink3} />
-          </Pressable>
-          <Btn label={busy ? 'Verifying...' : 'Verify address'} disabled={busy || !address.buildingNumber.trim() || !address.street.trim() || !address.city.trim() || !address.state.trim() || !address.lga.trim()}
-            onPress={() => submit(() => kycService.verifyAddress(address, addressDocument), 'Address verified', ['address_verified'])} />
-        </View>
-      )}
-
-      {method === 'selfie' && !tier2Unavailable && sdkFlow && (
-        <View>
-          <Hero icon="user" color={C_SELFIE} title="Tier 2 · Live face verification" sub="Your verified identity is saved. No additional NIN verification is needed. Prembly will guide you through a live camera check." />
-          <Text style={{ marginVertical: 22, color: c.ink2, fontFamily: font.regular }}>Use good lighting and follow the camera instructions. Return here after completing the check.</Text>
-          <Btn label={busy ? 'Please wait…' : 'Open Prembly face verification'} disabled={busy} onPress={() => runPrembly()} />
-          {!!premblySession && <View style={{ marginTop: 12 }}><Btn label="Check verification" variant="ghost" disabled={busy} onPress={() => runPrembly(true)} /></View>}
-          <Footer />
-        </View>
-      )}
-      {method === 'selfie' && !tier2Unavailable && !sdkFlow && (
-        <View>
-          <Hero icon="user" color={C_SELFIE} title="Selfie verification" sub="Hold your phone at eye level and keep your face inside the circle. The verification service reviews the capture after submission." />
-          <View style={{ alignItems: 'center', marginVertical: 22 }}>
-            <View style={{ width: 180, height: 180, borderRadius: 90, backgroundColor: c.surface2, borderWidth: 2, borderStyle: 'dashed', borderColor: '#8FDDD4', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-              <ZIcon name="user" size={92} color={c.ink3} stroke={1.5} />
-              {scanning && (
-                <Animated.View style={{ position: 'absolute', width: 180, height: 180, transform: [{ rotate }] }}>
-                  <Svg width={180} height={180} viewBox="0 0 180 180">
-                    <Circle cx={90} cy={90} r={84} fill="none" stroke="rgba(15,162,149,.20)" strokeWidth={4} />
-                    <Circle cx={90} cy={90} r={84} fill="none" stroke={C_BVN} strokeWidth={4} strokeLinecap="round" strokeDasharray="132 528" />
-                  </Svg>
-                </Animated.View>
-              )}
-            </View>
-          </View>
-          <Text style={{ textAlign: 'center', fontSize: 13, color: scanning ? c.brand : c.ink3, fontFamily: scanning ? font.bold : font.regular, marginBottom: 14 }}>
-            {scanning ? 'Preparing camera…' : 'Front camera · no Face ID needed'}
-          </Text>
-          <Btn label={scanning ? 'Opening camera…' : busy ? 'Submitting…' : 'Start camera'} disabled={scanning || busy} onPress={runSelfie} />
-          <Footer />
-        </View>
-      )}
-    </Screen>
-    <FaceLivenessModal
-      visible={upgradeCameraOpen}
-      onClose={() => { upgradeCaptureOwner.current = null; setUpgradeCameraOpen(false); }}
-      onCapture={(image) => {
-        if (!upgradeCaptureOwner.current?.()) return;
-        upgradeCaptureOwner.current = null;
-        setUpgradeCameraOpen(false); setUpSelfie(image);
-      }}
-    />
-    </>
-  );
-};
-
-const KycScreen = () => <AuthGuard fresh><Kyc /></AuthGuard>;
-
-export default KycScreen;
+export default function KycScreen() {
+  return <AuthGuard><KycScreenContent /></AuthGuard>;
+}

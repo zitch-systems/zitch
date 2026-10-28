@@ -1258,94 +1258,28 @@ def _repair_unbacked_wema_identity_flags(user) -> None:
 
 
 def _kyc_state(user) -> dict:
-    _repair_unbacked_wema_identity_flags(user)
-    from wallet.identity import accepted_identity_pending
-    from wallet.services import customer_funding_account
-    from wallet.address_verification import tier3_address_capability
-
-    funding = customer_funding_account(user)
-    held = bool(funding.get("legacy_funding_review"))
-    identity_processing = False if held else accepted_identity_pending(user)
-    wallet = Wallet.objects.filter(user=user).only(
-        "bank_tier", "account_number", "identity_upgrade_required").first()
-    bank_tier = wallet.bank_tier if wallet and not held else 0
-    # Surfaced so the app can offer the combined upgrade BEFORE the customer
-    # types an identity that the bank will refuse. Learning this only from a
-    # failed submission is what made both the app and WhatsApp ask for a number
-    # they could not use.
-    identity_upgrade_required = bool(
-        not held and wallet and wallet.account_number and wallet.identity_upgrade_required)
-    bank_limits = {
-        key: (str(value) if value is not None else None)
-        for key in ("single_inflow", "daily_spend", "max_balance")
-        for value in [wema.bank_tier_limit(bank_tier, key)]
-    }
-    return {
-        "identity_processing": identity_processing,
-        **({"pending": True, "account_setup_state": "processing", "otp_required": False}
-           if identity_processing else {}),
-        "tier": user.tier,
-        "tier_name": _TIER_NAMES.get(user.tier, "Unverified"),
-        "transaction_limit": str(user.transaction_limit),
-        "daily_transfer_limit": str(user.daily_transfer_limit),
-        "daily_bill_limit": str(user.daily_bill_limit),
-        "bvn_verified": user.bvn_verified,
-        "nin_verified": user.nin_verified,
-        "face_verified": user.face_verified,
-        "address_verified": user.address_verified,
-        "address_verification_pending": user.address_verification_pending,
-        "address_verification_state": ("verified" if user.address_verified else
-                                       "pending" if user.address_verification_pending else "not_verified"),
-        **tier3_address_capability(),
-        "address_verification_required": True,
-        "account_provider": "partnership",
-        "legacy_funding_review": held,
-        "identity_upgrade_required": identity_upgrade_required,
-        "id_document_verified": user.id_document_verified,
-        "email": user.email or "",
-        "email_verified": user.email_verified,
-        "phone_verified": user.phone_verified,
-        # True only for chat-onboarded accounts that haven't confirmed their
-        # email in the app yet — the one state where the KYC ladder is closed.
-        "email_verification_required": _email_verification_required(user),
-        "large_txn_threshold": str(User.LARGE_TXN_THRESHOLD),
-        # Separate from Zitch's verification/spend ladder: these are enforced by
-        # Wema on the dedicated NUBAN itself.
-        "bank_tier": bank_tier,
-        "has_wema_account": bool(not held and wallet and wallet.account_number),
-        "bank_upgrade_required": bool(not held and wallet and wallet.account_number and (
-            bank_tier < 2 or not (user.tier1_identity_verified and user.face_verified)
-        )),
-        "bank_tier_limits": bank_limits,
-        # Which rail each step runs on, so the screen renders what will ACTUALLY
-        # happen rather than a fixed set of inputs. The face and address steps look
-        # completely different on the bank rail — one opens the bank's own verifier,
-        # the other stops asking for a document — and a screen that guesses wrong
-        # either asks for a file nobody will read or hides the only working button.
-        # Two different face products exist and must never share a flag:
-        # - Wema hosted face is an alternative to SMS OTP for proving one BVN/NIN.
-        # - Prembly live selfie is the Tier-2 biometric sent with BVN+NIN to upgrade.
-        # Older app builds understand face_rail=document, which safely keeps the
-        # generic Tier-2 face card on Prembly instead of mislabelling Wema identity
-        # proof as a Tier-2 face pass.
-        "identity_verification_provider": "wema",
-        "identity_face_available": not held and wema.face_verify_live(),
-        "identity_verification_methods": (["sms_otp", "wema_face"]
-                                          if not held and wema.face_verify_live()
-                                          else ["sms_otp"]),
-        "face_rail": "document",
-        "tier2_face_rail": "prembly",
-        "tier2_face_flow": "prembly_sdk",
-        "tier2_requires_nin": False,
-        "tier2_face_available": tier2_face_available(),
-        "tier2_unavailable_reason": "" if tier2_face_available() else TIER2_LIVENESS_UNAVAILABLE,
-        "address_rail": "wema",
-        **({key: value for key, value in funding.items()
-            if key in {"provider", "has_account", "account_setup_state", "available",
-                       "spending_available", "bill_payments_available", "transfers_available",
-                       "can_fund", "legacy_funding_review", "message"}}
-           if held or funding.get("account_setup_state") == "bank_history_review" else {}),
-    }
+    from banking.accounts import account_for, account_payload
+    from banking.models import IdentityChallenge, AddressVerification
+    from accounts.models import IdentityProof
+    bank = account_for(user)
+    proofs = set(IdentityProof.objects.filter(user=user, source__in=["9psb_otp", "9psb_face"]).values_list("identity_type", flat=True))
+    address = AddressVerification.objects.filter(user=user).order_by("-created").first()
+    return {**account_payload(user), "tier": user.tier, "tier_name": _TIER_NAMES.get(user.tier, "Unverified"),
+        "transaction_limit": str(user.transaction_limit), "daily_transfer_limit": str(user.daily_transfer_limit),
+        "daily_bill_limit": str(user.daily_bill_limit), "limit_source": "Zitch platform limits",
+        "bvn_verified": "bvn" in proofs, "nin_verified": "nin" in proofs,
+        "face_verified": IdentityProof.objects.filter(user=user, source="9psb_face").exists(),
+        "address_verified": user.address_verified, "address_verification_pending": bool(address and address.state in {"pending", "submitted", "review"}),
+        "address_verification_state": address.state if address else "not_verified",
+        "account_provider": "9psb", "email": user.email or "", "email_verified": user.email_verified,
+        "phone_verified": user.phone_verified, "email_verification_required": _email_verification_required(user),
+        "large_txn_threshold": str(User.LARGE_TXN_THRESHOLD), "bank_tier": bank.tier if bank else 0,
+        "has_bank_account": bool(bank), "identity_verification_provider": "9psb",
+        "identity_verification_methods": ["OTP", "FACIAL"], "face_rail": "9psb", "tier2_face_rail": "9psb",
+        "tier2_requires_nin": True, "address_rail": "prembly", "address_verification_required": True,
+        "bank_tier_limits": {"single_inflow": str(bank.maximum_deposit) if bank and bank.maximum_deposit is not None else None,
+            "max_balance": str(bank.maximum_balance) if bank and bank.maximum_balance is not None else None, "daily_spend": None},
+        "identity_processing": IdentityChallenge.objects.filter(user=user, state__in=["initiating", "verifying", "verified", "opening"]).exists()}
 
 
 def _kyc_image_error(value) -> str | None:

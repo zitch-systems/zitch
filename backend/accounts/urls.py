@@ -2,7 +2,6 @@ from django.urls import path
 
 from . import views
 
-# Paths mirror the exact endpoints the Expo app calls.
 urlpatterns = [
     path("sigin/", views.signin),
     path("logout/", views.logout),
@@ -23,18 +22,4 @@ urlpatterns = [
     path("kyc/status/", views.kyc_status),
     path("limits/", views.transaction_limits),
     path("limits/transaction/", views.set_transaction_limit),
-    path("kyc/bvn/", views.kyc_bvn),
-    path("kyc/bvn/start/", views.kyc_bvn_start),
-    path("kyc/bvn/confirm/", views.kyc_bvn_confirm),
-    path("kyc/nin/", views.kyc_nin),
-    path("kyc/nin/confirm/", views.kyc_nin_confirm),
-    path("kyc/face/", views.kyc_face),
-    path("kyc/face/start/", views.kyc_face_start),
-    path("kyc/face/status/", views.kyc_face_status),
-    path("kyc/liveness/start/", views.kyc_liveness_start),
-    path("kyc/liveness/status/", views.kyc_liveness_status),
-    path("kyc/address/", views.kyc_address),
-    path("kyc/id/", views.kyc_id_document),
-    # TEST-ONLY: mark a user KYC-verified (WEMA_SIMULATION + SIMULATE_DEPOSIT_TOKEN only).
-    path("dev/simulate-kyc/", views.simulate_kyc),
 ]
