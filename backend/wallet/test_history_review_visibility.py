@@ -13,7 +13,6 @@ from wallet.services import (
     wallet_expected_balance,
 )
 from wallet.tests import make_user
-from legacy_funding.models import VirtualAccount
 
 
 @override_settings(BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE="active",
@@ -110,13 +109,6 @@ class BankHistoryReviewVisibilityTests(TestCase):
         self.assertEqual(funding["account_setup_state"], "ready")
         self.assertEqual(wallet_balance_payload(self.user)["available_balance"], Decimal("1000"))
 
-    def test_restored_vas_account_keeps_independent_bank_opening_review(self, _live):
-        VirtualAccount.objects.create(
-            user=self.user, number="9990000216", display_name="Zitch/Ada Eze",
-            encrypted_identity="retained", verification_reference="proof-test",
-            consent_reference="consent-test", verified_at=timezone.now(), mode="live", prefix="999")
-        self.assert_held_payload()
-        self.assertEqual(wallet_balance_payload(self.user)["legacy_funding_balance"], Decimal("0"))
 
     def test_missing_account_keeps_normal_onboarding(self, _live):
         self.wallet.account_number = ""

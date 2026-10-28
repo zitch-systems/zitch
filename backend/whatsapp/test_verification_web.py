@@ -193,15 +193,10 @@ class VerificationWebTests(TestCase):
         self.bank_address.assert_not_called()
 
     def test_historical_liability_blocks_new_and_existing_address_capabilities(self):
-        from legacy_funding.models import VirtualAccount
-        from wallet.legacy_test_fixtures import retained_receipt
+        from wallet.funding_test_fixtures import funding_hold
 
         self.unlock()
-        account = VirtualAccount.objects.create(
-            user=self.user, number="7120000042", display_name="Zitch/Test User",
-            encrypted_identity="test-encrypted-identity", verification_reference="test-proof",
-            consent_reference="test-consent", verified_at=timezone.now(), mode="live", prefix="712")
-        retained_receipt(account, "100")
+        funding_hold(self.user, "100", "7120000042")
         count = PendingAction.objects.count()
         with self.assertRaises(ValueError):
             start_verification(self.user, MSISDN, 3)

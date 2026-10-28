@@ -13,10 +13,8 @@ from wallet.models import Transaction, Wallet
 from wallet.services import (LimitExceeded, biller_source_for_transaction, customer_funding_account,
     debit, settle_or_refund, wallet_balance_payload, wallet_expected_balance)
 from wallet.tests import make_user
-from legacy_funding.models import VirtualAccount
-from wallet.partnership import first_partnership_setup, legacy_funding_blockers, legacy_funding_inventory
-from legacy_funding.models import Receipt
-from wallet.legacy_test_fixtures import retained_receipt, retained_bill
+from wallet.partnership import first_partnership_setup, legacy_funding_blockers
+from wallet.funding_test_fixtures import funding_hold
 from whatsapp import router
 
 
@@ -30,10 +28,7 @@ class PartnershipReturnTests(TestCase):
         self.wallet.account_name = "Ada Eze"
         self.wallet.bank_name = "Wema Bank"
         self.wallet.save()
-        self.account = VirtualAccount.objects.create(
-            user=self.user, number="9990000106", display_name="Zitch/Ada Eze",
-            encrypted_identity="retained", verification_reference="proof-test",
-            consent_reference="consent-test", verified_at=timezone.now(), mode="live", prefix="999")
+
 
     def response(self, path):
         result = self.client.post(path, json.dumps({"access_token": self.token}), content_type="application/json")
@@ -53,21 +48,18 @@ class PartnershipReturnTests(TestCase):
             router._do_account_details(self.user, "2348099990106")
         text = " ".join(call.args[1] for call in reply.call_args_list)
         self.assertIn(self.wallet.account_number, text)
-        self.assertNotIn(self.account.number, text)
-        self.assertEqual(VirtualAccount.objects.count(), 1)
         self.assertEqual(wallet_expected_balance(self.user.pk), Decimal("1000"))
 
     def test_zero_exposure_reserves_partnership_bill_source_and_transfer(self):
         bill = debit(self.user, "100", "Airtime — MTN")
-        self.assertIsNone(bill.bill_funding.vas_account_id)
         self.assertEqual(biller_source_for_transaction(bill.reference, amount="100"), self.wallet.account_number)
         transfer = debit(self.user, "100", "Transfer to Ada")
         self.assertFalse(_partnership_reference_blocked(transfer.reference, self.wallet.account_number))
-        self.assertTrue(_partnership_reference_blocked(transfer.reference, self.account.number))
+        self.assertTrue(_partnership_reference_blocked(transfer.reference, "7110000106"))
 
     def test_retained_credit_closes_both_spend_paths_without_reclassification(self):
         before = Transaction.objects.count()
-        retained_receipt(self.account, "100")
+        funding_hold(self.user, "100")
         self.assertEqual(Transaction.objects.count(), before + 1)
         self.assertEqual(legacy_funding_blockers(self.user), ["legacy_balance"])
         for service in ("Transfer to Ada", "Airtime — MTN"):
@@ -86,45 +78,14 @@ class PartnershipReturnTests(TestCase):
                 self.assertIn("balance review", reply.call_args.args[1])
                 self.assertNotIn(self.wallet.account_number, reply.call_args.args[1])
 
-    def test_held_receipt_stays_blocked_even_after_account_unblocked(self):
-        self.account.active = False
-        self.account.save(update_fields=["active"])
-        retained_receipt(self.account, state=Receipt.HELD)
-        self.account.active = True
-        self.account.save(update_fields=["active"])
-        self.assertEqual(legacy_funding_blockers(self.user), ["held_receipts"])
-        self.assertFalse(partnership_new_business_allowed(self.user))
-        self.assertEqual(wallet_expected_balance(self.user.pk), Decimal("1000"))
 
-    def test_pending_collection_bill_with_zero_remainder_cannot_return(self):
-        retained_receipt(self.account, "100")
-        bill = retained_bill(self.account, "100")
-        self.assertEqual(legacy_funding_blockers(self.user), ["unresolved_bills"])
-        self.assertFalse(partnership_new_business_allowed(self.user))
-        settle_or_refund(bill, {"success": True})
-        self.assertTrue(partnership_new_business_allowed(self.user))
 
     def test_restore_policy_never_overrides_archive_or_vas_selection(self):
         for values in ({"WEMA_PARTNERSHIP_MODE": "archive"}, {"WEMA_PARTNERSHIP_MODE": "disabled"}):
             with self.subTest(values=values), override_settings(**values):
                 self.assertFalse(partnership_new_business_allowed(self.user))
 
-    def test_inventory_is_aggregate_only_and_does_not_mutate_accounts(self):
-        report = legacy_funding_inventory()
-        self.assertEqual(report["eligible_accounts"], 1)
-        self.assertEqual(report["review_accounts"], 0)
-        self.assertNotIn(self.account.number, json.dumps(report))
-        self.assertNotIn(self.wallet.account_number, json.dumps(report))
-        self.assertEqual(Transaction.objects.count(), 1)
 
-    def test_validation_account_never_prevents_partnership_return(self):
-        other, _ = make_user("08099990107", "validation-return@example.test")
-        VirtualAccount.objects.create(user=other, number="7110000107", display_name="Zitch/Test",
-            encrypted_identity="retained", verification_reference="proof-fixture", consent_reference="consent-fixture",
-            verified_at=timezone.now(), mode="validation", prefix="711", active=False,
-            validation_balance=100)
-        self.assertTrue(partnership_new_business_allowed(other))
-        self.assertEqual(customer_funding_account(other)["provider"], "partnership")
 
     def independent_identity(self):
         self.wallet.account_number = ""

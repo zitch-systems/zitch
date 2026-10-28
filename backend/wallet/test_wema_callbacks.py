@@ -601,10 +601,8 @@ class WemaNotificationCallbackTests(TestCase):
 
     @patch("utility.wema.get_transactions")
     def test_retired_account_notification_never_uses_partnership_history(self, history):
-        from legacy_funding.models import VirtualAccount
-        VirtualAccount.objects.create(user=self.user, number=self.wallet.account_number,
-            display_name="Zitch/Historical", encrypted_identity="retained", verification_reference="proof",
-            consent_reference="consent", verified_at=timezone.now(), mode="live", prefix="045")
+        from wallet.funding_test_fixtures import funding_hold
+        funding_hold(self.user, "100", self.wallet.account_number, credit_funds=False)
         response = self._post({"accountNumber": self.wallet.account_number, "transactionType": "Credit"})
         self.assertEqual(response.status_code, 200)
         history.assert_not_called()

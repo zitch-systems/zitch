@@ -9,7 +9,7 @@ from utility import providers, wema
 from utility.launch_readiness import financial_controls_report
 from utility.liveness import tier2_face_available
 from utility.partnership_configuration import retired_account_configuration
-from wallet.partnership import legacy_funding_inventory
+from wallet.funding_holds import funding_inventory
 
 
 class Command(BaseCommand):
@@ -38,7 +38,7 @@ class Command(BaseCommand):
             "flow_id": flow_id if re.fullmatch(r"[0-9]{1,30}", flow_id) else None,
             "flow_private_key_configured": bool(flow.get("PRIVATE_KEY")),
             "financial_controls": financial,
-            "historical_funding": legacy_funding_inventory(),
+            "historical_funding": funding_inventory(),
             "retired_account_configuration": retired_account_configuration(),
             "release_authorization": False,
             "limitation": "This inspection does not verify bank acceptance, OTP, live payments, "

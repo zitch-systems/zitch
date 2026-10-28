@@ -830,34 +830,22 @@ def _mask_account(number: str) -> str:
 
 def _transaction_account_number(txn) -> str:
     """Resolve this movement's account without relabelling historical funds."""
-    from .models import BillFundingBinding, Wallet
-    from legacy_funding.models import Receipt, VirtualAccount
+    from .models import BillFundingBinding, RetiredFundingArchive, Wallet
+    from .funding_holds import transaction_has_funding_hold
+    from .partnership import partnership_account_number
 
     try:
-        receipt = Receipt.objects.select_related("account").filter(transaction_id=txn.pk).first()
-        if receipt is not None:
-            account = receipt.account
-            if (txn.direction == txn.IN and txn.currency == "NGN" and receipt.amount == txn.amount
-                    and account.user_id == txn.user_id and account.mode == VirtualAccount.LIVE
-                    and receipt.state == Receipt.CREDITED and not account.number.startswith("711")):
-                return account.number
+        if (transaction_has_funding_hold(txn)
+                or RetiredFundingArchive.objects.filter(transaction_id=txn.pk).exists()):
             return ""
-        binding = BillFundingBinding.objects.select_related("vas_account").filter(transaction_id=txn.pk).first()
+        binding = BillFundingBinding.objects.filter(transaction_id=txn.pk).first()
         if binding is not None:
             if txn.direction != txn.OUT or txn.currency != "NGN":
                 return ""
-            if binding.vas_account_id:
-                account = binding.vas_account
-                if (account.user_id == txn.user_id and account.mode == VirtualAccount.LIVE
-                        and not account.number.startswith("711")):
-                    return account.number
-                return ""
             number = binding.source_account
         else:
-            # A late legacy credit belongs to its retained account, even after
-            # the customer has historical funding records. Mutable metadata is not proof.
             number = Wallet.objects.filter(user_id=txn.user_id).values_list("account_number", flat=True).first()
-        return number if number and not number.startswith("711") else ""
+        return number if partnership_account_number(number) else ""
     except Exception:  # noqa: BLE001 — omit unknown provenance; never guess a funding account
         return ""
 

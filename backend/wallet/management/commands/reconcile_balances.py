@@ -28,7 +28,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from utility import wema
 from wallet.services import wallet_expected_balance, wema_provisioned_wallets
-from wallet.legacy_funding import reconciliation_scope
+from wallet.funding_holds import reconciliation_scope
 
 
 class Command(BaseCommand):
