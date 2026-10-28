@@ -13,7 +13,7 @@ from wallet.models import Transaction, Wallet
 from wallet.services import LimitExceeded, InsufficientFunds, settle_or_refund
 
 from .accounts import account_for, require_enabled, spendable, update_account
-from .client import Client, ProviderError, config, money
+from .client import Client, ProviderError, config, money, require_environment
 from .models import Instruction, PreviousBankArchive
 from .secrets import seal, unseal
 
@@ -132,6 +132,7 @@ def _invoke(instruction, body):
 
 
 def dispatch(instruction):
+    require_environment(instruction.account.environment)
     # A CAS claim closes API/API and API/worker races. Only 'prepared' may send.
     claimed = Instruction.objects.filter(pk=instruction.pk, state="prepared").update(
         state="sending", attempts=F("attempts") + 1, next_check=timezone.now() + timedelta(minutes=2))
@@ -180,6 +181,7 @@ def finish(instruction, state, *, token="", error=""):
 
 
 def requery(instruction):
+    require_environment(instruction.account.environment)
     if instruction.state in {"success", "failed"}:
         return _result(instruction.state, instruction)
     if instruction.state == "prepared":

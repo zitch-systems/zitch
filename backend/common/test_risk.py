@@ -19,6 +19,8 @@ from common.http import send_limit_error
 from common.risk import (HIGH_RISK, SCORE_NO_DEVICE_HEADER, attach_device, evaluate_login,
                          parse_device, remember_device, score_device)
 from wallet.tests import make_user
+from banking.test_client import CONFIG
+from banking.test_fixtures import bind_test_bank
 
 INFO_CLEAN = "os=android;osv=14;model=Pixel 7;brand=google;physical=1;rooted=0"
 INFO_ROOTED = "os=android;osv=14;model=Pixel 7;brand=google;physical=1;rooted=1"
@@ -153,7 +155,7 @@ class EvaluateLoginTests(TestCase):
         self.assertTrue(KnownDevice.objects.filter(user=self.user).exists())
 
 
-@override_settings(RISK_NEW_DEVICE_FACE_THRESHOLD=Decimal("50000"))
+@override_settings(RISK_NEW_DEVICE_FACE_THRESHOLD=Decimal("50000"), NINEPSB=CONFIG)
 class NewDeviceStepUpTests(TestCase):
     """The gate is expressed through send_limit_error, so it applies on every send
     path — the app, and anything else that funnels through the shared limit check."""
@@ -161,6 +163,7 @@ class NewDeviceStepUpTests(TestCase):
     def setUp(self):
         # Tier 3 so the tier cap (₦5,000,000) is not what refuses these amounts.
         self.user, _ = make_user("08066660004", "risk4@zitch.app", balance="500000", tier=3)
+        bind_test_bank(self.user)
 
     def _attach(self, **kw):
         attach_device(_request(**kw), self.user)

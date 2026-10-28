@@ -1260,6 +1260,7 @@ def _repair_unbacked_wema_identity_flags(user) -> None:
 def _kyc_state(user) -> dict:
     from banking.accounts import account_for, account_payload
     from banking.models import IdentityChallenge, AddressVerification
+    from banking.client import config
     from accounts.models import IdentityProof
     bank = account_for(user)
     proofs = set(IdentityProof.objects.filter(user=user, source__in=["9psb_otp", "9psb_face"]).values_list("identity_type", flat=True))
@@ -1279,7 +1280,7 @@ def _kyc_state(user) -> dict:
         "tier2_requires_nin": True, "address_rail": "prembly", "address_verification_required": True,
         "bank_tier_limits": {"single_inflow": str(bank.maximum_deposit) if bank and bank.maximum_deposit is not None else None,
             "max_balance": str(bank.maximum_balance) if bank and bank.maximum_balance is not None else None, "daily_spend": None},
-        "identity_processing": IdentityChallenge.objects.filter(user=user, state__in=["initiating", "verifying", "verified", "opening"]).exists()}
+        "identity_processing": IdentityChallenge.objects.filter(user=user, environment=config().get("ENVIRONMENT", "sandbox"), state__in=["initiating", "verifying", "verified", "opening"]).exists()}
 
 
 def _kyc_image_error(value) -> str | None:

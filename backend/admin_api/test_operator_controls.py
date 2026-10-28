@@ -365,7 +365,7 @@ class ReversalResolutionTests(TestCase):
         self.payout = debit(
             self.customer, Decimal("1000"), "Bank transfer",
             meta={"bank": "Wema", "recipient_account": "0123456789"},
-            reference="ZTRFREVERSAL001",
+            reference="ZTRFREVERSAL001", enforce_limits=False,
         )
         self.payout.transaction_status = Transaction.SUCCESS
         self.payout.meta = {
@@ -515,17 +515,11 @@ class ReversalResolutionTests(TestCase):
         self._decide(self.checker, requested.json()["approval_id"])
         before = Wallet.objects.get(user=self.customer).balance
 
-        from wallet.services import apply_wema_credit
-
-        row = {
-            "referenceId": "BANKRETURN001",
-            "amount": "500.00",
-            "creditType": "Credit",
-            "status": "Successfull",
-            "narration": f"REFUND {self.payout.reference}",
-        }
-        self.assertIsNone(apply_wema_credit(
-            Wallet.objects.get(user=self.customer), row, [self.payout.reference]))
+        from wallet.services import _apply_matched_reversal
+        # Replay retained, already-parsed historical evidence, without a wire parser.
+        _apply_matched_reversal(Wallet.objects.get(user=self.customer),
+            inbound_reference="BANKRETURN001", received_amount=Decimal("500"),
+            payout_reference=self.payout.reference)
 
         self.payout.refresh_from_db()
         self.assertFalse(self.payout.meta["wema_reversal_quarantine"]["active"])
@@ -581,17 +575,10 @@ class ReversalResolutionTests(TestCase):
         self.assertTrue(resolution.movement_transaction.meta["internal_movement"])
 
     def test_unmatched_case_is_listed_and_can_be_released_as_a_deposit(self):
-        from wallet.services import apply_wema_credit
-
-        row = {
-            "referenceId": "ALAT-UNMATCHED-OPS",
-            "amount": "250.00",
-            "creditType": "Credit",
-            "status": "Successfull",
-            "narration": "TRANSFER REVERSAL - ORIGINAL REFERENCE UNAVAILABLE",
-        }
+        from wallet.services import _record_unmatched_reversal
         with patch("utility.alerts.alert"):
-            apply_wema_credit(Wallet.objects.get(user=self.customer), row, self_refs=[])
+            _record_unmatched_reversal(Wallet.objects.get(user=self.customer),
+                inbound_reference="ALAT-UNMATCHED-OPS", received_amount=Decimal("250"))
         evidence = ReversalEvidence.objects.get(
             provider_reference="ALAT-UNMATCHED-OPS")
 
@@ -624,20 +611,14 @@ class ReversalResolutionTests(TestCase):
     def test_already_credited_row_can_be_retained_as_an_unrelated_deposit(self):
         from unittest.mock import patch
 
-        from wallet.services import apply_wema_credit, settle_reserved_funding
+        from wallet.services import _apply_matched_reversal, settle_reserved_funding
 
         settle_reserved_funding(
             "WEMA-CR-ALAT-OLD-CREDIT", Decimal("300.00"), self.customer)
-        row = {
-            "referenceId": "ALAT-OLD-CREDIT",
-            "amount": "300.00",
-            "creditType": "Credit",
-            "status": "Successfull",
-            "narration": f"REFUND {self.payout.reference}",
-        }
         with patch("utility.alerts.alert"):
-            apply_wema_credit(
-                Wallet.objects.get(user=self.customer), row, [self.payout.reference])
+            _apply_matched_reversal(Wallet.objects.get(user=self.customer),
+                inbound_reference="ALAT-OLD-CREDIT", received_amount=Decimal("300"),
+                payout_reference=self.payout.reference)
         before = Wallet.objects.get(user=self.customer).balance
 
         requested = self._request(
@@ -655,25 +636,19 @@ class ReversalResolutionTests(TestCase):
     def test_provider_success_conflict_can_restore_the_original_debit_once(self):
         from unittest.mock import patch
 
-        from wallet.services import apply_wema_credit, debit, settle_or_refund
+        from wallet.services import debit, settle_or_refund
 
         customer, _ = make_user(
             "08077770009", "provider-race@zitch.app", balance="5000")
         payout = debit(
             customer, Decimal("1000"), "Bank transfer",
             meta={"bank": "Wema", "recipient_account": "0123456789"},
-            reference="ZTRFPROVIDERRACE1",
+            reference="ZTRFPROVIDERRACE1", enforce_limits=False,
         )
-        row = {
-            "referenceId": "ALAT-PROVIDER-RACE",
-            "amount": "1000.00",
-            "creditType": "Credit",
-            "status": "Successfull",
-            "narration": f"REFUND {payout.reference}",
-        }
+        # Retained pre-migration payout: a failed result was refunded before a
+        # conflicting success arrived. No retired provider endpoint is needed.
         with patch("utility.alerts.alert"):
-            apply_wema_credit(
-                Wallet.objects.get(user=customer), row, [payout.reference])
+            settle_or_refund(payout, {"success": False, "message": "Failed"})
         payout.refresh_from_db()
         self.assertEqual(settle_or_refund(
             payout, {"success": True, "status": "SUCCESSFUL"}), "quarantined")
@@ -682,7 +657,7 @@ class ReversalResolutionTests(TestCase):
             "/api/admin/txn/reversal-resolution",
             data=json.dumps({
                 "reference": payout.reference,
-                "evidence_reference": "ALAT-PROVIDER-RACE",
+                "evidence_reference": f"provider-success:{payout.reference}",
                 "disposition": "confirm_provider_success",
                 "confirmed_amount": "1000.00",
                 "reason": "Provider trace confirms beneficiary received funds",
@@ -742,7 +717,7 @@ class CardFundingResolutionTests(TestCase):
             meta={"card": self.card.id, "card_funding": True,
                   "reconcile": True, "card_balance_applied": False},
             idempotency_key="card-resolution-1",
-            reference="ZCARDFUNDRESOLVE1",
+            reference="ZCARDFUNDRESOLVE1", enforce_limits=False,
         )
 
     def _request(self, disposition):

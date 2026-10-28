@@ -2,7 +2,7 @@
 import base64
 from django.utils import timezone
 from . import accounts, address, upgrades
-from .client import ProviderError
+from .client import ProviderError, config
 from .models import IdentityChallenge, AddressVerification
 from .secrets import unseal
 
@@ -52,7 +52,7 @@ def submit(user, action, data, files, scope):
         ref = scope.get("identity_reference", "")
         if action == "otp":
             return accounts.confirm_identity(user, ref, data.get("otp", ""))
-        row = IdentityChallenge.objects.filter(user=user, reference=ref).first()
+        row = IdentityChallenge.objects.filter(user=user, environment=config().get("ENVIRONMENT", "sandbox"), reference=ref).first()
         if not row:
             raise ValueError("Start an identity verification first")
         if row.state in {"verified", "opening"} and row.verified_at:

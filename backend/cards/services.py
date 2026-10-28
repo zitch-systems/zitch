@@ -133,6 +133,8 @@ def finalize_card_funding(txn: Transaction, result: dict) -> str:
         return "pending"
 
     wallet = Wallet.objects.select_for_update().get(user=current.user)
+    from banking.accounts import retain_historical_refund
+    retain_historical_refund(current)
     wallet.balance += current.amount
     wallet.save(update_fields=["balance", "updated"])
     meta.update(_provider_meta(result))
@@ -187,6 +189,8 @@ def resolve_card_funding(reference: str, *, disposition: str, reason: str,
         movement = txn.amount
     elif disposition == "confirm_failed":
         wallet = Wallet.objects.select_for_update().get(user=txn.user)
+        from banking.accounts import retain_historical_refund
+        retain_historical_refund(txn)
         wallet.balance += txn.amount
         wallet.save(update_fields=["balance", "updated"])
         txn.transaction_status = Transaction.FAILED

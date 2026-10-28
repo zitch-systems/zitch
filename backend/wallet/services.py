@@ -2711,6 +2711,14 @@ def resolve_reversal_quarantine(reference: str, *, disposition: str, reason: str
             raise ValueError("This evidence is not a provider-success/refund conflict")
         if payout.transaction_status != Transaction.FAILED:
             raise ValueError("The payout refund is no longer present")
+        from banking.accounts import historical_balance, retain_historical_refund
+        from banking.models import PreviousBankArchive
+        archived = ((payout.meta or {}).get("provider") != "9psb"
+                    and PreviousBankArchive.objects.filter(wallet=locked_wallet).exists())
+        if archived and historical_balance(locked_wallet) < payout.amount:
+            raise InsufficientFunds(
+                "The archived balance cannot cover this historical correction; keep the hold for review"
+            )
         if locked_wallet.balance < payout.amount:
             raise InsufficientFunds(
                 "The refunded funds are no longer available; keep the hold active "
@@ -2721,6 +2729,18 @@ def resolve_reversal_quarantine(reference: str, *, disposition: str, reason: str
         # wallet correction mirrors the status transition exactly once.
         locked_wallet.balance -= payout.amount
         locked_wallet.save(update_fields=["balance", "updated"])
+        if archived:
+            # The original payout's status restores the ledger debit. This
+            # non-posting evidence only reduces the separate historical hold;
+            # it must neither charge the ledger twice nor consume new-bank funds.
+            movement_txn = Transaction.objects.create(
+                user=evidence.user, service="Historical debit restoration evidence",
+                amount=payout.amount, direction=Transaction.OUT,
+                transaction_status=Transaction.FAILED, reference=resolution_reference,
+                meta={"internal_evidence": True, "payout_reference": payout.reference,
+                      "evidence_id": evidence.pk, "approval_id": approval_id},
+            )
+            retain_historical_refund(movement_txn, -payout.amount)
         payout.transaction_status = Transaction.SUCCESS
         movement = payout.amount
         movement_direction = Transaction.OUT

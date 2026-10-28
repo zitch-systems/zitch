@@ -39,6 +39,12 @@ def configured(product="waas"):
     return bool(conf.get("BASE_URL") and all(conf.get(f"{product.upper()}_{name}") for name in names))
 
 
+def require_environment(environment):
+    current = config().get("ENVIRONMENT", "sandbox")
+    if environment not in {"sandbox", "production"} or environment != current:
+        raise ProviderError("bank_environment_mismatch")
+
+
 def sandbox():
     return config().get("ENVIRONMENT", "sandbox") == "sandbox"
 

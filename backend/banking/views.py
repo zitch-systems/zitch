@@ -34,7 +34,7 @@ def status(request):
     proofs = set(IdentityProof.objects.filter(user=user, source__in=["9psb_otp", "9psb_face"]).values_list("identity_type", flat=True))
     profile = unseal(bank.encrypted_profile) if bank and bank.encrypted_profile else {
         "lastName": user.last_name, "otherNames": user.first_name, "phoneNo": user.phone, "email": user.email}
-    challenge = IdentityChallenge.objects.filter(user=user).exclude(state__in=["complete", "failed", "expired"]).order_by("-created").first()
+    challenge = IdentityChallenge.objects.filter(user=user, environment=config().get("ENVIRONMENT", "sandbox")).exclude(state__in=["complete", "failed", "expired"]).order_by("-created").first()
     progress = accounts.challenge_payload(challenge) if challenge else None
     if progress and progress["account_setup_state"] == "expired":
         progress = None
@@ -74,7 +74,7 @@ def identity_confirm(request):
 @api
 @require_user
 def identity_status(request):
-    challenge = IdentityChallenge.objects.filter(user=request.user_obj, reference=request.data.get("reference", "")).first()
+    challenge = IdentityChallenge.objects.filter(user=request.user_obj, environment=config().get("ENVIRONMENT", "sandbox"), reference=request.data.get("reference", "")).first()
     if not challenge:
         return fail("Verification request not found", status=404)
     if challenge.state == "opening" and challenge.verified_at:

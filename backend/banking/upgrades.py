@@ -9,7 +9,7 @@ from accounts.models import IdentityProof, User, hash_identifier
 from wallet.models import Wallet
 
 from .accounts import account_for, require_enabled, update_account
-from .client import Client, ProviderError
+from .client import Client, ProviderError, require_environment
 from .models import AccountUpgrade, AddressVerification
 from .payments import digest
 from .secrets import unseal
@@ -77,6 +77,7 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
 
 
 def refresh_upgrade(bank):
+    require_environment(bank.environment)
     request = AccountUpgrade.objects.filter(account=bank, state__in=["pending", "submitted", "review"]).order_by("created").first()
     if not request:
         return False

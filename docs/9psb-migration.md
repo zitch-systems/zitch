@@ -77,7 +77,7 @@ have yet been realized.
 | Payments | Durable once-only dispatch, fees bound to confirmation, uncertain outcomes retained | Confirm total customer debit including fees; execute funded-wallet UAT |
 | Status | Separate WaaS and VAS parsing; WaaS success sample verified against supplied Postman collection | Negative/reversal status examples and live test evidence |
 | Inflows | Authenticated durable inbox, bank requery before credit, duplicate protection | Owned test wallet; statement/history schema, outage backfill and reversal correlation |
-| VAS | Dynamic catalog, validation, purchase and status code implemented | Supplied VAS credentials return HTTP 400 / bad credentials; replacement required |
+| VAS | Dynamic catalog, validation, purchase and status code implemented | Available credential files still return HTTP 400 / bad credentials; the replacement attachment is missing from the restored workspace |
 | Prembly Tier 3 | Correlated request/status adapter prepared; new paid requests disabled | Terminal approval enum and retrievable report contract, then tests and activation |
 | App and WhatsApp | Shared app checkout, dynamic WhatsApp VAS flow, transfer fee review and secure identity forms implemented | Live channel UAT and broader backend regression migration |
 | QR and corporate WaaS | Documented by bank | Product implementation and acceptance tests remain |
@@ -117,3 +117,31 @@ suite in CI. Focused green tests are not evidence of production readiness.
 Keep all provider agreements, credentials and identity attachments out of this
 public Git repository. Sandbox keys were installed only in server environment
 configuration, with every new-customer activation switch left off.
+
+## Workspace recovery and archive safety follow-up
+
+Workspace access was restored on 28 October. The two credential files actually
+present are byte-identical to the earlier set. Rechecking these files returned
+WaaS authentication HTTP 200 and a successful bank directory, but VAS
+authentication HTTP 400 / bad credentials. The separately referenced replacement
+attachment is not present, so it has not been installed or verified. No activation
+or Render cost cutover was performed in this follow-up.
+
+Historical card refunds now create immutable archive adjustments in the same
+transaction as the refund. Operator restoration of a retired payout cannot use
+new-bank funds and reduces the historical hold without double-posting the ledger.
+Bank accounts and identity challenges have immutable environment bindings;
+background queues and direct recovery paths reject records from another
+environment before any network request or money transition. Migration 0006 leaves
+pre-existing challenge origins blank and blocked rather than guessing their
+origin. New challenges record their environment at creation.
+
+The combined banking, Render and shared-control regression run completed 222
+checks: 218 passed and four PostgreSQL-only checks were skipped locally.
+Coverage includes refund replay, rollback, insufficient historical funds and
+environment isolation across account, identity, payment and notification recovery. Updated email,
+device-risk, receipt and operator fixtures exercise the current bank evidence
+without opening retired provider routes. These focused results do not replace the
+full regression run: the latest completed full PostgreSQL checkpoint at `3d46c79`
+had 680 failures and 1,046 errors across 3,541 tests; SQLite had 680 failures,
+1,042 errors and 10 skips. The complete suite remains enabled and unresolved.

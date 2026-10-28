@@ -12,7 +12,7 @@ from django.utils import timezone
 from accounts.models import User, hash_identifier, record_identity_proof
 from wallet.models import Wallet
 
-from .client import Client, ProviderError, config, customer_enabled, sandbox, phone
+from .client import Client, ProviderError, config, customer_enabled, sandbox, phone, require_environment
 from .models import BankAccount, IdentityChallenge, PreviousBankArchive
 from .secrets import seal, unseal
 from .validation import wallet_profile
@@ -23,6 +23,9 @@ def require_enabled(user):
         raise ValueError("Banking setup is temporarily unavailable")
     if sandbox() and str(user.pk) not in config().get("SANDBOX_USER_IDS", []):
         raise ValueError("This bank connection is available to enrolled sandbox testers only")
+    existing = BankAccount.objects.filter(wallet__user_id=user.pk).first()
+    if existing:
+        require_environment(existing.environment)
 
 
 def same_name(first, second):
@@ -122,11 +125,13 @@ def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
         previous = IdentityChallenge.objects.filter(user=user, expires_at__gt=timezone.now(),
             state__in=["initiating", "pending", "verifying", "verified", "opening"]).first()
         if previous:
+            require_environment(previous.environment)
             if previous.identity_hash == digest and previous.method == method:
                 return challenge_payload(previous)
             raise ValueError("Finish the current identity check before starting another")
         challenge = IdentityChallenge.objects.create(user=user, reference="ZI" + secrets.token_hex(10).upper(),
             kind=kind, method=method, identity_hash=digest, last4=identifier[-4:],
+            environment=config().get("ENVIRONMENT", "sandbox"),
             encrypted_input=seal({"profile": profile, "identifier": identifier}),
             expires_at=timezone.now() + timedelta(minutes=10))
     try:
@@ -167,6 +172,7 @@ def confirm_identity(user, ref, otp):
     challenge = IdentityChallenge.objects.filter(user=user, reference=ref).first()
     if not challenge:
         raise ValueError("Verification request not found")
+    require_environment(challenge.environment)
     if challenge.state == "complete":
         return {"success": True, **account_payload(user)}
     if challenge.verified_at and challenge.state in {"verified", "opening"}:
@@ -199,9 +205,13 @@ def confirm_identity(user, ref, otp):
 
 
 def complete_account(challenge):
+    require_environment(challenge.environment)
     if not challenge.verified_at or not challenge.encrypted_input:
         raise ValueError("Complete bank identity verification first")
     user = challenge.user
+    existing = BankAccount.objects.filter(wallet__user_id=user.pk).first()
+    if existing:
+        require_environment(existing.environment)
     stored = unseal(challenge.encrypted_input)
     current = account_for(user)
     if current:
@@ -258,9 +268,12 @@ def complete_account(challenge):
 
 @transaction.atomic
 def _finish_identity(challenge, bank):
+    require_environment(challenge.environment)
+    require_environment(bank.environment)
     wallet = Wallet.objects.select_for_update().get(pk=bank.wallet_id)
     user = User.objects.select_for_update().get(pk=wallet.user_id)
     challenge = IdentityChallenge.objects.select_for_update().get(pk=challenge.pk)
+    require_environment(challenge.environment)
     if challenge.state == "complete":
         return {"success": True, **account_payload(user)}
     if not challenge.verified_at or not same_name(user.get_full_name(), bank.name):
@@ -304,6 +317,7 @@ def _restriction(value):
 
 
 def update_account(bank, reply=None):
+    require_environment(bank.environment)
     reply = reply or Client().wallet(bank.number)
     data = reply.data if isinstance(reply.data, dict) else {}
     if not reply.ok or str(data.get("number") or data.get("nuban") or "") != bank.number:

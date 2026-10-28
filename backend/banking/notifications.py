@@ -9,7 +9,7 @@ from django.utils import timezone
 from wallet.models import Transaction, Wallet
 from wallet.services import credit
 
-from .client import Client, ProviderError, config, money
+from .client import require_environment, Client, ProviderError, config, money
 from .models import BankAccount, Instruction, Notification
 from .payments import digest, requery
 
@@ -66,6 +66,7 @@ def ingest(event, body):
 
 
 def process(notice):
+    require_environment(notice.account.environment)
     if notice.state == "complete":
         return True
     # Lease prevents overlapping scheduler deliveries without holding a database

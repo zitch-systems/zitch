@@ -6,7 +6,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .accounts import complete_account, update_account
-from .client import ProviderError, configured
+from .client import ProviderError, configured, config
 from .models import AccountUpgrade, BankAccount, BillerValidation, IdentityChallenge, Instruction, Notification
 from .notifications import process
 from .payments import requery
@@ -25,12 +25,13 @@ def sweep(*, limit=10, budget_seconds=45):
     BillerValidation.objects.filter(expires_at__lte=now).exclude(encrypted_result="").update(encrypted_result="")
     if not configured():
         return result
+    environment = config().get("ENVIRONMENT", "sandbox")
     queues = [
-        ("notifications", Notification.objects.filter(next_check__lte=now).exclude(state="complete").order_by("next_check"), process),
-        ("instructions", Instruction.objects.filter(next_check__lte=now, state__in=["prepared", "sending", "pending"]).order_by("next_check"), requery),
-        ("identities", IdentityChallenge.objects.filter(state__in=["verified", "opening"], verified_at__isnull=False).order_by("updated"), complete_account),
-        ("accounts", BankAccount.objects.filter(Q(checked_at__lt=now-timedelta(minutes=4)) | Q(checked_at__isnull=True)).order_by("checked_at"), update_account),
-        ("upgrades", AccountUpgrade.objects.filter(state__in=["pending", "submitted", "review"]).filter(Q(checked_at__lt=now-timedelta(minutes=5)) | Q(checked_at__isnull=True)).order_by("checked_at"), lambda row: refresh_upgrade(row.account)),
+        ("notifications", Notification.objects.filter(account__environment=environment, next_check__lte=now).exclude(state="complete").order_by("next_check"), process),
+        ("instructions", Instruction.objects.filter(account__environment=environment, next_check__lte=now, state__in=["prepared", "sending", "pending"]).order_by("next_check"), requery),
+        ("identities", IdentityChallenge.objects.filter(environment=environment, state__in=["verified", "opening"], verified_at__isnull=False).order_by("updated"), complete_account),
+        ("accounts", BankAccount.objects.filter(environment=environment).filter(Q(checked_at__lt=now-timedelta(minutes=4)) | Q(checked_at__isnull=True)).order_by("checked_at"), update_account),
+        ("upgrades", AccountUpgrade.objects.filter(account__environment=environment, state__in=["pending", "submitted", "review"]).filter(Q(checked_at__lt=now-timedelta(minutes=5)) | Q(checked_at__isnull=True)).order_by("checked_at"), lambda row: refresh_upgrade(row.account)),
     ]
     for kind, rows, handler in queues:
         for row in rows[:limit]:

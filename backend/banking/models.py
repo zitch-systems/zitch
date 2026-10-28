@@ -51,6 +51,8 @@ class PreviousBankArchive(models.Model):
 
 
 class IdentityChallenge(models.Model):
+    environment = models.CharField(max_length=12, default="", blank=True,
+        choices=[("sandbox", "Sandbox"), ("production", "Production")])
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     reference = models.CharField(max_length=25, unique=True)
     kind = models.CharField(max_length=3, choices=[("bvn", "BVN"), ("nin", "NIN")])
