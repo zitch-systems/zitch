@@ -89,6 +89,11 @@ trigger checks skipped on SQLite), all 68 app suites / 706 tests and one snapsho
 passed, and TypeScript checking passed. Banking tests cover archive immutability,
 fees, server-owned bill prices, renewed-validation replay, identity ownership,
 web PIN/CSRF binding, WhatsApp authorization replay and ambiguous bank routing.
+The `c161ee1` checkpoint also passed migration consistency and all 78 banking
+tests on PostgreSQL, including both immutability trigger checks. Its app CI run
+had one cold native-component initialization timeout in an existing savings
+test (705 passed). That native test boundary was isolated and all 15 tests in
+that suite passed without a transform cache; production behavior is unchanged.
 
 The obsolete per-screen bill and old-provider identity tests were replaced with
 shared checkout, bank identity and route-binding coverage. Their original
