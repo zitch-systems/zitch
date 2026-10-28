@@ -1086,46 +1086,15 @@ def _save_verified_identity(user, identity_type: str, raw: str,
 
 
 def _email_verification_required(user) -> bool:
-    """Chat-onboarded accounts must confirm their email in the app before any
-    KYC step. The email was typed during a WhatsApp signup — one typo from being
-    someone else's inbox — and an address nobody has proved control of must not
-    become the recovery channel for a money account.
-
-    It fires only when the address is still UNVERIFIED, so a signup whose email
-    code round-trip succeeded passes straight through. That is now the common
-    case rather than the exception: the signup Flow sends the code, and it also
-    sets an app password, so these customers sign in directly instead of
-    arriving through the OTP password reset this gate once leaned on."""
-    # KYC ownership is proved by the Wema-registered SMS OTP or Wema face
-    # biometric.  Email is an account-recovery control, not a Wema KYC factor;
-    # never block BVN/NIN/face/address verification on an email code.
-    #
-    # This answers ONE question — "may the KYC ladder open?" — and the answer is
-    # now always yes. It used to answer a second, unrelated one as well (see
-    # _email_unproven_for_recovery), and collapsing it to False silently took that
-    # protection with it. Keep the two apart: they are the same fact serving
-    # different purposes, and only one of them was meant to be retired.
-    return False
+    """The bank identity flow requires both verified Zitch contact channels."""
+    return not user.email_verified
 
 
 def _email_unproven_for_recovery(user) -> bool:
-    """Whether this address is too unproven to be a PASSWORD-RECOVERY channel.
+    """A chat-claimed inbox cannot receive recovery codes until verified.
 
-    Deliberately NOT the same question as _email_verification_required. That one
-    asks whether to block KYC, and the answer is now always no. This one asks
-    whether to send a reset code to the inbox — and for a chat-onboarded account
-    it is still yes-it-is-unproven, for the reason that has not changed: the
-    address was typed into a WhatsApp conversation and nobody has ever proved
-    control of it. One typo and the reset code for a money account lands in a
-    stranger's inbox.
-
-    Both used to read the same predicate. When that predicate was hardcoded to
-    False to open the KYC ladder, this suppression went with it and reset codes
-    began going to unverified chat-typed addresses. Splitting them is what lets
-    the KYC decision stand without giving that away.
-
-    The phone still gets the code either way, and it is the identity these
-    accounts actually authenticated with — so nobody is locked out by this.
+    This recovery policy is independent of the bank's identity prerequisites.
+    The verified phone remains a recovery channel while the email is unproven.
     """
     return bool(getattr(user, "onboarded_via_whatsapp", False) and not user.email_verified)
 

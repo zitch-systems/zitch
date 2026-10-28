@@ -1,0 +1,57 @@
+{
+  "source_commit": "e60196f1bd60fee8b6009eddaaf43c9f9270bfaf",
+  "implementation_archive_branch": "archive/wema-partnership-before-9psb-20261028",
+  "reason": "Transport, hosted-face and callback contracts for the removed provider; standalone Prembly identity lookup is also retired. Shared ledger, historical liability and application control suites remain active.",
+  "files": [
+    {
+      "path": "backend/utility/test_wema.py",
+      "sha256": "e3eff9b8515e50c074b3b4f9163e6cc600790fdec895b57f9204976d2dc9f67a",
+      "test_methods": 144
+    },
+    {
+      "path": "backend/utility/test_bank_response_binding.py",
+      "sha256": "f40e9811cfd408a6a1f18324e8ebf7d3ef7e2958ff3dbf0fdf198024e110ffb7",
+      "test_methods": 17
+    },
+    {
+      "path": "backend/utility/test_history_contract.py",
+      "sha256": "38e36327b1b76809f644fd346b3973b9fd0df5e141435f34ad88a40d896b6104",
+      "test_methods": 8
+    },
+    {
+      "path": "backend/utility/test_wema_safety.py",
+      "sha256": "967cfef8a640b21dfb05ff8ee101c919687310c6dec03316fea0b6565f33634e",
+      "test_methods": 13
+    },
+    {
+      "path": "backend/utility/test_vas_refusal.py",
+      "sha256": "c717845570e028b5f5e783bbca9098abcc4d34494404d0f7e39ecf46e323cb03",
+      "test_methods": 29
+    },
+    {
+      "path": "backend/utility/test_vas_status_entitlement.py",
+      "sha256": "6a22080fbd2b875b086cc65d9892f587c7c890bbc9823330e75b52b42bdfb08f",
+      "test_methods": 13
+    },
+    {
+      "path": "backend/utility/test_vas_legend.py",
+      "sha256": "d298261c5040f77d58349a5cdfe52b9cac53fd4fb0368626e39ae0c041e493d5",
+      "test_methods": 22
+    },
+    {
+      "path": "backend/utility/test_prembly_identity_contract.py",
+      "sha256": "5fa65cf00d70ecc92bd0c421d67c98aa9d24b60531a0d542cd657e4bd834dbe2",
+      "test_methods": 10
+    },
+    {
+      "path": "backend/accounts/test_wema_face.py",
+      "sha256": "c1469e5c40350ba2fd698ac04ab2f6a946a54c587950e4f6f05743e5e99a6231",
+      "test_methods": 70
+    },
+    {
+      "path": "backend/wallet/test_wema_callbacks.py",
+      "sha256": "7cad6b34fb67dcefae6bb73f8d46fef57137bed5da6a7b276b2d62c739a6d8f5",
+      "test_methods": 83
+    }
+  ]
+}

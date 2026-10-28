@@ -9,6 +9,7 @@ import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { banking, type BankProfile, type BankStatus } from '@/lib/services/banking';
+import { kycService } from '@/lib/services/kyc';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { getSessionGeneration } from '@/lib/secureStore';
 
@@ -37,6 +38,9 @@ function KycScreenContent() {
   const [tier, setTier] = useState(2);
   const [upgrade, setUpgrade] = useState<Record<string, string>>({ pep: 'NO', idType: '1' });
   const [addressRef, setAddressRef] = useState('');
+  const [email, setEmail] = useState('');
+  const [emailCode, setEmailCode] = useState('');
+  const [emailSent, setEmailSent] = useState(false);
   const generation = useRef(getSessionGeneration());
   const active = useRef(true);
   const ownership = useRef(0);
@@ -51,6 +55,8 @@ function KycScreenContent() {
       if (!current(owner) || serial !== readSerial.current) return;
       if (result.success) {
         setStatus(result); setMessage(''); setProfile((p) => ({ ...p, ...result.profile }));
+        setEmail(result.profile.email || '');
+        if (result.email_verified) { setEmailCode(''); setEmailSent(false); }
         const challenge = result.identity_challenge;
         setTracking(challenge?.tracking_id || ''); setNeedsOtp(challenge?.otp_required === true);
         if (challenge) setKind(challenge.kind);
@@ -64,8 +70,26 @@ function KycScreenContent() {
       active.current = false; ownership.current += 1; inFlight.current = false;
       setBusy(false); setStatus(null); setIdentifier(''); setOtp(''); setTracking(''); setNeedsOtp(false);
       setProfile(emptyProfile); setUpgrade({ pep: 'NO', idType: '1' }); setAddressRef('');
+      setEmail(''); setEmailCode(''); setEmailSent(false); setMessage('');
     };
   }, []));
+  const verifyEmail = async (confirm: boolean) => {
+    if (!current() || inFlight.current) return;
+    if (confirm ? !/^[0-9]{6}$/.test(emailCode) : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return;
+    const owner = ownership.current;
+    inFlight.current = true; setBusy(true);
+    try {
+      const result = confirm ? await kycService.confirmEmail(emailCode) : await kycService.startEmail(email.trim());
+      if (!current(owner)) return;
+      setMessage(result.message || (result.success ? 'Check your email for a verification code.' : 'We could not verify your email. Please try again.'));
+      if (result.success && confirm) { setEmailCode(''); setEmailSent(false); await load(); }
+      else if (result.success) { setEmailSent(true); setEmailCode(''); }
+    } catch {
+      if (current(owner)) setMessage('Could not reach the verification service. Please try again.');
+    } finally {
+      if (current(owner)) { inFlight.current = false; setBusy(false); }
+    }
+  };
   const run = async (action: () => Promise<any>) => {
     if (!current() || inFlight.current) return;
     const owner = ownership.current;
@@ -113,6 +137,21 @@ function KycScreenContent() {
     } catch { if (current(owner)) setMessage('Could not read this document. Please try again.'); }
     finally { if (current(owner)) { inFlight.current = false; setBusy(false); } }
   };
+  if (status?.email_verified === false) return <Screen header={<Header title="Verify your email" />}>
+    <View style={{ gap: 16 }}>
+      <Text style={text}>Confirm your email address before setting up your bank account.</Text>
+      {!!message && <Text accessibilityLiveRegion="polite" style={text}>{message}</Text>}
+      <Field label="Email address" value={email} maxLength={254} keyboardType="email-address" autoCapitalize="none" autoCorrect={false}
+        editable={!busy && !emailSent} onChangeText={setEmail} />
+      {emailSent ? <>
+        <Field label="Six-digit email code" value={emailCode} maxLength={6} keyboardType="number-pad" secureTextEntry
+          editable={!busy} onChangeText={setEmailCode} />
+        <Btn label="Confirm email code" disabled={busy || !/^[0-9]{6}$/.test(emailCode)} onPress={() => void verifyEmail(true)} />
+        <Btn label="Resend email code" variant="outline" disabled={busy} onPress={() => void verifyEmail(false)} />
+        <Btn label="Change email address" variant="outline" disabled={busy} onPress={() => { setEmailSent(false); setEmailCode(''); setMessage(''); }} />
+      </> : <Btn label="Send email code" disabled={busy || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())} onPress={() => void verifyEmail(false)} />}
+    </View>
+  </Screen>;
   if (!status || !status.identity_available) return <Screen header={<Header title="Verify your account" />}>
     <View style={{ gap: 16 }}><Text style={text}>{message || (!status ? 'Loading verification status…' : 'Bank verification is currently unavailable for this account. Please verify your email and phone number, or contact support.')}</Text>
       <Btn label="Refresh verification status" variant="outline" onPress={() => void load()} /></View>

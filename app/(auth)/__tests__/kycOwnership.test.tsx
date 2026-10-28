@@ -16,6 +16,12 @@ const mockCameraPermission = jest.fn();
 const mockCamera = jest.fn();
 const mockPick = jest.fn();
 const mockRead = jest.fn();
+const mockStartEmail = jest.fn();
+const mockConfirmEmail = jest.fn();
+jest.mock('@/lib/services/kyc', () => ({ kycService: {
+  startEmail: (...args: any[]) => mockStartEmail(...args),
+  confirmEmail: (...args: any[]) => mockConfirmEmail(...args),
+} }));
 jest.mock('@/components/AuthGuard', () => ({ children }: any) => mockAuthenticated ? children : null);
 jest.mock('expo-router', () => ({ useFocusEffect: (callback: () => (() => void)) => {
   const ReactActual = jest.requireActual('react');
@@ -61,6 +67,8 @@ beforeEach(() => {
   mockCameraPermission.mockReset().mockResolvedValue({ granted: true });
   mockCamera.mockReset().mockResolvedValue({ canceled: false, assets: [{ base64: 'face-image' }] });
   mockPick.mockReset().mockResolvedValue({ canceled: true }); mockRead.mockReset().mockResolvedValue('encoded-document');
+  mockStartEmail.mockReset().mockResolvedValue({ success: true, message: 'We sent an email code.' });
+  mockConfirmEmail.mockReset().mockResolvedValue({ success: true });
 });
 afterEach(async () => { if (tree) await act(async () => tree.unmount()); });
 
@@ -104,6 +112,74 @@ it('does not fetch or mount identity collection while signed out', async () => {
 it('does not collect identities when the server disables verification', async () => {
   mockStatus.mockResolvedValue({ ...ready, identity_available: false }); await mount();
   expect(output()).not.toContain('Verify with bank OTP'); expect(output()).not.toContain('Residential address');
+});
+
+it('completes email verification before collecting bank identity', async () => {
+  mockStatus.mockResolvedValueOnce({ ...ready, email_verified: false, identity_available: false });
+  await mount();
+  expect(field('Email address').props.value).toBe(profile.email);
+  expect(output()).not.toContain('Verify with bank OTP');
+  await act(async () => { await control('Send email code').props.onPress(); });
+  expect(mockStartEmail).toHaveBeenCalledWith(profile.email);
+  await act(async () => { field('Six-digit email code').props.onChangeText('654321'); });
+  await act(async () => { await control('Confirm email code').props.onPress(); });
+  expect(mockConfirmEmail).toHaveBeenCalledWith('654321');
+  expect(output()).toContain('Verify with bank OTP');
+  expect(output()).not.toContain('Six-digit email code');
+  expect(mockIdentity).not.toHaveBeenCalled();
+});
+
+it('keeps an incorrect email code in the email step without granting bank access', async () => {
+  mockStatus.mockResolvedValue({ ...ready, email_verified: false, identity_available: false });
+  mockConfirmEmail.mockResolvedValue({ success: false, message: 'Invalid code' });
+  await mount();
+  await act(async () => { await control('Send email code').props.onPress(); });
+  await act(async () => { field('Six-digit email code').props.onChangeText('000000'); });
+  await act(async () => { await control('Confirm email code').props.onPress(); });
+  expect(output()).toContain('Invalid code');
+  expect(output()).not.toContain('Verify with bank OTP');
+  expect(mockStatus).toHaveBeenCalledTimes(1);
+});
+
+it('does not advance after failed email delivery and prevents duplicate sends', async () => {
+  mockStatus.mockResolvedValue({ ...ready, email_verified: false, identity_available: false });
+  let finish!: (value: unknown) => void;
+  mockStartEmail.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  await mount();
+  const send = control('Send email code').props.onPress;
+  await act(async () => { send(); send(); });
+  expect(mockStartEmail).toHaveBeenCalledTimes(1);
+  await act(async () => { finish({ success: false, message: 'Email delivery unavailable' }); });
+  expect(output()).toContain('Email delivery unavailable');
+  expect(output()).not.toContain('Six-digit email code');
+});
+
+it('discards a delayed email response after the session changes', async () => {
+  mockStatus.mockResolvedValue({ ...ready, email_verified: false, identity_available: false });
+  let finish!: (value: unknown) => void;
+  mockStartEmail.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  await mount();
+  await act(async () => { control('Send email code').props.onPress(); });
+  mockGeneration += 1;
+  await act(async () => { finish({ success: true }); });
+  expect(output()).not.toContain('Six-digit email code');
+  expect(mockConfirmEmail).not.toHaveBeenCalled();
+});
+
+it('clears the email code when changing the address or leaving verification', async () => {
+  mockStatus.mockResolvedValue({ ...ready, email_verified: false, identity_available: false });
+  await mount();
+  await act(async () => { await control('Send email code').props.onPress(); });
+  await act(async () => { field('Six-digit email code').props.onChangeText('654321'); });
+  await act(async () => { control('Change email address').props.onPress(); });
+  expect(output()).not.toContain('654321');
+  await act(async () => { field('Email address').props.onChangeText('new@example.test'); });
+  await act(async () => { await control('Send email code').props.onPress(); });
+  expect(mockStartEmail).toHaveBeenLastCalledWith('new@example.test');
+  await act(async () => { field('Six-digit email code').props.onChangeText('123456'); });
+  await act(async () => { mockBlur(); mockBlur = mockFocus(); });
+  expect(output()).not.toContain('123456');
+  expect(output()).not.toContain('Six-digit email code');
 });
 
 it('offers retry after an unsuccessful status read without inventing a verification step', async () => {

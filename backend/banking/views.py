@@ -39,6 +39,8 @@ def status(request):
     if progress and progress["account_setup_state"] == "expired":
         progress = None
     return ok(success=True, **accounts.account_payload(user), tier=user.tier, profile=profile,
+        email_verified=user.email_verified, phone_verified=user.phone_verified,
+        email_verification_required=not user.email_verified,
         identity_challenge=({**progress, "kind": challenge.kind} if progress else None),
         bvn_verified="bvn" in proofs, nin_verified="nin" in proofs,
         face_verified=IdentityProof.objects.filter(user=user, source="9psb_face").exists(),

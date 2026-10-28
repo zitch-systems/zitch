@@ -12,24 +12,18 @@ from django.test import Client, TestCase, override_settings
 from accounts import views
 from django.utils import timezone
 
-from betting.models import BettingPlatform
-from exams.models import ExamProduct
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 from common.ratelimit import _lockout_key, client_ip
-from utility.catalogue_fixtures import map_billers
+from banking.test_client import CONFIG
+from banking.test_fixtures import BankIdentityAPI, bind_test_bank, make_bank_user
+from banking.client import Reply
+from banking.models import BankAccount, IdentityChallenge, AddressVerification
+from transfers.tests import BankIOCase
 
 from .models import OTP, AccessToken
 
 User = get_user_model()
-
-
-def completed_liveness(user, _data):
-    # Service fixture: real session completion persists proof and flags together.
-    user.face_verified = True
-    user.recompute_tier()
-    user.save(update_fields=["face_verified", "tier"])
-    return {"success": True, "status": "verified"}
 
 
 class DeviceBoundSessionTests(TestCase):
@@ -497,66 +491,67 @@ class CredentialSecurityTests(TestCase):
         self.assertEqual(res.status_code, 200)
 
 
-class KycTierTests(TestCase):
+@override_settings(NINEPSB=CONFIG)
+class KycTierTests(BankIdentityAPI, TestCase):
     def setUp(self):
         self.client = Client()
-        # Starts where a real account does — the point of these tests is the
-        # ladder being climbed, so nothing may be pre-granted.
-        self.user, self.token = make_user("08010000001", "a@zitch.test",
-                                         identity_verified=False)
+        self.user, self.token = make_user("08010000001", "a@zitch.test", identity_verified=False, tier=0)
 
     def post(self, path, payload):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
-    def test_bvn_plus_nin_promote_to_tier_1(self):
-        # Tier 1 requires one verified identity; both identities prepare the
-        # account for the higher ladder once face/address are done.
-        r, b0 = self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
-        self.assertEqual(b0["tier"], 1)
-        res, body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(body["tier"], 1)
-
-    def test_an_unverified_phone_holds_the_tier_at_zero(self):
-        """Both contact channels are required. A WhatsApp signup does not earn
-        phone_verified from possession of the chat — a messenger session outlives
-        a SIM swap — so this can genuinely be the missing piece."""
-        self.user.phone_verified = False
-        self.user.save(update_fields=["phone_verified"])
-        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
-        body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})[1]
-        self.assertEqual(body["tier"], 0)
-        self.assertFalse(body["phone_verified"])
-        # Re-read: BVN/NIN were set server-side, so the local copy is stale.
-        self.user.refresh_from_db()
-        self.user.phone_verified = True
-        self.user.recompute_tier()
-        self.assertEqual(self.user.tier, 1)
-
-    def test_unverified_email_holds_the_tier_at_zero(self):
-        # BVN + NIN complete, email not confirmed: the ladder must not move —
-        # Tier 1 requires all three, however the account signed up.
+    def test_bank_status_reports_contact_prerequisites(self):
         self.user.email_verified = False
         self.user.save(update_fields=["email_verified"])
-        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
-        res, body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
-        self.assertEqual(body["tier"], 0)
+        response, body = self.post("/api/banking/status/", {"access_token": self.token})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(body["email_verified"])
+        self.assertTrue(body["email_verification_required"])
+        self.assertTrue(body["phone_verified"])
+        self.assertFalse(body["identity_available"])
+
+    def test_bvn_plus_nin_promote_to_tier_1(self):
+        self.assertEqual(self.complete_identity(self.user, self.token)["tier"], 1)
+        self.assertEqual(self.complete_identity(self.user, self.token, "nin", "10987654321")["tier"], 1)
+        self.assertEqual(BankAccount.objects.count(), 1)
+
+    def test_an_unverified_phone_holds_the_tier_at_zero(self):
+        self.user.phone_verified = False
+        self.user.save(update_fields=["phone_verified"])
+        with patch("banking.client.Client.initiate_identity") as send:
+            response = self.identity_post(self.user, self.token)
+        self.assertEqual(response.status_code, 400)
+        send.assert_not_called()
+        self.assertFalse(IdentityChallenge.objects.exists())
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 0)
+        self.user.phone_verified = True
+        self.user.save(update_fields=["phone_verified"])
+        self.assertEqual(self.complete_identity(self.user, self.token)["tier"], 1)
+
+    def test_unverified_email_holds_the_tier_at_zero(self):
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified"])
+        with patch("banking.client.Client.initiate_identity") as send:
+            response = self.identity_post(self.user, self.token)
+        self.assertEqual(response.status_code, 400)
+        send.assert_not_called()
         with patch("accounts.views._otp_code", return_value="909090"):
             self.post("/api/email/verify/start/", {"access_token": self.token})
-        body = self.post("/api/email/verify/confirm/", {"access_token": self.token, "otp": "909090"})[1]
-        self.assertEqual(body["tier"], 1)
+        response, body = self.post("/api/email/verify/confirm/", {"access_token": self.token, "otp": "909090"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["tier"], 0)
+        self.user.refresh_from_db()
+        self.assertEqual(self.complete_identity(self.user, self.token)["tier"], 1)
 
     def test_email_can_be_set_while_unverified(self):
-        # A blank or mistyped address must not strand the account below Tier 1:
-        # start() accepts a replacement for as long as the email is unverified.
         self.user.email, self.user.email_verified = "", False
         self.user.save(update_fields=["email", "email_verified"])
-        res, body = self.post("/api/email/verify/start/", {"access_token": self.token})
-        self.assertEqual(res.status_code, 400)  # nothing on file, none supplied
+        res, _ = self.post("/api/email/verify/start/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 400)
         with patch("accounts.views._otp_code", return_value="909090"):
-            res, body = self.post("/api/email/verify/start/",
-                                  {"access_token": self.token, "email": "Ada.New@Zitch.test"})
+            res, _ = self.post("/api/email/verify/start/", {"access_token": self.token, "email": "Ada.New@Zitch.test"})
         self.assertEqual(res.status_code, 200)
         self.user.refresh_from_db()
         self.assertEqual(self.user.email, "ada.new@zitch.test")
@@ -565,163 +560,128 @@ class KycTierTests(TestCase):
         self.assertTrue(self.user.email_verified)
 
     def test_kyc_ladder_stops_at_unavailable_tier_3(self):
-        # Isolate Tier 1/2 proofs; the unavailable address adapter cannot grant Tier 3.
-        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
-        b1 = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})[1]
-        self.assertEqual(b1["tier"], 1)
-        # Isolate the local ladder from the unconfigured provider-session rail.
-        with patch("accounts.views.verify_tier2_liveness", side_effect=completed_liveness):
-            face = self.post("/api/kyc/face/", {"access_token": self.token})[1]
-        self.assertEqual(face["tier"], 2)
-        # Changing the KYC provider cannot bypass the Partnership address gate.
-        with override_settings(KYC_PROVIDER="prembly"):
-            response, b2 = self.post("/api/kyc/address/", {"access_token": self.token, "address": "12 Allen Avenue", "city": "Ikeja", "state": "Lagos", "document": "ZmFrZQ=="})
-        self.assertEqual(response.status_code, 503)
-        self.assertFalse(b2["tier3_address_available"])
+        self.complete_identity(self.user, self.token)
+        self.complete_identity(self.user, self.token, "nin", "10987654321")
+        self.approve_tier2(self.user, self.token)
+        with patch("banking.client.Client.wallet", return_value=self.bank_wallet_reply(self.user, tier=2)), \
+             patch("banking.client.Client.upgrade") as send:
+            response, body = self.post("/api/banking/upgrade/", {"access_token": self.token, "tier": 3,
+                "profile": {**self.upgrade_profile(self.user), "proofOfAddressVerification": "untrusted"}})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Prembly", body["message"])
+        send.assert_not_called()
         self.user.refresh_from_db()
         self.assertEqual(self.user.tier, 2)
         self.assertFalse(self.user.address_verified)
-        b3 = self.post("/api/kyc/id/", {"access_token": self.token, "image": "ZmFrZQ==", "doc_type": "passport"})[1]
-        self.assertEqual(b3["tier"], 2)
-        self.assertTrue(b3["id_document_verified"])
 
     def test_address_without_proof_document_is_refused(self):
-        """Typed text is a claim, not evidence. Tier 2 raises the limit to
-        ₦200,000, so "address verified" has to mean a document was seen — not
-        that the user typed seven characters."""
-        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
-        self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
-        with patch("accounts.views.verify_tier2_liveness", side_effect=completed_liveness):
-            self.post("/api/kyc/face/", {"access_token": self.token})
-        with override_settings(KYC_PROVIDER="prembly"):
-            res, body = self.post("/api/kyc/address/", {
-                "access_token": self.token, "address": "12 Allen Avenue",
-                "city": "Ikeja", "state": "Lagos"})
-        self.assertEqual(res.status_code, 503)
-        self.assertIn("unavailable", body["message"].lower())
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.address_verified)
-        self.assertEqual(self.user.tier, 2)
+        with patch("banking.address._request") as send:
+            response, body = self.post("/api/banking/address/start/", {"access_token": self.token,
+                "address": {"street": "Test Road"}})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("provider setup", body["message"])
+        send.assert_not_called()
+        self.assertFalse(AddressVerification.objects.exists())
 
     def test_address_does_not_request_a_different_document_when_unavailable(self):
-        """A disabled verifier must not ask the customer to upload another file."""
-        self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
-        self.user.recompute_tier()
-        self.user.save(update_fields=["bvn_verified", "nin_verified", "face_verified", "tier"])
-        with override_settings(KYC_PROVIDER="prembly"), patch.object(views, "MAX_KYC_IMAGE_BASE64", 8):
-            res, body = self.post("/api/kyc/address/", {
-                "access_token": self.token, "address": "12 Allen Avenue",
-                "document": "A" * 64})
-        self.assertEqual(res.status_code, 503)
-        self.assertIn("unavailable", body["message"].lower())
+        response, body = self.post("/api/banking/address/start/", {"access_token": self.token,
+            "address": {"street": "Test Road"}, "document": "A" * 64})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("provider setup", body["message"])
+        self.assertNotIn("upload", body["message"].lower())
 
     def test_address_proof_is_not_retained(self):
-        """Unavailable verification retains neither a new address nor its image."""
-        self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
-        self.user.recompute_tier()
-        self.user.save(update_fields=["bvn_verified", "nin_verified", "face_verified", "tier"])
-        with override_settings(KYC_PROVIDER="prembly"):
-            self.post("/api/kyc/address/", {"access_token": self.token,
-                                            "address": "12 Allen Avenue",
-                                            "document": "ZmFrZXByb29m"})
+        self.post("/api/banking/address/start/", {"access_token": self.token,
+            "address": {"street": "Test Road"}, "document": "ZmFrZXByb29m"})
         self.user.refresh_from_db()
         self.assertFalse(self.user.address_verified)
         self.assertEqual(self.user.address, "")
-        blob = " ".join(str(v) for v in vars(self.user).values())
-        self.assertNotIn("ZmFrZXByb29m", blob)
+        self.assertFalse(AddressVerification.objects.exists())
+        self.assertNotIn("ZmFrZXByb29m", str(vars(self.user)))
 
     def test_bvn_nin_stored_hashed_not_raw(self):
-        # Defence in depth: the raw government IDs must not be recoverable at rest —
-        # only a keyed hash (for audit) + last 4 (for support) are kept.
-        from accounts.models import User, hash_identifier
-        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
-        self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
-        u = User.objects.get(pk=self.user.pk)
-        self.assertEqual(u.bvn_last4, "8901")
-        self.assertEqual(u.nin_last4, "4321")
-        self.assertEqual(u.bvn_hash, hash_identifier("12345678901"))
-        self.assertNotIn("12345678901", u.bvn_hash)   # the plaintext isn't in the hash
-        self.assertFalse(hasattr(u, "bvn"))            # the raw column no longer exists
+        from accounts.models import hash_identifier
+        self.complete_identity(self.user, self.token)
+        self.complete_identity(self.user, self.token, "nin", "10987654321")
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.bvn_last4, "8901")
+        self.assertEqual(self.user.nin_last4, "4321")
+        self.assertEqual(self.user.bvn_hash, hash_identifier("12345678901"))
+        self.assertNotIn("12345678901", self.user.bvn_hash)
+        self.assertFalse(hasattr(self.user, "bvn"))
+        self.assertFalse(IdentityChallenge.objects.exclude(encrypted_input="").exists())
 
     def test_direct_kyc_rejects_identity_already_owned_by_another_user(self):
         other, _ = make_user("08020000002", "other@zitch.test")
         other.set_bvn("12345678901")
         other.set_nin("10987654321")
-        other.bvn_verified = other.nin_verified = True
-        other.save(update_fields=["bvn_hash", "bvn_last4", "nin_hash", "nin_last4",
-                                  "bvn_verified", "nin_verified"])
-
-        bvn_response, _ = self.post(
-            "/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
-        nin_response, _ = self.post(
-            "/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
-        self.assertEqual(bvn_response.status_code, 409)
-        self.assertEqual(nin_response.status_code, 409)
-        current = User.objects.get(pk=self.user.pk)
-        self.assertFalse(current.bvn_verified)
-        self.assertFalse(current.nin_verified)
+        other.save(update_fields=["bvn_hash", "bvn_last4", "nin_hash", "nin_last4"])
+        with patch("banking.client.Client.initiate_identity") as send:
+            for kind, identifier in (("bvn", "12345678901"), ("nin", "10987654321")):
+                response = self.identity_post(self.user, self.token, kind, identifier)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("already linked", response.json()["message"])
+        send.assert_not_called()
+        self.assertFalse(IdentityChallenge.objects.exists())
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+        self.assertFalse(self.user.nin_verified)
 
     def test_bvn_otp_start_rejects_identity_owned_by_another_user(self):
         other, _ = make_user("08020000003", "otp-other@zitch.test")
         other.set_bvn("12345678901")
-        other.bvn_verified = True
-        other.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified"])
-        response, _ = self.post(
-            "/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
-        self.assertEqual(response.status_code, 409)
+        other.save(update_fields=["bvn_hash", "bvn_last4"])
+        with patch("banking.client.Client.initiate_identity") as send:
+            response = self.identity_post(self.user, self.token)
+        self.assertEqual(response.status_code, 400)
+        send.assert_not_called()
 
     def test_bvn_otp_flow(self):
-        # Redesigned flow: enter BVN -> code sent -> confirm code -> verified.
-        # Like every OTP test, pin the CSPRNG output; the cache contains only a
-        # keyed code hash and encrypted identity, never either plaintext value.
-        with patch("accounts.views._otp_code", return_value="654321"):
-            r1, _ = self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
-        self.assertEqual(r1.status_code, 200)
-        pending = cache.get(f"kyc_identity:bvn:{self.user.id}")
-        self.assertNotIn("654321", str(pending))
-        self.assertNotIn("12345678901", str(pending))
-        r2, body = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "654321"})
-        self.assertEqual(r2.status_code, 200)
-        self.assertEqual(body["tier"], 1)
+        result = self.complete_identity(self.user, self.token)
+        self.assertEqual(result["tier"], 1)
+        self.assertEqual(result["account_number"], f"19{self.user.pk:08d}")
         self.assertTrue(User.objects.get(pk=self.user.pk).bvn_verified)
+        self.assertNotIn("654321", str(IdentityChallenge.objects.values().first()))
+        self.assertEqual(IdentityChallenge.objects.get().encrypted_input, "")
 
     def test_bvn_otp_rejects_wrong_code(self):
-        self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
-        r, _ = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "000000"})
-        self.assertEqual(r.status_code, 400)
+        reference = self.pending_identity(self.user, self.token)
+        with patch("banking.client.Client.verify_identity", return_value=Reply({"message": "FAILED"}, 200)), \
+             patch("banking.client.Client.open_wallet") as opened:
+            response = self.identity_confirm(self.token, reference, "000000")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["success"])
+        self.assertEqual(IdentityChallenge.objects.get().failures, 1)
+        opened.assert_not_called()
         self.assertFalse(User.objects.get(pk=self.user.pk).bvn_verified)
 
     def test_bvn_otp_burns_after_repeated_wrong_codes(self):
-        # The 6-digit code is brute-forceable inside its 10-min window without a
-        # cap: after 5 wrong guesses the pending code is burned (429) and the
-        # right code no longer works until the user restarts.
-        with patch("accounts.views._otp_code", return_value="654321"):
-            self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
-        for _ in range(4):
-            r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "000000"})
-            self.assertEqual(r.status_code, 400)
-        r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "000000"})
-        self.assertEqual(r.status_code, 429)  # 5th wrong guess burns the code
-        # Even the correct code is now rejected — the pending entry is gone.
-        r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "654321"})
-        self.assertEqual(r.status_code, 400)
+        reference = self.pending_identity(self.user, self.token)
+        with patch("banking.client.Client.verify_identity", return_value=Reply({"message": "FAILED"}, 200)) as verify:
+            for _ in range(5):
+                self.assertFalse(self.identity_confirm(self.token, reference, "000000").json()["success"])
+            self.assertEqual(verify.call_count, 5)
+            response = self.identity_confirm(self.token, reference)
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(verify.call_count, 5)
+        self.assertEqual(IdentityChallenge.objects.get().encrypted_input, "")
         self.assertFalse(User.objects.get(pk=self.user.pk).bvn_verified)
+        self.assertFalse(BankAccount.objects.exists())
 
     def test_bvn_rejects_bad_format(self):
-        res, _ = self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "123"})
-        self.assertEqual(res.status_code, 400)
+        with patch("banking.client.Client.initiate_identity") as send:
+            response = self.identity_post(self.user, self.token, identifier="123")
+        self.assertEqual(response.status_code, 400)
+        send.assert_not_called()
 
     def test_face_submission_cannot_set_durable_flag_without_verified_session(self):
-        with patch("utility.providers.kyc_verify_face", return_value={"success": True}) as image:
-            res, body = self.post("/api/kyc/face/", {
-                "access_token": self.token, "selfie": "ZmFrZQ==",
-                "session_id": "untrusted-session", "verified": True,
-            })
-        self.assertEqual(res.status_code, 503)
-        self.assertEqual(body["code"], "tier2_liveness_unavailable")
-        image.assert_not_called()
+        with patch("banking.client.Client.initiate_identity") as send:
+            response = self.identity_post(self.user, self.token, method="FACIAL", image="ZmFrZQ==", verified=True)
+        self.assertEqual(response.status_code, 400)
+        send.assert_not_called()
         self.user.refresh_from_db()
         self.assertFalse(self.user.face_verified)
+        self.assertFalse(IdentityChallenge.objects.exists())
 
 
 class ClientIpTests(TestCase):
@@ -822,171 +782,119 @@ class RateLimitTests(TestCase):
         self.assertEqual(key, _lockout_key("user", "ADA.CUSTOMER@example.com"))
 
 
-class FullJourneyE2ETests(TestCase):
-    """One chained journey through the whole stack — onboarding -> sign in ->
-    fund -> KYC -> spend -> history -> transfer -> tier + face gate ->
-    loan -> savings -> card -> betting/exams -> auth-gated lookups. Guards the
-    cross-app integration that per-app unit tests don't. (Rate limiting is off
-    under tests, so creating users via the API isn't throttled.)"""
+class FullJourneyE2ETests(BankIdentityAPI, BankIOCase):
+    """Signup, bank identity/NUBAN, confirmed funding and payments share one owner.
 
+    All bank responses below are synthetic; this regression is not bank UAT.
+    """
     PHONE, RECIP = "08099000001", "08099000002"
 
     def setUp(self):
+        super().setUp()
         self.client = Client()
-        map_billers("bet9ja-betting", "ikeja-electric")
-        BettingPlatform.objects.create(code="bet9ja", name="Bet9ja", service_id="bet9ja-betting")
-        ExamProduct.objects.create(code="waec", name="WAEC", description="Result PIN", price=Decimal("3500"))
+        from transfers.models import Bank
+        Bank.objects.create(code="9psb", name="9PSB", bank_code="120001")
+        self.enquiry.side_effect = lambda number, code: Reply({"code": "00", "customer": {"account": {
+            "number": number, "bank": code, "name": BankAccount.objects.get(number=number).name}}}, 200)
 
     def post(self, path, **body):
-        r = self.client.post(path, data=json.dumps(body), content_type="application/json")
-        return r.status_code, r.json()
+        response = self.client.post(path, body, content_type="application/json")
+        return response.status_code, response.json()
+
+    def fund(self, user, amount, reference):
+        from banking.notifications import ingest, process
+        bank = BankAccount.objects.get(wallet__user=user)
+        payload = {"code": "00", "message": "SUCCESS", "accountnumber": bank.number,
+            "amount": str(amount), "nipsessionid": reference, "narration": "Test deposit"}
+        notification = ingest("transfer", payload)
+        with patch("banking.client.Client.notification", return_value=Reply({"status": "SUCCESS", "data": payload}, 200)):
+            self.assertTrue(process(notification))
+            self.assertTrue(process(ingest("transfer", payload)))
+        wallet = get_or_create_wallet(user)
+        BankAccount.objects.filter(pk=bank.pk).update(ledger_balance=wallet.balance, available_balance=wallet.balance)
 
     def test_full_user_journey(self):
-        P, R = self.PHONE, self.RECIP
-
-        # --- onboarding -> sign in (the auth refactor, end to end) ---
+        from wallet.models import Transaction
+        from wallet.services import wallet_expected_balance
+        from banking.models import Instruction
         with patch("accounts.views._otp_code", return_value="135790"):
-            self.assertEqual(self.post("/api/phone_verification/", phone=P, email="e2e@zitch.test")[0], 200)
-        otp = "135790"
-        s, b = self.post("/api/verify_otp/", phone=P, otp=otp)
-        self.assertEqual(s, 200)
-        tok = b["access_token"]
-        self.assertEqual(self.post("/api/set-password/", access_token=tok, password="Passw0rd123!")[0], 200)
-        self.assertEqual(self.post("/api/set-password/", email=P, password="hacked12345")[0], 401)  # no token
-        self.assertEqual(self.post("/api/set-transaction-pin/", access_token=tok, pin="246810")[0], 200)
-        s, b = self.post("/api/sigin/", email_or_phone=P, password="Passw0rd123!")
-        self.assertEqual(s, 200)
-        tok = b["access_token"]
+            self.assertEqual(self.post("/api/phone_verification/", phone=self.PHONE, email="e2e@zitch.test")[0], 200)
+        status, body = self.post("/api/verify_otp/", phone=self.PHONE, otp="135790", first_name="Ada", last_name="Eze")
+        self.assertEqual(status, 200)
+        token = body["access_token"]
+        self.assertEqual(self.post("/api/set-password/", access_token=token, password="Passw0rd123!")[0], 200)
+        self.assertEqual(self.post("/api/set-password/", email=self.PHONE, password="hacked12345")[0], 401)
+        self.assertEqual(self.post("/api/set-transaction-pin/", access_token=token, pin="246810")[0], 200)
+        status, body = self.post("/api/sigin/", email_or_phone=self.PHONE, password="Passw0rd123!")
+        self.assertEqual(status, 200)
+        token = body["access_token"]
+        user = User.objects.get(phone=self.PHONE)
+        with patch("banking.client.Client.initiate_identity") as verify:
+            self.assertEqual(self.identity_post(user, token).status_code, 400)
+        verify.assert_not_called()
+        with patch("accounts.views._otp_code", return_value="909090"), patch("accounts.views._otp_on_cooldown", return_value=False):
+            self.assertEqual(self.post("/api/email/verify/start/", access_token=token)[0], 200)
+        self.assertEqual(self.post("/api/email/verify/confirm/", access_token=token, otp="909090")[0], 200)
+        user.refresh_from_db()
+        identity = self.complete_identity(user, token)
+        self.assertEqual(identity["tier"], 1)
+        self.assertEqual(identity["bank_name"], "9PSB")
+        self.complete_identity(user, token, "nin", "10987654321")
+        status, body = self.post("/api/banking/status/", access_token=token)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["account_number"], identity["account_number"])
+        self.assertTrue(body["bvn_verified"])
+        self.assertTrue(body["nin_verified"])
+        self.fund(user, "50000.00", "JOURNEY-DEPOSIT-1")
+        status, body = self.post("/api/wallet_balance/", access_token=token)
+        self.assertEqual(body["wallet"], "50000.00")
+        self.assertIn("user_first_name", body)
 
-        # --- fund (Wema: a bank transfer into the user's NUBAN, credited by the
-        # reconcile_wema poller — simulated here with a settled credit) ---
-        from wallet.services import credit as _credit
-        user_obj = User.objects.get(phone=P)
-        _credit(user_obj, Decimal("50000"), "Wallet top-up")
-        s, b = self.post("/api/wallet_balance/", access_token=tok)
-        self.assertEqual(b["wallet"], "50000.00")
-        self.assertIn("user_first_name", b)  # the app reads this
+        purchase = {"access_token": token, "kind": "airtime", "phone": self.PHONE, "amount": "1000",
+            "transaction_pin": "246810", "idempotency_key": "journey-airtime-1"}
+        with patch("banking.client.Client.network", return_value=Reply({"status": "success", "responseCode": "200", "data": {"network": "MTN"}}, 200)), \
+             patch("banking.client.Client.topup", return_value=Reply({"status": "success", "responseCode": "200"}, 200)) as send:
+            status, paid = self.post("/api/banking/purchase/", **purchase)
+            self.assertEqual(status, 200)
+            self.assertTrue(paid["success"])
+            self.assertEqual(self.post("/api/banking/purchase/", **purchase)[1]["reference"], paid["reference"])
+            send.assert_called_once()
+        self.assertEqual(get_or_create_wallet(user).balance, Decimal("49000"))
+        transactions = self.post("/api/user-transaction-history/", access_token=token)[1]["all_site_transactions"]
+        self.assertTrue({"service", "amount", "transaction_status", "date"} <= set(transactions[0]))
 
-        # --- verify before spending ---
-        # Email, phone, BVN and NIN are now a floor beneath the tier ceilings:
-        # money cannot leave an account that has not proved who owns it, so this
-        # step comes before the first spend rather than after it.
-        self.post("/api/kyc/bvn/", access_token=tok, bvn="12345678901")
-        # BVN+NIN alone no longer promote: Tier 1 also requires the verified email.
-        self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 0)
-        with patch("accounts.views._otp_code", return_value="909090"), \
-             patch("accounts.views._otp_on_cooldown", return_value=False):
-            self.post("/api/email/verify/start/", access_token=tok)
-        body = self.post("/api/email/verify/confirm/", access_token=tok, otp="909090")[1]
-        self.assertEqual(body["tier"], 1)  # email was the last piece; confirm recomputes
+        recipient, _ = make_bank_user(self.RECIP, "r@zitch.test")
+        self.assertEqual(self.post("/api/transfer/resolve/", access_token=token, identifier=self.RECIP)[0], 200)
+        transfer = {"access_token": token, "identifier": self.RECIP, "amount": "5000",
+            "transaction_pin": "246810", "expected_fee": "0.00", "idempotency_key": "journey-p2p-1"}
+        status, sent = self.post("/api/transfer/send/", **transfer)
+        self.assertEqual(status, 200, sent)
+        self.assertEqual(self.post("/api/transfer/send/", **transfer)[1]["reference"], sent["reference"])
+        self.bank_send.assert_called_once()
+        self.assertEqual(get_or_create_wallet(user).balance, Decimal("44000"))
+        # A successful debit cannot manufacture the recipient's bank inflow.
+        self.assertEqual(get_or_create_wallet(recipient).balance, Decimal("0"))
+        self.fund(recipient, "5000.00", "JOURNEY-RECIPIENT-INFLOW")
+        self.assertEqual(get_or_create_wallet(recipient).balance, Decimal("5000"))
+        self.assertEqual(self.post("/api/transfer/send/", **{**transfer, "amount": "150000",
+            "idempotency_key": "journey-tier-blocked"})[0], 403)
 
-        # --- spend + history shape the app depends on ---
-        # Model the owned bank source behind the mocked funding above. Bill
-        # purchases require a canonical customer account, including in this journey.
-        from wallet.models import BankHistoryCheckpoint
-        wallet = get_or_create_wallet(user_obj)
-        wallet.account_number = "0459900001"
-        wallet.save(update_fields=["account_number"])
-        BankHistoryCheckpoint.objects.create(wallet=wallet, account_number=wallet.account_number,
-                                             opening_review_required=False)
-        self.assertEqual(self.post("/api/utility/buyairtime/", access_token=tok, amount="1000",
-                                   network="1", phone=P, transaction_pin="246810",
-                                   idempotency_key="journey-airtime-1")[0], 200)
-        self.assertEqual(self.post("/api/wallet_balance/", access_token=tok)[1]["wallet"], "49000.00")
-        txns = self.post("/api/user-transaction-history/", access_token=tok)[1]["all_site_transactions"]
-        self.assertTrue({"service", "amount", "transaction_status", "date"} <= set(txns[0]))
-
-        # --- transfer ---
-        recip = User.objects.create(username=R, phone=R, email="r@zitch.test", first_name="Reci", last_name="Pient")
-        get_or_create_wallet(recip)
-        self.assertEqual(self.post("/api/transfer/resolve/", access_token=tok, identifier=R)[0], 200)
-        self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="5000", transaction_pin="246810",
-                                   idempotency_key="journey-p2p-1")[0], 200)
-        self.assertEqual(get_or_create_wallet(recip).balance, Decimal("5000"))
-
-        # --- tier limits ---
-        _credit(user_obj, Decimal("200000"), "Wallet top-up")
-        # Tier 1 caps at ₦50k/txn, so a ₦150k transfer is blocked...
-        self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="150000", transaction_pin="246810",
-                                   idempotency_key="journey-p2p-tier-blocked")[0], 403)
-        # Model the independent Tier 2 proof; its existing limit covers this
-        # transfer. The unavailable address adapter must not manufacture Tier 3.
-        with patch("accounts.views.verify_tier2_liveness", side_effect=completed_liveness):
-            self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
-        wallet.bank_tier = 2
-        wallet.save(update_fields=["bank_tier"])
-        with override_settings(KYC_PROVIDER="wema"), \
-                patch("utility.wema.address_verify_live", return_value=True), \
-                patch("utility.wema.upgrade_tier3", return_value={"success": True}) as upgrade, \
-                patch("utility.wema.get_kyc_status", return_value={
-                    "success": True, "tier": "Tier 3", "address_verification": "Completed",
-                }) as status:
-            address_status, address_body = self.post("/api/kyc/address/", access_token=tok,
-                                                     address="12 Allen Avenue", city="Ikeja", state="Lagos")
-        self.assertEqual(address_status, 503)
-        self.assertFalse(address_body["tier3_address_available"])
-        upgrade.assert_not_called()
-        status.assert_not_called()
-        wallet.refresh_from_db()
-        user_obj.refresh_from_db()
-        self.assertFalse(user_obj.address_verified)
-        self.assertEqual(user_obj.tier, 2)
-        self.assertEqual(wallet.bank_tier, 2)
-        self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="150000", transaction_pin="246810",
-                                   idempotency_key="journey-p2p-bank-tier-blocked")[0], 403)
-        # An independent account-tier read may update the bank's spending cap;
-        # its uncorrelated address status must never grant our local Tier 3.
-        from wallet.services import sync_bank_tier
-        with patch("utility.wema.get_kyc_status", return_value={"success": True,
-                   "tier": "Tier 3", "address_verification": "Completed"}):
-            self.assertEqual(sync_bank_tier(wallet), 3)
-        user_obj.refresh_from_db()
-        self.assertEqual(user_obj.tier, 2)
-        self.assertFalse(user_obj.address_verified)
-        self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="150000", transaction_pin="246810",
-                                   idempotency_key="journey-p2p-large-1")[0], 200)
-
-        # --- loan, savings, card, betting, exam ---
-        self.assertEqual(self.post("/api/loans/request/", access_token=tok, amount="100000",
-                                   tenure_days=30, transaction_pin="246810",
-                                   idempotency_key="journey-loan-request-1")[0], 200)
-        self.assertEqual(self.post("/api/loans/repay/", access_token=tok, amount="200000",
-                                   transaction_pin="246810",
-                                   idempotency_key="journey-loan-repay-1")[1]["loan"]["status"], "repaid")
-        self.assertEqual(self.post("/api/savings/create/", access_token=tok, amount="10000",
-                                   days=90, transaction_pin="246810",
-                                   idempotency_key="journey-savings-1")[0], 200)
-        self.assertGreaterEqual(len(self.post("/api/savings/list/", access_token=tok)[1]["plans"]), 1)
-        self.assertEqual(self.post("/api/cards/create/", access_token=tok,
-                                   idempotency_key="journey-card-create-1")[0], 200)
-        self.assertEqual(self.post("/api/cards/fund/", access_token=tok, amount="5000",
-                                   transaction_pin="246810",
-                                   idempotency_key="journey-card-fund-1")[1]["card"]["balance"], "5000.00")
-        self.assertEqual(self.post("/api/cards/details/", access_token=tok, transaction_pin="246810")[0], 200)
-        self.assertEqual(self.post("/api/betting/fund/", access_token=tok, platform="bet9ja",
-                                   user_id="ZB99999", amount="1000", transaction_pin="246810",
-                                   idempotency_key="journey-betting-1")[0], 200)
-        before_exam = get_or_create_wallet(user_obj).balance
-        exam_status, exam_body = self.post("/api/exams/buy/", access_token=tok, exam="waec",
-                                           quantity=1, phone=P, transaction_pin="246810",
-                                           idempotency_key="journey-exam-1")
-        # Exam PINs have no current partner-bank route. The retired VTU provider
-        # must not be revived in this integration test: refusal means no success
-        # and no net wallet charge.
-        self.assertEqual(exam_status, 422)
-        self.assertFalse(exam_body.get("success"))
-        self.assertEqual(get_or_create_wallet(user_obj).balance, before_exam)
-
-        # --- name lookups require auth ---
-        self.assertEqual(self.post("/api/utility/validate_meter/", disco="1", meter="1234567890")[0], 401)
-        self.assertEqual(self.post("/api/utility/validate_meter/", access_token=tok,
-                                   disco="1", meter="1234567890")[0], 200)
+        self.approve_tier2(user, token)
+        status, address = self.post("/api/banking/address/start/", access_token=token, address={"street": "Test Road"})
+        self.assertEqual(status, 400)
+        self.assertFalse(address.get("success"))
+        self.assertFalse(AddressVerification.objects.exists())
+        user.refresh_from_db()
+        self.assertEqual(user.tier, 2)
+        self.assertFalse(user.address_verified)
+        self.assertEqual(Instruction.objects.count(), 2)
+        self.assertEqual(Transaction.objects.filter(user=user, direction=Transaction.OUT).count(), 2)
+        for owner in (user, recipient):
+            self.assertEqual(get_or_create_wallet(owner).balance, wallet_expected_balance(owner.pk))
+        self.assertEqual(self.post("/api/banking/catalog/", kind="network", phone=self.PHONE)[0], 401)
 
 
+@override_settings(NINEPSB=CONFIG)
 class KycStatusRepairTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
@@ -1003,20 +911,20 @@ class KycStatusRepairTests(TestCase):
     @override_settings(WEMA={"BASE_URL": "https://alat.test", "CHANNEL_ID": "chan",
                              "KEYS": {"wallet": "wallet-key"}, "SIMULATION": False})
     def test_kyc_status_never_clears_existing_verified_flags(self):
-        """A status refresh must not turn a completed identity back into a prompt."""
+        """Historical flags survive, but cannot stand in for new bank proof."""
         from accounts.views import _kyc_state
 
         state = _kyc_state(self.user)
         self.user.refresh_from_db()
 
-        self.assertTrue(state["bvn_verified"])
-        self.assertTrue(state["nin_verified"])
+        self.assertFalse(state["bvn_verified"])
+        self.assertFalse(state["nin_verified"])
         self.assertTrue(self.user.bvn_verified)
         self.assertTrue(self.user.nin_verified)
 
     @override_settings(WEMA={"BASE_URL": "https://alat.test", "CHANNEL_ID": "chan",
                              "KEYS": {"wallet": "wallet-key"}, "SIMULATION": False})
-    def test_kyc_status_rehydrates_flags_from_identity_proof(self):
+    def test_kyc_status_preserves_historical_proof_without_granting_new_bank_authority(self):
         from accounts.models import IdentityProof, record_identity_proof
         from accounts.views import _kyc_state
 
@@ -1030,8 +938,18 @@ class KycStatusRepairTests(TestCase):
         state = _kyc_state(self.user)
         self.user.refresh_from_db()
 
+        self.assertFalse(state["bvn_verified"])
+        self.assertFalse(self.user.bvn_verified)
+        self.assertFalse(state["nin_verified"])
+        self.assertTrue(IdentityProof.objects.filter(user=self.user,
+            source=IdentityProof.WEMA_WALLET_OTP).exists())
+
+    def test_kyc_status_reads_current_bank_proof(self):
+        from accounts.models import record_identity_proof
+        from accounts.views import _kyc_state
+        record_identity_proof(self.user, "bvn", "12345678901", source="9psb_otp")
+        state = _kyc_state(self.user)
         self.assertTrue(state["bvn_verified"])
-        self.assertTrue(self.user.bvn_verified)
         self.assertFalse(state["nin_verified"])
 
     @override_settings(WEMA={"BASE_URL": "https://alat.test", "CHANNEL_ID": "chan",
@@ -1064,15 +982,20 @@ class KycStatusRepairTests(TestCase):
         self.assertEqual(self.user.bvn_last4, "")
 
 
-class TransactionPinLockoutTests(TestCase):
+class TransactionPinLockoutTests(BankIOCase):
     """A stolen session token must not be usable to brute-force the short
     transaction PIN that gates money movement. The lock is per-user, so it can't
     be sidestepped by switching to a different money endpoint."""
 
     def setUp(self):
+        super().setUp()
         self.client = Client()
-        self.user, self.token = make_user("08010000001", "ada@zitch.test", pin="1234", balance="20000")
-        make_user("08020000002", "bob@zitch.test")  # a transfer recipient
+        self.user, self.token = make_bank_user("08010000001", "ada@zitch.test", pin="1234", balance="20000")
+        recipient, _ = make_bank_user("08020000002", "bob@zitch.test")
+        from transfers.models import Bank
+        Bank.objects.create(code="9psb", name="9PSB", bank_code="120001")
+        self.enquiry.side_effect = lambda number, code: Reply({"code": "00", "customer": {"account": {
+            "number": number, "bank": code, "name": recipient.get_full_name()}}}, 200)
         self._transfer_sequence = 0
 
     def post(self, path, payload):
@@ -1084,6 +1007,7 @@ class TransactionPinLockoutTests(TestCase):
         return self.post("/api/transfer/send/", {
             "access_token": self.token, "identifier": "08020000002",
             "amount": "1000", "transaction_pin": pin,
+            "expected_fee": "0.00",
             "idempotency_key": f"pin-lock-transfer-{self._transfer_sequence}",
         })
 
@@ -1422,7 +1346,8 @@ class PasswordRecoveryTests(TestCase):
                                 content_type="application/json").status_code
 
 
-class ChatOnboardedUpgradeTests(TestCase):
+@override_settings(NINEPSB=CONFIG)
+class ChatOnboardedUpgradeTests(BankIdentityAPI, TestCase):
     """The app-side upgrade contract for WhatsApp-onboarded accounts: both contact
     channels must be re-proven before the KYC ladder opens. The phone re-proves
     itself on the way in (no usable password, so entering the app runs the OTP
@@ -1433,7 +1358,7 @@ class ChatOnboardedUpgradeTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user = User.objects.create(
-            username="08155550001", phone="08155550001", first_name="Chidi",
+            username="08155550001", phone="08155550001", first_name="Chidi", last_name="Eze",
             email="chidi@zitch.test", tier=0,
             onboarded_via_whatsapp=True, email_verified=False,
         )
@@ -1446,23 +1371,18 @@ class ChatOnboardedUpgradeTests(TestCase):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
-    def test_kyc_is_not_gated_on_the_email_round_trip(self):
-        """The email gate on KYC was retired deliberately (cb4c5e3).
+    def test_bank_identity_requires_both_contact_channels(self):
+        with patch("banking.client.Client.initiate_identity") as send:
+            response = self.identity_post(self.user, self.token)
+        self.assertEqual(response.status_code, 400)
+        send.assert_not_called()
+        self.assertFalse(IdentityChallenge.objects.exists())
 
-        Identity ownership is proved by the Wema-registered SMS OTP or the Wema
-        face biometric; email is an account-recovery control, not a Wema KYC
-        factor, so it must never block BVN/NIN/face/address verification. This
-        test used to assert the opposite — it is kept, inverted, so the decision
-        is pinned rather than silently re-reversed by the next refactor.
-        """
-        res, _ = self.post("/api/kyc/bvn/start/", {"bvn": "12345678901"})
-        self.assertNotEqual(res.status_code, 403)
-
-    def test_kyc_status_no_longer_reports_an_email_gate(self):
-        """The flag stays in the payload (the app reads it) but reads False now."""
+    def test_kyc_status_reports_the_current_bank_email_requirement(self):
         res, body = self.post("/api/kyc/status/", {})
         self.assertEqual(res.status_code, 200)
-        self.assertFalse(body["email_verification_required"])
+        self.assertTrue(body["email_verification_required"])
+        self.assertFalse(body["identity_available"])
 
     def test_email_round_trip_opens_the_ladder(self):
         with patch("accounts.views._otp_code", return_value="424242"):
@@ -1472,8 +1392,13 @@ class ChatOnboardedUpgradeTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.email_verified)
         self.assertFalse(body["email_verification_required"])
-        res, _ = self.post("/api/kyc/bvn/start/", {"bvn": "12345678901"})
-        self.assertEqual(res.status_code, 200)   # the gate is open
+        # The email OTP does not also prove the chat-claimed phone number.
+        with patch("banking.client.Client.initiate_identity") as send:
+            self.assertEqual(self.identity_post(self.user, self.token).status_code, 400)
+        send.assert_not_called()
+        self.user.phone_verified = True
+        self.user.save(update_fields=["phone_verified"])
+        self.pending_identity(self.user, self.token)
 
     def test_a_wrong_code_does_not_verify(self):
         with patch("accounts.views._otp_code", return_value="424242"):
@@ -1515,22 +1440,19 @@ class ChatOnboardedUpgradeTests(TestCase):
                              content_type="application/json")
         self.assertEqual(email.call_args[0][0], "chidi@zitch.test")
 
-    def test_app_signup_accounts_are_untouched_by_the_gate(self):
-        """The gate is scoped to chat onboarding — an app-signup account keeps
-        today's behaviour on both KYC and recovery."""
+    def test_app_signup_also_requires_contact_verification_for_bank_identity(self):
         plain = User.objects.create(username="08155550002", phone="08155550002",
-                                    email="plain@zitch.test")
-        tok = AccessToken.issue(plain).key
-        res = self.client.post("/api/kyc/bvn/start/",
-                               data=json.dumps({"access_token": tok, "bvn": "12345678901"}),
-                               content_type="application/json")
-        self.assertEqual(res.status_code, 200)
-        with patch("accounts.views.send_email") as email, \
-             patch("accounts.views._otp_code", return_value="424242"):
-            self.client.post("/api/password/forgot/",
-                             data=json.dumps({"email_or_phone": "08155550002"}),
-                             content_type="application/json")
+            first_name="Ada", last_name="Eze", email="plain@zitch.test")
+        token = AccessToken.issue(plain).key
+        with patch("banking.client.Client.initiate_identity") as send:
+            response = self.identity_post(plain, token)
+        self.assertEqual(response.status_code, 400)
+        send.assert_not_called()
+        # Keep the existing app-account recovery policy independent of bank KYC.
+        with patch("accounts.views.send_email") as email, patch("accounts.views._otp_code", return_value="424242"):
+            self.client.post("/api/password/forgot/", {"email_or_phone": plain.phone}, content_type="application/json")
         self.assertEqual(email.call_args[0][0], "plain@zitch.test")
+
 
 
 class EmailVerificationReportsSuccessTests(TestCase):
