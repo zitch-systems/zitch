@@ -65,7 +65,9 @@ receipts, migration approvals and linked bills, then removes the foreign key fro
 Django's state. The migration-only compatibility app removes its runtime model
 state. Empty physical tables remain temporarily so old API and worker processes
 can finish while every Django service updates. Only after all services use that
-revision may the next migration remove the empty tables and obsolete triggers.
+revision may wallet migration 0031 remove the three empty tables, their triggers,
+the obsolete bill foreign key and the two retired PostgreSQL trigger functions.
+It retains the active bill reservation/refund checks and all ledger protections.
 A nonzero inventory aborts the migration; it never erases unreviewed records.
 
 Historical migration files and their original labels remain solely so existing
