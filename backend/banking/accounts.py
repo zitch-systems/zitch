@@ -12,7 +12,7 @@ from django.utils import timezone
 from accounts.models import User, hash_identifier, record_identity_proof
 from wallet.models import Wallet
 
-from .client import Client, ProviderError, config, customer_enabled, sandbox, phone, require_environment
+from .client import Client, ProviderError, config, customer_enabled, sandbox, phone, require_environment, wallet_number
 from .models import BankAccount, IdentityChallenge, PreviousBankArchive
 from .secrets import seal, unseal
 from .validation import wallet_profile
@@ -29,6 +29,8 @@ def require_enabled(user):
 
 
 def same_name(first, second):
+    if not isinstance(first, str) or not isinstance(second, str):
+        return False
     def parts(value):
         return set(re.findall(r"[a-z]+", str(value).casefold())) - {"mr", "mrs", "miss", "ms", "dr"}
     a, b = parts(first), parts(second)
@@ -227,8 +229,8 @@ def complete_account(challenge):
         response = Client().open_wallet(challenge.reference, stored["profile"],
             kind=challenge.kind, identifier=stored["identifier"])
     data = response.data if isinstance(response.data, dict) else {}
-    number = str(data.get("accountNumber") or data.get("number") or data.get("nuban") or "")
-    name = str(data.get("fullName") or data.get("name") or "")
+    number = wallet_number(data)
+    name = data.get("fullName") or data.get("name") or ""
     if not response.ok or not re.fullmatch(r"[0-9]{10}", number):
         return {**challenge_payload(challenge), "pending": True, "otp_required": False}
     if not same_name(user.get_full_name(), name):
@@ -237,7 +239,7 @@ def complete_account(challenge):
     # Read back the new account before attaching any funding destination.
     inquiry = Client().wallet(number)
     remote = inquiry.data if isinstance(inquiry.data, dict) else {}
-    if not inquiry.ok or str(remote.get("number") or remote.get("nuban") or "") != number or not same_name(name, remote.get("name", "")):
+    if not inquiry.ok or wallet_number(remote) != number or not same_name(name, remote.get("name", "")):
         return {"success": False, "pending": True, "otp_required": False, "message": "Your bank account is being confirmed."}
     with transaction.atomic():
         wallet, _ = Wallet.objects.get_or_create(user=user)
@@ -320,11 +322,12 @@ def update_account(bank, reply=None):
     require_environment(bank.environment)
     reply = reply or Client().wallet(bank.number)
     data = reply.data if isinstance(reply.data, dict) else {}
-    if not reply.ok or str(data.get("number") or data.get("nuban") or "") != bank.number:
+    if not reply.ok or wallet_number(data) != bank.number:
         raise ProviderError("account_confirmation_failed")
+    successful = data.get("isSuccessful", True)
     if (str(reply.body.get("responseCode", "00")) != "00"
             or str(data.get("responseCode", "00")) != "00"
-            or data.get("isSuccessful", True) not in (True, "true", "True")):
+            or (successful is not True and successful not in ("true", "True"))):
         raise ProviderError("account_confirmation_failed")
     if not same_name(bank.name, data.get("name", "")):
         raise ProviderError("account_holder_mismatch")

@@ -23,9 +23,11 @@ _PREFIX = {"waas": "/waas/api/v1/", "vas": "/vas/api/v1/"}
 
 
 class ProviderError(Exception):
-    def __init__(self, code, *, uncertain=False):
+    def __init__(self, code, *, uncertain=False, http_status=None, response_code=""):
         self.code = code
         self.uncertain = uncertain
+        self.http_status = http_status
+        self.response_code = response_code
         super().__init__(code)
 
 
@@ -97,6 +99,36 @@ def reference(value, *, length=None, maximum=25):
     return value
 
 
+def wallet_number(data):
+    """The observed NUBAN is distinct from 9PSB's internal wallet number."""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("nuban", "accountNumber", "number"):
+        if key in data:
+            value = data[key]
+            return value if isinstance(value, str) and re.fullmatch(r"[0-9]{10}", value) else ""
+    return ""
+
+
+def bank_directory(reply):
+    rows = reply.data.get("bankList") if isinstance(reply.data, dict) else None
+    if (not reply.ok or not isinstance(rows, list)
+            or str(reply.body.get("responseCode", "00")) != "00"
+            or str(reply.data.get("responseCode", "00")) != "00"):
+        raise ProviderError("bank_directory_unconfirmed")
+    result = []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("bankName"), str):
+            continue
+        name = row["bankName"].strip()
+        code = str(row.get("bankCode", "")).strip()
+        if name and len(name) <= 160 and re.fullmatch(r"[0-9]{3,6}", code):
+            result.append({"bank_name": name, "bank_code": code})
+    if not result:
+        raise ProviderError("bank_directory_empty")
+    return result
+
+
 @dataclass(frozen=True)
 class Reply:
     body: dict
@@ -109,19 +141,25 @@ class Reply:
 
     @property
     def ok(self):
-        return (200 <= self.http_status < 300
+        # Supplied contracts confirm results with HTTP 200. An accepted (202)
+        # request or empty/partial success response is not completion evidence.
+        return (self.http_status == 200
                 and str(self.body.get("status", "")).upper() == "SUCCESS")
 
     @property
     def identity_state(self):
         # Identity API explicitly uses message, not status, as its decision.
-        if not 200 <= self.http_status < 300:
+        if self.http_status != 200:
             return "PENDING"
         state = str(self.body.get("message", "")).upper()
+        if state == "SUCCESS" and (
+                str(self.body.get("status", "")).upper() in {"FAILED", "FAILURE", "ERROR"}
+                or str(self.body.get("responseCode", "00")) != "00"):
+            return "PENDING"
         return state if state in {"SUCCESS", "PENDING", "FAILED"} else "PENDING"
 
     def payment_state(self, *, product="waas", query=False):
-        if self.http_status >= 500 or self.http_status in {408, 409, 429}:
+        if self.http_status not in {200, 400, 401, 403, 422}:
             return "pending"
         body = self.body
         data = self.data if isinstance(self.data, dict) else {}
@@ -254,8 +292,10 @@ class Client:
                 raise ProviderError(exc.code, uncertain=False) from None
             data = result.body if self.product == "waas" else result.data
             token = data.get("accessToken") if isinstance(data, dict) else None
-            if not 200 <= result.http_status < 300 or not isinstance(token, str) or not token:
-                raise ProviderError("authentication_failed")
+            if result.http_status != 200 or not isinstance(token, str) or not token.strip():
+                code = str(result.body.get("responseCode", ""))
+                raise ProviderError("authentication_failed", http_status=result.http_status,
+                    response_code=code if re.fullmatch(r"[0-9]{2,4}", code) else "")
             try:
                 expires = int(data.get("expiresIn", 300))
             except (ValueError, TypeError):

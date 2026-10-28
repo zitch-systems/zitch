@@ -1259,19 +1259,18 @@ def _repair_unbacked_wema_identity_flags(user) -> None:
 
 def _kyc_state(user) -> dict:
     from banking.accounts import account_for, account_payload
-    from banking.models import IdentityChallenge, AddressVerification
+    from banking.models import IdentityChallenge
+    from banking.address import verification_status
     from banking.client import config
     from accounts.models import IdentityProof
     bank = account_for(user)
     proofs = set(IdentityProof.objects.filter(user=user, source__in=["9psb_otp", "9psb_face"]).values_list("identity_type", flat=True))
-    address = AddressVerification.objects.filter(user=user).order_by("-created").first()
     return {**account_payload(user), "tier": user.tier, "tier_name": _TIER_NAMES.get(user.tier, "Unverified"),
         "transaction_limit": str(user.transaction_limit), "daily_transfer_limit": str(user.daily_transfer_limit),
         "daily_bill_limit": str(user.daily_bill_limit), "limit_source": "Zitch platform limits",
         "bvn_verified": "bvn" in proofs, "nin_verified": "nin" in proofs,
         "face_verified": IdentityProof.objects.filter(user=user, source="9psb_face").exists(),
-        "address_verified": user.address_verified, "address_verification_pending": bool(address and address.state in {"pending", "submitted", "review"}),
-        "address_verification_state": address.state if address else "not_verified",
+        **verification_status(user),
         "account_provider": "9psb", "email": user.email or "", "email_verified": user.email_verified,
         "phone_verified": user.phone_verified, "email_verification_required": _email_verification_required(user),
         "large_txn_threshold": str(User.LARGE_TXN_THRESHOLD), "bank_tier": bank.tier if bank else 0,

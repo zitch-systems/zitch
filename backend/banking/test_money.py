@@ -70,6 +70,17 @@ class MoneyTests(TestCase):
         self.bank.refresh_from_db()
         self.assertEqual(before, self.bank.checked_at)
 
+    def test_account_readback_binds_observed_nuban_not_internal_wallet_number(self):
+        data = {"number": "INTERNAL-WALLET", "nuban": self.bank.number, "name": self.bank.name,
+            "status": "Active", "tier": "1", "isSuccessful": True,
+            "pndstatus": "InActive", "freezeStatus": "InActive",
+            "availableBalance": "500", "ledgerBalance": "500"}
+        update_account(self.bank, Reply({"status": "SUCCESS", "data": data}, 200))
+        self.assertEqual(self.bank.number, "1100000001")
+        for invalid in ("1100000099", "", None):
+            with self.subTest(nuban=invalid), self.assertRaises(ProviderError):
+                update_account(self.bank, Reply({"status": "SUCCESS", "data": {**data, "nuban": invalid}}, 200))
+
     def test_historical_refund_never_becomes_new_bank_money(self):
         from wallet.services import refund
         PreviousBankArchive.objects.create(wallet=self.wallet, balance=500, account_number="old")

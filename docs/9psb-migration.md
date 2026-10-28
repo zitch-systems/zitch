@@ -145,3 +145,13 @@ without opening retired provider routes. These focused results do not replace th
 full regression run: the latest completed full PostgreSQL checkpoint at `3d46c79`
 had 680 failures and 1,046 errors across 3,541 tests; SQLite had 680 failures,
 1,042 errors and 10 skips. The complete suite remains enabled and unresolved.
+
+## Executed sandbox checks
+
+The follow-up UAT run confirmed WaaS authentication, directory, the supplied test
+wallet's NUBAN and its bank-bound name enquiry. It uncovered and fixed internal
+wallet-number/NUBAN confusion and trailing newlines in bank routing codes. VAS
+still rejects the available credentials with HTTP 400 / response code 400.
+See [9psb-uat-evidence.md](9psb-uat-evidence.md) for exact results, regression evidence
+and the remaining activation gates. No test identity or settlement is implied by
+successful account reads, and no activation flag was changed.

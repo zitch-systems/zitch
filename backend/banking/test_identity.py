@@ -29,7 +29,7 @@ class IdentityTests(TestCase):
         return IdentityChallenge.objects.get(reference=result["reference"])
 
     def bank_reply(self, **changes):
-        data = {"number": "1100000001", "name": "Jane Doe", "status": "Active", "tier": "1",
+        data = {"number": "INTERNAL-WALLET", "nuban": "1100000001", "name": "Jane Doe", "status": "Active", "tier": "1",
                 "pndstatus": "InActive", "freezeStatus": "InActive", "ledgerBalance": "0.00", "availableBalance": "0.00"}
         return Reply({"status": "SUCCESS", "data": {**data, **changes}}, 200)
 

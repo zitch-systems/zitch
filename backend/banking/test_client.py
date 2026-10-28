@@ -88,9 +88,17 @@ class ClientTests(SimpleTestCase):
 
     def test_failed_auth_is_not_cached(self):
         with patch.object(Client, "_send", return_value=Reply({"status": "failed", "responseCode": "400"}, 400)):
-            with self.assertRaises(ProviderError):
+            with self.assertRaises(ProviderError) as raised:
                 Client("vas").token()
+        self.assertEqual(raised.exception.http_status, 400)
+        self.assertEqual(raised.exception.response_code, "400")
         self.assertIsNone(cache.get(Client("vas")._cache_key()))
+
+    def test_accepted_authentication_does_not_cache_an_unconfirmed_token(self):
+        with patch.object(Client, "_send", return_value=Reply({"accessToken": "unconfirmed-token"}, 202)), \
+                self.assertRaises(ProviderError):
+            Client().token()
+        self.assertIsNone(cache.get(Client()._cache_key()))
 
     def test_expired_auth_does_not_replay_money_instruction(self):
         with patch.object(Client, "token", return_value="t"), patch.object(Client, "_send", return_value=Reply({}, 401)) as send:

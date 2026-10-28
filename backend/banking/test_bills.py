@@ -93,6 +93,15 @@ class BillTests(TestCase):
             bills.validate(self.user, "B1", "unlisted", "customer-1", "1")
         query.assert_not_called()
 
+    def test_malformed_biller_name_cannot_create_spend_authorization(self):
+        for name in (True, ["Jane", "Doe"], {"name": "Jane Doe"}, " ", "J"*161):
+            with self.subTest(name=name), patch("banking.bills.item_price", return_value=Decimal("100")), \
+                    patch("banking.client.Client.validate_customer", return_value=Reply({
+                        "status": "success", "responseCode": "200", "data": {"customerName": name}}, 200)), \
+                    self.assertRaises(ValueError):
+                bills.validate(self.user, "B1", "I1", "customer-1", "100")
+        self.assertFalse(BillerValidation.objects.exists())
+
 
 @override_settings(NINEPSB=CONFIG, SECURE_SSL_REDIRECT=False, RATELIMIT_ENABLE=False,
     PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])

@@ -21,6 +21,22 @@ from .payments import digest
 from .secrets import seal
 
 
+def verification_status(user):
+    row = AddressVerification.objects.filter(user=user).order_by("-created", "-pk").first()
+    verified = bool(row and row.state == "verified")
+    historical_verified = bool(user.address_verified and not verified)
+    historical_pending = bool(user.address_verification_pending)
+    return {
+        "address_verified": verified,
+        "address_verification_pending": bool(row and row.state in {"pending", "submitted", "review"}),
+        "address_verification_state": row.state if row else
+            "historical_pending" if historical_pending else
+            "historical_verified" if historical_verified else "not_verified",
+        "historical_address_verified": historical_verified,
+        "historical_address_verification_pending": historical_pending,
+    }
+
+
 def _request(path, body):
     key = getattr(settings, "PREMBLY", {}).get("API_KEY", "")
     if not key:

@@ -65,7 +65,9 @@ def validate(user, biller, item, customer, amount):
         raise ValueError("Enter a valid customer number")
     reply = Client("vas").validate_customer(biller, customer, item=item, amount=amount)
     result = reply.data if isinstance(reply.data, dict) else {}
-    if not reply.ok or str(reply.body.get("responseCode")) != "200" or not result.get("customerName"):
+    name = result.get("customerName")
+    if (not reply.ok or str(reply.body.get("responseCode")) != "200"
+            or not isinstance(name, str) or not name.strip() or len(name) > 160):
         raise ValueError("The biller could not validate this customer")
     row = BillerValidation.objects.create(user=user, reference=secrets.token_urlsafe(24),
         biller_id=biller, item_id=item, customer_digest=digest(customer), amount=amount,

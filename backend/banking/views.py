@@ -42,7 +42,7 @@ def status(request):
         identity_challenge=({**progress, "kind": challenge.kind} if progress else None),
         bvn_verified="bvn" in proofs, nin_verified="nin" in proofs,
         face_verified=IdentityProof.objects.filter(user=user, source="9psb_face").exists(),
-        address_verified=user.address_verified,
+        **address.verification_status(user),
         identity_verification_provider="9psb", face_rail="9psb", address_rail="prembly",
         upgrade_requirements={"2": ["BVN", "NIN", "Utility bill", "Identity documents", "Signature"],
                               "3": ["BVN", "NIN", "Utility bill", "Prembly address verification"]})

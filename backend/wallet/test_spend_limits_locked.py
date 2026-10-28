@@ -10,15 +10,25 @@ These tests exercise the guarantee directly: they call `debit()` with NO view in
 front of it, which is exactly the position the second request in a race ends up in.
 """
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
 from common.http import daily_kind_for, spend_limit_error
 from wallet.models import Transaction, Wallet
 from wallet.services import LimitExceeded, debit, get_or_create_wallet, transfer
-from wallet.tests import make_user
+from banking.test_client import CONFIG
+from banking.test_fixtures import make_bank_user
+from banking.models import BankAccount
+from transfers.models import Bank
+from transfers.services import PayoutError
 
 
+def make_user(*args, **kwargs):
+    return make_bank_user(*args, bank_balance="5000000", **kwargs)
+
+
+@override_settings(NINEPSB=CONFIG)
 class DailyKindForTests(TestCase):
     def test_labels_map_to_the_bucket_they_are_counted_in(self):
         self.assertEqual(daily_kind_for("Transfer to Jane Doe"), "transfer")
@@ -35,6 +45,7 @@ class DailyKindForTests(TestCase):
 
 
 @override_settings(VELOCITY_MAX_OUT_10MIN=0)     # velocity off; caps under test here
+@override_settings(NINEPSB=CONFIG)
 class DebitEnforcesCapsUnderTheLockTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08044440001", "lock@zitch.app", tier=2)
@@ -92,6 +103,7 @@ class DebitEnforcesCapsUnderTheLockTests(TestCase):
         self.assertEqual(txn.amount, Decimal("1000"))
 
 
+@override_settings(NINEPSB=CONFIG)
 class DebitEnforcesVelocityUnderTheLockTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08044440002", "vel@zitch.app", tier=2)
@@ -110,31 +122,34 @@ class DebitEnforcesVelocityUnderTheLockTests(TestCase):
             debit(self.user, Decimal("100"), "Transfer to Jane")
 
 
+@override_settings(NINEPSB=CONFIG)
 class BankTierCapHoldsUnderTheLockTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08044440003", "bank@zitch.app", tier=2)
         Wallet.objects.filter(user=self.user).update(
-            balance=Decimal("5000000"), bank_tier=1,
-            account_number="0155500033")                      # bank cap 30,000/day
+            balance=Decimal("5000000"), bank_tier=1)
+        BankAccount.objects.filter(wallet__user=self.user).update(tier=1)
 
-    @override_settings(VELOCITY_MAX_OUT_10MIN=0)
-    def test_the_partner_banks_daily_cap_is_enforced_at_the_debit(self):
+    @override_settings(VELOCITY_MAX_OUT_10MIN=0,
+        NINEPSB={**CONFIG, "DAILY_OUTBOUND_LIMITS": '{"1":"30000"}'})
+    def test_configured_bank_daily_cap_is_enforced_at_the_debit(self):
         Transaction.objects.create(
             user=self.user, service="Transfer to X", amount=Decimal("29000"),
             direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
-            reference="BT-1", meta={"bank": "Wema Bank"})
+            reference="BT-1", meta={"provider": "9psb"})
         with self.assertRaises(LimitExceeded):
-            debit(self.user, Decimal("2000"), "Transfer to Jane", meta={"bank": "Wema Bank"})
+            debit(self.user, Decimal("2000"), "Transfer to Jane", meta={"provider": "9psb"})
 
 
 @override_settings(VELOCITY_MAX_OUT_10MIN=0)
-class InternalTransferEnforcesCapsUnderBothWalletLocksTests(TestCase):
+@override_settings(NINEPSB=CONFIG)
+class PeerTransferEnforcesCapsBeforeBankDispatchTests(TestCase):
     def setUp(self):
         self.sender, _ = make_user("08044440004", "p2p-lock@zitch.app", tier=2)
         self.recipient, _ = make_user("08044440005", "p2p-recipient@zitch.app", tier=2)
         Wallet.objects.filter(user=self.sender).update(balance=Decimal("5000000"))
 
-    def test_internal_transfer_cannot_race_past_the_daily_cap(self):
+    def test_peer_transfer_cannot_race_past_the_daily_cap(self):
         Transaction.objects.create(
             user=self.sender, service="Transfer to Previous", amount=self.sender.daily_transfer_limit,
             direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
@@ -142,7 +157,15 @@ class InternalTransferEnforcesCapsUnderBothWalletLocksTests(TestCase):
         )
         before_sender = Wallet.objects.get(user=self.sender).balance
         before_recipient = Wallet.objects.get(user=self.recipient).balance
-        with self.assertRaises(LimitExceeded):
-            transfer(self.sender, self.recipient, Decimal("1000"))
+        Bank.objects.create(code="9psb", name="9PSB", bank_code="120001")
+        bank = BankAccount.objects.get(wallet__user=self.sender)
+        with override_settings(NINEPSB={**CONFIG, "TRANSFER_FEE_TOTAL": "0"}), \
+                patch("banking.adapter.resolve_account", return_value={"success": True, "name": "Ada Eze"}), \
+                patch("banking.payments.update_account", return_value=bank), \
+                patch("banking.payments._invoke") as send, self.assertRaises(PayoutError) as raised:
+            transfer(self.sender, self.recipient, Decimal("1000"), expected_fee="0")
+        self.assertEqual(raised.exception.kind, "limit_exceeded")
+        self.assertIn("daily", str(raised.exception).lower())
+        send.assert_not_called()
         self.assertEqual(Wallet.objects.get(user=self.sender).balance, before_sender)
         self.assertEqual(Wallet.objects.get(user=self.recipient).balance, before_recipient)
