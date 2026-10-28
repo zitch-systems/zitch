@@ -36,7 +36,6 @@ class FundingHoldTests(TestCase):
         self.assertFalse(any(name.startswith("vas_") for name in get_commands()))
         self.assertNotIn("purge_retired_accounts", get_commands())
         self.assertIsNone(importlib.util.find_spec("wema_vas"))
-        self.assertIsNone(importlib.util.find_spec("legacy_funding.models"))
 
     def test_outstanding_money_blocks_funding_and_both_spend_paths(self):
         funding_hold(self.user, "1250")

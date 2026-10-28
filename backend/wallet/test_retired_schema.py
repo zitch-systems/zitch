@@ -20,8 +20,11 @@ class RetiredSchemaTests(TestCase):
             ("wallet", "0029_retired_funding_archive"),
             ("wema_vas", "0004_separate_account_modes")]).apps
 
-    def test_runtime_models_and_bill_foreign_key_are_absent(self):
-        self.assertEqual(list(apps.get_app_config("wema_vas").get_models()), [])
+    def test_only_empty_schema_mappings_remain_during_rolling_deployment(self):
+        # Retain mappings until the physical tables are dropped in stage 2.
+        # PostgreSQL flush must include every table referencing current models.
+        self.assertEqual({model.__name__ for model in apps.get_app_config("wema_vas").get_models()},
+                         {"VirtualAccount", "Receipt", "MigrationApproval"})
         self.assertNotIn("vas_account", {f.name for f in BillFundingBinding._meta.fields})
 
     def test_nonempty_schema_stops_removal_without_deleting_records(self):

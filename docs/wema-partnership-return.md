@@ -53,25 +53,26 @@ Any prior bank proof, request or account history keeps the recovery path.
 
 ## Completed account retirement
 
-The retired account and receipt records have been purged. The remaining runtime
-models, account-balance adapters, purge command and bill-funding foreign key are
-removed. Outstanding money lives in the independent `UnsettledFunding` and
+The retired account and receipt records have been purged. Account-balance
+adapters, the purge command and bill-funding foreign key are removed from runtime
+code. Outstanding money lives in the independent `UnsettledFunding` and
 `RetiredFundingArchive` accounting records; removing an integration does not
 cancel that liability or settle it at the bank. The original transaction ledger
 and its database protections remain intact.
 
 The rollout has two stages. Wallet migration 0030 requires zero retired accounts,
 receipts, migration approvals and linked bills, then removes the foreign key from
-Django's state. The migration-only compatibility app removes its runtime model
-state. Empty physical tables remain temporarily so old API and worker processes
-can finish while every Django service updates. Only after all services use that
-revision may the next migration remove the empty tables and obsolete triggers.
+Django's state. Empty physical tables and their otherwise unused Django mappings
+remain temporarily so old API and worker processes can finish while every
+service updates. Keeping the mappings until the tables disappear also preserves
+PostgreSQL test isolation. Only after all services use that revision may the next
+migration remove the empty tables, model mappings and obsolete triggers.
 A nonzero inventory aborts the migration; it never erases unreviewed records.
 
 Historical migration files and their original labels remain solely so existing
-and fresh databases can traverse the same migration graph. There are no provider
-models, enrollment operations, callbacks, customer screens or bank credentials in
-that compatibility package. The old destination digest still prevents accidental
+and fresh databases can traverse the same migration graph. The compatibility
+package has no enrollment operations, callbacks, customer screens or bank
+credentials. Its empty model mappings are removed in stage 2. The old destination digest still prevents accidental
 reuse, and outstanding money remains in reconciliation scope.
 
 Remove `HISTORICAL_FUNDING_IDENTITY_KEYS` from runtime environments; it has no

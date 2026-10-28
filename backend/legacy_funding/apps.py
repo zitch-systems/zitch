@@ -1,10 +1,10 @@
-"""Migration-only tombstone for databases upgraded from the retired integration."""
+"""Historical financial evidence only; no provider or customer routes."""
 from django.apps import AppConfig
 
 
 class LegacyFundingConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "legacy_funding"
-    # Django must recognize already-applied migrations. No runtime models exist.
+    # Retain the database/migration identity and all protected foreign keys.
     label = "wema_vas"
-    verbose_name = "Retired migration history"
+    verbose_name = "Historical funding evidence"
