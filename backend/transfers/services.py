@@ -256,5 +256,8 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
                                      "color": bank.color or "#0FA295"})
     Beneficiary.objects.filter(pk=row.pk).update(transfer_count=F("transfer_count") + 1, bank_code=bank.code)
     row.refresh_from_db()
+    if row.transfer_count > 50 and not row.saved:
+        row.saved = True
+        row.save(update_fields=["saved"])
     txn.beneficiary_id, txn.beneficiary_transfers, txn.beneficiary_saved = row.pk, row.transfer_count, row.saved
     return txn

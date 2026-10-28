@@ -43,13 +43,22 @@ identity ownership proof. No production activation switches were changed.
 
 The expanded local run completed 272 tests: 267 passed and five PostgreSQL-only
 checks were skipped. Separate authentication/UAT checks passed after adding
-redacted HTTP diagnostics. Existing tests for locked spending limits, immutable
+redacted HTTP diagnostics; the final contract run passed all 42 checks.
+A further 85 transfer and money regression checks passed. They cover fee
+confirmation, durable reservation before dispatch, ambiguous responses, refunds,
+restricted/absent source accounts, owned account bindings and saved recipients.
+That run identified and fixed the missing automatic beneficiary save at transfer
+51; it also verifies bounded rejection-code retention without raw provider text.
+Existing tests for locked spending limits, immutable
 schema retirement, archived liabilities and pending address evidence were migrated
 to the new bank model; they were not removed to obtain a passing result.
 
 The latest completed full CI at `028919a` ran 3,555 tests on PostgreSQL and ended
 with **673 failures and 1,015 errors**. Its 103 focused bank/Render checks passed,
-as did App and Meta connector CI. Full regressions remain a release gate.
+as did App and Meta connector CI. On the next checkpoint (`aadbea5`), PostgreSQL
+migration consistency and focused bank contracts passed again, along with App
+and Meta CI; full backend runs were still in progress when this evidence was
+written. Full regressions remain a release gate.
 
 ## Repeating the connectivity check
 

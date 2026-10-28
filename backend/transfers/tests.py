@@ -1,21 +1,48 @@
-﻿"""Tests for bank transfer (payout) + saved beneficiaries."""
+"""Tests for bank transfer (payout) + saved beneficiaries."""
 import json
 from decimal import Decimal
-from io import StringIO
 from unittest.mock import patch
 
-from django.core.management import call_command
 from django.test import Client, TestCase, override_settings
 
 from wallet.models import Transaction
 from wallet.services import get_or_create_wallet
-from wallet.tests import make_user
+from wallet.tests import make_user as make_unbanked_user
+from banking.test_fixtures import make_bank_user as make_user
+from banking.test_client import CONFIG
+from banking.client import Reply, ProviderError
+from banking.models import BankAccount, Instruction
 
 from .models import Bank, Beneficiary
 
 
-class BankTransferTests(TestCase):
+@override_settings(NINEPSB={**CONFIG, "TRANSFER_FEE_TOTAL": "0.00"})
+class BankIOCase(TestCase):
+    """Exercise application controls with only the bank HTTP boundary replaced."""
     def setUp(self):
+        super().setUp()
+        def wallet(number):
+            bank = BankAccount.objects.get(number=number)
+            return Reply({"status": "SUCCESS", "data": {
+                "number": "INTERNAL-WALLET", "nuban": bank.number, "name": bank.name,
+                "status": "Active", "tier": str(bank.tier), "isSuccessful": True,
+                "pndstatus": "Active" if bank.pnd else "InActive",
+                "freezeStatus": "Active" if bank.frozen else "InActive",
+                "availableBalance": str(bank.available_balance),
+                "ledgerBalance": str(bank.ledger_balance)}}, 200)
+        def resolve(number, code):
+            return Reply({"code": "00", "customer": {"account": {
+                "number": number, "bank": code,
+                "name": "MUSA ADAMU" if number == "0777777777" else "JOHN DOE"}}}, 200)
+        self.wallet_read = self.enterContext(patch("banking.client.Client.wallet", side_effect=wallet))
+        self.enquiry = self.enterContext(patch("banking.client.Client.resolve", side_effect=resolve))
+        self.bank_send = self.enterContext(patch("banking.client.Client.transfer",
+            return_value=Reply({"status": "SUCCESS", "responseCode": "00"}, 200)))
+
+
+class BankTransferTests(BankIOCase):
+    def setUp(self):
+        super().setUp()
         self.client = Client()
         self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="50000")
         self.bank = Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#E32119")
@@ -23,6 +50,8 @@ class BankTransferTests(TestCase):
 
     def post(self, path, payload):
         payload = dict(payload)
+        if path == "/api/transfers/send/":
+            payload.setdefault("expected_fee", "0.00")
         if path == "/api/transfers/send/" and "idempotency_key" not in payload:
             self._key_seq += 1
             payload["idempotency_key"] = f"bank-test-{self._key_seq}"
@@ -52,7 +81,7 @@ class BankTransferTests(TestCase):
                     res, _body = self.post(path, {
                         "access_token": self.token, "account_number": account,
                         "bank": "gtb", "name": "John Doe", "amount": "1000",
-                        "transaction_pin": "1234",
+                        "transaction_pin": "1234", "expected_fee": "0.00",
                     })
                     self.assertEqual(res.status_code, 400)
                     resolve.assert_not_called()
@@ -66,7 +95,7 @@ class BankTransferTests(TestCase):
                 res, _body = self.post(path, {
                     "access_token": self.token, "account_number": "0123456789",
                     "bank": "gtb", "name": "John Doe", "amount": "1000",
-                    "transaction_pin": "1234",
+                    "transaction_pin": "1234", "expected_fee": "0.00",
                 })
                 self.assertEqual(res.status_code, 404)
                 resolve.assert_not_called()
@@ -100,7 +129,7 @@ class BankTransferTests(TestCase):
     def test_transfer_below_50_rejected(self):
         res, body = self.post("/api/transfers/send/", {
             "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-            "name": "ADEYEMI WILLIAM", "amount": "40", "transaction_pin": "1234",
+            "name": "ADEYEMI WILLIAM", "amount": "40", "transaction_pin": "1234", "expected_fee": "0.00",
         })
         self.assertEqual(res.status_code, 400)
         self.assertIn("50", body.get("message", ""))
@@ -114,7 +143,7 @@ class BankTransferTests(TestCase):
                    return_value={"success": True, "name": "JANE SMITH"}):
             res, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
             })
         self.assertEqual(res.status_code, 409)
         self.assertEqual(body.get("code"), "account_mismatch")
@@ -127,7 +156,7 @@ class BankTransferTests(TestCase):
                    return_value={"success": True, "name": "DOE JOHN"}):
             res, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
             })
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body.get("success") or body.get("pending"))
@@ -141,25 +170,11 @@ class BankTransferTests(TestCase):
         # payload must always carry the field â€” blank when unset.
         self.assertIn("logo", body["banks"][0])
 
-    def test_detect_sweeps_only_popular_banks_when_flagged(self):
-        # With a `popular` set defined, auto-detect must not fan name-enquiries
-        # out to every active bank (each probe is a paid provider call).
+    def test_detection_never_sweeps_paid_name_enquiries(self):
         from transfers.services import detect_account_banks
-        popular = Bank.objects.create(code="acc", name="Access Bank", bank_code="044",
-                                      color="#F68B1F", popular=True)
-        probed = []
-
-        def fake_resolve(acct, bank_code):
-            probed.append(bank_code)
-            return {"success": True, "name": "ADA EZE"}
-
-        # detect_account_banks imports these inside the function, so patch the
-        # source module, not transfers.services.
-        with patch("utility.providers.payout_live", return_value=True), \
-             patch("utility.providers.payout_resolve_account", side_effect=fake_resolve):
-            matches = detect_account_banks("0000000001")
-        self.assertEqual(probed, [popular.bank_code])  # gtb (not popular) skipped
-        self.assertEqual([m["bank"] for m in matches], [popular.code])
+        Bank.objects.create(code="acc", name="Access Bank", bank_code="044", popular=True)
+        self.assertEqual(detect_account_banks("0000000001"), [])
+        self.enquiry.assert_not_called()
 
     def test_resolve_requires_10_digits(self):
         res, _ = self.post("/api/transfers/resolve/", {"access_token": self.token, "account_number": "123", "bank": "gtb"})
@@ -171,35 +186,25 @@ class BankTransferTests(TestCase):
         self.assertTrue(body["name"])
         self.assertEqual(body["bank"], "gtb")  # echoes the bank back
 
-    def test_resolve_auto_detects_bank_without_bank_param(self):
-        # No `bank` supplied -> the server detects it (mock: the first active bank)
-        # and returns the bank + name so the app can fill it in automatically.
-        from django.core.cache import cache
-        cache.clear()
-        res, body = self.post("/api/transfers/resolve/", {"access_token": self.token, "account_number": "0123456789"})
-        self.assertEqual(res.status_code, 200)
-        self.assertTrue(body["success"])
-        self.assertTrue(body["name"])
-        self.assertEqual(body["bank"], "gtb")
-        self.assertEqual(len(body["matches"]), 1)
+    def test_resolve_requires_a_selected_bank_without_paid_detection(self):
+        res, body = self.post("/api/transfers/resolve/", {
+            "access_token": self.token, "account_number": "0123456789"})
+        self.assertEqual(res.status_code, 404)
+        self.assertIn("pick the bank", body["message"])
+        self.enquiry.assert_not_called()
 
-    def test_resolve_flags_mock_when_name_enquiry_not_live(self):
-        # Without a live Wema name-enquiry rail the detection is a placeholder, so
-        # the response must carry `mock: true` and the app won't auto-fill it as a
-        # verified bank/holder (which looked like "mis-detection").
-        from django.core.cache import cache
-        cache.clear()
-        res, body = self.post("/api/transfers/resolve/", {"access_token": self.token, "account_number": "0123456789"})
-        self.assertEqual(res.status_code, 200)
-        self.assertTrue(body.get("mock"))
-        # An explicit-bank resolve is mock too in this mode.
-        res2, body2 = self.post("/api/transfers/resolve/", {"access_token": self.token, "account_number": "0123456789", "bank": "gtb"})
-        self.assertTrue(body2.get("mock"))
+    def test_failed_name_enquiry_never_returns_a_placeholder_holder(self):
+        with patch("banking.client.Client.resolve", side_effect=ProviderError("network_unavailable")):
+            res, body = self.post("/api/transfers/resolve/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb"})
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(body.get("success"))
+        self.assertNotIn("name", body)
 
     def test_send_debits_and_saves_beneficiary(self):
         res, body = self.post("/api/transfers/send/", {
             "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-            "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
         })
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["success"])
@@ -229,7 +234,7 @@ class BankTransferTests(TestCase):
         poor, token = make_user("08090000009", "poor@zitch.test", balance="30000")
         res, _ = self.post("/api/transfers/send/", {
             "access_token": token, "account_number": "0123456789", "bank": "gtb",
-            "name": "John Doe", "amount": "40000", "transaction_pin": "1234",
+            "name": "John Doe", "amount": "40000", "transaction_pin": "1234", "expected_fee": "0.00",
         })
         self.assertEqual(res.status_code, 402)
         self.assertEqual(get_or_create_wallet(poor).balance, Decimal("30000"))
@@ -238,7 +243,7 @@ class BankTransferTests(TestCase):
         # Tier 1 ceiling is 50,000; a 60,000 payout is blocked before any debit.
         res, body = self.post("/api/transfers/send/", {
             "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-            "name": "John Doe", "amount": "60000", "transaction_pin": "1234",
+            "name": "John Doe", "amount": "60000", "transaction_pin": "1234", "expected_fee": "0.00",
         })
         self.assertEqual(res.status_code, 403)
         self.assertEqual(body["code"], "limit_exceeded")
@@ -248,11 +253,11 @@ class BankTransferTests(TestCase):
         # A rail that returns PENDING (queued / awaiting auth) must NOT be settled
         # as Successful â€” the row stays Pending (money debited, flagged for the
         # webhook) and the response says "processing", not "sent".
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "PENDING"}):
+        with patch("banking.client.Client.transfer",
+                   return_value=Reply({"status": "PENDING", "responseCode": "09"}, 200)):
             res, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
             })
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body.get("pending"))
@@ -264,9 +269,8 @@ class BankTransferTests(TestCase):
 
     def test_pending_payout_excluded_from_vtu_reconcile_sweep(self):
         """Regression: a PENDING bank payout shares the reconcile+OUT shape with a
-        VAS purchase, but must NOT be swept by the partner-bank VAS requery â€” that would
-        query the wrong provider for a reference partner-bank VAS never saw (risking a wrong
-        refund/settle). It is settled only by the disbursement webhook."""
+        VAS purchase, but must not enter a VAS sweep. The durable bank instruction
+        records the product and is requeried through the WaaS endpoint."""
         from datetime import timedelta
 
         from django.utils import timezone
@@ -274,11 +278,11 @@ class BankTransferTests(TestCase):
         from wallet.services import credit, debit, pending_vas_purchases
 
         # A PENDING bank payout (what execute_payout leaves on a rail 'PENDING').
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "PENDING"}):
+        with patch("banking.client.Client.transfer",
+                   return_value=Reply({"status": "PENDING", "responseCode": "09"}, 200)):
             _, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
             })
         payout = Transaction.objects.get(reference=body["reference"])
 
@@ -296,11 +300,11 @@ class BankTransferTests(TestCase):
 
     def test_send_refunds_when_payout_fails(self):
         """If the payout provider declines, the wallet debit must be reversed."""
-        with patch("transfers.services.payout_send",
-                   return_value={"success": False, "message": "bank declined"}):
+        with patch("banking.client.Client.transfer",
+                   return_value=Reply({"status": "FAILED", "responseCode": "51"}, 200)):
             res, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
             })
         self.assertEqual(res.status_code, 422)
         self.assertEqual(body.get("code"), "transfer_failed")
@@ -313,17 +317,16 @@ class BankTransferTests(TestCase):
 
     def test_ambiguous_send_timeout_holds_debit_never_refunds(self):
         """CRITICAL: a network timeout on the non-idempotent disburse POST is
-        AMBIGUOUS — Wema may already have paid the recipient. The debit MUST be
+        AMBIGUOUS — the bank may already have paid the recipient. The debit MUST be
         HELD (PENDING + reconcile), never refunded. Refunding here drains the float
         (recipient keeps the money, sender made whole) and a retry double-pays. The
-        reconcile flag then lets reconcile_wema settle/reverse it on the true
+        reconcile flag then lets reconcile_9psb settle it on the true
         outcome."""
-        with patch("transfers.services.payout_send",
-                   return_value={"success": False, "pending": True, "status": "pending",
-                                 "message": "Transfer is processing"}):
+        with patch("banking.client.Client.transfer",
+                   side_effect=ProviderError("network_unavailable", uncertain=True)):
             res, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
             })
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body.get("pending"))
@@ -336,15 +339,16 @@ class BankTransferTests(TestCase):
             Transaction.objects.filter(user=self.user, transaction_status=Transaction.FAILED).exists())
 
     def test_accepted_unknown_status_holds_debit_and_reports_pending(self):
-        """CRITICAL: a payout Wema ACCEPTED but reported with a status this code
+        """CRITICAL: a payout the bank ACCEPTED but reported with a status this code
         doesn't recognise must be treated exactly like PENDING — debit held,
         response pending — not as a failure. Misclassifying it refunded an
         in-flight transfer (double-spend) and showed the user "Error / success"."""
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "QUEUED_AT_SWITCH", "reference": "X"}):
+        with patch("banking.client.Client.transfer",
+                   return_value=Reply({"status": "SUCCESS", "responseCode": "00",
+                       "data": {"transactionStatus": "QUEUED_AT_SWITCH"}}, 200)):
             res, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
             })
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body.get("pending"))
@@ -353,29 +357,28 @@ class BankTransferTests(TestCase):
         self.assertTrue(txn.meta.get("reconcile"))
         self.assertEqual(self.balance(), Decimal("40000"))  # held, not refunded
 
-    def test_explicit_failed_status_refunds_even_when_envelope_succeeded(self):
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "DECLINED",
-                                 "message": "Transaction declined"}):
+    def test_conflicting_failure_and_success_keeps_the_debit_pending(self):
+        with patch("banking.client.Client.transfer", return_value=Reply({
+                "status": "SUCCESS", "responseCode": "00", "data": {
+                    "status": "FAILED", "responseCode": "51"}}, 200)):
             res, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
-            })
-        self.assertEqual(res.status_code, 422)
-        self.assertEqual(body.get("code"), "transfer_failed")
-        self.assertTrue(body.get("refunded"))
-        self.assertTrue(body.get("reference"))
-        self.assertEqual(self.balance(), Decimal("50000"))
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("pending"))
+        self.assertFalse(body.get("refunded"))
+        self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.PENDING)
+        self.assertEqual(self.balance(), Decimal("40000"))
 
     def test_provider_success_echo_is_never_shown_as_the_error(self):
         """A definitive provider rejection whose message is the request-level
         "success" echo must not reach the app as the error text (the
         "Error / success" dialog) — the view substitutes a real sentence."""
-        with patch("transfers.services.payout_send",
-                   return_value={"success": False, "message": "success"}):
+        with patch("banking.client.Client.transfer",
+                   return_value=Reply({"status": "FAILED", "responseCode": "51", "message": "success"}, 200)):
             res, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
             })
         self.assertEqual(res.status_code, 422)
         self.assertEqual(body.get("code"), "transfer_failed")
@@ -387,20 +390,20 @@ class BankTransferTests(TestCase):
     def test_reconcile_flag_committed_before_provider_call(self):
         """A crash between the debit commit and the settle write must leave a row the
         payout sweep (meta__reconcile=True) can still find. Assert the committed
-        PENDING row already carries the flag at the moment payout_send is invoked —
+        PENDING row already carries the flag at the moment the bank is invoked —
         i.e. it is pre-flagged with the debit, not after the call."""
         seen = {}
 
         def spy(*args, **kwargs):
-            row = Transaction.objects.get(reference=args[1])  # args[1] == reference
+            row = Instruction.objects.get(reference=args[0]).transaction
             seen["reconcile"] = (row.meta or {}).get("reconcile")
             seen["status"] = row.transaction_status
-            return {"success": True, "status": "success"}
+            return Reply({"status": "SUCCESS", "responseCode": "00"}, 200)
 
-        with patch("transfers.services.payout_send", side_effect=spy):
+        with patch("banking.client.Client.transfer", side_effect=spy):
             self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
             })
         self.assertTrue(seen["reconcile"])                     # flagged BEFORE the send
         self.assertEqual(seen["status"], Transaction.PENDING)
@@ -408,26 +411,24 @@ class BankTransferTests(TestCase):
     def test_delivered_payout_clears_reconcile_flag(self):
         """A confirmed-delivered payout is settled AND its reconcile flag cleared, so
         the reconciler never needlessly requeries a completed transfer."""
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "success"}):
+        with patch("banking.client.Client.transfer",
+                   return_value=Reply({"status": "SUCCESS", "responseCode": "00"}, 200)):
             _, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
             })
         txn = Transaction.objects.get(reference=body["reference"])
         self.assertEqual(txn.transaction_status, Transaction.SUCCESS)
         self.assertNotIn("reconcile", txn.meta or {})
 
 
-class DemoSourceAccountTests(TestCase):
-    """A NUBAN minted while the payout rail was MOCKED exists nowhere at the bank,
-    but stays on the wallet once live keys are set — and it is what we send as the
-    payout's sourceAccountNumber. The rail rejects it and blames "the account
-    number", which reads as the recipient's."""
+class DemoSourceAccountTests(BankIOCase):
+    """A historical demo account is never ownership evidence for new banking."""
 
     def setUp(self):
+        super().setUp()
         self.client = Client()
-        self.user, self.token = make_user("08010000009", "demo@zitch.test", balance="50000")
+        self.user, self.token = make_unbanked_user("08010000009", "demo@zitch.test", balance="50000")
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#E32119")
         wallet = get_or_create_wallet(self.user)
         wallet.account_number = "0112345678"
@@ -437,32 +438,26 @@ class DemoSourceAccountTests(TestCase):
     def send(self):
         res = self.client.post("/api/transfers/send/", data=json.dumps({
             "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-            "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
             "idempotency_key": "demo-source-send-1",
         }), content_type="application/json")
         return res, res.json()
 
-    @patch("transfers.services.payout_live", create=True, return_value=True)
-    @patch("utility.providers.payout_live", return_value=True)
-    def test_a_live_payout_is_refused_before_any_debit(self, *_):
+    def test_historical_demo_source_is_refused_before_any_debit(self):
         before = get_or_create_wallet(self.user).balance
-        with patch("transfers.services.payout_send") as send:
-            res, body = self.send()
+        res, body = self.send()
+        self.assertEqual(res.status_code, 403)
         self.assertFalse(body.get("success"))
-        send.assert_not_called()                                   # never reached the rail
+        self.bank_send.assert_not_called()
         self.assertEqual(get_or_create_wallet(self.user).balance, before)
-        # No outbound row at all — not even a debit-then-refund pair, which is what
-        # the user would otherwise watch happen on every attempt.
-        self.assertEqual(
-            Transaction.objects.filter(user=self.user, direction=Transaction.OUT).count(), 0)
-        self.assertIn("test mode", body["message"])
+        self.assertFalse(Transaction.objects.filter(user=self.user, direction=Transaction.OUT).exists())
 
-    @patch("utility.providers.payout_live", return_value=False)
-    def test_mock_mode_still_works_for_local_and_test_use(self, _live):
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "success"}):
-            _, body = self.send()
-        self.assertTrue(body.get("success"))
+    @override_settings(NINEPSB={**CONFIG, "ENABLED": False})
+    def test_disabled_banking_never_uses_a_mock_money_fallback(self):
+        _, body = self.send()
+        self.assertFalse(body.get("success"))
+        self.bank_send.assert_not_called()
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000"))
 
 
 class ClearDemoAccountAdminTests(TestCase):
@@ -480,7 +475,7 @@ class ClearDemoAccountAdminTests(TestCase):
         self.admin.message_user = lambda req, msg, level=None: self.messages.append(msg)
 
     def _wallet(self, phone, bank_name):
-        user, _ = make_user(phone, f"{phone}@zitch.test", balance="100")
+        user, _ = make_unbanked_user(phone, f"{phone}@zitch.test", balance="100")
         wallet = get_or_create_wallet(user)
         wallet.account_number = f"01{phone[-8:]}"
         wallet.bank_name = bank_name
@@ -508,31 +503,32 @@ class ClearDemoAccountAdminTests(TestCase):
         self.assertIn("issued by the real bank", " ".join(self.messages))
 
 
-class PayoutFailureIsRecordedTests(TestCase):
+class PayoutFailureIsRecordedTests(BankIOCase):
     """A rejected payout used to leave nothing behind but a Failed row: the rail's
     reason went to the user and the log and was then lost. On a deploy with no
     shell and no log access, every failed transfer looked identical."""
 
     def setUp(self):
+        super().setUp()
         self.client = Client()
         self.user, self.token = make_user("08010000031", "why@zitch.test", balance="50000")
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#E32119")
 
-    def test_the_rails_reason_is_kept_on_the_ledger_row(self):
-        reason = "Debit account is restricted"
-        with patch("transfers.services.payout_send",
-                   return_value={"success": False, "status": "FAILED", "message": reason}):
+    def test_rejection_code_is_retained_without_raw_provider_text(self):
+        with patch("banking.client.Client.transfer", return_value=Reply({
+                "status": "FAILED", "responseCode": "51", "message": "Private bank response"}, 200)):
             res = self.client.post("/api/transfers/send/", data=json.dumps({
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
                 "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
-                "idempotency_key": "failure-reason-send-1",
+                "expected_fee": "0.00", "idempotency_key": "failure-reason-send-1",
             }), content_type="application/json")
-        self.assertFalse(res.json().get("success"))
-        txn = Transaction.objects.filter(user=self.user, direction=Transaction.OUT).first()
+        self.assertEqual(res.status_code, 422)
+        txn = Transaction.objects.get(user=self.user, direction=Transaction.OUT)
         self.assertEqual(txn.transaction_status, Transaction.FAILED)
-        self.assertEqual(txn.meta.get("failure"), reason)
         self.assertEqual(txn.meta.get("failure_status"), "FAILED")
-        # …and the money came back.
+        self.assertEqual(Instruction.objects.get(transaction=txn).last_error, "waas_response_51")
+        self.assertNotIn("Private bank response", json.dumps(txn.meta))
+        self.assertNotIn("Private bank response", res.content.decode())
         self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000.00"))
 
     def test_the_admin_column_reads_it_back(self):
@@ -547,102 +543,71 @@ class PayoutFailureIsRecordedTests(TestCase):
         self.assertEqual(TransactionAdmin(Txn, AdminSite()).failure_reason(Txn(meta={})), "—")
 
 
-class NoSourceAccountTests(TestCase):
-    """With no NUBAN of their own and no shared pool, there is no account to debit.
-    payout_send does refuse — but only after the debit, and with "Payouts are
-    temporarily unavailable, please try again shortly", which reads as a passing
-    outage and invites the one thing that cannot work: waiting."""
+class NoSourceAccountTests(BankIOCase):
+    """No customer-owned 9PSB account means no debit or shared-pool fallback."""
 
     def setUp(self):
+        super().setUp()
         self.client = Client()
-        self.user, self.token = make_user("08010000041", "nosrc@zitch.test", balance="50000")
+        self.user, self.token = make_unbanked_user("08010000041", "nosrc@zitch.test", balance="50000")
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#E32119")
         # Wallet exists (make_user credits it) but was never provisioned a NUBAN.
 
     def send(self):
         res = self.client.post("/api/transfers/send/", data=json.dumps({
             "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-            "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
             "idempotency_key": "no-source-send-1",
         }), content_type="application/json")
         return res, res.json()
 
-    @override_settings(WEMA={"SOURCE_ACCOUNT": "", "KEYS": {}, "CHANNEL_ID": ""})
-    @patch("utility.providers.payout_live", return_value=True)
-    def test_says_the_account_is_not_set_up_and_never_debits(self, _live):
+    def test_unprovisioned_user_is_refused_before_debit(self):
         before = get_or_create_wallet(self.user).balance
-        with patch("transfers.services.payout_send") as send:
-            _, body = self.send()
+        _, body = self.send()
         self.assertFalse(body.get("success"))
-        self.assertIn("isn't set up yet", body["message"])
-        send.assert_not_called()
+        self.bank_send.assert_not_called()
         self.assertEqual(get_or_create_wallet(self.user).balance, before)
-        self.assertEqual(
-            Transaction.objects.filter(user=self.user, direction=Transaction.OUT).count(), 0)
+        self.assertFalse(Transaction.objects.filter(user=self.user, direction=Transaction.OUT).exists())
 
-    @override_settings(WEMA={"SOURCE_ACCOUNT": "0100000001", "KEYS": {}, "CHANNEL_ID": ""})
-    @patch("utility.providers.payout_live", return_value=True)
-    def test_a_configured_pool_still_lets_the_transfer_through(self, _live):
-        # The pool is the documented fallback for a sender with no NUBAN yet.
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "success"}):
-            _, body = self.send()
-        self.assertTrue(body.get("success"))
+    @override_settings(WEMA={"SOURCE_ACCOUNT": "0100000001"})
+    def test_historical_shared_pool_cannot_substitute_for_an_owned_account(self):
+        _, body = self.send()
+        self.assertFalse(body.get("success"))
+        self.bank_send.assert_not_called()
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000"))
 
 
-class PayoutSourceActivationTests(TestCase):
+class PayoutSourceActivationTests(BankIOCase):
     def setUp(self):
+        super().setUp()
         self.user, _ = make_user("08010000042", "activate@zitch.test", balance="50000")
         self.bank = Bank.objects.create(code="gtb-activate", name="GTBank", bank_code="058")
-        wallet = get_or_create_wallet(self.user)
-        wallet.account_number = "0452491368"
-        wallet.bank_name = "Wema Bank"
-        wallet.pnd_lifted = False
-        wallet.save(update_fields=["account_number", "bank_name", "pnd_lifted"])
+        self.source = BankAccount.objects.get(wallet__user=self.user)
 
-    @patch("utility.providers.payout_live", return_value=True)
-    @patch("transfers.services.wema_provider.wema_live", return_value=True)
-    @patch("transfers.services.wema_provider.lift_debit_restriction",
-           return_value={"success": False, "message": "Resource not found"})
-    def test_restricted_source_never_debits_or_calls_transfer(
-            self, _lift, _wema_live, _payout_live):
+    def test_restricted_source_never_debits_or_calls_transfer(self):
         from .services import PayoutError, execute_payout
+        self.source.pnd = True
+        self.source.save(update_fields=["pnd"])
+        with self.assertRaises(PayoutError) as caught:
+            execute_payout(self.user, Decimal("1000"), "0123456789", self.bank,
+                "JOHN DOE", channel="app", expected_fee="0.00")
+        self.assertEqual(caught.exception.kind, "limit_exceeded")
+        self.assertIn("restricted", caught.exception.message)
+        self.bank_send.assert_not_called()
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000"))
+        self.assertFalse(Transaction.objects.filter(user=self.user, direction=Transaction.OUT).exists())
 
-        before = get_or_create_wallet(self.user).balance
-        with patch("transfers.services.payout_send") as send:
-            with self.assertRaises(PayoutError) as caught:
-                execute_payout(self.user, Decimal("1000"), "0123456789",
-                               self.bank, "JOHN DOE", channel="app")
-        self.assertEqual(caught.exception.kind, "source_restricted")
-        send.assert_not_called()
-        self.assertEqual(get_or_create_wallet(self.user).balance, before)
-        self.assertFalse(Transaction.objects.filter(
-            user=self.user, direction=Transaction.OUT).exists())
-
-    @patch("utility.providers.payout_live", return_value=True)
-    @patch("transfers.services.wema_provider.wema_live", return_value=True)
-    def test_send_uses_fresh_account_after_cached_wallet_was_replaced(
-            self, _wema_live, _payout_live):
+    def test_send_uses_owned_bank_binding_even_when_display_mirror_is_stale(self):
         from wallet.models import Wallet
         from .services import execute_payout
-
-        # make_user touched the reverse relation before the NUBAN was attached.
-        self.assertEqual(self.user.wallet.account_number, "")
-        Wallet.objects.filter(user=self.user).update(
-            account_number="0452491369", pnd_lifted=True)
-        from wallet.models import BankHistoryCheckpoint
-
-        BankHistoryCheckpoint.objects.create(
-            wallet=get_or_create_wallet(self.user), account_number="0452491369",
-            opening_review_required=False)
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "success"}) as send:
-            execute_payout(self.user, Decimal("1000"), "0123456789",
-                           self.bank, "JOHN DOE", channel="app")
-        self.assertEqual(send.call_args.kwargs["source_account"], "0452491369")
+        Wallet.objects.filter(user=self.user).update(account_number="0452491369", pnd_lifted=True)
+        execute_payout(self.user, Decimal("1000"), "0123456789", self.bank,
+            "JOHN DOE", channel="app", expected_fee="0.00")
+        self.assertEqual(self.bank_send.call_args.args[2], self.source.number)
+        self.assertNotEqual(self.bank_send.call_args.args[2], "0452491369")
 
 
-class SavedBeneficiaryTests(TestCase):
+class SavedBeneficiaryTests(BankIOCase):
     """Keeping a recipient, naming them, and removing them.
 
     The distinction under test throughout: every payout records a RECENT, and
@@ -653,6 +618,7 @@ class SavedBeneficiaryTests(TestCase):
     """
 
     def setUp(self):
+        super().setUp()
         self.client = Client()
         self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="50000")
         self.other, self.other_token = make_user("08010000002", "bola@zitch.test")
@@ -661,16 +627,19 @@ class SavedBeneficiaryTests(TestCase):
             bank_name="GTBank", bank_code="058")
 
     def post(self, path, payload):
+        payload = dict(payload)
+        if path == "/api/transfers/send/":
+            payload.setdefault("expected_fee", "0.00")
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
     def test_a_payout_records_a_recent_not_a_saved_beneficiary(self):
         bank = Bank.objects.create(code="gtb2", name="Zenith", bank_code="057")
         from .services import execute_payout
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "success"}):
+        with patch("banking.client.Client.transfer",
+                   return_value=Reply({"status": "SUCCESS", "responseCode": "00"}, 200)):
             execute_payout(self.user, Decimal("1000"), "0999999999", bank,
-                           "MUSA ADAMU", channel="app")
+                           "MUSA ADAMU", channel="app", expected_fee="0.00")
         row = Beneficiary.objects.get(user=self.user, account_number="0999999999")
         self.assertFalse(row.saved)
         self.assertEqual(row.nickname, "")
@@ -768,28 +737,28 @@ class SavedBeneficiaryTests(TestCase):
         self.row.save()
         bank = Bank.objects.create(code="gtb2", name="GTBank", bank_code="058")
         from .services import execute_payout
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "success"}):
+        with patch("banking.client.Client.transfer",
+                   return_value=Reply({"status": "SUCCESS", "responseCode": "00"}, 200)):
             execute_payout(self.user, Decimal("1000"), "0123456789", bank,
-                           "JOHN DOE", channel="app")
+                           "JOHN DOE", channel="app", expected_fee="0.00")
         self.row.refresh_from_db()
         self.assertTrue(self.row.saved)
         self.assertEqual(self.row.nickname, "Mum")
 
     def test_a_send_names_the_row_it_just_wrote(self):
         bank = Bank.objects.create(code="gtb3", name="Access", bank_code="044")
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "success"}):
+        with patch("banking.client.Client.transfer",
+                   return_value=Reply({"status": "SUCCESS", "responseCode": "00"}, 200)):
             _, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0777777777", "bank": "gtb3",
-                "name": "MUSA ADAMU", "amount": "1000", "transaction_pin": "1234",
+                "name": "MUSA ADAMU", "amount": "1000", "transaction_pin": "1234", "expected_fee": "0.00",
                 "idempotency_key": "saved-beneficiary-send-1"})
         self.assertTrue(body.get("success"), body)
         row = Beneficiary.objects.get(user=self.user, account_number="0777777777")
         self.assertEqual(body["beneficiary_id"], row.id)
 
 
-class PayoutFrequencyTests(TestCase):
+class PayoutFrequencyTests(BankIOCase):
     """A recipient earns their place in the address book.
 
     Every payout is remembered — that is what fills the send screen in from a
@@ -799,16 +768,17 @@ class PayoutFrequencyTests(TestCase):
     """
 
     def setUp(self):
+        super().setUp()
         self.client = Client()
         self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="500000")
         self.bank = Bank.objects.create(code="gtb", name="GTBank", bank_code="058")
 
     def pay(self):
         from .services import execute_payout
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "success"}):
+        with patch("banking.client.Client.transfer",
+                   return_value=Reply({"status": "SUCCESS", "responseCode": "00"}, 200)):
             return execute_payout(self.user, Decimal("1000"), "0123456789", self.bank,
-                                  "JOHN DOE", channel="app")
+                                  "JOHN DOE", channel="app", expected_fee="0.00")
 
     def row(self):
         return Beneficiary.objects.get(user=self.user, account_number="0123456789")
@@ -868,7 +838,7 @@ class BankShortFormTests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.user, self.token = make_user("08010000001", "ada@zitch.test")
+        self.user, self.token = make_unbanked_user("08010000001", "ada@zitch.test")
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058", active=True)
         Bank.objects.create(code="uba", name="UBA", bank_code="033", active=True)
         Bank.objects.create(code="scb", name="Standard Chartered", bank_code="068", active=True)

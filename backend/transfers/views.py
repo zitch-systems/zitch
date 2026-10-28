@@ -1,10 +1,7 @@
-"""Bank transfer (payout) endpoints + saved beneficiaries.
+"""Bank transfers and saved beneficiaries through the 9PSB integration.
 
-Payout to external banks runs on Wema/ALAT; until keys are set this runs in MOCK
-mode in dev/tests and resolves/settles automatically so the flow is testable (in
-production it fails closed). Money still moves correctly out of the wallet ledger.
-Wema exposes NO payout webhook — a PENDING transfer is settled/reversed by the
-reconcile_wema poller (utility/management/commands/reconcile_wema.py).
+Payment instructions reserve funds before dispatch and reconcile uncertain
+outcomes through the bank-specific outbox. No mock payment fallback is used.
 """
 import re
 
@@ -221,10 +218,8 @@ def resolve_account(request):
     """POST /api/transfers/resolve/ {access_token, account_number, bank?}
     -> {success, name, bank, bank_name, matches}
 
-    With ``bank`` (our slug) it resolves at that one bank. WITHOUT it, the bank is
-    auto-detected: a name-enquiry runs across the active banks and the match(es)
-    are returned, so the app fills the bank in automatically once a 10-digit
-    account number is typed (``matches`` lists every hit; usually exactly one).
+    The customer selects a bank before name enquiry. Account numbers are not
+    unique across banks, so the server never performs a paid directory sweep.
     """
     raw_account = request.data.get("account_number")
     acct = raw_account.strip() if isinstance(raw_account, str) else ""
@@ -258,9 +253,9 @@ def resolve_account(request):
 def transfer_charge(request):
     """POST /api/transfers/charge/ {access_token, amount} -> {fee}
 
-    The NIP fee the bank levies on an inter-bank transfer of ``amount`` (from Wema's
-    GetNIPCharges schedule). Informational — for display before the user confirms;
-    the send flow itself is unchanged. An unavailable quote is not a free transfer.
+    The confirmed total fee for an inter-bank transfer of ``amount``. The send
+    flow requires the customer to confirm this exact fee before reserving funds.
+    An unavailable quote is not a free transfer.
     """
     amount = parse_amount(request.data.get("amount"))
     if amount is None:

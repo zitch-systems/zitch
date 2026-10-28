@@ -1,6 +1,7 @@
 """Durable, single-submission payment orchestration and terminal settlement."""
 import hashlib
 import json
+import re
 import secrets
 from datetime import timedelta
 from decimal import Decimal
@@ -144,7 +145,11 @@ def dispatch(instruction):
         state = reply.payment_state(product=instruction.product)
         data = reply.data if isinstance(reply.data, dict) else {}
         token = str(data.get("token", "")) if instruction.operation == "bill" and state == "success" else ""
-        error = ""
+        # Retain a bounded machine code for operator diagnosis, never the raw
+        # response message (which can echo account or identity information).
+        response_code = str(reply.body.get("responseCode", ""))
+        error = (f"{instruction.product}_response_{response_code}"
+                 if state == "failed" and re.fullmatch(r"[0-9]{2,4}", response_code) else "")
     except ProviderError as exc:
         state = "pending" if exc.uncertain else "failed"
         token, error = "", exc.code
