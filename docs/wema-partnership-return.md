@@ -62,10 +62,10 @@ and its database protections remain intact.
 
 The rollout has two stages. Wallet migration 0030 requires zero retired accounts,
 receipts, migration approvals and linked bills, then removes the foreign key from
-Django's state. The migration-only compatibility app removes its runtime model
-state. Empty physical tables remain temporarily so old API and worker processes
-can finish while every Django service updates. Only after all services use that
-revision may wallet migration 0031 remove the three empty tables, their triggers,
+Django's state. Empty physical tables and their otherwise unused Django mappings
+remain temporarily so old API and worker processes can finish while every
+service updates. Only after all services use that revision may the compatibility
+app remove its model state and wallet migration 0031 remove the three empty tables, their triggers,
 the obsolete bill foreign key and the two retired PostgreSQL trigger functions.
 It retains the active bill reservation/refund checks and all ledger protections.
 A nonzero inventory aborts the migration; it never erases unreviewed records.
