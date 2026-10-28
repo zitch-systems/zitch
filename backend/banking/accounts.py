@@ -105,6 +105,7 @@ def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
         from .validation import base64_file
         image = base64_file(image, maximum_bytes=5*1024*1024, image_only=True)
     profile = wallet_profile(profile)
+    profile["email"] = user.email
     if phone(profile["phoneNo"]) != phone(user.phone):
         raise ValueError("Use your verified Zitch phone number")
     if kind == "nin" and not profile.get("ninUserId") and not account_for(user):

@@ -252,7 +252,7 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     if txn.transaction_status == Transaction.FAILED:
         raise PayoutError("provider", result.get("message", "Transfer could not be completed."))
     row, _ = Beneficiary.objects.get_or_create(user=user, account_number=account_number,
-        bank_name=bank.name, defaults={"name": name, "bank_code": bank.code,
+        bank_name=bank.name, defaults={"name": name[:80], "bank_code": bank.code,
                                      "color": bank.color or "#0FA295"})
     Beneficiary.objects.filter(pk=row.pk).update(transfer_count=F("transfer_count") + 1, bank_code=bank.code)
     row.refresh_from_db()

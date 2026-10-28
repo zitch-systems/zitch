@@ -102,20 +102,19 @@ const SendMoney = () => {
     setFee(null);
     if (!Number.isFinite(amount) || amount < MIN_TRANSFER) return;
     const timer = setTimeout(async () => {
-      const result = await transfersService.charge(amount);
-      if (!active || !isCurrentSession()) return;
-      const value = Number(result.fee);
-      if (result.success && result.fee != null && Number.isFinite(value) && value >= 0) {
-        setFee(String(result.fee)); setFeeFor(amount);
-      }
+      try {
+        const result = await transfersService.charge(amount);
+        if (!active || !isCurrentSession()) return;
+        const value = Number(result.fee);
+        if (result.success && result.fee != null && typeof result.fee !== 'boolean' && Number.isFinite(value) && value >= 0) {
+          setFee(String(result.fee)); setFeeFor(amount);
+        }
+      } catch { if (active && isCurrentSession()) setFee(null); }
     }, 400);
     return () => { active = false; clearTimeout(timer); };
   }, [amount]);
   const currentFee = feeFor === amount ? fee : null;
-  // Bank mode: type a 10-digit account and we AUTO-DETECT the bank — the server
-  // name-enquires across banks and returns the match, so the bank + holder name
-  // fill in by themselves. The user can still tap the bank field to override
-  // (which resolves at just that one bank).
+  // The customer selects a bank before its account holder is confirmed.
   const [bankName, setBankName] = useState('');   // resolved account holder name
   const [bankNameFor, setBankNameFor] = useState('');
   const [resolvingBank, setResolvingBank] = useState(false);

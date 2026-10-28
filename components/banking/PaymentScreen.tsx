@@ -44,6 +44,11 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
   const reviewed = useRef('');
   const current = () => generation.current === getSessionGeneration();
   const fingerprint = JSON.stringify([kind, phone, amount, biller, item, customer, product, validation]);
+  // Validation tokens expire. A retry for the same payment must keep its key
+  // even after customer validation is renewed.
+  const paymentIntent = JSON.stringify([kind, phone, Number(amount).toFixed(2), biller, item, customer.trim(), product]);
+  const liveFingerprint = useRef(fingerprint);
+  liveFingerprint.current = fingerprint;
   const text = { color: c.ink1, fontFamily: font.regular, lineHeight: 22 };
   const invalidate = () => { setValidation(''); setCustomerName(''); };
   const fetchCatalog = async (type: string, params: Record<string, string>, consume: (items: CatalogItem[]) => void) => {
@@ -65,10 +70,11 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
   useEffect(() => { if (!phone && phoneNumber) setPhone(localPhone(phoneNumber)); }, [phoneNumber]);
   const validate = async () => {
     if (busy) return;
+    const captured = fingerprint;
     setBusy(true);
     try {
       const result = await banking.validate({ biller_id: biller, item_id: item, customer, amount });
-      if (!current()) return;
+      if (!current() || liveFingerprint.current !== captured) return;
       if (result.success && result.validation_reference) { setValidation(result.validation_reference); setCustomerName(result.customer_name || ''); }
       else setMessage(result.message || 'Customer could not be verified.');
     } catch { if (current()) setMessage('Could not verify this customer. Please try again.'); }
@@ -77,10 +83,12 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
   const pay = async (pin: string) => {
     if (!current() || active.current || !valid || reviewed.current !== fingerprint) return;
     active.current = true; setBusy(true); setPinError('');
-    const captured = fingerprint;
+    const captured = paymentIntent;
+    let requested = false;
     try {
       const key = await acquireSpendAttempt('9psb-' + kind, captured);
       if (!current()) return;
+      requested = true;
       const response = await apiPost('/api/banking/purchase/', { kind, phone, amount, product_id: product,
         validation_reference: validation, transaction_pin: pin, idempotency_key: key });
       const result = await response.json();
@@ -90,12 +98,15 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
         await clearSpendAttempt('9psb-' + kind, captured, key);
         if (!current()) return;
       }
-      if (outcome === 'success' || outcome === 'pending') {
+      if (outcome === 'success' || outcome === 'pending' || outcome === 'unknown') {
         setFinished(true); setStep(null); setReference(String(result.reference || ''));
         setMessage(outcome === 'success' ? 'Payment completed.' + (result.token ? ` Your token: ${result.token}` : '') : 'Payment is processing. Check transaction history before trying again.');
         await reload();
       } else { setPinError(result.message || 'Payment could not be completed.'); }
-    } catch { if (current()) { setStep(null); setFinished(true); setMessage('The response was interrupted. Check transaction history; your payment reference is retained for a safe retry.'); } }
+    } catch { if (current()) {
+      if (requested) { setStep(null); setFinished(true); setMessage('The response was interrupted. Check transaction history; your payment reference is retained for a safe retry.'); }
+      else setPinError('Could not safely save this payment request. Please try again.');
+    } }
     finally { active.current = false; if (current()) setBusy(false); }
   };
   const numeric = Number(amount);
@@ -107,7 +118,10 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
     {billPaymentsAvailable !== true && <Text style={text}>Bill payments are temporarily unavailable.</Text>}
     {!!message && <Text accessibilityLiveRegion="polite" style={text}>{message}</Text>}
     {!finished && <>
-      <Field label="Phone number" value={phone} keyboardType="phone-pad" editable={!busy && !step} onChangeText={(v) => { setPhone(localPhone(v)); setProduct(''); setPlans([]); invalidate(); }} />
+      <Field label="Phone number" value={phone} keyboardType="phone-pad" editable={!active.current && !step} onChangeText={(v) => {
+        if (active.current) return;
+        catalogSerial.current += 1; setBusy(false); setPhone(localPhone(v)); setProduct(''); setPlans([]); invalidate();
+      }} />
       {kind === 'data' && <><Btn label="Load data plans for this phone" disabled={busy || phone.length !== 11} onPress={() => void fetchCatalog('data', { phone }, setPlans)} />
         {plans.map((p) => <Btn key={String(p.productId)} variant={product === String(p.productId) ? 'primary' : 'outline'} label={`${p.dataBundle || 'Data plan'} · ${p.validity || ''} · ${money(Number(p.amount))}`} disabled={busy} onPress={() => { setProduct(String(p.productId)); setAmount(String(p.amount)); }} />)}</>}
       {kind === 'bill' && <>
@@ -123,7 +137,7 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
         {items.map((entry) => <Btn key={String(entry.itemId)} label={`${entry.itemName}${Number(entry.amount) > 0 ? ' · ' + money(Number(entry.amount)) : ''}`} variant={item === String(entry.itemId) ? 'primary' : 'outline'} disabled={busy} onPress={() => { setItem(String(entry.itemId)); setAmount(Number(entry.amount) > 0 ? String(entry.amount) : ''); invalidate(); }} />)}
         <Field label="Customer, meter or subscription number" value={customer} editable={!busy} onChangeText={(v) => { setCustomer(v); invalidate(); }} />
       </>}
-      <Field label="Amount (NGN)" value={amount} keyboardType="decimal-pad" editable={!busy && kind !== 'data'} onChangeText={(v) => { const next = normalizeAmountInput(v); if (next !== null) { setAmount(next); invalidate(); } }} />
+      <Field label="Amount (NGN)" value={amount} keyboardType="decimal-pad" editable={!busy && kind !== 'data' && !(kind === 'bill' && Number(items.find((entry) => String(entry.itemId) === item)?.amount) > 0)} onChangeText={(v) => { const next = normalizeAmountInput(v); if (next !== null) { setAmount(next); invalidate(); } }} />
       {kind === 'bill' && <><Btn label="Verify customer" disabled={busy || !biller || !item || !customer || numeric <= 0} onPress={() => void validate()} />{!!customerName && <Text style={text}>Customer: {customerName}</Text>}</>}
       <Btn label="Review payment" disabled={!valid} onPress={() => { reviewed.current = fingerprint; setStep('review'); }} />
     </>}

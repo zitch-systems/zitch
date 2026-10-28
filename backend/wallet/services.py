@@ -2892,12 +2892,14 @@ def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "
     from banking.accounts import account_for, same_name
     from banking.adapter import resolve_account
     from transfers.models import Bank
-    from transfers.services import PayoutError, execute_payout
+    from transfers.services import PayoutError, execute_payout, bank_name_keys
     destination = account_for(recipient)
     if (not destination or destination.status != "active" or not recipient.is_active
             or not recipient.email_verified or not recipient.phone_verified):
         raise PayoutError("recipient_unavailable", "This recipient has not completed bank account setup.")
-    bank = Bank.objects.filter(code="9psb", active=True).exclude(bank_code="").first()
+    candidates = [row for row in Bank.objects.filter(active=True).exclude(bank_code="")
+        if "alias:9psb" in bank_name_keys(row.name)]
+    bank = candidates[0] if len(candidates) == 1 else None
     if not bank:
         raise PayoutError("rail_unavailable", "The bank directory needs to be refreshed.")
     resolved = resolve_account(destination.number, bank.bank_code)

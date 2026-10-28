@@ -23,9 +23,9 @@ describe('wallet context purchase balance', () => {
   beforeEach(() => { jest.useFakeTimers(); mockApiPost.mockReset(); mockGeneration = 1; jest.clearAllMocks(); });
   afterEach(() => { act(() => { tree?.unmount(); }); jest.useRealTimers(); });
 
-  it.each([true, false])('publishes canonical Partnership funds to existing bill consumers, bill gate: %s', async (enabled) => {
+  it.each([true, false])('publishes canonical 9PSB funds to existing bill consumers, bill gate: %s', async (enabled) => {
     mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
-      ? { success: true, provider: 'partnership', wallet: '6000.00', available_balance: enabled ? '1000.00' : '0.00',
+      ? { success: true, provider: '9psb', wallet: '6000.00', available_balance: enabled ? '1000.00' : '0.00',
           historical_balance: '5000.00', bill_payments_available: enabled, transfers_available: false }
       : { status: true, all_site_transactions: [] } }));
     act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
@@ -52,7 +52,7 @@ describe('wallet context purchase balance', () => {
     expect(current.transfersAvailable).toBe(false);
   });
 
-  it('never publishes a reserved validation-prefix account as a live funding number', async () => {
+  it('never publishes a funding number from a retired provider', async () => {
     mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
       ? { success: true, provider: 'partnership', can_fund: true, account_number: '7111234567',
           available: true, has_account: true, account_setup_state: 'ready' }
@@ -62,11 +62,11 @@ describe('wallet context purchase balance', () => {
     expect(current.accountNumber).toBe('');
   });
 
-  it.each(['ready', 'bank_history_review'])('publishes a confirmed Partnership destination in state %s', async (state) => {
+  it.each(['ready', 'bank_history_review'])('publishes a confirmed 9PSB destination in state %s', async (state) => {
     mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
-      ? { success: true, provider: 'partnership', can_fund: true, available: true, has_account: true,
-          account_setup_state: state, account_number: '0454243073', account_name: 'Current Customer', bank_name: 'Wema Bank',
-          wallet: '1000', available_balance: state === 'ready' ? '1000' : '0', spending_available: state === 'ready' }
+      ? { success: true, provider: '9psb', can_fund: true, available: true, has_account: true,
+          account_setup_state: state, account_number: '0454243073', account_name: 'Current Customer', bank_name: '9PSB',
+          wallet: '1000', available_balance: state === 'ready' ? '1000' : '0', spending_available: state === 'ready', bill_payments_available: state === 'ready' }
       : { status: true, all_site_transactions: [] } }));
     act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
     await act(async () => { await current.reload(); });
@@ -78,9 +78,9 @@ describe('wallet context purchase balance', () => {
 
   it('keeps preserved money visible while suppressing every funding detail during historical review', async () => {
     mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
-      ? { success: true, provider: 'partnership', can_fund: true, available: true, has_account: true,
+      ? { success: true, provider: '9psb', can_fund: true, available: true, has_account: true,
           legacy_funding_review: true, account_setup_state: 'legacy_funding_review',
-          account_number: '7121234567', account_name: 'Retired Account', bank_name: 'Wema Bank',
+          account_number: '7121234567', account_name: 'Retired Account', bank_name: '9PSB',
           wallet: '1000', available_balance: '1000', spending_available: true }
       : { status: true, all_site_transactions: [] } }));
     act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
@@ -106,7 +106,7 @@ describe('wallet context purchase balance', () => {
 
   it('keeps the last known balance with an explicit stale-data error after refresh fails', async () => {
     mockApiPost.mockImplementation(async (path: string) => ({ json: async () => path === '/api/wallet_balance/'
-      ? { success: true, provider: 'partnership', wallet: '2500' }
+      ? { success: true, provider: '9psb', wallet: '2500', available_balance: '2500', bill_payments_available: true }
       : { status: true, all_site_transactions: [] } }));
     act(() => { tree = renderer.create(<WalletProvider><Capture /></WalletProvider>); });
     await act(async () => { await current.reload(); });
@@ -126,7 +126,7 @@ describe('wallet context purchase balance', () => {
     let load!: Promise<void>;
     await act(async () => { load = current.reload(); await Promise.resolve(); });
     mockGeneration += 1;
-    await act(async () => { finish({ success: true, provider: 'partnership', account_namespace: 'old-user', wallet: '9999', user_first_name: 'Old User' }); await load; });
+    await act(async () => { finish({ success: true, provider: '9psb', account_namespace: 'old-user', wallet: '9999', user_first_name: 'Old User' }); await load; });
     expect(current.balanceLoaded).toBe(false);
     expect(current.firstName).toBe('');
     expect(require('@/lib/secureStore').saveSpendAccountNamespace).not.toHaveBeenCalled();

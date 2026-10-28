@@ -139,3 +139,15 @@ class IdentityTests(TestCase):
         for path in ("/api/wallet/wema/create/", "/webhooks/wema/transaction/anything", "/api/kyc/face/start/"):
             with self.subTest(path=path), self.assertRaises(Resolver404):
                 resolve(path)
+
+    def test_status_recovers_only_the_current_customers_challenge(self):
+        from accounts.models import AccessToken
+        row = self.pending()
+        token = AccessToken.issue(self.user).key
+        result = self.client.post("/api/banking/status/", {}, content_type="application/json", HTTP_AUTHORIZATION="Bearer " + token).json()
+        self.assertEqual(result["identity_challenge"]["tracking_id"], row.reference)
+        self.assertEqual(result["identity_challenge"]["kind"], "bvn")
+        self.assertNotIn("12345678901", str(result))
+        other = User.objects.create_user(username="other-status")
+        result = self.client.post("/api/banking/status/", {}, content_type="application/json", HTTP_AUTHORIZATION="Bearer " + AccessToken.issue(other).key).json()
+        self.assertIsNone(result["identity_challenge"])

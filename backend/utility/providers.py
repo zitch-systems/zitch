@@ -1253,12 +1253,9 @@ def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
 # (see issue_card / card_secure_details).
 def card_issue(holder: str, customer_ref: str, email: str = "", *, account_number: str = "",
                phone: str = "") -> dict:
-    if card_provider() == "wema":
-        from . import wema
-        # partner bank keys the virtual card by the user's NUBAN — thread it through.
-        return wema.card_issue(holder, customer_ref, account_number=account_number,
-                               email=email, phone=phone)
-    return issue_card(holder, customer_ref)
+    # The new partnership's card-acquiring contract has not been supplied.
+    # Do not fall through to a different issuer after the provider switch.
+    return {"success": False, "pending": False, "message": "Card services are temporarily unavailable."}
 
 
 def card_set_status(card_token: str, active: bool, *, provider: str = "",

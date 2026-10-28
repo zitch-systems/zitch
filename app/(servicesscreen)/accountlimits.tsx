@@ -235,7 +235,7 @@ const AccountLimits = () => {
       </Card>
       <Card style={{ marginBottom: 24 }}>
         <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1, marginBottom: 14 }}>Verification steps</Text>
-        {['Tier 1 · BVN or NIN, verified by SMS code or face', 'Tier 2 · Prembly face verification and bank upgrade', 'Tier 3 · Address verification'].map((label) => <Text key={label} style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 22, marginBottom: 8 }}>{label}</Text>)}
+        {['Tier 1 · BVN or NIN, verified by SMS code or face', 'Tier 2 · BVN, NIN, utility bill and bank approval', 'Tier 3 · Prembly address verification and bank approval'].map((label) => <Text key={label} style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 22, marginBottom: 8 }}>{label}</Text>)}
         <Btn label="View verification" variant="ghost" onPress={() => router.push('/kyc')} />
       </Card>
       </>}

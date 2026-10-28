@@ -10,6 +10,9 @@ export type BankStatus = ApiResult<{
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean; address_verified: boolean;
   profile: BankProfile; account_number?: string; account_name?: string;
   identity_available?: boolean; address_verification_available?: boolean;
+  can_fund?: boolean; available?: boolean; has_account?: boolean;
+  legacy_funding_review?: boolean; migration_message?: string;
+  identity_challenge?: BankProgress & { kind: 'bvn' | 'nin' };
   account_setup_state?: string; maximum_single_deposit?: string | null; maximum_balance?: string | null;
 }>;
 export type BankProgress = ApiResult<{

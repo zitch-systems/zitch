@@ -79,17 +79,30 @@ have yet been realized.
 | Inflows | Authenticated durable inbox, bank requery before credit, duplicate protection | Owned test wallet; statement/history schema, outage backfill and reversal correlation |
 | VAS | Dynamic catalog, validation, purchase and status code implemented | Supplied VAS credentials return HTTP 400 / bad credentials; replacement required |
 | Prembly Tier 3 | Correlated request/status adapter prepared; new paid requests disabled | Terminal approval enum and retrievable report contract, then tests and activation |
-| App and WhatsApp | New app screens and secure WhatsApp identity forms drafted | Shared payment screen, WhatsApp VAS/transfer flow and full regression migration still required |
+| App and WhatsApp | Shared app checkout, dynamic WhatsApp VAS flow, transfer fee review and secure identity forms implemented | Live channel UAT and broader backend regression migration |
 | QR and corporate WaaS | Documented by bank | Product implementation and acceptance tests remain |
 | Virtual accounts and card acquiring | Commercial scope only | Technical API/callback/reconciliation contracts are missing |
 | Render | Blueprint validated; bounded durable scheduler and idle polling implemented | Authenticated resource cutover and full daily-cycle evidence |
 
-The first 47 targeted banking tests pass locally on SQLite; TypeScript checking
-passes. The broader app run exposed 12 failing suites that still use retired
-provider/screen contracts (60 passed). The broader backend run also exposed
-legacy-contract failures and did not complete locally. These are unresolved
-release gates, not evidence of a fully passing application. PostgreSQL validation
-is run separately before the unchanged full regression suite in CI.
+Local validation at this checkpoint: 78 banking tests (76 passed; two PostgreSQL
+trigger checks skipped on SQLite), all 68 app suites / 706 tests and one snapshot
+passed, and TypeScript checking passed. Banking tests cover archive immutability,
+fees, server-owned bill prices, renewed-validation replay, identity ownership,
+web PIN/CSRF binding, WhatsApp authorization replay and ambiguous bank routing.
+
+The obsolete per-screen bill and old-provider identity tests were replaced with
+shared checkout, bank identity and route-binding coverage. Their original
+implementation and tests remain in the archive branch. The active mobile source
+contains no retired-provider API wrappers or hosted face screens. Prembly is no
+longer advertised for Tier 2.
+
+The first draft CI run at `bfd2160` passed migration consistency and all 47 then
+present banking tests on PostgreSQL. Its complete PostgreSQL regression run
+executed 3,508 tests with **667 failures and 1,045 errors**. Many use retired
+provider contracts; this does not establish that every failure is obsolete.
+The full backend regression suite remains an unresolved release blocker and has
+not been disabled or removed. New PostgreSQL checks run separately before that
+suite in CI. Focused green tests are not evidence of production readiness.
 
 Keep all provider agreements, credentials and identity attachments out of this
 public Git repository. Sandbox keys were installed only in server environment

@@ -6,6 +6,7 @@ import SendMoney from '@/app/(servicesscreen)/sendmoney';
 let mockGeneration = 0;
 const mockResolveLegacy = jest.fn();
 const mockResolveBank = jest.fn();
+const mockCharge = jest.fn();
 const mockNotify = jest.fn();
 const mockAcquireSpendAttempt = jest.fn();
 const mockClearSpendAttempt = jest.fn();
@@ -49,6 +50,7 @@ jest.mock('@/lib/spendOutcome', () => ({
 }));
 jest.mock('@/lib/services/transfers', () => ({
   transfersService: {
+    charge: (...args: unknown[]) => mockCharge(...args),
     resolve: (...args: unknown[]) => mockResolveBank(...args),
     resolveLegacy: (...args: unknown[]) => mockResolveLegacy(...args),
     send: jest.fn(),
@@ -179,6 +181,8 @@ const loadBankCatalogue = () => {
 
 describe('SendMoney recipient response binding', () => {
   beforeEach(() => {
+    jest.useFakeTimers();
+    mockCharge.mockReset().mockResolvedValue({ success: true, fee: "0.00" });
     mockGeneration = 0;
     mockSearchParams = {};
     mockResolveLegacy.mockReset();
@@ -219,8 +223,10 @@ describe('SendMoney recipient response binding', () => {
     await act(async () => { tree = renderer.create(<SendMoney />); });
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
     await act(async () => { control(tree, 'Enter amount').props.onChangeText('49'); });
+    await act(async () => { jest.advanceTimersByTime(450); });
     expect(control(tree, 'Continue').props.disabled).toBe(true);
     await act(async () => { control(tree, 'Enter amount').props.onChangeText('50'); });
+    await act(async () => { jest.advanceTimersByTime(450); });
     expect(control(tree, 'Continue').props.disabled).toBe(false);
     act(() => tree.unmount());
   });
@@ -232,6 +238,7 @@ describe('SendMoney recipient response binding', () => {
     await act(async () => { tree = renderer.create(<SendMoney />); });
     await act(async () => { pressText(tree, 'Saved'); });
     await act(async () => { control(tree, 'Enter amount').props.onChangeText('1000'); });
+    await act(async () => { jest.advanceTimersByTime(450); });
     expect(control(tree, 'Zitch tag or phone').props.value).toBe('08012345678');
     expect(control(tree, 'Continue').props.disabled).toBe(true);
     expect(control(tree, 'Confirm recipient')).toBeTruthy();
@@ -282,6 +289,7 @@ describe('SendMoney recipient response binding', () => {
 
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
     await act(async () => { control(tree, 'Enter amount').props.onChangeText('1000'); });
+    await act(async () => { jest.advanceTimersByTime(450); });
 
     expect(control(tree, 'Continue').props.disabled).toBe(false);
     expect(tree.root.findAllByType(Text).some((node) =>
@@ -306,6 +314,7 @@ describe('SendMoney recipient response binding', () => {
       control(tree, 'Zitch tag or phone').props.onChangeText('08020000002');
       control(tree, 'Enter amount').props.onChangeText('1000');
     });
+    await act(async () => { jest.advanceTimersByTime(450); });
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
 
     expect(control(tree, 'Continue').props.disabled).toBe(true);
@@ -334,6 +343,7 @@ describe('SendMoney recipient response binding', () => {
       control(tree, 'Account number').props.onChangeText('0123456789');
       control(tree, 'Enter amount').props.onChangeText('1000');
     });
+    await act(async () => { jest.advanceTimersByTime(450); });
 
     let firstRequest!: Promise<void>;
     await act(async () => { pressAncestor(control(tree, 'Bank')); });
@@ -378,6 +388,7 @@ describe('SendMoney recipient response binding', () => {
       control(tree, 'Account number').props.onChangeText('0123456789');
       control(tree, 'Enter amount').props.onChangeText('1000');
     });
+    await act(async () => { jest.advanceTimersByTime(450); });
     await act(async () => { pressAncestor(control(tree, 'Bank')); });
     await act(async () => { await pressText(tree, 'Bank A'); });
 
@@ -404,6 +415,7 @@ describe('SendMoney recipient response binding', () => {
       control(tree, 'Zitch tag or phone').props.onChangeText('08020000002');
       control(tree, 'Enter amount').props.onChangeText('100000');
     });
+    await act(async () => { jest.advanceTimersByTime(450); });
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
     await act(async () => { control(tree, 'Continue').props.onPress(); });
     await act(async () => {
@@ -447,6 +459,7 @@ describe('SendMoney recipient response binding', () => {
       control(tree, 'Zitch tag or phone').props.onChangeText('08020000002');
       control(tree, 'Enter amount').props.onChangeText('1000');
     });
+    await act(async () => { jest.advanceTimersByTime(450); });
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
     await act(async () => { control(tree, 'Continue').props.onPress(); });
     await act(async () => {
@@ -502,6 +515,7 @@ describe('SendMoney recipient response binding', () => {
       control(tree, 'Zitch tag or phone').props.onChangeText('08020000002');
       control(tree, 'Enter amount').props.onChangeText('1000');
     });
+    await act(async () => { jest.advanceTimersByTime(450); });
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
     await act(async () => { control(tree, 'Continue').props.onPress(); });
     await act(async () => {
@@ -540,6 +554,7 @@ describe('SendMoney recipient response binding', () => {
     await act(async () => { tree = renderer.create(<SendMoney />); });
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
     await act(async () => { control(tree, 'Enter amount').props.onChangeText('1,000.50'); });
+    await act(async () => { jest.advanceTimersByTime(450); });
     expect(control(tree, 'Enter amount').props.value).toBe('1000.50');
     await act(async () => { control(tree, 'Continue').props.onPress(); });
     await act(async () => { control(tree, 'Confirm transfer').props.onPress(); jest.advanceTimersByTime(320); });

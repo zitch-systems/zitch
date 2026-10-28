@@ -164,7 +164,7 @@ def _resolve_and_confirm(pa: PendingAction, user, msisdn: str, bank) -> None:
     _send_confirm(pa, msisdn,
                   "Confirm transfer\n"
                   f"{_money(amount)} -> {name.upper()}\n"
-                  f"{bank.name} • {acct}")
+                  f"{bank.name} • {acct}\nFee: {_money(Decimal(pa.payload['expected_fee']))}\nTotal: {_money(amount + Decimal(pa.payload['expected_fee']))}")
 
 
 def _flow_pin_ok(pa: PendingAction, user, msisdn: str, text: str) -> bool:
@@ -345,6 +345,8 @@ def _transfer_outcome(pa: PendingAction, user, msisdn: str, txn, *, replay: bool
         ("Bank", pa.payload["bank_name"]),
         ("Account", pa.payload["account"]),
         ("Amount", _money(amount)),
+        ("Fee", _money(Decimal(txn.meta.get("fee", "0")))),
+        ("Total", _money(txn.amount)),
         ("Reference", txn.reference),
         ("Date", txn.created.strftime("%d %b %Y, %H:%M")),
     ]), ref=txn.reference, user=user, balance_after=wallet.balance)
@@ -414,7 +416,7 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
             # inside execute_payout to "Transfer to <name>" when it is blank,
             # which is what every transfer sent before narration existed.
             note=_narration(pa),
-            idempotency_key=f"wa-{pa.id}", channel="whatsapp",
+            idempotency_key=f"wa-{pa.id}", channel="whatsapp", expected_fee=pa.payload.get("expected_fee"),
         )
     except PayoutError as exc:
         who = pa.payload["name"].upper()
@@ -1020,39 +1022,7 @@ SERVICE_MENUS = {
 }
 
 
-def _start_vtu(user, msisdn: str) -> None:
-    """Menu 3 - airtime and data as ONE Flow instead of four chat round-trips.
-
-    The chat ladder asked what to buy, then the network, then the number, then
-    the amount, each its own message and each a place to get stuck; the customer
-    in the screenshot was four taps in and still had two to go. The Flow asks the
-    same four things as four pages of one session and chains into the PIN, so the
-    whole purchase is one interaction.
-
-    Same fallback as the transfer form: if the Flow cannot be sent, the guided
-    chat sub-menu still works. Failing closed would take airtime away from every
-    deploy without Flows configured, and nothing here is secret - the PIN is
-    still collected on its own encrypted page either way.
-    """
-    if _blocked_from_spending(user, msisdn, biller=True):
-        return None
-    _clear_actions(msisdn)
-    if flows_live():
-        # action_type is provisional: the FIRST page decides airtime vs data and
-        # rewrites it, because the executor is chosen by action_type later.
-        pa = _new_flow(user, msisdn, "airtime", FLOW_VTU_STATE,
-                       {"vtu_step": "kind", "pin_attempts": 0})
-        res = send_flow(
-            msisdn, sign_flow_token(pa),
-            header="Airtime & data",
-            body="Pick what you need and we'll take it from there - your PIN stays private.",
-            screen=VTU_SCREEN, screen_data={"error": ""},
-            cta="Buy",
-        )
-        if res.get("success"):
-            return reply(msisdn, "📱 Tap *Buy* on the secure form above.")
-        log.warning("wa_vtu_flow_send_failed pa=%s detail=%r", pa.id, res.get("error_detail", ""))
-        _clear_actions(msisdn)
+def _start_vtu(user, msisdn: str):
     return _start_service_menu(user, msisdn, "airtime_data")
 
 
@@ -1060,6 +1030,9 @@ def _start_service_menu(user, msisdn: str, kind: str) -> None:
     """Open a category sub-menu so the user picks 1 or 2 (or taps the row) instead
     of having to type the word. Stored as a `pick_service` flow so a bare "1"/"2"
     is read as the sub-menu choice, not the main-menu balance/transfer number."""
+    if kind == "bill":
+        from banking.chat import start
+        return start(user, msisdn, "bill")
     body, rows = SERVICE_MENUS[kind]
     _new_flow(user, msisdn, "pick_service", kind)
     reply_list(msisdn, body, rows, button_label="Choose")
@@ -1101,13 +1074,9 @@ def _choice_id(text: str, names: dict) -> str | None:
 
 
 # ---- airtime ----
-def _start_airtime(user, msisdn: str) -> None:
-    if _blocked_from_spending(user, msisdn, biller=True):
-        return None
-    phone = _own_phone(user)
-    payload = {"pin_attempts": 0, **({"phone": phone} if phone else {})}
-    _new_flow(user, msisdn, "airtime", "network", payload)
-    _ask_network(msisdn)
+def _start_airtime(user, msisdn: str):
+    from banking.chat import start
+    return start(user, msisdn, "airtime")
 
 
 def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
@@ -1196,26 +1165,9 @@ def _exec_airtime(pa: PendingAction, user, msisdn: str) -> str:
 
 
 # ---- data ----
-def _start_data(user, msisdn: str, phone=None, network=None) -> None:
-    """Start data purchase with every safe detail already available.
-
-    "Data for me" means the linked Zitch line, so asking for that number again is
-    redundant. The number's Nigerian prefix can also preselect a network; number
-    portability makes that a hint, not an authority, so an explicitly stated
-    network always wins and the final confirmation still shows both values.
-    Unknown prefixes continue to the network picker.
-    """
-    if _blocked_from_spending(user, msisdn, biller=True):
-        return None
-    own_or_given = _phone_from(str(phone), user) if phone else _own_phone(user)
-    payload = {"pin_attempts": 0, **({"phone": own_or_given} if own_or_given else {})}
-    pa = _new_flow(user, msisdn, "data", "network", payload)
-    net = _network_id(network) or _network_from_prefix(own_or_given)
-    if net:
-        # Reuse the normal network step so catalogue lookup, plan choices and all
-        # later balance/limit/PIN checks stay on the exact same path.
-        return _advance_data(pa, user, msisdn, net)
-    return _ask_network(msisdn)
+def _start_data(user, msisdn: str, phone=None, network=None):
+    from banking.chat import start
+    return start(user, msisdn, "data", mobile=phone or "me")
 
 
 def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
@@ -1295,44 +1247,14 @@ def _exec_data(pa: PendingAction, user, msisdn: str) -> str:
 
 
 # ---- electricity ----
-def _start_electricity(user, msisdn: str) -> None:
-    if _blocked_from_spending(user, msisdn, biller=True):
-        return None
-    pa = _new_flow(user, msisdn, "electricity", "disco")
-    _electricity_next(pa, user, msisdn)
+def _start_electricity(user, msisdn: str):
+    from banking.chat import start
+    return start(user, msisdn, "bill")
 
 
-def _begin_electricity(user, msisdn: str, biller, customer_id, variation, amount) -> None:
-    """Start an electricity payment from details the customer already gave.
-
-    "Load my nepa bill. 2000010657 5,000 to IKEDC" names the disco, the meter and
-    the amount in one line. Discarding all three and opening with "Which disco?"
-    is the channel telling someone it did not read their message - so whatever
-    arrives is put in the flow's payload up front and the flow asks only for what
-    is genuinely still missing.
-
-    Nothing is trusted for being pre-filled: the meter is verified with the
-    provider exactly as a typed one is, the amount goes through the same minimum,
-    balance and limit checks, and the payment still ends at the same confirm +
-    PIN. Pre-filling changes which QUESTIONS get asked, never which CHECKS run.
-    """
-    if _blocked_from_spending(user, msisdn, biller=True):
-        return None
-    payload = {"pin_attempts": 0}
-    disco = _disco_id(biller)
-    if disco:
-        payload["disco"] = disco
-    mt = _meter_type(variation)
-    if mt:
-        payload["meter_type"] = mt
-    meter = re.sub(r"\D", "", str(customer_id or ""))
-    if len(meter) >= 6:
-        payload["meter"] = meter
-    amt = parse_amount(str(amount)) if amount is not None else None
-    if amt is not None and amt >= MIN_ELECTRICITY:
-        payload["amount"] = str(amt)
-    pa = _new_flow(user, msisdn, "electricity", "disco", payload)
-    _electricity_next(pa, user, msisdn)
+def _begin_electricity(user, msisdn: str, biller, customer_id, variation, amount):
+    from banking.chat import start
+    return start(user, msisdn, "bill")
 
 
 def _electricity_next(pa: PendingAction, user, msisdn: str) -> None:
@@ -1477,29 +1399,14 @@ def _exec_electricity(pa: PendingAction, user, msisdn: str) -> str:
 
 
 # ---- cable ----
-def _start_cable(user, msisdn: str) -> None:
-    if _blocked_from_spending(user, msisdn, biller=True):
-        return None
-    _new_flow(user, msisdn, "cable", "provider")
-    reply(msisdn, CABLE_PROMPT)
+def _start_cable(user, msisdn: str):
+    from banking.chat import start
+    return start(user, msisdn, "bill")
 
 
-def _begin_cable(user, msisdn: str, biller, customer_id) -> None:
-    """Cable's half of the same courtesy: a named provider skips the provider
-    list, and a smartcard number given up front is not asked for again. The
-    package still has to be chosen - it carries the price - and the card is still
-    verified with the provider before anything is confirmed."""
-    if _blocked_from_spending(user, msisdn, biller=True):
-        return None
-    payload = {"pin_attempts": 0}
-    card = re.sub(r"\D", "", str(customer_id or ""))
-    if len(card) >= 6:
-        payload["iuc_given"] = card
-    prov = _cable_id(biller)
-    pa = _new_flow(user, msisdn, "cable", "provider", payload)
-    if not prov:
-        return reply(msisdn, CABLE_PROMPT)
-    return _cable_packages(pa, user, msisdn, prov)
+def _begin_cable(user, msisdn: str, biller, customer_id):
+    from banking.chat import start
+    return start(user, msisdn, "bill")
 
 
 def _cable_packages(pa: PendingAction, user, msisdn: str, prov: str) -> None:
@@ -1591,22 +1498,9 @@ def _exec_cable(pa: PendingAction, user, msisdn: str) -> str:
 
 
 # ---- exam PINs ----
-def _start_exam(user, msisdn: str) -> None:
-    if _blocked_from_spending(user, msisdn, biller=True):
-        return None
-    products = list(ExamProduct.objects.filter(active=True).order_by("name")[:8])
-    if not products:
-        return reply(msisdn, "Exam PINs are unavailable right now. Please try again later.")
-    pa = _new_flow(user, msisdn, "exam", "product", {
-        "pin_attempts": 0,
-        "product_choices": [product.code for product in products],
-    })
-    lines = "\n".join(
-        f"{index + 1}  {product.name} · {product.description} · {_money(product.price)}"
-        for index, product in enumerate(products)
-    )
-    _touch(pa, state="product", payload=pa.payload)
-    return reply(msisdn, "🎓 *Buy an Exam PIN*\nChoose a product:\n" + lines)
+def _start_exam(user, msisdn: str):
+    from banking.chat import start
+    return start(user, msisdn, "bill")
 
 
 def _exam_product(text: str, choices: list[str]):
@@ -2048,70 +1942,9 @@ def _network_from_prefix(phone) -> str | None:
     return _PREFIX_TO_NETWORK.get(digits[:4]) if len(digits) >= 10 else None
 
 
-def _begin_airtime(user, msisdn: str, amount, phone, network, recipient_ref=None) -> bool:
-    """LLM airtime: if amount + network + phone are all known, jump to confirm;
-    otherwise start the guided flow."""
-    if _blocked_from_spending(user, msisdn, biller=True):
-        return True
-    # "recharge tobi 2k" names WHO, not what number. Falling through to the
-    # default below would have read the missing number as "me" and topped up the
-    # sender's own line - the wrong number, already paid for, and nothing on the
-    # confirm card to reveal it was wrong because the card shows the number it
-    # guessed. Zitch cannot read the phone's contacts, so the only honest move is
-    # to ask.
-    if recipient_ref and not phone:
-        who = str(recipient_ref)[:40]
-        payload = {"pin_attempts": 0, "recipient_ref": who}
-        try:
-            if amount is not None:
-                payload["amount"] = str(Decimal(str(amount)))
-        except (InvalidOperation, TypeError):
-            pass
-        netid = _network_id(network)
-        if netid:
-            payload["net"] = netid
-        _new_flow(user, msisdn, "airtime", "phone", payload)
-        reply(msisdn, f"I can't look up {who}'s number - Zitch can't read your contacts. "
-                      "What number should I recharge?")
-        return True
-    # "2k airtime for me" carries neither a number nor a network. Falling back to
-    # the guided flow for that made the AI look useless on the single most common
-    # sentence customers actually send - so both are inferred rather than asked
-    # for: no target means the customer's own line, and a Nigerian number's
-    # prefix names its network. Neither guess moves money; the confirm screen
-    # still shows what was inferred and still needs biometrics or the PIN.
-    ph = _phone_from(str(phone), user) if phone else _own_phone(user)
-    if phone and not ph:
-        payload = {"pin_attempts": 0}
-        try:
-            if amount is not None:
-                payload["amount"] = str(Decimal(str(amount)))
-        except (InvalidOperation, TypeError):
-            pass
-        netid = _network_id(network)
-        if netid:
-            payload["net"] = netid
-        _new_flow(user, msisdn, "airtime", "phone", payload)
-        reply(msisdn, "That isn't a valid Nigerian mobile number. What number should I recharge?")
-        return True
-    netid = _network_id(network) or _network_from_prefix(ph)
-    try:
-        amt = Decimal(str(amount)) if amount is not None else None
-    except (InvalidOperation, TypeError):
-        amt = None
-    if amt and amt >= 50 and netid and ph:
-        if _insufficient(user, amt):
-            reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
-            return True
-        net = NETWORK_NAMES[netid]
-        pa = _new_flow(user, msisdn, "airtime", "pin",
-                       {"pin_attempts": 0, "net": netid, "phone": ph, "amount": str(amt.quantize(Decimal("0.01"))),
-                        "meta": {"phone": ph, "network": netid}})
-        if not _arm_confirm(pa, user):   # failure is already explained in-chat
-            return True
-        _send_confirm(pa, msisdn, f"Confirm airtime\n{_money(amt)} {net} -> {ph}")
-        return True
-    _start_airtime(user, msisdn)
+def _begin_airtime(user, msisdn: str, amount, phone, network, recipient_ref=None):
+    from banking.chat import start
+    start(user, msisdn, "airtime", mobile=phone, amount=amount)
     return True
 
 
@@ -2444,7 +2277,9 @@ def run_flow_execution(pa: PendingAction, user) -> str:
     if (pa.action_type != "unlock" and pa.state != EXECUTING_STATE
             and _channel_linked(user, pa.msisdn)):
         _mark_verified(pa.msisdn)
+    from banking.chat import execute as execute_bank_vas
     executors = {
+        "bank_vas": execute_bank_vas,
         "transfer": _exec_transfer, "airtime": _exec_airtime, "data": _exec_data,
         "electricity": _exec_electricity, "cable": _exec_cable, "convert": _exec_convert,
         "exam": _exec_exam,

@@ -513,6 +513,9 @@ def _flow_summary(pa: PendingAction) -> str:
     p = pa.payload
     at = pa.action_type
     try:
+        if at == "bank_vas":
+            from banking.chat import fields
+            return " · ".join(fields(pa).values())
         if at == "transfer":
             return (f"Send {_money(Decimal(p['amount']))} to {p.get('name', 'recipient').upper()}"
                     f" · {p.get('bank_name', '')} {p.get('account', '')}".rstrip())
@@ -667,9 +670,13 @@ def _flow_fields(pa: PendingAction) -> dict:
     try:
         if at in ("savings_create", "loan_repay"):
             return _with_context(savings_loans.confirmation_fields(pa))
+        if at == "bank_vas":
+            from banking.chat import fields
+            return _with_context(fields(pa))
         if at == "transfer":
+            amount, fee = Decimal(p["amount"]), Decimal(p.get("expected_fee", "0"))
             return _with_context({
-                "amount": _money(Decimal(p["amount"])),
+                "amount": f"{_money(amount)} + {_money(fee)} fee = {_money(amount + fee)}",
                 "recipient": f"To {p.get('name', 'recipient').upper()}",
                 "details": f"{p.get('bank_name', '')} · {p.get('account', '')}".strip(" ·")})
         if at == "airtime":
@@ -932,7 +939,9 @@ def _pending_spend_amount(pa: PendingAction) -> Decimal | None:
         amount = Decimal(str(raw))
     except (InvalidOperation, TypeError):
         return None
-    return amount if amount > 0 else None
+    if pa.action_type == "transfer":
+        amount += Decimal(str(p.get("expected_fee", "0")))
+    return amount if amount.is_finite() and amount > 0 else None
 
 
 def _fresh_wallet_balance(user) -> Decimal:
@@ -989,6 +998,14 @@ def _arm_confirm(pa: PendingAction, user) -> bool:
 
     Whichever rung is armed, the deep-link approval (biometric in the app) is
     offered alongside it - see _approve_link_line."""
+    if pa.action_type == "transfer":
+        from banking.fees import transfer_fee
+        fee = transfer_fee(pa.payload.get("amount"))
+        if fee is None:
+            _clear_actions(pa.msisdn)
+            reply(pa.msisdn, "Transfer fees could not be confirmed. Please try again later.")
+            return False
+        pa.payload["expected_fee"] = str(fee)
     unavailable = _unavailable_product_for_action(pa)
     if unavailable:
         _clear_actions(pa.msisdn)
@@ -4840,7 +4857,9 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
             else f"your 11-digit {kind.upper()}"
         return reply(msisdn, f"🪪 That isn't {wanted}. Enter it on the secure screen I sent, "
                              "or type it here - either works. Or reply \"cancel\".")
+    from banking.chat import advance as advance_bank_vas
     handler = {
+        "bank_vas": advance_bank_vas,
         "transfer": _advance_transfer,
         "airtime": _advance_airtime,
         "data": _advance_data,

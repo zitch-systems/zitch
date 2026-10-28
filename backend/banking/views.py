@@ -11,8 +11,8 @@ from common.ratelimit import ratelimit
 from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key
 
 from . import accounts, address, bills, notifications, upgrades
-from .client import ProviderError, config
-from .models import AddressVerification, IdentityChallenge
+from .client import ProviderError, config, money, phone
+from .models import AddressVerification, IdentityChallenge, BillerValidation
 
 
 def _error(exc):
@@ -34,7 +34,12 @@ def status(request):
     proofs = set(IdentityProof.objects.filter(user=user, source__in=["9psb_otp", "9psb_face"]).values_list("identity_type", flat=True))
     profile = unseal(bank.encrypted_profile) if bank and bank.encrypted_profile else {
         "lastName": user.last_name, "otherNames": user.first_name, "phoneNo": user.phone, "email": user.email}
+    challenge = IdentityChallenge.objects.filter(user=user).exclude(state__in=["complete", "failed", "expired"]).order_by("-created").first()
+    progress = accounts.challenge_payload(challenge) if challenge else None
+    if progress and progress["account_setup_state"] == "expired":
+        progress = None
     return ok(success=True, **accounts.account_payload(user), tier=user.tier, profile=profile,
+        identity_challenge=({**progress, "kind": challenge.kind} if progress else None),
         bvn_verified="bvn" in proofs, nin_verified="nin" in proofs,
         face_verified=IdentityProof.objects.filter(user=user, source="9psb_face").exists(),
         address_verified=user.address_verified,
@@ -150,8 +155,19 @@ def purchase(request):
     user, body = request.user_obj, request.data
     if not isinstance(body.get("idempotency_key"), str) or not body["idempotency_key"].strip():
         return fail("A payment reference is required", status=400)
-    key = spend_key(body["idempotency_key"], user, "9psb", body.get("kind"), body.get("phone"),
-                    body.get("amount"), body.get("product_id"), body.get("validation_reference"))
+    try:
+        mobile, amount = phone(body.get("phone")), money(body.get("amount"))
+        binding = [body.get("product_id", "")]
+        if body.get("kind") == "bill":
+            validation = BillerValidation.objects.get(user=user, reference=body.get("validation_reference", ""))
+            if money(validation.amount) != amount:
+                return fail("Review the validated bill amount before paying.", status=409, code="price_changed")
+            # A renewed validation token must not create another payment after a
+            # lost response. Bind the stable request to its economic details.
+            binding = [validation.biller_id, validation.item_id, validation.customer_digest]
+        key = spend_key(body["idempotency_key"], user, "9psb", body.get("kind"), mobile, amount, *binding)
+    except (ValueError, BillerValidation.DoesNotExist):
+        return fail("Verify the payment details before paying.", status=400)
     replay = idempotent_replay(existing_for_key(user, key))
     if replay is not None:
         return replay

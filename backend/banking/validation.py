@@ -43,6 +43,11 @@ def wallet_profile(data):
     required = ("lastName", "otherNames", "phoneNo", "gender", "dateOfBirth", "address")
     if any(data.get(k) in (None, "") for k in required):
         raise ValueError("Name, phone, gender, date of birth and residential address are required")
+    for key, limit in (("lastName", 80), ("otherNames", 80), ("dateOfBirth", 10), ("address", 100)):
+        if not isinstance(data[key], str) or not data[key].strip() or len(data[key]) > limit:
+            raise ValueError("Provide valid name, date of birth and address fields within the bank limits")
+    if len(data["lastName"] + " " + data["otherNames"]) > 160:
+        raise ValueError("The full account name exceeds the bank limit")
     if data["gender"] not in (0, 1) or isinstance(data["gender"], bool):
         raise ValueError("Select the gender required by the bank")
     datetime.strptime(data["dateOfBirth"], "%d/%m/%Y")
@@ -85,8 +90,8 @@ def upgrade_profile(tier, data):
         if data.get(key):
             result[key] = data[key]
     for key, chars in (("userPhoto", 100000), ("idCardFront", 100000), ("idCardBack", 100000), ("utilityBill", 50000)):
-        result[key] = base64_file(data.get(key), maximum_chars=chars, image_only=key == "userPhoto")
-    result["customerSignature"] = base64_file(data.get("customerSignature"), maximum_bytes=500 * 1024)
+        result[key] = base64_file(data.get(key), maximum_chars=chars, image_only=key in {"userPhoto", "idCardFront", "idCardBack"})
+    result["customerSignature"] = base64_file(data.get("customerSignature"), maximum_bytes=500 * 1024, image_only=True)
     if str(tier) == "3":
         result["proofOfAddressVerification"] = base64_file(data.get("proofOfAddressVerification"), maximum_chars=50000)
     return result

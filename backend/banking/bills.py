@@ -75,7 +75,7 @@ def validate(user, biller, item, customer, amount):
             "amount": str(amount), "expires_at": row.expires_at.isoformat()}
 
 
-def purchase_bill(user, validation_ref, mobile, idempotency_key):
+def purchase_bill(user, validation_ref, mobile, idempotency_key, *, channel="app"):
     bank = spending_account(user, refresh=True)
     mobile = phone(mobile)
     with transaction.atomic():
@@ -85,7 +85,7 @@ def purchase_bill(user, validation_ref, mobile, idempotency_key):
         result = unseal(row.encrypted_result)
         txn = debit(user, row.amount, "Utility bill payment", meta={"provider": "9psb", "provider_purchase": True,
             "vas_rail": "9psb", "vas_type": "bill", "reconcile": True, "biller_id": row.biller_id,
-            "item_id": row.item_id}, idempotency_key=idempotency_key)
+            "item_id": row.item_id, "channel": channel}, idempotency_key=idempotency_key)
         instruction = bind_instruction(txn, "vas", "bill", {"amount": str(row.amount), "source": bank.number,
             "phone": mobile, "biller_id": row.biller_id, "item_id": row.item_id,
             "customer": result["customer"], "customer_name": result["name"], "other_field": result["other_field"]})
@@ -96,7 +96,7 @@ def purchase_bill(user, validation_ref, mobile, idempotency_key):
     return txn
 
 
-def purchase_topup(user, kind, mobile, amount, *, product_id="", idempotency_key):
+def purchase_topup(user, kind, mobile, amount, *, product_id="", idempotency_key, channel="app"):
     bank = spending_account(user, refresh=True)
     mobile = phone(mobile)
     network = catalog("network", phone=mobile).get("network")
@@ -113,7 +113,7 @@ def purchase_topup(user, kind, mobile, amount, *, product_id="", idempotency_key
     with transaction.atomic():
         txn = debit(user, Decimal(amount), kind.title(), meta={"provider": "9psb", "provider_purchase": True,
             "vas_rail": "9psb", "vas_type": kind, "reconcile": True, "phone": mobile,
-            "network": network, "product_id": product_id}, idempotency_key=idempotency_key)
+            "network": network, "product_id": product_id, "channel": channel}, idempotency_key=idempotency_key)
         instruction = bind_instruction(txn, "vas", kind, {"amount": amount, "source": bank.number,
             "phone": mobile, "network": network, "product_id": product_id})
     dispatch(instruction)

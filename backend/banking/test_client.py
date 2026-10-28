@@ -123,7 +123,7 @@ class ClientTests(SimpleTestCase):
                         Client()._base()
 
     def test_money_rejects_invalid_values_without_rounding(self):
-        for value in [True, "nan", "Infinity", "-1", "0", "1.001", None, "1000000000000"]:
+        for value in [True, "nan", "Infinity", "-1", "0", "1.001", None, "1000000000000", "1e500", {}, []]:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 money(value)
         self.assertEqual(money("10.05"), "10.05")

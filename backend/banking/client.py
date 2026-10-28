@@ -59,10 +59,12 @@ def money(value):
         amount = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         raise ValueError("Invalid amount") from None
-    if not amount.is_finite() or amount <= 0 or amount != amount.quantize(Decimal(".01")):
+    if not amount.is_finite() or amount <= 0:
         raise ValueError("Amount must be positive with at most two decimal places")
     if amount >= Decimal("1000000000000"):
         raise ValueError("Amount is too large")
+    if amount != amount.quantize(Decimal(".01")):
+        raise ValueError("Amount must be positive with at most two decimal places")
     return format(amount, ".2f")
 
 
