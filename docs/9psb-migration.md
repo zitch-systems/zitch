@@ -84,8 +84,8 @@ have yet been realized.
 | Virtual accounts and card acquiring | Commercial scope only | Technical API/callback/reconciliation contracts are missing |
 | Render | Blueprint validated; bounded durable scheduler and idle polling implemented | Authenticated resource cutover and full daily-cycle evidence |
 
-Local validation at this checkpoint: 78 banking tests (76 passed; two PostgreSQL
-trigger checks skipped on SQLite), all 68 app suites / 706 tests and one snapshot
+Local validation at this checkpoint: 89 banking and Render checks (87 passed;
+two PostgreSQL trigger checks skipped on SQLite), all 68 app suites / 706 tests and one snapshot
 passed, and TypeScript checking passed. Banking tests cover archive immutability,
 fees, server-owned bill prices, renewed-validation replay, identity ownership,
 web PIN/CSRF binding, WhatsApp authorization replay and ambiguous bank routing.
@@ -94,6 +94,11 @@ tests on PostgreSQL, including both immutability trigger checks. Its app CI run
 had one cold native-component initialization timeout in an existing savings
 test (705 passed). That native test boundary was isolated and all 15 tests in
 that suite passed without a transform cache; production behavior is unchanged.
+The subsequent `d349423` app CI passed, and its PostgreSQL banking checks passed.
+Both Render files now describe the same proposed existing-resource cutover.
+Maintenance holds no Meta credentials; the worker retries receipts but leaves
+bank/account sweeps to the cron. Static checks enforce shared credentials,
+single migration ownership, checks-before-deploy and all seven retained controls.
 
 The obsolete per-screen bill and old-provider identity tests were replaced with
 shared checkout, bank identity and route-binding coverage. Their original

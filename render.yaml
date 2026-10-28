@@ -1,7 +1,7 @@
 # Intended existing-resource configuration after the documented cutover.
 # Blueprint auto-sync remains paused. First rename crn-dalvugvf3r2c73dv0cig to
 # zitch-maintenance-ry6y; validate its runs before retiring the six other crons.
-# See docs/render-cost-cutover.md. Do not create replacement API/DB/cache resources.
+# See docs/render-maintenance-cutover.md. Do not create replacement API/DB/cache resources.
 services:
 - type: web
   name: zitch-api-ry6y
@@ -112,12 +112,6 @@ services:
   - key: PREMBLY_API_KEY
     sync: false
   - key: PREMBLY_APP_ID
-    sync: false
-  - key: PREMBLY_FACE_WIDGET_ID
-    sync: false
-  - key: PREMBLY_FACE_WIDGET_KEY
-    sync: false
-  - key: PREMBLY_FACE_SDK_ENABLED
     sync: false
   - key: DJANGO_KYC_HASH_KEY
     generateValue: true
@@ -338,21 +332,6 @@ services:
       type: web
       name: zitch-api-ry6y
       envVarKey: PREMBLY_APP_ID
-  - key: PREMBLY_FACE_WIDGET_ID
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: PREMBLY_FACE_WIDGET_ID
-  - key: PREMBLY_FACE_WIDGET_KEY
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: PREMBLY_FACE_WIDGET_KEY
-  - key: PREMBLY_FACE_SDK_ENABLED
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: PREMBLY_FACE_SDK_ENABLED
   - key: CARD_ISSUER_API_KEY
     fromService:
       type: web
@@ -558,13 +537,8 @@ services:
       type: web
       name: zitch-api-ry6y
       envVarKey: NINEPSB_WEBHOOK_PASSWORD
-  - key: WHATSAPP_ACCESS_TOKEN
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: WHATSAPP_ACCESS_TOKEN
   - key: WHATSAPP_WORKER_RECONCILE
-    value: 'true'
+    value: 'false'
 - type: cron
   name: zitch-maintenance-ry6y
   region: frankfurt
@@ -768,51 +742,6 @@ services:
       type: web
       name: zitch-api-ry6y
       envVarKey: PREMBLY_API_KEY
-  - key: WHATSAPP_QUEUE_KEY
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: WHATSAPP_QUEUE_KEY
-  - key: WHATSAPP_QUEUE_KEY_PREV
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: WHATSAPP_QUEUE_KEY_PREV
-  - key: WHATSAPP_MODE
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: WHATSAPP_MODE
-  - key: WHATSAPP_ACCESS_TOKEN
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: WHATSAPP_ACCESS_TOKEN
-  - key: WHATSAPP_PHONE_NUMBER_ID
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: WHATSAPP_PHONE_NUMBER_ID
-  - key: WHATSAPP_APP_SECRET
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: WHATSAPP_APP_SECRET
-  - key: WHATSAPP_VERIFY_TOKEN
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: WHATSAPP_VERIFY_TOKEN
-  - key: WHATSAPP_FLOW_PRIVATE_KEY
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: WHATSAPP_FLOW_PRIVATE_KEY
-  - key: WHATSAPP_FLOW_ID
-    fromService:
-      type: web
-      name: zitch-api-ry6y
-      envVarKey: WHATSAPP_FLOW_ID
 - type: keyvalue
   name: zitch-cache-ry6y
   region: frankfurt
