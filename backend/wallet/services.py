@@ -205,16 +205,12 @@ def wallet_expected_balance(user_id) -> Decimal:
 
 def wallet_balance_payload(user, wallet=None) -> dict:
     """Keep historical funds visible without making them Partnership money."""
-    from legacy_funding.models import VirtualAccount
-    from wallet.legacy_funding import account_balance
     from wallet.partnership import partnership_allowed, partnership_account_number
 
     wallet = wallet or get_or_create_wallet(user)
     total = wallet.balance
-    account = VirtualAccount.objects.filter(user_id=user.pk, mode=VirtualAccount.LIVE).first()
-    historical = max(Decimal("0.00"), account_balance(account)) if account else Decimal("0.00")
     from wallet.models import UnsettledFunding
-    historical += UnsettledFunding.objects.filter(user_id=user.pk, archive__isnull=True).aggregate(
+    historical = UnsettledFunding.objects.filter(user_id=user.pk, archive__isnull=True).aggregate(
         value=Sum("amount"))["value"] or Decimal("0.00")
     invalid_account = bool(wallet.account_number) and not partnership_account_number(wallet.account_number)
     held = (not user.is_active or not partnership_allowed(user) or invalid_account
@@ -326,9 +322,9 @@ def debit(user, amount, service: str, meta: dict | None = None, reference: str |
                 idempotency_key=idempotency_key,
             )
             if bill_source is not None:
-                source, account, approval = bill_source
+                source, approval = bill_source
                 BillFundingBinding.objects.create(transaction=txn, source_account=source,
-                                                  vas_account=account, approval_reference=approval)
+                                                  approval_reference=approval)
             return txn
     except IntegrityError:
         if idempotency_key:
@@ -1241,7 +1237,8 @@ def wema_provisioned_wallets():
     polled without needing a manual data repair; demo/mock accounts stay
     excluded.
     """
-    from legacy_funding.models import VirtualAccount
+    from wallet.funding_holds import DestinationDigest
+    from wallet.models import UnsettledFunding
 
     return (Wallet.objects
             .filter(Q(account_reference__startswith=WEMA_ACCOUNT_REF_PREFIX)
@@ -1249,7 +1246,9 @@ def wema_provisioned_wallets():
                        & Q(bank_name__icontains="Wema"))
                     | Q(account_number__regex=r"^045[0-9]{7}$"))
             .exclude(account_number="")
-            .exclude(account_number__in=VirtualAccount.objects.values("number"))
+            .exclude(account_number__startswith="711")
+            .alias(destination_digest=DestinationDigest("account_number"))
+            .exclude(destination_digest__in=UnsettledFunding.objects.values("destination_digest"))
             .exclude(bank_name__icontains=DEMO_ACCOUNT_MARKER))
 
 
@@ -3168,11 +3167,11 @@ def bank_spent_today(user) -> Decimal:
         user=user, direction=Transaction.OUT, currency="NGN", created__gte=start,
         transaction_status__in=(Transaction.PENDING, Transaction.SUCCESS),
     ).only("amount", "meta", "service")
-    funding = dict(BillFundingBinding.objects.filter(transaction__in=rows).values_list(
-        "transaction_id", "vas_account_id"))
+    funding = set(BillFundingBinding.objects.filter(transaction__in=rows).values_list(
+        "transaction_id", flat=True))
     def debits_bank(row):
         if row.pk in funding:
-            return funding[row.pk] is None
+            return True
         meta = row.meta if isinstance(row.meta, dict) else {}
         if meta.get("internal_evidence") or meta.get("internal_movement"):
             return False
@@ -3219,7 +3218,7 @@ def _biller_funding_context(user, amount=Decimal("0"), *, wallet=None):
     wallet = wallet or Wallet.objects.get(user=user)
     source = wallet.account_number
     if partnership_account_number(source):
-        return source, None, ""
+        return source, ""
     # A retained retired number can never become a simulation funding source.
     if source:
         raise LimitExceeded(REVIEW_MESSAGE)
@@ -3246,7 +3245,7 @@ def biller_source_for_transaction(reference, *, amount, source_account="") -> st
             raise ValueError
     except (InvalidOperation, TypeError, ValueError):
         raise LimitExceeded("Invalid bill amount.") from None
-    binding = BillFundingBinding.objects.select_related("transaction__user", "vas_account").filter(
+    binding = BillFundingBinding.objects.select_related("transaction__user").filter(
         transaction__reference=reference).first()
     if binding is None:
         raise LimitExceeded("A verified bill funding reservation is required.")
@@ -3260,8 +3259,7 @@ def biller_source_for_transaction(reference, *, amount, source_account="") -> st
         raise LimitExceeded("Bill funding does not match this payment.")
     current = _biller_funding_context(txn.user, wallet=wallet)
     if (current is None or current[0] != binding.source_account
-            or getattr(current[1], "pk", None) != binding.vas_account_id
-            or current[2] != binding.approval_reference):
+            or current[1] != binding.approval_reference):
         raise LimitExceeded("Bill funding configuration changed; retry after review.")
     return binding.source_account
 
@@ -3282,11 +3280,7 @@ def bank_spend_error(user, amount, *, biller=False) -> str | None:
     from utility import wema as wema_provider
     try:
         if biller:
-            source = _biller_funding_context(user, amount)
-            if source and source[1] is not None:
-                # App KYC/velocity/daily bill limits still run in common.http.
-                # The former NUBAN's bank tier is not a collection-account limit.
-                return None
+            _biller_funding_context(user, amount)
         else:
             assert_customer_spending_available(user)
     except LimitExceeded as exc:

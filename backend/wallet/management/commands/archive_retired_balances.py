@@ -5,7 +5,6 @@ from decimal import Decimal
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from legacy_funding.models import VirtualAccount
 from wallet.models import RetiredFundingArchive, Transaction, UnsettledFunding, Wallet
 from wallet.services import wallet_expected_balance
 from whatsapp.models import AuditLog
@@ -25,8 +24,6 @@ class Command(BaseCommand):
         reference = opts["operator_reference"].strip()
         if not reference or len(reference) > 160:
             raise CommandError("A bounded operator reference is required")
-        if VirtualAccount.objects.exists():
-            raise CommandError("Retired account removal must finish first")
         user_ids = list(UnsettledFunding.objects.filter(archive__isnull=True)
                         .values_list("user_id", flat=True))
         wallets = {w.user_id: w for w in Wallet.objects.select_for_update()

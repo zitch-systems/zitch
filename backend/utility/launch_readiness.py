@@ -56,7 +56,7 @@ def financial_controls_report():
     from django.db.models import Exists, OuterRef
     from wallet.models import BankHistoryCheckpoint, Transaction, Wallet
     from wallet.services import wema_provisioned_wallets
-    from wallet.legacy_funding import reconciliation_scope
+    from wallet.funding_holds import reconciliation_scope
     from whatsapp.models import AuditLog
     from wallet.partnership import partnership_allowed
 

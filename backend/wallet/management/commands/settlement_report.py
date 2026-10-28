@@ -58,7 +58,7 @@ from django.utils import timezone
 from utility import wema
 from wallet.models import Transaction, Wallet, RetiredFundingArchive
 from wallet.services import is_bank_payout, wema_provisioned_wallets
-from wallet.legacy_funding import reconciliation_scope
+from wallet.funding_holds import reconciliation_scope
 
 # The label prefixes that identify which rail a day's movement went out on. These
 # mirror common.http's daily-cap buckets; kept separate because this command

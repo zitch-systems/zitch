@@ -8,20 +8,21 @@ from django.utils import timezone
 from wallet.alerts import _describe, _email_alert_html, _sms_alert, _whatsapp_template_summary
 from wallet.models import BillFundingBinding, Transaction, Wallet
 from wallet.services import credit, debit, refund
-from legacy_funding.models import VirtualAccount
-from wallet.legacy_test_fixtures import account_fixture, retained_receipt, retained_bill
+from wallet.funding_test_fixtures import funding_hold
+from wallet.tests import make_user
 
 
 @override_settings(BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE="active",
                    WEMA_BILLER_MODE="active")
 class TransactionAlertBalanceTests(TestCase):
     def setUp(self):
-        self.user, self.account = account_fixture()
+        self.user, _ = make_user("08099900001", "alert-hold@zitch.test", tier=3)
         for key, value in {"phone_verified": True, "email_verified": True,
                            "bvn_verified": True, "nin_verified": True, "tier": 3}.items():
             setattr(self.user, key, value)
         self.user.save()
-        retained_receipt(self.account, "1000")
+        self.hold = funding_hold(self.user, "1000")
+        self.held_credit = Transaction.objects.get(pk=self.hold.evidence["credits"][0]["transaction_id"])
         self.legacy_credit = credit(self.user, "5000", "Historical Partnership deposit")
 
     def assert_alert_balances(self, txn, *, total, available, historical=None, reversal=False):
@@ -49,16 +50,17 @@ class TransactionAlertBalanceTests(TestCase):
         self.assert_alert_balances(self.legacy_credit, total="6,000.00", available="0.00")
 
     def test_pending_bill_reservation_reduces_available_balance_in_alerts(self):
-        bill = retained_bill(self.account, "100")
+        bill = debit(self.user, "100", "Airtime — MTN", enforce_limits=False)
         self.assert_alert_balances(bill, total="5,900.00", available="0.00")
 
-    def test_reversal_restores_only_the_vas_available_amount(self):
-        bill = retained_bill(self.account, "100")
+    def test_reversal_does_not_release_held_money(self):
+        bill = debit(self.user, "100", "Airtime — MTN", enforce_limits=False)
         refund(bill)
         self.assert_alert_balances(bill, total="6,000.00", available="0.00", reversal=True)
 
     def test_restricted_account_keeps_funds_visible_but_unavailable(self):
-        VirtualAccount.objects.filter(pk=self.account.pk).update(active=False)
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
         self.assert_alert_balances(self.legacy_credit, total="6,000.00", available="0.00")
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("6000"))
 
@@ -79,25 +81,19 @@ class TransactionAlertBalanceTests(TestCase):
             self.assertIn(expected, text)
             self.assertNotIn("0123****89", text)  # The company's collection account is never customer-facing.
 
-    def test_historical_credit_uses_immutable_receipt_account_despite_old_wallet_or_spoofed_metadata(self):
+    def test_archived_credit_never_uses_current_account_or_spoofed_metadata(self):
         Wallet.objects.filter(user=self.user).update(account_number="0451234567")
-        txn = self.account.receipts.get().transaction
+        txn = self.held_credit
         txn.meta = {"account_number": "1111111111", "vas_account": "2222222222"}
-        self.assert_account(txn, "9990****01")
+        self.assertNotIn("9990****01", _sms_alert(txn))
         for text in (_sms_alert(txn), _email_alert_html(txn)):
             self.assertNotIn("0451****67", text)
             self.assertNotIn("1111****11", text)
 
-    def test_historical_bill_and_refund_show_customer_account_not_company_source(self):
-        Wallet.objects.filter(user=self.user).update(account_number="0451234567")
-        bill = retained_bill(self.account, "100")
-        self.assert_account(bill, "9990****01")
-        refund(bill)
-        self.assert_account(bill, "9990****01", reversal=True)
 
-    def test_late_legacy_credit_retains_old_account_after_live_vas_and_ignores_metadata(self):
+    def test_partnership_credit_uses_current_account_and_ignores_metadata(self):
         Wallet.objects.filter(user=self.user).update(account_number="0451234567")
-        self.legacy_credit.meta = {"vas_account": self.account.number}
+        self.legacy_credit.meta = {"vas_account": "9990000001"}
         self.assert_account(self.legacy_credit, "0451****67")
         for text in (_sms_alert(self.legacy_credit), _email_alert_html(self.legacy_credit)):
             self.assertNotIn("9990****01", text)
@@ -111,27 +107,8 @@ class TransactionAlertBalanceTests(TestCase):
 
     def test_provenance_read_failure_omits_account_instead_of_falling_back_to_legacy(self):
         Wallet.objects.filter(user=self.user).update(account_number="0451234567")
-        txn = self.account.receipts.get().transaction
-        with patch("legacy_funding.models.Receipt.objects.select_related", side_effect=RuntimeError("unavailable")):
+        txn = self.held_credit
+        with patch("wallet.funding_holds.UnsettledFunding.objects.filter", side_effect=RuntimeError("unavailable")):
             for text in (_sms_alert(txn), _email_alert_html(txn)):
                 self.assertNotIn("0451****67", text)
                 self.assertNotIn("9990****01", text)
-
-
-
-class ValidationTransactionAlertBalanceTests(TestCase):
-    def test_validation_account_balance_never_enters_real_money_alerts(self):
-        user, account = account_fixture(suffix="2", mode="validation")
-        account.validation_balance = Decimal("9000")
-        account.save(update_fields=["validation_balance"])
-        txn = credit(user, "1000", "Historical Partnership deposit")
-        _subject, body = _describe(txn)
-        summary = _whatsapp_template_summary(txn, reversal=False)
-        for text in (body, summary):
-            self.assertIn("Available balance: ₦1,000.00", text)
-            self.assertNotIn("9,000", text)
-            self.assertNotIn("10,000", text)
-            self.assertNotIn("Historical funds unavailable", text)
-        Wallet.objects.filter(user=user).update(account_number=account.number)
-        for text in (_sms_alert(txn), _email_alert_html(txn)):
-            self.assertNotIn("7110****02", text)

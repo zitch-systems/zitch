@@ -98,7 +98,7 @@ class FinancialControlsReadinessTests(TestCase):
 
     def test_unresolved_legacy_exposure_blocks_older_passing_controls(self):
         self.passing()
-        with patch("wallet.legacy_funding.reconciliation_scope", return_value={"legacy_funding_required": True}):
+        with patch("wallet.funding_holds.reconciliation_scope", return_value={"legacy_funding_required": True}):
             self.assertFalse(financial_controls_report()["financial_controls_ready"])
 
     def test_invalid_or_incomplete_settlement_never_passes(self):

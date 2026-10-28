@@ -51,35 +51,33 @@ blindly. Retained independent identity proof may support an eligible customer's
 first Partnership setup, but it does not replace the bank's ownership challenge.
 Any prior bank proof, request or account history keeps the recovery path.
 
-## Retired account deletion
+## Completed account retirement
 
-After every API, worker and scheduled job is live with wallet migration 0028,
-preview the owner-authorized cleanup using `purge_retired_accounts` with explicit
-`--expected-accounts`, `--expected-receipts`, `--expected-unsettled` and
-`--operator-reference` values. Add `--apply` only after the preview matches.
-The command deletes retired account and receipt rows, including encrypted account
-identity. It rejects held receipts, bill bindings, migration approvals, restricted
-live accounts, mismatched ledger evidence and wallets still using a retired number.
+The retired account and receipt records have been purged. Account-balance
+adapters, the purge command and bill-funding foreign key are removed from runtime
+code. Outstanding money lives in the independent `UnsettledFunding` and
+`RetiredFundingArchive` accounting records; removing an integration does not
+cancel that liability or settle it at the bank. The original transaction ledger
+and its database protections remain intact.
 
-Real money remains in the existing wallet and transaction ledger. Its payment
-evidence moves into an immutable `UnsettledFunding` hold; no duplicate credit is
-created. This hold blocks funding and spending and remains in reconciliation
-scope until independently evidenced settlement. The old live destination remains
-blocked by its digest, without retaining its plaintext account record. Validation
-accounts with zero exposure are deleted without touching their owners or any
-Partnership wallet. An independent identity proof still permits first Partnership
-setup when there is no prior bank account or issuance history.
+The rollout has two stages. Wallet migration 0030 requires zero retired accounts,
+receipts, migration approvals and linked bills, then removes the foreign key from
+Django's state. Empty physical tables and their otherwise unused Django mappings
+remain temporarily so old API and worker processes can finish while every
+service updates. Keeping the mappings until the tables disappear also preserves
+PostgreSQL test isolation. Only after all services use that revision may the next
+migration remove the empty tables, model mappings and obsolete triggers.
+A nonzero inventory aborts the migration; it never erases unreviewed records.
 
-The purge is atomic and audited. It locks affected wallets and retired tables,
-temporarily permits deletion only on those retired tables, and restores their
-protections before commit. Ledger and audit protections remain enabled throughout.
-Empty historical tables and migration labels remain for deployment compatibility;
-there are no retired enrollment, callback or provider execution routes.
+Historical migration files and their original labels remain solely so existing
+and fresh databases can traverse the same migration graph. The compatibility
+package has no enrollment operations, callbacks, customer screens or bank
+credentials. Its empty model mappings are removed in stage 2. The old destination digest still prevents accidental
+reuse, and outstanding money remains in reconciliation scope.
 
-After verifying zero retired account/receipt rows, remove
-`HISTORICAL_FUNDING_IDENTITY_KEYS` from runtime environments. It has no active
-consumer. Database deletion does not close bank-side accounts or settle money;
-bank closure and any late deposits require attributable bank evidence.
+Remove `HISTORICAL_FUNDING_IDENTITY_KEYS` from runtime environments; it has no
+consumer. Bank-side account closure and any late deposits require attributable
+bank evidence and are separate from this software removal.
 
 Run `python manage.py partnership_diagnostics --require-clean-config`, then
 `python manage.py wema_preflight --strict` for release gates. Neither proves bank

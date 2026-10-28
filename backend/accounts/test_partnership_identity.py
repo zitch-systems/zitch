@@ -5,7 +5,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import AccessToken, IdentityProof, User
-from legacy_funding.models import VirtualAccount
+from wallet.funding_test_fixtures import funding_hold
 from utility import providers
 from wallet.models import Wallet
 
@@ -26,10 +26,7 @@ class PartnershipIdentityTests(TestCase):
         return self.client.post(path, {"access_token": self.token, **data}, content_type="application/json")
 
     def legacy_hold(self):
-        return VirtualAccount.objects.create(user=self.user, number="8110000001", prefix="811",
-            display_name="Zitch/Ada Eze", encrypted_identity="historical-encrypted-value",
-            verification_reference="historical-proof", consent_reference="historical-consent",
-            verified_at=timezone.now(), mode=VirtualAccount.LIVE, active=False)
+        return funding_hold(self.user, "100", "8110000001")
 
     def test_stale_provider_setting_and_prembly_credentials_cannot_redirect_tier_one(self):
         with override_settings(KYC_PROVIDER="prembly", BANK_ACCOUNT_PROVIDER="wema_vas",
@@ -74,7 +71,7 @@ class PartnershipIdentityTests(TestCase):
         self.assertFalse(data["bank_upgrade_required"])
         self.assertTrue(data["address_verification_required"])
         self.assertEqual(data["address_rail"], "wema")
-        self.assertNotIn(account.number, str(data))
+        self.assertNotIn("8110000001", str(data))
 
     def test_old_provider_setting_cannot_bypass_partnership_address_verification(self):
         self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True

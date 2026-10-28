@@ -278,8 +278,6 @@ class BillFundingBinding(models.Model):
     """Immutable source reservation for one bill debit, independent of metadata."""
     transaction = models.OneToOneField(Transaction, on_delete=models.PROTECT, related_name="bill_funding")
     source_account = models.CharField(max_length=10)
-    vas_account = models.ForeignKey("wema_vas.VirtualAccount", null=True, blank=True,
-                                   on_delete=models.PROTECT, related_name="bill_fundings")
     approval_reference = models.CharField(max_length=256, blank=True)
     created = models.DateTimeField(auto_now_add=True)
 
@@ -294,11 +292,6 @@ class BillFundingBinding(models.Model):
         if (txn.direction != Transaction.OUT or txn.currency != "NGN"
                 or txn.transaction_status != Transaction.PENDING):
             raise ValueError("Bill funding requires an NGN debit")
-        if self.vas_account_id and (self.vas_account.user_id != txn.user_id
-                                   or self.vas_account.mode != "live"
-                                   or self.source_account == self.vas_account.number
-                                   or not self.approval_reference):
-            raise ValueError("Invalid VAS bill funding reservation")
         return super().save(*args, **kwargs)
 
 
