@@ -50,8 +50,8 @@ are not 9PSB UAT acceptance and do not demonstrate live account creation.
    PostgreSQL/SQLite CI. Then review and merge the release before deployment.
 2. Resolve VAS authentication, obtain bank-approved identity fixtures and a
    Zitch-owned funded UAT wallet, and complete joint bank UAT/sign-off.
-3. Confirm production credentials/transport, callbacks and their authentication,
-   required IP allowlisting, fees, tier limits, ICAD requirements, history and
+3. Confirm production credentials/transport, callback acceptance, any production
+   IP allowlisting, fees, tier limits, ICAD requirements, history and
    reversal correlation. Do not infer these from sandbox connectivity alone.
 4. Complete Prembly's terminal address-decision/report contract before enabling
    Tier 3 address requests. QR/corporate flows remain unfinished; virtual-account
@@ -62,3 +62,12 @@ are not 9PSB UAT acceptance and do not demonstrate live account creation.
 
 See `9psb-uat-evidence.md` for the last redacted live connectivity results and
 `9psb-migration.md` for the product/service matrix.
+
+29 October follow-up: full CI for this checkpoint completed with 487 failures
+and 565 errors across 3,188 PostgreSQL tests; all 122 focused PostgreSQL bank/
+Render checks passed. Both full backend jobs failed. The technical team has
+confirmed no test-environment IP whitelist is needed and requested Basic Auth
+callback credentials. The corrected credential attachment is now available but
+is identical to the earlier set; VAS authentication still returns HTTP 400.
+The callback URL is still undeployed (HTTP 404). See the updated UAT evidence
+before sending registration details to the bank.

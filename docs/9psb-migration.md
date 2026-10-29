@@ -77,7 +77,7 @@ have yet been realized.
 | Payments | Durable once-only dispatch, fees bound to confirmation, uncertain outcomes retained | Confirm total customer debit including fees; execute funded-wallet UAT |
 | Status | Separate WaaS and VAS parsing; WaaS success sample verified against supplied Postman collection | Negative/reversal status examples and live test evidence |
 | Inflows | Authenticated durable inbox, bank requery before credit, duplicate protection | Owned test wallet; statement/history schema, outage backfill and reversal correlation |
-| VAS | Dynamic catalog, validation, purchase and status code implemented | Available credential files still return HTTP 400 / bad credentials; the replacement attachment is missing from the restored workspace |
+| VAS | Dynamic catalog, validation, purchase and status code implemented | Corrected attachment (3) was retrieved on 29 October and is identical to the earlier credentials; the documented authentication endpoint still returns HTTP 400 / bad credentials |
 | Prembly Tier 3 | Correlated request/status adapter prepared; new paid requests disabled | Terminal approval enum and retrievable report contract, then tests and activation |
 | App and WhatsApp | Shared app checkout, dynamic WhatsApp VAS flow, transfer fee review and secure identity forms implemented | Live channel UAT and broader backend regression migration |
 | QR and corporate WaaS | Documented by bank | Product implementation and acceptance tests remain |
@@ -124,7 +124,8 @@ Workspace access was restored on 28 October. The two credential files actually
 present are byte-identical to the earlier set. Rechecking these files returned
 WaaS authentication HTTP 200 and a successful bank directory, but VAS
 authentication HTTP 400 / bad credentials. The separately referenced replacement
-attachment is not present, so it has not been installed or verified. No activation
+attachment was not present at that checkpoint. It was retrieved on 29 October
+and found identical; the fresh VAS request still failed with HTTP 400. No activation
 or Render cost cutover was performed in this follow-up.
 
 Historical card refunds now create immutable archive adjustments in the same
@@ -142,7 +143,7 @@ Coverage includes refund replay, rollback, insufficient historical funds and
 environment isolation across account, identity, payment and notification recovery. Updated email,
 device-risk, receipt and operator fixtures exercise the current bank evidence
 without opening retired provider routes. These focused results do not replace the
-full regression run: the latest completed full PostgreSQL checkpoint at `3d46c79`
+full regression run: the then-current full PostgreSQL checkpoint at `3d46c79`
 had 680 failures and 1,046 errors across 3,541 tests; SQLite had 680 failures,
 1,042 errors and 10 skips. The complete suite remains enabled and unresolved.
 
