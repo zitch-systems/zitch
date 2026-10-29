@@ -2930,8 +2930,16 @@ def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "
     if not bank:
         raise PayoutError("rail_unavailable", "The bank directory needs to be refreshed.")
     resolved = resolve_account(destination.number, bank.bank_code)
-    if not resolved.get("success") or not same_name(destination.name, resolved.get("name", "")):
+    if (not resolved.get("success") or resolved.get("mock")
+            or resolved.get("bank_code", bank.bank_code) != bank.bank_code
+            or not same_name(destination.name, resolved.get("name", ""))):
         raise PayoutError("recipient_unavailable", "We could not confirm this recipient's bank account.")
+    recipient.refresh_from_db()
+    current = account_for(recipient)
+    if (not current or current.pk != destination.pk or current.number != destination.number
+            or current.status != "active" or not recipient.is_active
+            or not recipient.phone_verified or not recipient.email_verified):
+        raise PayoutError("recipient_unavailable", "This recipient's bank account is no longer available.")
     outgoing = execute_payout(sender, Decimal(str(amount)), destination.number, bank,
         resolved["name"], note=note, idempotency_key=idempotency_key, channel=channel, expected_fee=expected_fee)
     return outgoing, None

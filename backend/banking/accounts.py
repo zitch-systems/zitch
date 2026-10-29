@@ -18,10 +18,30 @@ from .secrets import seal, unseal
 from .validation import wallet_profile
 
 
+def sandbox_tester(user):
+    """Allow only explicit IDs or a verified phone enrolled for sandbox use."""
+    conf = config()
+    if str(user.pk) in conf.get("SANDBOX_USER_IDS", []):
+        return True
+    if not user.phone_verified:
+        return False
+    try:
+        number = phone(user.phone)
+    except ValueError:
+        return False
+    for enrolled in conf.get("SANDBOX_PHONES", []):
+        try:
+            if number == phone(enrolled):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def require_enabled(user):
     if not user.is_active or not customer_enabled():
         raise ValueError("Banking setup is temporarily unavailable")
-    if sandbox() and str(user.pk) not in config().get("SANDBOX_USER_IDS", []):
+    if sandbox() and not sandbox_tester(user):
         raise ValueError("This bank connection is available to enrolled sandbox testers only")
     existing = BankAccount.objects.filter(wallet__user_id=user.pk).first()
     if existing:
@@ -73,7 +93,7 @@ def account_payload(user):
     bank = account_for(user)
     allowed = customer_enabled() and user.is_active
     if sandbox():
-        allowed = allowed and str(user.pk) in config().get("SANDBOX_USER_IDS", [])
+        allowed = allowed and sandbox_tester(user)
     ready = bool(bank and allowed and bank.status == "active")
     can_spend = bool(ready and bank.pnd is False and bank.frozen is False
         and not bank.opening_review_required and bank.available_balance is not None

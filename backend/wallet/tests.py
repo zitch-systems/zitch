@@ -1362,7 +1362,7 @@ class SmsAlertFormatTests(TestCase):
         self.assertTrue(lines[0].startswith("CR:NGN 4,300.00"))
         self.assertEqual(lines[1], "Acct No:0228****72")     # bank's own masking
         self.assertTrue(lines[2].startswith("Desc :"))
-        self.assertTrue(lines[3].startswith("Bal :"))
+        self.assertTrue(lines[3].startswith("Available :"))
         self.assertRegex(lines[4], r"^\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2} WAT$")
 
     def test_a_debit_reads_dr(self):
@@ -1397,7 +1397,7 @@ class SmsAlertFormatTests(TestCase):
         txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
         body = _sms_alert(txn)
         self.assertLessEqual(len(body), 160)
-        self.assertIn("Bal :", body)
+        self.assertIn("Available :", body)
         self.assertRegex(body.split("\n")[-1], r"^\d{2}-\d{2}-\d{4}")
 
     def test_it_stays_inside_the_gsm_7_alphabet(self):

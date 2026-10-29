@@ -51,9 +51,10 @@ def spending_account(user, *, refresh=False):
 
 
 def bank_limit_error(user, amount):
-    bank = account_for(user)
-    if not bank:
-        return "Complete your 9PSB account setup first"
+    try:
+        bank = spending_account(user)
+    except LimitExceeded as exc:
+        return str(exc)
     # Deposit and balance limits are NOT outbound spending limits. Unknown bank
     # limits are not guessed; the bank still enforces them on every instruction.
     try:

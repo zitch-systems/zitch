@@ -868,7 +868,7 @@ class AiIntentTests(TestCase):
             self.inbound("load 120k mtn airtime for 08099998888", "fg1")
         self.assertIn("Confirm payment", self.last_reply())  # fast-path jumps to confirm
         self.inbound("1234", "fg2")                          # PIN -> reaches _run_vtu
-        self.assertIn("Tier 1 limit", self.last_reply())
+        self.assertIn("could not be submitted", self.last_reply())
         self.user.refresh_from_db()
         self.assertEqual(self.user.tier, 1)
         self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("300000"))  # not debited

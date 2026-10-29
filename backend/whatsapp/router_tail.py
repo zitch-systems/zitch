@@ -1032,6 +1032,9 @@ def _start_service_menu(user, msisdn: str, kind: str) -> None:
     """Open a category sub-menu so the user picks 1 or 2 (or taps the row) instead
     of having to type the word. Stored as a `pick_service` flow so a bare "1"/"2"
     is read as the sub-menu choice, not the main-menu balance/transfer number."""
+    from utility.providers import biller_enabled
+    if not biller_enabled():
+        return reply(msisdn, "Bill payments are temporarily unavailable.")
     if kind == "bill":
         from banking.chat import start
         return start(user, msisdn, "bill")

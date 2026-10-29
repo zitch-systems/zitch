@@ -147,7 +147,7 @@ class PaymentFlowE2ETests(FlowContractMixin, TestCase):
             state=FLOW_PIN_STATE,
             payload=payload or {"amount": "1000", "account": "0123456789",
                                 "bank_code": "058", "bank_name": "GTBank",
-                                "name": "ADA EZE", "pin_attempts": 0,
+                                "name": "JOHN DOE", "pin_attempts": 0, "expected_fee": "0.00",
                                 "flow_screen": flows.PIN_SCREEN},
             expires_at=timezone.now() + timezone.timedelta(minutes=10))
 
@@ -190,6 +190,7 @@ class PaymentFlowE2ETests(FlowContractMixin, TestCase):
         with patch("whatsapp.router.execute_payout") as payout:
             payout.return_value = self._pending_txn()
             resp = self._exchange(pa, {"pin": "1234"})
+            payout.assert_called_once()
         self.assertScreen(resp, standing_on=flows.PIN_SCREEN, note="pending")
         self.assertEqual(resp["screen"], flows.RESULT_SCREEN)
         self.assertNotIn(resp["screen"], self.terminals)

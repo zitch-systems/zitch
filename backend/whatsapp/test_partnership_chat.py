@@ -48,8 +48,8 @@ class PartnershipCustomerChatTests(TestCase):
                 self.assertEqual("2️⃣  💸 Send money" in menu, enabled)
                 self.assertEqual("1️⃣1️⃣  📷 Scan a QR code" in menu, enabled)
                 self.assertEqual("send 5k to Ada" in menu, enabled)
-                self.assertEqual("3️⃣  📱 Airtime / Data" in menu, enabled)
-                self.assertEqual("4️⃣  💡 Pay a bill" in menu, enabled)
+                self.assertEqual("3️⃣  📱 Airtime / Data\n" in menu, enabled)
+                self.assertEqual("4️⃣  💡 Pay a bill\n" in menu, enabled)
 
     @override_settings(NINEPSB={**CONFIG, "ENABLED": False})
     def test_archived_transfer_option_is_refused_before_recipient_or_pin(self):

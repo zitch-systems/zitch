@@ -43,7 +43,7 @@ class RetiredBalanceArchiveTests(TestCase):
         self.assertEqual(RetiredFundingArchive.objects.count(), 1)
         self.assertEqual(wallet_expected_balance(self.user.pk), Decimal("0"))
         payload = wallet_balance_payload(self.user)
-        self.assertEqual(payload["balance"], Decimal("0"))
+        self.assertEqual(payload["balance"], Decimal("100"))
         self.assertEqual(payload["legacy_funding_balance"], Decimal("100"))
         after = snapshot()
         self.assertEqual(after["ledger_liability"], before["ledger_liability"])

@@ -1,8 +1,10 @@
 # 9PSB integration and previous partnership retirement
 
-**Draft implementation; not a production-ready or fully integrated release.**
-Customer banking, VAS and sandbox enrollment remain disabled. Do not merge or
-deploy this branch until the release gates below are satisfied.
+**Restricted WaaS sandbox release preparation; production banking is not approved.**
+Full backend regression checks must pass before deployment. This release may
+enroll explicitly allowed sandbox testers once the deployed services are healthy;
+VAS and production UAT approval stay disabled. The bank acceptance gates below
+remain requirements for production activation, not claims of completed testing.
 
 ## Archive
 
@@ -188,3 +190,8 @@ activation is WaaS sandbox only, with VAS disabled and production UAT approval
 false. New identity, OTP and test NUBAN acceptance still require approved bank
 test fixtures and a permitted tester. Existing cron schedules can continue
 through the reconciliation alias; consolidation is separate from this release.
+
+Sandbox enrollment accepts explicit user IDs or exact verified phone numbers
+configured in `NINEPSB_SANDBOX_PHONES`. Enrollment cannot bypass the customer
+activation switch, environment binding or production UAT gate. Keep tester
+identifiers in server configuration, outside this repository.

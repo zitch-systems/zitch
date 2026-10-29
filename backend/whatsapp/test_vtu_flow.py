@@ -208,8 +208,7 @@ class ChatKeepsGoingThroughTheAiTests(TestCase):
                 pa.delete()
 
     def test_chat_normalizes_supported_nigerian_formats(self):
-        with patch.object(router, "_arm_confirm", return_value=True), \
-                patch.object(router, "_send_confirm"):
+        with patch.object(router, "_send_confirm"):
             router._begin_airtime(
                 self.user, MSISDN, 2000, "+2348031234567", "Airtel")
         pa = PendingAction.objects.get(msisdn=MSISDN)
