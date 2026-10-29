@@ -17,6 +17,9 @@ not funds that can be relabelled as a new provider's balance.
 
 Implementation uses the supplied WaaS API v3.1 (22 July 2026), VAS API PDF,
 Postman collections, and the signed-service scope supplied by the project owner.
+The VAS contract review and implementation follow-up on 29 October is recorded
+in [9psb-vas-contract.md](9psb-vas-contract.md), including source hashes, all
+documented routes, dynamic fields, duplicate handling and receipt recovery.
 The older December 2024 collection does not define the newer identity handshake;
 the July PDF takes precedence. Agreements, credentials and identity data are not
 committed to this public repository.

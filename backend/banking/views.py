@@ -130,7 +130,7 @@ def address_status(request):
 @require_user
 def catalog(request):
     try:
-        accounts.require_enabled(request.user_obj)
+        bills.require_vas(request.user_obj)
         body = request.data
         result = bills.catalog(body.get("kind"), **{k: body[k] for k in ("phone", "category", "biller") if k in body})
         return ok(success=True, data=result)
@@ -145,7 +145,7 @@ def bill_validate(request):
     body = request.data
     try:
         return ok(bills.validate(request.user_obj, body.get("biller_id", ""), body.get("item_id", ""),
-            body.get("customer", ""), body.get("amount")))
+            body.get("customer", ""), body.get("amount"), inputs=body.get("inputs")))
     except (ProviderError, ValueError) as exc:
         return _error(exc)
 
@@ -161,7 +161,8 @@ def purchase(request):
         mobile, amount = phone(body.get("phone")), money(body.get("amount"))
         binding = [body.get("product_id", "")]
         if body.get("kind") == "bill":
-            validation = BillerValidation.objects.get(user=user, reference=body.get("validation_reference", ""))
+            validation = BillerValidation.objects.get(user=user, reference=body.get("validation_reference", ""),
+                environment=config().get("ENVIRONMENT", "sandbox"))
             if money(validation.amount) != amount:
                 return fail("Review the validated bill amount before paying.", status=409, code="price_changed")
             # A renewed validation token must not create another payment after a
@@ -184,7 +185,9 @@ def purchase(request):
                 product_id=body.get("product_id", ""), idempotency_key=key)
         from wallet.models import Transaction
         state = "success" if txn.transaction_status == Transaction.SUCCESS else "failed" if txn.transaction_status == Transaction.FAILED else "pending"
-        return provider_purchase_response(state, txn, txn.meta, success_message="Payment completed.", token=txn.meta.get("token", ""))
+        return provider_purchase_response(state, txn, txn.meta, success_message="Payment completed.",
+            token=txn.meta.get("token", ""), electricity_units=txn.meta.get("electricity_units", ""),
+            receipt_pending=txn.meta.get("receipt_pending") is True)
     except DuplicateTransaction:
         return idempotent_replay(existing_for_key(user, key)) or fail("Payment is already processing", status=409)
     except (ProviderError, ValueError, LimitExceeded, InsufficientFunds) as exc:

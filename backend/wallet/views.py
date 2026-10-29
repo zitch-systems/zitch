@@ -1095,10 +1095,11 @@ def transaction_status(request):
     # Recover purchased value after an app restart or a late provider settlement.
     # Keep it out of bulk history, and never expose a token while the payment is
     # pending, refunded or under review. The lookup above is owner-scoped.
+    meta = txn.meta if isinstance(txn.meta, dict) else {}
+    bank_bill = meta.get("provider") == "9psb" and meta.get("vas_type") == "bill"
     if (row["transaction_status"] == Transaction.SUCCESS
             and not row["under_review"] and txn.direction == Transaction.OUT
-            and txn.service.casefold().startswith("electricity")):
-        meta = txn.meta if isinstance(txn.meta, dict) else {}
+            and (bank_bill or txn.service.casefold().startswith("electricity"))):
 
         def receipt_text(key, maximum=160):
             value = meta.get(key)
@@ -1107,6 +1108,7 @@ def transaction_status(request):
             return str(value).strip()[:maximum]
 
         row.update(
+            receipt_pending=meta.get("receipt_pending") is True,
             meter=receipt_text("meter", 40),
             meter_type=receipt_text("meter_type", 20),
             customer_name=receipt_text("customer_name") or receipt_text("customer"),

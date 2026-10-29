@@ -3,11 +3,17 @@
 **Activation is blocked.** These results establish connectivity and account reads,
 not completed customer KYC, settlement or production acceptance.
 
-Last authentication diagnosis: 29 October 2026, 09:21 WAT. The corrected
+Last authentication diagnosis: 29 October 2026, 10:42 WAT. The corrected
 credential attachment (3) was retrieved and compared byte-for-byte with the
-earlier attachment: they contain the same credentials. Fresh requests used the
-documented JSON fields and URLs. WaaS returned HTTP 200 with an access token;
-VAS returned HTTP 400, response code 400 and `Bad credentials`.
+earlier attachment: they contain the same credentials. The initial 09:21 WAT
+requests used the documented JSON fields and URLs. WaaS returned HTTP 200 with
+an access token; VAS returned HTTP 400, response code 400 and `Bad credentials`.
+
+The 10:42 WAT repeat exercised the actual updated client and again obtained
+WaaS HTTP 200 and VAS HTTP 400 / response code 400. The newly supplied VAS files
+are byte-identical to the earlier versions. Contract changes and synthetic tests
+are recorded in [9psb-vas-contract.md](9psb-vas-contract.md); these do not turn
+the failed sandbox authentication into completed VAS UAT.
 
 The documented VAS authenticator and the implementation both use
 `POST http://102.216.128.75:9090/identity/api/v1/authenticate`, with `username`

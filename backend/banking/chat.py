@@ -12,6 +12,7 @@ from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceed
 from . import bills
 from .client import ProviderError, config, money, phone
 from .payments import spending_account
+from .vas import fields_schema, text_value
 
 ACTION = "bank_vas"
 PAGE_SIZE = 8
@@ -73,9 +74,9 @@ def _named(rows):
 def start(user, msisdn, kind="bill", *, mobile=None, amount=None):
     r = router()
     try:
-        spending_account(user, refresh=True)
         if config().get("VAS_ENABLED") is not True:
             raise ValueError("Bill payments are temporarily unavailable")
+        spending_account(user, refresh=True)
         if kind not in {"airtime", "data", "bill"}:
             raise ValueError("Choose airtime, data or bill payments")
         payload = {"kind": kind, "pin_attempts": 0}
@@ -95,7 +96,8 @@ def _confirm(pa, user):
     r = router()
     if pa.payload["kind"] == "bill":
         result = bills.validate(user, pa.payload["biller_id"], pa.payload["item_id"],
-                                pa.payload["customer"], pa.payload["amount"])
+                                pa.payload["customer"], pa.payload["amount"],
+                                inputs=pa.payload.get("validation_inputs", {}))
         pa.payload.update(validation_reference=result["validation_reference"], customer_name=result["customer_name"])
     else:
         network = bills.catalog("network", phone=pa.payload["phone"]).get("network")
@@ -112,7 +114,24 @@ def fields(pa):
     kind = p["kind"]
     return {"amount": router()._money(Decimal(p["amount"])),
         "recipient": p.get("customer_name") or p.get("phone", ""),
-        "details": p.get("item_name") or p.get("plan_name") or (p.get("network", "") + " " + kind).strip()}
+        "details": p.get("item_name") or p.get("biller_name") or p.get("plan_name") or (p.get("network", "") + " " + kind).strip()}
+
+
+def _customer_prompt(pa):
+    router()._touch(pa, state="customer", payload=pa.payload)
+    field = pa.payload["biller_fields"]["customerId"]
+    return router().reply(pa.msisdn, field["fieldDescription"] or "Enter your customer, meter or subscription number.")
+
+
+def _next_customer_input(pa):
+    r = router()
+    for key in ("firstname", "lastname"):
+        field = pa.payload["biller_fields"].get(key)
+        if field and field["validation"] == "Y" and not pa.payload["validation_inputs"].get(key):
+            r._touch(pa, state="input_" + key, payload=pa.payload)
+            return r.reply(pa.msisdn, field["fieldDescription"] or ("Enter your " + key))
+    r._touch(pa, state="phone", payload=pa.payload)
+    return r.reply(pa.msisdn, 'Enter your contact phone number, or reply "me".')
 
 
 def advance(pa, user, msisdn, text):
@@ -130,9 +149,12 @@ def advance(pa, user, msisdn, text):
         elif pa.state == "billers":
             selected = _pick(pa, text)
             if selected:
-                pa.payload["biller_id"] = selected["id"]
-                rows = [row for field in bills.catalog("fields", biller=selected["id"])
-                        if isinstance(field, dict) for row in field.get("items", []) if isinstance(row, dict)]
+                schema = fields_schema(bills.catalog("fields", biller=selected["id"]))
+                pa.payload.update(biller_id=selected["id"], biller_name=selected["label"],
+                    biller_fields=schema, validation_inputs={}, item_id="", amount="0")
+                if "itemId" not in schema:
+                    return _customer_prompt(pa)
+                rows = schema["itemId"]["items"]
                 choices = [{"id": str(row["itemId"]), "label": str(row["itemName"])[:160], "amount": str(row.get("amount", "0"))}
                            for row in rows if row.get("itemId") is not None and row.get("itemName")]
                 return _choices(pa, "items", choices)
@@ -143,15 +165,19 @@ def advance(pa, user, msisdn, text):
                 if not amount.is_finite() or amount < 0:
                     raise ValueError("This bill item has an invalid price")
                 pa.payload.update(item_id=selected["id"], item_name=selected["label"], amount=str(amount))
-                r._touch(pa, state="customer", payload=pa.payload)
-                return r.reply(msisdn, "Enter your customer, meter or subscription number.")
+                return _customer_prompt(pa)
         elif pa.state == "customer":
-            customer = str(text).strip()
-            if not customer or len(customer) > 100:
+            customer = text_value(text, maximum=100)
+            if not customer:
                 raise ValueError("Enter a valid customer number")
             pa.payload["customer"] = customer
-            r._touch(pa, state="phone", payload=pa.payload)
-            return r.reply(msisdn, 'Enter your contact phone number, or reply "me".')
+            return _next_customer_input(pa)
+        elif pa.state in {"input_firstname", "input_lastname"}:
+            value = text_value(text, maximum=100)
+            if not value:
+                raise ValueError("Enter the required customer name")
+            pa.payload["validation_inputs"][pa.state.removeprefix("input_")] = value
+            return _next_customer_input(pa)
         elif pa.state == "phone":
             mobile = phone(user.phone if str(text).strip().casefold() == "me" else text)
             pa.payload["phone"] = mobile
@@ -192,8 +218,11 @@ def execute(pa, user, msisdn):
     def receipt(txn, result):
         return label + " receipt", [("Amount", r._money(amount)),
             ("Recipient", p.get("customer_name") or p["phone"]),
-            ("Details", p.get("item_name") or p.get("plan_name") or p.get("network", "")),
-            *([("Token", result["token"])] if result.get("token") else []), ("Reference", txn.reference)]
+            ("Details", p.get("item_name") or p.get("biller_name") or p.get("plan_name") or p.get("network", "")),
+            *([("Token", result["token"])] if result.get("token") else []),
+            *([("Units", result["electricity_units"])] if result.get("electricity_units") else []),
+            *([("Token", "Being retrieved. Check transaction history shortly.")] if result.get("receipt_pending") else []),
+            ("Reference", txn.reference)]
     if prior:
         return r._vtu_outcome(pa, user, msisdn, amount, label, prior, prior.meta, receipt, replay=True)
     try:

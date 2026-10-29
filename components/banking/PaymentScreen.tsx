@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import { router } from 'expo-router';
 import AuthGuard from '@/components/AuthGuard';
@@ -14,7 +14,6 @@ import { classifySpendResponse } from '@/lib/spendOutcome';
 import { normalizeAmountInput } from '@/lib/amounts';
 
 type Kind = 'airtime' | 'data' | 'bill';
-type Item = { itemId: string; itemName: string; amount: string | number };
 const localPhone = (value: string) => value.replace(/[\s()+-]/g, '').replace(/^234/, '0');
 function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
   const { c } = useTheme();
@@ -23,7 +22,12 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
   const [amount, setAmount] = useState('');
   const [categories, setCategories] = useState<CatalogItem[]>([]);
   const [billers, setBillers] = useState<CatalogItem[]>([]);
-  const [items, setItems] = useState<Item[]>([]);
+  const [fields, setFields] = useState<CatalogItem[]>([]);
+  const [fieldsReady, setFieldsReady] = useState(false);
+  const [inputs, setInputs] = useState<Record<string, string>>({});
+  const items = fields.flatMap((field) => field.isSelectData === 'Y' ? field.items || [] : []);
+  const extraFields = fields.filter((field) => field.validation === 'Y' && ['firstname', 'lastname'].includes(field.fieldName || ''));
+  const hasSelection = fields.some((field) => field.fieldName === 'itemId');
   const [plans, setPlans] = useState<CatalogItem[]>([]);
   const [category, setCategory] = useState('');
   const [biller, setBiller] = useState('');
@@ -40,18 +44,21 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
   const [reference, setReference] = useState('');
   const generation = useRef(getSessionGeneration());
   const active = useRef(false);
+  const validating = useRef(false);
   const catalogSerial = useRef(0);
   const reviewed = useRef('');
-  const current = () => generation.current === getSessionGeneration();
-  const fingerprint = JSON.stringify([kind, phone, amount, biller, item, customer, product, validation]);
+  const current = useCallback(() => generation.current === getSessionGeneration(), []);
+  const fingerprint = JSON.stringify([kind, phone, amount, biller, item, customer, product, validation, inputs]);
+  const validationIntent = JSON.stringify([phone, amount, biller, item, customer, inputs]);
+  const liveValidationIntent = useRef(validationIntent);
+  liveValidationIntent.current = validationIntent;
   // Validation tokens expire. A retry for the same payment must keep its key
   // even after customer validation is renewed.
   const paymentIntent = JSON.stringify([kind, phone, Number(amount).toFixed(2), biller, item, customer.trim(), product]);
-  const liveFingerprint = useRef(fingerprint);
-  liveFingerprint.current = fingerprint;
   const text = { color: c.ink1, fontFamily: font.regular, lineHeight: 22 };
   const invalidate = () => { setValidation(''); setCustomerName(''); };
-  const fetchCatalog = async (type: string, params: Record<string, string>, consume: (items: CatalogItem[]) => void) => {
+  const resetFields = () => { setFields([]); setFieldsReady(false); setInputs({}); setItem(''); setAmount(''); setCustomer(''); invalidate(); };
+  const fetchCatalog = useCallback(async (type: string, params: Record<string, string>, consume: (items: CatalogItem[]) => void) => {
     const serial = ++catalogSerial.current;
     setBusy(true);
     try {
@@ -61,24 +68,26 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
       else setMessage(result.message || 'The bank catalog is unavailable. Please try again.');
     } catch { if (current() && serial === catalogSerial.current) setMessage('Could not load the bank catalog. Please try again.'); }
     finally { if (current() && serial === catalogSerial.current) setBusy(false); }
-  };
+  }, [current]);
   useEffect(() => {
     generation.current = getSessionGeneration();
-    if (kind === 'bill') void fetchCatalog('categories', {}, setCategories);
-    return () => { generation.current = -1; };
-  }, [kind]);
-  useEffect(() => { if (!phone && phoneNumber) setPhone(localPhone(phoneNumber)); }, [phoneNumber]);
+    if (kind === 'bill' && billPaymentsAvailable === true) void fetchCatalog('categories', {}, setCategories);
+    return () => { generation.current = -1; catalogSerial.current += 1; };
+  }, [kind, billPaymentsAvailable, fetchCatalog]);
+  useEffect(() => { if (phoneNumber) setPhone((prior) => prior || localPhone(phoneNumber)); }, [phoneNumber]);
   const validate = async () => {
-    if (busy) return;
-    const captured = fingerprint;
-    setBusy(true);
+    if (!current() || busy || validating.current) return;
+    const captured = validationIntent;
+    validating.current = true; setBusy(true); invalidate();
     try {
-      const result = await banking.validate({ biller_id: biller, item_id: item, customer, amount });
-      if (!current() || liveFingerprint.current !== captured) return;
-      if (result.success && result.validation_reference) { setValidation(result.validation_reference); setCustomerName(result.customer_name || ''); }
+      const result = await banking.validate({ biller_id: biller, item_id: item, customer, amount, inputs });
+      if (!current() || liveValidationIntent.current !== captured) return;
+      if (result.success && result.validation_reference && Number(result.amount) === Number(amount)) {
+        setValidation(result.validation_reference); setCustomerName(result.customer_name || ''); setMessage('');
+      }
       else setMessage(result.message || 'Customer could not be verified.');
     } catch { if (current()) setMessage('Could not verify this customer. Please try again.'); }
-    finally { if (current()) setBusy(false); }
+    finally { validating.current = false; if (current()) setBusy(false); }
   };
   const pay = async (pin: string) => {
     if (!current() || active.current || !valid || reviewed.current !== fingerprint) return;
@@ -100,7 +109,7 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
       }
       if (outcome === 'success' || outcome === 'pending' || outcome === 'unknown') {
         setFinished(true); setStep(null); setReference(String(result.reference || ''));
-        setMessage(outcome === 'success' ? 'Payment completed.' + (result.token ? ` Your token: ${result.token}` : '') : 'Payment is processing. Check transaction history before trying again.');
+        setMessage(outcome === 'success' ? 'Payment completed.' + (result.token ? ` Your token: ${result.token}` : result.receipt_pending ? ' Your token is being retrieved. Check transaction history shortly.' : '') : 'Payment is processing. Check transaction history before trying again.');
         await reload();
       } else { setPinError(result.message || 'Payment could not be completed.'); }
     } catch { if (current()) {
@@ -127,18 +136,23 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
       {kind === 'bill' && <>
         {!categories.length && <Btn label="Retry loading bill categories" variant="outline" disabled={busy} onPress={() => void fetchCatalog('categories', {}, setCategories)} />}
         {categories.map((entry) => <Btn key={String(entry.id)} label={String(entry.name)} variant={category === String(entry.id) ? 'primary' : 'outline'} disabled={busy} onPress={() => {
-          const id = String(entry.id); setCategory(id); setBiller(''); setBillers([]); setItem(''); setItems([]); invalidate();
+          const id = String(entry.id); setCategory(id); setBiller(''); setBillers([]); resetFields();
           void fetchCatalog('billers', { category: id }, setBillers);
         }} />)}
         {billers.map((entry) => <Btn key={String(entry.id)} label={String(entry.name)} variant={biller === String(entry.id) ? 'primary' : 'outline'} disabled={busy} onPress={() => {
-          const id = String(entry.id); setBiller(id); setItem(''); setItems([]); invalidate();
-          void fetchCatalog('fields', { biller: id }, (fields) => setItems(fields.flatMap((field) => field.items || [])));
+          const id = String(entry.id); setBiller(id); resetFields();
+          void fetchCatalog('fields', { biller: id }, (rows) => {
+            setFields(rows); setFieldsReady(rows.some((field) => field.fieldName === 'customerId'));
+          });
         }} />)}
         {items.map((entry) => <Btn key={String(entry.itemId)} label={`${entry.itemName}${Number(entry.amount) > 0 ? ' · ' + money(Number(entry.amount)) : ''}`} variant={item === String(entry.itemId) ? 'primary' : 'outline'} disabled={busy} onPress={() => { setItem(String(entry.itemId)); setAmount(Number(entry.amount) > 0 ? String(entry.amount) : ''); invalidate(); }} />)}
         <Field label="Customer, meter or subscription number" value={customer} editable={!busy} onChangeText={(v) => { setCustomer(v); invalidate(); }} />
+        {extraFields.map((field) => <Field key={field.fieldName} label={field.fieldName === 'firstname' ? 'Customer first name' : 'Customer last name'}
+          placeholder={field.fieldDescription} value={inputs[field.fieldName!] || ''} editable={!busy} maxLength={100}
+          onChangeText={(value) => { setInputs((prior) => ({ ...prior, [field.fieldName!]: value })); invalidate(); }} />)}
       </>}
       <Field label="Amount (NGN)" value={amount} keyboardType="decimal-pad" editable={!busy && kind !== 'data' && !(kind === 'bill' && Number(items.find((entry) => String(entry.itemId) === item)?.amount) > 0)} onChangeText={(v) => { const next = normalizeAmountInput(v); if (next !== null) { setAmount(next); invalidate(); } }} />
-      {kind === 'bill' && <><Btn label="Verify customer" disabled={busy || !biller || !item || !customer || numeric <= 0} onPress={() => void validate()} />{!!customerName && <Text style={text}>Customer: {customerName}</Text>}</>}
+      {kind === 'bill' && <><Btn label="Verify customer" disabled={busy || !biller || !fieldsReady || (hasSelection && !item) || !customer.trim() || numeric <= 0 || extraFields.some((field) => !inputs[field.fieldName!]?.trim())} onPress={() => void validate()} />{!!customerName && <Text style={text}>Customer: {customerName}</Text>}</>}
       <Btn label="Review payment" disabled={!valid} onPress={() => { reviewed.current = fingerprint; setStep('review'); }} />
     </>}
     {finished && <Btn label="View transaction history" variant="outline" onPress={() => router.push('/(homepage)/history')} />}

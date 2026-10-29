@@ -70,7 +70,7 @@ class ClientTests(SimpleTestCase):
     def test_waas_and_vas_have_separate_authentication_and_cache(self):
         with patch.object(Client, "_send", side_effect=[
             Reply({"accessToken": "wallet-token", "expiresIn": 1800}, 200),
-            Reply({"status": "success", "data": {"accessToken": "vas-token", "expiresIn": 1800}}, 200),
+            Reply({"status": "success", "responseCode": "200", "data": {"accessToken": "vas-token", "expiresIn": 1800}}, 200),
         ]) as send:
             self.assertEqual(Client().token(), "wallet-token")
             self.assertEqual(Client("vas").token(), "vas-token")

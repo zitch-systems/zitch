@@ -117,7 +117,8 @@ async function chooseBill() {
   mockCatalog.mockImplementation(async (kind: string) => ({ success: true, data:
     kind === 'categories' ? [{ id: 'C1', name: 'Electricity' }] :
     kind === 'billers' ? [{ id: 'B1', name: 'Current Biller' }] :
-    [{ fieldName: 'Account', items: [{ itemId: 'I1', itemName: 'Fixed product', amount: '100' }] }] }));
+    [{ fieldName: 'customerId', validation: 'Y' }, { fieldName: 'amount', validation: 'Y' },
+      { fieldName: 'itemId', isSelectData: 'Y', validation: 'Y', items: [{ itemId: 'I1', itemName: 'Fixed product', amount: '100' }] }] }));
   await mount('bill');
   await act(async () => { control('Electricity').props.onPress(); });
   await act(async () => { control('Current Biller').props.onPress(); });
@@ -149,6 +150,85 @@ it('binds fixed bill prices and validation to the current customer', async () =>
   await act(async () => { control('Customer, meter or subscription number').props.onChangeText('customer-2'); });
   expect(control('Review payment').props.disabled).toBe(true);
   expect(JSON.stringify(tree.toJSON())).not.toContain('Ada Eze');
+});
+
+async function chooseNoPlanBill(fields: object[] = []) {
+  mockCatalog.mockImplementation(async (kind: string) => ({ success: true, data:
+    kind === 'categories' ? [{ id: 'C1', name: 'Subscriptions' }] :
+    kind === 'billers' ? [{ id: 'B1', name: 'No-plan biller' }] :
+    [{ fieldName: 'customerId', validation: 'Y' }, { fieldName: 'amount', validation: 'Y' }, ...fields] }));
+  await mount('bill');
+  await act(async () => { control('Subscriptions').props.onPress(); });
+  await act(async () => { control('No-plan biller').props.onPress(); });
+  await act(async () => { control('Customer, meter or subscription number').props.onChangeText('customer-1'); });
+  await act(async () => { control('Amount (NGN)').props.onChangeText('100'); });
+}
+
+it('validates and purchases a no-plan bill without inventing an item', async () => {
+  await chooseNoPlanBill();
+  expect(control('Verify customer').props.disabled).toBe(false);
+  await verifyBill(); await payBill();
+  expect(mockValidate).toHaveBeenCalledWith({ biller_id: 'B1', item_id: '', customer: 'customer-1', amount: '100', inputs: {} });
+  expect(mockPost).toHaveBeenCalledTimes(1);
+});
+
+it('collects required customer names and invalidates approval when they change', async () => {
+  await chooseNoPlanBill([
+    { fieldName: 'firstname', validation: 'Y', fieldDescription: 'First name on account' },
+    { fieldName: 'lastname', validation: 'Y' },
+  ]);
+  expect(control('Verify customer').props.disabled).toBe(true);
+  await act(async () => { control('Customer first name').props.onChangeText('Ada'); });
+  await act(async () => { control('Customer last name').props.onChangeText('Eze'); });
+  expect(control('Verify customer').props.disabled).toBe(false);
+  await verifyBill();
+  expect(mockValidate).toHaveBeenCalledWith(expect.objectContaining({ inputs: { firstname: 'Ada', lastname: 'Eze' } }));
+  await act(async () => { control('Customer last name').props.onChangeText('Changed'); });
+  expect(control('Review payment').props.disabled).toBe(true);
+});
+
+it('does not request names excluded from bank validation', async () => {
+  await chooseNoPlanBill([{ fieldName: 'firstname', validation: 'N' }]);
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Customer first name' })).toHaveLength(0);
+  expect(control('Verify customer').props.disabled).toBe(false);
+});
+
+it('requires a vend option but lets the customer enter an unpriced electricity amount', async () => {
+  await chooseNoPlanBill([{ fieldName: 'itemId', validation: 'Y', isSelectData: 'Y',
+    items: [{ itemId: 'VT01', itemName: 'PREPAID' }, { itemId: 'VT02', itemName: 'POSTPAID' }] }]);
+  expect(control('Verify customer').props.disabled).toBe(true);
+  await act(async () => { control('PREPAID').props.onPress(); });
+  expect(control('Amount (NGN)').props.editable).toBe(true);
+  await act(async () => { control('Amount (NGN)').props.onChangeText('100'); });
+  await verifyBill();
+  expect(mockValidate).toHaveBeenCalledWith(expect.objectContaining({ item_id: 'VT01', amount: '100' }));
+});
+
+it('does not accept an approval for a different bill amount', async () => {
+  await chooseNoPlanBill();
+  mockValidate.mockResolvedValue({ success: true, validation_reference: 'wrong-price', customer_name: 'Ada', amount: '101' });
+  await act(async () => { control('Verify customer').props.onPress(); });
+  expect(control('Review payment').props.disabled).toBe(true);
+  expect(mockPost).not.toHaveBeenCalled();
+});
+
+it('submits customer validation once on rapid taps and clears a rejected earlier approval', async () => {
+  await chooseNoPlanBill(); await verifyBill();
+  let finish!: (value: unknown) => void;
+  mockValidate.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  const validate = control('Verify customer').props.onPress;
+  await act(async () => { validate(); validate(); });
+  expect(mockValidate).toHaveBeenCalledTimes(2); // Initial approval + one renewal.
+  await act(async () => { finish({ success: false, message: 'Validation unavailable' }); });
+  expect(control('Review payment').props.disabled).toBe(true);
+});
+
+it('directs a confirmed payment with a delayed token to its recoverable receipt', async () => {
+  mockPost.mockResolvedValue({ status: 200, json: async () => ({ success: true, receipt_pending: true, reference: 'TOKEN-PENDING' }) });
+  await chooseNoPlanBill(); await verifyBill(); await payBill();
+  expect(JSON.stringify(tree.toJSON())).toContain('Your token is being retrieved');
+  expect(control('View transaction history')).toBeTruthy();
+  expect(mockClear).toHaveBeenCalledTimes(1);
 });
 
 it('ignores a bill validation response after the customer changes', async () => {

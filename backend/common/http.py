@@ -460,6 +460,10 @@ def idempotent_replay(prior):
             token = meta.get("provider_reference")
         if token:
             extra["token"] = str(token)
+        if isinstance(meta.get("electricity_units"), str):
+            extra["electricity_units"] = meta["electricity_units"][:40]
+        if meta.get("receipt_pending") is True:
+            extra["receipt_pending"] = True
         return ok(success=True, reference=prior.reference, message="Already processed",
                   duplicate=True, **extra)
     # Transaction.status has model choices, but fail closed if legacy or corrupt

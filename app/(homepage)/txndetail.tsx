@@ -36,6 +36,7 @@ type TransactionStatusRow = {
   customer_name?: string;
   customer_address?: string;
   electricity_units?: string;
+  receipt_pending?: boolean;
 };
 
 type TransactionStatusResult = {
@@ -188,6 +189,7 @@ const TxnDetail = () => {
   const { state, label: status, icon: statusIcon } = transactionStatusPresentation(rawStatus);
   const statusColor = state === 'failed' ? c.red : state === 'pending' ? c.amber : c.lime;
   const electricityToken = state === 'success' && !underReview ? String(liveTxn?.token || '').trim() : '';
+  const receiptPending = state === 'success' && !underReview && liveTxn?.receipt_pending === true;
   const electricityRows = electricityToken ? [
     ['Electricity token', electricityToken],
     ['Meter', liveTxn?.meter], ['Meter type', liveTxn?.meter_type],
@@ -234,7 +236,8 @@ const TxnDetail = () => {
         {electricityToken ? <View style={{ marginBottom: 10 }}><Btn label="Copy electricity token" icon="copy" onPress={() => {
           void Clipboard.setStringAsync(electricityToken).then(() => notify('Copied', 'Electricity token copied.')).catch(() => notify('Could not copy', 'Please try again.'));
         }} /></View> : null}
-        {state === 'pending' && referenceParam ? (
+        {receiptPending && <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 10 }}>Payment completed. Your token is being retrieved; refresh shortly.</Text>}
+        {(state === 'pending' || receiptPending) && referenceParam ? (
           <View style={{ marginBottom: 10 }}>
             <Btn
               label={refreshing ? 'Refreshing status…' : 'Refresh status'}

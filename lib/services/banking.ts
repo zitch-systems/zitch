@@ -22,7 +22,8 @@ export type BankProgress = ApiResult<{
 }>;
 export type CatalogItem = { id?: string; name?: string; productId?: string; amount?: string | number;
   dataBundle?: string; validity?: string; fieldName?: string; fieldDescription?: string;
-  items?: { itemId: string; itemName: string; amount: string | number }[] };
+  validation?: 'Y' | 'N'; isSelectData?: 'Y' | 'N';
+  items?: { itemId: string; itemName: string; amount?: string | number }[] };
 
 export const banking = {
   status: () => apiJson<BankStatus>('/api/banking/status/'),

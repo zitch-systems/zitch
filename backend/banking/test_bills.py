@@ -15,6 +15,13 @@ from .secrets import seal
 from .test_client import CONFIG
 from .test_money import MoneyTests
 
+BILL_FIELDS = [
+    {"fieldName": "customerId", "fieldDescription": "Enter Meter number", "validation": "Y"},
+    {"fieldName": "amount", "fieldDescription": "Enter Amount to Pay", "validation": "Y"},
+    {"fieldName": "itemId", "fieldDescription": "Select a plan", "validation": "Y", "isSelectData": "Y",
+     "items": [{"itemId": "I1", "itemName": "Plan", "amount": "100"}]},
+]
+
 
 @override_settings(NINEPSB=CONFIG)
 class BillTests(TestCase):
@@ -24,6 +31,7 @@ class BillTests(TestCase):
 
     def validation(self, **changes):
         return BillerValidation.objects.create(user=self.user, reference="approved-customer", biller_id="B1", item_id="I1",
+            environment="production",
             amount=100, customer_digest=digest("customer-1"),
             encrypted_result=seal({"customer": "customer-1", "name": "Jane Doe", "other_field": "bound-value"}),
             expires_at=timezone.now()+timedelta(minutes=5), **changes)
@@ -88,14 +96,14 @@ class BillTests(TestCase):
         self.assertEqual(send.call_args.args[1]["network"], "MTN")
 
     def test_client_cannot_choose_an_unlisted_bill_item(self):
-        with patch("banking.bills.catalog", return_value=[{"items": [{"itemId": "I1", "amount": "100"}]}]), \
+        with patch("banking.bills.catalog", return_value=BILL_FIELDS), \
              patch("banking.client.Client.validate_customer") as query, self.assertRaises(ValueError):
             bills.validate(self.user, "B1", "unlisted", "customer-1", "1")
         query.assert_not_called()
 
     def test_malformed_biller_name_cannot_create_spend_authorization(self):
         for name in (True, ["Jane", "Doe"], {"name": "Jane Doe"}, " ", "J"*161):
-            with self.subTest(name=name), patch("banking.bills.item_price", return_value=Decimal("100")), \
+            with self.subTest(name=name), patch("banking.bills.catalog", return_value=BILL_FIELDS), \
                     patch("banking.client.Client.validate_customer", return_value=Reply({
                         "status": "success", "responseCode": "200", "data": {"customerName": name}}, 200)), \
                     self.assertRaises(ValueError):

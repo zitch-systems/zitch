@@ -28,7 +28,8 @@ def sweep(*, limit=10, budget_seconds=45):
     environment = config().get("ENVIRONMENT", "sandbox")
     queues = [
         ("notifications", Notification.objects.filter(account__environment=environment, next_check__lte=now).exclude(state="complete").order_by("next_check"), process),
-        ("instructions", Instruction.objects.filter(account__environment=environment, next_check__lte=now, state__in=["prepared", "sending", "pending"]).order_by("next_check"), requery),
+        ("instructions", Instruction.objects.filter(account__environment=environment, next_check__lte=now).filter(
+            Q(state__in=["prepared", "sending", "pending"]) | Q(state="success", receipt_pending=True)).order_by("next_check"), requery),
         ("identities", IdentityChallenge.objects.filter(environment=environment, state__in=["verified", "opening"], verified_at__isnull=False).order_by("updated"), complete_account),
         ("accounts", BankAccount.objects.filter(environment=environment).filter(Q(checked_at__lt=now-timedelta(minutes=4)) | Q(checked_at__isnull=True)).order_by("checked_at"), update_account),
         ("upgrades", AccountUpgrade.objects.filter(account__environment=environment, state__in=["pending", "submitted", "review"]).filter(Q(checked_at__lt=now-timedelta(minutes=5)) | Q(checked_at__isnull=True)).order_by("checked_at"), lambda row: refresh_upgrade(row.account)),

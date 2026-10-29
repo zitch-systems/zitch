@@ -201,7 +201,10 @@ class Reply:
         if product == "vas":
             if self.ok and code == "200":
                 return "success"
-            if status == "FAILED" and code in {"300", "400", "401", "403"}:
+            # The supplied Postman duplicate-reference example is HTTP 200 /
+            # failed / 300. It does not prove the original debit failed. Query
+            # its existing reference; never refund or replay this instruction.
+            if status == "FAILED" and code in {"400", "401", "403"}:
                 return "failed"
         else:
             # 42 is an existing transaction and must be requeried, not refunded.
@@ -292,7 +295,9 @@ class Client:
                 raise ProviderError(exc.code, uncertain=False) from None
             data = result.body if self.product == "waas" else result.data
             token = data.get("accessToken") if isinstance(data, dict) else None
-            if result.http_status != 200 or not isinstance(token, str) or not token.strip():
+            vas_confirmed = self.product != "vas" or (
+                result.ok and str(result.body.get("responseCode")) == "200")
+            if result.http_status != 200 or not vas_confirmed or not isinstance(token, str) or not token.strip():
                 code = str(result.body.get("responseCode", ""))
                 raise ProviderError("authentication_failed", http_status=result.http_status,
                     response_code=code if re.fullmatch(r"[0-9]{2,4}", code) else "")
@@ -432,12 +437,16 @@ class Client:
             raise ValueError("Invalid catalog ID")
         return str(value)
 
-    def validate_customer(self, biller, customer, *, item="", amount=None):
+    def validate_customer(self, biller, customer, *, item="", amount=None, firstname="", lastname=""):
         payload = {"billerId": self._catalog_id(biller), "customerId": str(customer)}
         if item:
             payload["itemId"] = self._catalog_id(item)
         if amount is not None:
             payload["amount"] = money(amount)
+        for key, value in (("firstname", firstname), ("lastname", lastname)):
+            if value:
+                from .vas import text_value
+                payload[key] = text_value(value, maximum=100)
         return self.request("billspayment/validate", payload)
 
     def topup(self, kind, ref, amount, number, mobile, network, *, product_id=""):
@@ -450,10 +459,15 @@ class Client:
         return self.request("topup/" + kind, payload)
 
     def pay_bill(self, ref, amount, number, *, biller, item, customer, mobile, name, other_field=""):
-        return self.request("billspayment/pay", {"billerId": self._catalog_id(biller),
-            "itemId": self._catalog_id(item), "customerId": str(customer), "customerPhone": phone(mobile),
+        payload = {"billerId": self._catalog_id(biller),
+            "customerId": str(customer), "customerPhone": phone(mobile),
             "customerName": name, "otherField": other_field, "amount": money(amount),
-            "debitAccount": account(number), "transactionReference": reference(ref, length=18)})
+            "debitAccount": account(number), "transactionReference": reference(ref, length=18)}
+        # The collection's no-plan bill payment omits itemId. Never invent an
+        # item for a biller whose fields have no selection.
+        if item:
+            payload["itemId"] = self._catalog_id(item)
+        return self.request("billspayment/pay", payload)
 
     def vas_status(self, ref, *, bill=False):
         return self.request(("billspayment" if bill else "topup") + "/status", method="GET",

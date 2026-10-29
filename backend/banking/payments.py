@@ -14,7 +14,7 @@ from wallet.models import Transaction, Wallet
 from wallet.services import LimitExceeded, InsufficientFunds, settle_or_refund
 
 from .accounts import account_for, require_enabled, spendable, update_account
-from .client import Client, ProviderError, config, money, require_environment
+from .client import Client, ProviderError, config, money, phone, require_environment
 from .models import Instruction, PreviousBankArchive
 from .secrets import seal, unseal
 
@@ -77,12 +77,22 @@ def bank_limit_error(user, amount):
     return None
 
 
-def _result(state, instruction, *, token="", code=""):
+def _result(state, instruction, *, token="", code="", receipt=None):
+    value = {}
+    if state == "success":
+        # Replays and background completion retain purchased value.
+        meta = instruction.transaction.meta or {}
+        value = {key: meta[key] for key in ("token", "electricity_units")
+                 if isinstance(meta.get(key), str) and meta[key]}
+        value.update(receipt or {})
+        if token:
+            value["token"] = token
     return {"success": state == "success", "pending": state == "pending",
         "status": {"success": "SUCCESS", "failed": "FAILED", "pending": "PENDING"}[state],
         "reference": instruction.transaction.reference, "provider_reference": instruction.reference,
         "vas_rail": "9psb", "vas_type": instruction.operation,
-        "token": token, "code": code,
+        "receipt_pending": state == "success" and instruction.receipt_pending,
+        "token": "", **value, "code": code,
         "message": "Payment is processing." if state == "pending" else "Payment could not be completed." if state == "failed" else "Payment completed."}
 
 
@@ -132,6 +142,35 @@ def _invoke(instruction, body):
     raise ValueError("Unsupported payment operation")
 
 
+def _vas_response_matches(instruction, data, body):
+    """Every echoed identifier must agree, including contradictory aliases."""
+    try:
+        for key in ("transactionId", "transactionReference", "reference"):
+            if key in data and data[key] != instruction.reference:
+                return False
+        if "amount" in data and money(data["amount"]) != money(instruction.amount):
+            return False
+        for key in ("debitAccount", "accountNumber"):
+            if key in data and data[key] != instruction.account.number:
+                return False
+        if instruction.operation in {"airtime", "data"}:
+            for key in ("recipient", "phoneNumber"):
+                if key in data and (not isinstance(data[key], str) or phone(data[key]) != body["phone"]):
+                    return False
+            if "network" in data and (not isinstance(data["network"], str)
+                    or data["network"].strip().upper() != body["network"].strip().upper()):
+                return False
+            if "productId" in data and data["productId"] != body.get("product_id"):
+                return False
+        else:
+            for key, expected in (("billerId", "biller_id"), ("itemId", "item_id"), ("customerId", "customer")):
+                if key in data and data[key] != body.get(expected):
+                    return False
+    except (ValueError, KeyError):
+        return False
+    return True
+
+
 def dispatch(instruction):
     require_environment(instruction.account.environment)
     # A CAS claim closes API/API and API/worker races. Only 'prepared' may send.
@@ -141,10 +180,15 @@ def dispatch(instruction):
         instruction.refresh_from_db()
         return _result(instruction.state if instruction.state in {"success", "failed"} else "pending", instruction)
     try:
-        reply = _invoke(instruction, unseal(instruction.encrypted_request))
+        body = unseal(instruction.encrypted_request)
+        reply = _invoke(instruction, body)
         state = reply.payment_state(product=instruction.product)
         data = reply.data if isinstance(reply.data, dict) else {}
-        token = str(data.get("token", "")) if instruction.operation == "bill" and state == "success" else ""
+        if instruction.product == "vas" and not _vas_response_matches(instruction, data, body):
+            return finish(instruction, "pending", error="vas_response_mismatch")
+        from .vas import receipt as bill_receipt
+        receipt = bill_receipt(data) if instruction.operation == "bill" and state == "success" else {}
+        receipt_pending = instruction.operation == "bill" and state == "success" and data.get("isToken") is True and not receipt.get("token")
         # Retain a bounded machine code for operator diagnosis, never the raw
         # response message (which can echo account or identity information).
         response_code = str(reply.body.get("responseCode", ""))
@@ -152,42 +196,58 @@ def dispatch(instruction):
                  if state == "failed" and re.fullmatch(r"[0-9]{2,4}", response_code) else "")
     except ProviderError as exc:
         state = "pending" if exc.uncertain else "failed"
-        token, error = "", exc.code
+        receipt, error, receipt_pending = {}, exc.code, False
     except (ValueError, KeyError):
-        state, token, error = "failed", "", "invalid_instruction"
-    return finish(instruction, state, token=token, error=error)
+        state, receipt, error, receipt_pending = "failed", {}, "invalid_instruction", False
+    return finish(instruction, state, receipt=receipt, receipt_pending=receipt_pending, error=error)
 
 
 @transaction.atomic
-def finish(instruction, state, *, token="", error=""):
+def finish(instruction, state, *, token="", error="", receipt=None, receipt_pending=False):
     # Match the existing money state machine's wallet -> transaction lock order.
     Wallet.objects.select_for_update().get(pk=instruction.account.wallet_id)
     txn = Transaction.objects.select_for_update().get(pk=instruction.transaction_id)
     locked = Instruction.objects.select_for_update().get(pk=instruction.pk)
     if locked.state in {"success", "failed"}:
+        if locked.state == "success" and locked.receipt_pending:
+            # Delivery is already confirmed. Receipt recovery can enrich that
+            # receipt, but no failed/unknown lookup may refund a delivered bill.
+            if state == "success" and (receipt or {}).get("token"):
+                txn.meta = {**txn.meta, **receipt, "receipt_pending": False}
+                txn.save(update_fields=["meta"])
+                locked.receipt_pending, locked.encrypted_request, locked.next_check = False, "", None
+                locked.last_error = ""
+                locked.save(update_fields=["receipt_pending", "encrypted_request", "next_check", "last_error", "updated"])
+                return _result("success", locked, receipt=receipt)
+            locked.next_check = timezone.now() + timedelta(minutes=5)
+            locked.last_error = "conflicting_terminal_status" if state == "failed" else (error or "receipt_unavailable")
+            locked.save(update_fields=["next_check", "last_error", "updated"])
+            return _result("success", locked)
         if state in {"success", "failed"} and state != locked.state:
             locked.last_error = "conflicting_terminal_status"
             locked.save(update_fields=["last_error", "updated"])
         return _result(locked.state, locked)
-    result = _result(state, locked, token=token, code=error)
+    locked.receipt_pending = state == "success" and receipt_pending
+    result = _result(state, locked, token=token, code=error, receipt=receipt)
     outcome = settle_or_refund(txn, result)
     if outcome in {"success", "failed"}:
         state = outcome
-        result = _result(state, locked, token=token if state == "success" else "", code=error)
+        result = _result(state, locked, token=token if state == "success" else "", code=error, receipt=receipt)
     elif outcome == "quarantined":
         state = "pending"
         result = _result(state, locked, code="settlement_review")
     locked.state, locked.last_error = state, error
-    locked.next_check = timezone.now() + timedelta(minutes=2) if state == "pending" else None
-    if state != "pending":
+    locked.receipt_pending = state == "success" and locked.receipt_pending
+    locked.next_check = timezone.now() + timedelta(minutes=5 if locked.receipt_pending else 2) if state == "pending" or locked.receipt_pending else None
+    if state != "pending" and not locked.receipt_pending:
         locked.encrypted_request = ""
-    locked.save(update_fields=["state", "last_error", "next_check", "encrypted_request", "updated"])
+    locked.save(update_fields=["state", "last_error", "next_check", "encrypted_request", "receipt_pending", "updated"])
     return result
 
 
 def requery(instruction):
     require_environment(instruction.account.environment)
-    if instruction.state in {"success", "failed"}:
+    if instruction.state in {"success", "failed"} and not instruction.receipt_pending:
         return _result(instruction.state, instruction)
     if instruction.state == "prepared":
         # No worker may create a new instruction merely by running reconciliation.
@@ -202,6 +262,13 @@ def requery(instruction):
                 instruction.operation, timezone.localtime(instruction.created).date().isoformat(), instruction.account.number)
         state = response.payment_state(product=instruction.product, query=True)
         data = response.data if isinstance(response.data, dict) else {}
+        if instruction.product == "vas":
+            if not _vas_response_matches(instruction, data, unseal(instruction.encrypted_request)):
+                return finish(instruction, "pending", error="vas_status_mismatch")
+            from .vas import receipt as bill_receipt
+            receipt = bill_receipt(data, query=True) if state == "success" and instruction.operation == "bill" else {}
+            receipt_pending = instruction.operation == "bill" and state == "success" and data.get("isToken") is True and not receipt.get("token")
+            return finish(instruction, state, receipt=receipt, receipt_pending=receipt_pending)
         # Bind the queried payment whenever the bank includes its reference or
         # amount. Contradictions are review cases, never terminal settlement.
         returned = data.get("transactionId") or data.get("transactionReference") or data.get("reference")
@@ -209,10 +276,10 @@ def requery(instruction):
             return finish(instruction, "pending", error="status_reference_mismatch")
         if data.get("amount") is not None and Decimal(money(data["amount"])) != instruction.amount:
             return finish(instruction, "pending", error="status_amount_mismatch")
-        return finish(instruction, state, token=str(data.get("token", "")) if state == "success" else "")
+        return finish(instruction, state)
     except (ProviderError, ValueError):
         Instruction.objects.filter(pk=instruction.pk).update(next_check=timezone.now() + timedelta(minutes=5), last_error="status_unavailable")
-        return _result("pending", instruction, code="status_unavailable")
+        return _result("success" if instruction.state == "success" else "pending", instruction, code="status_unavailable")
 
 
 def submit_existing(reference, product, operation, payload):

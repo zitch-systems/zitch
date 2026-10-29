@@ -101,6 +101,7 @@ class Instruction(models.Model):
     request_digest = models.CharField(max_length=64)
     encrypted_request = models.TextField(blank=True)
     provider_reference = models.CharField(max_length=160, blank=True)
+    receipt_pending = models.BooleanField(default=False)
     attempts = models.PositiveIntegerField(default=0)
     next_check = models.DateTimeField(null=True, db_index=True)
     last_error = models.CharField(max_length=80, blank=True)
@@ -155,6 +156,8 @@ class AccountUpgrade(models.Model):
 
 
 class BillerValidation(models.Model):
+    environment = models.CharField(max_length=12, default="", blank=True,
+        choices=[("sandbox", "Sandbox"), ("production", "Production")])
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     reference = models.CharField(max_length=64, unique=True)
     biller_id = models.CharField(max_length=80)
