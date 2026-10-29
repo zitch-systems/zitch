@@ -168,7 +168,8 @@ def purchase(request):
             # A renewed validation token must not create another payment after a
             # lost response. Bind the stable request to its economic details.
             binding = [validation.biller_id, validation.item_id, validation.customer_digest]
-        key = spend_key(body["idempotency_key"], user, "9psb", body.get("kind"), mobile, amount, *binding)
+        key = spend_key(body["idempotency_key"], user, "9psb", config().get("ENVIRONMENT", "sandbox"),
+            body.get("kind"), mobile, amount, *binding)
     except (ValueError, BillerValidation.DoesNotExist):
         return fail("Verify the payment details before paying.", status=400)
     replay = idempotent_replay(existing_for_key(user, key))

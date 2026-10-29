@@ -7,6 +7,8 @@ from django.test import SimpleTestCase, override_settings
 from .client import Client, ProviderError, Reply, money
 
 CONFIG = {"BASE_URL": "https://bank.example.test", "ENVIRONMENT": "production",
+    "VAS_BASE_URL": "https://bank.example.test/vas/api/v1",
+    "VAS_AUTH_URL": "https://bank.example.test/identity/api/v1/authenticate",
     "ENABLED": True, "UAT_APPROVED": True, "VAS_ENABLED": True, "WAAS_USERNAME": "test", "WAAS_PASSWORD": "test",
     "WAAS_CLIENT_ID": "test", "WAAS_CLIENT_SECRET": "test", "VAS_USERNAME": "vas", "VAS_PASSWORD": "vas"}
 

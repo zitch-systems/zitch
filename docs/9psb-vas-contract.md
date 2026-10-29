@@ -97,7 +97,9 @@ No payment, identity submission, live account creation or activation occurred.
 
 ## Remaining acceptance work
 
-1. 9PSB must resolve the rejected VAS credentials/profile. Sandbox IP whitelisting
+1. 9PSB must confirm the VAS identity URL/profile because its later correction
+   conflicts with both attachments. A 400 response alone does not identify the
+   credentials as the cause. See [the routing correction](9psb-vas-auth-routing.md). Sandbox IP whitelisting
    is not required, as its technical team already confirmed.
 2. With working credentials and a Zitch-owned authorized funded UAT wallet,
    verify network/catalog reads, supported airtime/data networks, fixed-price and

@@ -1,5 +1,14 @@
 # Release checkpoint — 28 October 2026
 
+**29 October VAS update:** the supplied VAS contract is now covered by shared
+backend, mobile and WhatsApp changes, including no-plan billers, required customer
+names, duplicate-slip recovery and retained electricity receipts. A traced
+request to the attachment-specified identity URL returned HTTP 400 / Bad
+credentials. The bank now disputes that URL; see the
+[authentication routing correction](9psb-vas-auth-routing.md). The latest wider SQLite suite still has 487 failures and 561 errors.
+The migration remains a draft and is not deployed. Current details are in
+[the VAS contract review](9psb-vas-contract-20261029.md).
+
 The 9PSB migration is not deployed or approved for public banking. Render is
 still serving main commit `30a365b3c248b0831e79f197541939b6181fb5c4` through
 deploy `dep-dbh2ete1egvs73991tbg`. PR #561 remains a draft. No deployment or
@@ -48,7 +57,7 @@ are not 9PSB UAT acceptance and do not demonstrate live account creation.
 
 1. Finish the shared backend regression migration and obtain passing full
    PostgreSQL/SQLite CI. Then review and merge the release before deployment.
-2. Resolve VAS authentication, obtain bank-approved identity fixtures and a
+2. Confirm the VAS identity URL/profile and successful authentication; obtain bank-approved identity fixtures and a
    Zitch-owned funded UAT wallet, and complete joint bank UAT/sign-off.
 3. Confirm production credentials/transport, callback acceptance, any production
    IP allowlisting, fees, tier limits, ICAD requirements, history and

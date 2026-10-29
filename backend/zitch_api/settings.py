@@ -940,6 +940,10 @@ if SENTRY_DSN and not TESTING:
 # implicit authorization to process production customer identities or money.
 NINEPSB = {
     "BASE_URL": os.environ.get("NINEPSB_BASE_URL", ""),
+    # Explicit VAS URLs, independent of WaaS. Leave unset until confirmed for
+    # this bank profile; the disputed attachment URL is not an automatic default.
+    "VAS_BASE_URL": os.environ.get("NINEPSB_VAS_BASE_URL", ""),
+    "VAS_AUTH_URL": os.environ.get("NINEPSB_VAS_AUTH_URL", ""),
     "ENVIRONMENT": os.environ.get("NINEPSB_ENVIRONMENT", "sandbox"),
     "ENABLED": env_bool("NINEPSB_ENABLED", False),
     "UAT_APPROVED": env_bool("NINEPSB_UAT_APPROVED", False),

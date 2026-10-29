@@ -18,7 +18,6 @@ from django.core.cache import cache
 
 TIMEOUT = (5, 20)
 _local = threading.local()
-_AUTH_PATH = {"waas": "/waas/api/v1/authenticate", "vas": "/identity/api/v1/authenticate"}
 _PREFIX = {"waas": "/waas/api/v1/", "vas": "/vas/api/v1/"}
 
 
@@ -36,9 +35,14 @@ def config():
 
 
 def configured(product="waas"):
-    conf = config()
-    names = ("USERNAME", "PASSWORD", "CLIENT_ID", "CLIENT_SECRET") if product == "waas" else ("USERNAME", "PASSWORD")
-    return bool(conf.get("BASE_URL") and all(conf.get(f"{product.upper()}_{name}") for name in names))
+    client = Client(product)
+    try:
+        client._api_base()
+        client._auth_url()
+        client._credentials()
+    except ProviderError:
+        return False
+    return True
 
 
 def require_environment(environment):
@@ -223,19 +227,65 @@ class Client:
             raise ValueError("Unknown bank product")
         self.product = product
 
-    def _base(self):
-        base = str(config().get("BASE_URL", "")).rstrip("/")
-        parsed = urlsplit(base)
-        if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+    @staticmethod
+    def _validated_url(value):
+        # Validate the original string: urlsplit silently removes some control
+        # characters. Never accept credentials, query secrets or redirects here.
+        if (not isinstance(value, str) or not value
+                or any(char.isspace() or ord(char) < 32 for char in value)
+                or "\\" in value):
             raise ProviderError("invalid_base_url")
+        value = value.rstrip("/")
+        try:
+            parsed = urlsplit(value)
+            parsed.port  # Reject malformed and out-of-range ports before I/O.
+        except ValueError:
+            raise ProviderError("invalid_base_url") from None
+        if (not parsed.hostname or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment or "?" in value or "#" in value
+                or not re.fullmatch(r"[A-Za-z0-9/_-]*", parsed.path)):
+            raise ProviderError("invalid_base_url")
+        if config().get("ENVIRONMENT", "sandbox") not in {"sandbox", "production"}:
+            raise ProviderError("invalid_environment")
         if parsed.scheme != "https":
             # The bank supplied this exact HTTP-only sandbox host. No arbitrary
             # insecure-host bypass, and no real customer data may use it.
-            if not (sandbox() and base == "http://102.216.128.75:9090"):
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            if not (sandbox() and origin == "http://102.216.128.75:9090"):
                 raise ProviderError("https_required")
-        if not parsed.hostname:
+        return value
+
+    def _base(self):
+        """WaaS origin only; VAS never inherits this setting."""
+        base = self._validated_url(config().get("BASE_URL", ""))
+        if urlsplit(base).path:
             raise ProviderError("invalid_base_url")
         return base
+
+    def _api_base(self):
+        if self.product == "waas":
+            return self._base() + _PREFIX["waas"].rstrip("/")
+        value = config().get("VAS_BASE_URL")
+        if not value:
+            raise ProviderError("vas_api_endpoint_missing")
+        value = self._validated_url(value)
+        if urlsplit(value).path != "/vas/api/v1":
+            raise ProviderError("vas_api_endpoint_invalid")
+        return value
+
+    def _auth_url(self):
+        if self.product == "waas":
+            return self._api_base() + "/authenticate"
+        # The bank's correction conflicts with the supplied VAS attachments.
+        # Require an explicit, confirmed identity URL; do not infer it from
+        # the WaaS host, guess another port, or fall back after a failed login.
+        value = config().get("VAS_AUTH_URL")
+        if not value:
+            raise ProviderError("vas_auth_endpoint_missing")
+        value = self._validated_url(value)
+        if not re.fullmatch(r"/identity/(?:[A-Za-z0-9_-]+/)*authenticate", urlsplit(value).path):
+            raise ProviderError("vas_auth_endpoint_invalid")
+        return value
 
     def _credentials(self):
         prefix = self.product.upper()
@@ -249,8 +299,10 @@ class Client:
         return result
 
     def _cache_key(self):
-        # Changing credentials or environment cannot reuse another tenant's token.
-        material = json.dumps([self._base(), self._credentials()], sort_keys=True)
+        # Changing either endpoint, credentials or environment must also isolate
+        # the token and catalog cache. A corrected URL cannot reuse an old token.
+        material = json.dumps([config().get("ENVIRONMENT", "sandbox"), self._api_base(),
+            self._auth_url(), self._credentials()], sort_keys=True)
         return "9psb:token:" + self.product + ":" + hashlib.sha256(material.encode()).hexdigest()
 
     @staticmethod
@@ -290,7 +342,7 @@ class Client:
             raise ProviderError("authentication_in_progress")
         try:
             try:
-                result = self._send("POST", self._base() + _AUTH_PATH[self.product], payload=self._credentials())
+                result = self._send("POST", self._auth_url(), payload=self._credentials())
             except ProviderError as exc:
                 raise ProviderError(exc.code, uncertain=False) from None
             data = result.body if self.product == "waas" else result.data
@@ -313,8 +365,13 @@ class Client:
     def request(self, path, payload=None, *, method="POST", params=None):
         if path.startswith("/") or ".." in path or ":" in path:
             raise ValueError("Invalid provider path")
+        # Reject cross-product calls before authentication. A default WaaS
+        # client must never send a VAS operation or obtain its bearer token.
+        is_vas_path = path.startswith(("topup/", "billspayment/"))
+        if (self.product == "vas") != is_vas_path:
+            raise ValueError("The provider endpoint does not match its product")
         token = self.token()  # Auth failures happen before the instruction.
-        result = self._send(method, self._base() + _PREFIX[self.product] + path,
+        result = self._send(method, self._api_base() + "/" + path,
                             payload=payload, params=params, token=token)
         if result.http_status == 401:
             cache.delete(self._cache_key())

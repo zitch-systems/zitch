@@ -1595,6 +1595,10 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return _do_beneficiaries(user, msisdn)
     if low in ("9", "history", "transactions", "my transactions", "recent"):
         return _do_history(user, msisdn)
+    receipt_request = re.fullmatch(r"receipt\s+([A-Za-z0-9_-]{1,50})", text, re.I)
+    if receipt_request:
+        from banking.chat import payment_receipt
+        return payment_receipt(user, msisdn, receipt_request.group(1))
     if low in ("10", "exam", "exam pin", "exam pins", "waec pin", "neco pin",
                "jamb pin", "nabteb pin"):
         return _start_exam(user, msisdn)
@@ -1732,8 +1736,8 @@ def _is_sensitive_read(low: str) -> bool:
     # recipient's name, so they are gated like any other read of the address
     # book. _send_unlock replays the original text afterwards, and these ids
     # are well inside the length it can carry.
-    return low.strip() in _SENSITIVE_READS or low.startswith((
-        "bene:save:", "bene:no:", "savings page ", "savings history ", "savings plan "))
+    return (bool(re.match(r"receipt\s", low)) or low.strip() in _SENSITIVE_READS or low.startswith((
+        "bene:save:", "bene:no:", "savings page ", "savings history ", "savings plan ")))
 
 
 def _needs_reauth(convo: ConversationState) -> bool:

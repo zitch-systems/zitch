@@ -179,6 +179,10 @@ services:
     sync: false
   - key: NINEPSB_BASE_URL
     sync: false
+  - key: NINEPSB_VAS_BASE_URL
+    sync: false
+  - key: NINEPSB_VAS_AUTH_URL
+    sync: false
   - key: NINEPSB_ENVIRONMENT
     sync: false
   - key: NINEPSB_ENABLED
@@ -447,6 +451,16 @@ services:
       type: web
       name: zitch-api-ry6y
       envVarKey: NINEPSB_BASE_URL
+  - key: NINEPSB_VAS_BASE_URL
+    fromService:
+      type: web
+      name: zitch-api-ry6y
+      envVarKey: NINEPSB_VAS_BASE_URL
+  - key: NINEPSB_VAS_AUTH_URL
+    fromService:
+      type: web
+      name: zitch-api-ry6y
+      envVarKey: NINEPSB_VAS_AUTH_URL
   - key: NINEPSB_ENVIRONMENT
     fromService:
       type: web
@@ -647,6 +661,16 @@ services:
       type: web
       name: zitch-api-ry6y
       envVarKey: NINEPSB_BASE_URL
+  - key: NINEPSB_VAS_BASE_URL
+    fromService:
+      type: web
+      name: zitch-api-ry6y
+      envVarKey: NINEPSB_VAS_BASE_URL
+  - key: NINEPSB_VAS_AUTH_URL
+    fromService:
+      type: web
+      name: zitch-api-ry6y
+      envVarKey: NINEPSB_VAS_AUTH_URL
   - key: NINEPSB_ENVIRONMENT
     fromService:
       type: web

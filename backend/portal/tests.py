@@ -797,14 +797,14 @@ class DiagnosticsPageTests(TestCase):
         res = self.client.get("/admin/diagnostics/")
         self.assertEqual(res.status_code, 200)
         body = res.content.decode()
-        for expected in ("Partnership preflight", "Wema / ALAT", "SMS (Termii)",
+        for expected in ("Bank preflight", "9PSB", "SMS (Termii)",
                          "Bank bill payments"):
             self.assertIn(expected, body)
 
     def test_a_failing_probe_does_not_take_the_page_down(self):
         # The page exists precisely for when something is broken.
         self.client.force_login(self.staff)
-        with patch("utility.wema.wema_diagnostics", side_effect=RuntimeError("rail down")):
+        with patch("banking.readiness.report", side_effect=RuntimeError("rail down")):
             res = self.client.get("/admin/diagnostics/")
         self.assertEqual(res.status_code, 200)
         self.assertIn("rail down", res.content.decode())

@@ -90,6 +90,7 @@ describe('transaction-detail pending refresh', () => {
     mockParams.underReview = '';
     mockParams.statusMessage = '';
     mockParams.reviewKind = '';
+    mockParams.spendScope = 'zitch-transfer';
   });
 
   afterEach(() => {
@@ -279,6 +280,15 @@ describe('transaction-detail pending refresh', () => {
     await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Share receipt' }).props.onPress(); });
     expect(notify).toHaveBeenCalledWith('Could not share', 'Please try again.');
     act(() => tree.unmount()); share.mockRestore();
+  });
+
+  it.each(['9psb-airtime', '9psb-data', '9psb-bill'])('clears the settled %s attempt after confirming its reference', async (scope) => {
+    mockParams.spendScope = scope;
+    mockApiJson.mockResolvedValue(transaction('SUCCESSFUL'));
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+    expect(mockClearSpendAttempt).toHaveBeenCalledWith(scope, mockParams.spendFingerprint, mockParams.spendKey);
+    act(() => tree.unmount());
   });
 
 });

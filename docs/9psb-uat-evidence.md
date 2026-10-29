@@ -3,7 +3,15 @@
 **Activation is blocked.** These results establish connectivity and account reads,
 not completed customer KYC, settlement or production acceptance.
 
-Last authentication diagnosis: 29 October 2026, 10:42 WAT. The corrected
+Historical observation (superseded endpoint interpretation below): a VAS-only wire trace at **10:50:44 WAT, 29 October 2026**
+confirmed `POST http://102.216.128.75:9090/identity/api/v1/authenticate`, the
+separate VAS credential pair and JSON keys `username`/`password`. This exactly
+matches the attached Postman collection. That identity endpoint returned
+**HTTP 400 / responseCode 400 / Bad credentials**. This shows which URL was
+called, but does not establish that it is the correct route for the VAS profile. See [the VAS contract review](9psb-vas-contract-20261029.md)
+for implemented fixes, the observed request, test evidence and deployment state.
+
+Earlier authentication diagnosis: 29 October 2026, 10:42 WAT. The corrected
 credential attachment (3) was retrieved and compared byte-for-byte with the
 earlier attachment: they contain the same credentials. The initial 09:21 WAT
 requests used the documented JSON fields and URLs. WaaS returned HTTP 200 with
@@ -15,9 +23,15 @@ are byte-identical to the earlier versions. Contract changes and synthetic tests
 are recorded in [9psb-vas-contract.md](9psb-vas-contract.md); these do not turn
 the failed sandbox authentication into completed VAS UAT.
 
-The documented VAS authenticator and the implementation both use
-`POST http://102.216.128.75:9090/identity/api/v1/authenticate`, with `username`
-and `password` in the JSON body. There is no endpoint mismatch.
+**29 October bank correction:** the technical team says the quoted endpoint is
+for WaaS and that VAS has a separate identity endpoint. PDF page 2 and the latest
+Postman `base_url_auth` still show that same URL. Their byte-identical new copies
+do not resolve the conflict. The prior statement "There is no endpoint mismatch"
+is withdrawn: matching an attachment is not confirmation of provider routing.
+The runtime now requires explicit `NINEPSB_VAS_BASE_URL` and
+`NINEPSB_VAS_AUTH_URL`; neither inherits the WaaS host. Do not configure the
+unconfirmed authentication URL or retry credentials against guessed endpoints.
+See [the authentication routing correction](9psb-vas-auth-routing.md).
 
 The technical team's reply supplied on 29 October confirms that IP whitelisting
 is not required for the test environment and requests our webhook URL with a
@@ -95,15 +109,17 @@ JSON may contain `account_number` and `mobile`, using bank-provided test values.
 Do not commit credentials, identities or the private fixture file.
 
 ```sh
-python manage.py bank_sandbox_check --fixtures /private/path/9psb-test-fixtures.json
+python manage.py bank_preflight --report-only
+# After 9PSB confirms the exact VAS identity URL for this profile:
+python manage.py bank_sandbox_check --product vas --fixtures /private/path/9psb-test-fixtures.json
 ```
 
 The command rejects production configuration and identity fields, performs no
 purchases or ledger writes, and prints only redacted evidence. Its output always
 distinguishes connectivity from UAT completion and activation readiness.
 
-Before activation, resolve full backend regressions, supply working VAS credentials
-and bank-approved identity fixtures, complete funded transaction/callback UAT,
+Before activation, resolve full backend regressions, confirm the VAS identity URL
+and profile, obtain successful authentication and bank-approved identity fixtures, complete funded transaction/callback UAT,
 confirm fees and ambiguous limits, and complete the missing provider contracts.
 Production additionally requires HTTPS production credentials and bank UAT/ICAD
 approval. Sandbox keys are not production activation credentials.

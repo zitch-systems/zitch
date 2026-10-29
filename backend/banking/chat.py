@@ -242,3 +242,33 @@ def execute(pa, user, msisdn):
         r.reply(msisdn, message)
         return r.Outcome(message, r.OUTCOME_FAILED)
     return r._vtu_outcome(pa, user, msisdn, amount, label, txn, txn.meta, receipt)
+
+
+def payment_receipt(user, msisdn, reference):
+    """Recover a confirmed purchase in the owner's authenticated chat."""
+    from .models import Instruction
+    from wallet.review_state import transaction_review_map
+
+    r = router()
+    if not user.is_active or not r._channel_linked(user, msisdn):
+        return r.reply(msisdn, "Sign in to your linked account to view this receipt.")
+    instruction = Instruction.objects.select_related("transaction").filter(
+        transaction__user=user, transaction__reference=reference, product="vas",
+        account__environment=config().get("ENVIRONMENT", "sandbox")).first()
+    if instruction is None:
+        return r.reply(msisdn, "No bill payment was found for that reference on your account.")
+    txn = instruction.transaction
+    if transaction_review_map([txn]) or txn.transaction_status == Transaction.PENDING:
+        return r.reply(msisdn, "This payment is still being confirmed. Do not pay again. "
+            f"Reply *receipt {txn.reference}* to check later.")
+    if txn.transaction_status == Transaction.FAILED and instruction.state == "failed":
+        return r.reply(msisdn, f"This payment failed and was refunded. Reference: {txn.reference}.")
+    if txn.transaction_status != Transaction.SUCCESS or instruction.state != "success":
+        return r.reply(msisdn, "The final payment outcome needs review. Please contact support.")
+    meta = txn.meta if isinstance(txn.meta, dict) else {}
+    rows = [("Service", txn.service), ("Amount", r._money(txn.amount))]
+    if instruction.receipt_pending:
+        rows.append(("Token", f"Being retrieved. Reply receipt {txn.reference} to check again."))
+    rows.extend((label, meta[key]) for key, label in (("token", "Token"), ("electricity_units", "Units"))
+                if isinstance(meta.get(key), str) and meta[key])
+    return r.reply_receipt(msisdn, "Bill payment receipt", rows, ref=txn.reference, user=user)

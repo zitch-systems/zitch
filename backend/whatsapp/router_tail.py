@@ -926,6 +926,8 @@ def _vtu_outcome(pa: PendingAction, user, msisdn: str, amount: Decimal, label: s
         mark_awaiting_settlement(txn)
         line = (f"⏳ Your {label} ({detail}) is still processing - we'll confirm shortly. "
                 f"Ref {txn.reference}.")
+        if (txn.meta or {}).get("provider") == "9psb":
+            line += f" Reply *receipt {txn.reference}* to check its status and recover your receipt."
         reply(msisdn, line)
         return Outcome(line, OUTCOME_PENDING)
 

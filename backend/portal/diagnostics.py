@@ -1,7 +1,7 @@
 """The diagnostics, in the browser.
 
 Everything ops needs to answer "why isn't this working" already existed — the
-go-live preflight, the Wema probe, the bank-code comparison, the callback config,
+go-live preflight, bank endpoint configuration, the bank-code comparison, the callback config,
 the VTU balance, the SMS delivery test. All of it was reachable only with an
 `Authorization: Bearer` header, which in practice means curl, which means a
 terminal. An operator working from the Render dashboard and a browser could reach
@@ -111,11 +111,10 @@ def diagnostics_view(request):
                                            lambda: vas_can_settle("airtime")),
                "bills_settleable": _safe("bills_settleable",
                                          lambda: vas_can_settle("bill"))}),
-        note="Wema Partnership provides these bill-payment services. A <code>settleable</code> that reads "
-             "<code>false</code> means purchases of that product are REFUSED before any "
-             "debit (the customer is not charged): ALAT's status check answers with a bare "
-             "integer this deploy has no legend for, so a <code>PROCESSING</code> purchase "
-             "could never be settled or refunded. The reason names the env var to set."))
+        note="9PSB provides airtime, data and bill payments through its VAS API. "
+             "A <code>settleable</code> value of <code>false</code> blocks new purchases "
+             "before debit. Check the separate VAS API and identity URLs in the bank "
+             "preflight. Configuration alone does not establish bank acceptance or delivery."))
 
     # The channel most likely to be "just not responding" with nothing in any log:
     # the webhook acks 200 and queues, and a SEPARATE service does the replying.

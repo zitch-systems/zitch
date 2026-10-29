@@ -10,7 +10,7 @@ from django.utils import timezone
 from wallet.services import debit
 
 from .accounts import require_enabled
-from .client import Client, ProviderError, config, money, phone, require_environment
+from .client import Client, ProviderError, config, configured, money, phone, require_environment
 from .models import BillerValidation
 from .payments import bind_instruction, digest, dispatch, spending_account
 from .secrets import seal, unseal
@@ -19,7 +19,7 @@ from .vas import fields_schema, selection_amount, text_value
 
 def require_vas(user):
     require_enabled(user)
-    if config().get("VAS_ENABLED") is not True:
+    if config().get("VAS_ENABLED") is not True or not configured("vas"):
         raise ValueError("Bill payments are temporarily unavailable")
 
 

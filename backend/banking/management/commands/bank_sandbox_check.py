@@ -11,11 +11,13 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--fixtures", help="Private JSON file containing bank-provided account_number/mobile test fixtures")
+        parser.add_argument("--product", choices=("all", "waas", "vas"), default="all",
+                            help="Check one product without authenticating the other")
 
     def handle(self, *args, **options):
         try:
             fixtures = json.loads(Path(options["fixtures"]).read_text()) if options["fixtures"] else {}
-            result = sandbox_checks(fixtures)
+            result = sandbox_checks(fixtures, product=options["product"])
         except (OSError, ValueError):
             raise CommandError("Sandbox environment and valid private test fixtures are required") from None
         self.stdout.write(json.dumps(result, sort_keys=True))

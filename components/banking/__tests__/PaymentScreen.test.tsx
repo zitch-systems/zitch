@@ -1,6 +1,7 @@
 import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import PaymentScreen from '../PaymentScreen';
+import { router } from 'expo-router';
 
 let mockGeneration = 1;
 let mockPin: any;
@@ -321,4 +322,33 @@ it('does not repaint a receipt from another account during marker cleanup', asyn
   mockGeneration += 1; await act(async () => { finish(); });
   expect(JSON.stringify(tree.toJSON())).not.toContain('OLD-RECEIPT');
   expect(mockReload).not.toHaveBeenCalled();
+});
+
+it('opens the pending payment with its durable attempt for settlement recovery', async () => {
+  await mount(); await review();
+  await act(async () => { mockPin.onComplete('582940'); });
+  await act(async () => { control('View payment status').props.onPress(); });
+  expect(router.push).toHaveBeenCalledWith({ pathname: '/(homepage)/txndetail', params: {
+    reference: 'BANK-REF', status: 'Pending', spendScope: '9psb-airtime',
+    spendFingerprint: mockAcquire.mock.calls[0][1], spendKey: 'stable-payment-key',
+  } });
+});
+
+
+it('keeps a confirmed token and units visible when wallet refresh fails', async () => {
+  mockPost.mockResolvedValue({ status: 200, json: async () => ({ success: true,
+    reference: 'PAID-BILL', token: '11111111111111111111', electricity_units: '3.93' }) });
+  mockReload.mockRejectedValueOnce(new Error('wallet refresh interrupted'));
+  await chooseBill();
+  mockValidate.mockResolvedValue({ success: true, validation_reference: 'VALID', customer_name: 'Jane', amount: '100' });
+  await act(async () => { control('Verify customer').props.onPress(); });
+  await act(async () => { control('Review payment').props.onPress(); });
+  await act(async () => { mockConfirmation.onPay(); });
+  await act(async () => { mockPin.onComplete('582940'); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Payment completed. Your token: 11111111111111111111 Units: 3.93');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('The response was interrupted');
+  await act(async () => { control('View payment status').props.onPress(); });
+  expect(router.push).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({
+    reference: 'PAID-BILL', status: 'Successful', spendScope: '9psb-bill',
+  }) }));
 });

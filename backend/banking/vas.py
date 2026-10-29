@@ -96,6 +96,9 @@ def receipt(data, *, query=False):
     if data.get("isToken") is True and isinstance(token, str) and 0 < len(token.strip()) <= 256:
         if not any(ord(char) < 32 for char in token):
             result["token"] = token.strip()
+    # Immediate electricity responses carry units in otherField; status
+    # responses carry them in description. Only expose the documented label.
+    unit_sources = [data.get("otherField")]
     description = data.get("description")
     if query and data.get("isToken", True) is True and isinstance(description, str) and len(description) <= 4096:
         # The status sample has no data.token: "Token:\n<20 digits>".
@@ -109,7 +112,11 @@ def receipt(data, *, query=False):
                 result.pop("token", None)
         elif tokens:
             result.pop("token", None)
-        units = re.findall(r"(?im)^Units Purchased:[ \t]*([0-9]+(?:\.[0-9]+)?(?:[ \t]+kWh)?)[ \t]*$", description)
-        if len(units) == 1 and len(units[0]) <= 40:
-            result["electricity_units"] = units[0]
+        unit_sources.append(description)
+    units = set()
+    for source in unit_sources:
+        if isinstance(source, str) and len(source) <= 4096:
+            units.update(re.findall(r"(?im)^Units Purchased:[ \t]*([0-9]+(?:\.[0-9]+)?(?:[ \t]+kWh)?)[ \t]*\r?$", source))
+    if len(units) == 1 and len(next(iter(units))) <= 40:
+        result["electricity_units"] = next(iter(units))
     return result

@@ -108,6 +108,36 @@ class VasWireTests(SimpleTestCase):
             with self.subTest(value=value), self.assertRaises(ProviderError):
                 fields_schema(value)
 
+    def test_wrong_product_cannot_reach_authentication_or_a_money_endpoint(self):
+        with patch.object(Client, "_send") as send:
+            with self.assertRaises(ValueError):
+                Client().categories()
+            with self.assertRaises(ValueError):
+                Client().topup("airtime", "Z90000000000000001", "100", "1100000001", "07041267880", "MTN")
+            with self.assertRaises(ValueError):
+                Client("vas").wallet("1100000001")
+        send.assert_not_called()
+
+    def test_switching_environment_cannot_reuse_a_cached_token_or_catalog(self):
+        with patch.object(Client, "_send", side_effect=[
+                success({"accessToken": "production-only", "expiresIn": 3600}),
+                success({"accessToken": "sandbox-only", "expiresIn": 3600})]) as send:
+            first_key = Client("vas")._cache_key()
+            self.assertEqual(Client("vas").token(), "production-only")
+            with override_settings(NINEPSB={**CONFIG, "ENVIRONMENT": "sandbox"}):
+                self.assertNotEqual(Client("vas")._cache_key(), first_key)
+                self.assertEqual(Client("vas").token(), "sandbox-only")
+            self.assertEqual(send.call_count, 2)
+
+    def test_immediate_electricity_receipt_parses_units_without_exposing_other_field(self):
+        self.assertEqual(receipt({"isToken": True, "token": "11111111111111111111",
+            "otherField": "Units Purchased: 3.93"}),
+            {"token": "11111111111111111111", "electricity_units": "3.93"})
+        self.assertEqual(receipt({"otherField": "Customer: private\r\nUnits Purchased: 3.93\r\n"}),
+            {"electricity_units": "3.93"})
+        self.assertNotIn("electricity_units", receipt({"otherField": "Units Purchased: 3.93",
+            "description": "Units Purchased: 7.8"}, query=True))
+
 
 @override_settings(NINEPSB=CONFIG, SECURE_SSL_REDIRECT=False, RATELIMIT_ENABLE=False,
     PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
@@ -334,3 +364,31 @@ class VasJourneyTests(TestCase):
                 txn = bills.purchase_topup(self.user, "data", "07041267880", "50", product_id="P1", idempotency_key="data-"+str(index))
                 self.assertEqual(txn.transaction_status, Transaction.PENDING)
         self.assert_balance("250")
+
+    def test_immediate_units_and_token_survive_api_replay_and_history(self):
+        result, _ = self.validate()
+        ref = result.json()["validation_reference"]
+        with patch.object(Client, "pay_bill", return_value=success({"isToken": True,
+                "token": "11111111111111111111", "otherField": "Units Purchased: 3.93"})) as send:
+            first, replay = self.purchase(ref), self.purchase(ref)
+        for response in (first, replay):
+            self.assertEqual(response.json()["token"], "11111111111111111111")
+            self.assertEqual(response.json()["electricity_units"], "3.93")
+        self.assertEqual(send.call_count, 1)
+        detail = self.post("/api/transaction/status/", {"reference": first.json()["reference"]})
+        self.assertEqual(detail.json()["transaction"]["electricity_units"], "3.93")
+        self.assert_balance("400")
+
+    def test_sandbox_topup_cannot_be_replayed_as_a_production_payment(self):
+        body = {"kind": "airtime", "amount": "100", "phone": "07041267880",
+            "transaction_pin": "582940", "idempotency_key": "environment-bound"}
+        with patch("banking.bills.catalog", return_value={"network": "MTN"}), \
+                patch.object(Client, "topup", return_value=success({})) as send:
+            first = self.post("/api/banking/purchase/", body)
+            self.assertTrue(first.json()["success"])
+            with override_settings(NINEPSB={**CONFIG, "ENVIRONMENT": "sandbox", "SANDBOX_CUSTOMERS_ENABLED": True}):
+                other_environment = self.post("/api/banking/purchase/", body)
+        self.assertEqual(other_environment.status_code, 409)
+        self.assertEqual(other_environment.json()["code"], "idempotency_conflict")
+        self.assertEqual(send.call_count, 1)
+        self.assert_balance("400")

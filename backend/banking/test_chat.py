@@ -1,9 +1,10 @@
 from unittest.mock import patch
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from whatsapp.models import PendingAction, WhatsAppLink
 from . import chat
-from .client import Reply
+from .client import Client, Reply
 from .test_client import CONFIG
 from .test_money import MoneyTests
 from .test_bills import BILL_FIELDS
@@ -14,6 +15,7 @@ from .test_bills import BILL_FIELDS
 class ChatTests(TestCase):
     def setUp(self):
         MoneyTests.setUp(self)
+        cache.clear()
         self.msisdn = "2347041267880"
         self.user.set_transaction_pin("582940")
         self.user.save()
@@ -117,3 +119,77 @@ class ChatTests(TestCase):
             chat.start(self.user, self.msisdn, "airtime")
         catalog.assert_not_called()
         self.assertFalse(PendingAction.objects.filter(action_type=chat.ACTION).exists())
+
+    def test_electricity_journey_delivers_bound_receipt_and_replays_without_another_debit(self):
+        def success(data):
+            return Reply({"status": "success", "responseCode": "200", "data": data}, 200)
+
+        with patch.object(Client, "categories", return_value=success([{"id": "1", "name": "Electricity"}])), \
+             patch.object(Client, "billers", return_value=success([{"id": "B1", "name": "Electricity Biller"}])), \
+             patch.object(Client, "fields", return_value=success(BILL_FIELDS)), \
+             patch.object(Client, "validate_customer", return_value=success({"customerName": "Jane Doe", "otherField": "bound-value"})), \
+             patch.object(Client, "pay_bill", return_value=success({"isToken": True,
+                 "token": "11111111111111111111", "otherField": "Units Purchased: 3.93"})) as send, \
+             patch("whatsapp.router._flow_pin_ok", return_value=True) as authorize, \
+             patch("whatsapp.router.reply_receipt") as receipt:
+            chat.start(self.user, self.msisdn, "bill")
+            for answer in ("1", "1", "1", "METER-123", "me"):
+                chat.advance(self.current(), self.user, self.msisdn, answer)
+            send.assert_not_called()
+            pa = self.current()
+            chat.advance(pa, self.user, self.msisdn, "authorized-flow-result")
+            chat.execute(pa, self.user, self.msisdn)
+        authorize.assert_called_once()
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.args[1:], ("100.00", self.bank.number))
+        self.assertEqual(send.call_args.kwargs["customer"], "METER-123")
+        self.assertEqual(send.call_args.kwargs["other_field"], "bound-value")
+        self.assertEqual(receipt.call_count, 2)
+        self.assertIn(("Token", "11111111111111111111"), receipt.call_args.args[2])
+        self.assertIn(("Units", "3.93"), receipt.call_args.args[2])
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, 400)
+
+    def test_receipt_recovery_is_owner_scoped_and_never_calls_the_bank(self):
+        from accounts.models import User
+        from .test_bills import BillTests
+        from . import bills
+
+        row = BillTests.validation(self)
+        with patch.object(Client, "pay_bill", return_value=Reply({"status": "success", "responseCode": "200",
+                "data": {"isToken": True, "token": "11111111111111111111"}}, 200)):
+            txn = bills.purchase_bill(self.user, row.reference, self.user.phone, "receipt-test")
+        with patch("whatsapp.router.reply_receipt") as receipt, patch.object(Client, "request") as bank:
+            chat.payment_receipt(self.user, self.msisdn, txn.reference)
+            self.assertIn(("Token", "11111111111111111111"), receipt.call_args.args[2])
+            receipt.reset_mock()
+            other = User.objects.create_user(username="other-chat")
+            WhatsAppLink.objects.create(user=other, wa_msisdn="2348011112222", status=WhatsAppLink.ACTIVE)
+            chat.payment_receipt(other, "2348011112222", txn.reference)
+            receipt.assert_not_called()
+            self.assertNotIn("11111111111111111111", str(self.reply.call_args))
+            bank.assert_not_called()
+
+    def test_receipt_command_requires_idle_reauthentication_including_whitespace_variants(self):
+        from whatsapp.router import handle_inbound
+        for text in ("receipt ZTC-123", "RECEIPT\tZTC-123", "receipt\nZTC-123"):
+            with self.subTest(text=text), patch("whatsapp.router._needs_reauth", return_value=True), \
+                    patch("whatsapp.router._send_unlock") as unlock, patch("banking.chat.payment_receipt") as receipt:
+                handle_inbound(self.msisdn, text)
+                unlock.assert_called_once()
+                receipt.assert_not_called()
+
+    def test_pending_receipt_cannot_reveal_a_token(self):
+        from .models import Instruction
+        from .test_bills import BillTests
+        from . import bills
+        row = BillTests.validation(self)
+        with patch.object(Client, "pay_bill", return_value=Reply({"status": "pending", "responseCode": "202",
+                "data": {"isToken": True, "token": "11111111111111111111"}}, 200)):
+            txn = bills.purchase_bill(self.user, row.reference, self.user.phone, "pending-receipt")
+        self.assertEqual(Instruction.objects.get().state, "pending")
+        with patch("whatsapp.router.reply_receipt") as receipt:
+            chat.payment_receipt(self.user, self.msisdn, txn.reference)
+        receipt.assert_not_called()
+        self.assertIn("still being confirmed", self.reply.call_args.args[1])
+        self.assertNotIn("11111111111111111111", self.reply.call_args.args[1])

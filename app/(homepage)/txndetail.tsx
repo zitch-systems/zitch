@@ -18,7 +18,7 @@ import {
 
 const STATUS_POLL_INTERVAL_MS = 4000;
 const MAX_STATUS_POLLS = 5;
-const TRANSFER_SPEND_SCOPES = new Set(['bank-transfer', 'zitch-transfer']);
+const RECOVERABLE_SPEND_SCOPES = new Set(['bank-transfer', 'zitch-transfer', '9psb-airtime', '9psb-data', '9psb-bill']);
 
 type TransactionStatusRow = {
   service?: string;
@@ -93,7 +93,7 @@ const TxnDetail = () => {
     if (!referenceParam || returnedReference !== referenceParam
       || transaction.under_review === true
       || txnState(transaction.transaction_status) === 'pending'
-      || !TRANSFER_SPEND_SCOPES.has(spendAttempt.scope)
+      || !RECOVERABLE_SPEND_SCOPES.has(spendAttempt.scope)
       || !spendAttempt.scope || !spendAttempt.fingerprint || !spendAttempt.key) return;
     await clearSpendAttempt(spendAttempt.scope, spendAttempt.fingerprint, spendAttempt.key);
   }, [referenceParam, spendAttempt.fingerprint, spendAttempt.key, spendAttempt.scope]);
