@@ -1,24 +1,37 @@
 # VAS authentication routing correction - 29 October 2026
 
-The bank's latest reply disputes the authentication URL used in earlier tests.
-The new PDF and Postman collection still contain that same URL. The integration
-must not interpret a matching document, a 400 response, or successful WaaS
-authentication as proof that the VAS endpoint/profile is correct.
+The supplied VAS PDF and Postman collection define the integration contract.
+VAS authenticates through the identity service; WaaS has its own authenticator.
+The earlier interpretation that the supplied VAS URL was missing, established
+as a WaaS URL, or required a replacement before testing was incorrect. The
+bank's short reply did not supply a different URL. Authentication still fails,
+but that failure does not change which endpoint the supplied VAS files define.
 
-## Source conflict
+## Source contract and observed request
 
 | Source | Authentication evidence |
 | --- | --- |
 | New VAS PDF, page 2 | POST `http://102.216.128.75:9090/identity/api/v1/authenticate`; JSON `username`, `password` |
 | New VAS Postman collection | `base_url_auth` is `http://102.216.128.75:9090/identity/api/v1`; request appends `/authenticate` |
-| Bank reply supplied by project owner | Quoted endpoint is for WaaS; VAS has a separate identity endpoint |
-| Earlier request trace | Observed HTTP 400 / responseCode 400 / Bad credentials at the attachment URL |
+| Postman authentication override | `noauth`; do not send its sample bearer token on login |
+| Postman JSON mapping | `apiKey` becomes `username`; `secretKey` becomes `password` |
+| Supplied test credential file | Use only the Value Added Service section's `username` and `password` |
+| WaaS authenticator | Separate `/waas/api/v1/authenticate` path and credential set |
+| Fresh VAS-only request at 13:20 WAT, 29 October | HTTP 400 / responseCode 400 / Bad credentials at the documented identity URL |
 
-Required clarification: the exact VAS identity authentication URL, including
-scheme, host, port and path, for Zitch's sandbox profile. If it differs from the
-files, request the corrected Postman environment or a redacted example. The
-credentials are not established as the cause. No speculative alternate ports,
-hosts, credential swapping or repeated login attempts were made in this change.
+The fresh check resolved the URL directly from the supplied Postman collection
+and used `Client("vas")` with no WaaS credentials configured. Before sending,
+the trace checked that the JSON exactly matched the supplied VAS credential
+pair, that no Authorization header was present, and that redirects were disabled.
+The credential pair differs from the WaaS pair. Exactly one login request was
+made; no payment or customer identity request was submitted. The redacted
+[request evidence](evidence/9psb-vas-authentication-20261029.json) records the result.
+
+The observed failure is VAS authentication rejection. The response does not
+establish whether the bank-side profile, credential validity or service setup
+caused it. A successful WaaS login is not VAS acceptance. Continue diagnosing
+the documented VAS request; do not guess hosts, swap product credentials, or
+reuse the collection's sample bearer token.
 
 The newly supplied files are byte-identical to the earlier copies:
 
@@ -36,13 +49,15 @@ are not committed to this public repository.
 | --- | --- |
 | `NINEPSB_BASE_URL` | WaaS origin; the WaaS API uses `/waas/api/v1` |
 | `NINEPSB_VAS_BASE_URL` | Independent full VAS API root, ending in `/vas/api/v1`; matches Postman's `base_url_vas` |
-| `NINEPSB_VAS_AUTH_URL` | Explicit full VAS identity authentication URL; no inferred default |
+| `NINEPSB_VAS_AUTH_URL` | Explicit full VAS identity authentication URL from the VAS collection; no inferred default |
 | `NINEPSB_WAAS_*` | WaaS username, password, client ID and client secret |
-| `NINEPSB_VAS_*` credentials | VAS username and password only |
+| `NINEPSB_VAS_USERNAME` | VAS API key, sent as JSON `username` |
+| `NINEPSB_VAS_PASSWORD` | VAS secret key, sent as JSON `password` |
 
-Both VAS URLs are unset by default. This is a configuration requirement, not
-proof of bank confirmation: the actual URL must be obtained/confirmed before
-setting it. A configured URL cannot automatically certify bank UAT.
+The environment example now includes both documented VAS sandbox URLs. Runtime
+settings still require explicit environment values rather than inheriting WaaS
+or silently selecting sandbox for production. A configured URL is not completed
+bank UAT, and production requires separately supplied HTTPS endpoints.
 
 - VAS never inherits a WaaS host or token. Different VAS API and identity hosts
   are supported. VAS can authenticate without any WaaS credentials configured.
@@ -72,8 +87,8 @@ First inspect configuration without making a bank request:
 python manage.py bank_preflight --report-only
 ```
 
-After the exact VAS URL/profile is confirmed and configured, the VAS-only command
-cannot authenticate WaaS or report its success as VAS access:
+With the supplied VAS sandbox URLs and VAS credentials configured, the VAS-only
+command cannot authenticate WaaS or report its success as VAS access:
 
 ```sh
 python manage.py bank_sandbox_check --product vas --fixtures /private/path/9psb-test-fixtures.json
@@ -93,6 +108,9 @@ UAT and activation readiness. Use `--product waas` for the independent WaaS chec
 - Operator diagnostic checks: all seven passed.
 - Full app: 68 suites, 724 tests and one snapshot passed. TypeScript passed.
 - Migration consistency: no model changes detected.
+- Fresh VAS-only sandbox authentication: HTTP 400 / responseCode 400 / Bad
+  credentials at 13:20 WAT. Request URL, VAS credential mapping and noauth
+  behavior matched the supplied collection; no token was issued.
 - Full backend regression results are recorded in the release checkpoint; the
   earlier migration already had unresolved full-suite failures. Focused tests
   do not substitute for that release gate or for real bank acceptance.
@@ -100,5 +118,5 @@ UAT and activation readiness. Use `--product waas` for the independent WaaS chec
 Render was checked during this work and still serves main commit
 `30a365b3c248b0831e79f197541939b6181fb5c4`, deploy
 `dep-dbh2ete1egvs73991tbg`. No service, runtime credential, activation flag or
-deployment was changed. The migration remains a draft until the endpoint
-conflict, full regression failures and actual bank UAT are resolved.
+deployment was changed. The migration remains a draft until VAS authentication,
+full regression failures and actual bank UAT are resolved.

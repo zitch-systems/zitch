@@ -4,7 +4,9 @@
 backend, mobile and WhatsApp changes, including no-plan billers, required customer
 names, duplicate-slip recovery and retained electricity receipts. A traced
 request to the attachment-specified identity URL returned HTTP 400 / Bad
-credentials. The bank now disputes that URL; see the
+credentials. A fresh VAS-only check at 13:20 WAT verified the documented URL,
+separate VAS credentials and absence of a bearer token, with the same response.
+See the
 [authentication routing correction](9psb-vas-auth-routing.md). The latest wider SQLite suite still has 487 failures and 561 errors.
 The migration remains a draft and is not deployed. Current details are in
 [the VAS contract review](9psb-vas-contract-20261029.md).
@@ -57,7 +59,7 @@ are not 9PSB UAT acceptance and do not demonstrate live account creation.
 
 1. Finish the shared backend regression migration and obtain passing full
    PostgreSQL/SQLite CI. Then review and merge the release before deployment.
-2. Confirm the VAS identity URL/profile and successful authentication; obtain bank-approved identity fixtures and a
+2. Resolve the documented VAS authentication rejection; obtain bank-approved identity fixtures and a
    Zitch-owned funded UAT wallet, and complete joint bank UAT/sign-off.
 3. Confirm production credentials/transport, callback acceptance, any production
    IP allowlisting, fees, tier limits, ICAD requirements, history and

@@ -27,8 +27,8 @@ committed to this public repository.
 ## Delivery controls
 
 - Separate explicit VAS API/identity URLs, credentials and cached tokens from
-  WaaS; bounded network timeouts. The bank-disputed VAS authentication URL is
-  unset by default; see [routing correction](9psb-vas-auth-routing.md).
+  WaaS; bounded network timeouts. The environment example uses the supplied
+  VAS sandbox collection URLs; see [routing review](9psb-vas-auth-routing.md).
 - Persist transaction references before money instructions. Never replay an
   uncertain write or refund merely because a request timed out.
 - Verify inflow notifications with the bank before ledger credit; acknowledge
@@ -82,7 +82,7 @@ have yet been realized.
 | Payments | Durable once-only dispatch, fees bound to confirmation, uncertain outcomes retained | Confirm total customer debit including fees; execute funded-wallet UAT |
 | Status | Separate WaaS and VAS parsing; WaaS success sample verified against supplied Postman collection | Negative/reversal status examples and live test evidence |
 | Inflows | Authenticated durable inbox, bank requery before credit, duplicate protection | Owned test wallet; statement/history schema, outage backfill and reversal correlation |
-| VAS | Dynamic catalog, validation, purchase and status code implemented | Corrected attachment (3) was retrieved on 29 October and is identical to the earlier credentials; the observed attachment URL returned HTTP 400 and is disputed by the bank; confirm exact VAS identity routing before retesting |
+| VAS | Dynamic catalog, validation, purchase and status code implemented | The documented identity URL, separate VAS credential pair and noauth login were verified in a fresh 13:20 WAT request on 29 October; authentication still returned HTTP 400 / Bad credentials |
 | Prembly Tier 3 | Correlated request/status adapter prepared; new paid requests disabled | Terminal approval enum and retrievable report contract, then tests and activation |
 | App and WhatsApp | Shared app checkout, dynamic WhatsApp VAS flow, transfer fee review and secure identity forms implemented | Live channel UAT and broader backend regression migration |
 | QR and corporate WaaS | Documented by bank | Product implementation and acceptance tests remain |
@@ -157,8 +157,9 @@ had 680 failures and 1,046 errors across 3,541 tests; SQLite had 680 failures,
 The follow-up UAT run confirmed WaaS authentication, directory, the supplied test
 wallet's NUBAN and its bank-bound name enquiry. It uncovered and fixed internal
 wallet-number/NUBAN confusion and trailing newlines in bank routing codes. VAS
-returned HTTP 400 / response code 400 at the observed URL. The bank now disputes
-that URL, so a credentials-only diagnosis is not established.
+returned HTTP 400 / response code 400 at the documented identity URL. A fresh
+13:20 WAT VAS-only check verified the Postman URL and VAS credential mapping;
+the rejection persisted. Its underlying cause remains unverified.
 See [9psb-uat-evidence.md](9psb-uat-evidence.md) for exact results, regression evidence
 and the remaining activation gates. No test identity or settlement is implied by
 successful account reads, and no activation flag was changed.

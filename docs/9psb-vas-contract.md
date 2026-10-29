@@ -23,7 +23,7 @@ sandbox origin and approved test data. Production requires HTTPS.
 
 | Operation | Method and path | Integration |
 |---|---|---|
-| VAS authentication | POST `/identity/api/v1/authenticate` | Separate username/password JSON, Bearer token cache; failure envelopes cannot supply a token |
+| VAS authentication | POST `/identity/api/v1/authenticate` | VAS apiKey -> username, secretKey -> password; no Authorization header on login; separate token cache |
 | Phone network | GET `/vas/api/v1/topup/network?phone=…` | Normalized phone; bank network used for purchase |
 | Data plans | GET `/vas/api/v1/topup/dataPlans?phone=…` | Dynamic plans; chosen product and exact price checked by server |
 | Airtime | POST `/vas/api/v1/topup/airtime` | Owned debit account, durable 18-character reference, one submission |
@@ -97,9 +97,10 @@ No payment, identity submission, live account creation or activation occurred.
 
 ## Remaining acceptance work
 
-1. 9PSB must confirm the VAS identity URL/profile because its later correction
-   conflicts with both attachments. A 400 response alone does not identify the
-   credentials as the cause. See [the routing correction](9psb-vas-auth-routing.md). Sandbox IP whitelisting
+1. Resolve the authentication rejection at the documented VAS identity URL. The
+   13:20 WAT VAS-only recheck verified the URL, VAS credential pair and `noauth`
+   behavior, then returned HTTP 400 / Bad credentials. The cause remains
+   unverified. See [the routing review](9psb-vas-auth-routing.md). Sandbox IP whitelisting
    is not required, as its technical team already confirmed.
 2. With working credentials and a Zitch-owned authorized funded UAT wallet,
    verify network/catalog reads, supported airtime/data networks, fixed-price and

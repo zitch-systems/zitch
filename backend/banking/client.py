@@ -276,9 +276,8 @@ class Client:
     def _auth_url(self):
         if self.product == "waas":
             return self._api_base() + "/authenticate"
-        # The bank's correction conflicts with the supplied VAS attachments.
-        # Require an explicit, confirmed identity URL; do not infer it from
-        # the WaaS host, guess another port, or fall back after a failed login.
+        # Configure the identity URL from the VAS collection independently of
+        # WaaS. Never infer its host or fall back after a failed login.
         value = config().get("VAS_AUTH_URL")
         if not value:
             raise ProviderError("vas_auth_endpoint_missing")

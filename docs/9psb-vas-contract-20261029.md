@@ -27,10 +27,13 @@ VAS operations before it authenticates, and a VAS client refuses WaaS operations
 WaaS separately uses `/waas/api/v1/authenticate`; its successful authentication
 does not establish VAS access. Token and catalog caches also include environment.
 
-A later bank reply disputes this URL. The response alone does not prove that the
-credentials/profile are wrong. Both newly supplied attachments still name the
-same URL; obtain the exact VAS identity URL before another authenticated request.
-See [the routing correction](9psb-vas-auth-routing.md). No test-environment IP whitelist is required according
+A fresh check at **13:20 WAT** resolved the URL directly from the supplied VAS
+Postman collection, verified the supplied VAS credential pair and sent no
+Authorization header, exactly as its `noauth` login requires. It again returned
+HTTP 400 / responseCode 400 / Bad credentials. The VAS files define this identity
+URL; the earlier request for a replacement URL was an interpretation error.
+The authentication response alone does not identify the underlying cause.
+See [the routing review](9psb-vas-auth-routing.md). No test-environment IP whitelist is required according
 to the bank's reply. No test purchase, real identity submission or activation
 switch was performed in this review.
 
