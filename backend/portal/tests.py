@@ -4,6 +4,8 @@ The portal is the money-control surface, so the tests pin the gates: non-staff
 can never log in, read_only can read but not mutate, every mutation lands in
 the audit log, and the FX corridor pause actually stops quotes.
 """
+from django.test import override_settings as _bank_test_settings
+from banking.test_client import CONFIG as _BANK_TEST_CONFIG
 import json
 from datetime import timedelta
 from decimal import Decimal
@@ -37,6 +39,7 @@ def make_staff(username, role=None, superuser=False):
     return u
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class PortalTestCase(TestCase):
     def setUp(self):
         self.client = Client()
@@ -213,6 +216,8 @@ class MutationTests(PortalTestCase):
         self.user.bvn_verified = self.user.nin_verified = True
         self.user.save(update_fields=["bvn_verified", "nin_verified"])
         credit(self.user, Decimal("100000"), "Seed")
+        from banking.test_fixtures import bind_test_bank
+        bind_test_bank(self.user, tier=1)
         self.post("fx-corridor", {"currency": "USD", "enabled": False}, token=self.admin)
         with self.assertRaises(FxError):
             create_fx_quote(self.user, "NGN", "USD", Decimal("1000"))

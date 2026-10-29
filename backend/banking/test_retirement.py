@@ -21,7 +21,10 @@ class RetiredProviderBoundaryTests(SimpleTestCase):
     def test_retired_bank_routes_are_not_registered(self):
         for path in ("/api/wallet/wema/create/", "/api/wallet/wema/verify-otp/",
                      "/api/wallet/wema/resend-otp/", "/webhooks/wema/account-creation/test",
-                     "/webhooks/wema/notification/test", "/wema-diagnose", "/wema-callbacks-diagnose"):
+                     "/webhooks/wema/notification/test", "/wema-diagnose", "/wema-callbacks-diagnose",
+                     "/api/dev/simulate-kyc/", "/api/wallet/account/create/",
+                     "/api/kyc/bvn/start/", "/api/kyc/bvn/confirm/", "/api/kyc/nin/start/",
+                     "/api/kyc/nin/confirm/", "/api/kyc/face/", "/api/kyc/address/"):
             with self.subTest(path=path), self.assertRaises(Resolver404):
                 resolve(path)
 

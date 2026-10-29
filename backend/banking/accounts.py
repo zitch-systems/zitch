@@ -82,6 +82,7 @@ def account_payload(user):
     if can_spend:
         can_spend = not PreviousBankArchive.objects.filter(wallet=bank.wallet, pending_transactions__gt=0).exists()
     from .fees import transfer_fee
+    opening_review = bool(ready and bank.opening_review_required)
     return {"provider": "9psb", "bank_name": "9PSB" if ready else "",
         "identity_available": bool(allowed and user.email_verified and user.phone_verified),
         "address_verification_available": False,
@@ -91,11 +92,11 @@ def account_payload(user):
         "bank_tier": bank.tier if bank else 0, "sandbox": sandbox(),
         "transfers_available": can_spend and transfer_fee(1) is not None, "spending_available": can_spend,
         "bill_payments_available": can_spend and config().get("VAS_ENABLED") is True,
-        "account_setup_state": "ready" if ready else "setup_required" if allowed else "banking_unavailable",
+        "account_setup_state": "bank_history_review" if opening_review else "ready" if ready else "setup_required" if allowed else "banking_unavailable",
         "maximum_single_deposit": str(bank.maximum_deposit) if bank and bank.maximum_deposit is not None else None,
         "maximum_balance": str(bank.maximum_balance) if bank and bank.maximum_balance is not None else None,
         "pnd": bank.pnd if bank else None,
-        "migration_message": "" if ready else "Complete your 9PSB account setup to continue banking."}
+        "migration_message": "Your bank account balance needs review. Contact support before spending." if opening_review else "" if ready else "Complete your 9PSB account setup to continue banking."}
 
 
 def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
@@ -125,7 +126,7 @@ def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
     with transaction.atomic():
         User.objects.select_for_update().get(pk=user.pk)
         previous = IdentityChallenge.objects.filter(user=user, expires_at__gt=timezone.now(),
-            state__in=["initiating", "pending", "verifying", "verified", "opening"]).first()
+            state__in=["initiating", "pending", "verifying", "verified", "opening", "unconfirmed"]).first()
         if previous:
             require_environment(previous.environment)
             if previous.identity_hash == digest and previous.method == method:

@@ -1,4 +1,5 @@
 """Bounded recovery of persisted instructions; never invent bank confirmations."""
+import logging
 import time
 from datetime import timedelta
 
@@ -11,6 +12,8 @@ from .models import AccountUpgrade, BankAccount, BillerValidation, IdentityChall
 from .notifications import process
 from .payments import requery
 from .upgrades import refresh_upgrade
+
+log = logging.getLogger(__name__)
 
 
 def sweep(*, limit=10, budget_seconds=45):
@@ -41,6 +44,22 @@ def sweep(*, limit=10, budget_seconds=45):
             try:
                 handler(row)
                 result[kind] += 1
-            except (ProviderError, ValueError):
+                if kind == "instructions":
+                    _alert_stuck(row, now)
+            except Exception as exc:
+                # Persisted work stays queued. One malformed row or integration
+                # failure must not prevent recovery for the remaining customers.
                 result["errors"] += 1
+                log.error("bank_recovery_failed kind=%s exception=%s", kind, type(exc).__name__)
     return result
+
+
+def _alert_stuck(instruction, now):
+    from utility.alerts import alert
+    from utility.reconciliation import alert_due
+    instruction.refresh_from_db(fields=["state", "created", "receipt_pending"])
+    if (instruction.state in {"prepared", "sending", "pending"}
+            and instruction.created <= now - timedelta(hours=2)
+            and alert_due(f"9psb-stuck-instruction:{instruction.pk}", [str(instruction.pk)])):
+        alert("9PSB payment still pending after two hours; review the bank instruction. "
+              "No automatic refund was made.", level="error", instruction_id=instruction.pk)

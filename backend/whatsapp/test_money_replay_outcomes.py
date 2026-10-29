@@ -5,6 +5,7 @@ message must come from that request's ledger state; treating every duplicate as
 "already processed" either claims an unsettled payment succeeded or calls a
 failed/refunded payment successful.
 """
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import Mock, patch
@@ -27,6 +28,7 @@ User = get_user_model()
 MSISDN = "2348099991111"
 
 
+@bank_channel_case
 class DuplicateMoneyOutcomeTests(TestCase):
     def setUp(self):
         self.user = User.objects.create(

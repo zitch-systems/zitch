@@ -170,7 +170,7 @@ def wallet_balance_payload(user, wallet=None) -> dict:
     held_archive = RetiredFundingArchive.objects.filter(funding__user=user).aggregate(
         total=Sum("funding__amount"))["total"] or Decimal("0.00")
     historical = historical_balance(wallet) + held_archive
-    return {"balance": available, "available_balance": available,
+    return {"balance": wallet.balance + held_archive, "available_balance": available,
             "historical_balance": historical, "legacy_funding_balance": historical,
             "restricted_balance": max(Decimal("0.00"), book_available - available)}
 
@@ -2294,6 +2294,13 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
     wallet; when omitted they are looked up.
     """
     from utility import wema
+    from banking.models import BankAccount, PreviousBankArchive
+
+    # Retained statement decoding is useful for review; it cannot reopen a
+    # migrated wallet's old funding path or credit a new-bank account.
+    if (BankAccount.objects.filter(wallet_id=wallet.pk).exists()
+            or PreviousBankArchive.objects.filter(wallet_id=wallet.pk).exists()):
+        return None
 
     # Retired account receipts cannot enter through the Partnership statement rail.
     from wallet.partnership import retired_funding_destination

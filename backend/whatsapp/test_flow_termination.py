@@ -16,6 +16,7 @@ ordinary screen in the session rendering and only the ending failing.
 These lock the envelope down, because nothing else can: the endpoint returns a dict
 and never learns what the device did with it.
 """
+from banking.test_fixtures import bank_channel_case
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -27,6 +28,7 @@ from whatsapp.flows import SUCCESS_SCREEN, _check_contract, _close_flow
 TERMINATION = "extension_message_response"
 
 
+@bank_channel_case
 class TerminationEnvelopeTests(TestCase):
     def test_the_envelope_matches_metas_documented_shape(self):
         resp = _close_flow("TOK123")
@@ -53,6 +55,7 @@ class TerminationEnvelopeTests(TestCase):
         self.assertEqual(set(out["data"]), {"status", "message"})
 
 
+@bank_channel_case
 @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
 class SettledOutcomeTests(TestCase):
     """The end-to-end property: a successful payment ends the Flow."""

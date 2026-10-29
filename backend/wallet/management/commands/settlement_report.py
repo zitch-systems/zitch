@@ -1,7 +1,7 @@
 """Daily liability report; unverified assets never become zero or a green result."""
 import json
 from django.core.management.base import BaseCommand, CommandError
-from banking.audit import snapshot
+from banking.audit import snapshot, alert_review
 from whatsapp.ops import record_audit
 
 
@@ -29,5 +29,7 @@ class Command(BaseCommand):
                   or (len(thresholds) > 1 and position > thresholds[1]))
         record_audit("recon.settlement_report", actor_type="system", after=result)
         self.stdout.write(json.dumps(result, sort_keys=True))
+        if breach:
+            alert_review("settlement report", result)
         if breach and options["fail_on_breach"]:
             raise CommandError("Settlement is incomplete or outside the declared thresholds")

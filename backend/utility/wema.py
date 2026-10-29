@@ -24,7 +24,22 @@ def classify_transfer_status(status, *, envelope_ok=True):
     return "pending"
 
 def normalize_transaction(value):
-    return None
+    from wallet.historical_evidence import normalize_transaction as decode
+    return decode(value)
+
+def _naira(value):
+    from wallet.historical_evidence import _naira as decode
+    return decode(value)
+
+def _first_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return _first_text(next(iter(value.values()), ""))
+    if isinstance(value, (list, tuple)):
+        return _first_text(value[0]) if value else ""
+    return ""
+
 
 def face_verification_url(*args, **kwargs):
     return ""

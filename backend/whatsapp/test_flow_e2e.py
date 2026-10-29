@@ -17,6 +17,7 @@ Every test here walks a real session through `handle_flow_request` and asserts
 all four on every response, so a new branch that answers a malformed or
 unreachable screen fails here rather than on a customer's phone.
 """
+from banking.test_fixtures import bank_channel_case
 import json
 import os
 from decimal import Decimal
@@ -92,6 +93,7 @@ def _make_user(balance="50000"):
     return user
 
 
+@bank_channel_case
 class FlowContractMixin:
     """assertScreen — the four invariants, on every response."""
 
@@ -125,6 +127,7 @@ class FlowContractMixin:
         return response
 
 
+@bank_channel_case
 @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "v", "TOKEN": "",
                              "APP_SECRET": "", "PHONE_NUMBER_ID": "1",
                              "BASE_URL": "https://graph.test"},
@@ -278,6 +281,7 @@ class PaymentFlowE2ETests(FlowContractMixin, TestCase):
 
 
 
+@bank_channel_case
 @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "v", "TOKEN": "",
                              "APP_SECRET": "", "PHONE_NUMBER_ID": "1",
                              "BASE_URL": "https://graph.test"},
@@ -330,6 +334,7 @@ class VtuFlowE2ETests(FlowContractMixin, TestCase):
         self.assertEqual(resp["screen"], RESULT_SCREEN)
 
 
+@bank_channel_case
 @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "v", "TOKEN": "",
                              "APP_SECRET": "", "PHONE_NUMBER_ID": "1",
                              "BASE_URL": "https://graph.test"},
@@ -361,6 +366,7 @@ class TransferFormE2ETests(FlowContractMixin, TestCase):
             PendingAction.objects.get(msisdn=MSISDN).state, "amount")
 
 
+@bank_channel_case
 class ResultScreenRolloutTests(FlowContractMixin, TestCase):
     """The Flow JSON and the endpoint are a contract, and the publish is a
     manual step that does not run from a deploy.

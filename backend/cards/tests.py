@@ -1,4 +1,6 @@
 """Tests for virtual cards: create, details reveal, fund, freeze."""
+from django.test import override_settings as _bank_test_settings
+from banking.test_client import CONFIG as _BANK_TEST_CONFIG
 import json
 from decimal import Decimal
 from unittest.mock import patch
@@ -8,15 +10,21 @@ from django.test import Client, TestCase, override_settings
 
 from wallet.models import Transaction
 from wallet.services import get_or_create_wallet
-from wallet.tests import make_user
+from banking.test_fixtures import make_bank_user as make_user
 
 from .issuance import claim_card_issuance
 from .models import CardIssuance, VirtualCard
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class CardTests(TestCase):
     def setUp(self):
         self.client = Client()
+        # These tests cover the shared issuance/ledger controls. The production
+        # provider stays unavailable until a card contract is supplied.
+        self.enterContext(patch("cards.views.card_issue", return_value={
+            "success": True, "card_token": "synthetic-card", "brand": "Verve",
+            "last4": "4321", "expiry": "12/29"}))
         self.user, self.token = make_user("08020000001", "kola@zitch.test", balance="50000")
         self._key_seq = 0
 

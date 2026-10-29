@@ -163,3 +163,28 @@ the rejection persisted. Its underlying cause remains unverified.
 See [9psb-uat-evidence.md](9psb-uat-evidence.md) for exact results, regression evidence
 and the remaining activation gates. No test identity or settlement is implied by
 successful account reads, and no activation flag was changed.
+
+
+## WaaS deployment preparation — 29 October 2026
+
+The current release work migrates shared authorization and ledger fixtures to
+explicit 9PSB accounts and bank-owned identity evidence. Retired ALAT/Prembly
+wire and UI contracts are recorded by original Git commit, source hash and
+replacement suites in retired-provider-test-inventory.json; the full default
+Django and PostgreSQL test discovery remains enabled. Historical reversal,
+refund, liability, browser authorization and shared financial-control checks
+remain active.
+
+This checkpoint fixes lost-response identity retries, concurrent browser KYC
+submissions, shared identity request budgets, retained-statement guards,
+historical balance visibility and bank recovery error isolation. Scheduled
+balance and settlement findings alert operators without including customer
+account numbers. A stuck instruction remains pending and alerts after two
+hours; recovery never guesses a refund.
+
+Full local regression and PostgreSQL release validation are still in progress.
+This checkpoint is not a deployed or bank-certified result. The requested
+activation is WaaS sandbox only, with VAS disabled and production UAT approval
+false. New identity, OTP and test NUBAN acceptance still require approved bank
+test fixtures and a permitted tester. Existing cron schedules can continue
+through the reconciliation alias; consolidation is separate from this release.

@@ -17,6 +17,28 @@ DOCUMENTS = [("userPhoto", "Passport photograph (JPEG/PNG, 75 KB)"), ("idCardFro
 ADDRESS = [("house_number", "House number"), ("street", "Street"), ("address", "Full residential address"),
     ("city", "City"), ("state", "State"), ("lga", "Local government area"), ("landmark", "Nearest landmark")]
 
+OPERATION_LIMITS = {
+    "identity": ("bank_identity_start", 5, 600),
+    "otp": ("bank_identity_confirm", 10, 600),
+    "upgrade": ("bank_upgrade", 3, 600),
+    "address": ("address_start", 2, 3600),
+    "address_status": ("address_status", 5, 600),
+}
+
+
+def validate_fields(action, data, files):
+    """A browser grant authorizes only these server-defined KYC operations."""
+    fields = {
+        "identity": {key for key, _ in PROFILE} | {"gender", "kind", "identifier", "method"},
+        "otp": {"otp"}, "identity_status": set(),
+        "upgrade": {key for key, _ in DETAILS} | {"bvn", "nin", "idType", "pep", "tier"},
+        "upgrade_status": set(), "address": {key for key, _ in ADDRESS}, "address_status": set(),
+    }
+    uploads = {"identity": {"face"}, "upgrade": {key for key, _ in DOCUMENTS}}
+    if (action not in fields or set(data) - fields[action] - {"action", "csrfmiddlewaretoken"}
+            or set(files) - uploads.get(action, set())):
+        raise ValueError("Use the fields and actions shown on this verification page")
+
 
 def context(user, payload):
     bank = accounts.account_for(user)

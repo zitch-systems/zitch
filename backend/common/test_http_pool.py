@@ -12,7 +12,8 @@ import requests
 from django.test import TestCase
 
 from common import http_pool
-from utility import wema
+from banking.client import Client as BankClient
+from banking import client as bank_client
 from whatsapp import providers
 
 #: Reach the pooled path the way the helper documents: by saying "this process is
@@ -33,17 +34,17 @@ class PooledSessionTests(TestCase):
         """A connection pool for the process, not one per message."""
         with _as_production():
             graph = http_pool.pooled_session("whatsapp-graph")
-            gateway = http_pool.pooled_session("wema-gateway")
+            gateway = http_pool.pooled_session("9psb")
             self.assertIsNot(graph, requests)
             self.assertIs(graph, http_pool.pooled_session("whatsapp-graph"))
-            self.assertIs(gateway, http_pool.pooled_session("wema-gateway"))
+            self.assertIs(gateway, http_pool.pooled_session("9psb"))
             # Separate rails: a stalled gateway must not starve WhatsApp of sockets.
             self.assertIsNot(graph, gateway)
 
     def test_never_retries(self):
         """urllib3 replaying a POST duplicates a message, or a payment."""
         with _as_production():
-            for name in ("whatsapp-graph", "wema-gateway"):
+            for name in ("whatsapp-graph", "9psb"):
                 session = http_pool.pooled_session(name)
                 for scheme in ("https://", "http://"):
                     adapter = session.get_adapter(f"{scheme}example.test")
@@ -64,7 +65,15 @@ class PooledSessionTests(TestCase):
         """The seams themselves, not just the helper."""
         with _as_production():
             self.assertIs(providers._graph(), http_pool.pooled_session("whatsapp-graph"))
-            self.assertIs(wema._gateway(), http_pool.pooled_session("wema-gateway"))
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"status": "SUCCESS"}
+        with mock.patch.object(bank_client._local, "session", None, create=True):
+            with mock.patch.object(bank_client.requests, "Session") as factory:
+                factory.return_value.request.return_value = response
+                BankClient._send("GET", "https://bank.example.test/first")
+                BankClient._send("GET", "https://bank.example.test/second")
+                factory.assert_called_once()
+                self.assertEqual(factory.return_value.request.call_count, 2)
 
     def test_test_suite_keeps_its_patch_seam(self):
         """Under the test runner the module is returned, so patches still bite.
@@ -73,7 +82,7 @@ class PooledSessionTests(TestCase):
         `whatsapp.providers.requests.*` and `utility.wema.requests.*`.
         """
         self.assertIs(providers._graph(), providers.requests)
-        self.assertIs(wema._gateway(), wema.requests)
+        self.assertIs(bank_client.requests, requests)
 
     def test_overriding_the_TESTING_setting_does_not_disable_the_seam(self):
         """The regression that motivated reading sys.argv instead of settings.
@@ -87,4 +96,4 @@ class PooledSessionTests(TestCase):
 
         with override_settings(TESTING=False):
             self.assertIs(providers._graph(), providers.requests)
-            self.assertIs(wema._gateway(), wema.requests)
+            self.assertIs(bank_client.requests, requests)

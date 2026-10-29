@@ -79,7 +79,7 @@ class ReconciliationEvidenceTests(TestCase):
 
     def test_reference_match_does_not_assume_fee_is_in_principal(self):
         txn = debit(self.user, Decimal("100"), "Transfer to PRIVATE NAME", reference="LEDGER-REFERENCE",
-                    meta={"bank": "Example", "wema_transfer": {"platform_reference": "BANK-PLATFORM"}})
+                    meta={"bank": "Example", "wema_transfer": {"platform_reference": "BANK-PLATFORM"}}, enforce_limits=False)
         report, text, _, _ = self.run_report([
             self.row(referenceId="BANK-PLATFORM", amount="100"),
             self.row(referenceId="BANK-PLATFORM", tranId="FEE-REFERENCE", amount="10.75"),

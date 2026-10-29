@@ -1,7 +1,7 @@
 """Read-only 9PSB reconciliation including unresolved archived liabilities."""
 import json
 from django.core.management.base import BaseCommand, CommandError
-from banking.audit import snapshot
+from banking.audit import snapshot, alert_review
 from whatsapp.ops import record_audit
 
 
@@ -23,5 +23,7 @@ class Command(BaseCommand):
         result = snapshot()
         record_audit("recon.balance_check", actor_type="system", after=result)
         self.stdout.write(json.dumps(result, sort_keys=True))
+        if result["incomplete"]:
+            alert_review("balance reconciliation", result)
         if result["incomplete"] and (options["fail_nonzero"] or options["fail_over"]):
             raise CommandError("Bank balances or historical liabilities require review")

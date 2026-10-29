@@ -46,12 +46,63 @@ class WebTests(TestCase):
     def test_grant_is_bound_to_owner_and_has_no_general_access_token(self):
         self.unlock()
         with patch("banking.web_verification.submit", return_value={"pending": True, "identity_reference": "bound-ref"}) as submit:
-            response = self.post({"action": "identity", "user_id": "99999"})
+            response = self.post({"action": "identity"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(submit.call_args.args[0].pk, self.user.pk)
         self.assertFalse(AccessToken.objects.exists())
         self.assertIn("no-store", response["Cache-Control"])
         self.assertEqual(response["Referrer-Policy"], "no-referrer")
+
+    def test_client_authentication_and_unrecognized_operations_cannot_reach_adapter(self):
+        self.unlock()
+        with patch("banking.web_verification.submit") as submit:
+            for body in ({"action": "transfer"}, {"action": "identity", "user_id": "99999"},
+                         {"action": "identity", "access_token": "attacker-token"},
+                         {"action": "identity", "url": "https://evil.example"}):
+                self.assertEqual(self.post(body).status_code, 400)
+        submit.assert_not_called()
+
+    def test_reentrant_post_and_chat_cancel_cannot_duplicate_bank_operation(self):
+        from whatsapp.models import PendingAction
+        from whatsapp import router
+        from whatsapp.verification_web import PROCESSING, READY
+        self.unlock()
+
+        def submit(*args):
+            self.assertEqual(PendingAction.objects.get().state, PROCESSING)
+            self.assertEqual(self.post({"action": "identity"}).status_code, 410)
+            with patch.object(router, "reply"):
+                router.handle_inbound(self.msisdn, "cancel")
+            self.assertTrue(PendingAction.objects.exists())
+            return {"pending": True, "identity_reference": "bound-ref"}
+
+        with patch("banking.web_verification.submit", side_effect=submit) as adapter:
+            self.assertEqual(self.post({"action": "identity"}).status_code, 200)
+        adapter.assert_called_once()
+        self.assertEqual(PendingAction.objects.get().state, READY)
+
+    def test_unknown_service_exception_is_redacted_and_cannot_be_resubmitted(self):
+        self.unlock()
+        with patch("banking.web_verification.submit", side_effect=RuntimeError("private-identity-12345678901")) as submit:
+            response = self.post({"action": "identity"})
+            self.assertEqual(response.status_code, 503)
+            self.assertNotIn(b"12345678901", response.content)
+            self.assertIn("no-store", response["Cache-Control"])
+            self.assertEqual(self.post({"action": "identity"}).status_code, 410)
+        submit.assert_called_once()
+
+    @override_settings(RATELIMIT_ENABLE=True)
+    def test_browser_cannot_bypass_the_api_identity_request_budget(self):
+        from django.core.cache import cache
+        from common.ratelimit import opaque_cache_identifier
+        self.unlock()
+        key = "rl:bank_identity_start:" + opaque_cache_identifier("bank_identity_start", "127.0.0.1")
+        cache.set(key, 5, 600)
+        with patch("banking.web_verification.submit") as submit:
+            response = self.post({"action": "identity"})
+        self.assertEqual(response.status_code, 429)
+        self.assertIn("no-store", response["Cache-Control"])
+        submit.assert_not_called()
 
     def test_pin_change_revokes_existing_browser_grant(self):
         self.unlock()

@@ -1,5 +1,7 @@
 """Tests for the enterprise-hardening controls: ledger<->balance reconciliation
 (integrity_check) and the fraud velocity guard (common.http.check_velocity)."""
+from django.test import override_settings as _bank_test_settings
+from banking.test_client import CONFIG as _BANK_TEST_CONFIG
 from decimal import Decimal
 from io import StringIO
 
@@ -9,9 +11,10 @@ from django.test import TestCase, override_settings
 from common.http import check_velocity
 from wallet.models import Transaction, Wallet
 from wallet.services import credit, debit, refund, settle_or_refund
-from wallet.tests import make_user
+from banking.test_fixtures import make_bank_user as make_user
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class IntegrityCheckTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08031110001", "ic@zitch.app", balance="5000")
@@ -55,6 +58,7 @@ class IntegrityCheckTests(TestCase):
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("4000"))
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class VelocityGuardTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08031110002", "vg@zitch.app", balance="100000")

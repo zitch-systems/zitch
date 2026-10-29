@@ -18,6 +18,8 @@ from django.utils import timezone
 from PIL import Image
 
 from accounts.models import AccessToken
+from banking.test_client import CONFIG as BANK_CONFIG
+from banking.test_fixtures import bind_test_bank
 from common.http import evaluate_transaction_pin
 from wallet.services import get_or_create_wallet
 
@@ -41,7 +43,7 @@ def document(raw=None):
 
 
 @override_settings(
-    ZITCH_LINKS={"API_BASE": ORIGIN}, SECURE_SSL_REDIRECT=False,
+    NINEPSB=BANK_CONFIG, ZITCH_LINKS={"API_BASE": ORIGIN}, SECURE_SSL_REDIRECT=False,
     CSRF_COOKIE_SECURE=True, RATELIMIT_ENABLE=False,
     PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"],
     BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE="active",
@@ -92,6 +94,7 @@ class VerificationWebTests(TestCase):
         self.production_address_service = verify_kyc_address
         self.service = self.enterContext(patch(
             "accounts.views.verify_kyc_address", side_effect=self.complete_address))
+        bind_test_bank(self.user, tier=2)
         self.path = self.start()
 
     @staticmethod
@@ -150,7 +153,7 @@ class VerificationWebTests(TestCase):
     def test_start_requires_existing_matching_active_link(self):
         other = User.objects.create(username="other")
         for user, number, tier in ((other, MSISDN, 3), (self.user, "2348022223333", 3),
-                                   (self.user, MSISDN, 1), (self.user, MSISDN, True)):
+                                   (self.user, MSISDN, 4), (self.user, MSISDN, True)):
             with self.subTest(user=user.pk, number=number, tier=tier), self.assertRaises(ValueError):
                 start_verification(user, number, tier)
         self.link.status = WhatsAppLink.PENDING
@@ -160,8 +163,8 @@ class VerificationWebTests(TestCase):
 
     def test_disabled_partnership_and_archive_refuse_new_verification_capabilities(self):
         count = PendingAction.objects.count()
-        for settings_change in ({"WEMA_PARTNERSHIP_MODE": "disabled"},
-                                {"WEMA_PARTNERSHIP_MODE": "archive"}):
+        for settings_change in ({"NINEPSB": {**BANK_CONFIG, "ENABLED": False}},
+                                {"NINEPSB": {**BANK_CONFIG, "UAT_APPROVED": False}}):
             with self.subTest(settings=settings_change), override_settings(**settings_change):
                 for tier in (2, 3):
                     with self.subTest(tier=tier), self.assertRaises(ValueError):
@@ -171,8 +174,8 @@ class VerificationWebTests(TestCase):
         self.assertEqual(self.pa.state, PIN)
 
     def test_lifecycle_change_blocks_unsubmitted_pin_and_address_forms(self):
-        for settings_change in ({"WEMA_PARTNERSHIP_MODE": "disabled"},
-                                {"WEMA_PARTNERSHIP_MODE": "archive"}):
+        for settings_change in ({"NINEPSB": {**BANK_CONFIG, "ENABLED": False}},
+                                {"NINEPSB": {**BANK_CONFIG, "UAT_APPROVED": False}}):
             for unlocked in (False, True):
                 with self.subTest(settings=settings_change, unlocked=unlocked):
                     self.path = self.start()
@@ -192,19 +195,6 @@ class VerificationWebTests(TestCase):
         self.provider.assert_not_called()
         self.bank_address.assert_not_called()
 
-    def test_historical_liability_blocks_new_and_existing_address_capabilities(self):
-        from wallet.funding_test_fixtures import funding_hold
-
-        self.unlock()
-        funding_hold(self.user, "100", "7120000042")
-        count = PendingAction.objects.count()
-        with self.assertRaises(ValueError):
-            start_verification(self.user, MSISDN, 3)
-        self.assertEqual(PendingAction.objects.count(), count)
-        self.assertEqual(self.get().status_code, 410)
-        self.assertEqual(self.post(self.address()).status_code, 410)
-        self.provider.assert_not_called()
-        self.bank_address.assert_not_called()
 
     def test_archive_does_not_rewrite_submitted_verification_records(self):
         self.get()  # Establish CSRF before attempting already-consumed links.
@@ -212,7 +202,7 @@ class VerificationWebTests(TestCase):
         for state in (PROCESSING, REVIEW, COMPLETE):
             with self.subTest(state=state):
                 PendingAction.objects.filter(pk=self.pa.pk).update(state=state)
-                with override_settings(WEMA_PARTNERSHIP_MODE="archive"):
+                with override_settings(NINEPSB={**BANK_CONFIG, "ENABLED": False}):
                     self.assertEqual(self.get().status_code, 410)
                     self.assertEqual(self.post(self.address()).status_code, 410)
                 self.pa.refresh_from_db()
@@ -221,24 +211,18 @@ class VerificationWebTests(TestCase):
         self.provider.assert_not_called()
         self.bank_address.assert_not_called()
 
-    def test_accepted_operation_keeps_its_pending_result_after_archive(self):
+    def test_accepted_operation_keeps_its_pending_result_after_disable(self):
         self.unlock()
-
-        def accepted_before_archive(request, user, data):
+        def accepted(user, action, data, files, scope):
             self.pa.refresh_from_db()
             self.assertEqual(self.pa.state, PROCESSING)
-            self.enterContext(override_settings(WEMA_PARTNERSHIP_MODE="archive"))
-            return JsonResponse({"success": False, "pending": True}, status=202)
-
-        with patch("whatsapp.verification_web._run_address_operation",
-                   side_effect=accepted_before_archive) as provider:
-            response = self.post(self.address())
-        self.assertEqual(response.status_code, 202)
-        self.assertContains(response, "Your address is being checked", status_code=202)
+            self.enterContext(override_settings(NINEPSB={**BANK_CONFIG, "ENABLED": False}))
+            return {"pending": True, "identity_reference": "bank-owned-reference"}
+        with patch("banking.web_verification.submit", side_effect=accepted) as provider:
+            self.assertEqual(self.post({"action": "identity"}).status_code, 410)
         self.pa.refresh_from_db()
-        self.assertEqual(self.pa.state, REVIEW)
+        self.assertEqual(self.pa.state, PROCESSING)
         self.assertEqual(self.get().status_code, 410)
-        self.assertEqual(self.post(self.address()).status_code, 410)
         provider.assert_called_once()
 
     def test_new_link_retires_only_previous_web_actions(self):
@@ -288,13 +272,13 @@ class VerificationWebTests(TestCase):
 
     def test_router_menu_does_not_invalidate_an_open_browser_form(self):
         from .router import handle_inbound
-
         self.unlock()
         with patch("whatsapp.router.send_menu") as menu:
             handle_inbound(MSISDN, "menu")
         menu.assert_called_once_with(MSISDN)
-        self.assertContains(self.get(), 'name="document"')
-        self.assertEqual(self.post(self.address()).status_code, 200)
+        self.assertContains(self.get(), 'name="identifier"')
+        with patch("banking.web_verification.submit", return_value={"pending": True}):
+            self.assertEqual(self.post({"action": "identity_status"}).status_code, 200)
 
     def test_router_explicit_cancel_revokes_unsubmitted_portal(self):
         from .router import handle_inbound
@@ -329,24 +313,19 @@ class VerificationWebTests(TestCase):
 
     def test_router_cancel_during_provider_call_preserves_inflight_verification(self):
         from .router import handle_inbound
-
         self.unlock()
-
-        def verifying(user, data):
+        def verifying(*args):
             with patch("whatsapp.router.reply") as reply:
                 handle_inbound(MSISDN, "cancel")
             self.pa.refresh_from_db()
             self.assertEqual(self.pa.state, PROCESSING)
             self.assertIn("processing", reply.call_args.args[1])
-            self.assertIn("cannot", reply.call_args.args[1])
-            return self.complete_address(user, data)
-
-        self.service.side_effect = verifying
-        self.assertEqual(self.post(self.address()).status_code, 200)
+            return {"pending": True}
+        with patch("banking.web_verification.submit", side_effect=verifying) as provider:
+            self.assertEqual(self.post({"action": "identity"}).status_code, 200)
         self.pa.refresh_from_db()
-        self.assertEqual(self.pa.state, COMPLETE)
-        self.assertEqual(self.post(self.address()).status_code, 410)
-        self.service.assert_called_once()
+        self.assertEqual(self.pa.state, READY)
+        provider.assert_called_once()
 
     def test_router_unrelated_command_reaches_its_handler_without_consuming_portal(self):
         from .router import handle_inbound
@@ -381,40 +360,6 @@ class VerificationWebTests(TestCase):
         self.assertFalse(PendingAction.objects.filter(pk=chat.pk).exists())
         self.assertTrue(PendingAction.objects.filter(pk=self.pa.pk).exists())
 
-    def test_router_tier3_button_opens_bound_portal_without_provider_call_before_pin(self):
-        from .router import _offer_tier_upgrade, handle_inbound
-
-        with patch("whatsapp.router.reply_buttons") as buttons:
-            _offer_tier_upgrade(self.user, MSISDN)
-        self.assertIn(("tier3", "Upgrade to Tier 3"), buttons.call_args.args[2])
-        with patch("whatsapp.router.send_cta_url", return_value={"success": True}) as cta, \
-                patch("accounts.views.verify_kyc_address") as service:
-            handle_inbound(MSISDN, "tier3")
-            cta.assert_called_once()
-            self.assertEqual(cta.call_args.args[0], MSISDN)
-            url = cta.call_args.args[2]
-            parsed = urlsplit(url)
-            self.assertEqual(f"{parsed.scheme}://{parsed.netloc}", ORIGIN)
-            self.assertEqual(parsed.query, "")
-            self.assertTrue(parsed.path.startswith("/wa/verify/"))
-            claims = signing.loads(parsed.path.rsplit("/", 1)[1], salt=SALT)
-            self.pa = PendingAction.objects.get(pk=claims["p"])
-            self.assertEqual((self.pa.user_id, self.pa.msisdn, self.pa.payload["tier"]),
-                             (self.user.pk, MSISDN, 3))
-            self.assertEqual(self.pa.state, PIN)
-            self.path = parsed.path
-            self.assertContains(self.get(), "Transaction PIN")
-            self.assertEqual(self.post(self.address()).status_code, 403)
-            service.assert_not_called()
-        self.face.assert_not_called()
-        self.tier2.assert_not_called()
-        self.bank_address.assert_not_called()
-        self.provider.assert_not_called()
-        self.assertFalse(AccessToken.objects.exists())
-        # The scoped shared service becomes reachable only after the PIN exchange.
-        self.unlock()
-        self.assertEqual(self.post(self.address()).status_code, 200)
-        self.service.assert_called_once()
 
     def test_router_tier3_cta_failure_falls_back_to_same_valid_https_link(self):
         from .router import _send_web_verification
@@ -443,21 +388,6 @@ class VerificationWebTests(TestCase):
         cta.assert_not_called()
         self.provider.assert_not_called()
 
-    def test_router_tier2_never_offers_unsupported_web_liveness(self):
-        from .router import KYC_UPGRADE_STATE, handle_inbound
-
-        PendingAction.objects.create(
-            user=self.user, msisdn=MSISDN, action_type="kyc", state=KYC_UPGRADE_STATE,
-            expires_at=timezone.now() + timedelta(minutes=5),
-        )
-        with patch("whatsapp.verification_web.start_verification") as start, \
-                patch("whatsapp.router.reply") as reply, patch("whatsapp.router.send_cta_url") as cta:
-            handle_inbound(MSISDN, "tier2")
-        start.assert_not_called()
-        cta.assert_not_called()
-        self.assertIn("temporarily unavailable", reply.call_args.args[1])
-        self.face.assert_not_called()
-        self.tier2.assert_not_called()
 
     def test_get_is_safe_for_link_preview_and_does_not_reveal_kyc_form(self):
         response = self.get()
@@ -481,18 +411,16 @@ class VerificationWebTests(TestCase):
         self.assertEqual(cookie["path"], self.path)
         self.assertNotEqual(self.pa.payload["browser_proof"], cookie.value)
         self.assertNotIn(GOOD_PIN, json.dumps(self.pa.payload))
-        self.assertContains(self.get(), 'name="document"')
+        self.assertContains(self.get(), 'name="identifier"')
         self.assertFalse(AccessToken.objects.exists())
 
     def test_fetch_pin_redirect_has_refreshed_form_csrf_and_no_referer_required(self):
         response = self.unlock()
-        # fetch follows this same-resource 303 and stores the rotated CSRF cookie.
         page = self.get(response["Location"])
-        csrf_value = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"',
-                               page.content.decode()).group(1)
-        body = self.address(csrfmiddlewaretoken=csrf_value)
-        response = self.post(body, csrf=False, HTTP_SEC_FETCH_MODE="cors",
-                             HTTP_SEC_FETCH_SITE="same-origin")
+        csrf_value = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', page.content.decode()).group(1)
+        with patch("banking.web_verification.submit", return_value={"pending": True}):
+            response = self.post({"action": "identity_status", "csrfmiddlewaretoken": csrf_value},
+                csrf=False, HTTP_SEC_FETCH_MODE="cors", HTTP_SEC_FETCH_SITE="same-origin")
         self.assertEqual(response.status_code, 200)
         self.assert_security_headers(response)
 
@@ -625,106 +553,11 @@ class VerificationWebTests(TestCase):
         self.assertEqual(response.status_code, 413)
         self.assert_security_headers(response)
 
-    def test_tier2_is_truthful_and_never_calls_still_photo_liveness_or_upgrade(self):
-        User.objects.filter(pk=self.user.pk).update(face_verified=False, tier=1)
-        self.path = self.start(tier=2)
-        self.unlock()
-        response = self.get()
-        self.assertContains(response, "temporarily unavailable", status_code=503)
-        self.assertNotContains(response, 'name="bvn"', status_code=503)
-        self.assertNotContains(response, 'name="selfie"', status_code=503)
-        self.assertEqual(self.post({"action": "tier2", "live_image": "photo",
-                                   "bvn": "12345678901", "nin": "12345678902"}).status_code, 400)
-        self.face.assert_not_called()
-        self.tier2.assert_not_called()
-        self.assertEqual(self.post(self.address()).status_code, 400)
-        self.provider.assert_not_called()
 
-    def test_tier2_pin_gate_opens_prembly_without_collecting_nin(self):
-        User.objects.filter(pk=self.user.pk).update(nin_verified=False, face_verified=False, tier=1)
-        self.path = self.start(tier=2)
-        with patch("utility.liveness.tier2_face_available", return_value=True), \
-                patch("utility.liveness.start_tier2_liveness", return_value={
-                    "success": True, "session": "server-session",
-                    "url": "https://sdk-live.prembly.com/?session=provider-session"}) as start:
-            self.get()
-            self.assertEqual(self.post({"action": "tier2"}).status_code, 403)
-            start.assert_not_called()
-            self.unlock()
-            self.assertContains(self.get(), "No additional NIN verification is needed")
-            response = self.post({"action": "tier2"})
-            self.assertContains(response, "Open Prembly face verification")
-            self.assertNotContains(response, 'name="nin"')
-            start.assert_called_once()
-            self.user.refresh_from_db()
-            self.assertFalse(self.user.face_verified)
-            self.assertEqual(self.user.tier, 1)
-        self.tier2.assert_not_called()
 
-    def test_tier3_requires_actual_tier2_identity_flags(self):
-        User.objects.filter(pk=self.user.pk).update(face_verified=False)
-        self.unlock()
-        self.assertEqual(self.get().status_code, 409)
-        self.assertEqual(self.post(self.address()).status_code, 409)
-        self.provider.assert_not_called()
 
-    def test_address_calls_existing_view_and_consumes_once_without_storing_upload(self):
-        self.unlock()
-        response = self.post(self.address())
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Address verified")
-        self.assert_security_headers(response)
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.address_verified)
-        self.assertEqual(self.user.tier, 3)
-        self.service.assert_called_once()
-        scoped_user, data = self.service.call_args.args
-        self.assertEqual(scoped_user.pk, self.user.pk)
-        self.assertEqual(data["street"], "Palm Street")
-        self.assertTrue(data["document"])
-        self.pa.refresh_from_db()
-        self.assertEqual(self.pa.state, COMPLETE)
-        for sensitive in ("Palm Street", "100001", GOOD_PIN, "document", "base64"):
-            self.assertNotIn(sensitive, json.dumps(self.pa.payload))
-        self.assertEqual(self.get().status_code, 410)
-        self.assertEqual(self.post(self.address()).status_code, 410)
-        self.service.assert_called_once()
-        self.assertFalse(AccessToken.objects.exists())
 
-    def test_service_validation_rejection_is_preserved(self):
-        self.unlock()
-        self.service.side_effect = None
-        self.service.return_value = JsonResponse(
-            {"success": False, "message": "Private provider reply 12345678901"}, status=400)
-        response = self.post(self.address())
-        self.assertEqual(response.status_code, 400)
-        self.assertNotContains(response, "12345678901", status_code=400)
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.address_verified)
-        self.pa.refresh_from_db()
-        self.assertEqual(self.pa.state, READY)
-        self.service.side_effect = self.complete_address
-        self.assertEqual(self.post(self.address()).status_code, 200)
 
-    def test_explicit_fixed_fields_are_forwarded_in_authenticated_context(self):
-        self.unlock()
-        observed = {}
-
-        def backend(user, data):
-            observed.update(data)
-            self.assertEqual(user.pk, self.user.pk)
-            User.objects.filter(pk=self.user.pk).update(address_verified=True)
-            return JsonResponse({"success": True})
-
-        with patch("accounts.views.verify_kyc_address", side_effect=backend):
-            response = self.post(self.address(), HTTP_AUTHORIZATION="Bearer attacker-token")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(observed["buildingNumber"], "12")
-        self.assertEqual(observed["street"], "Palm Street")
-        self.assertEqual(observed["lga"], "Ikeja")
-        self.assertEqual(observed["country"], "Nigeria")
-        self.assertNotIn("action", observed)
-        self.assertNotIn("access_token", observed)
 
     def test_unrecognized_operation_or_fields_cannot_form_an_api_proxy(self):
         self.unlock()
@@ -735,301 +568,70 @@ class VerificationWebTests(TestCase):
             self.assertEqual(self.post(self.address(**{field: value})).status_code, 400)
         self.provider.assert_not_called()
 
-    def test_invalid_or_missing_images_fields_and_duplicate_values_never_dispatch(self):
-        self.unlock()
-        invalid = [self.address(document=document(b"not an image")),
-                   self.address(document=document(b"x" * 2_000_001)),
-                   self.address(street=""), self.address(lga=""),
-                   self.address(city="x" * 61), self.address(street=["one", "two"])]
-        missing = self.address()
-        missing.pop("document")
-        invalid.append(missing)
-        for data in invalid:
-            response = self.post(data)
-            self.assertEqual(response.status_code, 400)
-        self.provider.assert_not_called()
 
     def test_reentrant_duplicate_post_cannot_dispatch_again(self):
         self.unlock()
-
-        def verify(user, data):
+        def verifying(*args):
             self.pa.refresh_from_db()
             self.assertEqual(self.pa.state, PROCESSING)
-            self.assertEqual(self.post(self.address()).status_code, 410)
-            return self.complete_address(user, data)
-
-        self.service.side_effect = verify
-        self.assertEqual(self.post(self.address()).status_code, 200)
-        self.service.assert_called_once()
+            self.assertEqual(self.post({"action": "identity"}).status_code, 410)
+            return {"pending": True}
+        with patch("banking.web_verification.submit", side_effect=verifying) as service:
+            self.assertEqual(self.post({"action": "identity"}).status_code, 200)
+        service.assert_called_once()
 
     def test_ambiguous_provider_error_cannot_be_replayed_or_echoed(self):
         self.unlock()
-        self.service.side_effect = RuntimeError("secret-document-PIN-12345678901")
-        response = self.post(self.address())
-        self.assertEqual(response.status_code, 503)
-        self.assertNotContains(response, "12345678901", status_code=503)
-        self.assert_security_headers(response)
-        self.pa.refresh_from_db()
-        self.assertEqual(self.pa.state, REVIEW)
-        self.assertEqual(self.post(self.address()).status_code, 410)
-        self.service.assert_called_once()
-
-    def test_backend_200_without_verified_state_is_not_success(self):
-        self.unlock()
-        with patch("whatsapp.verification_web._run_address_operation",
-                   return_value=JsonResponse({"success": True})):
-            response = self.post(self.address())
-        self.assertEqual(response.status_code, 503)
-        self.pa.refresh_from_db()
-        self.assertEqual(self.pa.state, REVIEW)
-        self.assertNotContains(response, "<h1>Address verified</h1>", status_code=503)
-
-    def test_backend_email_gate_is_preserved(self):
-        self.unlock()
-        self.service.side_effect = self.production_address_service
-        with patch("accounts.views._email_gate", return_value=JsonResponse({"message": "Verify email"}, status=403)):
-            self.assertEqual(self.post(self.address()).status_code, 403)
-        self.provider.assert_not_called()
-
-    def test_bank_address_form_forwards_structured_fields_without_client_account(self):
-        self.unlock()
-        with patch("accounts.views.kyc_provider", return_value="wema"), \
-                patch("accounts.views.wema.address_verify_live", return_value=True):
-            page = self.get()
-            self.assertContains(page, "No document upload is needed")
-            self.assertNotContains(page, 'name="document"')
-            data = self.address()
-            data.pop("document")
-            response = self.post(data)
-        self.assertEqual(response.status_code, 200)
-        self.service.assert_called_once()
-        scoped_user, address = self.service.call_args.args
-        self.assertEqual(scoped_user.pk, self.user.pk)
-        self.assertNotIn("accountNumber", address)
-        self.assertNotIn("document", address)
-        for key, value in {"buildingNumber": "12", "street": "Palm Street", "lga": "Ikeja",
-                           "city": "Ikeja", "state": "Lagos", "postalCode": "100001"}.items():
-            self.assertEqual(address[key], value)
-        self.user.refresh_from_db()
-        self.assertEqual(self.user.wallet.bank_tier, 2)
-        self.bank_address.assert_not_called()
-        self.provider.assert_not_called()
-
-    def test_unavailable_bank_rail_does_not_collect_or_verify_a_fallback_document(self):
-        self.unlock()
-        with patch("accounts.views.kyc_provider", return_value="wema"), \
-                patch("accounts.views.wema.address_verify_live", return_value=False):
-            page = self.get()
-            self.assertNotContains(page, 'name="document"', status_code=503)
-            self.assertContains(page, "temporarily unavailable", status_code=503)
-            self.assertEqual(self.post(self.address()).status_code, 503)
-        self.provider.assert_not_called()
-        self.bank_address.assert_not_called()
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.address_verified)
-        self.assertFalse(self.user.address_verification_pending)
-
-    def test_bank_rejection_never_requests_a_document_or_falls_back_to_document_provider(self):
-        self.unlock()
-        self.service.side_effect = None
-        self.service.return_value = JsonResponse({"success": False, "rejected": True}, status=400)
-        data = self.address()
-        data.pop("document")
-        with patch("accounts.views.kyc_provider", return_value="wema"), \
-                patch("accounts.views.wema.address_verify_live", return_value=True):
-            response = self.post(data)
-        self.assertEqual(response.status_code, 400)
-        self.assertNotContains(response, 'name="document"', status_code=400)
-        self.assertNotContains(response, "utility bill", status_code=400)
-        self.service.assert_called_once()
-        self.bank_address.assert_not_called()
-        self.provider.assert_not_called()
-
-    def test_bank_to_document_rail_change_requires_proof_on_submit(self):
-        self.unlock()
-        with patch("accounts.views.kyc_provider", return_value="wema"), \
-                patch("accounts.views.wema.address_verify_live", return_value=True):
-            self.assertNotContains(self.get(), 'name="document"')
-        data = self.address()
-        data.pop("document")
-        response = self.post(data)
-        self.assertEqual(response.status_code, 400)
-        self.assertContains(response, 'name="document"', status_code=400)
-        self.provider.assert_not_called()
-        self.bank_address.assert_not_called()
-
-    def test_document_to_bank_rail_change_does_not_forward_unnecessary_upload(self):
-        from accounts.views import verify_kyc_address
-
-        self.unlock()
-        self.assertContains(self.get(), 'name="document"')
-        with patch("accounts.views.kyc_provider", return_value="wema"), \
-                patch("accounts.views.wema.address_verify_live", return_value=True), \
-                patch("accounts.views.verify_kyc_address", wraps=verify_kyc_address) as service:
-            response = self.post(self.address(document=document(b"unneeded private photo")))
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("document", service.call_args.args[1])
-        self.provider.assert_not_called()
-        self.bank_address.assert_not_called()
-
-    def test_client_cannot_disable_document_proof(self):
-        self.unlock()
-        for field in ("proof_required", "bank_rail", "provider"):
-            with self.subTest(field=field):
-                data = self.address(**{field: "false"})
-                data.pop("document")
-                self.assertEqual(self.post(data).status_code, 400)
-        self.provider.assert_not_called()
-        self.bank_address.assert_not_called()
-
-    def test_pending_bank_check_is_not_marked_verified_or_replayed(self):
-        self.unlock()
-        self.service.side_effect = None
-        self.service.return_value = JsonResponse({"success": True, "pending": True}, status=202)
-        with patch("accounts.views.kyc_provider", return_value="wema"), \
-                patch("accounts.views.wema.address_verify_live", return_value=True):
-            response = self.post(self.address())
-        self.assertEqual(response.status_code, 202)
-        self.assertContains(response, "Your address is being checked", status_code=202)
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.address_verified)
-        self.assertEqual(self.user.tier, 2)
-        self.assertEqual(self.post(self.address()).status_code, 410)
-        self.service.assert_called_once()
-
-    def test_existing_pending_address_only_shows_authenticated_status_refresh(self):
-        self.unlock()
-        User.objects.filter(pk=self.user.pk).update(address_verification_pending=True)
-        with patch("accounts.views._kyc_state", return_value={
-                "address_verified": False, "address_verification_pending": True}):
-            response = self.get()
-            self.assertContains(response, "Check verification status", status_code=202)
-            self.assertNotContains(response, 'name="buildingNumber"', status_code=202)
-            self.assertEqual(self.post(self.address()).status_code, 202)
-            self.assertEqual(self.post({"action": "status"}).status_code, 202)
-        self.provider.assert_not_called()
-        self.bank_address.assert_not_called()
-
-    def test_unavailable_address_contract_blocks_form_and_dispatch_before_collection(self):
-        self.unlock()
-        self.capability.return_value = {
-            "tier3_address_available": False,
-            "tier3_address_unavailable_reason": "Address verification is unavailable. Contact Zitch support."}
-        with patch("whatsapp.verification_web._address_data") as parse, \
-             patch("whatsapp.verification_web._run_address_operation") as service:
-            page = self.get()
-            self.assertContains(page, "Contact Zitch support", status_code=503)
-            self.assertNotContains(page, 'name="buildingNumber"', status_code=503)
-            self.assertNotContains(page, 'name="document"', status_code=503)
-            self.assertEqual(self.post(self.address()).status_code, 503)
-        parse.assert_not_called()
-        service.assert_not_called()
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.address_verified)
-        self.assertFalse(self.user.address_verification_pending)
-
-    def test_production_service_cannot_be_enabled_by_a_capability_claim_or_bank_account_status(self):
-        self.unlock()
-        self.service.side_effect = self.production_address_service
-        self.bank_status.return_value = {
-            "success": True, "tier": 3, "address_verification": "Completed"}
-        with patch("accounts.views.kyc_provider", return_value="wema"), \
-                patch("accounts.views.wema.address_verify_live", return_value=True):
-            self.assertEqual(self.post(self.address()).status_code, 503)
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.address_verified)
-        self.assertFalse(self.user.address_verification_pending)
-        self.assertEqual(self.user.tier, 2)
-        self.provider.assert_not_called()
-        self.bank_address.assert_not_called()
-        self.bank_status.assert_not_called()
-
-    def test_disabled_new_address_checks_preserve_existing_verified_and_pending_status(self):
-        self.unlock()
-        self.capability.return_value = {
-            "tier3_address_available": False, "tier3_address_unavailable_reason": "Contact support."}
-        User.objects.filter(pk=self.user.pk).update(address_verification_pending=True)
-        page = self.get()
-        self.assertContains(page, "Your address request needs review", status_code=202)
-        self.assertContains(page, "Zitch Support", status_code=202)
-        self.assertNotContains(page, "being checked", status_code=202)
-        self.assertEqual(self.post(self.address()).status_code, 202)
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.address_verified)
-        self.assertTrue(self.user.address_verification_pending)
-        User.objects.filter(pk=self.user.pk).update(address_verified=True, address_verification_pending=False)
-        self.assertContains(self.get(), "Address verified")
-        self.provider.assert_not_called()
-        self.bank_address.assert_not_called()
-
-    def test_submitted_pending_link_can_refresh_but_never_submit_address_again(self):
-        self.unlock()
-        with patch("whatsapp.verification_web._run_address_operation",
-                   return_value=JsonResponse({"success": True, "pending": True}, status=202)) as service:
-            self.assertEqual(self.post(self.address()).status_code, 202)
+        with patch("banking.web_verification.submit", side_effect=RuntimeError("secret-document-12345678901")) as service:
+            response = self.post({"action": "identity"})
+            self.assertEqual(response.status_code, 503)
+            self.assertNotContains(response, "12345678901", status_code=503)
+            self.assert_security_headers(response)
             self.pa.refresh_from_db()
             self.assertEqual(self.pa.state, REVIEW)
-            with patch("accounts.views._kyc_state", return_value={
-                    "address_verified": False, "address_verification_pending": True}):
-                self.assertEqual(self.get().status_code, 202)
-                self.assertEqual(self.post({"action": "status"}).status_code, 202)
-                self.assertEqual(self.post({"action": "status"}, csrf=False).status_code, 403)
-                self.assertEqual(self.get(client=Client(enforce_csrf_checks=True)).status_code, 403)
-                self.assertEqual(self.post(self.address()).status_code, 410)
-            with patch("accounts.views._kyc_state", return_value={
-                    "address_verified": True, "address_verification_pending": False}):
-                self.assertContains(self.post({"action": "status"}), "Address verified")
-                self.assertEqual(self.post(self.address()).status_code, 410)
+            self.assertEqual(self.post({"action": "identity"}).status_code, 410)
         service.assert_called_once()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     def test_pending_status_cannot_be_read_after_credential_revocation(self):
         self.unlock()
-        with patch("whatsapp.verification_web._run_address_operation",
-                   return_value=JsonResponse({"success": True, "pending": True}, status=202)):
-            self.assertEqual(self.post(self.address()).status_code, 202)
+        with patch("banking.web_verification.submit", return_value={"pending": True, "identity_reference": "bound-reference"}):
+            self.assertEqual(self.post({"action": "identity"}).status_code, 200)
         User.objects.filter(pk=self.user.pk).update(password="changed")
-        self.assertEqual(self.post({"action": "status"}).status_code, 410)
+        self.assertEqual(self.post({"action": "identity_status"}).status_code, 410)
         self.assertEqual(self.get().status_code, 410)
 
     def test_status_readback_rechecks_credentials_after_the_bank_call(self):
         self.unlock()
-        User.objects.filter(pk=self.user.pk).update(address_verification_pending=True)
-
-        def revoke_during_readback(user):
+        def revoke(user, *args):
             User.objects.filter(pk=user.pk).update(password="changed-during-readback")
-            return False
+            return {"pending": True}
+        with patch("banking.web_verification.submit", side_effect=revoke):
+            self.assertEqual(self.post({"action": "identity_status"}).status_code, 410)
 
-        with patch("wallet.address_verification.refresh_address_verification",
-                   side_effect=revoke_during_readback):
-            self.assertEqual(self.post({"action": "status"}).status_code, 410)
-
-    def test_router_cancel_preserves_bank_request_already_pending_review(self):
-        from .router import handle_inbound
-
-        self.unlock()
-        self.service.side_effect = None
-        self.service.return_value = JsonResponse({"success": False, "pending": True}, status=202)
-        data = self.address()
-        data.pop("document")
-        with patch("accounts.views.kyc_provider", return_value="wema"), \
-                patch("accounts.views.wema.address_verify_live", return_value=True):
-            self.assertEqual(self.post(data).status_code, 202)
-        with patch("whatsapp.router.reply") as reply:
-            handle_inbound(MSISDN, "cancel")
-        self.pa.refresh_from_db()
-        self.assertEqual(self.pa.state, REVIEW)
-        self.assertNotIn("Okay, cancelled", reply.call_args.args[1])
-        self.service.assert_called_once()
 
     @override_settings(RATELIMIT_ENABLE=True)
-    def test_existing_address_operation_rate_limit_is_shared(self):
+    def test_existing_identity_operation_rate_limit_is_shared(self):
         from common.ratelimit import opaque_cache_identifier
-
         self.unlock()
-        key = "rl:kyc_address:" + opaque_cache_identifier("kyc_address", "127.0.0.1")
-        cache.set(key, 10, 600)
-        self.assertEqual(self.post(self.address()).status_code, 429)
-        self.provider.assert_not_called()
+        key = "rl:bank_identity_start:" + opaque_cache_identifier("bank_identity_start", "127.0.0.1")
+        cache.set(key, 5, 600)
+        with patch("banking.web_verification.submit") as provider:
+            self.assertEqual(self.post({"action": "identity"}).status_code, 429)
+        provider.assert_not_called()
 
     def test_non_https_or_non_origin_config_cannot_issue_links(self):
         for base in ("http://testserver", "https://testserver/path", "https://user@host", ""):

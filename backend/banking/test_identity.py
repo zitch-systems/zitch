@@ -40,6 +40,20 @@ class IdentityTests(TestCase):
         self.assertFalse(BankAccount.objects.exists())
         self.assertNotIn("12345678901", row.encrypted_input)
 
+    def test_lost_identity_response_does_not_initiate_again_on_retry(self):
+        with patch("banking.client.Client.initiate_identity",
+                side_effect=ProviderError("network_unavailable", uncertain=True)) as initiate:
+            with self.assertRaises(ProviderError):
+                start_identity(self.user, "bvn", "12345678901", PROFILE)
+            result = start_identity(self.user, "bvn", "12345678901", PROFILE)
+        self.assertEqual(initiate.call_count, 1)
+        self.assertEqual(IdentityChallenge.objects.count(), 1)
+        self.assertEqual(result["account_setup_state"], "unconfirmed")
+        self.assertTrue(result["pending"])
+        self.assertFalse(result["otp_required"])
+        self.assertFalse(BankAccount.objects.exists())
+        self.assertFalse(IdentityProof.objects.exists())
+
     def test_expired_otp_is_not_sent_and_raw_input_is_erased(self):
         row = self.pending()
         IdentityChallenge.objects.filter(pk=row.pk).update(expires_at=timezone.now()-timedelta(seconds=1))

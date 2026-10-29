@@ -5,7 +5,7 @@ from decimal import Decimal
 from io import StringIO
 from unittest.mock import patch
 
-from django.core.management import call_command, get_commands
+from django.core.management import call_command, get_commands, CommandError
 from django.db import connection, IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.urls import Resolver404, resolve
@@ -40,16 +40,18 @@ class FundingHoldTests(TestCase):
 
     def test_outstanding_money_blocks_funding_and_both_spend_paths(self):
         funding_hold(self.user, "1250")
+        from banking.models import PreviousBankArchive
+        PreviousBankArchive.objects.create(wallet=self.wallet, balance="1250", account_number=self.wallet.account_number)
         before = list(Transaction.objects.values())
         state = customer_funding_account(self.user)
-        self.assertEqual(state["provider"], "partnership")
-        self.assertEqual(state["account_setup_state"], "legacy_funding_review")
+        self.assertEqual(state["provider"], "9psb")
+        self.assertEqual(state["account_setup_state"], "banking_unavailable")
         for flag in ("has_account", "available", "can_fund", "spending_available", "transfers_available", "bill_payments_available"):
             self.assertFalse(state[flag])
         self.assertNotIn(self.wallet.account_number, json.dumps(state))
         self.assertEqual(wallet_balance_payload(self.user), {"balance": Decimal("1250"),
             "available_balance": Decimal("0"), "historical_balance": Decimal("1250"),
-            "legacy_funding_balance": Decimal("1250")})
+            "legacy_funding_balance": Decimal("1250"), "restricted_balance": Decimal("0")})
         for service in ("Airtime — MTN", "Transfer to Ada"):
             with self.assertRaises(LimitExceeded):
                 debit(self.user, "1", service)
@@ -81,7 +83,7 @@ class FundingHoldTests(TestCase):
         with patch("utility.wema.wema_live", return_value=True), patch("utility.wema.get_balance", return_value={
                 "success": True, "balance_naira": Decimal("0")}), patch("utility.alerts.alert"):
             for name, flag in (("settlement_report", "--fail-on-breach"), ("reconcile_balances", "--fail-nonzero")):
-                with self.subTest(command=name), self.assertRaises(SystemExit):
+                with self.subTest(command=name), self.assertRaises(CommandError):
                     call_command(name, flag, stdout=StringIO(), stderr=StringIO())
         evidence = AuditLog.objects.get(action="recon.settlement_report").after
         self.assertIsNone(evidence["position"])

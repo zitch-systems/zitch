@@ -23,8 +23,8 @@ class PartnershipRoutingTests(SimpleTestCase):
 
     @override_settings(BANK_ACCOUNT_PROVIDER="wema_vas", KYC_PROVIDER="prembly")
     def test_stale_environment_selectors_cannot_enable_retired_integration(self):
-        self.assertEqual(bank_account_provider(), "partnership")
-        self.assertEqual(kyc_provider(), "wema")
+        self.assertEqual(bank_account_provider(), "9psb")
+        self.assertEqual(kyc_provider(), "9psb")
 
 
 class PartnershipDiagnosticsTests(TestCase):
@@ -51,7 +51,7 @@ class PartnershipDiagnosticsTests(TestCase):
             call_command("partnership_diagnostics", stdout=output)
         network.assert_not_called()
         report = json.loads(output.getvalue())
-        self.assertEqual(report["account_provider"], "partnership")
+        self.assertEqual(report["account_provider"], "9psb")
         self.assertTrue(report["read_only"])
         self.assertFalse(report["release_authorization"])
         self.assertIn("financial_controls", report)

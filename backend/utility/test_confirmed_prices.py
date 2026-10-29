@@ -1,3 +1,4 @@
+from banking.test_fixtures import bank_channel_case
 """A catalogue price change cannot silently change the customer's approved debit."""
 import json
 from decimal import Decimal
@@ -12,6 +13,7 @@ from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
 
+@bank_channel_case
 class ConfirmedPurchasePriceTests(TestCase):
     def setUp(self):
         self.user, self.token = make_user("08012223334", "confirmed-price@zitch.test", balance="50000")

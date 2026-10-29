@@ -130,7 +130,7 @@ def _decode(token):
     return None
 
 
-def _resolve(claims, *, lock=False, status_only=False):
+def _resolve(claims, *, lock=False, status_only=False, completing=False):
     """Called inside an atomic block when mutating: user -> link -> action locks."""
     if claims is None:
         return None, None
@@ -149,7 +149,8 @@ def _resolve(claims, *, lock=False, status_only=False):
     readable_pending = bool(pa and status_only and pa.state == REVIEW
                             and pa.payload.get("address_pending") is True)
     if (not pa or not user or not link or pa.user_id != user.pk or pa.expired
-            or (pa.state not in (PIN, READY) and not readable_pending) or pa.payload.get("tier") not in (1, 2, 3)
+            or (pa.state not in (PIN, READY) and not readable_pending
+                and not (completing and pa.state == PROCESSING)) or pa.payload.get("tier") not in (1, 2, 3)
             or pa.payload.get("link_id") != link.pk or pa.msisdn != link.wa_msisdn
             or pa.payload.get("link_stamp") != _link_stamp(link)
             or not hmac.compare_digest(pa.payload.get("credentials", ""), _credential_stamp(user))
@@ -303,26 +304,53 @@ def _submit(request, claims):
             return response
         if not _has_proof(request, pa, user):
             return _page(request, "pin", status=403, message="Enter your transaction PIN to continue.")
-        if any(len(request.POST.getlist(k)) != 1 for k in request.POST):
+        if (any(len(request.POST.getlist(k)) != 1 for k in request.POST)
+                or any(len(request.FILES.getlist(k)) != 1 for k in request.FILES)):
             return _page(request, "error", status=400, message="Use one value for each field.")
+        from banking.web_verification import validate_fields, OPERATION_LIMITS
+        try:
+            validate_fields(action, request.POST, request.FILES)
+        except ValueError as exc:
+            return _form(request, pa, user, message=str(exc), status=400)
+        if action in OPERATION_LIMITS:
+            scope, limit, window = OPERATION_LIMITS[action]
+            if ratelimit(scope, limit, window)(lambda _request: None)(request) is not None:
+                return _form(request, pa, user, status=429,
+                             message="Too many requests. Please wait before trying again.")
+        # Claim the browser action before leaving the transaction for bank I/O.
+        # Chat cancellation and a second POST cannot re-enter this operation.
+        pa.state = PROCESSING
+        pa.save(update_fields=["state"])
     from banking.web_verification import submit
     from banking.client import ProviderError
+    status, uncertain = 200, False
     try:
         result = submit(user, action, request.POST, request.FILES, pa.payload)
         message = result.get("message") or ("Verification completed." if result.get("success") else "Your bank verification is processing.")
     except ValueError as exc:
         result, message = {}, str(exc)
+        status = 400
     except ProviderError:
         result, message = {}, "The service could not confirm the result. Check status before submitting again."
+        status = 503
+    except Exception:
+        result, message = {}, "We could not confirm this verification. Please contact support before trying again."
+        status, uncertain = 503, True
     with transaction.atomic():
-        current, owner = _resolve(claims, lock=True)
-        if not current or not _has_proof(request, current, owner):
+        current, owner = _resolve(claims, lock=True, completing=True)
+        if not current:
+            return _page(request, status=410)
+        current.state = READY
+        if not _has_proof(request, current, owner):
             return _page(request, status=410)
         for key in ("identity_reference", "address_reference"):
             if result.get(key):
                 current.payload[key] = result[key]
-        current.save(update_fields=["payload"])
-    return _form(request, current, owner, message=message)
+        current.state = REVIEW if uncertain else READY
+        current.save(update_fields=["payload", "state"])
+    if uncertain:
+        return _page(request, "error", status=status, message=message)
+    return _form(request, current, owner, message=message, status=status)
 
 
 @csrf_protect

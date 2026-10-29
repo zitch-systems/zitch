@@ -12,19 +12,20 @@ from wallet.models import BillFundingBinding, BillFundingRefund, BankHistoryChec
 from wallet.services import (DuplicateTransaction, LimitExceeded, bank_spend_error,
     biller_source_for_transaction, credit, customer_funding_account, debit, refund,
     settle_or_refund, wallet_balance_payload, wallet_expected_balance)
-from wallet.tests import make_user
+from banking.test_fixtures import make_bank_user as make_user
+from banking.test_client import CONFIG
 from wallet.funding_test_fixtures import funding_hold
 from wallet.partnership import legacy_funding_blockers
 
 
 @override_settings(WEMA_PARTNERSHIP_MODE="active", BANK_ACCOUNT_PROVIDER="partnership",
                    WEMA_BILLER_MODE="active")
+@override_settings(NINEPSB=CONFIG)
 class PartnershipBillFundingTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08088990001", "bills@example.test", balance="1000", tier=3)
         self.wallet = Wallet.objects.get(user=self.user)
-        self.wallet.account_number = "0458899001"
-        self.wallet.save(update_fields=["account_number"])
+
 
     def test_immutable_own_source_authorizes_exact_pending_bill(self):
         txn = debit(self.user, "100", "Airtime — MTN")
@@ -36,34 +37,36 @@ class PartnershipBillFundingTests(TestCase):
             biller_source_for_transaction("missing", amount="100")
 
     def test_disabled_biller_fails_before_ledger_debit(self):
-        with override_settings(WEMA_BILLER_MODE="disabled"), self.assertRaises(LimitExceeded):
+        with override_settings(NINEPSB={**CONFIG, "VAS_ENABLED": False}), self.assertRaises(LimitExceeded):
             debit(self.user, "100", "Airtime — MTN")
         self.assertFalse(BillFundingBinding.objects.exists())
         self.assertEqual(wallet_expected_balance(self.user.pk), Decimal("1000"))
 
     def test_partnership_pause_stops_new_bills(self):
-        with override_settings(WEMA_PARTNERSHIP_MODE="archive"), self.assertRaises(LimitExceeded):
+        with override_settings(NINEPSB={**CONFIG, "ENABLED": False}), self.assertRaises(LimitExceeded):
             debit(self.user, "100", "Airtime — MTN")
         self.assertFalse(BillFundingBinding.objects.exists())
 
     def test_missing_live_account_is_not_replaced_by_pool(self):
-        self.wallet.account_number = ""
-        self.wallet.save(update_fields=["account_number"])
+        from banking.models import BankAccount
+        from wallet.tests import make_user as unbanked_user
+        self.user, _ = unbanked_user("08088990003", "unbanked@example.test", balance="1000")
+        self.wallet = self.user.wallet
         with patch("utility.wema.wema_live", return_value=True), self.assertRaises(LimitExceeded):
             debit(self.user, "100", "Airtime — MTN")
 
-    def test_history_review_bank_cap_and_kyc_still_apply(self):
-        with patch("utility.wema.wema_live", return_value=True):
-            self.assertIn("review", bank_spend_error(self.user, 100, biller=True))
-            checkpoint = BankHistoryCheckpoint.objects.get(wallet=self.wallet)
-            checkpoint.opening_review_required = False
-            checkpoint.save(update_fields=["opening_review_required"])
-            with patch("utility.wema.bank_tier_limit", return_value=Decimal("150")):
-                debit(self.user, "100", "Airtime — MTN")
-                with self.assertRaises(LimitExceeded):
-                    debit(self.user, "100", "Data — MTN")
-        self.user.bvn_verified = self.user.nin_verified = False
-        self.user.save(update_fields=["bvn_verified", "nin_verified"])
+    def test_opening_review_limits_and_contact_revocation_still_apply(self):
+        from banking.models import BankAccount
+        BankAccount.objects.filter(wallet=self.wallet).update(opening_review_required=True)
+        with self.assertRaises(LimitExceeded):
+            debit(self.user, "100", "Airtime — MTN")
+        BankAccount.objects.filter(wallet=self.wallet).update(opening_review_required=False)
+        with override_settings(NINEPSB={**CONFIG, "SINGLE_OUTBOUND_LIMITS": '{"3":"150"}'}):
+            debit(self.user, "100", "Airtime — MTN")
+            with self.assertRaises(LimitExceeded):
+                debit(self.user, "151", "Data — MTN")
+        self.user.phone_verified = False
+        self.user.save(update_fields=["phone_verified"])
         with self.assertRaises(LimitExceeded):
             debit(self.user, "10", "Airtime — MTN")
 
@@ -83,12 +86,12 @@ class PartnershipBillFundingTests(TestCase):
 
 
 @skipUnlessDBFeature("has_select_for_update")
+@override_settings(NINEPSB=CONFIG)
 class PostgresBillFundingTests(TransactionTestCase):
     def setUp(self):
         self.user, _ = make_user("08088990002", "postgres-bill@example.test", balance="1000", tier=3)
         self.wallet = Wallet.objects.get(user=self.user)
-        self.wallet.account_number = "0458899002"
-        self.wallet.save(update_fields=["account_number"])
+
 
     def race(self, actions):
         barrier = Barrier(len(actions))

@@ -50,6 +50,7 @@ class MoneyTests(TestCase):
         self.bank.pnd = True
         self.bank.save()
         result = wallet_balance_payload(self.user, self.wallet)
+        self.assertEqual(result["balance"], Decimal("500"))
         self.assertEqual(result["available_balance"], Decimal("0"))
         self.assertEqual(result["historical_balance"], Decimal("200"))
         self.assertEqual(result["restricted_balance"], Decimal("300"))

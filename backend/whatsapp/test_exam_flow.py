@@ -1,3 +1,4 @@
+from banking.test_fixtures import bank_channel_case
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ from whatsapp.models import PendingAction
 from whatsapp.test_flows import MSISDN, _make_user
 
 
+@bank_channel_case
 @override_settings(TESTING=True)
 class WhatsAppExamPinTests(TestCase):
     def setUp(self):
@@ -22,23 +24,15 @@ class WhatsAppExamPinTests(TestCase):
         self.assertIn("🔟  🎓 Exam PIN", router.menu_text())
 
     @patch.object(router, "reply")
-    def test_the_guided_flow_collects_product_quantity_and_phone(self, reply):
-        router._start_exam(self.user, MSISDN)
+    def test_exam_menu_loads_current_bank_catalog(self, reply):
+        with patch("banking.bills.catalog", return_value=[{"id": "EXAM", "name": "Exam PINs"}]) as catalog:
+            router._start_exam(self.user, MSISDN)
+        catalog.assert_called_once_with("categories")
         pa = PendingAction.objects.get(msisdn=MSISDN)
-        self.assertEqual(pa.state, "product")
-        router._advance_exam(pa, self.user, MSISDN, "1")
-        pa.refresh_from_db()
-        self.assertEqual(pa.state, "quantity")
-        router._advance_exam(pa, self.user, MSISDN, "2")
-        pa.refresh_from_db()
-        self.assertEqual(pa.state, "phone")
-
-        router._advance_exam(pa, self.user, MSISDN, "me")
-        pa.refresh_from_db()
-        self.assertEqual(pa.payload["amount"], "7000.00")
-        confirm = reply.call_args[0][1]
-        self.assertIn("Confirm Exam PIN", confirm)
-        self.assertIn("Available balance ₦10,000.00", confirm)
+        self.assertEqual(pa.action_type, "bank_vas")
+        self.assertEqual(pa.state, "categories")
+        self.assertEqual(pa.payload["choices"], [{"id": "EXAM", "label": "Exam PINs"}])
+        self.assertIn("Exam PINs", reply.call_args.args[1])
 
     @patch.object(router, "reply_receipt")
     @patch.object(router, "vtu_purchase",
