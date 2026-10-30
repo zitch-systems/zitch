@@ -32,7 +32,7 @@ def spending_account(user, *, refresh=False):
     if not bank:
         raise LimitExceeded("Complete your 9PSB account setup first")
     if not user.email_verified or not user.phone_verified or user.tier < 1:
-        raise LimitExceeded("Complete your contact and bank identity verification before spending")
+        raise LimitExceeded("Verify your contact details and bank identity before spending")
     if refresh:
         try:
             update_account(bank)
