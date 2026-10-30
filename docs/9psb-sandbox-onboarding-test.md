@@ -52,14 +52,16 @@ bank transfers closed. The reason names the cause without secrets:
 |---|---|
 | `authentication_failed, HTTP 4xx` | The bank rejected the WaaS credentials |
 | `network_unavailable` | Render could not reach the sandbox host |
-| `bank_directory_unconfirmed, HTTP n[, response code c], status s` | Login worked, but the bank refused or failed the `get_banks` call (non-200, status not `SUCCESS`, or a non-`00` code). `s` is the reply's one-word status, or `absent`/`unrecognized`; a non-numeric code shows as `withheld` |
+| `bank_directory_unconfirmed, HTTP n[, response code c], status s` | Login worked, but the bank refused or failed the `get_banks` call (non-200, status not `SUCCESS`, or a non-`00` code). `s` is the reply's one-word status, or `absent`/`unrecognized`; a code that is not a short token shows as `withheld` |
 | `bank_directory_malformed, HTTP 200` | The bank answered success without a `data.bankList` array |
 | `bank_directory_empty` | The list had no usable bank name and numeric code |
 
-On 30 October the 13:18 UTC deploy logged `bank_directory_unconfirmed, HTTP 200`
-with no numeric code: 9PSB answered, but not with status `SUCCESS`. The next
-deploy also logs the status word. Account opening uses the same WaaS login, which
-works, and does not depend on the bank directory.
+On 30 October the 14:01 UTC deploy logged `bank_directory_unconfirmed, HTTP 200,
+response code withheld, status SUCCESS`: 9PSB returned the directory successfully
+with a `responseCode` that is not `00`. A JSON `null` code was read as the text
+`None` and refused; a null or blank code is now treated as absent. Any other code
+is logged verbatim when it is a short token. Account opening uses the same WaaS
+login, which works, and does not depend on the bank directory.
 
 ## 3. Ask 9PSB for these before testing
 
