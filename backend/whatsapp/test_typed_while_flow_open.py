@@ -22,7 +22,7 @@ from django.utils import timezone
 
 from transfers.models import Bank
 from whatsapp import router
-from whatsapp.flows import ACCOUNT_OTP, FLOW_ID_STATE, _success_screen
+from whatsapp.flows import FLOW_ID_STATE, _success_screen
 from whatsapp.models import PendingAction
 from whatsapp.test_flows import MSISDN, _make_user
 
@@ -62,25 +62,20 @@ class TypedIdentityIsAnsweredTests(TestCase):
         self.assertEqual(pa.state, "bvn")   # handed to the chat step, not left armed
         self.assertIn("delete your message", reply.call_args[0][1].lower())
 
-    def test_add_account_routes_to_its_own_handler(self):
-        """Signup parks both ID types in one 'bvn' entry state and has a
-        different advance function; sending it to the KYC one would ask the
-        wrong questions about a number that is already right."""
-        pa = _identity_action(self.user, action_type="add_account")
-        with patch.object(router, "reply"), \
-             patch.object(router, "_advance_add_account") as advance:
-            router._advance(pa, self.user, MSISDN, "81083752916")
-        advance.assert_called_once()
-
-    def test_a_typed_account_code_is_processed(self):
-        pa = _identity_action(self.user, action_type="add_account",
-                              id_kind=ACCOUNT_OTP, tracking_id="t1")
-        with patch.object(router, "reply"), \
-             patch.object(router, "_advance_add_account") as advance:
-            router._advance(pa, self.user, MSISDN, "123456")
-        advance.assert_called_once()
-        pa.refresh_from_db()
-        self.assertEqual(pa.state, "otp")
+    def test_a_retired_account_setup_is_closed_without_reading_the_number(self):
+        """In-chat account opening belonged to the retired partner bank. A
+        session left open from it is closed, and the typed number is not used."""
+        from whatsapp.models import PendingAction
+        from whatsapp.retired_setup import RETIRED_SETUP_MESSAGE
+        for text in ("81083752916", "123456"):
+            with self.subTest(text=text):
+                pa = _identity_action(self.user, action_type="add_account", id_kind="account_otp")
+                with patch.object(router, "reply") as reply, \
+                     patch.object(router, "_advance_kyc") as kyc:
+                    router._advance(pa, self.user, MSISDN, text)
+                kyc.assert_not_called()
+                reply.assert_called_once_with(MSISDN, RETIRED_SETUP_MESSAGE)
+                self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
 
     def test_a_typed_email_address_is_processed_and_not_read_as_a_new_command(self):
         """The one identity answer that contains letters. Recognised by shape

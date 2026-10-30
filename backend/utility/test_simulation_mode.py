@@ -5,10 +5,11 @@ airtime/data/bills, cards, FX, Mono, Wema, KYC) so the app can be walked end-to-
 with no real money — and wema_preflight HARD-FAILS while it is on, so it can never
 reach a real-money deploy.
 """
+import json
 from io import StringIO
 from unittest import mock
 
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from utility.providers import (
@@ -60,32 +61,10 @@ class ProviderUnblockTests(SimpleTestCase):
 
 
 
-_LIVE_DIAG = {"base_url": "https://api.alat.ng", "channel_id_set": True,
-              "wallet_key_set": True, "security_info_set": True, "wema_live": True,
-              "simulation": True, "status": "configured", "hint": ""}
-
-
 class PreflightSimulationGateTests(TestCase):
-    @override_settings(WEMA=_SIM, TEST_OTP={"PHONE": "", "CODE": ""}, SIMULATE_DEPOSIT_TOKEN="",
-                       RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
-                       TERMII={"API_KEY": "tk_x", "BASE_URL": "x", "SENDER_ID": "Zitch",
-                               "CHANNEL": "dnd"},
-                       CARD_ISSUER={"API_KEY": "ci_x"})
-    def test_preflight_hard_fails_while_simulation_on(self):
+    @override_settings(MONO={"SIMULATION": True})
+    def test_preflight_blocks_go_live_while_simulation_on(self):
         out = StringIO()
-        code = 0
-        with mock.patch("utility.wema.wema_diagnostics", return_value=_LIVE_DIAG):
-            try:
-                call_command("wema_preflight", stdout=out)
-            except SystemExit as exc:
-                code = exc.code
-        self.assertIn("NOT READY", out.getvalue())
-        self.assertIn("Simulation mode", out.getvalue())
-        self.assertEqual(code, 1)
-
-
-_KEYED_SIM = {"CHANNEL_ID": "chan-1", "KEYS": {"wallet": "subkey", "card": "cardkey",
-                                               "airtime": "airkey"},
-              "BASE_URL": "https://apiplayground.alat.ng", "SIMULATION": True,
-              "SOURCE_ACCOUNT": "0100000001"}
-_KEYED_LIVE = {**_KEYED_SIM, "SIMULATION": False}
+        with self.assertRaises(CommandError):
+            call_command("bank_preflight", stdout=out)
+        self.assertIn("simulation_mode_enabled", json.loads(out.getvalue())["blockers"])

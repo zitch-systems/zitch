@@ -16,13 +16,12 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 
 from wallet.models import Wallet
-from wallet.services import wema_account_reference
 from wallet.tests import make_user
 
 
 def _provision(user, account_number="0123456789"):
     Wallet.objects.filter(user=user).update(
-        account_reference=wema_account_reference(user), account_number=account_number)
+        account_reference=f"WEMA-WALLET-{user.id}", account_number=account_number)
 
 
 def _bank(naira):

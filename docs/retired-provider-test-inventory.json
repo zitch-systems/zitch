@@ -52,6 +52,331 @@
       "path": "backend/wallet/test_wema_callbacks.py",
       "sha256": "7cad6b34fb67dcefae6bb73f8d46fef57137bed5da6a7b276b2d62c739a6d8f5",
       "test_methods": 83
+    },
+    {
+      "path": "backend/accounts/test_simulate_kyc.py",
+      "sha256": "573e656bf15a1df71811078f478d2a4b94ed9fdf00ce0cf23b570cf62f86742d",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/utility/test_electricity_variants.py",
+      "sha256": "9d67288742739634464d7e42468ee2ffe2756ea4f2528e85cfb0484ca08c8d25",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/utility/test_kyc_status_readback.py",
+      "sha256": "be975fd44ff93b5f5f474f48062e8fb9e2a0b15356a0a9a36273c307a51554ef",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/utility/test_partnership_archive.py",
+      "sha256": "604b81c09d5e20eb9a843e16f918c7f099aeb14cd9a7dae0d0135c5bb7bbb90f",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/utility/test_wema_banks_sync.py",
+      "sha256": "695ac5fd62438e45c5d2d0b059485f8fb1987bbf051858b81c48cdb4cc46e618",
+      "test_methods": 26,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/utility/test_wema_billers.py",
+      "sha256": "5779688fb1f292503684a307322eb174fe1fb5063ce89ecf33eb989e0f456d3d",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/utility/test_wema_preflight.py",
+      "sha256": "ab773a1e0cef91a072e330041edf5ecffbfa373f9a140c820b73d4525086999d",
+      "test_methods": 5,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_account_recovery.py",
+      "sha256": "39ec2d9638824004755a4197555ed7def882db7dfa406160209a437833c5c872",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_async_identity.py",
+      "sha256": "87c9f05704f3c64d854b8e836f3b44e721ac0674ed1bd30fe41659d1e8a590d0",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_bank_tier.py",
+      "sha256": "6d3840a5d57a53c648329858de747e7aefde7a2713a6b67e2e35927b643f886d",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_face_account_state.py",
+      "sha256": "0702c27a6941347c53082937cd8b2dba331fd1b9b51fd6b3c7bcd885a3b1e215",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_history_checkpoint.py",
+      "sha256": "112ce92972c35c863c6ed2d2e562f94299174e11980776ccf734de60740a1074",
+      "test_methods": 11,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_nin_account_recovery.py",
+      "sha256": "917947851945a175a4432284eae49ff7e890cbae136f4fe8a3d914f3ec331310",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_opening_review.py",
+      "sha256": "78a1f718a701aab5707f40fa8bdfd79048e31871061fb29b3d0226fedf463bca",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_reconciliation_evidence.py",
+      "sha256": "50004fd659dfab9f47fe05cf56e306a5e8e160e0b310b447be8b3132af3b2f42",
+      "test_methods": 14,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_settlement_report.py",
+      "sha256": "cce8a6a751c02faf38ae670fad14588b87d11dd948d7396346e9a16e250dc6dd",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_wema_funding.py",
+      "sha256": "cacefe5c3ff0ea097e9a27e6002d9ff0e65e15f202fbbddc5887a2a0abb5e0f9",
+      "test_methods": 50,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_face_kyc.py",
+      "sha256": "bf479e4f444f14582575711a9837a2bbcfcb1e1b7094ff3247eeb5065470d0a1",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_partnership_journeys.py",
+      "sha256": "278906d3cce911122a291032136ff1d4103693ad5c0479b5db8cedaa20a2e04d",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/accounts/test_identity_otp_channels.py",
+      "sha256": "51e16ef5ed9927e95b262a27155d67530f38d3366c7c8bfbd083dcf979a6479b",
+      "test_methods": 8,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/accounts/test_prembly_otp_channels.py",
+      "sha256": "fbe622edef1e6b1ee0f29ed7d08187d92be697749461a4235598db031ea1e532",
+      "test_methods": 9,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/accounts/test_kyc_challenge_integrity.py",
+      "sha256": "7791b9a5c0da3aaef97a58fd14115e51316ddcfcc1fab88dcafe170ae1817cc0",
+      "test_methods": 7,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_bank_otp_concurrency.py",
+      "sha256": "9c547f76675c349997f62e831cad44974756592e15ca57ce50e0494b18c7dbf1",
+      "test_methods": 1,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_simulate_deposit.py",
+      "sha256": "1e0ff5d5f7ddf6c55d159c9983d4770031cdc1743a24183d382ffc06eab32e27",
+      "test_methods": 1,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
+    },
+    {
+      "path": "backend/utility/test_biller_lifecycle.py",
+      "sha256": "75d7d1a0e266ab84f6df985c0b6df837eac9cb0dc916018e67cf4b37399f01b8",
+      "test_methods": 0,
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "reason": "Tests for the retired partner bank's account opening, statement reconciliation, face recovery, bank-code sync, preflight and simulation tooling, removed with that code. Shared ledger, historical liability and 9PSB suites remain active.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_transfers",
+        "wallet.test_funding_holds"
+      ]
     }
   ],
   "retired_classes": [
@@ -1221,6 +1546,19 @@
       "class": "BankCodesInProbeTests",
       "class_sha256": "1af80ac6208d6166baa82331308040e835b0e27098fdf555d61a10eaea7a77e2",
       "test_methods": 3
+    },
+    {
+      "path": "backend/whatsapp/test_identity_otp.py",
+      "class": "AccountOtpScreenNamesTheIdentityRecordTests",
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "source_file_sha256": "beedf0e56f2ab40569cbf4b212fc3a5e938edf693b46839862715ea2e10605d5",
+      "class_sha256": "8f64414126902d32c43ad2da71504e568a3c291e9d6b27b62f3ac7fc1ab04204",
+      "test_methods": 5,
+      "reason": "Screen for the retired partner bank's in-chat account-opening OTP, which was removed.",
+      "replacement_suites": [
+        "whatsapp.test_typed_while_flow_open",
+        "whatsapp.test_partnership_chat"
+      ]
     }
   ],
   "retired_methods": [
@@ -1893,6 +2231,138 @@
       ],
       "method": "PartnershipCustomerChatTests.test_historical_funding_review_does_not_open_a_new_account_or_identity_flow",
       "sha256": "3cacb50ebdbc127648ce162b4c9433c162a1eb57dc371ce28c81bec9568ec99a"
+    },
+    {
+      "path": "backend/banking/test_archive.py",
+      "method": "ArchiveTests.test_retained_statement_rows_cannot_credit_an_archived_or_current_bank_wallet",
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "sha256": "e8d0dc1231923f8cd52f659d3d3b90b60d155b096c8bde5fe745b1edd9943aac",
+      "reason": "Exercised retired partner-bank code (account opening, authorize callback, statement credit, reconnect action, simulation token or Wema card dispatch) that was removed.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "whatsapp.test_typed_while_flow_open",
+        "utility.test_provider_dispatch"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_biller_funding.py",
+      "method": "PostgresBillFundingTests.test_retired_authorization_and_refund_cannot_reopen_debit",
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "sha256": "8ab3221ae00a41c3ebfcf9f3bec054d6873c8ff174bbe5d1e13c8eb9615ee410",
+      "reason": "Exercised retired partner-bank code (account opening, authorize callback, statement credit, reconnect action, simulation token or Wema card dispatch) that was removed.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "whatsapp.test_typed_while_flow_open",
+        "utility.test_provider_dispatch"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_admin_integrity.py",
+      "method": "FinancialAdminIntegrityTests.test_named_reconnect_keeps_callback_confirmation_guard",
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "sha256": "b02b27b069ff1306854d923444c3ac36f658d7f99e141e4791b9028fb0dbd2f3",
+      "reason": "Exercised retired partner-bank code (account opening, authorize callback, statement credit, reconnect action, simulation token or Wema card dispatch) that was removed.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "whatsapp.test_typed_while_flow_open",
+        "utility.test_provider_dispatch"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_typed_while_flow_open.py",
+      "method": "TypedIdentityIsAnsweredTests.test_add_account_routes_to_its_own_handler",
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "sha256": "41fbdb247ea3f4dab1a2338ad1caba3c4510919175f3744f1580be04f648d0d6",
+      "reason": "Exercised retired partner-bank code (account opening, authorize callback, statement credit, reconnect action, simulation token or Wema card dispatch) that was removed.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "whatsapp.test_typed_while_flow_open",
+        "utility.test_provider_dispatch"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_typed_while_flow_open.py",
+      "method": "TypedIdentityIsAnsweredTests.test_a_typed_account_code_is_processed",
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "sha256": "0d9b29a20785adcf5b032cd1ad5536484fa96276b2d2dc51dbf35a138795d418",
+      "reason": "Exercised retired partner-bank code (account opening, authorize callback, statement credit, reconnect action, simulation token or Wema card dispatch) that was removed.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "whatsapp.test_typed_while_flow_open",
+        "utility.test_provider_dispatch"
+      ]
+    },
+    {
+      "path": "backend/utility/test_provider_dispatch.py",
+      "method": "FundingDispatchTests.test_funding_account_reserve_signals_otp",
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "sha256": "9eef44cab1f23a1752afaa9340c645695e8edce9c04577724f15ec90ae76ca35",
+      "reason": "Exercised retired partner-bank code (account opening, authorize callback, statement credit, reconnect action, simulation token or Wema card dispatch) that was removed.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "whatsapp.test_typed_while_flow_open",
+        "utility.test_provider_dispatch"
+      ]
+    },
+    {
+      "path": "backend/utility/test_provider_dispatch.py",
+      "method": "FundingDispatchTests.test_funding_account_get_signals_otp",
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "sha256": "635feb3a97f8f269c165b2fd43456dcc3107d47328a60c944b0dade407ab9a16",
+      "reason": "Exercised retired partner-bank code (account opening, authorize callback, statement credit, reconnect action, simulation token or Wema card dispatch) that was removed.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "whatsapp.test_typed_while_flow_open",
+        "utility.test_provider_dispatch"
+      ]
+    },
+    {
+      "path": "backend/utility/test_provider_dispatch.py",
+      "method": "CardDispatchTests.test_explicit_card_backend_override_keeps_existing_wema_card_on_wema",
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "sha256": "b2abf76b6953292af12be616f628390d8bc0c4b9d1865130a67d1fcd6d4a3089",
+      "reason": "Exercised retired partner-bank code (account opening, authorize callback, statement credit, reconnect action, simulation token or Wema card dispatch) that was removed.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "whatsapp.test_typed_while_flow_open",
+        "utility.test_provider_dispatch"
+      ]
+    },
+    {
+      "path": "backend/zitch_api/test_production_checks.py",
+      "method": "ProductionConfigurationTests.test_simulate_deposit_token_allowed_with_simulation_override",
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "sha256": "b02f36797dfb604e11ed559aad93aad0171c784406a449ea905e5e0cb683d73a",
+      "reason": "Exercised retired partner-bank code (account opening, authorize callback, statement credit, reconnect action, simulation token or Wema card dispatch) that was removed.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "whatsapp.test_typed_while_flow_open",
+        "utility.test_provider_dispatch"
+      ]
+    },
+    {
+      "path": "backend/zitch_api/test_production_checks.py",
+      "method": "ProductionConfigurationTests.test_simulated_deposit_token_is_rejected",
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "sha256": "5e96c0253ef1fcc6faf097b9c417513cbab89658cfdeba2674f822e77cce0ba7",
+      "reason": "Exercised retired partner-bank code (account opening, authorize callback, statement credit, reconnect action, simulation token or Wema card dispatch) that was removed.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "whatsapp.test_typed_while_flow_open",
+        "utility.test_provider_dispatch"
+      ]
+    },
+    {
+      "path": "backend/zitch_api/test_partnership_only.py",
+      "method": "PartnershipDiagnosticsTests.test_report_is_read_only_and_does_not_claim_provider_acceptance",
+      "source_commit": "f961c60c075ab7e6140fe5a6e9eb56097a7e7d7c",
+      "sha256": "01f718f92d88e4cf87ae0cbb63951ed4cfac7524b2e208fbd31e9cd37456a7d3",
+      "reason": "Exercised retired partner-bank code (account opening, authorize callback, statement credit, reconnect action, simulation token or Wema card dispatch) that was removed.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "whatsapp.test_typed_while_flow_open",
+        "utility.test_provider_dispatch"
+      ]
     }
   ]
 }

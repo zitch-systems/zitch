@@ -1,16 +1,16 @@
 """Launch gates require recent successful controls, not merely configured keys."""
 from datetime import timedelta
+import json
 from io import StringIO
 from unittest.mock import patch
 
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import TestCase
 from django.utils import timezone
 
 from accounts.models import User
 from utility.launch_readiness import financial_controls_report
 from wallet.models import BankHistoryCheckpoint, Wallet
-from wallet.services import wema_account_reference
 from whatsapp.models import AuditLog
 
 
@@ -116,14 +116,12 @@ class FinancialControlsReadinessTests(TestCase):
         self.assertNotIn("secret-connection", str(report))
 
     def test_core_preflight_cannot_ignore_failed_financial_evidence(self):
-        from utility.test_wema_preflight import _LIVE_DIAG, _EMAIL_OK
         out = StringIO()
-        with patch("utility.wema.wema_diagnostics", return_value=_LIVE_DIAG), \
-                patch("utility.providers.email_probe", return_value=_EMAIL_OK):
-            with self.assertRaises(SystemExit):
-                call_command("wema_preflight", "--launch-scope", "core", stdout=out)
-        self.assertIn("[FAIL] GATE Financial reconciliation evidence", out.getvalue())
-        self.assertIn("RESULT: NOT READY", out.getvalue())
+        with self.assertRaises(CommandError):
+            call_command("bank_preflight", "--launch-scope", "core", stdout=out)
+        report = json.loads(out.getvalue())
+        self.assertFalse(report["financial_controls"]["financial_controls_ready"])
+        self.assertFalse(report["production_ready"])
 
 
 class EmptyFinancialControlsTests(TestCase):

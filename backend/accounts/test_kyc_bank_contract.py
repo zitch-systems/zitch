@@ -1,51 +1,16 @@
-"""Bank KYC contracts and ownership boundaries; all bank traffic is mocked."""
-import json
+"""Historical identity evidence and ownership boundaries."""
 from datetime import timedelta
-from unittest.mock import Mock, patch
-from urllib.parse import parse_qs, urlsplit
 
-from django.core.cache import cache
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import TestCase
 from django.utils import timezone
 
-from accounts.models import (AccessToken, IdentityProof, User, hash_identifier,
+from accounts.models import (IdentityProof, User, hash_identifier,
                              record_identity_proof, rehydrate_verified_identity_flags)
-from accounts.views import verify_kyc_address
-from utility import wema
-from utility.providers import (kyc_verify_address, kyc_verify_face,
-                               kyc_verify_id_document, kyc_verify_nin_document)
 from wallet.models import WemaFaceSession, WemaProvisioningAttempt
 from wallet.services import get_or_create_wallet
-from wallet.views import upgrade_wema_identity
 
 
-PILOT = {
-    "BASE_URL": "https://lagos-alat-blueapi.azure-api.net",
-    "CHANNEL_ID": "test-channel", "KEYS": {"wallet": "test-wallet", "upgrade": "test-upgrade"},
-    "SIMULATION": False, "FACE_CB_MODE": "registered",
-    "FACE_VERIFY_URL": "https://face-verification-pilot.azurewebsites.net",
-}
 BVN, NIN = "22222222222", "33333333333"
-
-
-def prembly_liveness_pass():
-    return {"status": True, "detail": "Liveliness Detected", "response_code": "00",
-            "data": {"confidence": 0.9999910736083985,
-                     "confidence_in_percentage": 99.99910736083984},
-            "verification": {"status": "VERIFIED", "reference": "661", "verification_id": 661},
-            "endpoint_name": "Face Liveliness"}
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 class TrustedIdentityRehydrationTests(TestCase):

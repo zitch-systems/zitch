@@ -14,7 +14,6 @@ import secrets
 import time
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
-from urllib.parse import urlparse
 
 from django.contrib.auth import get_user_model
 from django.conf import settings
@@ -40,15 +39,11 @@ from utility.providers import (email_live, payout_resolve_account, send_email, s
                                sms_live, verify_bvn, verify_nin, vtu_purchase,
                                vtu_verify_customer)
 from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
-from utility import wema as wema_provider
-from wallet import views as wallet_views
 from wallet.forex import FxError, all_balances, create_fx_quote, currency_balance, execute_fx
-from wallet.models import WemaProvisioningAttempt
 from wallet.services import (
     DuplicateTransaction,
     InsufficientFunds,
     LimitExceeded,
-    attach_existing_bank_account,
     bank_spend_error,
     customer_funding_account,
     customer_spendable_balance,
@@ -60,7 +55,7 @@ from wallet.services import (
 )
 
 from . import ai
-from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN,
+from .flows import (CODE_SCREEN, EMAIL_SCREEN,
                     FLOW_FORM_STATE, IDENTITY_CHAIN,
                     FLOW_ID_STATE, FLOW_PHONE_CODE_STATE, FLOW_PHONE_STATE, FLOW_PIN_STATE,
                     FLOW_PRIVACY_STATE,
@@ -91,8 +86,6 @@ EXECUTION_TTL = timedelta(minutes=30)
 #: asked of the customer.
 EXECUTING_STATE = "executing"
 PIN_FLOW_ATTEMPTS = 2                   # 1 retry then cancel (spec §7)
-#: Retained state name for choosing either identity's ownership proof.
-BVN_METHOD_STATE = "bvn_method"
 KYC_UPGRADE_STATE = "kyc_upgrade"
 
 def _links() -> dict:
@@ -1319,137 +1312,6 @@ def _touch(pa: PendingAction, **fields) -> None:
     pa.save()
 
 
-# --------------------------------------------------------------------------- #
-# Test-only, no-CLI simulation commands
-# --------------------------------------------------------------------------- #
-_SIMULATION_SETUP_COMMANDS = {
-    "simulate setup", "simulation setup", "test setup", "setup simulation",
-}
-_SIMULATION_KYC_COMMANDS = {
-    "simulate kyc", "simulate identity", "simulate verification",
-}
-_SIMULATION_DEPOSIT_COMMAND = re.compile(
-    r"^(?:simulate|simulation|test)\s+(?:deposit|fund|funding)(?:\s+(.+))?$"
-)
-
-
-def _is_simulation_command(low: str) -> bool:
-    return (low in _SIMULATION_SETUP_COMMANDS
-            or low in _SIMULATION_KYC_COMMANDS
-            or bool(_SIMULATION_DEPOSIT_COMMAND.fullmatch(low)))
-
-
-def _chat_simulation_allowed() -> bool:
-    """Both switches must say this is a deliberate fake-money deployment.
-
-    An active WhatsAppLink authenticates which account is changed, so the
-    command needs no shared secret in the chat. Turning WEMA_SIMULATION off
-    removes the command's power even if the second switch is accidentally left.
-    """
-    wema_cfg = getattr(settings, "WEMA", {}) or {}
-    deliberate = (getattr(settings, "ALLOW_PRODUCTION_SIMULATION", False)
-                  or getattr(settings, "DEBUG", False)
-                  or getattr(settings, "TESTING", False))
-    return bool(wema_cfg.get("SIMULATION") and deliberate)
-
-
-def _handle_simulation_command(user, msisdn: str, low: str) -> None:
-    """Prepare the linked account for an end-to-end fake-money walkthrough.
-
-    This runs before pending-action dispatch, so it can safely replace the BVN
-    Flow currently open in the chat. It is deliberately absent from the menu.
-    """
-    if not _chat_simulation_allowed():
-        return reply(msisdn, "🧪 Simulation commands are disabled on this deployment.")
-
-    _clear_actions(msisdn)
-    try:
-        if low in _SIMULATION_SETUP_COMMANDS:
-            from accounts.views import apply_simulated_kyc
-
-            with db_transaction.atomic():
-                account_number, state = apply_simulated_kyc(user, 3)
-                wallet = get_or_create_wallet(user)
-                target = Decimal("50000")
-                gap = target - wallet.balance
-                # Idempotent setup: bring a fresh account up to ₦50k, but do not
-                # add another ₦50k when the command is repeated.
-                if gap >= Decimal("100"):
-                    wallet, _ = wallet_views.apply_simulated_deposit(user, gap)
-            account_line = account_number or "mock account provisioning pending"
-            return reply(
-                msisdn,
-                "🧪 *Simulation ready*\n\n"
-                f"✅ Identity: Tier {state['tier']} (BVN/NIN simulated)\n"
-                f"✅ Funding account: {account_line}\n"
-                f"✅ Mock balance: {_money(wallet.balance)}\n\n"
-                "No real BVN, partner-bank deposit or bank transfer was used. "
-                "Reply *reset pin* next, then test balance and a small payment.",
-            )
-
-        if low in _SIMULATION_KYC_COMMANDS:
-            # This is the realistic walkthrough: contact ownership is proved by
-            # genuinely delivered Termii/Resend codes, while the two government-ID
-            # lookups remain local mocks. Refuse to start if either real contact
-            # rail is absent (or a fixed test OTP would short-circuit delivery).
-            if _kyc_test_code(user):
-                return reply(
-                    msisdn,
-                    "⚠️ A fixed test OTP is still enabled for this account. Disable it "
-                    "before testing real SMS and email delivery.",
-                )
-            missing = []
-            if not sms_live():
-                missing.append("Termii SMS")
-            if not email_live():
-                missing.append("Resend email")
-            if missing:
-                return reply(
-                    msisdn,
-                    "⚠️ Interactive verification needs real " + " and ".join(missing)
-                    + " delivery configured first.",
-                )
-
-            with db_transaction.atomic():
-                user.phone_verified = False
-                user.email_verified = False
-                user.bvn_verified = False
-                user.nin_verified = False
-                # Erase earlier simulated identity markers. The digits entered in
-                # the coming Flow are never stored; successful mock steps receive
-                # fresh per-user simulation hashes in _kyc_submit_identity.
-                user.bvn_hash = ""
-                user.bvn_last4 = ""
-                user.nin_hash = ""
-                user.nin_last4 = ""
-                user.recompute_tier()
-                user.save(update_fields=[
-                    "phone_verified", "email_verified", "bvn_verified", "nin_verified",
-                    "bvn_hash", "bvn_last4", "nin_hash", "nin_last4", "tier",
-                ])
-
-            reply(
-                msisdn,
-                "🧪 *Interactive verification ready*\n\n"
-                "📲 Phone code: real delivery through Termii\n"
-                "📧 Email code: real delivery through Resend\n"
-                "🪪 BVN and NIN: enter test 11-digit values in the private Flow; "
-                "verification is simulated and no identity provider is contacted.",
-            )
-            return _start_kyc(user, msisdn)
-
-        match = _SIMULATION_DEPOSIT_COMMAND.fullmatch(low)
-        raw_amount = (match.group(1) if match else "") or "50000"
-        amount = parse_amount(raw_amount)
-        wallet, reference = wallet_views.apply_simulated_deposit(user, amount)
-        return reply(msisdn, f"🧪 Simulated deposit credited: {_money(amount)}\n"
-                      f"Balance: {_money(wallet.balance)}\nReference: {reference}")
-    except ValueError as exc:
-        return reply(msisdn, f"⚠️ {exc}")
-    except Exception:
-        log.exception("wa_simulation_command_failed user=%s", user.pk)
-        return reply(msisdn, "⚠️ The simulation setup couldn't finish. Please try again shortly.")
-
 
 # --------------------------------------------------------------------------- #
 # entry point (called by the webhook, after dedupe)
@@ -1503,11 +1365,6 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low in ("menu", "hi", "hello", "start", "help"):
         _clear_actions(msisdn)
         return send_menu(msisdn)
-
-    # A test setup command must be able to escape the BVN/PIN Flow that is
-    # currently open; every other message still belongs to the pending action.
-    if _is_simulation_command(low):
-        return _handle_simulation_command(user, msisdn, low)
 
     # Historical setup commands cannot reopen the retired account product.
     if low in _RETIRED_SETUP_COMMANDS:
@@ -2171,24 +2028,14 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
         # ago. The password itself is of course never repeated back.
         + (f"📱 *The Zitch app is the same account.* Sign in with *{user.email}* "
            "and the password you just chose.\n\n" if pw_hash and user.email else "")
-        # Verification runs now, not "later": account setup below collects the ID
-        # and the SMS code, then rolls into whatever is left. Only when the bank
-        # integration is off is there nothing to roll into, so only then is the
-        # customer told to start it themselves.
-        + ("" if wallet_views._wema_funding_enabled() else
-           "To verify your identity, reply *8* - we'll do your phone, email and "
-           "BVN or NIN right here.\n\n")
+        + "To verify your identity, reply *8* - we'll do your phone, email and "
+          "BVN or NIN right here.\n\n"
         + "🔒 *Tip:* lock this chat with your fingerprint - tap our name above -> "
           "*Chat lock*. Reply *lock* for the steps.\n\n"
         + menu_text()
         + "\n\n📋 *Note:* verify your *BVN or NIN* - reply *8* - before your "
           "personal Zitch account number can be created.",
     )
-    # Roll straight into minting their funding NUBAN - a wallet you can't pay
-    # into isn't much of an account. Skipped quietly when the bank integration
-    # is off; option 6 offers the same setup any time.
-    if wallet_views._wema_funding_enabled():
-        _start_add_account(user, msisdn, after_signup=True)
     return True
 
 
@@ -2325,9 +2172,8 @@ def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to 
 
 
 def _do_add_money(user, msisdn: str) -> None:
-    """Show the user's dedicated Zitch account for bank-transfer funding (credited
-    automatically by the reconcile_wema poller) - or, if it hasn't been minted
-    yet, run the identity + OTP round-trip right here in the chat."""
+    """Show the user's dedicated Zitch account for bank-transfer funding - or, if
+    it hasn't been opened yet, send the secure 9PSB verification page."""
     wallet = get_or_create_wallet(user)
     funding = customer_funding_account(user)
     if funding.get("account_setup_state") in {"partnership_review", "legacy_funding_review"}:
@@ -2831,61 +2677,6 @@ def _do_support(msisdn: str) -> None:
 _KYC_STEPS = ("phone", "email", "bvn")
 
 
-#: PendingAction.state while the face step is waiting for an identity number that
-#: arrived in the CHAT rather than the Flow. It needs its own state because the
-#: answer is forwarded to the bank, not verified here - routing it through the
-#: ordinary "bvn"/"nin" states would re-run verification on an identity the
-#: customer has already proven, and never send the face link.
-FACE_ID_STATE = "face_id"
-
-
-def _face_step_available() -> bool:
-    """Whether the chat can offer the bank's face check.
-
-    Gated on the rail rather than always shown: with no Account Creation key the
-    step would list an item the customer can never complete, and a ladder with a
-    permanently unchecked rung reads as a broken account, not an optional extra.
-    """
-    return wema_provider.face_verify_live()
-
-
-def _offer_bvn_verification_method(pa: PendingAction, msisdn: str, kind="bvn") -> None:
-    """Offer Tier-1 BVN or NIN verification by bank SMS or hosted face."""
-    kind = "nin" if kind == "nin" else "bvn"
-    other = "bvn" if kind == "nin" else "nin"
-    # A callback can attach the NUBAN before the bank's OTP identity round-trip
-    # completes. The account-creation OTP cannot be started again against that
-    # NUBAN, but the hosted face check can still prove its owner's BVN. Offer
-    # only that working route so a funded Tier-0 customer is not stranded.
-    wallet = get_or_create_wallet(pa.user)
-    if wallet.account_number and not (pa.user.bvn_verified or pa.user.nin_verified):
-        pa.payload["id_kind"] = kind
-        pa.payload.pop("id_purpose", None)
-        _touch(pa, state=BVN_METHOD_STATE, payload=pa.payload)
-        return reply_buttons(
-            msisdn,
-            f"🪪 *Verify your {kind.upper()}*\n\nYour funding account is open, but identity "
-            "verification is not confirmed yet. Use our partner bank's secure "
-            "face check to finish Tier 1. Your funds remain available once the "
-            "bank confirms the check.",
-            [(f"{kind}_face", f"Verify {kind.upper()} with face"),
-             (f"use_{other}", f"Use {other.upper()} instead")],
-        )
-    pa.payload["id_kind"] = kind
-    pa.payload.pop("id_purpose", None)
-    _touch(pa, state=BVN_METHOD_STATE, payload=pa.payload)
-    methods = [(f"{kind}_sms", "SMS OTP")]
-    message = "Choose SMS OTP to verify this identity."
-    if _face_step_available():
-        methods.append((f"{kind}_face", "Face verification"))
-        message = "Choose SMS OTP or a face check on our partner bank's secure page."
-    methods.append((f"use_{other}", f"Use {other.upper()} instead"))
-    reply_buttons(
-        msisdn,
-        f"🪪 *How would you like to verify your {kind.upper()}?*\n\n" + message,
-        methods,
-    )
-
 
 def _kyc_test_code(user) -> str:
     """The fixed TEST_OTP code, but ONLY for the one nominated test number.
@@ -2897,8 +2688,8 @@ def _kyc_test_code(user) -> str:
     meant to be, and one that silently followed the pair into production.
 
     Reuses the app's switch rather than inventing a second one, so there is a
-    single answer to "is a fixed code accepted anywhere", and wema_preflight
-    already hard-fails while it is set."""
+    single answer to "is a fixed code accepted anywhere", and bank_preflight
+    reports test_otp_bypass_enabled while it is set."""
     test = getattr(settings, "TEST_OTP", {}) or {}
     phone, code = (test.get("PHONE") or "").strip(), (test.get("CODE") or "").strip()
     if not (phone and code) or (user.phone or "").strip() != phone:
@@ -2927,9 +2718,8 @@ def _kyc_outstanding(user) -> list:
         "bvn": user.bvn_verified or user.nin_verified,
         "nin": user.nin_verified,
     }
-    # Wema hosted face is an ALTERNATIVE way to complete the BVN/NIN item, not a
-    # fifth KYC rung. Tier-2 liveness is Prembly and is handled by the combined bank
-    # upgrade, so neither belongs in the initial identity checklist.
+    # Tier-2 liveness is handled by the combined bank upgrade, so it does not
+    # belong in the initial identity checklist.
     return [step for step in _KYC_STEPS if not done[step]]
 
 
@@ -2990,16 +2780,10 @@ def _signup_nudge(ob, message: str) -> str:
 
 def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
     outstanding = _kyc_outstanding(user)
-    from wallet.identity import accepted_identity_pending
     funding = customer_funding_account(user)
     if funding.get("account_setup_state") in {"partnership_review", "legacy_funding_review"}:
         return reply(msisdn, funding["migration_message"])
 
-    if accepted_identity_pending(user):
-        _clear_actions(msisdn)
-        return reply(msisdn, "Your bank accepted the verification code. Your identity "
-                     "check is still processing. You do not need to submit your BVN "
-                     "or the code again. Reply *8* to check your status shortly.")
     if not outstanding:
         return _offer_tier_upgrade(user, msisdn)
     # "Let's do the rest now" is a promise, so it must not be made when every
@@ -3037,11 +2821,6 @@ def _bank_upgrade_blocks(user, step: str) -> bool:
     if step not in _UPGRADE_STEPS:
         return False
     wallet = get_or_create_wallet(user)
-    if not (user.bvn_verified or user.nin_verified) and _face_step_available():
-        # An existing NUBAN bars a second account-creation OTP, not the bank's
-        # independent hosted BVN face check. The latter records durable proof
-        # only after its authenticated callback succeeds.
-        return False
     # The existing-account product does not accept a second identity OTP. Treat
     # the account itself as authoritative, not only a flag written after one
     # failed submission, so a restored/adopted account can never prompt for NIN
@@ -3111,9 +2890,6 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
         return _kyc_send_email_code(pa, user, msisdn)
     if step == "face":
         return _kyc_start_face_step(pa, user, msisdn)
-    if step == "bvn" and (_face_step_available()
-                          or (flows_live() and wallet_views._wema_funding_enabled())):
-        return _offer_bvn_verification_method(pa, msisdn)
     if _send_identity_flow(pa, step):
         return None
     if flows_live():
@@ -3149,23 +2925,6 @@ def _kyc_finish(pa: PendingAction, user, msisdn: str) -> None:
     if pending:
         tail = (f"\n\n⏳ Your {pending.upper()} is with our team for review - we'll message you "
                 "when it's approved.")
-    # A completed identity ladder mints the personal account number, because
-    # that is what the customer verified FOR. Instant in simulation (mock
-    # NUBAN); in live mode the bank requires its own SMS round, so the ladder
-    # points at it rather than silently launching another flow.
-    if user.bvn_verified or user.nin_verified:
-        wallet = get_or_create_wallet(user)
-        if not wallet.account_number:
-            if _chat_simulation_allowed():
-                from accounts.views import _simulate_provision_account
-
-                acct = _simulate_provision_account(user)
-                if acct:
-                    tail += (f"\n\n🏦 Your personal Zitch account number is ready: "
-                             f"*{acct}*\nFund your wallet by bank transfer to it any time.")
-            elif wallet_views._wema_funding_enabled():
-                tail += ("\n\n🏦 One last step: reply *6* to open your personal Zitch "
-                         "account number - the bank sends its own SMS code to finish.")
     reply(msisdn, "🎉 *Thanks!* Here's where you stand:\n\n" + _kyc_status_lines(user) + tail)
 
 
@@ -3475,33 +3234,6 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
         choice = ("tier3", "Upgrade to Tier 3") if user.tier >= 2 else ("tier2", "Upgrade to Tier 2")
         return reply_buttons(msisdn, "Choose the upgrade you want:", [choice, ("later", "Later")])
 
-    if state == BVN_METHOD_STATE:
-        if user.bvn_verified or user.nin_verified:
-            return _start_kyc(user, msisdn)
-        if low in ("use_nin", "use_bvn"):
-            return _offer_bvn_verification_method(pa, msisdn, low.removeprefix("use_"))
-        kind = "nin" if pa.payload.get("id_kind") == "nin" else "bvn"
-        if low in (f"{kind}_sms", "sms", "sms otp", "1"):
-            if get_or_create_wallet(user).account_number and not (user.bvn_verified or user.nin_verified):
-                return _offer_bvn_verification_method(pa, msisdn, kind)
-            pa.payload["id_method"] = "sms_otp"
-            pa.payload.pop("id_purpose", None)
-            if _send_identity_flow(pa, kind, fallback_state=kind):
-                return None
-            _touch(pa, state=BVN_METHOD_STATE, payload=pa.payload)
-            return reply(msisdn, "The secure identity form could not open. Please try again shortly.")
-        if low in (f"{kind}_face", "face", "face verification", "2"):
-            if not _face_step_available():
-                return _offer_bvn_verification_method(pa, msisdn, kind)
-            pa.payload["id_method"] = "wema_face"
-            pa.payload["id_purpose"] = "face"
-            if _send_identity_flow(pa, kind, fallback_state=FACE_ID_STATE):
-                return None
-            pa.payload.pop("id_purpose", None)
-            _touch(pa, state=BVN_METHOD_STATE, payload=pa.payload)
-            return reply(msisdn, "The secure identity form could not open. Please try again shortly.")
-        return _offer_bvn_verification_method(pa, msisdn, kind)
-
     if state == "phone":
         if low == "resend":
             return _kyc_send_phone_code(pa, user, msisdn)
@@ -3549,24 +3281,6 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
                                  'or reply "cancel".')
         return _kyc_submit_identity(pa, user, msisdn, state, digits)
 
-    if state == FACE_ID_STATE:
-        # The face step asks for the identity in the Flow, but a customer can always
-        # type it into the thread instead - and this state had no branch, so they
-        # were told "Got it" and then dumped at the main menu with their BVN sitting
-        # in the chat and no face check ever started.
-        #
-        # The number is already in their history by the time we get here, so refusing
-        # it now would cost them the step and save nothing. Take it, name the one
-        # thing that still removes it, and carry on.
-        digits = "".join(ch for ch in val if ch.isdigit())
-        if len(digits) != 11:
-            kind = str(pa.payload.get("id_kind", "bvn")).upper()
-            return reply(msisdn, f"That should be exactly 11 digits. Enter your {kind} again, "
-                                 'or reply "cancel".')
-        reply(msisdn, "🔐 Got it." + _DELETE_TIP)
-        return _kyc_send_face_link(pa, user, msisdn,
-                                   str(pa.payload.get("id_kind", "bvn")).lower(), digits)
-
     _clear_actions(msisdn)
     return send_menu(msisdn)
 
@@ -3611,114 +3325,6 @@ def _kyc_start_face_step(pa, user, msisdn):
     _clear_actions(msisdn)
     return _send_web_verification(user, msisdn, 2)
 
-
-def _face_account_setup_held(user) -> bool:
-    """A completed ownership check with unresolved issuance is not a new setup."""
-    from wallet.identity import accepted_identity_pending
-    from wallet.models import WemaFaceSession
-    from wallet.account_recovery import active_account_recovery
-
-    if accepted_identity_pending(user):
-        return True
-    return (not get_or_create_wallet(user).account_number
-            and active_account_recovery(user) is None
-            and WemaFaceSession.objects.filter(user=user, status=WemaFaceSession.VERIFIED).exists())
-
-
-def _face_session_for_link(user, kind, digits):
-    """Reuse an authorized challenge across all WhatsApp face-link entry points."""
-    from django.db import transaction
-    from wallet.models import Wallet, WemaFaceSession
-    from accounts.models import hash_identifier
-    from accounts.views import FACE_SESSION_TTL_MINUTES, face_identity_error, _identity_owned_by_another_user
-    from utility.providers import partnership_new_business_allowed
-    from wallet.account_recovery import active_account_recovery, start_recovery_session
-    with transaction.atomic():
-        wallet = Wallet.objects.select_for_update().get(user=user)
-        user = type(user).objects.select_for_update().get(pk=user.pk)
-        recovery = active_account_recovery(user, identity_type=kind, identity_hash=hash_identifier(digits))
-        if ((wallet.account_number and getattr(user, f"{kind}_verified", False))
-                or _face_account_setup_held(user)
-                or active_account_recovery(user) is not None and recovery is None
-                or face_identity_error(user, kind, digits)
-                or _identity_owned_by_another_user(user, kind, digits)
-                or not partnership_new_business_allowed(user)):
-            return None
-        session = recovery if recovery else WemaFaceSession.objects.create(
-            user=user, state=secrets.token_urlsafe(32)[:64], identity_type=kind,
-            identity_hash=hash_identifier(digits),
-            expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
-        )
-    if recovery:
-        start_recovery_session(session, minutes=FACE_SESSION_TTL_MINUTES)
-    return session
-
-
-def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits: str) -> None:
-    """Mint a one-time face session and send the customer the bank's link.
-
-    The result never comes back through this chat: the bank posts it to our own
-    callback, which is the only version a customer cannot fake by opening the page
-    and claiming success. So nothing here marks anything verified - it hands over a
-    link and moves on, and the tier lifts if and when the bank says so.
-    """
-    from utility.providers import partnership_new_business_allowed
-    if not partnership_new_business_allowed(user):
-        return _start_kyc(user, msisdn)
-    if _face_account_setup_held(user):
-        _clear_actions(msisdn)
-        return reply(msisdn, "Your identity check is already complete or processing. "
-                     "Reply *6* to check your funding account; do not repeat face verification.")
-    from accounts.models import hash_identifier
-    from accounts.views import (FACE_SESSION_TTL_MINUTES, _face_callback_url,
-                                _identity_owned_by_another_user, face_identity_error)
-    from wallet.models import WemaFaceSession
-
-    # The SAME binding the app enforces. This rail had neither check, so a number
-    # the API answered with a 409 was accepted here - and a session could be opened
-    # against an identity this account has never proven, which is the substitution
-    # the face step exists to catch.
-    if _identity_owned_by_another_user(user, kind, digits):
-        _clear_actions(msisdn)
-        return reply(msisdn, "⚠️ That number is already linked to another Zitch account. "
-                             "Please contact support if this is unexpected.")
-    refusal = face_identity_error(user, kind, digits)
-    if refusal:
-        _clear_actions(msisdn)
-        return reply(msisdn, f"⚠️ {refusal}")
-
-    pa.payload.pop("id_purpose", None)
-    pa.payload["attempted"] = sorted(set(pa.payload.get("attempted") or []) | {"face"})
-    session = _face_session_for_link(user, kind, digits)
-    if session is None:
-        _clear_actions(msisdn)
-        return reply(msisdn, "Your account setup changed. Reply *6* to check its current status.")
-    expires_minutes = max(1, int((session.expires_at - timezone.now()).total_seconds() / 60))
-    url = wema_provider.face_verification_url(kind, digits, _face_callback_url(session.state))
-    # Same reason as kyc_face_start: without the verifier host a failure inside the
-    # bank's page leaves no trace on our side at all. Host only - the URL's query
-    # string carries the customer's BVN.
-    log.info("wa_face_link_sent user=%s kind=%s session=%s verifier=%s",
-             user.pk, kind, session.state[:8], urlparse(url).hostname or "unset")
-    # A BUTTON, not a pasted link. The URL carries the customer's own BVN in its
-    # query string, and WhatsApp would render that as visible tappable text sitting
-    # in their history forever - while also looking exactly like the phishing
-    # messages we tell people to ignore. The CTA opens in WhatsApp's own browser
-    # with only the label showing.
-    send_cta_url(
-        msisdn,
-        "🤳 *One last step - the face check*\n\n"
-        "Your bank runs this check on their own secure page. Your photo never "
-        "passes through Zitch or this chat.\n\n"
-        f"_Expires in {expires_minutes} minutes. I'll message you as soon "
-        "as the bank confirms._",
-        url, cta="Start face check", footer="Secured by your bank",
-        # NEVER paste this one as text. The URL carries the customer's raw BVN in a
-        # query string; send_cta_url's ordinary fallback would put it in the thread
-        # in clear, permanently, which is the exact thing the button exists to stop.
-        allow_text_fallback=False)
-    _touch(pa, state="idle", payload=pa.payload)
-    return _kyc_next(pa, user, msisdn)
 
 
 def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str):
@@ -3892,30 +3498,6 @@ def _do_account_details(user, msisdn: str) -> None:
     return reply(msisdn, "You don't have a funding account number yet - reply *6* (Add money) to set one up in a minute.")
 
 
-# --------------------------------------------------------------------------- #
-# add_account - mint the dedicated Wema NUBAN without leaving the chat.
-# Same two-step contract as the app (identity -> bank OTP), driving the same
-# shared code: _start_wema_attempt / complete_wema_provisioning in wallet.views.
-# The BVN/NIN input state is masked out of the message log by is_awaiting_bvn.
-# --------------------------------------------------------------------------- #
-def _resume_account_otp(user, msisdn: str, attempt) -> None:
-    using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
-    resend = wema_provider.resend_wallet_otp(
-        user.phone or "", attempt.tracking_id, bvn=using_bvn)
-    pa = PendingAction.objects.create(
-        user=user, msisdn=msisdn, action_type="add_account", state="otp",
-        payload={"tracking_id": attempt.tracking_id, "using_bvn": using_bvn,
-                 "id_type": attempt.identity_type},
-        expires_at=_flow_deadline("otp"),
-    )
-    secure = _send_account_otp_flow(pa)
-    return reply(
-        msisdn, f"📲 Your {attempt.identity_type.upper()} account setup is still active. "
-        + ("Our partner bank sent the existing setup code again. " if resend.get("success")
-           else "Use the existing partner-bank setup code. ")
-        + ("Enter it on the secure form to finish issuing your account number." if secure
-           else "Enter it to finish issuing your account number."))
-
 
 def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
     if not user.email_verified or not user.phone_verified:
@@ -3924,349 +3506,7 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
     return _send_web_verification(user, msisdn, 1)
 
 
-def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
-                             in_flow: bool = False) -> str | None:
-    """Open the NUBAN with the ID just supplied - from the Flow or, if Flows are
-    not configured, from the chat. One implementation so the two entry points
-    cannot drift on recovery or on what a failure does to the pending action.
 
-    This is also where the BVN genuinely gets verified: the bank name-matches it
-    while creating the account, which is the only real identity check we have.
-
-    Returns one of three SENTINELS, because the Flow caller has to tell the
-    outcomes apart to pick a closing screen and they are otherwise
-    indistinguishable (every branch used to return whatever reply() gave back):
-      "otp"     - accepted, code page next.
-      "fail"    - hard failure; the chat already carries the "⚠️ ..." reason and
-                  the pending action is cleared. The Flow must NOT close green.
-      "upgrade" - the account itself is fine; only this identity is blocked and
-                  must go through the combined upgrade in the app. Distinct from
-                  "fail" because the account setup did NOT fail - closing on the
-                  failure screen tells the customer their account is broken while
-                  the chat tells them it is open, which is the same
-                  self-contradiction this whole branch exists to remove.
-      other     - the account was adopted/created successfully.
-    """
-    if is_retired_setup(pa):
-        PendingAction.objects.filter(pk=pa.pk).delete()
-        reply(msisdn, RETIRED_SETUP_MESSAGE)
-        return "fail"
-    funding = customer_funding_account(user)
-    if funding.get("account_setup_state") in {"partnership_review", "legacy_funding_review"}:
-        _clear_actions(msisdn)
-        reply(msisdn, funding["migration_message"])
-        return "fail"
-    from wallet.identity import accepted_identity_pending
-    if accepted_identity_pending(user):
-        _clear_actions(msisdn)
-        reply(msisdn, "Your bank accepted the verification code. Account setup is still processing. "
-                     "You do not need to enter your identity or code again. Reply *6* to check shortly.")
-        return "processing"
-    kind = "bvn" if pa.payload.get("id_type") == "bvn" else "nin"
-    using_bvn = kind == "bvn"
-    wallet = get_or_create_wallet(user)
-    identity_already_verified = bool(getattr(user, f"{kind}_verified", False))
-    from wallet.partnership import first_partnership_setup
-    if identity_already_verified and not wallet.account_number and not first_partnership_setup(user):
-        # A stale WhatsApp action can survive the callback which verifies the
-        # identity.  The old guard returned "already verified" here and discarded
-        # the only remaining route to a NUBAN, so every subsequent reply 6 landed
-        # in the same loop.  Recovery must be account-aware: first read back any
-        # account Wema already minted, then offer the authenticated face creation
-        # route when the callback completed identity verification without a NUBAN.
-        recovered, _detail = attach_existing_bank_account(user, using_bvn=using_bvn)
-        if recovered is not None and recovered.account_number:
-            _clear_actions(msisdn)
-            _send_account_details(
-                msisdn, recovered,
-                intro="✅ *Your verified bank account has been reconnected*")
-            return "adopted"
-        if _send_identity_face_option(
-                pa, user, msisdn, kind, digits, account_setup=True):
-            _clear_actions(msisdn)
-            reply(
-                msisdn,
-                f"✅ Your {kind.upper()} remains verified. Use the secure face link "
-                "above to finish issuing your account number; you do not need to "
-                f"verify the {kind.upper()} again.")
-            return "adopted"
-        _clear_actions(msisdn)
-        reply(
-            msisdn,
-            f"✅ Your {kind.upper()} remains verified, but account issuance is "
-            "temporarily unavailable. Support has been notified; please do not "
-            f"submit your {kind.upper()} repeatedly.")
-        return "fail"
-    if identity_already_verified and wallet.account_number:
-        _clear_actions(msisdn)
-        _send_account_details(
-            msisdn, wallet,
-            intro="✅ *Your Zitch account number is already set up*")
-        return "adopted"
-    if wallet.account_number:
-        identity_type = (WemaProvisioningAttempt.BVN if using_bvn
-                         else WemaProvisioningAttempt.NIN)
-        payload, status = wallet_views._verify_existing_wema_identity(
-            user, wallet, identity_type, digits)
-        if payload.get("success") and payload.get("otp_required"):
-            pa.payload.update({
-                "tracking_id": payload.get("tracking_id", ""),
-                "using_bvn": using_bvn,
-                "id_type": kind,
-            })
-            _touch(pa, state="otp", payload=pa.payload)
-            if in_flow:
-                pa.payload["id_kind"] = ACCOUNT_OTP
-                pa.payload["flow_screen"] = IDENTITY_CHAIN
-                _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
-                reply(msisdn, payload.get("message") or
-                      f"Our partner bank is sending a code for your {kind.upper()}. Enter it on the next secure page.")
-                return "otp"
-            if _send_account_otp_flow(pa):
-                reply(msisdn, payload.get("message") or
-                      f"Our partner bank is sending a code for your {kind.upper()}. Enter it on the secure form.")
-                return "otp"
-            reply(msisdn, payload.get("message") or
-                  f"Our partner bank is sending a code for your {kind.upper()}. Enter it here to finish.")
-            return "otp"
-        _clear_actions(msisdn)
-        _send_account_details(msisdn, wallet,
-                              intro="✅ *Your Zitch account number is already set up*")
-        message = payload.get("message") if isinstance(payload, dict) else ""
-        if payload.get("success"):
-            reply(msisdn, message or f"✅ Your {kind.upper()} is already verified.")
-            return "adopted"
-        if payload.get("upgrade_required"):
-            # Not scoped to NIN-with-a-verified-BVN any more: the bank refuses
-            # whichever identity is outstanding once the account exists, and the
-            # narrower condition dropped the other cases into the generic
-            # "try again later" below - advice that could never work.
-            _kyc_bank_upgrade_notice(user, msisdn)
-            return "upgrade"
-        reply(msisdn, message or
-              (f"{kind.upper()} verification could not start right now. Please try again later."))
-        return "fail" if status >= 400 else "adopted"
-
-    # Respect the chosen ownership proof. Only the authenticated bank callback
-    # can turn hosted face completion into a verified identity/account.
-    if pa.payload.get("verification_method") == "face":
-        if _send_identity_face_option(pa, user, msisdn, kind, digits, account_setup=True):
-            _clear_actions(msisdn)
-            return "face"
-        _clear_actions(msisdn)
-        reply(msisdn, "Face verification could not start. Reply *6* to try again or choose SMS OTP.")
-        return "fail"
-
-    res, identity_error = wallet_views._start_wema_attempt(
-        user, digits if using_bvn else "", "" if using_bvn else digits)
-    if identity_error:
-        _clear_actions(msisdn)
-        reply(msisdn, f"⚠️ {identity_error}")
-        return "fail"
-    if not res.get("success"):
-        # The bank may already hold an account for this customer - adopt it
-        # instead of dead-ending (same recovery the app performs).
-        recovered = wallet_views._adopt_existing_wema_account(
-            user, using_bvn=using_bvn, reason=res.get("message", ""))
-        if recovered is not None:
-            wallet = get_or_create_wallet(user)
-            _clear_actions(msisdn)
-            _send_account_details(msisdn, wallet,
-                                  intro="✅ *Found it!* Your Zitch account was already set up")
-            if using_bvn and user.bvn_verified and not user.nin_verified:
-                reply(msisdn,
-                      "✅ Your BVN remains verified. Your account is already open, "
-                      "so our partner bank requires the remaining Tier 2 details together in "
-                      "one upgrade rather than a second OTP. Reply *8* to continue.")
-                _kyc_bank_upgrade_notice(user, msisdn)
-                return "upgrade"
-            if not (user.bvn_verified or user.nin_verified):
-                # Attaching an existing NUBAN does not prove ownership of an
-                # identity, and the existing-account rail cannot issue a fresh
-                # account-creation OTP. Continue through the real KYC chooser.
-                _start_kyc(user, msisdn)
-                return "adopted"
-            reply(msisdn,
-                  "We reconnected the account. Your verified identity details are up to date; "
-                  "reply *8* anytime to review what is left.")
-            return "adopted"
-        _clear_actions(msisdn)
-        if wallet_views._ALREADY_ONBOARDED.search(res.get("message", "") or ""):
-            _record_identity_review(pa.payload.get("id_type", "id"), "Wema Wallet Service returned customer already exists")
-            reply(msisdn, "⚠️ Our partner bank says these details already exist. Support needs to review this setup; we won't ask you to keep retrying the same BVN/NIN.")
-        else:
-            reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed - please try again later.')}")
-        return "fail"
-    pa.payload["tracking_id"] = str(res.get("tracking_id") or "")
-    pa.payload["using_bvn"] = using_bvn
-    _touch(pa, state="otp", payload=pa.payload)
-    # The code completes account creation and is what name-matches the ID, so it
-    # belongs on the secure screen too. Collecting the BVN privately and then
-    # asking for the code that unlocks it in clear would be half a fix.
-    if in_flow:
-        # The BVN arrived through an open flow session: the code page is the
-        # NEXT PAGE of that session, not a second flow message. Arm the state;
-        # the caller renders the screen as the data_exchange response.
-        pa.payload["id_kind"] = ACCOUNT_OTP
-        pa.payload["flow_screen"] = IDENTITY_CHAIN
-        _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
-        reply(msisdn, f"📲 Our partner bank checked your {kind.upper()} and sent a code by SMS to the phone "
-                      f"registered on it - enter that code on the next page of the secure form. "
-                      "Finish this SMS step to create the account.")
-        return "otp"
-    if _send_account_otp_flow(pa):
-        return reply(msisdn, f"📲 Our partner bank checked your {kind.upper()} and sent a code by SMS to the "
-                             "phone registered on it. Enter that code on the secure form above "
-                             "to finish. Reply *resend* only if you need the same code sent again.")
-    reply(msisdn, f"📲 Our partner bank checked your {kind.upper()} and sent a code by SMS to the phone "
-                  "registered on it. Enter that code here to finish, or reply *resend* to send it again.")
-
-
-def _send_account_otp_flow(pa: PendingAction) -> bool:
-    """Put the bank's SMS code on the masked screen. Like every other identity
-    Flow here this does NOT fail closed - without Flows configured the code is
-    entered in the chat, exactly as before."""
-    if not flows_live():
-        return False
-    pa.payload["id_kind"] = ACCOUNT_OTP
-    pa.payload["flow_screen"] = CODE_SCREEN   # 6-digit root; IDENTITY_SCREEN is 11/11 now
-    _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
-    res = send_flow(
-        pa.msisdn, sign_identity_token(pa),
-        header="Finish your account", body="Enter the code privately - it never appears in this chat.",
-        screen=CODE_SCREEN,
-        screen_data={"summary": ("Enter the code our partner bank sent to the phone registered on your "
-                                 + ("BVN" if pa.payload.get("using_bvn") else "NIN")),
-                     "label": "SMS code", "error": ""},
-        cta="Enter securely",
-    )
-    if res.get("success"):
-        return True
-    _touch(pa, state="otp", payload=pa.payload)
-    log.warning("wa_account_otp_flow_send_failed pa=%s detail=%r", pa.id,
-                res.get("error_detail", ""))
-    return False
-
-
-def _send_identity_face_option(pa: PendingAction, user, msisdn: str,
-                               kind: str, digits: str, *, account_setup: bool = False) -> bool:
-    """Offer Wema hosted face as the alternative to a just-sent identity OTP.
-
-    Shared by both rails that send one - account creation and the KYC ladder - so
-    the escape from an undeliverable code exists wherever the code is sent, and the
-    two cannot drift on how the session is bound or what the customer is told.
-
-    The raw identity appears only inside the CTA URL sent through Meta's button
-    payload, never as message text. The callback owns the verdict and uses Wema's
-    correlationId to start the matching without-OTP Tier-1 account creation.
-    """
-    from utility.providers import partnership_new_business_allowed
-    if (not partnership_new_business_allowed(user) or not _face_step_available()
-            or _face_account_setup_held(user)):
-        return False
-    from accounts.models import hash_identifier
-    from accounts.views import (FACE_SESSION_TTL_MINUTES, _face_callback_url,
-                                _identity_owned_by_another_user,
-                                face_identity_error)
-    from wallet.models import WemaFaceSession
-
-    if _identity_owned_by_another_user(user, kind, digits):
-        return False
-    if face_identity_error(user, kind, digits):
-        return False
-    session = _face_session_for_link(user, kind, digits)
-    if session is None:
-        return False
-    url = wema_provider.face_verification_url(
-        kind, digits, _face_callback_url(session.state))
-    result = send_cta_url(
-        msisdn,
-        ("🤳 *Face verification*\n\nOpen our partner bank's secure page to verify your "
-         f"{kind.upper()} and create your account without SMS OTP." if account_setup else
-         "🤳 *Face verification*\n\nOpen our partner bank's secure page to verify your "
-         f"{kind.upper()} with a face check. No SMS code is needed. Return to WhatsApp when finished."
-         if pa.payload.get("id_method") == "wema_face" else
-         "🤳 *Can't receive the SMS?*\n\nThe code goes to the phone number registered "
-         f"on your {kind.upper()}, which may not be the line you're using now - so a "
-         "resend won't help. You can complete the same check on our partner bank's secure face "
-         "page instead, with no SMS code at all. Use either option - not both."),
-        url,
-        cta="Open face verification",
-        footer="Secured by your bank",
-        allow_text_fallback=False,
-    )
-    if not result.get("success"):
-        if not session.is_account_recovery:
-            session.delete()
-        return False
-    log.info("wa_account_face_option_sent user=%s kind=%s session=%s verifier=%s",
-             user.pk, kind, session.state[:8], urlparse(url).hostname or "unset")
-    return True
-
-
-def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:
-    """The SMS code submitted through the Flow. ("retry", msg) to stay on the
-    screen, ("done", msg) to close it - the chat carries the detail either way.
-
-    Delegates to the same completion the chat path uses, so the two cannot drift
-    on what a 400 means or on when the pending action is cleared.
-    """
-    if is_retired_setup(pa):
-        PendingAction.objects.filter(pk=pa.pk).delete()
-        return "done", RETIRED_SETUP_MESSAGE
-    user, msisdn = pa.user, pa.msisdn
-    code = "".join(ch for ch in str(code) if ch.isdigit())
-    if not code:
-        return "retry", "Enter the code from the SMS."
-    payload, status = wallet_views.complete_wema_provisioning(
-        user, code, pa.payload.get("tracking_id", ""))
-    if payload.get("success"):
-        attempted_identity = "bvn" if pa.payload.get("using_bvn") else "nin"
-        _send_account_details(msisdn, get_or_create_wallet(user),
-                              intro="🎉 *Your Zitch account number is ready!*")
-        # Wema Wallet Service OTP is phone-only. Account creation is complete
-        # once Wema validates that code; do not add a parallel Resend/email OTP
-        # that the bank will not validate.
-        _clear_actions(msisdn)
-        _kyc_continue_after_account(user, msisdn, attempted={attempted_identity})
-        return "done", "Account created ✅ - see the chat for your account details."
-    if payload.get("pending") or status == 202:
-        # Wema has consumed and accepted the OTP, but can take a short time to
-        # expose the NUBAN through GetPartnershipAccountDetails. Do not leave the
-        # customer on a retry screen: this OTP is single-use. The provisioning
-        # attempt remains available to the bank callback/reconciliation path.
-        _clear_actions(msisdn)
-        reply(msisdn, "⏳ Your identity was accepted. We’re creating your Zitch account and will message you as soon as it is ready.")
-        return "done", "Identity accepted ✅ - account creation is in progress."
-    if status == 400:   # expired / mismatched attempt: retrying the same code cannot help
-        _clear_actions(msisdn)
-        reply(msisdn, "⚠️ " + (payload.get("message") or "That didn't work.") + " Reply *6* to start again.")
-        return "done", "That attempt expired - see the chat."
-    return "retry", (payload.get("message") or "That code didn't work.")
-
-
-def _kyc_continue_after_account(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
-    """Roll straight from account setup into whatever identity checks remain.
-
-    Verification is meant to happen once, at signup, rather than being deferred
-    to a "reply 8" the customer never sends - and by this point the expensive
-    parts are already done: opening the NUBAN name-matched their BVN, and its
-    SMS code proved the SIM. What is normally left is the email and the second
-    ID. Nothing is re-asked: _kyc_outstanding skips anything already verified,
-    so a customer who is fully verified sees this do nothing at all.
-    """
-    user.refresh_from_db()
-    outstanding = _kyc_outstanding(user)
-    if not outstanding:
-        return None
-    # Only roll in when every remaining step can actually run. A dead rail ends
-    # the ladder with "we can't send SMS codes" - fine as an answer to someone
-    # who asked to verify, but not as the last thing a customer reads after
-    # their account number was minted successfully. They can still reply 8.
-    if not all(_kyc_rail_ready(user, step) for step in outstanding):
-        log.info("wa_kyc_rollin_skipped steps=%s - a rail is unavailable", ",".join(outstanding))
-        return None
-    return _start_kyc(user, msisdn, attempted=attempted)
 
 
 def _kyc_rail_ready(user, step: str) -> bool:
@@ -4278,113 +3518,6 @@ def _kyc_rail_ready(user, step: str) -> bool:
         return bool(email_live() or _kyc_test_code(user))
     return True
 
-
-def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> None:
-    if is_retired_setup(pa):
-        PendingAction.objects.filter(pk=pa.pk).delete()
-        return reply(msisdn, RETIRED_SETUP_MESSAGE)
-    val = text.strip()
-    if pa.state == FACE_ID_STATE and pa.payload.get("id_purpose") == "account_face":
-        kind = "nin" if pa.payload.get("id_type") == "nin" else "bvn"
-        digits = "".join(ch for ch in val if ch.isdigit())
-        if len(digits) != 11:
-            return reply(msisdn, f'Enter your 11-digit {kind.upper()} again, or reply "cancel".')
-        reply(msisdn, "🔐 Got it." + _DELETE_TIP)
-        if _send_identity_face_option(pa, user, msisdn, kind, digits, account_setup=True):
-            _clear_actions(msisdn)
-            return None
-        return reply(msisdn, "Face verification is temporarily unavailable. Reply *6* to try again shortly.")
-    if pa.state == "id_type":
-        low = val.lower()
-        if low in ("1", "bvn"):
-            pa.payload["id_type"] = "bvn"
-        elif low in ("2", "nin"):
-            pa.payload["id_type"] = "nin"
-        else:
-            return reply(msisdn, "Reply *1* to use your BVN or *2* to use your NIN.")
-        kind = pa.payload["id_type"]
-        # Keep both legacy and current Flow keys in sync. The secure Flow may
-        # be opened from this PendingAction after a prior BVN session; without
-        # this explicit write, that stale id_kind can relabel a NIN challenge.
-        pa.payload["id_kind"] = kind
-        pa.state = "verification_method"
-        pa.expires_at = _flow_deadline(pa.state)
-        pa.save(update_fields=["payload", "state", "expires_at"])
-        options = "*1* SMS OTP"
-        if _face_step_available():
-            options += "\n*2* Face verification"
-        return reply(msisdn,
-                     f"How should our partner bank verify your {kind.upper()} for the account?\n"
-                     + options + "\n\nChoose a method to continue securely.")
-    if pa.state == "verification_method":
-        low = val.lower()
-        if low in ("1", "sms", "otp", "sms otp"):
-            pa.payload["verification_method"] = "sms"
-        elif low in ("2", "face", "face verification"):
-            if not _face_step_available():
-                return reply(msisdn, "Face verification is temporarily unavailable. Reply *1* to use SMS OTP.")
-            pa.payload["verification_method"] = "face"
-        else:
-            return reply(msisdn, "Reply *1* for SMS OTP or *2* for Face verification.")
-        kind = pa.payload.get("id_type", "bvn")
-        pa.state = "bvn"
-        pa.expires_at = _flow_deadline(pa.state)
-        pa.save(update_fields=["payload", "state", "expires_at"])
-        if _send_identity_flow(pa, kind, fallback_state="bvn"):
-            return None
-        if flows_live():
-            _clear_actions(msisdn)
-            return reply(msisdn, "⚠️ The secure entry screen didn't go through, so I won't ask for "
-                                 "your ID number here in the chat. Reply *6* to try again in a "
-                                 "moment, or contact Zitch support if it continues.")
-        return reply(msisdn, f"Enter your 11-digit *{kind.upper()}*. It is used only to open your "
-                             "account.\n\n_Delete your message afterwards (press and hold -> Delete -> "
-                             "Delete for everyone) - WhatsApp only lets the sender do this._")
-    if pa.state == "bvn":
-        digits = "".join(ch for ch in val if ch.isdigit())
-        if len(digits) != 11:
-            return reply(msisdn, f"That should be exactly 11 digits. Enter your {pa.payload.get('id_type', 'BVN').upper()} again, or reply \"cancel\".")
-        return _account_submit_identity(pa, user, msisdn, digits)
-    if pa.state == "otp":
-        if val.lower() in ("face", "face verification", "use face"):
-            if not _face_step_available():
-                return reply(msisdn, "Face verification is temporarily unavailable. Use the SMS code or reply *resend*.")
-            # The customer has explicitly said the SMS route is unusable. Do not
-            # keep resending to the same BVN/NIN-registered line. Re-open secure
-            # identity entry, then issue Wema's hosted face URL; the raw number is
-            # never retained in PendingAction or repeated in chat.
-            kind = "bvn" if pa.payload.get("using_bvn") else "nin"
-            pa.payload.update({
-                "id_type": kind,
-                "id_kind": kind,
-                "id_purpose": "account_face",
-                "verification_method": "face",
-            })
-            pa.state = FACE_ID_STATE
-            pa.expires_at = _flow_deadline(FACE_ID_STATE)
-            pa.save(update_fields=["payload", "state", "expires_at"])
-            if _send_identity_flow(pa, kind, fallback_state=FACE_ID_STATE):
-                return reply(msisdn, "Use the secure form above to enter your ID again, then open the bank's face-verification page. Your ID will not appear in this chat.")
-            if flows_live():
-                _clear_actions(msisdn)
-                return reply(msisdn, "⚠️ The secure face-verification form could not open. Reply *6* to try again in a moment.")
-            return reply(msisdn, f"Enter your 11-digit {kind.upper()} again to use face verification instead of SMS.")
-        if val.lower() == "resend":
-            res = wema_provider.resend_wallet_otp(user.phone or "", pa.payload.get("tracking_id", ""),
-                                                  bvn=bool(pa.payload.get("using_bvn")))
-            if res.get("success"):
-                return reply(msisdn, "📲 Code re-sent - enter it here.")
-            return reply(msisdn, "⚠️ " + (res.get("message") or "Couldn't resend the code - try again shortly."))
-        # Same completion as the Flow path, so a 400 means the same thing and the
-        # pending action is cleared at the same moment on both. Only the wording
-        # of a retry differs: here there is a chat to say "or resend" in.
-        status, message = account_flow_otp(pa, val)
-        if status == "retry":
-            return reply(msisdn, "⚠️ " + message
-                         + ' Try again, reply *resend* for a new code, *face* to use face verification instead, or "cancel".')
-        return None
-    _clear_actions(msisdn)
-    return send_menu(msisdn)
 
 
 # --------------------------------------------------------------------------- #
@@ -4700,8 +3833,6 @@ def _identity_fallback_state(pa: PendingAction) -> str:
     in the thread rather than the Flow - the same state `_send_identity_flow`
     falls back to when the dispatch itself fails."""
     kind = str(pa.payload.get("id_kind", "bvn")).lower()
-    if kind == ACCOUNT_OTP:
-        return "otp"
     if kind == "email":
         return "email" if pa.payload.get("id_step") == "code" else "email_address"
     return str(pa.payload.get("id_fallback_state") or kind)
@@ -4744,7 +3875,7 @@ def _accept_identity_in_chat(pa: PendingAction, user, msisdn: str, text: str) ->
     # The identity challenge code (the SMS that name-matches a BVN/NIN). It has
     # no chat state at all - it is only ever armed on a deploy with Flows live -
     # so it is checked here, mirroring flows._submit_identity_otp exactly.
-    if kind not in (ACCOUNT_OTP, "email") and pa.payload.get("id_otp_hash"):
+    if kind != "email" and pa.payload.get("id_otp_hash"):
         status, message = kyc_flow_identity_otp(pa, val)
         if status == "retry":
             return reply(msisdn, "⚠️ " + message)
@@ -4754,8 +3885,7 @@ def _accept_identity_in_chat(pa: PendingAction, user, msisdn: str, text: str) ->
     _touch(pa, state=_identity_fallback_state(pa), payload=pa.payload)
     if secret:
         reply(msisdn, "🔐 Got it - I'll use what you typed." + _DELETE_TIP)
-    handler = _advance_add_account if pa.action_type == "add_account" else _advance_kyc
-    return handler(pa, user, msisdn, val)
+    return _advance_kyc(pa, user, msisdn, val)
 
 
 def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
@@ -4814,18 +3944,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         # them used to get an answer.
         kind = str(pa.payload.get("id_kind", "bvn")).lower()
         low = text.strip().lower()
-        if kind == ACCOUNT_OTP and low in ("face", "face verification", "use face"):
-            _touch(pa, state="otp", payload=pa.payload)
-            return _advance_add_account(pa, user, msisdn, text)
         if low == "resend":
-            if kind == ACCOUNT_OTP:
-                res = wema_provider.resend_wallet_otp(
-                    user.phone or "", pa.payload.get("tracking_id", ""),
-                    bvn=bool(pa.payload.get("using_bvn")))
-                if res.get("success"):
-                    return reply(msisdn, "📲 Code re-sent - enter it on the secure screen.")
-                return reply(msisdn, "⚠️ " + (res.get("message")
-                                              or "Couldn't resend the code - try again shortly."))
             if kind == "email" and pa.payload.get("id_step") == "code":
                 # An expired code with no way to ask for another would strand the
                 # customer inside a dead Flow.
@@ -4852,9 +3971,6 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
             _clear_actions(msisdn)
             reply(msisdn, "Okay - leaving that verification.")
             return handle_inbound(msisdn, text)
-        if kind == ACCOUNT_OTP:
-            return reply(msisdn, "📲 That isn't the 6-digit code. Enter it on the secure screen "
-                                 "I sent, or type it here - either works. Or reply \"cancel\".")
         if kind == "email":
             what = "email code" if pa.payload.get("id_step") == "code" else "email address"
             return reply(msisdn, f"📧 That doesn't look like your {what}. Enter it on the secure "
@@ -4877,7 +3993,6 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "exam": _advance_exam,
         "convert": _advance_convert,
         "pick_service": _advance_pick_service,
-        "add_account": _advance_add_account,
         "kyc": _advance_kyc,
         "qr": _advance_qr,
         "beneficiary": _advance_beneficiary,

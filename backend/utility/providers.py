@@ -5,7 +5,6 @@ never become simulated successes.
 import hashlib
 import logging
 import math
-import re
 import secrets
 
 import requests
@@ -90,20 +89,6 @@ def _partnership_reference_blocked(reference: str | None = None, source_account:
 # ---------------------------------------------------------------------------
 # VAS (airtime / data / cable / electricity / betting) - partner bank only.
 # ---------------------------------------------------------------------------
-# Service ids are intentionally lowercase (for example, "mtn-airtime"), while
-# ALAT's Airtime/Data contract expects the operator name values in uppercase.
-# Normalise at the provider boundary so every caller sends the same wire value.
-_WEMA_NETWORKS = {
-    "mtn": "MTN",
-    "glo": "GLO",
-    "airtel": "AIRTEL",
-    "9mobile": "9MOBILE",
-}
-
-
-def _wema_network(service_network: str) -> str:
-    value = str(service_network or "").strip()
-    return _WEMA_NETWORKS.get(value.casefold(), value.upper())
 
 def simulation_mode() -> bool:
     return False
@@ -118,10 +103,6 @@ def mock_disabled_in_prod() -> bool:
     wallet was debited). When this returns True, the provider must fail closed
     instead — the debit is then refunded by the normal failure path.
 
-    A simulation deploy is the deliberate exception: WEMA_SIMULATION marks the deploy
-    as fake-money end-to-end, so mocks are allowed even with DEBUG off. This is safe
-    because simulation is a hard go-live gate (see wema_preflight), so it is never on
-    in a real-money deploy.
     """
     if simulation_mode():
         return False
@@ -137,10 +118,6 @@ def vas_provider() -> str:
     return "9psb"
 
 
-# The product whose status legend decides a purchase of this route type. The
-# airtime/data status check and the bills status check answer with DIFFERENT integer
-# enums, so they are configured (and gated) separately — see wema._vas_legend.
-_SETTLE_PRODUCT = {"airtime": "airtime", "data": "airtime", "bill": "bills"}
 
 #: Shown to the customer when a purchase is refused because this deploy could not
 #: settle it. The shared purchase runner checks before debit; the provider boundary
@@ -155,60 +132,11 @@ def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
     return (True, "") if biller_enabled() else (False, "Bill payments are unavailable")
 
 
-def _wema_vas_route(service_id: str, payload: dict):
-    """Resolve how the partner bank would fulfil this purchase, or None to fail closed.
-
-    Returns {"type": "airtime"|"data"|"bill", "code": <wema code>, "amount": <naira>}.
-    Airtime always resolves; data/cable resolve once the plan's `wema_code` has been
-    synced; electricity/betting resolve once a WemaBiller row maps their service_id.
-    A missing code returns None so callers fail closed without routing to a retired provider.
-
-    Electricity and betting take their amount from the request rather than a plan
-    row: the customer types it, there is no bundle with a price to read."""
-    if service_id.endswith("-airtime"):
-        return {"type": "airtime", "code": "", "amount": payload.get("amount")}
-    if service_id.endswith("-electric") or service_id.endswith("-betting"):
-        from .models import WemaBiller
-        meter_type = payload.get("variation_code") if service_id.endswith("-electric") else ""
-        if service_id.endswith("-electric") and meter_type not in ("prepaid", "postpaid"):
-            return None
-        b = (WemaBiller.objects.filter(service_id=service_id, meter_type=meter_type, active=True)
-             .only("package_id").first())
-        if not (b and b.package_id):
-            return None
-        amount = payload.get("amount")
-        if amount in (None, ""):
-            # A variable-amount bill with no amount cannot be paid on either rail;
-            # returning None makes the caller fail closed.
-            return None
-        return {"type": "bill", "code": b.package_id, "amount": amount}
-    var = str(payload.get("variation_code", "") or "")
-    if not var:
-        return None  # no plan code -> safe partner-bank configuration error
-    if service_id.endswith("-data"):
-        from .models import DataPlan
-        p = DataPlan.objects.filter(plan_code=var).only("wema_code", "price").first()
-        return {"type": "data", "code": p.wema_code, "amount": p.price} if (p and p.wema_code) else None
-    if service_id in ("dstv", "gotv", "startimes"):
-        from .models import CablePlan
-        p = CablePlan.objects.filter(cable_plan_code=var).only("wema_code", "price").first()
-        return {"type": "bill", "code": p.wema_code, "amount": p.price} if (p and p.wema_code) else None
-    return None
-
 
 def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
     return {"success": False, "not_charged": True,
             "message": "Refresh the app to use the current bank bill catalog."}
 
-def vas_retired_rail(meta: dict | None) -> str:
-    rail = str((meta or {}).get("vas_rail") or "unknown")
-    return "" if rail == "9psb" else rail
-
-
-# One alert per reference per day. The reconcile cron runs every two minutes, so an
-# un-cooled page here would be ~720 identical events a day per stranded row; a daily
-# reminder is the right cadence for a row a human has to clear by hand.
-_RETIRED_RAIL_ALERT_COOLDOWN = 24 * 60 * 60
 
 
 def vas_requery(reference: str, meta: dict | None = None) -> dict:
@@ -222,32 +150,6 @@ def vtu_requery(reference: str) -> dict:
 
     txn = Transaction.objects.filter(reference=reference).only("meta").first()
     return vas_requery(reference, (txn.meta if txn else None) or {})
-
-#: Our cable service_ids, and the CablePlan.provider choice each maps to.
-_CABLE_PROVIDER_CHOICE = {"gotv": "1", "dstv": "2", "startimes": "3"}
-
-
-def _cable_validation_code(service_id: str) -> str:
-    """Any mapped ``packageId`` for this cable provider, for validating a smartcard.
-
-    ALAT's ValidateCustomer takes a packageId, but a smartcard is validated BEFORE the
-    customer picks a bouquet — that is the whole point of the step, and it is the order
-    the app and the WhatsApp flow both use. Routing validation through the normal
-    per-plan lookup therefore asked for a bouquet code that does not exist yet and
-    failed every cable IUC check with "biller not configured", whatever was mapped.
-
-    Any mapped bouquet of the same provider identifies the same biller to ALAT, which
-    is all validation needs, so the cheapest mapped one is used. Still returns "" when
-    NOTHING for that provider is mapped, which is a real configuration gap.
-    """
-    from .models import CablePlan
-
-    choice = _CABLE_PROVIDER_CHOICE.get(service_id, "")
-    if not choice:
-        return ""
-    row = (CablePlan.objects.filter(provider=choice, active=True)
-           .exclude(wema_code="").order_by("price").only("wema_code").first())
-    return row.wema_code if row else ""
 
 
 def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "") -> dict:
@@ -574,7 +476,6 @@ def _kyc_mock_or_unavailable() -> dict:
 
     These checks lift KYC tiers and clear the face step-up on large payments. A
     missing provider in production must therefore be an outage, never a pass.
-    ``WEMA_SIMULATION`` remains the deliberate end-to-end test exception.
     """
     if mock_disabled_in_prod():
         return {
@@ -1136,18 +1037,20 @@ def fx_execute(quote_ref: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Money-movement rail — partner bank / ALAT (funding / virtual accounts / payouts)
+# Money-movement rail — 9PSB (funding / virtual accounts / payouts)
 #
 # The funding_* / payout_* wrappers are the provider-agnostic contract the views
-# and services call; they delegate to the partner bank client (utility.wema), the sole
-# money-movement rail. partner bank funds by bank transfer to an OTP-provisioned NUBAN (no
-# hosted checkout, no webhook — inbound deposits AND payout settlement are handled
-# by the reconcile_wema poller). The *_provider() selectors are retained (returning
-# "wema") so any remaining callers/diagnostics keep working.
+# and services call. Customers fund by bank transfer to their 9PSB NUBAN; payouts
+# go through banking.adapter. The *_provider() selectors are retained for
+# callers and diagnostics.
 # ---------------------------------------------------------------------------
-def _wema_live() -> bool:
-    from . import wema
-    return wema.wema_live()
+#: The retired partner bank's card, Remita and BNPL rails have no 9PSB contract.
+#: Historical cards issued there keep this result for every operation.
+def _archived_provider_result(*args, **kwargs) -> dict:
+    return {"success": False, "pending": True, "status": "REVIEW", "retired": True,
+            "code": "provider_archived",
+            "message": "This historical provider is archived; manual review is required."}
+
 
 
 def payment_provider() -> str:
@@ -1170,9 +1073,9 @@ def card_provider() -> str:
 def card_capabilities(provider: str = "") -> dict:
     """Return customer-facing operations supported by a card backend.
 
-    Wema's card-management product funds only during issuance and its hotlist
-    operation is permanent.  The generic issuer retains reversible status and
-    incremental funding support.
+    Cards issued by the retired partner bank ("wema") can no longer be funded or
+    unfrozen. The generic issuer retains reversible status and incremental
+    funding support.
     """
     backend = provider if provider in ("wema", "issuer") else card_provider()
     if backend == "wema":
@@ -1196,43 +1099,22 @@ def _card_backend(provider: str = "") -> str:
 # --- Funding (wallet top-up) dispatch — partner bank (OTP-provisioned NUBAN) ---
 def funding_initialize(email: str, amount_naira, reference: str, *,
                        name: str = "", redirect_url: str = "") -> dict:
-    """partner bank/ALAT has no hosted checkout — funding is by bank transfer to the user's
-    dedicated NUBAN (credited by the reconcile_wema poller), so there is no charge to
-    start. Returns a graceful message the app shows instead of a checkout URL."""
+    """There is no hosted checkout — funding is by bank transfer to the user's
+    dedicated NUBAN, so there is no charge to start. Returns a graceful message the
+    app shows instead of a checkout URL."""
     return {"success": False,
             "message": "Top up by bank transfer to your dedicated account number."}
 
 
 def funding_verify(reference: str, provider: str = "") -> dict:
-    """partner bank deposits are credited by the reconcile poller, not a synchronous verify
+    """Deposits are credited by the reconcile poller, not a synchronous verify
     call, so there is nothing to confirm here."""
     # White-label: no provider name in customer-facing copy.
     return {"success": False, "message": "Deposits are credited automatically on receipt."}
 
 
-def funding_account_reserve(account_reference: str, account_name: str, customer_email: str,
-                            customer_name: str, bvn: str = "", nin: str = "") -> dict:
-    """Provision a dedicated funding (virtual) account.
 
-    partner bank can't mint an account synchronously — it needs a BVN/NIN + OTP round-trip
-    driven by the /api/wallet/wema/* endpoints. Signal that so ensure_reserved_account
-    leaves the wallet numberless (the OTP flow fills it) rather than surfacing a hard
-    error.
-    """
-    return {"success": False, "otp_required": True,
-            "message": "Verify the OTP to finish setting up your account."}
-
-
-def funding_account_get(account_reference: str) -> dict:
-    """Fetch an existing dedicated account (duplicate recovery).
-
-    partner bank accounts are provisioned by the OTP endpoints, not a synchronous lookup, so
-    this signals otp_required rather than performing a wrong-rail lookup."""
-    return {"success": False, "otp_required": True,
-            "message": "Verify the OTP to finish setting up your account."}
-
-
-# --- Payout (bank transfer) dispatch — partner bank ---
+# --- Payout (bank transfer) dispatch — 9PSB ---
 def payout_resolve_account(account_number: str, bank_code: str) -> dict:
     from banking.adapter import resolve_account
     return resolve_account(account_number, bank_code)
@@ -1247,10 +1129,10 @@ def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
 
 
 # --- Virtual card dispatch ---
-# Two card backends: the generic CARD_ISSUER (default) and ALAT Card-Management
-# (NUBAN-keyed; selected when card_provider() is "wema" — see wema.card_*). When no
-# backend is configured the calls mock in dev/test and fail closed in production
-# (see issue_card / card_secure_details).
+# The generic CARD_ISSUER is the only live backend. Cards recorded as issued by the
+# retired partner bank ("wema") return the archived result for every operation.
+# When no backend is configured the calls mock in dev/test and fail closed in
+# production (see issue_card / card_secure_details).
 def card_issue(holder: str, customer_ref: str, email: str = "", *, account_number: str = "",
                phone: str = "") -> dict:
     # The new partnership's card-acquiring contract has not been supplied.
@@ -1261,30 +1143,25 @@ def card_issue(holder: str, customer_ref: str, email: str = "", *, account_numbe
 def card_set_status(card_token: str, active: bool, *, provider: str = "",
                     masked_pan: str = "") -> dict:
     if _card_backend(provider) == "wema":
-        from . import wema
-        if masked_pan:
-            return wema.card_set_status(card_token, active, masked_pan=masked_pan)
-        return wema.card_set_status(card_token, active)
+        return _archived_provider_result()
     return set_card_status(card_token, active)
 
 
 def card_fund(card_token: str, amount, *, provider: str = "") -> dict:
     if _card_backend(provider) == "wema":
-        from . import wema
-        return wema.card_fund(card_token, amount)
+        return _archived_provider_result()
     return fund_card(card_token, amount)
 
 
 def card_reveal(card_token: str, *, provider: str = "") -> dict:
     if _card_backend(provider) == "wema":
-        from . import wema
-        return wema.card_reveal(card_token)
+        return _archived_provider_result()
     return card_secure_details(card_token)
 
 
 # ---------------------------------------------------------------------------
-# NIP transfer charges / Remita / BNPL — partner bank-only rails (no alternative provider).
-# The wrappers keep the views off the wema client directly and give tests one seam.
+# Transfer charges / Remita / BNPL. Remita and BNPL were retired partner-bank rails
+# with no 9PSB contract; the wrappers keep the views and tests on one seam.
 # ---------------------------------------------------------------------------
 def payout_charge(amount_naira):
     from banking.fees import transfer_fee
@@ -1293,13 +1170,11 @@ def payout_charge(amount_naira):
 
 def remita_validate(rrr: str) -> dict:
     """Validate a Remita RRR (read-only)."""
-    from . import wema
-    return wema.validate_rrr(rrr)
+    return _archived_provider_result()
 
 
 def remita_pay(amount_naira, reference: str, *, rrr: str, source_account: str = "", **kw) -> dict:
     """Pay a Remita RRR using the debit's approved biller source."""
-    from . import wema
     source, source_error = _biller_source(reference, amount=amount_naira, source_account=source_account)
     if source_error:
         return source_error
@@ -1307,10 +1182,9 @@ def remita_pay(amount_naira, reference: str, *, rrr: str, source_account: str = 
     if not can_settle:
         return {"success": False, "pending": False, "not_charged": True,
                 "code": "remita_unavailable", "message": _VAS_UNAVAILABLE}
-    return wema.pay_remita(amount_naira, reference, rrr=rrr, source_account=source, **kw)
+    return _archived_provider_result()
 
 
 def bnpl_offers() -> dict:
     """The BNPL product offers a customer is eligible for (read-only)."""
-    from . import wema
-    return wema.bnpl_offers()
+    return _archived_provider_result()

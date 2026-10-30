@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase, override_settings
 from django.urls import Resolver404, resolve
 
-from utility import providers, wema
+from utility import providers
 from .test_client import CONFIG
 
 
@@ -28,23 +28,32 @@ class RetiredProviderBoundaryTests(SimpleTestCase):
             with self.subTest(path=path), self.assertRaises(Resolver404):
                 resolve(path)
 
-    def test_retired_wire_methods_cannot_contact_the_bank_or_confirm_success(self):
+    def test_retired_provider_client_and_operator_commands_are_gone(self):
+        from importlib.util import find_spec
+
+        from django.core.management import get_commands
+        for module in ("utility.wema", "wallet.wema_callbacks", "wallet.wema_urls",
+                       "wallet.identity", "wallet.account_recovery", "wallet.reconciliation"):
+            with self.subTest(module=module):
+                self.assertIsNone(find_spec(module))
+        commands = get_commands()
+        for name in ("wema_preflight", "wema_banks_sync", "seed_wema_plans", "partnership_diagnostics",
+                     "prepare_account_recovery", "repair_partner_bank_accounts",
+                     "reconciliation_evidence"):
+            with self.subTest(command=name):
+                self.assertNotIn(name, commands)
+        # The live reconcile cron still invokes this name; it runs the 9PSB sweep.
+        self.assertEqual(commands["reconcile_wema"], "utility")
+
+    def test_retired_card_remita_and_bnpl_rails_never_confirm_success(self):
         with patch("requests.sessions.Session.request") as http:
-            for name in ("create_wallet_request", "validate_wallet_otp", "resend_wallet_otp",
-                         "create_wallet_with_face", "get_account_details", "lift_debit_restriction",
-                         "get_kyc_status", "upgrade_tier2", "upgrade_tier3", "get_balance",
-                         "get_transactions", "get_banks", "get_nip_charges", "resolve_account",
-                         "transfer", "confirm_transfer_status", "credit_wallet", "confirm_credit_status",
-                         "purchase_airtime", "get_data_plans", "purchase_data", "get_bills",
-                         "validate_bill_customer", "pay_bill", "vas_status", "vas_status_entitlement",
-                         "validate_rrr", "pay_remita", "remita_receipt", "bnpl_offers", "bnpl_consent",
-                         "bnpl_accept_terms", "bnpl_status", "bnpl_liquidate", "card_issue", "card_fund",
-                         "card_reveal", "card_set_status", "verify_bvn", "verify_nin", "verify_vnin"):
-                with self.subTest(method=name):
-                    result = getattr(wema, name)()
+            for result in (providers.card_set_status("token", True, provider="wema"),
+                           providers.card_fund("token", 1, provider="wema"),
+                           providers.card_reveal("token", provider="wema"),
+                           providers.remita_validate("1234"), providers.bnpl_offers()):
+                with self.subTest(result=result):
                     self.assertFalse(result["success"])
                     self.assertTrue(result["retired"])
-                    self.assertTrue(result["pending"])
             http.assert_not_called()
 
     def test_standalone_identity_and_face_lookups_cannot_bypass_9psb(self):

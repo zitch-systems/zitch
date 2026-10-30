@@ -44,7 +44,7 @@ Payment receipts and Flow completion screens must reflect the canonical ledger a
 
 ## Operational checks before release
 
-Run `python manage.py wema_preflight --strict` for the full declared scope. `--launch-scope core` explicitly excludes higher tiers and unsupported products; it still requires current successful financial-control evidence. A GO result cannot certify real-device delivery or bank settlement acceptance.
+Run `python manage.py bank_preflight` for the 9PSB release gates; it fails while any blocker remains, including test shortcuts such as `TEST_OTP_PHONE`. A clean result cannot certify real-device delivery or bank settlement acceptance.
 
 Verify authorized live signup/OTP, Tier 1 verification, account lookup, incoming credit, outgoing transfer/status, bill purchase/refund, delayed and duplicate callbacks, missed-notification recovery and customer receipts. Verify the matching bank and ledger entries and the current backup restore procedure.
 

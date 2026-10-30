@@ -1,18 +1,9 @@
 """Catalogue rows that make VAS purchasable, for tests and local setup.
 
-Not a convenience. The partner bank is the only VAS rail and it fulfils against its
-OWN codes — a data/cable bundle's ``wema_code`` and an electricity/betting service's
-``WemaBiller.package_id``. A service with no code cannot be routed, so
-``providers._wema_vas_route`` returns None and the purchase is refused before any
-debit (see ``providers.vtu_purchase``).
-
-That is a change of KIND, not degree. While the retired rail still existed an
-unmapped service simply fell through to a provider that needed no catalogue, so a
-test (or a fresh deploy) could buy airtime, data, cable and electricity with an empty
-catalogue and nothing looked wrong. Now the catalogue IS the product: nothing is on
-sale until ``manage.py seed_wema_plans`` has run. These helpers are the test-sized
-equivalent of that command, so a fixture reads as the mapped deploy it stands in for
-rather than silently exercising a refusal path.
+The local plan tables keep the retired partner bank's codes (a data/cable bundle's
+``wema_code`` and an electricity/betting service's ``WemaBiller.package_id``) as
+historical evidence. Tests that exercise older purchase paths still need mapped
+rows, so these helpers fill them in; 9PSB VAS reads its catalogue live from the bank.
 """
 from .models import CablePlan, DataPlan, WemaBiller
 

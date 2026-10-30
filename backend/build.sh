@@ -19,15 +19,6 @@ fi
 # Read-only, redacted evidence for operators while public maintenance is on.
 # This reports configuration gaps; it cannot authorize release or change funds.
 python manage.py bank_preflight --report-only
-# Optional incident evidence for a bounded set of internal user IDs. The command
-# reads bank statements and local history only, prints redacted summaries, and
-# never changes balances, checkpoints, KYC state or payment outcomes. Clear the
-# selector after collecting evidence so routine deploys do not repeat bank reads.
-if [ -n "${ZITCH_RECONCILIATION_EVIDENCE_USERS:-}" ]; then
-  python manage.py reconciliation_evidence \
-    --user-ids "$ZITCH_RECONCILIATION_EVIDENCE_USERS" --days 90 --max-rows 50 \
-    || echo "==> Reconciliation evidence unavailable; launch review remains open."
-fi
 # An unconfirmed directory closes payout routing and prints its redacted cause;
 # it does not block deploying identity/account changes.
 python manage.py sync_bank_directory --if-configured --close-on-failure

@@ -63,15 +63,6 @@ class FundingDispatchTests(SimpleTestCase):
         out = P.funding_verify("ZPAY1")
         self.assertFalse(out["success"])
 
-    def test_funding_account_reserve_signals_otp(self):
-        out = P.funding_account_reserve("usr-1", "Ada", "a@b.com", "Ada", bvn="22212345678")
-        self.assertFalse(out["success"])
-        self.assertTrue(out["otp_required"])
-
-    def test_funding_account_get_signals_otp(self):
-        out = P.funding_account_get("ZITCH-WALLET-1")
-        self.assertFalse(out["success"])
-        self.assertTrue(out["otp_required"])
 
 
 
@@ -94,10 +85,9 @@ class CardDispatchTests(SimpleTestCase):
         })
 
     def test_card_issue_is_unavailable_before_issuer_dispatch(self):
-        with patch("utility.providers.issue_card") as issuer, patch("utility.wema.card_issue") as previous:
+        with patch("utility.providers.issue_card") as issuer:
             out = P.card_issue("ADA EZE", "42", email="ada@example.test")
         issuer.assert_not_called()
-        previous.assert_not_called()
         self.assertFalse(out["success"])
         self.assertFalse(out["pending"])
 
@@ -290,19 +280,19 @@ class CardDispatchTests(SimpleTestCase):
 
 
     @override_settings(CARD_PROVIDER="issuer")
-    def test_explicit_card_backend_override_keeps_existing_wema_card_on_wema(self):
-        with patch("utility.wema.card_set_status", return_value={"success": True}) as ms, \
-             patch("utility.wema.card_fund", return_value={"success": False}) as mf, \
-             patch("utility.wema.card_reveal", return_value={"success": True}) as mr:
-            P.card_set_status("0155500011", active=False, provider="wema",
-                              masked_pan="5061******1234")
-            P.card_fund("0155500011", 5000, provider="wema")
-            P.card_reveal("0155500011", provider="wema")
-
-        ms.assert_called_once_with("0155500011", False,
-                                   masked_pan="5061******1234")
-        mf.assert_called_once_with("0155500011", 5000)
-        mr.assert_called_once_with("0155500011")
+    def test_cards_from_the_retired_issuer_never_reach_the_generic_issuer(self):
+        with patch("utility.providers.set_card_status") as status, \
+             patch("utility.providers.fund_card") as fund, \
+             patch("utility.providers.card_secure_details") as reveal:
+            results = (P.card_set_status("0155500011", active=False, provider="wema",
+                                         masked_pan="5061******1234"),
+                       P.card_fund("0155500011", 5000, provider="wema"),
+                       P.card_reveal("0155500011", provider="wema"))
+        for mock in (status, fund, reveal):
+            mock.assert_not_called()
+        for result in results:
+            self.assertFalse(result["success"])
+            self.assertEqual(result["code"], "provider_archived")
 
 
 

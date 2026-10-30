@@ -12,24 +12,6 @@ from .models import PreviousBankArchive, HistoricalBalanceAdjustment
 
 
 class ArchiveTests(TestCase):
-    def test_retained_statement_rows_cannot_credit_an_archived_or_current_bank_wallet(self):
-        from wallet.services import apply_wema_credit
-        from .models import BankAccount
-        row = {"referenceId": "OLD-STATEMENT", "amount": "100.00",
-               "creditType": "Credit", "status": "Successful"}
-        for archived in (True, False):
-            with self.subTest(archived=archived):
-                user = User.objects.create_user(username=f"statement-{archived}")
-                wallet = Wallet.objects.create(user=user, balance=500, account_number="1234567890" if archived else "1234567891")
-                if archived:
-                    PreviousBankArchive.objects.create(wallet=wallet, balance=500, account_number=wallet.account_number)
-                else:
-                    BankAccount.objects.create(wallet=wallet, number=wallet.account_number, name="Test Customer")
-                self.assertIsNone(apply_wema_credit(wallet, row))
-                wallet.refresh_from_db()
-                self.assertEqual(wallet.balance, 500)
-                self.assertFalse(Transaction.objects.filter(user=user).exists())
-
     def test_snapshot_removes_funding_destination_without_deleting_liability(self):
         user = User.objects.create_user(username="historical", tier=2, bvn_verified=True, nin_verified=True, face_verified=True)
         wallet = Wallet.objects.create(user=user, balance=500, account_number="1234567890", account_name="Historical User", bank_name="Previous bank", bank_tier=2)

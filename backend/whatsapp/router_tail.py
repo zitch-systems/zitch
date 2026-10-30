@@ -2228,13 +2228,11 @@ def run_flow_execution(pa: PendingAction, user) -> str:
     # lock both records briefly so a concurrent cancel, replay, expiry or account
     # freeze cannot race past the final execution boundary.
     #
-    # Do NOT wrap the provider call below in this transaction. Wema's debit-wallet
-    # rail calls our Authentication Callback while ProcessClientTransfer is still
-    # in flight. If the PENDING ledger row is created inside an outer transaction
-    # that has not committed yet, the callback cannot see it and correctly denies
-    # the payout as "unknown_reference", which Wema surfaces as "Authentication
-    # Failed". Keep only the claim/eligibility check atomic; the executor's own
-    # debit() transaction then commits the row before the Wema network call.
+    # Do NOT wrap the provider call below in this transaction. The PENDING ledger
+    # row must be committed before the bank call, so a callback, requery or
+    # reconciliation that looks the reference up while the call is in flight can
+    # see it. Keep only the claim/eligibility check atomic; the executor's own
+    # debit() transaction then commits the row before the bank network call.
     with db_transaction.atomic():
         live = PendingAction.objects.select_for_update().filter(
             pk=pa.pk,
