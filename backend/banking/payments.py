@@ -32,7 +32,7 @@ def spending_account(user, *, refresh=False):
     if not bank:
         raise LimitExceeded("Complete your 9PSB account setup first")
     if not user.email_verified or not user.phone_verified or user.tier < 1:
-        raise LimitExceeded("Complete your contact and bank identity verification before spending")
+        raise LimitExceeded("Verify your contact details and bank identity before spending")
     if refresh:
         try:
             update_account(bank)
@@ -146,7 +146,9 @@ def _invoke(instruction, body):
 def _vas_response_matches(instruction, data, body):
     """Every echoed identifier must agree, including contradictory aliases."""
     try:
-        for key in ("transactionId", "transactionReference", "reference"):
+        # VAS data.transactionReference is the bank's own reference (19 digits
+        # in the supplied airtime/data success samples), not an echo of ours.
+        for key in ("transactionId", "reference"):
             if key in data and data[key] != instruction.reference:
                 return False
         if "amount" in data and money(data["amount"]) != money(instruction.amount):

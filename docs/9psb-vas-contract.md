@@ -59,9 +59,11 @@ POST is automatically retried after a timeout or authentication response.
 - HTTP 200 with `status=failed` / `responseCode=300` is the collection's
   duplicate-reference example. It stays pending and is queried; it cannot cause
   a refund or a second submission. A 404 status lookup also cannot refund.
-- Any echoed amount, account, reference, recipient, network or product must
-  match the persisted instruction. Contradictions remain unresolved. A generic
-  successful status lookup is not itself a successful payment.
+- Any echoed amount, account, recipient, network or product must match the
+  persisted instruction. Contradictions remain unresolved. A generic
+  successful status lookup is not itself a successful payment. Top-up
+  `data.transactionReference` is the bank's own reference, not an echo (see
+  the 30 October re-audit below).
 - The bill-status example embeds a token and units in `data.description`.
   Only the explicit token/units labels are parsed after confirmed success.
   Arbitrary descriptions, references and `otherField` never become tokens.
@@ -113,3 +115,40 @@ No payment, identity submission, live account creation or activation occurred.
 This VAS contract does not add BVN/NIN/facial, wallet-opening, Prembly address,
 QR/corporate, virtual-account or card-acquiring acceptance evidence. Those retain
 their separate implementation and UAT requirements in `9psb-migration.md`.
+
+## 30 October re-audit against the attached files
+
+The attached PDF and Postman collection hash to the same SHA-256 values as the
+source files above. Every route, method, request field, length and response
+field in the PDF matches the client. Replaying the collection's example
+responses through the real dispatch and requery code found three defects. Each
+now has a regression in `banking/test_vas_postman_contract.py` that fails
+without its fix.
+
+| Finding | Evidence in the collection | Effect before the fix | Fix |
+|---|---|---|---|
+| The bank's top-up reference was treated as a mismatched echo | Airtime/data success: `data.transactionReference` is `2304031007421680414`, not the request's `VAS29PSBA000000024` | Every documented success was held as `vas_response_mismatch` until a requery | That field is no longer compared with Zitch's reference; amount, account, recipient, network and product checks remain |
+| Dotted data-plan IDs were rejected | `MTN-2.5GB-27`, `MTN-1.5GB-4`, `MTN-4.5GB-6` among the 50 sample plans | Purchases of those plans failed after reservation and were refunded | Product IDs (JSON body only) may contain inner dots; URL path IDs stay strict |
+| Amounts were sent as `"100.00"` | Every request and plan sample uses whole-naira strings (`"100"`, `"200"`, `"1000"`); data and bill payments must send the catalog/validation value | Risk of rejection where the bank compares the plan or validation amount as a string | Whole amounts go on the wire as `"100"`; kobo stays as `"100.50"` and is never rounded |
+
+Other observations:
+
+- **Token expiry units.** The PDF says `expiresIn` is in seconds. The sample's
+  `7200000` matches its JWT's two-hour lifetime, so it is milliseconds. The
+  client caches a token for at most one hour, which is safe under either reading.
+- **The live rejection differs from the documented bad-credentials response.**
+  The collection's *INVALID CREDENTIAL* example is HTTP **401** /
+  `responseCode` **401**. The sandbox answered Zitch's VAS pair with HTTP
+  **400** / `responseCode` **400** / *Bad credentials*. Ask 9PSB whether the VAS
+  profile for that key pair is active in the test environment, and which value
+  is the `apiKey` and which the `secretKey`.
+- **Credential shape.** The collection's own sample `apiKey` is `PK_TEST_` plus 10
+  characters, and its `secretKey` is 32 alphanumeric characters. If the supplied
+  VAS pair looks different (for example, a WaaS-style username), raise it with
+  the bank. The collection ships with empty `apiKey`/`secretKey` variables, so
+  credentials come only from the separate credential document.
+- **Pasted whitespace.** Environment values for 9PSB URLs and credentials are now
+  stripped, and boolean flags ignore surrounding whitespace. A trailing newline
+  in a Render variable previously reached the bank verbatim.
+- `data.dataPlan` in the data success sample carries the product ID. The PDF
+  calls it the "data bundle purchased", so it is not enforced as an echo.

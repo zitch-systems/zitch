@@ -80,6 +80,17 @@ def money(value):
     return format(amount, ".2f")
 
 
+def vas_amount(value):
+    """VAS wire amount in the supplied samples' form: whole naira as "100".
+
+    Every VAS request and catalog sample uses whole-naira strings, and data and
+    bill payments must send the catalog/validation value. Kobo is kept, never
+    rounded away.
+    """
+    amount = money(value)
+    return amount[:-3] if amount.endswith(".00") else amount
+
+
 def account(value):
     if not isinstance(value, str) or not re.fullmatch(r"[0-9]{10}", value):
         raise ValueError("A ten-digit account number is required")
@@ -493,12 +504,21 @@ class Client:
             raise ValueError("Invalid catalog ID")
         return str(value)
 
+    @staticmethod
+    def _product_id(value):
+        # Supplied data plans include IDs such as "MTN-2.5GB-27". Product IDs
+        # are JSON body values, never URL path segments.
+        value = str(value)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", value) or ".." in value:
+            raise ValueError("Invalid catalog ID")
+        return value
+
     def validate_customer(self, biller, customer, *, item="", amount=None, firstname="", lastname=""):
         payload = {"billerId": self._catalog_id(biller), "customerId": str(customer)}
         if item:
             payload["itemId"] = self._catalog_id(item)
         if amount is not None:
-            payload["amount"] = money(amount)
+            payload["amount"] = vas_amount(amount)
         for key, value in (("firstname", firstname), ("lastname", lastname)):
             if value:
                 from .vas import text_value
@@ -508,16 +528,16 @@ class Client:
     def topup(self, kind, ref, amount, number, mobile, network, *, product_id=""):
         if kind not in {"airtime", "data"}:
             raise ValueError("Invalid top-up type")
-        payload = {"phoneNumber": phone(mobile), "network": str(network), "amount": money(amount),
+        payload = {"phoneNumber": phone(mobile), "network": str(network), "amount": vas_amount(amount),
             "debitAccount": account(number), "transactionReference": reference(ref, length=18)}
         if kind == "data":
-            payload["productId"] = self._catalog_id(product_id)
+            payload["productId"] = self._product_id(product_id)
         return self.request("topup/" + kind, payload)
 
     def pay_bill(self, ref, amount, number, *, biller, item, customer, mobile, name, other_field=""):
         payload = {"billerId": self._catalog_id(biller),
             "customerId": str(customer), "customerPhone": phone(mobile),
-            "customerName": name, "otherField": other_field, "amount": money(amount),
+            "customerName": name, "otherField": other_field, "amount": vas_amount(amount),
             "debitAccount": account(number), "transactionReference": reference(ref, length=18)}
         # The collection's no-plan bill payment omits itemId. Never invent an
         # item for a biller whose fields have no selection.
