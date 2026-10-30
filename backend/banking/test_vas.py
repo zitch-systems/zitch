@@ -68,7 +68,7 @@ class VasWireTests(SimpleTestCase):
         self.assertEqual(calls[-1].kwargs["params"], {"transReference": ref})
         self.assertEqual(calls[4].kwargs["payload"]["productId"], "MTN-200MB-2")
         self.assertEqual(calls[9].kwargs["payload"], {"billerId": "BP-IKEJA", "customerId": "CUSTOMER-1",
-            "itemId": "VT01", "amount": "100.00", "firstname": "Jane", "lastname": "Doe"})
+            "itemId": "VT01", "amount": "100", "firstname": "Jane", "lastname": "Doe"})
         self.assertEqual(calls[10].kwargs["payload"]["otherField"], "bound-value")
 
     def test_failure_envelope_cannot_cache_a_token(self):
@@ -185,7 +185,7 @@ class VasJourneyTests(TestCase):
         self.assertEqual(body["debitAccount"], self.bank.number)
         self.assertEqual(body["customerName"], "Jane Doe")
         self.assertEqual(body["otherField"], "bound-value")
-        self.assertEqual(body["amount"], "100.00")
+        self.assertEqual(body["amount"], "100")
         self.assertEqual(len(body["transactionReference"]), 18)
         self.assert_balance("400")
 
@@ -347,7 +347,7 @@ class VasJourneyTests(TestCase):
         self.assertTrue(response.json()["pending"])
         instruction = Instruction.objects.get()
         self.assertEqual(instruction.last_error, "vas_response_mismatch")
-        for extra in ({"transactionReference": "OTHER"}, {"transactionReference": instruction.reference, "reference": "OTHER"},
+        for extra in ({"transactionReference": instruction.reference, "reference": "OTHER"},
                       {"amount": "101"}, {"debitAccount": "1100000099"}, {"billerId": "OTHER"}):
             with self.subTest(extra=extra), patch.object(Client, "vas_status", return_value=success({
                     "transactionStatus": "success", **extra})):
@@ -357,7 +357,7 @@ class VasJourneyTests(TestCase):
 
     def test_topup_echo_must_match_selected_recipient_amount_network_and_product(self):
         for index, extra in enumerate(({"recipient": "08011112222"}, {"amount": "101"},
-                {"network": "OTHER"}, {"productId": "OTHER"}, {"transactionReference": "OTHER"})):
+                {"network": "OTHER"}, {"productId": "OTHER"}, {"transactionId": "OTHER"})):
             with self.subTest(extra=extra), patch("banking.bills.catalog", side_effect=lambda kind, **kw:
                     {"network": "MTN"} if kind == "network" else [{"productId": "P1", "amount": "50"}]), \
                  patch.object(Client, "topup", return_value=success(extra)):

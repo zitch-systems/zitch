@@ -146,7 +146,9 @@ def _invoke(instruction, body):
 def _vas_response_matches(instruction, data, body):
     """Every echoed identifier must agree, including contradictory aliases."""
     try:
-        for key in ("transactionId", "transactionReference", "reference"):
+        # VAS data.transactionReference is the bank's own reference (19 digits
+        # in the supplied airtime/data success samples), not an echo of ours.
+        for key in ("transactionId", "reference"):
             if key in data and data[key] != instruction.reference:
                 return False
         if "amount" in data and money(data["amount"]) != money(instruction.amount):
