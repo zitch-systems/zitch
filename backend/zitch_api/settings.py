@@ -18,7 +18,17 @@ load_dotenv(BASE_DIR / ".env")
 
 
 def env_bool(name: str, default: bool = False) -> bool:
-    return os.environ.get(name, str(default)).lower() in {"1", "true", "yes", "on"}
+    # Dashboard pastes often carry a trailing space/newline; "true\n" is still true.
+    return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_text(name: str, default: str = "") -> str:
+    """A provider URL/credential without surrounding whitespace from a pasted value.
+
+    A trailing newline in a bank key is sent verbatim and rejected as bad
+    credentials, which reads exactly like a bank-side problem.
+    """
+    return os.environ.get(name, default).strip()
 
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-insecure-change-me")
@@ -939,12 +949,12 @@ if SENTRY_DSN and not TESTING:
 # 9PSB credentials remain server-side. Sandbox is the safe default, never an
 # implicit authorization to process production customer identities or money.
 NINEPSB = {
-    "BASE_URL": os.environ.get("NINEPSB_BASE_URL", ""),
+    "BASE_URL": env_text("NINEPSB_BASE_URL"),
     # Explicit VAS URLs, independent of WaaS. The environment example contains
     # the supplied sandbox collection URLs; production requires its own URLs.
-    "VAS_BASE_URL": os.environ.get("NINEPSB_VAS_BASE_URL", ""),
-    "VAS_AUTH_URL": os.environ.get("NINEPSB_VAS_AUTH_URL", ""),
-    "ENVIRONMENT": os.environ.get("NINEPSB_ENVIRONMENT", "sandbox"),
+    "VAS_BASE_URL": env_text("NINEPSB_VAS_BASE_URL"),
+    "VAS_AUTH_URL": env_text("NINEPSB_VAS_AUTH_URL"),
+    "ENVIRONMENT": env_text("NINEPSB_ENVIRONMENT", "sandbox"),
     "ENABLED": env_bool("NINEPSB_ENABLED", False),
     "UAT_APPROVED": env_bool("NINEPSB_UAT_APPROVED", False),
     "TRANSFER_FEE_TOTAL": os.environ.get("NINEPSB_TRANSFER_FEE_TOTAL", ""),
@@ -952,7 +962,7 @@ NINEPSB = {
     "SANDBOX_CUSTOMERS_ENABLED": env_bool("NINEPSB_SANDBOX_CUSTOMERS_ENABLED", False),
     "SANDBOX_PHONES": [x.strip() for x in os.environ.get("NINEPSB_SANDBOX_PHONES", "").split(",") if x.strip()],
     "SANDBOX_USER_IDS": [x.strip() for x in os.environ.get("NINEPSB_SANDBOX_USER_IDS", "").split(",") if x.strip()],
-    **{key: os.environ.get("NINEPSB_" + key, "") for key in (
+    **{key: env_text("NINEPSB_" + key) for key in (
         "WAAS_USERNAME", "WAAS_PASSWORD", "WAAS_CLIENT_ID", "WAAS_CLIENT_SECRET",
         "VAS_USERNAME", "VAS_PASSWORD", "WEBHOOK_USERNAME", "WEBHOOK_PASSWORD")},
     "SINGLE_OUTBOUND_LIMITS": os.environ.get("NINEPSB_SINGLE_OUTBOUND_LIMITS", "{}"),
