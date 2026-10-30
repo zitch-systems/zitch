@@ -71,21 +71,19 @@ class FinancialControlsReadinessTests(TestCase):
         self.assertEqual(financial_controls_report()["checks"]["integrity"], "inventory_changed")
 
     def test_unverified_opening_blocks_even_when_latest_controls_pass(self):
+        from banking.models import BankAccount
+        from banking.client import config
         self.passing()
-        self.wallet.account_number = "0123456789"
-        self.wallet.account_reference = wema_account_reference(self.user)
-        self.wallet.save()
+        bank = BankAccount.objects.create(wallet=self.wallet, number="1234567890", name="Test Customer",
+            environment=config().get("ENVIRONMENT", "sandbox"), opening_review_required=True)
         report = financial_controls_report()
         self.assertEqual(report["opening_reviews"], 1)
         self.assertFalse(report["financial_controls_ready"])
-        BankHistoryCheckpoint.objects.create(wallet=self.wallet, account_number="0000000000",
-                                             opening_review_required=False)
-        self.assertEqual(financial_controls_report()["opening_reviews"], 1)
-        BankHistoryCheckpoint.objects.create(wallet=self.wallet, account_number=self.wallet.account_number,
-                                             opening_review_required=False)
-        self.assertEqual(financial_controls_report()["opening_reviews"], 0)
-        self.assertEqual(financial_controls_report()["checks"]["bank_balances"], "inventory_changed")
-        self.assertEqual(financial_controls_report()["checks"]["settlement"], "inventory_changed")
+        BankAccount.objects.filter(pk=bank.pk).update(opening_review_required=False)
+        report = financial_controls_report()
+        self.assertEqual(report["opening_reviews"], 0)
+        self.assertEqual(report["checks"]["bank_balances"], "inventory_changed")
+        self.assertEqual(report["checks"]["settlement"], "inventory_changed")
 
     def test_nonzero_or_missing_tolerance_cannot_certify_reconciliation(self):
         self.passing()

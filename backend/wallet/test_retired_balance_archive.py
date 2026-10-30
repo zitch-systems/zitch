@@ -8,13 +8,12 @@ from django.db import connection, IntegrityError, transaction
 from django.test import TestCase, override_settings
 
 from wallet.models import RetiredFundingArchive, UnsettledFunding, Transaction, Wallet
-from wallet.management.commands.settlement_report import Command as Settlement
+from banking.audit import snapshot
 from wallet.partnership import partnership_allowed, retired_funding_destination
 from wallet.services import wallet_balance_payload, wallet_expected_balance
 from wallet.tests import make_user
 
 
-@override_settings(WEMA_PARTNERSHIP_MODE="active")
 class RetiredBalanceArchiveTests(TestCase):
     def setUp(self):
         import hashlib
@@ -36,7 +35,7 @@ class RetiredBalanceArchiveTests(TestCase):
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("100"))
 
     def test_archive_zeroes_active_wallet_without_forgiving_liability(self):
-        before = Settlement()._owed()
+        before = snapshot()
         with patch("utility.wema.transfer") as bank:
             self.run_archive(apply=True)
             self.run_archive(apply=True)
@@ -44,19 +43,21 @@ class RetiredBalanceArchiveTests(TestCase):
         self.assertEqual(RetiredFundingArchive.objects.count(), 1)
         self.assertEqual(wallet_expected_balance(self.user.pk), Decimal("0"))
         payload = wallet_balance_payload(self.user)
-        self.assertEqual(payload["balance"], Decimal("0"))
-        self.assertEqual(payload["legacy_funding_balance"], Decimal("0"))
-        after = Settlement()._owed()
+        self.assertEqual(payload["balance"], Decimal("100"))
+        self.assertEqual(payload["legacy_funding_balance"], Decimal("100"))
+        after = snapshot()
         self.assertEqual(after["ledger_liability"], before["ledger_liability"])
         self.assertEqual(after["stored_liability"], before["stored_liability"])
-        self.assertEqual(after["archived_liability"], Decimal("100"))
+        self.assertEqual(Decimal(after["archived_liability"]), Decimal("100"))
+        # Archiving the liability permits new account setup; it does not make
+        # the retained money spendable or enable a provider connection.
         self.assertTrue(partnership_allowed(self.user))
         self.assertTrue(retired_funding_destination("9081234567"))
         self.credit.refresh_from_db()
         self.assertEqual(self.credit.amount, Decimal("100"))
         self.assertEqual(UnsettledFunding.objects.get(pk=self.hold.pk).amount, Decimal("100"))
         with patch("utility.wema.wema_live", return_value=True), \
-             patch("utility.alerts.alert"), self.assertRaises(SystemExit):
+             patch("utility.alerts.alert"), self.assertRaises(CommandError):
             call_command("settlement_report", fail_on_breach=True, stdout=StringIO())
 
     def test_partnership_balance_cannot_be_archived(self):

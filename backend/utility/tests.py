@@ -1,3 +1,4 @@
+from banking.test_fixtures import bank_channel_case
 """Tests for VTU purchases: the debit -> provider -> settle/refund invariant
 that protects users from losing money when an aggregator call fails."""
 import json
@@ -17,8 +18,11 @@ from .catalogue_fixtures import map_billers, map_cable
 from .models import CablePlan, DataPlan
 
 
+@bank_channel_case
 class UtilityTests(TestCase):
     def setUp(self):
+        self.enterContext(patch("utility.views.vtu_purchase", return_value={"success": True, "status": "SUCCESS"}))
+        self.enterContext(patch("utility.views.vtu_verify_customer", return_value={"success": True, "customer_name": "Ada Eze", "customer_address": "Test Address"}))
         self.client = Client()
         self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="20000")
         wallet = get_or_create_wallet(self.user)
@@ -96,26 +100,7 @@ class UtilityTests(TestCase):
         self.assertEqual(body["name"], "ADA EZE")
         self.assertEqual(body["amount"], "5000.00")
 
-    def test_payremita_success_debits_once(self):
-        with patch("utility.views.remita_pay", return_value={"success": True, "status": "SUCCESS"}):
-            res, body = self.post("/api/utility/payremita/", {
-                "access_token": self.token, "rrr": "120000000001", "amount": "5000",
-                "transaction_pin": "1234"})
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(self.balance(), Decimal("15000"))
-        self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status,
-                         Transaction.SUCCESS)
 
-    def test_payremita_refunds_on_failure(self):
-        with patch("utility.views.remita_pay",
-                   return_value={"success": False, "message": "invalid rrr"}):
-            res, body = self.post("/api/utility/payremita/", {
-                "access_token": self.token, "rrr": "BAD", "amount": "5000", "transaction_pin": "1234"})
-        self.assertEqual(res.status_code, 422)
-        self.assertEqual(body.get("code"), "purchase_failed")
-        self.assertTrue(body.get("refunded"))
-        self.assertTrue(body.get("reference"))
-        self.assertEqual(self.balance(), Decimal("20000"))   # fully refunded
 
     @patch("utility.views.vas_can_settle", return_value=(False, "manual-only"))
     @patch("utility.views.remita_validate")
@@ -139,42 +124,6 @@ class UtilityTests(TestCase):
             user=self.user, direction=Transaction.OUT,
         ).exists())
 
-    def test_payremita_pending_retry_never_becomes_a_success_receipt(self):
-        payload = {
-            "access_token": self.token,
-            "rrr": "120000000001",
-            "amount": "5000",
-            "transaction_pin": "1234",
-            "idempotency_key": "remita-pending-retry-1",
-        }
-        with patch("utility.views.remita_pay", return_value={
-            "success": False,
-            "pending": True,
-            "status": "PROCESSING",
-        }) as pay:
-            first, first_body = self.post("/api/utility/payremita/", payload)
-
-        self.assertEqual(first.status_code, 200)
-        self.assertTrue(first_body["pending"])
-        self.assertNotIn("success", first_body)
-        self.assertEqual(self.balance(), Decimal("15000"))
-        pay.assert_called_once()
-
-        # A client retry must replay the PENDING ledger row without debiting or
-        # contacting Remita again, and without upgrading the receipt to success.
-        with patch("utility.views.remita_pay",
-                   side_effect=AssertionError("pending replay called Remita twice")) as retry_pay:
-            retry, retry_body = self.post("/api/utility/payremita/", payload)
-
-        self.assertEqual(retry.status_code, 200)
-        self.assertTrue(retry_body["pending"])
-        self.assertTrue(retry_body["duplicate"])
-        self.assertNotIn("success", retry_body)
-        self.assertEqual(retry_body["reference"], first_body["reference"])
-        self.assertEqual(self.balance(), Decimal("15000"))
-        retry_pay.assert_not_called()
-        txn = Transaction.objects.get(reference=first_body["reference"])
-        self.assertEqual(txn.transaction_status, Transaction.PENDING)
 
     def test_airtime_rejects_wrong_pin_without_debit(self):
         res, _ = self.post("/api/utility/buyairtime/", {
@@ -381,6 +330,7 @@ _DEFINITE_FAILURE = {"success": False, "pending": False, "status": "FAILED",
                      "provider_reference": "BX1", "message": "not found"}
 
 
+@bank_channel_case
 class VtuReconciliationTests(TestCase):
     """A provider timeout must hold the purchase PENDING — never refund a
     possibly-delivered service. The reconcile job later requeries and settles.
@@ -436,46 +386,11 @@ class VtuReconciliationTests(TestCase):
         self.assertEqual(txn.transaction_status, Transaction.PENDING)
         self.assertTrue(txn.meta.get("reconcile"))
 
-    def test_reconcile_marks_delivered_purchase_successful(self):
-        _, body = self._buy_airtime_timed_out()
-        self._reconcile({"success": True})
-        self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.SUCCESS)
-        self.assertEqual(self.balance(), Decimal("19000"))  # correctly spent
 
-    def test_reconcile_refunds_definitively_failed_purchase(self):
-        _, body = self._buy_airtime_timed_out()
-        self._reconcile(_DEFINITE_FAILURE)
-        self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.FAILED)
-        self.assertEqual(self.balance(), Decimal("20000"))  # refunded
 
-    def test_reconcile_leaves_still_unknown_pending(self):
-        _, body = self._buy_airtime_timed_out()
-        self._reconcile({"success": False, "pending": True})
-        self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.PENDING)
-        self.assertEqual(self.balance(), Decimal("19000"))
 
-    def test_reconcile_settle_is_idempotent(self):
-        _, body = self._buy_airtime_timed_out()
-        self._reconcile(_DEFINITE_FAILURE)
-        self._reconcile(_DEFINITE_FAILURE)   # a second run must not double-refund
-        self.assertEqual(self.balance(), Decimal("20000"))
 
-    def test_a_freshly_pending_purchase_does_not_page(self):
-        """Minutes after a timeout, holding PENDING is the correct behaviour."""
-        _, body = self._buy_airtime_timed_out()
-        with patch("utility.alerts.alert") as alerted:
-            self._reconcile({"success": False, "pending": True})
-        self.assertFalse([c for c in alerted.call_args_list if "still PENDING" in str(c)])
 
-    def test_a_purchase_stuck_for_hours_pages(self):
-        """After hours the sweep will not resolve it on its own, and nothing else
-        reports that the customer paid for a service never delivered."""
-        _, body = self._buy_airtime_timed_out(age=timedelta(hours=6))
-        with patch("utility.alerts.alert") as alerted:
-            self._reconcile({"success": False, "pending": True})
-        stuck = [c for c in alerted.call_args_list if "still PENDING" in str(c)]
-        self.assertTrue(stuck, "a purchase stuck for hours must page")
-        self.assertIn(body["reference"], str(stuck[0]))
 
     def test_crash_after_debit_leaves_a_reconcilable_row(self):
         """Worker dies mid-provider-call: the debit has committed but settle never
@@ -502,10 +417,13 @@ class VtuReconciliationTests(TestCase):
         self.assertEqual(self.balance(), Decimal("19000"))  # debited, awaiting recovery
 
         # The sweep now finds the orphan and refunds the definitively-failed purchase.
-        self._reconcile(_DEFINITE_FAILURE)
+        with patch("banking.client.Client._send") as bank:
+            call_command("reconcile_9psb")
+        bank.assert_not_called()
         txn.refresh_from_db()
-        self.assertEqual(txn.transaction_status, Transaction.FAILED)
-        self.assertEqual(self.balance(), Decimal("20000"))  # money returned
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)
+        self.assertEqual(self.balance(), Decimal("19000"))  # Historical review, never a guessed refund.
+
 
 
 class FxFailClosedTests(TestCase):

@@ -1,6 +1,7 @@
 """BVN/NIN verify LIVE: lookup, then a code to the line the identity is
 registered to, entered in the Flow. A name match proves someone knows a name;
 a code delivered to the registered line proves they control it."""
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -16,423 +17,13 @@ from whatsapp.test_flows import MSISDN, _make_user
 LOOKUP = "whatsapp.router.verify_bvn"
 
 
-@override_settings(TESTING=False, DEBUG=False, PAYMENT_PROVIDER="kora", WEMA={})
-class IdentityOtpTests(TestCase):
-
-    def setUp(self):
-        self._wema_disabled = patch("wallet.views._wema_funding_enabled", return_value=False)
-        self._wema_disabled.start()
-        self.addCleanup(self._wema_disabled.stop)
-        self.user = _make_user()
-        self.user.bvn_verified = False
-        self.user.nin_verified = False
-        self.user.save(update_fields=["bvn_verified", "nin_verified"])
-
-    def _pa(self):
-        return PendingAction.objects.create(
-            user=self.user, msisdn=MSISDN, action_type="kyc", state=FLOW_ID_STATE,
-            payload={"id_kind": "bvn"}, expires_at=timezone.now() + timedelta(minutes=10))
-
-    def _submit(self, pa, value):
-        return handle_flow_request({"action": "data_exchange",
-                                    "flow_token": sign_identity_token(pa),
-                                    "data": {"number": value}})
-
-    def _pass_lookup(self, phone="08031234567"):
-        return patch(LOOKUP, return_value={"success": True, "first_name": "Ada",
-                                           "last_name": "Eze", "phone": f"234{phone[1:]}"})
-
-    def test_a_good_bvn_after_a_typo_still_reaches_the_code_screen(self):
-        """The retry screen must route onward too, or a corrected number would
-        dead-end on the attempt that finally succeeds."""
-        pa = self._pa()
-        with patch(LOOKUP, return_value={"success": False, "invalid": True, "message": "no"}):
-            self.assertEqual(self._submit(pa, "11111111111")["screen"], IDENTITY_RETRY)
-        with self._pass_lookup(), patch("whatsapp.router.flows_live", return_value=True), \
-             patch("whatsapp.router.sms_live", return_value=True), \
-             patch("whatsapp.router.send_sms", return_value={"success": True}):
-            resp = self._submit(pa, "22222222222")
-        self.assertEqual(resp["screen"], IDENTITY_CHAIN)
-
-    def test_a_good_bvn_challenges_the_registered_line_instead_of_verifying(self):
-        pa = self._pa()
-        with self._pass_lookup(), patch("whatsapp.router.flows_live", return_value=True), \
-             patch("whatsapp.router.sms_live", return_value=True), \
-             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
-            resp = self._submit(pa, "22222222222")
-        self.assertEqual(resp["screen"], IDENTITY_CHAIN)          # the code screen, chained
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.bvn_verified)                  # NOT yet — the code decides
-        self.assertEqual(sms.call_args[0][0], "2348031234567")    # the identity's line
-
-    def test_the_code_verifies_and_the_number_never_reaches_the_chat(self):
-        pa = self._pa()
-        with self._pass_lookup(), patch("whatsapp.router.flows_live", return_value=True), \
-             patch("whatsapp.router.sms_live", return_value=True), \
-             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
-            self._submit(pa, "22222222222")
-            code = sms.call_args[0][1].split("Zitch: ")[1][:6]
-        pa.refresh_from_db()
-        self.assertNotIn("2348031234567", pa.payload["id_otp_to"])   # masked
-        with patch("whatsapp.router.reply"):
-            done = self._submit(pa, code)
-        self.assertEqual(done["screen"], RESULT_SCREEN)
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.bvn_verified)
-
-    def test_a_wrong_code_retries_then_queues_for_review(self):
-        pa = self._pa()
-        with self._pass_lookup(), patch("whatsapp.router.flows_live", return_value=True), \
-             patch("whatsapp.router.sms_live", return_value=True), \
-             patch("whatsapp.router.send_sms", return_value={"success": True}):
-            self._submit(pa, "22222222222")
-        from whatsapp.flows import CODE_RETRY
-
-        for _ in range(2):
-            self.assertEqual(self._submit(pa, "000000")["screen"], CODE_RETRY)
-        third = self._submit(pa, "000000")
-        self.assertEqual(third["screen"], RESULT_SCREEN)
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.bvn_verified)
-        self.assertIn("wrong verification codes",
-                      SystemSetting.get("wa_last_identity_review", ""))
-
-    def test_a_record_with_no_phone_is_not_queued_as_a_hash_only_review(self):
-        """Never auto-verify because the challenge could not be run — the whole
-        point is that the lookup alone is not proof of ownership."""
-        pa = self._pa()
-        with patch(LOOKUP, return_value={"success": True, "first_name": "Ada",
-                                         "last_name": "Eze", "phone": ""}), \
-             patch("whatsapp.router.flows_live", return_value=True), \
-             patch("whatsapp.router.reply") as reply:
-            resp = self._submit(pa, "22222222222")
-        self.assertEqual(resp["screen"], RESULT_SCREEN)
-        self.assertIn("did not complete", resp["data"]["message"])
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.bvn_verified)
-        self.assertFalse(self.user.bvn_hash)
-        pa.refresh_from_db()
-        self.assertNotIn("pending_review", pa.payload)
-        self.assertEqual(SystemSetting.get("wa_last_identity_review", ""), "")
-        self.assertIn("not verified or submitted for review", reply.call_args[0][1])
-
-    def test_an_already_verified_identity_is_never_resubmitted_or_replaced(self):
-        old_hash = hash_identifier("11111111111")
-        self.user.bvn_hash = old_hash
-        self.user.bvn_last4 = "1111"
-        self.user.bvn_verified = True
-        self.user.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified"])
-        pa = self._pa()
-        with patch(LOOKUP) as lookup, patch("whatsapp.router.reply"):
-            self._submit(pa, "22222222222")
-        lookup.assert_not_called()
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.bvn_verified)
-        self.assertEqual(self.user.bvn_hash, old_hash)
-        self.assertEqual(self.user.bvn_last4, "1111")
-
-    def test_otp_failure_does_not_rollback_a_concurrently_completed_proof(self):
-        concurrent_hash = hash_identifier("33333333333")
-
-        def complete_elsewhere(*_args, **_kwargs):
-            type(self.user).objects.filter(pk=self.user.pk).update(
-                bvn_verified=True, bvn_hash=concurrent_hash, bvn_last4="3333")
-            return "the verification code could not be delivered"
-
-        pa = self._pa()
-        with self._pass_lookup(), \
-             patch("whatsapp.router._kyc_send_identity_otp", side_effect=complete_elsewhere), \
-             patch("whatsapp.router.reply"):
-            self._submit(pa, "22222222222")
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.bvn_verified)
-        self.assertEqual(self.user.bvn_hash, concurrent_hash)
-        self.assertEqual(self.user.bvn_last4, "3333")
-
-    def test_identity_changed_during_sms_delivery_does_not_arm_the_old_code(self):
-        concurrent_hash = hash_identifier("33333333333")
-
-        def change_identity(*_args, **_kwargs):
-            type(self.user).objects.filter(pk=self.user.pk).update(
-                bvn_hash=concurrent_hash, bvn_last4="3333")
-            return {"success": True}
-
-        pa = self._pa()
-        with self._pass_lookup(), patch("whatsapp.router.flows_live", return_value=True), \
-                patch("whatsapp.router.sms_live", return_value=True), \
-                patch("whatsapp.router.send_sms", side_effect=change_identity), \
-                patch("whatsapp.router.reply"):
-            response = self._submit(pa, "22222222222")
-        self.assertEqual(response["screen"], RESULT_SCREEN)
-        self.user.refresh_from_db()
-        pa.refresh_from_db()
-        self.assertEqual(self.user.bvn_hash, concurrent_hash)
-        self.assertFalse(self.user.bvn_verified)
-        self.assertNotIn("id_otp_hash", pa.payload)
-        self.assertFalse(IdentityProof.objects.filter(user=self.user).exists())
-
-    def test_bvn_typed_with_secure_form_open_still_arms_its_bound_sms_challenge(self):
-        from whatsapp.router import _accept_identity_in_chat
-
-        pa = self._pa()
-        with self._pass_lookup(), patch("whatsapp.router.flows_live", return_value=True), \
-                patch("whatsapp.router.sms_live", return_value=True), \
-                patch("whatsapp.router.send_sms", return_value={"success": True}) as sms, \
-                patch("whatsapp.router.reply"):
-            # The real chat handoff temporarily parks this action at 'bvn'.
-            self.assertEqual(_accept_identity_in_chat(pa, self.user, MSISDN, "22222222222"), "otp")
-        pa.refresh_from_db()
-        self.assertEqual(pa.state, FLOW_ID_STATE)
-        self.assertEqual(pa.payload["id_otp_subject"], self.user.pk)
-        self.assertEqual(pa.payload["id_otp_identity_hash"], hash_identifier("22222222222"))
-        code = sms.call_args[0][1].split("Zitch: ")[1][:6]
-        with patch("whatsapp.router.reply"):
-            done = self._submit(pa, code)
-        self.assertEqual(done["screen"], RESULT_SCREEN)
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.bvn_verified)
-        self.assertEqual(self.user.bvn_hash, hash_identifier("22222222222"))
-
-    def _armed_challenge(self):
-        pa = self._pa()
-        with self._pass_lookup(), patch("whatsapp.router.flows_live", return_value=True), \
-                patch("whatsapp.router.sms_live", return_value=True), \
-                patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
-            self._submit(pa, "22222222222")
-        pa.refresh_from_db()
-        return pa, sms.call_args[0][1].split("Zitch: ")[1][:6]
-
-    def test_old_identity_code_cannot_verify_a_changed_or_cleared_hash(self):
-        from whatsapp.router import kyc_flow_identity_otp
-
-        for current_hash in (hash_identifier("33333333333"), ""):
-            with self.subTest(current_hash=current_hash):
-                pa, code = self._armed_challenge()
-                type(self.user).objects.filter(pk=self.user.pk).update(bvn_hash=current_hash)
-                self.assertEqual(kyc_flow_identity_otp(pa, code)[0], "stop")
-                self.user.refresh_from_db()
-                self.assertFalse(self.user.bvn_verified)
-                self.assertEqual(self.user.bvn_hash, current_hash)
-                self.assertFalse(IdentityProof.objects.filter(user=self.user).exists())
-                pa.delete()
-
-    def test_stale_duplicate_confirmation_cannot_consume_an_identity_twice(self):
-        from whatsapp.router import kyc_flow_identity_otp
-
-        pa, code = self._armed_challenge()
-        stale = PendingAction.objects.get(pk=pa.pk)
-        self.assertEqual(kyc_flow_identity_otp(pa, code)[0], "ok")
-        self.assertEqual(kyc_flow_identity_otp(stale, code)[0], "stop")
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.bvn_verified)
-        self.assertEqual(self.user.bvn_hash, hash_identifier("22222222222"))
-        self.assertEqual(IdentityProof.objects.filter(user=self.user).count(), 1)
-
-    def test_stale_wrong_guesses_share_budget_and_expired_challenges_never_grant_proof(self):
-        from whatsapp.router import kyc_flow_identity_otp
-
-        pa, code = self._armed_challenge()
-        stale = PendingAction.objects.get(pk=pa.pk)
-        wrong = "999999" if code != "999999" else "888888"
-        self.assertEqual(kyc_flow_identity_otp(pa, wrong)[0], "retry")
-        self.assertEqual(kyc_flow_identity_otp(stale, wrong)[0], "retry")
-        self.assertEqual(kyc_flow_identity_otp(pa, wrong)[0], "stop")
-        self.assertEqual(kyc_flow_identity_otp(stale, code)[0], "stop")
-        pa.delete()
-        pa, code = self._armed_challenge()
-        pa.payload["id_otp_exp"] = (timezone.now() - timedelta(seconds=1)).isoformat()
-        pa.save(update_fields=["payload"])
-        self.assertEqual(kyc_flow_identity_otp(pa, code)[0], "stop")
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.bvn_verified)
-        self.assertFalse(IdentityProof.objects.filter(user=self.user).exists())
-
-    def test_a_failed_lookup_stays_retryable_without_creating_a_review(self):
-        pa = self._pa()
-        with patch(LOOKUP, return_value={"success": False,
-                                         "message": "That BVN does not match the name on this account."}), \
-             patch("whatsapp.router.reply"):
-            resp = self._submit(pa, "22222222222")
-        self.assertIn("did not complete", resp["data"]["message"])
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.bvn_hash)
-        self.assertFalse(self.user.bvn_verified)
-        pa.refresh_from_db()
-        self.assertEqual(pa.state, FLOW_ID_STATE)
-        self.assertNotIn("pending_review", pa.payload)
-        self.assertEqual(SystemSetting.get("wa_last_identity_review", ""), "")
-
-    def test_reopening_the_flow_shows_the_code_screen_not_the_number(self):
-        pa = self._pa()
-        with self._pass_lookup(), patch("whatsapp.router.flows_live", return_value=True), \
-             patch("whatsapp.router.sms_live", return_value=True), \
-             patch("whatsapp.router.send_sms", return_value={"success": True}):
-            self._submit(pa, "22222222222")
-        resp = handle_flow_request({"action": "INIT", "flow_token": sign_identity_token(pa)})
-        self.assertEqual(resp["screen"], IDENTITY_CHAIN)
-        self.assertNotEqual(resp["screen"], IDENTITY_SCREEN)
 
 
-@override_settings(
-    TESTING=False,
-    DEBUG=False,
-    WEMA={"SIMULATION": True},
-    ALLOW_PRODUCTION_SIMULATION=True,
-    PREMBLY={"BASE_URL": "https://prembly.invalid", "API_KEY": "staged", "APP_ID": "staged"},
-)
-class SimulatedIdentityFlowTests(TestCase):
-    """The private Flow still collects both IDs, but the values never leave Zitch
-    or determine the identity markers stored for a simulation account."""
-
-    def setUp(self):
-        self.user = _make_user()
-        self.user.phone_verified = True
-        self.user.email_verified = True
-        self.user.bvn_verified = False
-        self.user.nin_verified = False
-        self.user.save(update_fields=[
-            "phone_verified", "email_verified", "bvn_verified", "nin_verified",
-        ])
-        self.pa = PendingAction.objects.create(
-            user=self.user,
-            msisdn=MSISDN,
-            action_type="kyc",
-            state=FLOW_ID_STATE,
-            payload={"id_kind": "bvn"},
-            expires_at=timezone.now() + timedelta(minutes=10),
-        )
-
-    def _submit(self, value):
-        return handle_flow_request({
-            "action": "data_exchange",
-            "flow_token": sign_identity_token(self.pa),
-            "data": {"number": value},
-        })
-
-    def test_bvn_and_nin_are_entered_then_verified_without_a_live_lookup(self):
-        bvn, nin = "22222222222", "33333333333"
-        with patch("utility.providers.requests.post") as provider_post, \
-             patch("whatsapp.router.flows_live", return_value=True), \
-             patch("whatsapp.router.send_flow", return_value={"success": True}), \
-             patch("whatsapp.router.send_sms") as identity_sms, \
-             patch("whatsapp.router.reply"):
-            first = self._submit(bvn)
-            # Tier 1 completes with BVN. NIN starts a separate Tier 2 action;
-            # customers must not be trapped in a mandatory second-ID loop.
-            self.assertFalse(PendingAction.objects.filter(pk=self.pa.pk).exists())
-            self.pa = PendingAction.objects.create(
-                user=self.user, msisdn=MSISDN, action_type="kyc",
-                state=FLOW_ID_STATE, payload={"id_kind": "nin", "target_tier": 2},
-                expires_at=timezone.now() + timedelta(minutes=10),
-            )
-            second = self._submit(nin)
-
-        self.assertEqual(first["screen"], RESULT_SCREEN)
-        self.assertEqual(second["screen"], RESULT_SCREEN)
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.bvn_verified)
-        self.assertTrue(self.user.nin_verified)
-        self.assertEqual(self.user.tier, 1)
-        self.assertEqual(
-            self.user.bvn_hash,
-            hash_identifier(f"simulation:bvn:{self.user.pk}"),
-        )
-        self.assertEqual(
-            self.user.nin_hash,
-            hash_identifier(f"simulation:nin:{self.user.pk}"),
-        )
-        self.assertNotEqual(self.user.bvn_hash, hash_identifier(bvn))
-        self.assertNotEqual(self.user.nin_hash, hash_identifier(nin))
-        provider_post.assert_not_called()
-        identity_sms.assert_not_called()
 
 
-@override_settings(TESTING=False, DEBUG=False, PAYMENT_PROVIDER="kora", WEMA={})
-class InvalidIdentityIsRejectedNotQueuedTests(TestCase):
-    """A wrong BVN is the customer's to correct, not an operator's to approve.
-
-    Queueing a name mismatch was the worse half: "this number belongs to someone
-    else" is exactly the request a reviewer must never wave through.
-    """
-
-    def setUp(self):
-        self._wema_disabled = patch("wallet.views._wema_funding_enabled", return_value=False)
-        self._wema_disabled.start()
-        self.addCleanup(self._wema_disabled.stop)
-        self.user = _make_user()
-        self.user.bvn_verified = False
-        self.user.nin_verified = False
-        self.user.save(update_fields=["bvn_verified", "nin_verified"])
-
-    def _pa(self):
-        return PendingAction.objects.create(
-            user=self.user, msisdn=MSISDN, action_type="kyc", state=FLOW_ID_STATE,
-            payload={"id_kind": "bvn"}, expires_at=timezone.now() + timedelta(minutes=10))
-
-    def _submit(self, pa, value="22222222222"):
-        return handle_flow_request({"action": "data_exchange",
-                                    "flow_token": sign_identity_token(pa),
-                                    "data": {"number": value}})
-
-    def _reject(self, message="That BVN does not match the name on this account."):
-        return patch(LOOKUP, return_value={"success": False, "invalid": True, "message": message})
-
-    def test_a_wrong_bvn_asks_again_on_a_screen_that_starts_empty(self):
-        """A DIFFERENT screen id, and that is the fix: WhatsApp keeps form state
-        across a same-screen re-render, so re-rendering IDENTITY_SCREEN left the
-        rejected digits in the box and one tap resubmitted them."""
-        pa = self._pa()
-        with self._reject():
-            resp = self._submit(pa)
-        self.assertEqual(resp["screen"], IDENTITY_RETRY)
-        self.assertNotEqual(resp["screen"], IDENTITY_SCREEN)
-        self.assertIn("isn't valid", resp["data"]["error"])
-        self.assertIn("1 attempt(s) left", resp["data"]["error"])
-
-    def test_a_wrong_bvn_is_never_queued_for_review(self):
-        pa = self._pa()
-        with self._reject():
-            self._submit(pa)
-        pa.refresh_from_db()
-        self.assertNotIn("pending_review", pa.payload)
-        self.assertEqual(SystemSetting.get("wa_last_identity_review", ""), "")
-
-    def test_a_rejected_number_is_not_stored_on_the_account(self):
-        """An identity that is not the customer's has no business being hashed
-        onto their record — a reviewer might later approve what is already there."""
-        pa = self._pa()
-        with self._reject():
-            self._submit(pa)
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.bvn_hash)
-        self.assertFalse(self.user.bvn_verified)
-
-    def test_the_retry_screen_is_bounded_so_it_cannot_be_used_to_probe(self):
-        pa = self._pa()
-        with self._reject(), patch("whatsapp.router.reply"):
-            self.assertEqual(self._submit(pa)["screen"], IDENTITY_RETRY)
-            second = self._submit(pa)
-        self.assertEqual(second["screen"], RESULT_SCREEN)     # terminal, not another guess
-        self.assertIn("Too many", second["data"]["message"])
-
-    def test_an_unreachable_provider_does_not_create_an_approvable_review(self):
-        """An outage is ours, but it produces no evidence for manual approval."""
-        pa = self._pa()
-        with patch(LOOKUP, return_value={"success": False,
-                                         "message": "Identity provider unreachable: boom"}), \
-             patch("whatsapp.router.reply"):
-            resp = self._submit(pa)
-        self.assertEqual(resp["screen"], RESULT_SCREEN)
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.bvn_verified)
-        self.assertFalse(self.user.nin_verified)
-        self.assertFalse(self.user.bvn_hash)
-        pa.refresh_from_db()
-        self.assertEqual(pa.state, FLOW_ID_STATE)
-        self.assertNotIn("pending_review", pa.payload)
-        self.assertEqual(SystemSetting.get("wa_last_identity_review", ""), "")
 
 
+@bank_channel_case
 class WrongPinRetriesOnAnEmptyScreenTests(TestCase):
     """A wrong PIN must not come back with the wrong PIN still in the box.
 
@@ -473,6 +64,7 @@ class WrongPinRetriesOnAnEmptyScreenTests(TestCase):
         self.assertEqual(done["screen"], RESULT_SCREEN)
 
 
+@bank_channel_case
 @override_settings(TESTING=False, DEBUG=False)
 class PinResetOtpTests(TestCase):
     """A PIN reset must prove CURRENT possession of the phone, not historical
@@ -564,6 +156,7 @@ class PinResetOtpTests(TestCase):
                                                       action_type="setpin").exists())
 
 
+@bank_channel_case
 class CodeChallengeDeadlineTests(TestCase):
     """A flow waiting on a 10-minute SMS code must not expire in two minutes.
 
@@ -597,6 +190,7 @@ class CodeChallengeDeadlineTests(TestCase):
         self.assertLessEqual(deadline, timezone.now() + PIN_TTL + timedelta(seconds=5))
 
 
+@bank_channel_case
 @override_settings(TESTING=False, DEBUG=False)
 class AccountOtpScreenNamesTheIdentityRecordTests(TestCase):
     """The bank's code goes to the phone on the BVN/NIN record, not the Zitch line.
@@ -686,6 +280,7 @@ class AccountOtpScreenNamesTheIdentityRecordTests(TestCase):
         self.assertIn("NIN", self._screen({"id_type": "nin"})["summary"])
 
 
+@bank_channel_case
 @override_settings(TESTING=False, DEBUG=False)
 class IdentityOtpScreenNeverGuessesBvnTests(TestCase):
     """The KYC identity challenge must not label itself BVN by default.

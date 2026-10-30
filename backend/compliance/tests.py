@@ -4,6 +4,8 @@ Each test names the commitment it enforces, because that is the only thing that 
 these features falsifiable: "we monitor for structuring" is unreviewable, "a case exists
 with a 30-day deadline and it goes red when missed" is not.
 """
+from django.test import override_settings as _bank_test_settings
+from banking.test_client import CONFIG as _BANK_TEST_CONFIG
 import json
 from datetime import timedelta
 from decimal import Decimal
@@ -22,10 +24,11 @@ from compliance.services import (close_case, erase_user_data, export_user_data,
                                  scan_transactions)
 from wallet.models import Transaction, Wallet
 from wallet.services import credit, debit
-from wallet.tests import make_user
+from banking.test_fixtures import make_bank_user as make_user
 
 
 @override_settings(VELOCITY_MAX_OUT_10MIN=0, AML_THRESHOLD_NGN=Decimal("5000000"))
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class AmlMonitoringTests(TestCase):
     def setUp(self):
         self.user, self.token = make_user("08088880001", "aml@zitch.app",
@@ -138,6 +141,7 @@ class AmlMonitoringTests(TestCase):
         self.assertTrue(AmlCase.objects.exists())
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class AmlCaseClosureTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08088880002", "aml2@zitch.app")
@@ -184,6 +188,7 @@ class AmlCaseClosureTests(TestCase):
         self.assertTrue(any("filing deadline" in c[0][0] for c in alert_mock.call_args_list))
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class DataSubjectExportTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08088880003", "dsr@zitch.app", balance="5000")
@@ -233,6 +238,7 @@ class DataSubjectExportTests(TestCase):
         self.assertEqual((req.due - req.received).days, DataSubjectRequest.RESPONSE_DAYS)
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class DataSubjectErasureTests(TestCase):
     def setUp(self):
         self.user, self.token = make_user("08088880005", "erase@zitch.app", balance="7000")
@@ -298,6 +304,7 @@ class DataSubjectErasureTests(TestCase):
         self.assertEqual(req.subject_label, "erase@zitch.app")
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class DisputeTests(TestCase):
     def setUp(self):
         self.user, self.token = make_user("08088880007", "disp@zitch.app", balance="50000")
@@ -375,6 +382,7 @@ class DisputeTests(TestCase):
         self.assertTrue(row.after["on_time"])
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class DsrFromAdminTests(TestCase):
     """`manage.py data_subject_request` needs a production shell. A deploy without one
     (Render's free tier has none) could not service an NDPR request AT ALL — not an

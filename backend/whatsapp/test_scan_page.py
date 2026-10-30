@@ -5,6 +5,7 @@ can open a camera. These cover the seam that creates: a link that is single-use 
 short-lived, a decoder that stays on the SERVER so a page nobody can trust never
 gets to assert an account number, and a handoff that raises exactly one confirm card.
 """
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -38,6 +39,7 @@ def _frame_bytes(payload):
     return buf.getvalue()
 
 
+@bank_channel_case
 class ScannerLinkTests(TestCase):
     def setUp(self):
         self.user = _linked()
@@ -66,6 +68,7 @@ class ScannerLinkTests(TestCase):
         self.assertIn("/scan/", str(rep.call_args.args[1]))
 
 
+@bank_channel_case
 class ScannerPageTests(TestCase):
     def setUp(self):
         self.user = _linked()
@@ -97,6 +100,7 @@ class ScannerPageTests(TestCase):
         self.assertEqual(self.client.get("/scan/nope").status_code, 410)
 
 
+@bank_channel_case
 class FrameDecodingTests(TestCase):
     def setUp(self):
         self.user = _linked()

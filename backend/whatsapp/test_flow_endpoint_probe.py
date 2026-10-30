@@ -4,6 +4,7 @@
 endpoint 500s, fails to decrypt, or is never reached at all — three very
 different problems behind one blank panel, none of which left a trace.
 """
+from banking.test_fixtures import bank_channel_case
 import json
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from whatsapp.models import SystemSetting
 from whatsapp.views import FLOW_ENDPOINT_KEY
 
 
+@bank_channel_case
 @override_settings(WHATSAPP={"MODE": "sandbox", "TOKEN": "", "PHONE_NUMBER_ID": ""})
 class FlowEndpointRecordingTests(TestCase):
     URL = "/webhooks/whatsapp/flow"

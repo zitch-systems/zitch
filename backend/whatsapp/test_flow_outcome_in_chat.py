@@ -12,6 +12,7 @@ easily misread as "nothing happened": a wrong PIN that cancelled the payment, a
 lockout, a PIN that was never set. Those closed the panel and left the thread
 ending on the confirm card — still there, still looking live.
 """
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -31,6 +32,7 @@ def _armed(user, **payload):
         expires_at=timezone.now() + timedelta(minutes=5))
 
 
+@bank_channel_case
 @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
 class FlowOutcomeReachesTheChatTests(TestCase):
 
@@ -115,6 +117,7 @@ def flows_last_try() -> int:
     return PIN_FLOW_ATTEMPTS - 1
 
 
+@bank_channel_case
 class ARetappedCardDoesNotReopenThePinPadTests(TestCase):
     """A Flow card cannot be recalled, expired or disabled by the business that
     sent it, so the confirm card stays in the thread and stays tappable forever.

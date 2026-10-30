@@ -119,59 +119,14 @@ BANK_HISTORY_REVIEW_MESSAGE = (
 
 
 def bank_history_review_required(wallet) -> bool:
-    """Mirror the opening-balance spend hold without changing review evidence.
-
-    An absent checkpoint has the same unverified opening as the checkpoint the
-    authoritative spend guard would create. Reads must show that hold before a
-    customer enters a payment, while keeping the attached funding account usable.
-    """
-    from utility import wema
-    from .models import BankHistoryCheckpoint
-
-    if not wallet.account_number or not wema.wema_live():
-        return False
-    return not BankHistoryCheckpoint.objects.filter(
-        wallet_id=wallet.pk, account_number=wallet.account_number,
-        opening_review_required=False,
-    ).exists()
+    from banking.models import BankAccount
+    bank = BankAccount.objects.filter(wallet=wallet).first()
+    return bool(bank and bank.status == "review")
 
 
 def customer_funding_account(user) -> dict:
-    """Return only usable Partnership details; never relabel retired accounts."""
-    from utility.providers import partnership_new_business_allowed
-    from wallet.partnership import (REVIEW_MESSAGE, first_partnership_setup,
-                                    legacy_funding_blockers, partnership_account_number)
-
-    wallet = get_or_create_wallet(user)
-    review = bool(legacy_funding_blockers(user))
-    valid_account = partnership_account_number(wallet.account_number)
-    # A retained retired number in Wallet is evidence to review, not a new NUBAN.
-    invalid_account = bool(wallet.account_number) and not valid_account
-    review = review or invalid_account
-    allowed = user.is_active and not review and partnership_new_business_allowed(user)
-    has_account = allowed and valid_account
-    history_review = has_account and bank_history_review_required(wallet)
-    spending = allowed and not history_review
-    account_state = ("legacy_funding_review" if review else
-                     "bank_history_review" if history_review else
-                     "partnership_unavailable" if not allowed else "ready" if has_account else "")
-    return {"account_number": wallet.account_number if has_account else "",
-            "account_name": wallet.account_name if has_account else "",
-            "bank_name": wallet.bank_name if has_account else "",
-            # The singular bank-confirmed account is the only active funding source.
-            "bank_accounts": ([{"account_number": wallet.account_number,
-                               "account_name": wallet.account_name,
-                               "bank_name": wallet.bank_name}] if has_account else []),
-            "bank_tier": wallet.bank_tier if has_account else 0,
-            "has_account": has_account, "provider": "partnership",
-            "available": has_account, "can_fund": has_account,
-            "legacy_funding_review": review,
-            "bill_payments_available": spending and biller_spending_available(user),
-            "transfers_available": spending, "spending_available": spending,
-            "migration_message": (REVIEW_MESSAGE if review else
-                                  BANK_HISTORY_REVIEW_MESSAGE if history_review else ""),
-            **({"account_setup_state": account_state} if account_state else {}),
-            "partnership_setup_required": allowed and first_partnership_setup(user)}
+    from banking.accounts import account_payload
+    return account_payload(user)
 
 
 def wallet_expected_balance(user_id) -> Decimal:
@@ -204,21 +159,20 @@ def wallet_expected_balance(user_id) -> Decimal:
 
 
 def wallet_balance_payload(user, wallet=None) -> dict:
-    """Keep historical funds visible without making them Partnership money."""
-    from wallet.partnership import partnership_allowed, partnership_account_number
-
+    from banking.accounts import account_for, account_payload, spendable, historical_balance
+    from wallet.models import RetiredFundingArchive
     wallet = wallet or get_or_create_wallet(user)
-    total = wallet.balance
-    from wallet.models import UnsettledFunding
-    historical = UnsettledFunding.objects.filter(user_id=user.pk, archive__isnull=True).aggregate(
-        value=Sum("amount"))["value"] or Decimal("0.00")
-    invalid_account = bool(wallet.account_number) and not partnership_account_number(wallet.account_number)
-    held = (not user.is_active or not partnership_allowed(user) or invalid_account
-            or bank_history_review_required(wallet))
-    available = Decimal("0.00") if held else max(Decimal("0.00"), total)
-    return {"balance": total, "available_balance": available,
-            "historical_balance": max(Decimal("0.00"), total - available),
-            "legacy_funding_balance": historical}
+    bank = account_for(user)
+    book_available = spendable(wallet) if bank else Decimal("0.00")
+    available = Decimal("0.00")
+    if bank and account_payload(user)["spending_available"]:
+        available = max(Decimal("0.00"), min(book_available, bank.available_balance))
+    held_archive = RetiredFundingArchive.objects.filter(funding__user=user).aggregate(
+        total=Sum("funding__amount"))["total"] or Decimal("0.00")
+    historical = historical_balance(wallet) + held_archive
+    return {"balance": wallet.balance + held_archive, "available_balance": available,
+            "historical_balance": historical, "legacy_funding_balance": historical,
+            "restricted_balance": max(Decimal("0.00"), book_available - available)}
 
 
 def customer_spendable_balance(user, *, wallet=None) -> Decimal:
@@ -303,6 +257,9 @@ def debit(user, amount, service: str, meta: dict | None = None, reference: str |
     if wallet.balance < amount:
         raise InsufficientFunds("Insufficient wallet balance")
     if enforce_limits:
+        if customer_spendable_balance(user, wallet=wallet) < amount:
+            raise InsufficientFunds("Insufficient available balance")
+    if enforce_limits:
         from common.http import spend_limit_error   # local: common.http imports from here
         breach = spend_limit_error(user, amount, service)
         if breach:
@@ -318,7 +275,7 @@ def debit(user, amount, service: str, meta: dict | None = None, reference: str |
                 direction=Transaction.OUT,
                 transaction_status=Transaction.PENDING,
                 reference=reference or make_reference(),
-                meta=with_idempotency_fingerprint(meta, idempotency_key),
+                meta=with_idempotency_fingerprint({**(meta or {}), **({"provider": "9psb"} if enforce_limits else {})}, idempotency_key),
                 idempotency_key=idempotency_key,
             )
             if bill_source is not None:
@@ -348,7 +305,7 @@ def credit(user, amount, service: str, meta: dict | None = None, reference: str 
     wallet.save(update_fields=["balance", "updated"])
     try:
         with db_transaction.atomic():  # savepoint: contain the unique violation
-            return Transaction.objects.create(
+            txn = Transaction.objects.create(
                 user=user,
                 service=service,
                 amount=amount,
@@ -358,6 +315,9 @@ def credit(user, amount, service: str, meta: dict | None = None, reference: str 
                 meta=with_idempotency_fingerprint(meta, idempotency_key),
                 idempotency_key=idempotency_key,
             )
+            from banking.accounts import retain_historical_refund
+            retain_historical_refund(txn)
+            return txn
     except IntegrityError:
         if idempotency_key:
             raise DuplicateTransaction(idempotency_key)
@@ -378,6 +338,8 @@ def refund(txn: Transaction) -> bool:
     if current.transaction_status != Transaction.PENDING:
         return False
     wallet = Wallet.objects.select_for_update().get(user=current.user)
+    from banking.accounts import retain_historical_refund
+    retain_historical_refund(current)
     wallet.balance += current.amount
     wallet.save(update_fields=["balance", "updated"])
     current.transaction_status = Transaction.FAILED
@@ -448,6 +410,8 @@ def settle_or_refund(txn: Transaction, result: dict) -> str:
 
     # Definitive failure: refund and mark Failed.
     wallet = Wallet.objects.select_for_update().get(user=txn.user)
+    from banking.accounts import retain_historical_refund
+    retain_historical_refund(txn)
     wallet.balance += txn.amount
     wallet.save(update_fields=["balance", "updated"])
     meta.pop("reconcile", None)
@@ -820,6 +784,8 @@ def reverse_transfer(reference: str) -> Transaction | None:
             or _active_reversal_quarantine(txn)):
         return None
     wallet = Wallet.objects.select_for_update().get(user=txn.user)
+    from banking.accounts import retain_historical_refund
+    retain_historical_refund(txn)
     wallet.balance += txn.amount
     wallet.save(update_fields=["balance", "updated"])
     txn.transaction_status = Transaction.FAILED
@@ -2232,6 +2198,8 @@ def _apply_matched_reversal(wallet: Wallet, *, inbound_reference: str,
                 "quarantine": marker, "quarantine_changed": changed}
 
     original_status = payout.transaction_status
+    from banking.accounts import retain_historical_refund
+    retain_historical_refund(payout)
     locked_wallet.balance += payout.amount
     locked_wallet.save(update_fields=["balance", "updated"])
     meta = dict(payout.meta or {})
@@ -2326,6 +2294,13 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
     wallet; when omitted they are looked up.
     """
     from utility import wema
+    from banking.models import BankAccount, PreviousBankArchive
+
+    # Retained statement decoding is useful for review; it cannot reopen a
+    # migrated wallet's old funding path or credit a new-bank account.
+    if (BankAccount.objects.filter(wallet_id=wallet.pk).exists()
+            or PreviousBankArchive.objects.filter(wallet_id=wallet.pk).exists()):
+        return None
 
     # Retired account receipts cannot enter through the Partnership statement rail.
     from wallet.partnership import retired_funding_destination
@@ -2676,6 +2651,11 @@ def resolve_reversal_quarantine(reference: str, *, disposition: str, reason: str
         if amount <= 0:
             return
         if direction == Transaction.OUT:
+            from banking.accounts import historical_balance
+            from banking.models import PreviousBankArchive
+            if (PreviousBankArchive.objects.filter(wallet=locked_wallet).exists()
+                    and historical_balance(locked_wallet) < amount):
+                raise InsufficientFunds("The archived balance cannot cover this historical correction; keep the hold for review")
             if locked_wallet.balance < amount:
                 raise InsufficientFunds(
                     "The wallet no longer contains enough funds to apply this "
@@ -2705,6 +2685,8 @@ def resolve_reversal_quarantine(reference: str, *, disposition: str, reason: str
         )
         movement = amount
         movement_direction = direction
+        from banking.accounts import retain_historical_refund
+        retain_historical_refund(movement_txn, amount if direction == Transaction.IN else -amount)
 
     payout_required = {
         "confirm_provider_success", "confirm_partial_return",
@@ -2736,6 +2718,14 @@ def resolve_reversal_quarantine(reference: str, *, disposition: str, reason: str
             raise ValueError("This evidence is not a provider-success/refund conflict")
         if payout.transaction_status != Transaction.FAILED:
             raise ValueError("The payout refund is no longer present")
+        from banking.accounts import historical_balance, retain_historical_refund
+        from banking.models import PreviousBankArchive
+        archived = ((payout.meta or {}).get("provider") != "9psb"
+                    and PreviousBankArchive.objects.filter(wallet=locked_wallet).exists())
+        if archived and historical_balance(locked_wallet) < payout.amount:
+            raise InsufficientFunds(
+                "The archived balance cannot cover this historical correction; keep the hold for review"
+            )
         if locked_wallet.balance < payout.amount:
             raise InsufficientFunds(
                 "The refunded funds are no longer available; keep the hold active "
@@ -2746,6 +2736,18 @@ def resolve_reversal_quarantine(reference: str, *, disposition: str, reason: str
         # wallet correction mirrors the status transition exactly once.
         locked_wallet.balance -= payout.amount
         locked_wallet.save(update_fields=["balance", "updated"])
+        if archived:
+            # The original payout's status restores the ledger debit. This
+            # non-posting evidence only reduces the separate historical hold;
+            # it must neither charge the ledger twice nor consume new-bank funds.
+            movement_txn = Transaction.objects.create(
+                user=evidence.user, service="Historical debit restoration evidence",
+                amount=payout.amount, direction=Transaction.OUT,
+                transaction_status=Transaction.FAILED, reference=resolution_reference,
+                meta={"internal_evidence": True, "payout_reference": payout.reference,
+                      "evidence_id": evidence.pk, "approval_id": approval_id},
+            )
+            retain_historical_refund(movement_txn, -payout.amount)
         payout.transaction_status = Transaction.SUCCESS
         movement = payout.amount
         movement_direction = Transaction.OUT
@@ -2824,6 +2826,8 @@ def resolve_reversal_quarantine(reference: str, *, disposition: str, reason: str
                 "Resolve the payout's other returned-credit evidence before a full reversal"
             )
         if payout.transaction_status != Transaction.FAILED:
+            from banking.accounts import retain_historical_refund
+            retain_historical_refund(payout)
             locked_wallet.balance += payout.amount
             locked_wallet.save(update_fields=["balance", "updated"])
             payout.transaction_status = Transaction.FAILED
@@ -2910,153 +2914,40 @@ def resolve_reversal_quarantine(reference: str, *, disposition: str, reason: str
 
 
 def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "",
-             channel: str = "") -> tuple[Transaction, Transaction | None]:
-    """Send to an owned partner-bank account; credit it only from bank evidence.
-
-    Live customer balances are held in individual NUBANs. Moving two local
-    balances alone would leave the recipient with no bank cash to spend, so the
-    live path uses the same durable payout as an ordinary bank transfer. The
-    recipient's authenticated deposit callback/history posts the inbound row.
-    Local wallet transfers are restricted to the existing fake-money policy.
-    """
-    from utility import wema
-    from utility.providers import mock_disabled_in_prod, payout_resolve_account
+             channel: str = "", expected_fee=None) -> tuple[Transaction, Transaction | None]:
+    """Send through the bank; only a confirmed notification credits the recipient."""
+    from banking.accounts import account_for, same_name
+    from banking.adapter import resolve_account
     from transfers.models import Bank
-    from transfers.services import PayoutError, execute_payout
-
-    try:
-        assert_customer_spending_available(sender)
-    except LimitExceeded as exc:
-        raise PayoutError("rail_unavailable", str(exc)) from exc
-    if not wema.wema_live():
-        if mock_disabled_in_prod():
-            raise PayoutError(
-                "rail_unavailable", "Transfers are temporarily unavailable. No money was taken.")
-        return _local_transfer(sender, recipient, amount, note=note,
-                               idempotency_key=idempotency_key, channel=channel)
-
-    # Re-read mutable identity/account state, rather than a reverse relation
-    # cached before a callback finished account setup in this request.
-    from django.contrib.auth import get_user_model
-
-    recipient = get_user_model().objects.get(pk=recipient.pk)
-    recipient_wallet = Wallet.objects.filter(user_id=recipient.pk).first()
-    source = Wallet.objects.filter(user_id=sender.pk).first()
-    if source is None or not re.fullmatch(r"\d{10}", source.account_number or "") or is_demo_account(source):
-        raise PayoutError(
-            "source_missing", "Finish your account setup before sending money. No money was taken.")
-    if (not recipient.is_active or not recipient.tier1_identity_verified
-            or not recipient.phone_verified or not recipient.email_verified
-            or recipient_wallet is None
-            or not re.fullmatch(r"\d{10}", recipient_wallet.account_number or "")
-            or is_demo_account(recipient_wallet)):
-        raise PayoutError(
-            "recipient_unavailable", "This recipient's Zitch account is not ready to receive this transfer. No money was taken.")
-    bank = Bank.objects.filter(code="wema", active=True).exclude(bank_code="").first()
-    if bank is None:
-        raise PayoutError(
-            "rail_unavailable", "Transfers are temporarily unavailable. No money was taken.")
-    resolved = payout_resolve_account(recipient_wallet.account_number, bank.bank_code)
-    resolved_name = str(resolved.get("name") or "").strip()
+    from transfers.services import PayoutError, execute_payout, bank_name_keys
+    destination = account_for(recipient)
+    if (not destination or destination.status != "active" or not recipient.is_active
+            or not recipient.email_verified or not recipient.phone_verified):
+        raise PayoutError("recipient_unavailable", "This recipient has not completed bank account setup.")
+    candidates = [row for row in Bank.objects.filter(active=True).exclude(bank_code="")
+        if "alias:9psb" in bank_name_keys(row.name)]
+    bank = candidates[0] if len(candidates) == 1 else None
+    if not bank:
+        raise PayoutError("rail_unavailable", "The bank directory needs to be refreshed.")
+    resolved = resolve_account(destination.number, bank.bank_code)
     if (not resolved.get("success") or resolved.get("mock")
-            or str(resolved.get("bank_code") or bank.bank_code).strip() != bank.bank_code.strip()
-            or wema.holder_name_mismatch(recipient.get_full_name(), resolved_name)):
-        raise PayoutError(
-            "recipient_unavailable", "We could not confirm this recipient's account with our partner bank. No money was taken.")
-    # Account setup may have changed while name enquiry was in flight. Never
-    # send to an account that is no longer attached to the confirmed recipient.
-    if not Wallet.objects.filter(
-            pk=recipient_wallet.pk, user_id=recipient.pk,
-            account_number=recipient_wallet.account_number,
-            user__is_active=True,
-            user__phone_verified=True, user__email_verified=True).filter(
-                Q(user__bvn_verified=True) | Q(user__nin_verified=True)).exists():
-        raise PayoutError(
-            "recipient_unavailable", "This recipient's account changed. Review it again before sending. No money was taken.")
-    outgoing = execute_payout(
-        sender, Decimal(str(amount)), recipient_wallet.account_number, bank,
-        resolved_name, note=note, idempotency_key=idempotency_key, channel=channel,
-    )
+            or resolved.get("bank_code", bank.bank_code) != bank.bank_code
+            or not same_name(destination.name, resolved.get("name", ""))):
+        raise PayoutError("recipient_unavailable", "We could not confirm this recipient's bank account.")
+    recipient.refresh_from_db()
+    current = account_for(recipient)
+    if (not current or current.pk != destination.pk or current.number != destination.number
+            or current.status != "active" or not recipient.is_active
+            or not recipient.phone_verified or not recipient.email_verified):
+        raise PayoutError("recipient_unavailable", "This recipient's bank account is no longer available.")
+    outgoing = execute_payout(sender, Decimal(str(amount)), destination.number, bank,
+        resolved["name"], note=note, idempotency_key=idempotency_key, channel=channel, expected_fee=expected_fee)
     return outgoing, None
 
 
 @db_transaction.atomic
-def _local_transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "",
-                    channel: str = "") -> tuple[Transaction, Transaction]:
-    """Move simulated funds between two Zitch wallets atomically.
-
-    Both wallet rows are locked (in a stable order to avoid deadlocks) so the
-    debit and credit either both happen or neither does. Raises InsufficientFunds
-    if the sender can't cover the amount. With an `idempotency_key`, a duplicate
-    send (same sender + key) raises DuplicateTransaction with nothing moved.
-    Returns (debit_txn, credit_txn).
-    """
-    amount = Decimal(str(amount))
-
-    # Make sure both wallet rows exist before we lock them. A recipient only gets
-    # a wallet when they first authenticate, so a transfer to a user who exists
-    # but has never signed in (admin-created/seeded account) would otherwise miss
-    # from the locked read below and raise KeyError -> 500 with nothing moved.
-    get_or_create_wallet(sender)
-    get_or_create_wallet(recipient)
-
-    # Lock both wallets in a deterministic order (by user id) to prevent
-    # deadlocks when two users transfer to each other simultaneously.
-    first, second = sorted([sender.id, recipient.id])
-    wallets = {
-        w.user_id: w
-        for w in (Wallet.objects.select_for_update()
-                  .filter(user_id__in=[first, second])
-                  .order_by("user_id"))
-    }
-    sw = wallets[sender.id]
-    rw = wallets[recipient.id]
-
-    if sw.balance < amount:
-        raise InsufficientFunds("Insufficient wallet balance")
-
-    # `debit()` enforces these under its wallet lock. Internal P2P transfers
-    # mutate both wallets directly, so they need the same check here or two
-    # concurrent sends can both pass the view-level daily/velocity pre-check.
-    from common.http import spend_limit_error
-    recipient_name = (recipient.get_full_name() or recipient.phone or "Zitch user").strip()
-    service = f"Transfer to {recipient_name}"
-    breach = spend_limit_error(sender, amount, service)
-    if breach:
-        raise LimitExceeded(breach)
-
-    ref = make_reference("ZTRF")
-    sw.balance -= amount
-    rw.balance += amount
-    sw.save(update_fields=["balance", "updated"])
-    rw.save(update_fields=["balance", "updated"])
-
-    sender_name = (sender.get_full_name() or sender.phone or "Zitch user").strip()
-    narration = " ".join(str(note or "").split())[:60] or f"Transfer to {recipient_name}"
-
-    try:
-        with db_transaction.atomic():  # savepoint: contain the unique violation
-            debit_txn = Transaction.objects.create(
-                user=sender, service=service, amount=amount,
-                direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
-                reference=ref, meta=with_idempotency_fingerprint(
-                    {"to": recipient.phone, "recipient_name": recipient_name,
-                     "note": narration, "narration": narration,
-                     "channel": channel}, idempotency_key),
-                idempotency_key=idempotency_key,
-            )
-            credit_txn = Transaction.objects.create(
-                user=recipient, service=f"Transfer from {sender_name}", amount=amount,
-                direction=Transaction.IN, transaction_status=Transaction.SUCCESS,
-                reference=f"{ref}-C", meta={"from": sender.phone, "counterparty": sender_name,
-                                            "note": narration, "narration": narration,
-                                            "channel": channel},
-            )
-    except IntegrityError:
-        if idempotency_key:
-            raise DuplicateTransaction(idempotency_key)
-        raise
-    return debit_txn, credit_txn
+def _local_transfer(*args, **kwargs):
+    raise LimitExceeded("Bank payments require a bank instruction and confirmed settlement")
 
 
 
@@ -3121,31 +3012,12 @@ def provision_wema_account(user, *, account_number: str, account_name: str = "",
 
 
 def sync_bank_tier(wallet) -> int:
-    """Read the partner bank's tier for this NUBAN and store it. Returns the tier
-    (0 when unknown/unreadable, which asserts no bank cap).
-
-    The bank runs its own tier ladder with its own inflow/spend/balance caps, and it
-    enforces them on the account regardless of our KYC tier — so knowing the real
-    value is what lets us refuse a transfer the gateway would refuse anyway, with a
-    useful message instead of a failed payout.
-    """
-    from utility import wema as wema_provider
-    if not wallet.account_number:
+    from banking.accounts import update_account
+    from banking.models import BankAccount
+    bank = BankAccount.objects.filter(wallet=wallet).first()
+    if not bank:
         return 0
-    res = wema_provider.get_kyc_status(wallet.account_number)
-    if not isinstance(res, dict) or res.get("success") is not True or res.get("mock"):
-        return wallet.bank_tier or 0
-    from wallet.address_verification import bank_tier_number, refresh_address_verification
-
-    tier = bank_tier_number(res.get("tier"))
-    if tier and tier != wallet.bank_tier:
-        wallet.bank_tier = tier
-        wallet.save(update_fields=["bank_tier", "updated"])
-        log.info("wema_bank_tier_synced wallet=%s account=%s tier=%s",
-                 wallet.pk, wallet.account_number, tier)
-    if wallet.user.address_verification_pending:
-        refresh_address_verification(wallet.user, wallet=wallet, result=res)
-    return tier or (wallet.bank_tier or 0)
+    return update_account(bank).tier
 
 
 def bank_spent_today(user) -> Decimal:
@@ -3185,47 +3057,23 @@ def bank_spent_today(user) -> Decimal:
 
 
 def assert_customer_spending_available(user) -> None:
-    """Deny new spends while preserving historical settlement/refund paths."""
-    from utility.providers import partnership_new_business_allowed, PARTNERSHIP_ARCHIVED_MESSAGE
-    from wallet.partnership import REVIEW_MESSAGE, partnership_allowed, partnership_account_number
-
-    wallet = Wallet.objects.get(user=user)
-    if (not partnership_allowed(user)
-            or (wallet.account_number and not partnership_account_number(wallet.account_number))):
-        raise LimitExceeded(REVIEW_MESSAGE)
-    if not user.is_active or not partnership_new_business_allowed(user):
-        raise LimitExceeded(PARTNERSHIP_ARCHIVED_MESSAGE)
+    from banking.payments import spending_account
+    spending_account(user)
 
 
 def is_biller_service(service) -> bool:
     """Only retained utility products; never cards, transfers or savings."""
-    return bool(re.match(r"^(airtime|data|cable|electricity|remita|betting|exam)(?:\b|\s)",
+    return bool(re.match(r"^(airtime|data|cable|electricity|remita|betting|exam|utility bill)(?:\b|\s)",
                          str(service or "").strip(), re.I))
 
 
 def _biller_funding_context(user, amount=Decimal("0"), *, wallet=None):
-    """Reserve new bills only against the customer's own Partnership account."""
-    from utility.providers import biller_enabled, partnership_new_business_allowed
-    from utility import wema
-    from wallet.partnership import REVIEW_MESSAGE, partnership_allowed, partnership_account_number
-
-    if not user.is_active or not biller_enabled():
+    from banking.client import config
+    from banking.payments import spending_account
+    if not config().get("VAS_ENABLED"):
         raise LimitExceeded("Bill payments are temporarily unavailable.")
-    if not partnership_allowed(user):
-        raise LimitExceeded(REVIEW_MESSAGE)
-    if not partnership_new_business_allowed(user):
-        raise LimitExceeded("Bill payments are temporarily unavailable.")
-    wallet = wallet or Wallet.objects.get(user=user)
-    source = wallet.account_number
-    if partnership_account_number(source):
-        return source, ""
-    # A retained retired number can never become a simulation funding source.
-    if source:
-        raise LimitExceeded(REVIEW_MESSAGE)
-    if ((settings.DEBUG or getattr(settings, "TESTING", False))
-            and not wema.wema_live()):
-        return None
-    raise LimitExceeded("Your Partnership bank account is required for bill payments.")
+    bank = spending_account(user)
+    return bank.number, ""
 
 
 def biller_spending_available(user) -> bool:
@@ -3265,50 +3113,5 @@ def biller_source_for_transaction(reference, *, amount, source_account="") -> st
 
 
 def bank_spend_error(user, amount, *, biller=False) -> str | None:
-    """The partner bank's own DAILY ceiling on outbound spend, or None.
-
-    Checked in ADDITION to our KYC-tier limit, never instead of it: the two ladders
-    are independent and the customer is bound by whichever is tighter. A provisioned
-    account whose tier has not synced yet is treated as Tier 1 (the conservative bank
-    default), rather than silently allowing a transfer the bank is likely to reject.
-
-    The cap is CUMULATIVE — ALAT publishes it as "Daily Max Spend", not a per-transfer
-    limit. Comparing only the single amount would let N transfers each under the cap
-    sum past it, and the gateway would refuse whichever one crossed: the debit-then-
-    reverse this check exists to prevent. So today's spend counts toward it.
-    """
-    from utility import wema as wema_provider
-    try:
-        if biller:
-            _biller_funding_context(user, amount)
-        else:
-            assert_customer_spending_available(user)
-    except LimitExceeded as exc:
-        return str(exc)
-    wallet = Wallet.objects.filter(user=user).only("bank_tier", "account_number").first()
-    if wallet is None or not wallet.account_number:
-        return None
-    if wema_provider.wema_live():
-        from .models import BankHistoryCheckpoint
-
-        checkpoint, _ = BankHistoryCheckpoint.objects.get_or_create(
-            wallet=wallet, account_number=wallet.account_number)
-        if checkpoint.opening_review_required:
-            return (
-                "Your bank account balance needs review before you can spend. "
-                "Please contact Zitch Support. Incoming transfers and refunds "
-                "can still reach your account.")
-    bank_tier = wallet.bank_tier or 1
-    cap = wema_provider.bank_tier_limit(bank_tier, "daily_spend")
-    if cap is None:
-        return None
-    amount = Decimal(str(amount))
-    remaining = cap - bank_spent_today(user)
-    if amount > remaining:
-        if remaining <= 0:
-            return (f"You've reached your bank account's daily limit of ₦{cap:,.0f}. "
-                    "Complete the next verification step to raise it.")
-        return (f"This would pass your bank account's daily limit of ₦{cap:,.0f} — "
-                f"₦{remaining:,.0f} left today. "
-                "Complete the next verification step to raise it.")
-    return None
+    from banking.payments import bank_limit_error
+    return bank_limit_error(user, amount)

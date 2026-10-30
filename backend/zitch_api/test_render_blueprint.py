@@ -1,182 +1,123 @@
-"""Static safety invariants for the shared Render Blueprint."""
+"""Safety invariants for the proposed consolidation of existing Render resources.
+
+The files are also validated against Render's published JSON schema before a
+cutover. These checks deliberately parse only this repository's simple block
+layout, without adding a YAML dependency to the banking runtime.
+"""
 import re
 from pathlib import Path
-
 from django.test import SimpleTestCase
 
-
 BLUEPRINT = Path(__file__).resolve().parents[2] / "render.yaml"
+API = "zitch-api-ry6y"
+WORKER = "zitch-whatsapp-worker-ry6y"
+MAINTENANCE = "zitch-maintenance-ry6y"
+
+
+def service_blocks(text):
+    return {re.search(r"^  name: (.+)$", block, re.M).group(1): block
+        for block in re.findall(r"^- type: .+?(?=^- type: |^databases:|\Z)", text, re.M | re.S)}
+
+
+def env(block, key):
+    result = re.search(r"^  - key: " + re.escape(key) + r"\n(.*?)(?=^  - key: |\Z)", block, re.M | re.S)
+    return result.group(1) if result else ""
+
+
+def scalar(block, key):
+    result = re.search(r"^  " + re.escape(key) + r": ([^\n]+(?:\n    [^\n]+)*)", block, re.M)
+    return " ".join(result.group(1).split()).strip("\"'") if result else ""
 
 
 class RenderBlueprintSafetyTests(SimpleTestCase):
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.text = BLUEPRINT.read_text(encoding="utf-8")
-
-    def test_every_deployable_service_waits_for_repository_checks(self):
-        self.assertNotIn("autoDeployTrigger: commit", self.text)
-        self.assertEqual(self.text.count("autoDeployTrigger: checksPass"), 9)
-
-    def test_only_api_generates_secret_and_all_consumers_source_it(self):
-        secret_blocks = re.findall(
-            r"- key: DJANGO_SECRET_KEY\n(?P<config>\s+[^\n]+)", self.text,
-        )
-        self.assertEqual(len(secret_blocks), 9)
-        self.assertEqual(sum("generateValue: true" in row for row in secret_blocks), 1)
-        self.assertEqual(sum("fromService:" in row for row in secret_blocks), 8)
-
-    def test_non_api_builds_wait_for_api_migrations_and_recheck_before_start(self):
+    def blueprints(self):
         for filename in ("render.yaml", "render.frankfurt.yaml"):
-            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
-            builds = re.findall(r'^    buildCommand: "([^"]+)"', text, re.MULTILINE)
-            starts = re.findall(r'^    startCommand: "([^"]+)"', text, re.MULTILINE)
-            self.assertEqual(builds.count("./build.sh"), 1, filename)
-            self.assertEqual(builds.count(
-                "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
-            ), 8, filename)
-            self.assertEqual(sum(command.startswith("python manage.py migrate --check && ")
-                                 for command in starts), 8, filename)
-            self.assertNotRegex(text, r"manage.py migrate(?:[\"\n]| &&)")
+            text = BLUEPRINT.with_name(filename).read_text()
+            services = service_blocks(text)
+            self.api_source = services[API]
+            yield filename, text, services
 
-    def test_only_the_credentialed_worker_owns_terminal_whatsapp_delivery(self):
-        """Money crons leave WhatsApp alerts retryable without copying Meta secrets."""
-        keys = (
-            "TXN_ALERTS_WHATSAPP",
-            "WHATSAPP_MODE",
-            "WHATSAPP_BASE_URL",
-            "WHATSAPP_TOKEN",
-            "WHATSAPP_PHONE_NUMBER_ID",
-            "WHATSAPP_VERIFY_TOKEN",
-            "WHATSAPP_APP_SECRET",
-            "WHATSAPP_BUSINESS_NUMBER",
-            "WHATSAPP_TXN_ALERT_TEMPLATE",
-            "WHATSAPP_TXN_ALERT_TEMPLATE_LANG",
-        )
-        worker = re.search(
-            r"^    name: zitch-whatsapp-worker$.*?(?=^  - type:|\Z)",
-            self.text,
-            re.MULTILINE | re.DOTALL,
-        )
-        self.assertIsNotNone(worker)
-        for key in keys:
-            self.assertRegex(
-                worker.group(0),
-                rf"- key: {re.escape(key)}\n\s+fromService: "
-                rf"\{{type: web, name: zitch-api, envVarKey: {re.escape(key)}\}}",
-                f"zitch-whatsapp-worker must source {key} from zitch-api",
-            )
+    def inherited(self, block, key):
+        self.assertTrue(env(self.api_source, key), "Missing API source: " + key)
+        value = env(block, key)
+        self.assertIn("fromService:", value, key)
+        self.assertIn("name: " + API, value, key)
+        self.assertIn("envVarKey: " + key, value, key)
+        self.assertNotIn("value:", value, key)
 
-        for service in ("zitch-maturities", "zitch-reconcile-wema"):
-            match = re.search(
-                rf"^    name: {re.escape(service)}$.*?(?=^  - type:|\Z)",
-                self.text,
-                re.MULTILINE | re.DOTALL,
-            )
-            self.assertIsNotNone(match, service)
-            block = match.group(0)
-            self.assertRegex(block, r'- key: TXN_ALERTS_WHATSAPP\n\s+value: "false"')
-            for key in keys[1:] + ("WHATSAPP_QUEUE_KEY", "WHATSAPP_QUEUE_KEY_PREV"):
-                self.assertNotIn(f"- key: {key}", block,
-                                 f"{service} must not carry WhatsApp credentials")
+    def test_adopts_existing_resources_without_duplicate_api_worker_or_cache(self):
+        for filename, text, services in self.blueprints():
+            with self.subTest(filename=filename):
+                self.assertEqual(set(services), {API, WORKER, MAINTENANCE, "zitch-cache-ry6y"})
+                self.assertIn("- name: zitch-db-ry6y", text)
+                self.assertIn("Blueprint auto-sync remains paused", text)
+                self.assertIn("docs/render-maintenance-cutover.md", text)
 
-    def test_notification_writers_inherit_delivery_credentials_on_both_blueprints(self):
-        for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
-            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
-            for name in ("zitch-whatsapp-worker", "zitch-maturities", "zitch-reconcile-wema"):
-                block = re.search(rf"^    name: {name}{suffix}$.*?(?=^  - type:|\Z)",
-                                  text, re.MULTILINE | re.DOTALL).group(0)
-                for key in ("RESEND_API_KEY", "RESEND_FROM_EMAIL", "TERMII_API_KEY",
-                            "TERMII_SENDER_ID", "TERMII_CHANNEL", "TERMII_BASE_URL",
-                            "TXN_ALERTS_EMAIL", "TXN_ALERTS_SMS", "TXN_ALERTS_PUSH"):
-                    self.assertIn(f"fromService: {{type: web, name: zitch-api{suffix}, envVarKey: {key}}}", block)
-                if name == "zitch-reconcile-wema":
-                    for key in ("WEMA_UPGRADE_KEY", "WEMA_UPGRADE_BASE_URL"):
-                        self.assertIn(f"fromService: {{type: web, name: zitch-api{suffix}, envVarKey: {key}}}", block)
+    def test_every_deployable_service_waits_for_checks_and_uses_paid_compute(self):
+        for _, _, services in self.blueprints():
+            for name in (API, WORKER, MAINTENANCE):
+                self.assertEqual(scalar(services[name], "autoDeployTrigger"), "checksPass")
+                self.assertEqual(scalar(services[name], "plan"), "starter")
+            self.assertEqual(scalar(services[API], "healthCheckPath"), "/readyz")
 
-    def test_worker_inherits_shared_runtime_configuration_on_both_blueprints(self):
-        """The API accepts/encrypts work that the worker later resumes.
+    def test_api_alone_generates_the_shared_session_secret(self):
+        for _, text, services in self.blueprints():
+            self.assertEqual(text.count("- key: DJANGO_SECRET_KEY"), 3)
+            self.assertIn("generateValue: true", env(services[API], "DJANGO_SECRET_KEY"))
+            for name in (WORKER, MAINTENANCE):
+                self.inherited(services[name], "DJANGO_SECRET_KEY")
 
-        Independent dashboard copies of these values can make app and WhatsApp
-        execute different bank/provider contracts or make queued messages
-        undecryptable after a rotation.
-        """
-        keys = (
-            "WEMA_CHANNEL_ID", "WEMA_WALLET_KEY", "WEMA_ACCOUNT_CREATION_KEY",
-            "WEMA_BASE_URL", "WEMA_SIMULATION", "WEMA_FACE_VERIFY_URL",
-            "WEMA_FACE_CALLBACK_IPS", "WEMA_FACE_CB_MODE", "PREMBLY_BASE_URL",
-            "PREMBLY_API_KEY", "PREMBLY_APP_ID", "WHATSAPP_QUEUE_KEY",
-            "WHATSAPP_QUEUE_KEY_PREV", "SENTRY_DSN",
-        )
-        for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
-            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
-            api_name = f"zitch-api{suffix}"
-            worker = re.search(
-                rf"^    name: zitch-whatsapp-worker{suffix}$.*?(?=^  - type:|\Z)",
-                text, re.MULTILINE | re.DOTALL,
-            )
-            self.assertIsNotNone(worker)
-            self.assertRegex(
-                worker.group(0),
-                r'- key: DJANGO_REQUIRE_SHARED_CACHE\n\s+value: "true"',
-            )
+    def test_only_api_build_migrates_and_other_processes_wait_and_recheck(self):
+        for _, _, services in self.blueprints():
+            self.assertEqual(scalar(services[API], "buildCommand"), "./build.sh")
+            for name in (WORKER, MAINTENANCE):
+                self.assertEqual(scalar(services[name], "buildCommand"),
+                    "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5")
+                self.assertTrue(scalar(services[name], "startCommand").startswith("python manage.py migrate --check && "))
+
+    def test_only_worker_carries_whatsapp_delivery_credentials(self):
+        keys = ("WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET",
+            "WHATSAPP_QUEUE_KEY", "WHATSAPP_QUEUE_KEY_PREV", "WHATSAPP_FLOW_PRIVATE_KEY")
+        for _, _, services in self.blueprints():
             for key in keys:
-                self.assertIn(
-                    f"fromService: {{type: web, name: {api_name}, envVarKey: {key}}}",
-                    worker.group(0),
-                    f"{filename} worker must inherit {key}",
-                )
+                self.inherited(services[WORKER], key)
+                self.assertFalse(env(services[MAINTENANCE], key), key)
+            self.assertIn("value: 'false'", env(services[MAINTENANCE], "TXN_ALERTS_WHATSAPP"))
+            self.assertIn("sync: false", env(services[API], "WHATSAPP_QUEUE_KEY_PREV"))
 
-    def test_queue_rotation_secret_is_dashboard_owned_on_both_blueprints(self):
-        for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
-            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
-            api = re.search(
-                rf"^    name: zitch-api{suffix}$.*?(?=^  - type:|\Z)",
-                text, re.MULTILINE | re.DOTALL,
-            ).group(0)
-            self.assertRegex(
-                api,
-                r"- key: WHATSAPP_QUEUE_KEY_PREV\n\s+sync: false",
-            )
-            self.assertNotRegex(
-                api,
-                r'- key: WHATSAPP_QUEUE_KEY_PREV\n\s+value: ""',
-            )
+    def test_notification_writers_share_email_sms_configuration(self):
+        keys = ("RESEND_API_KEY", "RESEND_FROM_EMAIL", "TERMII_API_KEY", "TERMII_SENDER_ID",
+                "TERMII_CHANNEL", "TERMII_BASE_URL", "TXN_ALERTS_EMAIL", "TXN_ALERTS_SMS", "TXN_ALERTS_PUSH")
+        for _, _, services in self.blueprints():
+            for name in (WORKER, MAINTENANCE):
+                for key in keys:
+                    self.inherited(services[name], key)
 
-    def test_scheduled_jobs_do_not_all_start_on_reconciliation_boundary(self):
-        """reconcile-wema runs at :00/:10/... and calls the bank.
+    def test_bank_configuration_and_encryption_are_shared_by_all_consumers(self):
+        for _, _, services in self.blueprints():
+            keys = re.findall(r"^  - key: (NINEPSB_[A-Z_]+)$", services[API], re.M)
+            self.assertGreater(len(keys), 10)
+            for name in (WORKER, MAINTENANCE):
+                for key in keys + ["BANKING_ENCRYPTION_KEYS", "PREMBLY_API_KEY"]:
+                    self.inherited(services[name], key)
+                self.assertIn("value: 'true'", env(services[name], "DJANGO_REQUIRE_SHARED_CACHE"))
 
-        Starting the other bank/ledger scans at :00 guaranteed avoidable DB and
-        provider bursts, including three jobs together at 06:00.
-        """
-        for filename in ("render.yaml", "render.frankfurt.yaml"):
-            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
-            schedules = re.findall(r'^    schedule: "([^"]+)"', text, re.MULTILINE)
-            self.assertIn("*/10 * * * *", schedules)
-            fixed_minutes = [value.split()[0] for value in schedules if not value.startswith("*/")]
-            self.assertNotIn("0", fixed_minutes, filename)
+    def test_one_durable_scheduler_owns_reconciliation_and_preserves_controls(self):
+        from banking.maintenance import JOBS
+        for _, text, services in self.blueprints():
+            self.assertEqual(text.count("- type: cron"), 1)
+            self.assertEqual(scalar(services[MAINTENANCE], "schedule"), "*/5 * * * *")
+            self.assertTrue(scalar(services[MAINTENANCE], "startCommand").endswith("manage.py run_maintenance"))
+            self.assertIn("value: 'false'", env(services[WORKER], "WHATSAPP_WORKER_RECONCILE"))
+        controls = {name: (schedule, options) for name, schedule, options in JOBS}
+        self.assertEqual(len(controls), 7)
+        self.assertEqual(controls["run_maturities"][0], (1, 5))
+        self.assertEqual(controls["settlement_report"], ((6, 15), {"fail_on_breach": True}))
+        self.assertEqual(controls["integrity_check"][1], {"fail_nonzero": True})
+        self.assertEqual(controls["aml_scan"][1], {"fail_on_overdue": True})
 
-    def test_partnership_and_identity_configuration_cannot_diverge_between_consumers(self):
-        """A worker must use the same active Partnership contract as the API."""
-        keys = ("WEMA_PARTNERSHIP_MODE", "WEMA_BILLER_MODE")
-        flow_keys = ("WHATSAPP_FLOW_ID", "WHATSAPP_FLOW_PRIVATE_KEY", "WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE")
-        for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
-            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
-            self.assertNotIn("WEMA_VAS_", text.replace("WEMA_VAS_STATUS_LEGEND", "PARTNERSHIP_BILLER_LEGEND"))
-            self.assertEqual(text.count("- key: WEMA_VAS_STATUS_LEGEND"), 3)
+    def test_retired_credentials_and_prembly_face_sdk_are_absent(self):
+        for _, text, _ in self.blueprints():
+            self.assertNotIn("WEMA_", text)
+            self.assertNotIn("PREMBLY_FACE_", text)
             self.assertNotIn("WHATSAPP_FLOW_VAS_", text)
-            self.assertNotIn("WEMA_PARTNERSHIP_RESTORE_VAS", text)
-            self.assertNotIn("- key: BANK_ACCOUNT_PROVIDER", text)
-            self.assertNotIn("- key: KYC_PROVIDER", text)
-            api_name = "zitch-api" + suffix
-            services = re.findall(r"^  - type: .*?(?=^  - type: |^databases:|\Z)", text, re.M | re.S)
-            for block in services:
-                if "    runtime: python\n" not in block:
-                    continue
-                name = re.search(r"^    name: (.+)$", block, re.M).group(1)
-                expected = keys + (flow_keys if "whatsapp-worker" in name or name == api_name else ())
-                for key in expected:
-                    if name == api_name:
-                        self.assertIn(f"- key: {key}\n        sync: false", block)
-                    else:
-                        self.assertIn(f"fromService: {{type: web, name: {api_name}, envVarKey: {key}}}", block)

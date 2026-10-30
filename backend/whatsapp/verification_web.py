@@ -1,18 +1,8 @@
-"""PIN-gated, action-scoped mobile web verification; never an API session.
+"""PIN-gated, action-scoped bank verification for a linked WhatsApp account.
 
-Router contract: ``start_verification(user, msisdn, 2 | 3) -> https URL``.
-An inactive/mismatched link raises ValueError. A new link retires earlier web
-verification actions for that phone. Other WhatsApp actions are untouched.
-
-Tier 3 calls accounts.views.verify_kyc_address, the service shared with the
-kyc_address API, retaining its validation/provider decisions and shared rate limit.
-The API's JSON/bearer
-transport is replaced ONLY here by a bounded form and action-scoped PIN proof.
-No AccessToken is issued, and no caller can choose an endpoint or account.
-
-Tier 2 starts a server-created Prembly SDK session after the same PIN gate.
-The provider session is checked by the shared secret-authenticated adapter;
-client callbacks, uploaded stills and NIN inputs cannot authorize the upgrade.
+9PSB owns BVN, NIN and face decisions. Prembly is reserved for Tier 3 address
+verification. Grants are short-lived, bound to the linked customer and revoked
+when credentials change. They never grant a general app/API session.
 """
 import base64
 import hashlib
@@ -94,8 +84,8 @@ def _binding(pa):
 def start_verification(user, msisdn, tier):
     """Create one 15-minute, PIN-gated capability for an already linked phone."""
     origin = _public_origin()
-    if isinstance(tier, bool) or str(tier) not in ("2", "3"):
-        raise ValueError("Verification tier must be 2 or 3")
+    if isinstance(tier, bool) or str(tier) not in ("1", "2", "3"):
+        raise ValueError("Verification tier must be 1, 2 or 3")
     tier = int(tier)
     msisdn = str(msisdn or "").removeprefix("+")
     if not re.fullmatch(r"[1-9][0-9]{7,14}", msisdn):
@@ -140,7 +130,7 @@ def _decode(token):
     return None
 
 
-def _resolve(claims, *, lock=False, status_only=False):
+def _resolve(claims, *, lock=False, status_only=False, completing=False):
     """Called inside an atomic block when mutating: user -> link -> action locks."""
     if claims is None:
         return None, None
@@ -159,7 +149,8 @@ def _resolve(claims, *, lock=False, status_only=False):
     readable_pending = bool(pa and status_only and pa.state == REVIEW
                             and pa.payload.get("address_pending") is True)
     if (not pa or not user or not link or pa.user_id != user.pk or pa.expired
-            or (pa.state not in (PIN, READY) and not readable_pending) or pa.payload.get("tier") not in (2, 3)
+            or (pa.state not in (PIN, READY) and not readable_pending
+                and not (completing and pa.state == PROCESSING)) or pa.payload.get("tier") not in (1, 2, 3)
             or pa.payload.get("link_id") != link.pk or pa.msisdn != link.wa_msisdn
             or pa.payload.get("link_stamp") != _link_stamp(link)
             or not hmac.compare_digest(pa.payload.get("credentials", ""), _credential_stamp(user))
@@ -217,51 +208,10 @@ def _pending_page(request):
 
 def _form(request, pa, user, *, message="", status=200, values=None, refresh_status=True):
     if not _has_proof(request, pa, user):
-        if pa.state == REVIEW:
-            return _page(request, status=403)
         return _page(request, "pin", status=status, message=message)
-    if pa.payload["tier"] == 2:
-        from utility.liveness import tier2_face_available
-
-        if user.face_verified and user.tier >= 2:
-            return _page(request, "face_complete")
-        if not tier2_face_available():
-            return _page(request, "unavailable", status=503, message=UNAVAILABLE)
-        return _page(request, "tier2", status=status, message=message,
-                     face_url=pa.payload.get("face_url", ""))
-    from accounts.views import _kyc_state
-
-    if refresh_status and user.address_verification_pending:
-        from wallet.address_verification import refresh_address_verification
-
-        refresh_address_verification(user)
-    address_status = (_kyc_state(user) if refresh_status else {
-        "address_verified": user.address_verified,
-        "address_verification_pending": user.address_verification_pending})
-    if address_status.get("address_verified"):
-        return _page(request, "complete")
-    if address_status.get("address_verification_pending"):
-        return _pending_page(request)
-    if pa.state == REVIEW:
-        return _page(request, "review", status=503)
-    from wallet.address_verification import tier3_address_capability
-
-    capability = tier3_address_capability()
-    if capability["tier3_address_available"] is False:
-        return _page(request, "unavailable", status=503,
-                     message=capability["tier3_address_unavailable_reason"])
-    if not (user.tier1_identity_verified and user.face_verified
-            and user.email_verified and user.phone_verified and user.tier >= 2):
-        return _page(request, "unavailable", status=409,
-                     message="Complete Tier 2 identity verification before verifying your address. "
-                             "Return to WhatsApp to continue.")
-    if _bank_address_unavailable():
-        return _page(request, "unavailable", status=503,
-                     message="Address verification is temporarily unavailable. Your address has not been submitted. "
-                             "Please try again later or return to WhatsApp.")
-    return _page(request, "address", status=status, message=message,
-                 values=values or {}, expires_at=pa.expires_at,
-                 proof_required=_proof_required())
+    from banking.web_verification import context
+    return render(request, "whatsapp/bank_verification.html",
+        {"nonce": request.verification_nonce, "message": message, **context(user, pa.payload)}, status=status)
 
 
 @sensitive_variables()
@@ -325,59 +275,6 @@ def _run_address_operation(request, user, data):
 @sensitive_variables()
 def _submit(request, claims):
     action = request.POST.get("action", "")
-    if action in ("tier2", "face_status"):
-        with transaction.atomic():
-            pa, user = _resolve(claims, lock=True)
-            if pa is None:
-                return _page(request, status=410)
-            if (pa.payload["tier"] != 2 or request.FILES
-                    or set(request.POST) - {"action", "csrfmiddlewaretoken"}
-                    or any(len(request.POST.getlist(k)) != 1 for k in request.POST)):
-                return _page(request, "error", status=400, message="Use the face verification buttons on this page.")
-            if not _has_proof(request, pa, user):
-                return _page(request, "pin", status=403, message="Enter your transaction PIN to continue.")
-        from utility.liveness import start_tier2_liveness, verify_tier2_liveness
-
-        def still_authorized():
-            active, owner = _resolve(claims, lock=True)
-            return active is not None and _has_proof(request, active, owner)
-
-        result = (start_tier2_liveness(user) if action == "tier2" else
-                  verify_tier2_liveness(user, {"session": pa.payload.get("face_session", "")},
-                                       authorize=still_authorized))
-        with transaction.atomic():
-            current, current_user = _resolve(claims, lock=True)
-            if current is None or not _has_proof(request, current, current_user):
-                return _page(request, status=410)
-            if action == "tier2" and result.get("success"):
-                current.payload["face_session"] = result["session"]
-                current.payload["face_url"] = result["url"]
-                current.save(update_fields=["payload"])
-            if result.get("status") in ("failed", "expired"):
-                current.payload.pop("face_session", None)
-                current.payload.pop("face_url", None)
-                current.save(update_fields=["payload"])
-            return _form(request, current, current_user, message=result.get("message", ""))
-    if action == "status":
-        # Readback may make a bank GET and lock Wallet -> User. Authenticate in
-        # a short transaction, then release User/Link/Action before that call.
-        with transaction.atomic():
-            pa, user = _resolve(claims, lock=True, status_only=True)
-            if pa is None:
-                return _page(request, status=410)
-            if (pa.payload["tier"] != 3
-                    or set(request.POST) - {"action", "csrfmiddlewaretoken"} or request.FILES
-                    or any(len(request.POST.getlist(k)) != 1 for k in request.POST)):
-                return _page(request, "error", status=400,
-                             message="Use the status button on this page.")
-            if not _has_proof(request, pa, user):
-                return _page(request, "pin", status=403,
-                             message="Enter your transaction PIN to continue.")
-        response = _form(request, pa, user)
-        current, current_user = _resolve(claims, status_only=True)
-        if current is None or not _has_proof(request, current, current_user):
-            return _page(request, status=410)
-        return response
     with transaction.atomic():
         pa, user = _resolve(claims, lock=True)
         if pa is None:
@@ -406,74 +303,54 @@ def _submit(request, claims):
                                 secure=True, httponly=True, samesite="Strict", path=request.path)
             return response
         if not _has_proof(request, pa, user):
-            return _page(request, "pin", status=403,
-                         message="Enter your transaction PIN to continue.")
-        if action == "tier2" and pa.payload["tier"] == 2:
-            return _page(request, "unavailable", status=409, message=UNAVAILABLE)
-        if action != "address" or pa.payload["tier"] != 3:
-            return _page(request, "unavailable", status=400,
-                         message="This action is not available from this verification link.")
-        if not (user.tier1_identity_verified and user.face_verified
-                and user.email_verified and user.phone_verified and user.tier >= 2):
-            return _form(request, pa, user, refresh_status=False)
-        if user.address_verified:
-            return _page(request, "complete")
-        if user.address_verification_pending:
-            return _pending_page(request)
-        from wallet.address_verification import tier3_address_capability
-
-        if tier3_address_capability()["tier3_address_available"] is False:
-            return _form(request, pa, user, refresh_status=False)
-        if _bank_address_unavailable():
-            return _form(request, pa, user, refresh_status=False)
-        data, values, error = _address_data(request)
-        if error:
-            return _form(request, pa, user, status=400, message=error, values=values, refresh_status=False)
-        # Commit the claim BEFORE making a provider call. A timeout/crash must not
-        # roll back to READY and allow a second external verification. Conditional
-        # update also guards DBs where select_for_update is unavailable (SQLite).
-        if not PendingAction.objects.filter(pk=pa.pk, state=READY).update(state=PROCESSING):
-            return _page(request, status=409)
-
+            return _page(request, "pin", status=403, message="Enter your transaction PIN to continue.")
+        if (any(len(request.POST.getlist(k)) != 1 for k in request.POST)
+                or any(len(request.FILES.getlist(k)) != 1 for k in request.FILES)):
+            return _page(request, "error", status=400, message="Use one value for each field.")
+        from banking.web_verification import validate_fields, OPERATION_LIMITS
+        try:
+            validate_fields(action, request.POST, request.FILES)
+        except ValueError as exc:
+            return _form(request, pa, user, message=str(exc), status=400)
+        if action in OPERATION_LIMITS:
+            scope, limit, window = OPERATION_LIMITS[action]
+            if ratelimit(scope, limit, window)(lambda _request: None)(request) is not None:
+                return _form(request, pa, user, status=429,
+                             message="Too many requests. Please wait before trying again.")
+        # Claim the browser action before leaving the transaction for bank I/O.
+        # Chat cancellation and a second POST cannot re-enter this operation.
+        pa.state = PROCESSING
+        pa.save(update_fields=["state"])
+    from banking.web_verification import submit
+    from banking.client import ProviderError
+    status, uncertain = 200, False
     try:
-        result = _run_address_operation(request, user, data)
-        body = json.loads(result.content)
-        user.refresh_from_db()
-        verified = (result.status_code == 200 and isinstance(body, dict)
-                    and body.get("success") is True and user.address_verified)
-    except Exception:  # Do not log exception text, images, identities or provider payloads.
-        PendingAction.objects.filter(pk=pa.pk, state=PROCESSING).update(state=REVIEW)
-        return _page(request, "review", status=503)
-    if verified:
-        PendingAction.objects.filter(pk=pa.pk, state=PROCESSING).update(state=COMPLETE)
-        response = _page(request, "complete")
-        response.delete_cookie(_cookie_name(pa), path=request.path, samesite="Strict")
-        return response
-    if result.status_code == 202 and isinstance(body, dict) and body.get("pending") is True:
-        pa.payload["address_pending"] = True
-        PendingAction.objects.filter(pk=pa.pk, state=PROCESSING).update(state=REVIEW, payload=pa.payload)
-        return _pending_page(request)
-    if result.status_code in (400, 403, 409, 413, 422, 429):
-        # Only an explicit rejection permits correction/retry. Never echo raw
-        # provider messages; they may contain identity numbers or uploaded data.
-        PendingAction.objects.filter(pk=pa.pk, state=PROCESSING).update(state=READY)
-        messages = {
-            403: "Verification was refused. Check your account verification status in WhatsApp.",
-            409: "Your account is not ready for this step. Check its status in WhatsApp.",
-            429: "Too many verification requests. Wait a few minutes before trying again.",
-        }
-        # Re-resolve after dispatch: unlink/reset/expiry must take effect even on
-        # an error page returned by a slow provider.
-        current, current_user = _resolve(claims)
-        if current is None:
+        result = submit(user, action, request.POST, request.FILES, pa.payload)
+        message = result.get("message") or ("Verification completed." if result.get("success") else "Your bank verification is processing.")
+    except ValueError as exc:
+        result, message = {}, str(exc)
+        status = 400
+    except ProviderError:
+        result, message = {}, "The service could not confirm the result. Check status before submitting again."
+        status = 503
+    except Exception:
+        result, message = {}, "We could not confirm this verification. Please contact support before trying again."
+        status, uncertain = 503, True
+    with transaction.atomic():
+        current, owner = _resolve(claims, lock=True, completing=True)
+        if not current:
             return _page(request, status=410)
-        correction = "We could not verify this address. Check every address field."
-        if _proof_required():
-            correction += " Use a clear utility bill or bank statement showing your name and address."
-        return _form(request, current, current_user, status=result.status_code, values=values,
-                     message=messages.get(result.status_code, correction))
-    PendingAction.objects.filter(pk=pa.pk, state=PROCESSING).update(state=REVIEW)
-    return _page(request, "review", status=503)
+        current.state = READY
+        if not _has_proof(request, current, owner):
+            return _page(request, status=410)
+        for key in ("identity_reference", "address_reference"):
+            if result.get(key):
+                current.payload[key] = result[key]
+        current.state = REVIEW if uncertain else READY
+        current.save(update_fields=["payload", "state"])
+    if uncertain:
+        return _page(request, "error", status=status, message=message)
+    return _form(request, current, owner, message=message, status=status)
 
 
 @csrf_protect

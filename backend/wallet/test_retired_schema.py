@@ -9,7 +9,8 @@ from django.utils import timezone
 from wallet.funding_test_fixtures import funding_hold
 from wallet.models import BillFundingBinding, BillFundingRefund, Transaction, UnsettledFunding, Wallet
 from wallet.services import debit, refund
-from wallet.tests import make_user
+from banking.test_client import CONFIG
+from banking.test_fixtures import make_bank_user as make_user
 
 remove = importlib.import_module("wallet.migrations.0031_drop_retired_account_schema")
 detach = importlib.import_module("wallet.migrations.0030_detach_retired_funding")
@@ -21,7 +22,7 @@ class FixtureRollback(Exception):
     pass
 
 
-@override_settings(WEMA_PARTNERSHIP_MODE="active", WEMA_BILLER_MODE="active")
+@override_settings(NINEPSB=CONFIG)
 class RetiredSchemaTests(TransactionTestCase):
     def setUp(self):
         self.old = remove.historical_apps(connection)
@@ -59,7 +60,6 @@ class RetiredSchemaTests(TransactionTestCase):
 
     def test_empty_schema_removal_preserves_money_and_partnership_bill_refunds(self):
         user, _ = make_user("08077770002", "schema-money@example.test", balance="1000", tier=3)
-        Wallet.objects.filter(user=user).update(account_number="0457777002")
         bill = debit(user, "100", "Airtime — MTN")
         held_user, _ = make_user("08077770003", "schema-hold@example.test")
         hold = funding_hold(held_user, "100")

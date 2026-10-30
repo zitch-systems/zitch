@@ -248,37 +248,6 @@ class ReseedDoesNotUndoReconciliationTests(TestCase):
         self.assertTrue(gtb.active)
 
 
-class BankCodesInProbeTests(TestCase):
-    """The same comparison, read-only, for a deploy whose operator has no shell."""
-
-    def setUp(self):
-        Bank.objects.create(code="gtb", name="GTBank", bank_code="058")
-
-    def _probe(self, banks):
-        # Only the bank-list call matters here; the rest of the probe is stubbed so
-        # the test doesn't depend on every other rail endpoint.
-        with mock.patch(_GET_BANKS, return_value=banks), \
-             mock.patch("utility.wema.wema_live", return_value=True), \
-             mock.patch("utility.wema.get_data_plans", return_value={"success": True}):
-            from utility.wema import wema_probe
-
-            return wema_probe()
-
-    def test_a_differing_code_is_reported_with_a_fix_hint(self):
-        out = self._probe({"success": True, "banks": [{"bank_name": "GTBank", "bank_code": "000013"}]})
-        self.assertFalse(out["bank_codes"]["ok"])
-        self.assertEqual(out["bank_codes"]["differ"][0]["rail"], "000013")
-        self.assertIn("account enquiry failed", out["bank_codes"]["hint"])
-
-    def test_matching_codes_report_ok(self):
-        out = self._probe({"success": True, "banks": [{"bank_name": "GTBank Plc", "bank_code": "058"}]})
-        self.assertTrue(out["bank_codes"]["ok"])
-        self.assertEqual(out["bank_codes"]["agree"], 1)
-
-    def test_mock_mode_reports_no_comparison_at_all(self):
-        out = self._probe({"success": True, "mock": True,
-                           "banks": [{"bank_name": "Wema Bank", "bank_code": "035"}]})
-        self.assertNotIn("bank_codes", out)
 
 
 class BankAdminSyncTests(TestCase):

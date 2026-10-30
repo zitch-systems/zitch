@@ -12,6 +12,7 @@ Three defects from one production thread, and the invariant each one leaves:
 * The Flow's closing screen rendered one sentence for every ending, so a settled
   transfer, a queued one and a refused one looked alike at a glance.
 """
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -33,6 +34,7 @@ def _identity_action(user, action_type="kyc", **payload):
         expires_at=timezone.now() + timedelta(minutes=10))
 
 
+@bank_channel_case
 class TypedIdentityIsAnsweredTests(TestCase):
     """The escape hatch and the typed-answer path on an open identity Flow."""
 
@@ -123,6 +125,7 @@ class TypedIdentityIsAnsweredTests(TestCase):
         self.assertIn("11-digit BVN", reply.call_args[0][1])
 
 
+@bank_channel_case
 class BankDetectedFromTheAccountNumberTests(TestCase):
     """"Send 1000 to Mutumin 2217940528" — a complete instruction that used to
     open the guided form because it named no bank."""
@@ -196,6 +199,7 @@ class BankDetectedFromTheAccountNumberTests(TestCase):
         form.assert_not_called()
 
 
+@bank_channel_case
 class TerminalScreenReportsTheOutcomeTests(TestCase):
     """The closing screen says WHICH ending this was, in its heading."""
 

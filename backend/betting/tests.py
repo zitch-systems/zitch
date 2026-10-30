@@ -1,21 +1,27 @@
 """Tests for betting wallet funding."""
+from django.test import override_settings as _bank_test_settings
+from banking.test_client import CONFIG as _BANK_TEST_CONFIG
 import json
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import Client, TestCase
 
 from wallet.models import BankHistoryCheckpoint
 from wallet.services import get_or_create_wallet
-from wallet.tests import make_user
+from banking.test_fixtures import make_bank_user as make_user
 
 from utility.catalogue_fixtures import map_billers
 
 from .models import BettingPlatform
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class BettingTests(TestCase):
     def setUp(self):
         self.client = Client()
+        self.enterContext(patch("betting.views.vtu_purchase", return_value={
+            "success": True, "pending": False}))
         self.user, self.token = make_user("08030000001", "uche@zitch.test", balance="10000")
         wallet = get_or_create_wallet(self.user)
         wallet.account_number = "0453000001"

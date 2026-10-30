@@ -342,29 +342,27 @@ class User(AbstractUser):
         return self.bvn_verified or self.nin_verified
 
     def recompute_tier(self) -> None:
-        """Derive the KYC tier from the verifications completed (ascending):
-        Tier 1 needs verified contact details and either BVN or NIN; Tier 2
-        needs a verified identity and Prembly liveness; Tier 3 adds address verification.
-
-        Both contact requirements apply to every account, however it signed up.
-        The app earns `phone_verified` at signup (that IS the signup OTP); a
-        WhatsApp signup earns it in the chat KYC flow, because a messenger
-        session outlives a SIM swap and so is not by itself proof of the
-        number."""
-        has_identity = self.tier1_identity_verified
-
-        # Both contact channels must be proven before any tier above the floor.
-        if not (self.email_verified and self.phone_verified):
-            self.tier = 0
-        elif (has_identity and self.face_verified
-                and self.address_verified):
-            self.tier = 3
-        elif has_identity and self.face_verified:
-            self.tier = 2
-        elif self.tier1_identity_verified:
-            self.tier = 1
-        else:
-            self.tier = 0
+        """9PSB controls bank tiers; an identity lookup is not an upgrade."""
+        from banking.accounts import account_for
+        from banking.models import AccountUpgrade
+        self.tier = 0
+        if not self.pk or not self.email_verified or not self.phone_verified:
+            return
+        bank = account_for(self)
+        if not bank or bank.tier < 1:
+            return
+        kinds = set(IdentityProof.objects.filter(user=self,
+            source__in=["9psb_otp", "9psb_face"]).values_list("identity_type", flat=True))
+        if not kinds.intersection({"bvn", "nin"}):
+            return
+        self.tier = 1
+        if kinds >= {"bvn", "nin"} and bank.tier >= 2:
+            approved = AccountUpgrade.objects.filter(account=bank, state="approved")
+            if approved.filter(tier__gte=2).exists():
+                self.tier = 2
+            if bank.tier >= 3 and self.address_verified and approved.filter(tier=3,
+                    address_verification__state="verified").exists():
+                self.tier = 3
 
     def set_address(self, raw: str) -> None:
         self.address = (raw or "").strip()[:255]
@@ -427,6 +425,8 @@ class IdentityProof(models.Model):
 
     IDENTITY_CHOICES = ((BVN, "BVN"), (NIN, "NIN"))
     SOURCE_CHOICES = (
+        ("9psb_otp", "9PSB identity OTP"),
+        ("9psb_face", "9PSB facial verification"),
         (WEMA_WALLET_OTP, "Wema wallet OTP"),
         (WEMA_FACE, "Wema hosted face verification"),
         (WEMA_TIER2, "Wema Tier 2 upgrade"),

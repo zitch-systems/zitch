@@ -10,6 +10,7 @@ The chat card is still correct on every other rung. An SMS code and the dev/test
 PIN prompt have no card of their own, so that message IS their card; suppressing
 it there would leave the customer with a charge to authorise and no way to.
 """
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -31,6 +32,7 @@ def _airtime_action(user, state):
         expires_at=timezone.now() + timedelta(minutes=5))
 
 
+@bank_channel_case
 class TheFlowCardIsTheOnlyCardTests(TestCase):
 
     def setUp(self):

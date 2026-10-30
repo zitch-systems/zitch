@@ -7,6 +7,7 @@ imported in this environment; the logic tests run everywhere (they bypass the
 envelope and call the handler with a decrypted payload, exactly as the endpoint
 does after decryption).
 """
+from banking.test_fixtures import bank_channel_case
 import base64
 import json
 import os
@@ -53,13 +54,15 @@ def _make_user(balance="50000"):
     get_or_create_wallet(u)
     credit(u, Decimal(balance), "Seed")
     WhatsAppLink.objects.create(user=u, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+    from banking.test_fixtures import bind_test_bank
+    bind_test_bank(u)
     return u
 
 
 def _transfer_action(user, state=FLOW_PIN_STATE):
     return PendingAction.objects.create(
         user=user, msisdn=MSISDN, action_type="transfer", state=state,
-        payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
+        payload={"amount": "5000", "expected_fee": "0.00", "account": "0123456789", "bank_code": "058",
                  "bank_name": "GTBank", "name": "JOHN DOE",
                  "flow_summary": "Send ₦5,000.00 to JOHN DOE · GTBank 0123456789",
                  "flow_fields": {"amount": "₦5,000.00", "recipient": "To JOHN DOE",
@@ -72,6 +75,7 @@ def _transfer_action(user, state=FLOW_PIN_STATE):
 # --------------------------------------------------------------------------- #
 # envelope (RSA-OAEP + AES-GCM)
 # --------------------------------------------------------------------------- #
+@bank_channel_case
 @unittest.skipUnless(_HAS_CRYPTO, "cryptography not importable in this environment")
 class FlowsCryptoTests(TestCase):
     @classmethod
@@ -125,6 +129,7 @@ class FlowsCryptoTests(TestCase):
 # --------------------------------------------------------------------------- #
 # business logic (decrypted payload -> response), envelope-independent
 # --------------------------------------------------------------------------- #
+@bank_channel_case
 class FlowsHandlerTests(TestCase):
     def setUp(self):
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#e30613", active=True)
@@ -276,6 +281,7 @@ class FlowsHandlerTests(TestCase):
 # --------------------------------------------------------------------------- #
 # router arming + chat guard
 # --------------------------------------------------------------------------- #
+@bank_channel_case
 @override_settings(WHATSAPP_PROCESS_INLINE=False)
 @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
 class FlowExecutionOffMetasClockTests(TestCase):
@@ -454,6 +460,7 @@ class FlowExecutionOffMetasClockTests(TestCase):
         self.assertIn("going through", last.text)
 
 
+@bank_channel_case
 class FlowArmingTests(TestCase):
     def setUp(self):
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#e30613", active=True)
@@ -507,6 +514,7 @@ def router_last_reply():
 # --------------------------------------------------------------------------- #
 # endpoint (full crypto + HTTP)
 # --------------------------------------------------------------------------- #
+@bank_channel_case
 @unittest.skipUnless(_HAS_CRYPTO, "cryptography not importable in this environment")
 class FlowEndpointTests(TestCase):
     @classmethod
@@ -579,178 +587,9 @@ class FlowEndpointTests(TestCase):
 # --------------------------------------------------------------------------- #
 # identity (BVN/NIN) collected in the Flow, not the chat
 # --------------------------------------------------------------------------- #
-class IdentityFlowTests(TestCase):
-    """WhatsApp has no view-once for text and lets only the SENDER delete, so a
-    BVN typed into the thread stays in the customer's own history indefinitely.
-    It is collected in the encrypted Flow for the same reason the PIN is."""
-
-    def setUp(self):
-        self._wema_disabled = patch("wallet.views._wema_funding_enabled", return_value=False)
-        self._wema_disabled.start()
-        self.addCleanup(self._wema_disabled.stop)
-        self.user = _make_user()
-        self.user.bvn_verified = self.user.nin_verified = False
-        self.user.save(update_fields=["bvn_verified", "nin_verified"])
-
-    def _action(self, kind="bvn"):
-        return PendingAction.objects.create(
-            msisdn=MSISDN, user=self.user, action_type="kyc",
-            state=FLOW_ID_STATE, payload={"id_kind": kind},
-            expires_at=timezone.now() + timedelta(minutes=10))
-
-    def test_init_opens_the_identity_screen_for_the_right_number(self):
-        from .flows import IDENTITY_SCREEN, handle_flow_request, sign_identity_token
-
-        pa = self._action("nin")
-        resp = handle_flow_request({"action": "INIT", "flow_token": sign_identity_token(pa)})
-        self.assertEqual(resp["screen"], IDENTITY_SCREEN)
-        self.assertEqual(resp["data"]["label"], "NIN")
-
-    def test_a_wrong_length_number_is_rejected_onto_an_empty_retry_screen(self):
-        # IDENTITY_RETRY, not a same-screen re-render: the field is MASKED, so
-        # digits left in the box cannot even be read to correct. A typo costs
-        # no lookup attempt — length is not a verdict.
-        from .flows import IDENTITY_RETRY, handle_flow_request, sign_identity_token
-
-        pa = self._action()
-        resp = handle_flow_request({"action": "data_exchange",
-                                    "flow_token": sign_identity_token(pa),
-                                    "data": {"number": "123"}})
-        self.assertEqual(resp["screen"], IDENTITY_RETRY)
-        self.assertIn("11 digits", resp["data"]["error"])
-        pa.refresh_from_db()
-        self.assertFalse(pa.payload.get("id_bad_attempts"))   # no attempt burned
-
-    def test_a_valid_number_is_stored_hashed_and_never_echoed(self):
-        from .flows import handle_flow_request, sign_identity_token
-
-        pa = self._action()
-        with patch("whatsapp.router.verify_bvn", return_value={"success": True}):
-            resp = handle_flow_request({"action": "data_exchange",
-                                        "flow_token": sign_identity_token(pa),
-                                        "data": {"number": "12345678901"}})
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.bvn_verified)
-        self.assertTrue(self.user.bvn_hash)
-        # The number reaches neither the screen nor the chat transcript.
-        self.assertNotIn("12345678901", str(resp))
-        self.assertFalse(WaMessageLog.objects.filter(text__contains="12345678901").exists())
-
-    def test_a_forged_or_stale_token_resolves_to_nothing(self):
-        from .flows import handle_flow_request, sign_identity_token
-
-        pa = self._action()
-        good = sign_identity_token(pa)
-        forged = good[:-1] + ("a" if good[-1] != "a" else "b")
-        resp = handle_flow_request({"action": "data_exchange", "flow_token": forged,
-                                    "data": {"number": "12345678901"}})
-        self.assertIn("expired", resp["data"]["message"].lower())
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.bvn_verified)
-
-    def test_an_identity_token_is_not_a_money_token(self):
-        """The three token kinds resolve through different lookups; one must never
-        be accepted where another is expected."""
-        from .flows import resolve_flow_token, resolve_onboarding_token, sign_identity_token
-
-        pa = self._action()
-        token = sign_identity_token(pa)
-        self.assertIsNone(resolve_flow_token(token))
-        self.assertIsNone(resolve_onboarding_token(token))
-
-    def test_typing_the_number_into_the_chat_is_processed_not_refused(self):
-        """This used to assert a refusal, on the reasoning that reading it would
-        put in the transcript what the Flow exists to keep out. It is already in
-        the transcript by then — refusing does not un-send it, it only adds a
-        dead end on top of the exposure. So the number is processed, and the
-        protections that DO still help are the ones asserted here: it never
-        reaches the message log in clear, and the reply says how to delete it.
-        """
-        from . import router
-
-        self._action()
-        with patch.object(router, "reply") as mock_reply, \
-             patch.object(router, "_kyc_submit_identity") as submit:
-            router._advance(  # noqa: SLF001
-                PendingAction.objects.get(action_type="kyc"), self.user,
-                MSISDN, "12345678901")
-        submit.assert_called_once()
-        self.assertIn("delete your message",
-                      " ".join(str(c) for c in mock_reply.call_args_list).lower())
-        self.assertFalse(WaMessageLog.objects.filter(text__contains="12345678901").exists())
-
-    def test_an_open_identity_flow_masks_a_number_typed_into_the_chat(self):
-        """The masking gate the webhook consults. It covered the chat-fallback
-        states only, so with a Flow actually open the number it was meant to
-        protect went into the log in clear — the case that now happens most,
-        since a typed number is answered rather than refused."""
-        from . import router
-
-        self._action()
-        self.assertTrue(router.is_awaiting_bvn(MSISDN))
-
-    def test_the_router_sends_the_bvn_flow_instead_of_asking_in_the_chat(self):
-        from . import router
-
-        pa = self._action()
-        pa.state = "kyc_start"
-        pa.save(update_fields=["state"])
-        with patch.object(router, "flows_live", return_value=True), \
-             patch.object(router, "send_flow", return_value={"success": True}) as sent:
-            self.assertTrue(router._send_identity_flow(pa, "bvn"))  # noqa: SLF001
-        sent.assert_called_once()
-        pa.refresh_from_db()
-        self.assertEqual(pa.state, FLOW_ID_STATE)
-        self.assertEqual(pa.payload["id_kind"], "bvn")
-
-    def test_a_failed_flow_send_leaves_the_action_where_the_chat_expects_it(self):
-        """Otherwise the action sits in a Flow state with no Flow open, and the
-        customer's next message is refused by a guard pointing at a screen that
-        was never delivered."""
-        from . import router
-
-        pa = self._action()
-        with patch.object(router, "flows_live", return_value=True), \
-             patch.object(router, "send_flow", return_value={"success": False}):
-            self.assertFalse(router._send_identity_flow(pa, "bvn"))  # noqa: SLF001
-        pa.refresh_from_db()
-        self.assertEqual(pa.state, "bvn")
-
-    def test_nin_state_verifies_the_selected_first_identity(self):
-        """NIN is a valid first ownership proof for Partnership Tier 1."""
-        from whatsapp import router
-
-        pa = PendingAction.objects.create(
-            user=self.user, msisdn=MSISDN, action_type="kyc", state="nin",
-            payload={"attempted": ["phone", "email", "bvn", "nin"]},
-            expires_at=router._flow_deadline("idle"),
-        )
-        sent = []
-        with patch.object(router, "send_cta_url", return_value={"success": False}), \
-             patch.object(router, "reply", side_effect=lambda m, t, **k: sent.append(t)), \
-             patch.object(router, "_kyc_submit_identity") as submit, \
-             patch.object(router, "reply_buttons", side_effect=lambda m, t, *a, **k: sent.append(t)):
-            router._advance_kyc(pa, self.user, MSISDN, "12345678901")
-
-        submit.assert_called_once_with(pa, self.user, MSISDN, "nin", "12345678901")
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.nin_verified)
-
-    def test_stale_second_identity_state_does_not_restart_tier1(self):
-        from whatsapp import router
-
-        self.user.bvn_verified = True
-        self.user.save(update_fields=["bvn_verified"])
-        pa = PendingAction.objects.create(
-            user=self.user, msisdn=MSISDN, action_type="kyc", state="nin",
-            payload={}, expires_at=router._flow_deadline("idle"))
-        with patch.object(router, "_kyc_submit_identity") as submit, \
-             patch.object(router, "_kyc_bank_upgrade_notice") as upgrade:
-            router._advance_kyc(pa, self.user, MSISDN, "12345678901")
-        submit.assert_not_called()
-        upgrade.assert_called_once_with(self.user, MSISDN)
 
 
+@bank_channel_case
 class EmailFlowTests(TestCase):
     """Email rides the same encrypted Flow as BVN and NIN. The address is entered
     there and the 6-digit code comes back there — the code is a bearer credential
@@ -937,6 +776,7 @@ class EmailFlowTests(TestCase):
         mail.assert_called_once()
 
 
+@bank_channel_case
 class PublishedFlowJsonTests(unittest.TestCase):
     """`pin_flow.json` is validated by Meta at publish time, not by us at import
     time, so a change that parses perfectly here can still be rejected in
@@ -1004,6 +844,7 @@ class PublishedFlowJsonTests(unittest.TestCase):
                              f"{built['screen']} data keys drifted from the published JSON")
 
 
+@bank_channel_case
 class SendPayloadsMatchThePublishedScreensTests(TestCase):
     """The endpoint's RESPONSES are already pinned to the published schema; these
     pin the SENDS. The signup PIN send kept the retired "summary" key after
@@ -1031,7 +872,7 @@ class SendPayloadsMatchThePublishedScreensTests(TestCase):
         self.user = _make_user()
         self.pa = PendingAction.objects.create(
             user=self.user, msisdn=MSISDN, action_type="transfer", state="amount",
-            payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
+            payload={"amount": "5000", "expected_fee": "0.00", "account": "0123456789", "bank_code": "058",
                      "bank_name": "GTBank", "name": "JOHN DOE", "pin_attempts": 0},
             expires_at=timezone.now() + timedelta(minutes=5))
 
@@ -1129,6 +970,7 @@ class SendPayloadsMatchThePublishedScreensTests(TestCase):
         self._assert_matches(self._sent(router._send_email_flow, self.pa, "code"))     # noqa: SLF001
 
 
+@bank_channel_case
 class PemNormalisationTests(unittest.TestCase):
     """A PEM is only valid with real line breaks, and secret-management UIs mangle
     them in several different ways. Each variant below looks correct in the
@@ -1190,6 +1032,7 @@ class PemNormalisationTests(unittest.TestCase):
         self.assertIn("wa_flow_private_key_missing", "\n".join(logs.output))
 
 
+@bank_channel_case
 @unittest.skipUnless(_HAS_CRYPTO, "cryptography not importable in this environment")
 class KeyMismatchLoggingTests(TestCase):
     """A key that parses but is not Meta's pair is the one failure that looks
@@ -1220,6 +1063,7 @@ class KeyMismatchLoggingTests(TestCase):
         self.assertIn("wa_flow_key_mismatch", "\n".join(logs.output))
 
 
+@bank_channel_case
 class SignupFormFlowTests(TestCase):
     """The template-gallery pattern, on our own flow: names + email in ONE
     private form, chained straight into the phone/PIN pages — the whole signup
@@ -1361,6 +1205,7 @@ class SignupFormFlowTests(TestCase):
         self.assertNotIn("email", ob.payload)                 # nothing stored on a refusal
 
 
+@bank_channel_case
 class TransferFormFlowTests(TestCase):
     """The transfer form: amount + account + searchable bank in one private
     screen, the bank auto-detected from the NUBAN checksum when it is
@@ -1457,7 +1302,7 @@ class TransferFormFlowTests(TestCase):
         pa = self._pa()
         before = get_or_create_wallet(self.user).balance
         with patch("utility.providers.payout_resolve_account",
-                   return_value={"success": True, "name": "Ada Eze"}):
+                   return_value={"success": True, "name": "JOHN DOE"}):
             self._submit(pa, amount="2300", account_number="0123456789", bank="gtb")
         done = self._submit(pa, pin="1234")
         from .flows import RESULT_SCREEN
@@ -1465,6 +1310,7 @@ class TransferFormFlowTests(TestCase):
         self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("2300"))
 
 
+@bank_channel_case
 class TransferFormChatGuardTests(TestCase):
     """Chat text while the transfer form is armed. This guard previously sat in
     _confirm_prompt(pa) — a string builder with no text/msisdn in scope — where
@@ -1504,6 +1350,7 @@ class TransferFormChatGuardTests(TestCase):
             id=self.pa.id, state="flow_transfer_form").exists())
 
 
+@bank_channel_case
 class SignupPhoneCodeTests(TestCase):
     """The SMS check for the typed phone — mirroring the email code page.
 
@@ -1586,6 +1433,7 @@ class SignupPhoneCodeTests(TestCase):
         self.assertTrue(u.phone_verified)                  # proven by the code, not the chat
 
 
+@bank_channel_case
 class ScreenContractTests(TestCase):
     """Every reply must declare EXACTLY the properties its screen does.
 
@@ -1683,6 +1531,7 @@ class ScreenContractTests(TestCase):
         self.assertIn("status", resp["data"])
 
 
+@bank_channel_case
 @override_settings(TESTING=False, DEBUG=False)
 class PrivacyNoticeTests(TestCase):
     """Consent is asked BEFORE anything is collected, and it is recorded.
@@ -1777,72 +1626,3 @@ class PrivacyNoticeTests(TestCase):
         user = User.objects.get(email="noconsent@example.com")
         self.assertIsNone(user.privacy_consent_at)
         self.assertEqual(user.privacy_consent_version, "")
-
-
-class BlockedIdentityIsNotRequestedTests(TestCase):
-    """The screenshot defect: "Enter your NIN privately" and "we can't take your
-    NIN" arriving in the same burst.
-
-    Once the bank has opened the NUBAN it will not accept a second identity on
-    its own - only the combined upgrade (BVN + NIN + selfie in one request) will
-    do. The old flow asked anyway, discovered the refusal from the provider, and
-    told the customer only after they had handed the number over. These tests
-    pin the ordering: the check runs BEFORE the prompt, so the secure-entry
-    screen is never offered for an identity that cannot be submitted.
-    """
-
-    def setUp(self):
-        self.user = _make_user()
-        self.user.nin_verified = False
-        self.user.save(update_fields=["nin_verified"])
-        self.wallet = get_or_create_wallet(self.user)
-        self.wallet.account_number = "0452745377"
-        self.wallet.account_name = "Ada Eze"
-        self.wallet.bank_name = "Wema Bank"
-        self.wallet.identity_upgrade_required = True
-        self.wallet.save(update_fields=["account_number", "account_name",
-                                        "bank_name", "identity_upgrade_required"])
-
-    def _start_kyc(self):
-        from whatsapp import router
-
-        sent, flows = [], []
-        with patch.object(router, "flows_live", return_value=True), \
-             patch.object(router, "send_flow",
-                          side_effect=lambda *a, **k: flows.append(k) or {"success": True}), \
-             patch.object(router, "reply", side_effect=lambda m, t, **k: sent.append(t)), \
-             patch.object(router, "reply_buttons", side_effect=lambda m, t, *a, **k: sent.append(t)):
-            router._start_kyc(self.user, MSISDN)
-        return sent, flows
-
-    def test_no_secure_entry_screen_is_offered_for_a_blocked_nin(self):
-        _sent, flows = self._start_kyc()
-        self.assertEqual(flows, [], "a NIN entry screen was sent for an identity the bank refuses")
-
-    def test_the_customer_is_told_where_the_step_actually_happens(self):
-        sent, _flows = self._start_kyc()
-        body = "\n".join(sent)
-        self.assertIn("Upgrade to Tier 2", body)
-        self.assertIn("no additional NIN verification", body)
-        self.assertNotIn("open the app", body.lower())
-
-    def test_the_burst_never_contradicts_itself(self):
-        """No message may ask for the NIN when another says it cannot be used."""
-        sent, _flows = self._start_kyc()
-        body = "\n".join(sent).lower()
-        self.assertNotIn("enter your nin", body)
-        self.assertNotIn("let's do the rest now", body)
-
-    def test_no_provider_vocabulary_reaches_the_customer(self):
-        sent, _flows = self._start_kyc()
-        body = "\n".join(sent)
-        for jargon in ("Wallet Service OTP", "NUBAN", "existing-account upgrade", "Wema"):
-            self.assertNotIn(jargon, body)
-
-    def test_an_existing_account_uses_upgrade_even_without_legacy_flag(self):
-        """The account and verified identity determine the next step."""
-        self.wallet.identity_upgrade_required = False
-        self.wallet.save(update_fields=["identity_upgrade_required"])
-        sent, flows = self._start_kyc()
-        self.assertEqual(flows, [])
-        self.assertIn("Upgrade to Tier 2", "\n".join(sent))

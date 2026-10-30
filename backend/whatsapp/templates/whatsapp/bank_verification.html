@@ -1,0 +1,26 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Zitch · 9PSB verification</title>
+<style nonce="{{ nonce }}">body{font:16px system-ui;background:#f2f6f5;color:#132b27;margin:0}main{max-width:620px;margin:auto;padding:24px}section{background:white;border-radius:16px;padding:20px;margin:20px 0}h1{font-size:26px}h2{font-size:20px}label{display:block;margin-top:16px}input,select,button{box-sizing:border-box;width:100%;padding:12px;border:1px solid #a4bbb5;border-radius:8px;font:inherit;margin-top:6px}button{background:#087b68;color:white;border:0;cursor:pointer;margin-top:18px}.notice{padding:16px;background:#d9eee6;border-radius:10px}small{display:block;line-height:1.5;color:#45645c}</style></head><body><main>
+<h1>Verify your 9PSB account</h1><p>Current Zitch tier: {{ tier }}. The bank must approve each upgrade.</p>
+{% if bank.sandbox %}<p class="notice">Sandbox testing only. Do not submit real customer identities or transfer real money.</p>{% endif %}
+{% if message %}<p class="notice" role="status">{{ message }}</p>{% endif %}
+<section><h2>BVN, NIN and face verification</h2><p>9PSB verifies ownership of your identity. Tier 2 requires both BVN and NIN.</p>
+<form method="post" enctype="multipart/form-data" autocomplete="off">{% csrf_token %}<input type="hidden" name="action" value="identity">
+{% for field in profile %}<label>{{ field.label }}<input name="{{ field.key }}" value="{{ field.value }}" maxlength="100" {% if field.key != 'ninUserId' %}required{% endif %}></label>{% endfor %}
+<label>Gender required by bank<select name="gender"><option value="0">Male</option><option value="1">Female</option></select></label>
+<label>Identity type<select name="kind"><option value="bvn">BVN</option><option value="nin">NIN</option></select></label>
+<label>Identity number<input name="identifier" type="password" inputmode="numeric" pattern="[0-9]{11}" minlength="11" maxlength="11" required autocomplete="off"></label>
+<label>Verification method<select name="method"><option value="OTP">Bank OTP</option><option value="FACIAL">Bank face verification</option></select></label>
+<label>Take a face photo (for face verification)<input type="file" name="face" accept="image/jpeg,image/png" capture="user"></label><button>Start verification</button></form>
+{% if identity_reference %}<form method="post" autocomplete="off">{% csrf_token %}<input type="hidden" name="action" value="otp"><label>Bank OTP<input name="otp" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label><button>Verify code</button></form>
+<form method="post">{% csrf_token %}<button name="action" value="identity_status">Check verification status</button></form>{% endif %}</section>
+<section><h2>Tier 2 or Tier 3 upgrade</h2><small>Provide the documents required by 9PSB. Tier 3 also needs a completed Prembly address report. A submitted request remains pending until the bank approves it.</small>
+<form method="post" enctype="multipart/form-data" autocomplete="off">{% csrf_token %}<input type="hidden" name="action" value="upgrade"><label>Requested tier<select name="tier"><option value="2">Tier 2</option><option value="3">Tier 3</option></select></label>
+<label>BVN<input name="bvn" type="password" inputmode="numeric" pattern="[0-9]{11}" maxlength="11" required></label><label>NIN<input name="nin" type="password" inputmode="numeric" pattern="[0-9]{11}" maxlength="11" required></label>
+{% for field in details %}<label>{{ field.label }}<input name="{{ field.key }}" maxlength="150" {% if field.key != 'idExpiryDate' and field.key != 'idNumber' %}required{% endif %}></label>{% endfor %}
+<label>ID type<select name="idType"><option value="1">National ID (NIN)</option><option value="2">Driver’s licence</option><option value="3">Voter’s card</option><option value="4">International passport</option></select></label>
+<label>Politically exposed person<select name="pep"><option value="NO">No</option><option value="YES">Yes</option></select></label>
+{% for field in documents %}<label>{{ field.label }}<input name="{{ field.key }}" type="file" accept="image/jpeg,image/png,application/pdf" required></label>{% endfor %}<button>Submit bank upgrade</button></form><form method="post">{% csrf_token %}<button name="action" value="upgrade_status">Check bank approval</button></form></section>
+<section><h2>Tier 3 address verification</h2><p>Prembly verifies your residential address after Tier 2.</p>{% if bank.address_verification_available %}<form method="post">{% csrf_token %}<input type="hidden" name="action" value="address">
+{% for field in address_fields %}<label>{{ field.label }}<input name="{{ field.key }}" maxlength="255" required></label>{% endfor %}<button>Request address verification</button></form>
+{% else %}<p class="notice">Address verification is temporarily unavailable. Please contact support.</p>{% endif %}
+{% if address_reference %}<form method="post">{% csrf_token %}<button name="action" value="address_status">Check address status</button></form>{% endif %}</section><small>This link is bound to your linked WhatsApp account and expires in 15 minutes. Never send your PIN, OTP or identity numbers as chat messages.</small></main></body></html>

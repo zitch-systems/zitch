@@ -93,7 +93,7 @@ type WalletValue = {
   availableBalance: number;
   totalBalance: number;
   historicalBalance: number;
-  fundingProvider?: 'partnership';
+  fundingProvider?: '9psb';
   firstName: string;
   fullName: string;
   avatar: string;
@@ -160,7 +160,7 @@ const WalletContext = createContext<WalletValue>({
 
 export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const [balances, setBalances] = useState(() => walletBalances(undefined));
-  const [fundingProvider, setFundingProvider] = useState<'partnership'>();
+  const [fundingProvider, setFundingProvider] = useState<'9psb'>();
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [avatar, setAvatar] = useState('');
@@ -234,7 +234,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
           setBalances(walletBalances(value));
           setBalanceLoaded(true);
           setBalanceError('');
-          setFundingProvider(value.provider === 'partnership' ? 'partnership' : undefined);
+          setFundingProvider(value.provider === '9psb' ? '9psb' : undefined);
           const first = String(value.user_first_name || '');
           const last = String(value.user_last_name || '');
           const named = String(first || last

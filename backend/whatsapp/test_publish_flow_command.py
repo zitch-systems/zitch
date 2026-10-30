@@ -1,4 +1,5 @@
 """Management publishing must verify the selected Flow, endpoint and whole JSON."""
+from banking.test_fixtures import bank_channel_case
 import hashlib
 import json
 from io import StringIO
@@ -20,6 +21,7 @@ ENDPOINT = "https://api.zitch.ng/webhooks/whatsapp/flow"
 TARGET = "whatsapp.management.commands.publish_flow"
 
 
+@bank_channel_case
 class _Resp:
     def __init__(self, payload, status=200):
         self._payload = payload
@@ -44,6 +46,7 @@ def _report(status="draft", flow_id="999", **overrides):
             "local_contract_sha256": digest, "published_contract_sha256": digest, **overrides}
 
 
+@bank_channel_case
 @override_settings(**LIVE)
 class PublishFlowCommandTests(SimpleTestCase):
     def setUp(self):

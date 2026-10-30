@@ -3,6 +3,9 @@ Zitch-to-Zitch transfer, and the tier / face-verification send limits.
 
 All run in MOCK provider mode (no keys), so funding settles automatically.
 """
+from django.test import override_settings as _bank_test_settings
+from banking.test_client import CONFIG as _BANK_TEST_CONFIG
+from banking.test_fixtures import make_bank_user as bank_user, bind_test_bank, mock_bank_io
 import io
 import json
 import uuid
@@ -80,6 +83,7 @@ def make_transaction_at(user, *, created, amount, service, direction=Transaction
         field.auto_now_add = auto_now_add
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class TransactionStatusLookupTests(TestCase):
     """The live single-transaction read the detail screen polls.
 
@@ -92,7 +96,7 @@ class TransactionStatusLookupTests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.user, self.token = make_user("08010000601", "txnstatus@zitch.test")
+        self.user, self.token = bank_user("08010000601", "txnstatus@zitch.test")
 
     def _post(self, payload):
         res = self.client.post(
@@ -122,7 +126,7 @@ class TransactionStatusLookupTests(TestCase):
     def test_another_users_reference_is_not_readable(self):
         """Scoped to the caller's own rows, so this is not a lookup oracle for
         other people's payment references."""
-        other, _token = make_user("08010000602", "other@zitch.test")
+        other, _token = bank_user("08010000602", "other@zitch.test")
         Transaction.objects.create(
             user=other, service="Transfer", amount=Decimal("500"),
             direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
@@ -136,34 +140,40 @@ class TransactionStatusLookupTests(TestCase):
         self.assertEqual(res.status_code, 400)
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class FxLimitTests(TestCase):
     """Currency conversion must enforce the same KYC tier / large-transfer face
     gate as every other money-out flow (regression for the FX limit bypass)."""
 
     def test_tier1_over_cap_blocked(self):
-        user, _ = make_user("08055500001", "fxa@zitch.test", balance="200000", tier=1)
+        user, _ = bank_user("08055500001", "fxa@zitch.test", balance="200000", tier=1)
         with self.assertRaises(FxError):  # ₦60k > ₦50k tier-1 cap
             create_fx_quote(user, "NGN", "USD", Decimal("60000"))
 
     def test_large_transfer_needs_face(self):
         # Tier-3 cap is ₦5M, but >= ₦100k requires face verification (not set here).
-        user, _ = make_user("08055500002", "fxb@zitch.test", balance="500000", tier=3)
+        user, _ = bank_user("08055500002", "fxb@zitch.test", balance="500000", tier=3)
         with self.assertRaises(FxError):
             create_fx_quote(user, "NGN", "USD", Decimal("150000"))
 
     def test_within_limit_allowed(self):
-        user, _ = make_user("08055500003", "fxc@zitch.test", balance="200000", tier=1)
+        user, _ = bank_user("08055500003", "fxc@zitch.test", balance="200000", tier=1)
         q = create_fx_quote(user, "NGN", "USD", Decimal("10000"))
         self.assertEqual(q.to_currency, "USD")
 
 
+@_bank_test_settings(NINEPSB={**_BANK_TEST_CONFIG, "TRANSFER_FEE_TOTAL": "0.00"})
 class WalletTests(TestCase):
     def setUp(self):
+        mock_bank_io(self, directory=True)
         self.client = Client()
-        self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="20000")
+        self.user, self.token = bank_user("08010000001", "ada@zitch.test", balance="20000")
         self._transfer_key_seq = 0
 
     def post(self, path, payload):
+        payload = dict(payload)
+        if path == "/api/transfer/send/":
+            payload.setdefault("expected_fee", "0.00")
         payload = dict(payload)
         if path == "/api/transfer/send/" and "idempotency_key" not in payload:
             self._transfer_key_seq += 1
@@ -245,8 +255,8 @@ class WalletTests(TestCase):
                          f"user_{recipient.spend_namespace.hex}")
 
     def test_transfer_rejects_recipient_key_that_does_not_match_alias(self):
-        alias_owner, _ = make_user("08020000021", "alias-owner@zitch.test")
-        other, _ = make_user("08020000022", "other-recipient@zitch.test")
+        alias_owner, _ = bank_user("08020000021", "alias-owner@zitch.test")
+        other, _ = bank_user("08020000022", "other-recipient@zitch.test")
 
         res, body = self.post("/api/transfer/send/", {
             "access_token": self.token,
@@ -264,7 +274,7 @@ class WalletTests(TestCase):
         self.assertEqual(self.balance(other), Decimal("0"))
 
     def test_transfer_rejects_malformed_opaque_recipient_key_without_500(self):
-        recipient, _ = make_user("08020000025", "valid-recipient@zitch.test")
+        recipient, _ = bank_user("08020000025", "valid-recipient@zitch.test")
 
         res, body = self.post("/api/transfer/send/", {
             "access_token": self.token,
@@ -281,8 +291,8 @@ class WalletTests(TestCase):
         self.assertEqual(self.balance(recipient), Decimal("0"))
 
     def test_transfer_replays_original_recipient_after_alias_changes(self):
-        original, _ = make_user("08020000023", "movable-alias@zitch.test")
-        replacement, _ = make_user("08020000024", "replacement@zitch.test")
+        original, _ = bank_user("08020000023", "movable-alias@zitch.test")
+        replacement, _ = bank_user("08020000024", "replacement@zitch.test")
         recipient_key = f"user_{original.spend_namespace.hex}"
         payload = {
             "access_token": self.token,
@@ -308,7 +318,8 @@ class WalletTests(TestCase):
         self.assertTrue(replay_body.get("success"))
         self.assertTrue(replay_body.get("duplicate"))
         self.assertEqual(self.balance(self.user), Decimal("15000"))
-        self.assertEqual(self.balance(original), Decimal("5000"))
+        self.assertEqual(self.balance(original), Decimal("0"))
+        self.bank_send.assert_called_once()
         self.assertEqual(self.balance(replacement), Decimal("0"))
 
     def test_history_returns_authoritative_direction(self):
@@ -316,7 +327,7 @@ class WalletTests(TestCase):
         off it. The label regex alone misclassifies credits like 'Wallet top-up'
         and 'Transfer from …', so the backend value is the source of truth."""
         credit(self.user, Decimal("5000"), "Wallet top-up")  # an inflow
-        make_user("08020000002", "bob@zitch.test")
+        bank_user("08020000002", "bob@zitch.test")
         self.post("/api/transfer/send/", {  # an outflow
             "access_token": self.token, "identifier": "08020000002",
             "amount": "1000", "transaction_pin": "1234",
@@ -331,31 +342,23 @@ class WalletTests(TestCase):
         self.assertEqual(res.status_code, 400)
 
     def test_account_create_requires_valid_id(self):
-        """A malformed BVN is refused as malformed.
-
-        Uses a customer who has NOT verified a BVN yet, because that is the only
-        state in which "enter a valid BVN" is the meaningful answer — the default
-        fixture is already verified, and for those the endpoint deliberately
-        answers 409 before it ever looks at the digits (see the test below).
-        """
-        _fresh, token = make_user("08020000901", "unverified@zitch.test",
-                                  identity_verified=False)
-        res, _ = self.post("/api/wallet/account/create/", {"access_token": token, "bvn": "123"})
+        _fresh, token = make_user("08020000901", "unverified@zitch.test", identity_verified=False)
+        with patch("banking.client.Client.initiate_identity") as initiate:
+            res, _ = self.post("/api/banking/identity/start/", {
+                "access_token": token, "kind": "bvn", "identifier": "123"})
         self.assertEqual(res.status_code, 400)
+        initiate.assert_not_called()
 
-    def test_account_create_refuses_a_bvn_that_is_already_verified(self):
-        """The one-time-BVN rule: a verified BVN is final and is never asked for
-        again, so this is refused before the digits are even considered. Only its
-        keyed hash is retained, and no later feature may train customers to
-        disclose the raw number a second time."""
-        res, body = self.post("/api/wallet/account/create/",
-                              {"access_token": self.token, "bvn": "22222222222"})
-        self.assertEqual(res.status_code, 409)
-        self.assertIn("already verified", body["message"].lower())
+    def test_retired_account_create_route_cannot_provision(self):
+        with patch("banking.client.Client.open_wallet") as provision:
+            response = self.client.post("/api/wallet/account/create/", {
+                "access_token": self.token, "bvn": "22222222222"})
+        self.assertEqual(response.status_code, 404)
+        provision.assert_not_called()
 
     # --- transfer ---
     def test_transfer_requires_a_client_idempotency_key(self):
-        make_user("08020000002", "bob@zitch.test")
+        bank_user("08020000002", "bob@zitch.test")
         res, body = self.post("/api/transfer/send/", {
             "access_token": self.token, "identifier": "08020000002",
             "amount": "5000", "transaction_pin": "1234",
@@ -366,7 +369,7 @@ class WalletTests(TestCase):
         self.assertEqual(self.balance(self.user), Decimal("20000"))
 
     def test_transfer_moves_funds_atomically(self):
-        bob, _ = make_user("08020000002", "bob@zitch.test")
+        bob, _ = bank_user("08020000002", "bob@zitch.test")
         res, body = self.post("/api/transfer/send/", {
             "access_token": self.token, "identifier": "08020000002",
             "amount": "5000", "transaction_pin": "1234",
@@ -374,26 +377,25 @@ class WalletTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["success"])
         self.assertEqual(self.balance(self.user), Decimal("15000"))
-        self.assertEqual(self.balance(bob), Decimal("5000"))
+        self.assertEqual(self.balance(bob), Decimal("0"))
+        self.bank_send.assert_called_once()
 
     def test_transfer_to_recipient_without_wallet_row(self):
-        """A recipient only gets a wallet when they first authenticate, so an
-        admin-created/seeded user can exist with no wallet row. Sending to them
-        must mint one and move the money, not 500 with a KeyError."""
+        """An unprovisioned recipient cannot receive a synthetic local credit."""
         bob = User.objects.create(username="08020000099", phone="08020000099",
                                   email="bob2@zitch.test")
-        self.assertFalse(Wallet.objects.filter(user=bob).exists())
         res, body = self.post("/api/transfer/send/", {
             "access_token": self.token, "identifier": "08020000099",
             "amount": "5000", "transaction_pin": "1234",
         })
-        self.assertEqual(res.status_code, 200)
-        self.assertTrue(body["success"])
-        self.assertEqual(self.balance(self.user), Decimal("15000"))
-        self.assertEqual(self.balance(bob), Decimal("5000"))
+        self.assertEqual(res.status_code, 422)
+        self.assertEqual(body["code"], "transfer_recipient_unavailable")
+        self.assertEqual(self.balance(self.user), Decimal("20000"))
+        self.assertFalse(Wallet.objects.filter(user=bob).exists())
+        self.bank_send.assert_not_called()
 
     def test_transfer_rejects_wrong_pin(self):
-        make_user("08020000002", "bob@zitch.test")
+        bank_user("08020000002", "bob@zitch.test")
         res, _ = self.post("/api/transfer/send/", {
             "access_token": self.token, "identifier": "08020000002",
             "amount": "5000", "transaction_pin": "0000",
@@ -422,7 +424,7 @@ class WalletTests(TestCase):
             txn.save()
 
     def test_transfer_rejects_insufficient_funds(self):
-        make_user("08020000002", "bob@zitch.test")
+        bank_user("08020000002", "bob@zitch.test")
         # 30,000 is within the tier-1 limit (50k) but above the 20k balance,
         # so this exercises the insufficient-funds path, not the limit guard.
         res, _ = self.post("/api/transfer/send/", {
@@ -441,8 +443,8 @@ class WalletTests(TestCase):
 
     # --- tier / face limits (check_send_limits) ---
     def test_transfer_blocked_over_tier_limit(self):
-        rich, token = make_user("08030000003", "rich@zitch.test", balance="500000", tier=1)
-        make_user("08040000004", "x@zitch.test")
+        rich, token = bank_user("08030000003", "rich@zitch.test", balance="500000", tier=1)
+        bank_user("08040000004", "x@zitch.test")
         # Tier 1 limit is 50,000.
         res = self.client.post("/api/transfer/send/", data=json.dumps({
             "access_token": token, "identifier": "08040000004",
@@ -453,14 +455,14 @@ class WalletTests(TestCase):
         self.assertEqual(res.json()["code"], "limit_exceeded")
 
     def test_large_transfer_requires_server_side_face_verification(self):
-        u, token = make_user("08030000003", "rich@zitch.test", balance="500000", tier=2)
+        u, token = bank_user("08030000003", "rich@zitch.test", balance="500000", tier=2)
         # Tier 2 (₦200k cap) allows ₦150k, but a >=₦100k transfer still needs the
         # server-side face flag. Construct the (now-rare) Tier-2-without-face state
         # directly — face is normally a Tier-2 requirement, so set flags explicitly.
         User.objects.filter(pk=u.pk).update(
             bvn_verified=True, nin_verified=True, address_verified=True,
             face_verified=False, tier=2)
-        make_user("08040000004", "x@zitch.test")
+        bank_user("08040000004", "x@zitch.test")
         body = {"access_token": token, "identifier": "08040000004",
                 "amount": "150000", "transaction_pin": "1234"}
         # >= 100,000 needs face verification.
@@ -478,13 +480,14 @@ class WalletTests(TestCase):
         self.assertTrue(b["success"])
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class ReservedAccountTests(TestCase):
     """Dedicated (reserved) virtual account: minted at KYC, surfaced on the wallet,
     and credited by the funding webhook — idempotently."""
 
     def setUp(self):
         self.client = Client()
-        self.user, self.token = make_user("08010000001", "ada@zitch.test")
+        self.user, self.token = bank_user("08010000001", "ada@zitch.test")
 
     def post(self, path, payload):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
@@ -494,21 +497,16 @@ class ReservedAccountTests(TestCase):
         return get_or_create_wallet(self.user).balance
 
     def test_wallet_account_endpoint_is_a_fast_read_without_provisioning(self):
-        # The read endpoint never provisions on load (that needs the BVN, which we
-        # don't store, and a slow provider call would hang the page). A verified
-        # user with no number yet just gets an empty one back, fast.
-        self.user.bvn_verified = True
-        self.user.save(update_fields=["bvn_verified"])
-        res, body = self.post("/api/wallet/account/", {"access_token": self.token})
+        user, token = make_user("08010000002", "unbanked@zitch.test")
+        with patch("banking.client.Client.open_wallet") as provision:
+            res, body = self.post("/api/wallet/account/", {"access_token": token})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(body["account_number"], "")
-        # Once provisioned, the read returns the stored account.
-        w = get_or_create_wallet(self.user)
-        w.account_number, w.bank_name, w.account_name = "7012345678", "Wema Bank", "Ada Eze"
-        w.save(update_fields=["account_number", "bank_name", "account_name"])
-        _, body2 = self.post("/api/wallet/account/", {"access_token": self.token})
-        self.assertEqual(body2["account_number"], "7012345678")
-        self.assertEqual(body2["bank_name"], "Wema Bank")
+        provision.assert_not_called()
+        bank = bind_test_bank(user)
+        _, body2 = self.post("/api/wallet/account/", {"access_token": token})
+        self.assertEqual(body2["account_number"], bank.number)
+        self.assertEqual(body2["bank_name"], "9PSB")
 
     def test_wallet_account_returns_registered_holder_name(self):
         # The read always carries the customer's registered legal name so the
@@ -519,18 +517,19 @@ class ReservedAccountTests(TestCase):
         self.assertEqual(body["holder_name"], self.user.get_full_name())  # "Ada Eze"
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class LedgerConstraintTests(TestCase):
     """DB-level guards that back up the service-layer money checks."""
 
     def test_wallet_balance_cannot_go_negative(self):
-        user, _ = make_user("08010000001", "a@zitch.test", balance="100")
+        user, _ = bank_user("08010000001", "a@zitch.test", balance="100")
         wallet = get_or_create_wallet(user)
         wallet.balance = Decimal("-1")
         with self.assertRaises(IntegrityError), db_transaction.atomic():
             wallet.save()
 
     def test_transaction_amount_must_be_positive(self):
-        user, _ = make_user("08020000002", "b@zitch.test")
+        user, _ = bank_user("08020000002", "b@zitch.test")
         with self.assertRaises(IntegrityError), db_transaction.atomic():
             Transaction.objects.create(
                 user=user, service="bad", amount=Decimal("0"),
@@ -538,14 +537,19 @@ class LedgerConstraintTests(TestCase):
             )
 
 
+@_bank_test_settings(NINEPSB={**_BANK_TEST_CONFIG, "TRANSFER_FEE_TOTAL": "0.00"})
 class IdempotencyTests(TestCase):
     """A spend retried with the same idempotency_key debits / charges once."""
 
     def setUp(self):
+        mock_bank_io(self, directory=True)
         self.client = Client()
-        self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="20000")
+        self.user, self.token = bank_user("08010000001", "ada@zitch.test", balance="20000")
 
     def post(self, path, payload):
+        payload = dict(payload)
+        if path == "/api/transfer/send/":
+            payload.setdefault("expected_fee", "0.00")
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
@@ -553,26 +557,26 @@ class IdempotencyTests(TestCase):
         return get_or_create_wallet(self.user).balance
 
     def test_repeated_key_debits_airtime_once(self):
-        wallet = get_or_create_wallet(self.user)
-        wallet.account_number = "0451000001"
-        wallet.save(update_fields=["account_number"])
-        body = {"access_token": self.token, "amount": "1000", "network": "1",
+        from banking.client import Reply
+        body = {"access_token": self.token, "amount": "1000", "kind": "airtime",
                 "phone": "08010000001", "transaction_pin": "1234", "idempotency_key": "k-air-1"}
-        r1, _ = self.post("/api/utility/buyairtime/", body)
-        self.assertEqual(r1.status_code, 200)
-        self.assertEqual(self.bal(), Decimal("19000"))
-        # Same key (client retry / double-fire): replay, not a second debit.
-        r2, b2 = self.post("/api/utility/buyairtime/", body)
-        self.assertEqual(r2.status_code, 200)
-        self.assertTrue(b2.get("duplicate"))
-        self.assertEqual(self.bal(), Decimal("19000"))  # would be 18000 without the guard
-        self.assertEqual(Transaction.objects.filter(user=self.user, service__startswith="Airtime").count(), 1)
-        # A different key is a genuinely new purchase.
-        self.post("/api/utility/buyairtime/", {**body, "idempotency_key": "k-air-2"})
-        self.assertEqual(self.bal(), Decimal("18000"))
+        with patch("banking.bills.catalog", return_value={"network": "MTN"}), \
+             patch("banking.payments._invoke", return_value=Reply({
+                 "status": "success", "responseCode": "200"}, 200)) as send:
+            r1, _ = self.post("/api/banking/purchase/", body)
+            self.assertEqual(r1.status_code, 200, r1.content)
+            self.assertEqual(self.bal(), Decimal("19000"))
+            r2, b2 = self.post("/api/banking/purchase/", body)
+            self.assertEqual(r2.status_code, 200)
+            self.assertTrue(b2.get("duplicate"))
+            self.assertEqual(self.bal(), Decimal("19000"))
+            self.assertEqual(send.call_count, 1)
+            self.post("/api/banking/purchase/", {**body, "idempotency_key": "k-air-2"})
+            self.assertEqual(send.call_count, 2)
+            self.assertEqual(self.bal(), Decimal("18000"))
 
     def test_repeated_key_transfers_once(self):
-        make_user("08020000002", "bob@zitch.test")
+        bank_user("08020000002", "bob@zitch.test")
         body = {"access_token": self.token, "identifier": "08020000002",
                 "amount": "5000", "transaction_pin": "1234", "idempotency_key": "k-trf-1"}
         self.post("/api/transfer/send/", body)
@@ -590,13 +594,14 @@ class IdempotencyTests(TestCase):
         self.assertEqual(self.bal(), Decimal("19900"))  # the second debit rolled back
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class ReservedFundingTests(TestCase):
     """Reserved (virtual) account funding: a wallet maps 1:1 to its account, and
     an inbound transfer credits the right wallet exactly once."""
 
     def test_account_number_must_be_unique(self):
-        a, _ = make_user("08077700001", "ra@zitch.test")
-        b, _ = make_user("08077700002", "rb@zitch.test")
+        a, _ = bank_user("08077700001", "ra@zitch.test")
+        b, _ = bank_user("08077700002", "rb@zitch.test")
         wa = get_or_create_wallet(a)
         wa.account_number = "9921000001"
         wa.save()
@@ -607,7 +612,7 @@ class ReservedFundingTests(TestCase):
                 wb.save()
 
     def test_reserved_funding_credits_once_keyed_on_reference(self):
-        u, _ = make_user("08077700003", "rc@zitch.test")
+        u, _ = bank_user("08077700003", "rc@zitch.test")
         get_or_create_wallet(u)
         txn = settle_reserved_funding("MNFY|TEST|001", "5000.00", u)
         self.assertIsNotNone(txn)
@@ -617,18 +622,19 @@ class ReservedFundingTests(TestCase):
         self.assertEqual(get_or_create_wallet(u).balance, Decimal("5000.00"))
 
     def test_reserved_funding_incomplete_input_is_ignored(self):
-        u, _ = make_user("08077700004", "rc2@zitch.test")
+        u, _ = bank_user("08077700004", "rc2@zitch.test")
         get_or_create_wallet(u)
         self.assertIsNone(settle_reserved_funding("", "1000.00", u))
         self.assertIsNone(settle_reserved_funding("MNFY|TEST|002", None, u))
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class FundVerifyOwnershipTests(TestCase):
     """/api/fund/verify/ must not let a caller act on another user's funding ref."""
 
     def test_fund_verify_rejects_another_users_reference(self):
-        a, _ = make_user("08088800001", "fa@zitch.test")
-        _, tok_b = make_user("08088800002", "fb@zitch.test")
+        a, _ = bank_user("08088800001", "fa@zitch.test")
+        _, tok_b = bank_user("08088800002", "fb@zitch.test")
         FundingIntent.objects.create(user=a, reference="ZPAYOWN0001", amount=Decimal("5000"))
         res = Client().post(
             "/api/fund/verify/",
@@ -638,7 +644,7 @@ class FundVerifyOwnershipTests(TestCase):
 
     @patch("wallet.views.funding_verify")
     def test_missing_intent_is_rejected_before_provider_call(self, verify):
-        _, token = make_user("08088800013", "missing-fund@zitch.test")
+        _, token = bank_user("08088800013", "missing-fund@zitch.test")
 
         response = Client().post(
             "/api/fund/verify/",
@@ -650,10 +656,11 @@ class FundVerifyOwnershipTests(TestCase):
         verify.assert_not_called()
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class FundVerifySettlementTests(TestCase):
     def setUp(self):
         self.client = Client()
-        self.user, self.token = make_user(
+        self.user, self.token = bank_user(
             "08088800014", "fund-verify@zitch.test",
         )
 
@@ -808,12 +815,13 @@ class FundVerifySettlementTests(TestCase):
         self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class FundInitializeIdempotencyTests(TestCase):
     """Funding retries reuse one intent and never create a second provider POST."""
 
     def setUp(self):
         self.client = Client()
-        self.user, self.token = make_user(
+        self.user, self.token = bank_user(
             "08088800011", "fund-init@zitch.test",
         )
 
@@ -1066,9 +1074,10 @@ class FundInitializeIdempotencyTests(TestCase):
         self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("5000"))
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class FundingSettlementAmountTests(TestCase):
     def setUp(self):
-        self.user, _ = make_user("08088800003", "fc@zitch.test")
+        self.user, _ = bank_user("08088800003", "fc@zitch.test")
 
     def _intent(self, reference):
         return FundingIntent.objects.create(
@@ -1221,12 +1230,13 @@ class FundingSettlementAmountTests(TestCase):
         self.assertTrue(intent.meta["funding_review"]["active"])
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class FxLimitParityTests(TestCase):
     """FX was the one money-out path that skipped the compromised-account brake,
     and foreign->foreign conversions skipped every amount ceiling as well."""
 
     def setUp(self):
-        self.user, self.token = make_user("08033330001", "fx@zitch.test", tier=1)
+        self.user, self.token = bank_user("08033330001", "fx@zitch.test", tier=1)
         credit(self.user, Decimal("500000"), "Seed")
 
     def test_velocity_brake_applies_to_conversion(self):
@@ -1253,6 +1263,7 @@ class FxLimitParityTests(TestCase):
         self.assertIn("price", str(ctx.exception.message).lower())
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class FirstSpendVerificationTests(TestCase):
     """Email, phone and either BVN or NIN must be proved before ANY money leaves an
     account. Together they are exactly Tier 1, but the refusal names the missing
@@ -1260,9 +1271,13 @@ class FirstSpendVerificationTests(TestCase):
     about what to do next."""
 
     def setUp(self):
-        self.user, self.token = make_user("08044440001", "gate@zitch.test", balance="50000")
+        self.user, self.token = bank_user("08044440001", "gate@zitch.test", balance="50000")
 
     def _unverify(self, *fields):
+        from accounts.models import IdentityProof
+        for kind in ("bvn", "nin"):
+            if f"{kind}_verified" in fields:
+                IdentityProof.objects.filter(user=self.user, identity_type=kind).delete()
         for f in fields:
             setattr(self.user, f, False)
         self.user.save(update_fields=list(fields))
@@ -1295,6 +1310,8 @@ class FirstSpendVerificationTests(TestCase):
         debit(self.user, Decimal("1000"), "transfer")   # does not raise
 
     def test_nin_only_account_can_spend_at_tier_one(self):
+        from accounts.models import record_identity_proof
+        record_identity_proof(self.user, "nin", "10987654321", source="9psb_otp")
         self._unverify("bvn_verified")
         self.assertIsNone(unverified_error(self.user))
         self.assertEqual(self.user.tier, 1)
@@ -1318,13 +1335,14 @@ class FirstSpendVerificationTests(TestCase):
         self.assertIn("BVN", str(ctx.exception.message))
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class SmsAlertFormatTests(TestCase):
     """Nigerian bank alerts share one shape, and customers read them by position
     rather than by reading them. Matching it means a Zitch alert is scanned the
     same way as the bank's own alert sitting directly above it."""
 
     def setUp(self):
-        self.user, _ = make_user("08060000009", "alert@zitch.test", balance="10000")
+        self.user, _ = bank_user("08060000009", "alert@zitch.test", balance="10000")
         w = get_or_create_wallet(self.user)
         w.account_number = "0228565772"
         w.save(update_fields=["account_number"])
@@ -1344,7 +1362,7 @@ class SmsAlertFormatTests(TestCase):
         self.assertTrue(lines[0].startswith("CR:NGN 4,300.00"))
         self.assertEqual(lines[1], "Acct No:0228****72")     # bank's own masking
         self.assertTrue(lines[2].startswith("Desc :"))
-        self.assertTrue(lines[3].startswith("Bal :"))
+        self.assertTrue(lines[3].startswith("Available :"))
         self.assertRegex(lines[4], r"^\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2} WAT$")
 
     def test_a_debit_reads_dr(self):
@@ -1379,7 +1397,7 @@ class SmsAlertFormatTests(TestCase):
         txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
         body = _sms_alert(txn)
         self.assertLessEqual(len(body), 160)
-        self.assertIn("Bal :", body)
+        self.assertIn("Available :", body)
         self.assertRegex(body.split("\n")[-1], r"^\d{2}-\d{2}-\d{4}")
 
     def test_it_stays_inside_the_gsm_7_alphabet(self):
@@ -1403,13 +1421,14 @@ class SmsAlertFormatTests(TestCase):
         self.assertEqual(_mask_account("0228565772"), "0228****72")
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class EmailAlertBrandingTests(TestCase):
     """The alert arrived as five lines of bare text under a green "N" avatar —
     indistinguishable from phishing, which for a money alert is disqualifying.
     The HTML card carries the brand; the plain text stays as the fallback."""
 
     def setUp(self):
-        self.user, _ = make_user("08060000011", "brand@zitch.test", balance="50000")
+        self.user, _ = bank_user("08060000011", "brand@zitch.test", balance="50000")
         w = get_or_create_wallet(self.user)
         w.account_number = "0228565772"
         w.save(update_fields=["account_number"])
@@ -1461,6 +1480,7 @@ class EmailAlertBrandingTests(TestCase):
         self.assertNotIn("Available balance", html)
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class StatementRequestTests(TestCase):
     """The emailed PDF/Excel statement — the file a customer hands to a landlord
     or an embassy. What matters is that the range it claims is the range it
@@ -1468,7 +1488,7 @@ class StatementRequestTests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.user, self.token = make_user("08010000009", "ada@zitch.test", balance="20000")
+        self.user, self.token = bank_user("08010000009", "ada@zitch.test", balance="20000")
 
     def post(self, payload):
         res = self.client.post("/api/wallet/statement/request/",
@@ -1561,6 +1581,7 @@ class StatementRequestTests(TestCase):
         self.assertFalse(body.get("success"))
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class FxSettlementGateTests(TestCase):
     """The caps have to hold at SETTLEMENT, not only when a quote is priced.
 
@@ -1571,7 +1592,7 @@ class FxSettlementGateTests(TestCase):
     """
 
     def setUp(self):
-        self.user, _ = make_user("08044440001", "fxsettle@zitch.test", tier=1)
+        self.user, _ = bank_user("08044440001", "fxsettle@zitch.test", tier=1)
         credit(self.user, Decimal("500000"), "Seed")
 
     def _quote(self, amount):
@@ -1601,15 +1622,16 @@ class FxSettlementGateTests(TestCase):
         quote = self._quote("10000")
         # The quote was priced while verified; the account then lost it (an
         # email/phone change clears the flag and re-derives the tier).
-        self.user.bvn_verified = self.user.nin_verified = False
-        self.user.save(update_fields=["bvn_verified", "nin_verified"])
+        self.user.phone_verified = False
+        self.user.save(update_fields=["phone_verified"])
         with self.assertRaises(FxError):
             execute_fx(self.user, quote.quote_ref)
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class CustomerVisibleTransactionTests(TestCase):
     def test_missing_json_flag_remains_visible_while_internal_evidence_is_hidden(self):
-        user, _ = make_user("08019990001", "history-filter@zitch.test")
+        user, _ = bank_user("08019990001", "history-filter@zitch.test")
         normal = Transaction.objects.create(
             user=user, service="Normal payment", amount=Decimal("100"),
             direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
@@ -1632,7 +1654,7 @@ class CustomerVisibleTransactionTests(TestCase):
         self.assertEqual(visible, {normal.reference, explicit_false.reference})
 
     def test_active_reversal_hold_is_customer_visible_as_pending_review(self):
-        user, token = make_user("08019990002", "history-review@zitch.test")
+        user, token = bank_user("08019990002", "history-review@zitch.test")
         Transaction.objects.create(
             user=user, service="Bank transfer", amount=Decimal("100"),
             direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,

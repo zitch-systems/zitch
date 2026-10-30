@@ -2326,6 +2326,13 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
             "and in the Zitch app. Close this and reply \"set pin\" in the chat, then try "
             "the transfer again.")
 
+    from banking.fees import transfer_fee
+    fee = transfer_fee(amount)
+    if fee is None:
+        return _transfer_form_screen(error="Transfer fees could not be confirmed. Please try again later.")
+    if _fresh_wallet_balance(user) < amount + fee:
+        return _transfer_form_screen(error="Insufficient balance for the amount and transfer fee.")
+    pa.payload["expected_fee"] = str(fee)
     pa.payload.update({"amount": str(amount), "account": account,
                        "bank_code": bank.bank_code, "bank_name": bank.name,
                        "name": name, "pin_attempts": 0,

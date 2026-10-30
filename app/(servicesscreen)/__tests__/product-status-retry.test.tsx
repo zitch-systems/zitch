@@ -13,6 +13,16 @@ const mockGetToken = jest.fn();
 const mockCreateSavings = jest.fn();
 const mockRequestLoan = jest.fn();
 
+// Keep the native scrolling boundary light on cold CI workers. These tests
+// exercise request/retry ownership, including the refreshControl prop.
+jest.mock('react-native/Libraries/Components/ScrollView/ScrollView', () => {
+  const ReactActual = jest.requireActual<typeof import('react')>('react');
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+  return function MockScrollView({ children, ...props }: { children?: ReactNode }) {
+    return ReactActual.createElement(View, props, children);
+  };
+});
+
 jest.mock('@/lib/services/savings', () => ({ savingsService: {
   list: (...args: unknown[]) => mockListSavings(...args),
   getRates: (...args: unknown[]) => mockGetRates(...args),

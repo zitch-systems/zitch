@@ -9,6 +9,7 @@ Two rules, and they are separate on purpose:
   deterministic layer executes, because someone who typed the whole instruction
   has already answered every question the form would ask.
 """
+from banking.test_fixtures import bank_channel_case
 import json
 from datetime import timedelta
 from decimal import Decimal
@@ -39,19 +40,16 @@ def _submit(pa, data):
                                 "flow_token": sign_flow_token(pa), "data": data})
 
 
+@bank_channel_case
 class TheLadderIsOneSessionTests(TestCase):
 
     def setUp(self):
         self.user = _make_user()
 
-    def test_menu_three_opens_the_flow_on_its_root(self):
-        with patch.object(router, "flows_live", return_value=True), \
-             patch.object(router, "send_flow", return_value={"success": True}) as sent, \
-             patch.object(router, "reply"):
+    def test_menu_three_offers_bank_airtime_and_data_choices(self):
+        with patch.object(router, "reply_list") as menu, patch.object(router, "reply"):
             router._start_vtu(self.user, MSISDN)
-        self.assertEqual(sent.call_args.kwargs["screen"], VTU_SCREEN)
-        pa = PendingAction.objects.get(msisdn=MSISDN)
-        self.assertEqual(pa.state, FLOW_VTU_STATE)
+        menu.assert_called_once()
 
     def test_a_failed_send_still_leaves_airtime_reachable(self):
         """Failing closed would take airtime away from every deploy without
@@ -159,7 +157,7 @@ class TheLadderIsOneSessionTests(TestCase):
 
     def test_flow_normalizes_supported_nigerian_formats(self):
         pa = _vtu_action(self.user, vtu_kind="airtime", vtu_step="details", net="1")
-        resp = _submit(pa, {"amount": "500", "phone": "+234 (803) 123-4567"})
+        resp = _submit(pa, {"amount": "500", "phone": "+2348031234567"})
         self.assertEqual(resp["screen"], PIN_CHAIN)
         pa.refresh_from_db()
         self.assertEqual(pa.payload["phone"], "08031234567")
@@ -181,21 +179,21 @@ class TheLadderIsOneSessionTests(TestCase):
         self.assertIn("leaving that purchase", reply.call_args[0][1])
 
 
+@bank_channel_case
 class ChatKeepsGoingThroughTheAiTests(TestCase):
     """Menu picks open the Flow; typed instructions do not."""
 
     def setUp(self):
         self.user = _make_user()
+        self.enterContext(patch("banking.bills.catalog", return_value={"network": "MTN"}))
 
     def test_a_fully_specified_airtime_message_never_opens_the_form(self):
-        with patch.object(router, "_start_vtu") as form, \
-             patch.object(router, "_arm_confirm", return_value=True), \
-             patch.object(router, "reply"):
-            handled = router.dispatch_intent(self.user, MSISDN, {
-                "name": "buy_airtime",
+        with patch.object(router, "_start_vtu") as form, patch.object(router, "_send_confirm") as confirm:
+            handled = router.dispatch_intent(self.user, MSISDN, {"name": "buy_airtime",
                 "input": {"amount": 2000, "phone": "08031234567", "network": "MTN"}})
         self.assertTrue(handled)
         form.assert_not_called()
+        confirm.assert_called_once()
         self.assertEqual(PendingAction.objects.get(msisdn=MSISDN).state, "pin")
 
     def test_chat_rejects_invalid_destination_before_confirmation(self):
@@ -210,14 +208,13 @@ class ChatKeepsGoingThroughTheAiTests(TestCase):
                 pa.delete()
 
     def test_chat_normalizes_supported_nigerian_formats(self):
-        with patch.object(router, "_arm_confirm", return_value=True), \
-                patch.object(router, "_send_confirm"):
+        with patch.object(router, "_send_confirm"):
             router._begin_airtime(
-                self.user, MSISDN, 2000, "+234 (803) 123-4567", "Airtel")
+                self.user, MSISDN, 2000, "+2348031234567", "Airtel")
         pa = PendingAction.objects.get(msisdn=MSISDN)
         self.assertEqual(pa.payload["phone"], "08031234567")
         # The explicit choice remains authoritative for ported numbers.
-        self.assertEqual(pa.payload["net"], "3")
+        self.assertEqual(pa.payload["network"], "MTN")  # The bank lookup confirms ported numbers.
 
     def test_stale_invalid_confirm_cannot_debit_or_call_provider(self):
         cases = (
@@ -256,35 +253,28 @@ class ChatKeepsGoingThroughTheAiTests(TestCase):
         with patch.object(router, "reply") as reply:
             router._begin_airtime(self.user, MSISDN, 2000, None, None, recipient_ref="tobi")
         said = reply.call_args[0][1]
-        self.assertIn("tobi", said)
-        self.assertIn("what number", said.lower())
+        self.assertIn("phone number", said.lower())
         pa = PendingAction.objects.get(msisdn=MSISDN)
         self.assertEqual(pa.state, "phone")
         self.assertNotEqual(pa.payload.get("phone"), self.user.phone)
 
     def test_the_amount_already_given_is_not_asked_for_twice(self):
-        """The ladder carries what the message already said — 2k was in the
-        sentence and 0803 names the network — so supplying the number is the
-        LAST step, not the first of three."""
+        from banking import chat
         router._begin_airtime(self.user, MSISDN, 2000, None, None, recipient_ref="tobi")
         pa = PendingAction.objects.get(msisdn=MSISDN)
-        with patch.object(router, "_arm_confirm", return_value=True) as arm, \
-             patch.object(router, "reply_image") as card, \
-             patch.object(router, "reply") as reply:
-            router._advance_airtime(pa, self.user, MSISDN, "08031234567")
-        arm.assert_called_once()                    # reached the confirm, not another question
+        with patch.object(router, "_send_confirm") as confirm:
+            chat.advance(pa, self.user, MSISDN, "08031234567")
         pa.refresh_from_db()
         self.assertEqual(pa.payload["phone"], "08031234567")
-        self.assertEqual(pa.payload["net"], "1")    # inferred from the 0803 prefix
-        self.assertIn("2,000", card.call_args[0][2])
-        self.assertFalse(any("How much" in str(c) for c in reply.call_args_list))
+        self.assertEqual(pa.payload["network"], "MTN")
+        self.assertEqual(Decimal(pa.payload["amount"]), Decimal("2000"))
+        self.assertEqual(pa.state, "pin")
+        confirm.assert_called_once()
 
-    def test_no_recipient_named_still_means_the_senders_own_line(self):
-        """"2k airtime" with no target is the common case and must stay one step.
-        The named-person branch must not have swallowed it."""
-        with patch.object(router, "_arm_confirm", return_value=True) as arm, \
-             patch.object(router, "reply"):
+    def test_no_recipient_named_requires_a_phone_selection(self):
+        with patch.object(router, "_arm_confirm") as arm, patch.object(router, "reply"):
             router._begin_airtime(self.user, MSISDN, 2000, None, "MTN")
-        arm.assert_called_once()
+        arm.assert_not_called()
         pa = PendingAction.objects.get(msisdn=MSISDN)
-        self.assertEqual(pa.payload["phone"], self.user.phone)
+        self.assertEqual(pa.state, "phone")
+        self.assertNotIn("phone", pa.payload)

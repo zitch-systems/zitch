@@ -6,6 +6,7 @@ removed the confirmation — the panel vanished the instant the money moved, and
 customer had to go and find the receipt in the chat to learn whether their payment
 had worked.
 """
+from banking.test_fixtures import bank_channel_case
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -20,6 +21,7 @@ from whatsapp.tests import make_user
 TERMINATION = "extension_message_response"
 
 
+@bank_channel_case
 @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
 class OutcomeScreenTests(TestCase):
     def setUp(self):

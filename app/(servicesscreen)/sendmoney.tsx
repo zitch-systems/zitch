@@ -55,6 +55,8 @@ const SendMoney = () => {
   const resolveGeneration = useRef(0);
 
   const [amt, setAmt] = useState('');
+  const [fee, setFee] = useState<string | null>(null);
+  const [feeFor, setFeeFor] = useState(0);
   const [note, setNote] = useState('');
   const [bankSheet, setBankSheet] = useState(false);
   const [step, setStep] = useState<Step>(null);
@@ -95,10 +97,24 @@ const SendMoney = () => {
   }, []);
 
   const amount = Number(amt || 0);
-  // Bank mode: type a 10-digit account and we AUTO-DETECT the bank — the server
-  // name-enquires across banks and returns the match, so the bank + holder name
-  // fill in by themselves. The user can still tap the bank field to override
-  // (which resolves at just that one bank).
+  useEffect(() => {
+    let active = true;
+    setFee(null);
+    if (!Number.isFinite(amount) || amount < MIN_TRANSFER) return;
+    const timer = setTimeout(async () => {
+      try {
+        const result = await transfersService.charge(amount);
+        if (!active || !isCurrentSession()) return;
+        const value = Number(result.fee);
+        if (result.success && result.fee != null && typeof result.fee !== 'boolean' && Number.isFinite(value) && value >= 0) {
+          setFee(String(result.fee)); setFeeFor(amount);
+        }
+      } catch { if (active && isCurrentSession()) setFee(null); }
+    }, 400);
+    return () => { active = false; clearTimeout(timer); };
+  }, [amount]);
+  const currentFee = feeFor === amount ? fee : null;
+  // The customer selects a bank before its account holder is confirmed.
   const [bankName, setBankName] = useState('');   // resolved account holder name
   const [bankNameFor, setBankNameFor] = useState('');
   const [resolvingBank, setResolvingBank] = useState(false);
@@ -182,7 +198,7 @@ const SendMoney = () => {
     ? acct.length === 10 && !!bank && !!activeBankName
     : !!activeResolvedName;
   const recipientName = picked ? picked.name : mode === 'bank' ? activeBankName : activeResolvedName;
-  const valid = transfersAvailable === true && (pickedReady || acctReady) && amount >= MIN_TRANSFER && amount <= balance;
+  const valid = transfersAvailable === true && (pickedReady || acctReady) && amount >= MIN_TRANSFER && currentFee !== null && amount + Number(currentFee) <= balance;
 
   const resolveZitch = async () => {
     if (!isCurrentSession()) return;
@@ -252,21 +268,21 @@ const SendMoney = () => {
       const bankCode = picked ? pickedBankCode : bank?.code;
       return transfersService.send({
         account_number: accountNumber, bank: bankCode, name: recipientName, amount: amt,
-        transaction_pin: pin, note, idempotency_key: idempotencyKey,
+        transaction_pin: pin, note, idempotency_key: idempotencyKey, expected_fee: currentFee ?? undefined,
       });
     }
     const id = picked ? picked.account_number : identifier;
     return transfersService.sendLegacy({
       identifier: id,
       recipient_key: picked ? undefined : activeResolvedRecipient,
-      amount: amt, transaction_pin: pin, note, idempotency_key: idempotencyKey,
+      amount: amt, transaction_pin: pin, note, idempotency_key: idempotencyKey, expected_fee: currentFee ?? undefined,
     });
   };
 
   const send = async (pin: string) => {
     if (!isCurrentSession() || !valid || done || sendInFlight.current) return;
     const attempt = transferAttempt();
-    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([attempt.scope, attempt.fingerprint, note])) {
+    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([attempt.scope, attempt.fingerprint, note, currentFee])) {
       setStep('confirm');
       notify('Review transfer again', 'The transfer details changed. Check them before entering your PIN.');
       return;
@@ -518,6 +534,7 @@ const SendMoney = () => {
       <Field label="Narration (optional)" value={note} onChangeText={setNote} placeholder="What's it for?" />
       <View style={{ height: 20 }} />
 
+      {amount >= MIN_TRANSFER && currentFee === null && <Text style={{color: c.ink3, marginBottom: 12}}>A confirmed transfer fee is required before you can continue.</Text>}
       <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
 
       {/* Saved beneficiaries — moved to the bottom; tap one to fill the form above */}
@@ -566,10 +583,10 @@ const SendMoney = () => {
         open={step === 'confirm'}
         onClose={() => setStep(null)}
         title="Confirm transfer"
-        total={amount}
+        total={amount + Number(currentFee || 0)}
         balance={balance}
-        rows={[['To', recipientName || '—'], ['Account', picked ? picked.account_number : mode === 'bank' ? acct : identifier], ['Bank', picked ? picked.bank_name : mode === 'bank' ? bank?.name || '—' : 'Zitch']]}
-        onPay={() => { const attempt = transferAttempt(); reviewedPayment.current = JSON.stringify([attempt.scope, attempt.fingerprint, note]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        rows={[['Amount', money(amount)], ['Fee', currentFee === null ? 'Unavailable' : money(Number(currentFee))], ['To', recipientName || '—'], ['Account', picked ? picked.account_number : mode === 'bank' ? acct : identifier], ['Bank', picked ? picked.bank_name : mode === 'bank' ? bank?.name || '—' : 'Zitch']]}
+        onPay={() => { const attempt = transferAttempt(); reviewedPayment.current = JSON.stringify([attempt.scope, attempt.fingerprint, note, currentFee]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">

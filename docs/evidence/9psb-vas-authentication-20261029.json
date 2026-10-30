@@ -1,0 +1,35 @@
+{
+  "checked_at": "2026-10-29T12:20:15.975531+00:00",
+  "product": "vas",
+  "credential_source": "Value Added Service section of supplied test credentials",
+  "credential_fields": [
+    "username",
+    "password"
+  ],
+  "vas_credentials_differ_from_waas": true,
+  "documented_auth_url": "http://102.216.128.75:9090/identity/api/v1/authenticate",
+  "requests": [
+    {
+      "method": "POST",
+      "url": "http://102.216.128.75:9090/identity/api/v1/authenticate",
+      "json_fields": [
+        "password",
+        "username"
+      ],
+      "credentials_match_vas_section": true,
+      "authorization_header_present": false,
+      "redirects_allowed": false,
+      "http_status": 400,
+      "json_response": true,
+      "response_code": "400",
+      "message": "Bad credentials"
+    }
+  ],
+  "uat_complete": false,
+  "activation_ready": false,
+  "authentication_succeeded": false,
+  "error": "authentication_failed",
+  "http_status": 400,
+  "response_code": "400",
+  "completed_at": "2026-10-29T12:20:24.216359+00:00"
+}

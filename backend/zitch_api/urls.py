@@ -4,8 +4,8 @@ import json
 from django.conf import settings
 from django.contrib import admin
 from django.http import HttpResponse, JsonResponse
-from accounts.views import prembly_face_complete
 from django.urls import include, path
+from banking.views import webhook as bank_webhook
 
 from whatsapp import scan_views as whatsapp_scan
 from django.views.decorators.cache import never_cache
@@ -36,28 +36,17 @@ def health(_request):
     from utility.providers import (_prembly_live, card_issuer_live, kyc_provider,
                                     payment_provider, payout_live, payout_provider,
                                     sms_live, vas_provider, vtu_live)
-    from utility import wema
+    from banking.readiness import report as bank_report
     from whatsapp.providers import flows_live as _flows_live
     from whatsapp.providers import wa_live, wa_mode
 
     integrations = {
-        "funding_provider": payment_provider(),   # which rail funds the wallet (wema)
-        "funding_wema": wema.wema_live(),
-        "funding_wema_simulation": wema.wema_simulation(),
-        # securityInfo is a value WE choose that the bank echoes back to our
-        # authentication callback (confirmed by Wema 2026-07-27) — NOT a signing
-        # scheme the bank issues, and NOT a precondition for a payout to settle.
-        # False here means one optional factor is unused, not that money is blocked.
-        # wema_sandbox true => still on apiplayground, so no real money moves.
-        "funding_wema_security_info": bool(settings.WEMA.get("SECURITY_INFO")),
-        "wema_sandbox": "apiplayground" in (settings.WEMA.get("BASE_URL", "") or "").lower(),
-        "payout_provider": payout_provider(),     # which rail sends payouts + name enquiry (wema)
-        "payout_live": payout_live(),             # payout rail has live keys
-        "vas_provider": vas_provider(),           # airtime/data/bills rail (vas default)
-        "biller_wema": vtu_live(),
-        # Termii is the only SMS rail, so the name is a constant and sms_live is the
-        # whole story: keyed or in mock mode. The old per-rail sms_sendchamp boolean
-        # went with the rail — anything alerting on it should watch sms_live instead.
+        "banking": bank_report(),
+        "funding_provider": "9psb",
+        "payout_provider": "9psb",
+        "payout_live": payout_live(),
+        "vas_provider": "9psb",
+        "biller_live": vtu_live(),
         "sms_provider": "termii",
         # Termii ACCEPTS a message (returns a message_id, so `success` is true and
         # the customer is told a code is coming) and then never delivers it when
@@ -69,9 +58,9 @@ def health(_request):
         "sms_channel": (getattr(settings, "TERMII", {}) or {}).get("CHANNEL", ""),
         "sms_live": sms_live(),
         "email_resend": bool(settings.RESEND["API_KEY"]),
-        "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN/vNIN (wema Full KYC)
-        "kyc_wema": wema.wema_live(),
-        "kyc_prembly": _prembly_live(),  # selfie/liveness + address + ID-doc stay on Prembly
+        "kyc_provider": "9psb",
+        "address_provider": "prembly",
+        "address_configured": _prembly_live(),
         "cards_issuer": card_issuer_live(),
         # The audit that found the queue backlog also found REDIS_URL
         # disconnected — and there is a reason a boot-time check couldn't have
@@ -419,76 +408,6 @@ def robots_txt(_request):
 
 # POST only: this endpoint can send/consume an OTP. Credentials and identity data must
 # never appear in URLs, browser history, proxy access logs, or Slack link unfurls.
-@csrf_exempt
-@never_cache
-@require_http_methods(["POST"])
-def wema_diagnose(request):
-    """POST /wema-diagnose with Authorization: Bearer <diagnostic token>.
-
-    Browser-accessible Wema/ALAT connectivity self-test for hosts without shell
-    access (e.g. Render). Runs the real calls a deploy needs against the configured
-    (test or live) keys and shows exactly what auth/connectivity error the gateway
-    returns — turning "nothing works" into a precise fix. Returns NO secrets.
-
-    Optional JSON fields drive name enquiry or wallet creation. Responses are marked
-    no-store and contain no configured secrets.
-    """
-    import hmac
-    import os
-
-    # Whitespace is stripped on both sides: a trailing space/newline pasted into the
-    # env value (or the URL) would otherwise fail the byte-exact compare with an
-    # unexplainable "forbidden".
-    #
-    # Accepts EITHER token, like the other three probes. This one used to read
-    # WEMA_DIAG_TOKEN alone, so setting only DIAG_TOKEN opened /preflight,
-    # /sms-diagnose and /wema-callbacks-diagnose while this one kept 404ing —
-    # indistinguishable from "the route isn't deployed", which is the exact
-    # question these endpoints exist to answer.
-    diag_tokens = [t for t in (os.environ.get("WEMA_DIAG_TOKEN", "").strip(),
-                               os.environ.get("DIAG_TOKEN", "").strip()) if t]
-    if not diag_tokens:
-        return JsonResponse(
-            {"detail": "Set WEMA_DIAG_TOKEN or DIAG_TOKEN (any secret value) in the "
-                       "environment to enable this."},
-            status=404,
-        )
-    authorization = request.headers.get("Authorization", "")
-    supplied = (authorization[7:] if authorization.lower().startswith("bearer ")
-                else "").strip()
-    if not any(hmac.compare_digest(supplied, t) for t in diag_tokens):
-        # Length-only hint (no token content) — pinpoints paste truncation/typos.
-        return JsonResponse(
-            {"detail": "forbidden",
-             "hint": f"supplied token has {len(supplied)} chars; the configured "
-                     f"token(s) have {sorted({len(t) for t in diag_tokens})}. "
-                     f"They must match exactly."},
-            status=403,
-        )
-    if int(request.META.get("CONTENT_LENGTH") or 0) > 64 * 1024:
-        return JsonResponse({"detail": "request too large"}, status=413)
-    raw_body = request.body
-    if len(raw_body) > 64 * 1024:
-        return JsonResponse({"detail": "request too large"}, status=413)
-    try:
-        payload = json.loads(raw_body or b"{}")
-    except (ValueError, TypeError, UnicodeDecodeError):
-        return JsonResponse({"detail": "invalid JSON"}, status=400)
-    if not isinstance(payload, dict):
-        return JsonResponse({"detail": "invalid JSON"}, status=400)
-    from utility.wema import wema_probe
-
-    account = "".join(c for c in str(payload.get("account") or "") if c.isdigit())[:10]
-    bank = "".join(c for c in str(payload.get("bank") or "") if c.isalnum())[:6]
-    phone = "".join(c for c in str(payload.get("phone") or "") if c.isdigit())[:14]
-    bvn = "".join(c for c in str(payload.get("bvn") or "") if c.isdigit())[:11]
-    nin = "".join(c for c in str(payload.get("nin") or "") if c.isdigit())[:11]
-    otp = "".join(c for c in str(payload.get("otp") or "") if c.isdigit())[:8]
-    tracking_id = str(payload.get("tracking_id") or "").strip()[:80]
-    response = JsonResponse({"wema": wema_probe(
-        account, bank, phone, bvn=bvn, nin=nin, otp=otp, tracking_id=tracking_id)})
-    response["Cache-Control"] = "no-store"
-    return response
 
 
 def _diag_denied(request, *env_names):
@@ -521,7 +440,7 @@ def _diag_denied(request, *env_names):
 def preflight_diagnose(request):
     """GET /preflight with an Authorization bearer token.
 
-    The go-live readiness check over HTTP. It is the same `manage.py wema_preflight`
+    The go-live readiness check over HTTP. It is the same `manage.py bank_preflight`
     run verbatim — same checks, same wording, same exit status — because a second
     implementation would drift from the one the runbook cites, and a readiness gate
     that disagrees with itself is worse than one place to look.
@@ -534,7 +453,7 @@ def preflight_diagnose(request):
     one. `?strict=1` also gates on the soft checks, exactly as `--strict` does.
     `?launch_scope=core|full` selects the decision scope; it defaults to `full`.
     """
-    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
+    denied = _diag_denied(request, "DIAG_TOKEN")
     if denied:
         return denied
     launch_scope = request.GET.get("launch_scope", "full").strip().lower()
@@ -550,7 +469,7 @@ def preflight_diagnose(request):
     buf = io.StringIO()
     ready, error = True, ""
     try:
-        call_command("wema_preflight", stdout=buf, stderr=buf,
+        call_command("bank_preflight", stdout=buf, stderr=buf,
                      launch_scope=launch_scope,
                      **({"strict": True} if request.GET.get("strict") else {}))
     except SystemExit:
@@ -580,7 +499,7 @@ def whatsapp_diagnose(request):
     is the only view that distinguishes a dead worker from a muted conversation.
     Read-only; sends nothing.
     """
-    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
+    denied = _diag_denied(request, "DIAG_TOKEN")
     if denied:
         return denied
     from whatsapp.health import whatsapp_diagnostics
@@ -603,7 +522,7 @@ def sms_diagnose(request):
     non-delivery is diagnosable. Signup hides SMS failures (anti-enumeration), so
     this is the way to confirm the OTP actually drops. Returns NO secrets.
     """
-    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
+    denied = _diag_denied(request, "DIAG_TOKEN")
     if denied:
         return denied
     from utility.providers import sms_probe
@@ -625,126 +544,6 @@ def sms_diagnose(request):
     return response
 
 
-@never_cache
-@require_http_methods(["GET"])
-def wema_callbacks_diagnose(request):
-    """GET /wema-callbacks-diagnose with an Authorization bearer token.
-
-    Remote self-test for the four bank-called callbacks, for hosts with no shell
-    access (e.g. Render). ALAT will not enable the rails until it has PROFILED
-    these exact URLs, so this prints the strings to hand the bank and proves, in
-    process, that each one resolves to its handler and that the endpoint actually
-    refuses a wrong secret.
-
-    Checked in process rather than over loopback HTTP deliberately: a self-call
-    would have to escape and re-enter the platform's own routing, so a failure
-    would say more about the network than about the configuration.
-
-    URL templates deliberately do not embed the callback secret. Operators combine
-    the template with the value held in the secret manager when profiling the bank;
-    diagnostic responses must remain safe even if captured by an access log.
-    """
-    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
-    if denied:
-        return denied
-    from django.urls import Resolver404, resolve
-
-    from common.ratelimit import client_ip
-    from wallet.wema_callbacks import DEFAULT_CALLBACK_IPS, _fingerprint, _token_ok
-
-    conf = getattr(settings, "WEMA", None) or {}
-    token = (conf.get("CALLBACK_TOKEN") or "").strip()
-    base = f"{'https' if request.is_secure() else 'http'}://{request.get_host()}"
-    blockers = []
-
-    # ALAT's own names for the four, so the output can be read straight against the
-    # profiling form the bank sends. `notification` is production-only.
-    routes = []
-    for label, segment in (("Account Creation Callback URL", "account"),
-                           ("Authentication Callback URL", "authorize"),
-                           ("Transaction Callback URL", "transaction"),
-                           ("Transaction Notification URL (production only)", "notification")):
-        probe_fragment = f"/webhooks/wema/{segment}/{token or 'SET-WEMA_CALLBACK_TOKEN'}"
-        public_fragment = f"/webhooks/wema/{segment}/<WEMA_CALLBACK_TOKEN>"
-        try:
-            handler = resolve(probe_fragment).func.__name__
-        except Resolver404:
-            handler = ""
-            blockers.append(f"{segment}: route does not resolve — is this deploy current?")
-        routes.append({"give_the_bank_as": label, "url_template": base + public_fragment,
-                       "resolves": bool(handler), "handler": handler})
-
-    # The meaningful assertion is the negative one: that a WRONG secret is turned
-    # away. Comparing the configured token against itself would pass trivially and
-    # prove nothing — this catches the open-endpoint case (no token configured, and
-    # simulation or DEBUG letting it through).
-    secret_required = not _token_ok("zitch-diagnose-deliberately-wrong-secret")
-    if not token:
-        blockers.append("WEMA_CALLBACK_TOKEN is unset — the URL carries no secret.")
-    if not secret_required:
-        blockers.append("The callbacks accept ANY secret right now — do not profile these URLs.")
-
-    # Source-IP detection, shown in full so the chain can be read off a real request
-    # instead of guessed. `resolved` is what callback AUTHENTICATION will actually
-    # compare — the same helper the decorator uses — so this readiness answer cannot
-    # drift from enforcement. The hop-count figures below are reported separately
-    # because they still govern RATE LIMITING, which does use client_ip().
-    from wallet.wema_callbacks import _callback_source_ip
-
-    enforce_ips = bool(conf.get("CALLBACK_ENFORCE_IPS", False))
-    resolved = _callback_source_ip(request)
-    xff = [p.strip() for p in request.META.get("HTTP_X_FORWARDED_FOR", "").split(",") if p.strip()]
-    hops = int(getattr(settings, "RATELIMIT_TRUSTED_PROXY_HOPS", 0) or 0)
-
-    def _public(value):
-        try:
-            return ipaddress.ip_address(value).is_global
-        except ValueError:
-            return False
-
-    # The hop count that WOULD land on the right-most public address in the chain.
-    suggested = next((i for i, v in enumerate(reversed(xff), start=1) if _public(v)), None)
-    resolved_public = _public(resolved)
-    if enforce_ips and not resolved_public:
-        blockers.append(
-            f"CALLBACK_ENFORCE_IPS is on but the caller resolves to {resolved}, which is "
-            f"not a public address — every bank callback would be refused. No public "
-            f"address was found anywhere in X-Forwarded-For, so the platform is hiding "
-            f"the true caller; do not enable enforcement until it appears."
-        )
-    # Advisory only: callback auth no longer depends on the hop count, but the shared
-    # rate limiter still buckets on client_ip(), so a wrong count there lumps every
-    # caller into one bucket.
-    rate_limit_ip = client_ip(request)
-
-    response = JsonResponse({"callbacks": {
-        "ready_to_send_to_the_bank": not blockers,
-        "blockers": blockers,
-        "routes": routes,
-        "secret_configured": bool(token),
-        "secret_fingerprint": _fingerprint(token),   # never the secret itself
-        "secret_rotation_pending": bool((conf.get("CALLBACK_TOKEN_PREV") or "").strip()),
-        "wrong_secret_is_refused": secret_required,
-        "enforce_source_ips": enforce_ips,
-        "allowed_source_ips": list(conf.get("CALLBACK_IPS") or DEFAULT_CALLBACK_IPS),
-        "this_request_came_from": resolved,
-        "source_ip_detection": {
-            # Read this off a request you made yourself: if `resolved_is_public` is
-            # false, the allowlist cannot work yet and rate limits are bucketing on a
-            # platform hop rather than per-caller.
-            "resolved_is_public": resolved_public,
-            "rate_limit_bucket_ip": rate_limit_ip,
-            "trusted_proxy_hops": hops,
-            "suggested_trusted_proxy_hops": suggested,
-            "x_forwarded_for": xff,
-            "remote_addr": request.META.get("REMOTE_ADDR", ""),
-            "safe_to_enable_ip_enforcement": resolved_public,
-        },
-        "authorization_max_age_seconds": int(conf.get("AUTH_MAX_AGE", 900) or 900),
-        "require_security_info": bool(conf.get("AUTH_REQUIRE_SECURITY_INFO", False)),
-    }})
-    response["Cache-Control"] = "no-store"
-    return response
 
 
 urlpatterns = [
@@ -759,8 +558,7 @@ urlpatterns = [
     path("readyz", readyz),
     # Both spellings, for the same reason wema_urls.py registers both: operational
     # probes should not fail merely because a caller included a trailing slash.
-    *[p for frag, view in (("wema-diagnose", wema_diagnose),
-                           ("wema-callbacks-diagnose", wema_callbacks_diagnose),
+    *[p for frag, view in (("bank-diagnose", preflight_diagnose),
                            ("whatsapp-diagnose", whatsapp_diagnose),
                            ("sms-diagnose", sms_diagnose),
                            ("preflight", preflight_diagnose))
@@ -783,14 +581,12 @@ urlpatterns = [
     # links as tappable, so the chat carries this URL and it forwards into the
     # app scheme (store links as the no-app fallback).
     path("wa/approve/<str:token>", whatsapp_approve_handoff),
-    path("kyc/face/complete/", prembly_face_complete),
     path("wa/verify/<str:token>", whatsapp_verification_page, name="whatsapp_verification"),
     # Wema/ALAT bank-called callbacks. The bank PROFILES these exact URLs, and the
     # rails do not work until it has: account creation is refused without a profiled
     # Account Creation URL, and transactions fail authentication without the
     # Authentication URL. The trailing path segment is a shared secret; they sit
     # outside /api/ because they are bank-authenticated, not user-authenticated.
-    path("webhooks/wema/", include("wallet.wema_urls")),
     # The hosted QR scanner, opened from a WhatsApp button. Outside /api/ because it
     # is a PAGE for a customer's browser, not an authenticated JSON endpoint — the
     # single-use token in the path is what ties a scan to the chat that started it.
@@ -799,6 +595,8 @@ urlpatterns = [
     path("api/admin/", include("admin_api.urls")),
     path("api/whatsapp/", include("whatsapp.urls")),
     path("api/ops/", include("portal.urls")),
+    path("9psb/webhook", bank_webhook),
+    path("api/banking/", include("banking.urls")),
     path("api/", include("accounts.urls")),
     path("api/", include("wallet.urls")),
     path("api/utility/", include("utility.urls")),

@@ -18,7 +18,17 @@ load_dotenv(BASE_DIR / ".env")
 
 
 def env_bool(name: str, default: bool = False) -> bool:
-    return os.environ.get(name, str(default)).lower() in {"1", "true", "yes", "on"}
+    # Dashboard pastes often carry a trailing space/newline; "true\n" is still true.
+    return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_text(name: str, default: str = "") -> str:
+    """A provider URL/credential without surrounding whitespace from a pasted value.
+
+    A trailing newline in a bank key is sent verbatim and rejected as bad
+    credentials, which reads exactly like a bank-side problem.
+    """
+    return os.environ.get(name, default).strip()
 
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-insecure-change-me")
@@ -61,6 +71,7 @@ if RENDER_HOST:
     CSRF_TRUSTED_ORIGINS.append(f"https://{RENDER_HOST}")
 
 INSTALLED_APPS = [
+    "banking",
     "accounts.admin_config.ZitchAdminConfig",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -89,9 +100,9 @@ INSTALLED_APPS = [
 
 # Wema Partnership is the sole active account and transfer integration.
 # Historical funding records stay read-only for accounting and audit evidence.
-BANK_ACCOUNT_PROVIDER = "partnership"
-WEMA_PARTNERSHIP_MODE = os.environ.get("WEMA_PARTNERSHIP_MODE", "active").strip().lower()
-WEMA_BILLER_MODE = os.environ.get("WEMA_BILLER_MODE", "active").strip().lower()
+BANK_ACCOUNT_PROVIDER = "9psb"
+WEMA_PARTNERSHIP_MODE = "archived"
+WEMA_BILLER_MODE = "archived"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -119,18 +130,7 @@ def _url_origin(value: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
 
 
-_face_callback_origins = {
-    o.rstrip("/")
-    for o in os.environ.get("WEMA_FACE_CALLBACK_ORIGINS", "").split(",")
-    if o.strip()
-}
-# Use the SAME effective URL for CORS and the customer-facing link. Otherwise
-# an unset env var sends customers to Pilot while rejecting its browser callback.
-_face_verify_url = os.environ.get(
-    "WEMA_FACE_VERIFY_URL", "https://face-verification-pilot.azurewebsites.net")
-_derived_face_origin = _url_origin(_face_verify_url)
-if _derived_face_origin:
-    _face_callback_origins.add(_derived_face_origin)
+_face_callback_origins = set()
 
 CORS_ALLOW_ALL_ORIGINS = DEBUG
 CORS_ALLOWED_ORIGINS = sorted({
@@ -358,12 +358,12 @@ PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "").strip().lower()
 PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
 # The VAS (airtime/data/bills) rail is the partner bank only. Legacy
 # VAS_PROVIDER values are ignored by utility.providers.vas_provider.
-VAS_PROVIDER = "wema"
+VAS_PROVIDER = "9psb"
 # Tier 1 is always Wema Partnership: BVN or NIN with bank OTP/hosted face proof.
 # Tier 2 requires authenticated Prembly interactive liveness and a bank upgrade;
 # Tier 3 requires bank completion tied to the submitted address and request.
 # Unimplemented evidence adapters remain unavailable, regardless of credentials.
-KYC_PROVIDER = "wema"
+KYC_PROVIDER = "9psb"
 # Fraud velocity guard: max outbound money movements per user per 10 minutes
 # (common.http.check_velocity, applied on every send path). 0 disables. Off in
 # tests (suites legitimately hammer one user far faster than any human).
@@ -391,130 +391,10 @@ WA_REAUTH_IDLE_MINUTES = 0 if TESTING else int(os.environ.get("WA_REAUTH_IDLE_MI
 # channel; the notification is only ever a trigger. Blank keys => MOCK; WEMA_SIMULATION=true serves the mock
 # flow even in prod (no real money or debt). securityInfo is a per-reference
 # HMAC derived from WEMA_SECURITY_INFO, a private seed chosen by Zitch. See utility.wema.
-WEMA = {
-    "BASE_URL": os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng"),
-    # Optional per-product host override for cases where Wema profiles one live
-    # product on a different APIM host. Values should be the host only; product
-    # paths such as /account-upgrade are appended by utility.wema._url.
-    "BASE_URLS": {
-        "acct_mgt": os.environ.get("WEMA_ACCT_MGT_BASE_URL", ""),
-        "upgrade": os.environ.get("WEMA_UPGRADE_BASE_URL", ""),
-        "face_account": os.environ.get("WEMA_FACE_ACCOUNT_BASE_URL", ""),
-    },
-    "CHANNEL_ID": os.environ.get("WEMA_CHANNEL_ID", ""),   # x-api-key / access value
-    "KEYS": {
-        # Wallet Services covers wallet creation, credit/debit wallet, account
-        # management, notifications and bills. Every product sold separately in
-        # the portal requires its own key; never borrow this key across products.
-        "wallet": os.environ.get("WEMA_WALLET_KEY", ""),
-        # The BVN onboarding path calls /account-creation, which the portal sells as
-        # its own product ("Account Creation - Address Verification") separately from
-        # Wallet Services. It falls back to the wallet key, which is right when one
-        # subscription covers both and an APIM 401 on every signup when it does not —
-        # so make it settable without a code change. Leave blank unless Wema issued a
-        # distinct key for Account Creation.
-        "wallet_bvn": os.environ.get("WEMA_ACCOUNT_CREATION_KEY", ""),
-        # Partnership Account - Face Biometric Authentication. Most Wema tenants
-        # profile this under the account-creation subscription, so retain that as
-        # the explicit fallback while allowing a separately-issued key.
-        "face_account": (os.environ.get("WEMA_FACE_ACCOUNT_KEY", "")
-                         or os.environ.get("WEMA_ACCOUNT_CREATION_KEY", "")),
-        "acct_mgt": os.environ.get("WEMA_ACCT_MGT_KEY", ""),
-        "card": os.environ.get("WEMA_CARD_KEY", ""),       # Virtual Naira Card
-        "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # Airtime and Data API
-        "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # optional override; Wallet Services covers bills
-        "upgrade": os.environ.get("WEMA_UPGRADE_KEY", ""), # Account Upgrade API
-        "kyc": os.environ.get("WEMA_KYC_KEY", ""),         # Partnership Account KYC
-        "remita": os.environ.get("WEMA_REMITA_KEY", ""),   # Remita Payment
-        "bnpl": os.environ.get("WEMA_BNPL_KEY", ""),       # Buy-Now-Pay-Later
-    },
-    # The card product id ("cardKey") ALAT's virtualCard request expects — distinct
-    # from the subscription key above. Supplied by Wema; blank until then.
-    "CARD_PRODUCT_KEY": os.environ.get("WEMA_CARD_PRODUCT_KEY", ""),
-    # BNPL uses a DIFFERENT auth scheme from the rest of the rail: merchant headers
-    # (x-merchant-id + x-merchant-authorization-key) alongside the APIM subscription
-    # key above. Supplied by Wema when the BNPL product is enabled.
-    "BNPL_MERCHANT_ID": os.environ.get("WEMA_BNPL_MERCHANT_ID", ""),
-    "BNPL_AUTH_KEY": os.environ.get("WEMA_BNPL_AUTH_KEY", ""),
-    # Our own Wema pool/settlement NUBAN that funds outbound transfers (the
-    # sourceAccountNumber on ProcessClientTransfer). Required for Wema payouts.
-    "SOURCE_ACCOUNT": os.environ.get("WEMA_SOURCE_ACCOUNT", ""),
-    "SECURITY_INFO": os.environ.get("WEMA_SECURITY_INFO", ""),
-    "SIMULATION": env_bool("WEMA_SIMULATION", False),
-    # Bank-called callbacks (see wallet/wema_callbacks.py). ALAT signs nothing, so the
-    # secret lives in the URL path the bank profiles; _PREV keeps a rotation overlap.
-    "CALLBACK_TOKEN": os.environ.get("WEMA_CALLBACK_TOKEN", ""),
-    "CALLBACK_TOKEN_PREV": os.environ.get("WEMA_CALLBACK_TOKEN_PREV", ""),
-    # Source-IP allowlist of the bank's gateway egress addresses. Production is
-    # fail-closed by default; use the profiling environment to validate the trusted
-    # proxy hop and observed Wema source before enabling live money.
-    "CALLBACK_ENFORCE_IPS": env_bool(
-        "WEMA_CALLBACK_ENFORCE_IPS", not DEBUG and not TESTING),
-    "CALLBACK_IPS": [ip for ip in os.environ.get(
-        "WEMA_CALLBACK_IPS", "135.236.18.76,74.178.162.156").split(",") if ip.strip()],
-    # Payout authorisation: only authorise a PENDING bank payout younger than this
-    # (seconds). In production a missing/mismatched value denies the payout: Wema
-    # confirmed this is a private value chosen by Zitch and echoed to the callback.
-    "AUTH_MAX_AGE": int(os.environ.get("WEMA_AUTH_MAX_AGE", "900") or 900),
-    "AUTH_REQUIRE_SECURITY_INFO": env_bool(
-        "WEMA_AUTH_REQUIRE_SECURITY_INFO", not DEBUG and not TESTING),
-    # VAS status legends. The live payment legend confirmed for this integration is
-    # 200=success, 400=failed, 401=unauthorized/authentication-failed/invalid-API.
-    # Keep the maps product-scoped and environment-backed so a future bank contract
-    # change cannot silently reinterpret historical or in-flight payments. Without
-    # the legend a timed-out VAS purchase
-    # can never be auto-settled or auto-refunded: it stays PENDING forever, because
-    # guessing either way loses money (settle a failure and the customer is debited
-    # for nothing; refund a delivered top-up and we pay twice).
-    #
-    # These exist so that the moment Wema supplies the legend it is a Render env var,
-    # not a code change and a deploy. Format is `code=outcome` pairs, comma or space
-    # separated, where outcome is exactly one of success | pending | failed, plus
-    # explicit Wema aliases like success_or_pending where the bank's code is
-    # ambiguous:
-    #
-    #   WEMA_VAS_STATUS_LEGEND="200=success,400=failed,401=unauthorized_authentication_failed_or_invalid_api"
-    #
-    # Codes absent from the legend keep today's behaviour (PENDING, logged), and an
-    # unparseable entry is dropped with an error rather than defaulting — so a typo
-    # can never turn an unknown code into a settlement. See utility.wema._vas_legend.
-    "VAS_STATUS_LEGEND": os.environ.get("WEMA_VAS_STATUS_LEGEND", ""),
-    "BILLS_STATUS_LEGEND": os.environ.get("WEMA_BILLS_STATUS_LEGEND", ""),
-    # Remita is its own ALAT product with its own status enum, so it gets its own
-    # legend rather than borrowing the airtime one.
-    "REMITA_STATUS_LEGEND": os.environ.get("WEMA_REMITA_STATUS_LEGEND", ""),
-    # ALAT's face-biometric web app (Account Creation product). Liveness is a hosted
-    # WEB flow, not an API call: the customer is sent here with their BVN/NIN and the
-    # bank returns a correlationId proving the check passed.
-    #
-    # Pilot is the approved Wema environment for this rollout. Keep this non-secret
-    # fallback so a worker/API env-var drift cannot resurrect the old DEV host.
-    "FACE_VERIFY_URL": _face_verify_url,
-    # Pilot diagnostic only: Wema's pilot page currently fails when cb_uri is
-    # supplied. Keep enabled for the real flow; disable only to isolate the
-    # hosted verifier before Wema confirms its callback contract.
-    # "registered" sends the exact URL Wema whitelisted; "session" appends
-    # per-verification state for verifier deployments that support prefix matching;
-    # "none" is diagnostic only because no result can reach us.
-    "FACE_CB_MODE": (
-        os.environ.get("WEMA_FACE_CB_MODE", "").strip().lower()
-        or ("registered" if env_bool("WEMA_FACE_INCLUDE_CALLBACK", True) else "none")
-    ),
-    # Legacy compatibility for older environments; face_cb_mode() prefers the
-    # explicit mode above.
-    "FACE_INCLUDE_CALLBACK": env_bool("WEMA_FACE_INCLUDE_CALLBACK", True),
-    # Source IPs the face verifier calls us back from. SEPARATE from CALLBACK_IPS:
-    # that list is ALAT's transaction gateway, and the face app is a different Azure
-    # host. The face callback carries no shared token (its URL is shown to the
-    # customer), so this allowlist IS its authentication — without it, anyone who
-    # reads the URL out of their own browser could assert their own face check.
-    "FACE_CALLBACK_IPS": [ip.strip() for ip in
-                          os.environ.get("WEMA_FACE_CALLBACK_IPS", "").split(",") if ip.strip()],
-    # Exact browser origins allowed to transport the hosted verifier result. Origin
-    # is not authentication; browser callbacks are independently validated against
-    # Wema's authenticated without-OTP account endpoint before KYC state changes.
-    "FACE_CALLBACK_ORIGINS": sorted(_face_callback_origins),
-}
+WEMA = {"BASE_URL": "", "CHANNEL_ID": "", "KEYS": {}, "SOURCE_ACCOUNT": "",
+        "SIMULATION": False, "SECURITY_INFO": "", "CALLBACK_TOKEN": "", "CALLBACK_TOKEN_PREV": "",
+        "CALLBACK_IPS": [], "FACE_CALLBACK_IPS": [], "FACE_CALLBACK_ORIGINS": [],
+        "FACE_VERIFY_URL": "", "FACE_CB_MODE": "none"}
 
 # How long a debited-but-unresolved movement may sit before the reconcile crons
 # page. Below these the sweeps are doing their job (a bank or an aggregator
@@ -1065,3 +945,27 @@ if SENTRY_DSN and not TESTING:
         )
     except Exception:  # noqa: BLE001 — observability must never break boot
         pass
+
+# 9PSB credentials remain server-side. Sandbox is the safe default, never an
+# implicit authorization to process production customer identities or money.
+NINEPSB = {
+    "BASE_URL": env_text("NINEPSB_BASE_URL"),
+    # Explicit VAS URLs, independent of WaaS. The environment example contains
+    # the supplied sandbox collection URLs; production requires its own URLs.
+    "VAS_BASE_URL": env_text("NINEPSB_VAS_BASE_URL"),
+    "VAS_AUTH_URL": env_text("NINEPSB_VAS_AUTH_URL"),
+    "ENVIRONMENT": env_text("NINEPSB_ENVIRONMENT", "sandbox"),
+    "ENABLED": env_bool("NINEPSB_ENABLED", False),
+    "UAT_APPROVED": env_bool("NINEPSB_UAT_APPROVED", False),
+    "TRANSFER_FEE_TOTAL": os.environ.get("NINEPSB_TRANSFER_FEE_TOTAL", ""),
+    "VAS_ENABLED": env_bool("NINEPSB_VAS_ENABLED", False),
+    "SANDBOX_CUSTOMERS_ENABLED": env_bool("NINEPSB_SANDBOX_CUSTOMERS_ENABLED", False),
+    "SANDBOX_PHONES": [x.strip() for x in os.environ.get("NINEPSB_SANDBOX_PHONES", "").split(",") if x.strip()],
+    "SANDBOX_USER_IDS": [x.strip() for x in os.environ.get("NINEPSB_SANDBOX_USER_IDS", "").split(",") if x.strip()],
+    **{key: env_text("NINEPSB_" + key) for key in (
+        "WAAS_USERNAME", "WAAS_PASSWORD", "WAAS_CLIENT_ID", "WAAS_CLIENT_SECRET",
+        "VAS_USERNAME", "VAS_PASSWORD", "WEBHOOK_USERNAME", "WEBHOOK_PASSWORD")},
+    "SINGLE_OUTBOUND_LIMITS": os.environ.get("NINEPSB_SINGLE_OUTBOUND_LIMITS", "{}"),
+    "DAILY_OUTBOUND_LIMITS": os.environ.get("NINEPSB_DAILY_OUTBOUND_LIMITS", "{}"),
+}
+BANKING_ENCRYPTION_KEYS = [x.strip() for x in os.environ.get("BANKING_ENCRYPTION_KEYS", "").split(",") if x.strip()]

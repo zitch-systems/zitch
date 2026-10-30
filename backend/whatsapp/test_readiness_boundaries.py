@@ -1,4 +1,5 @@
 """Regression coverage for deferred execution and customer-visible outcomes."""
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from whatsapp.models import ConversationState, PendingAction, WaMessageLog, What
 from whatsapp.test_flows import MSISDN, _make_user, _transfer_action
 
 
+@bank_channel_case
 @override_settings(WHATSAPP_PROCESS_INLINE=False, WHATSAPP_FLOW_SETTLE_WAIT=0,
                    WHATSAPP_FLOW={"RESULT_SCREEN": True})
 class DeferredExecutionBoundaryTests(TestCase):
@@ -130,6 +132,7 @@ class DeferredExecutionBoundaryTests(TestCase):
         self.assertTrue(ConversationState.objects.filter(msisdn=MSISDN, last_verified__isnull=False).exists())
 
 
+@bank_channel_case
 @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True}, WHATSAPP_FLOW_SETTLE_WAIT=0.1)
 class ReviewOutcomeBoundaryTests(TestCase):
     def setUp(self):
@@ -247,6 +250,7 @@ class ReviewOutcomeBoundaryTests(TestCase):
         receipt.assert_not_called()
 
 
+@bank_channel_case
 class MalformedFlowHandleTests(TestCase):
     def test_invalid_handles_fail_before_database_or_unbounded_integer_conversion(self):
         for prefix, resolve in (("", flows.resolve_flow_token), ("ob", flows.resolve_onboarding_token),

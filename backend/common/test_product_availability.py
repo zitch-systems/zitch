@@ -163,6 +163,6 @@ class ProductAvailabilityTests(TestCase):
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("200000"))
 
     @override_settings(DEBUG=False, TESTING=False, WEMA={"SIMULATION": True})
-    def test_deliberate_simulation_remains_available(self):
+    def test_retired_simulation_cannot_enable_products(self):
         for product in MESSAGES:
-            self.assertTrue(product_available(product))
+            self.assertFalse(product_available(product))

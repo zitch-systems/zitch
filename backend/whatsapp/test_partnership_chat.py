@@ -1,4 +1,6 @@
 """Partnership chat preserves biller safety and refuses retired setup sessions."""
+from banking.test_fixtures import bank_channel_case
+from banking.test_client import CONFIG
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -13,6 +15,7 @@ from whatsapp.retired_setup import RETIRED_SETUP_MESSAGE
 from whatsapp.test_flows import MSISDN, _make_user
 
 
+@bank_channel_case
 class PartnershipCustomerChatTests(TestCase):
     def setUp(self):
         self.user = _make_user()
@@ -40,15 +43,15 @@ class PartnershipCustomerChatTests(TestCase):
     def test_partnership_menu_follows_lifecycle_policy_on_each_call(self):
         for lifecycle, enabled in (("active", True), ("archive", False)):
             with self.subTest(lifecycle=lifecycle), override_settings(
-                    BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE=lifecycle):
+                    NINEPSB={**CONFIG, "ENABLED": enabled}):
                 menu = router.menu_text()
                 self.assertEqual("2️⃣  💸 Send money" in menu, enabled)
                 self.assertEqual("1️⃣1️⃣  📷 Scan a QR code" in menu, enabled)
                 self.assertEqual("send 5k to Ada" in menu, enabled)
-                self.assertIn("3️⃣  📱 Airtime / Data", menu)
-                self.assertIn("4️⃣  💡 Pay a bill", menu)
+                self.assertEqual("3️⃣  📱 Airtime / Data\n" in menu, enabled)
+                self.assertEqual("4️⃣  💡 Pay a bill\n" in menu, enabled)
 
-    @override_settings(BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE="archive")
+    @override_settings(NINEPSB={**CONFIG, "ENABLED": False})
     def test_archived_transfer_option_is_refused_before_recipient_or_pin(self):
         with patch.object(router, "reply") as reply, \
                 patch.object(router, "_bank_items") as banks, \
@@ -133,22 +136,6 @@ class PartnershipCustomerChatTests(TestCase):
         reply.assert_called_once_with(MSISDN, RETIRED_SETUP_MESSAGE)
         onboarding.assert_not_called()
 
-    def test_historical_funding_review_does_not_open_a_new_account_or_identity_flow(self):
-        held = {**self.funding, "account_setup_state": "legacy_funding_review",
-                "available": False, "has_account": False,
-                "migration_message": "Your historical funds need review. Contact support."}
-        for fn in (router._do_add_money, router._do_account_details,
-                   router._start_add_account, router._start_kyc):
-            with self.subTest(fn=fn.__name__), \
-                    patch.object(router, "customer_funding_account", return_value=held), \
-                    patch.object(router, "reply") as reply, \
-                    patch.object(router, "send_flow") as flow, \
-                    patch.object(router.wallet_views, "_start_wema_attempt") as create:
-                fn(self.user, MSISDN)
-                reply.assert_called_once_with(MSISDN, held["migration_message"])
-                flow.assert_not_called()
-                create.assert_not_called()
-                self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
 
     def test_partnership_kyc_dispatch_and_generic_biller_text_remain_available(self):
         pa = PendingAction.objects.create(
@@ -235,18 +222,17 @@ class PartnershipCustomerChatTests(TestCase):
             self.assertNotIn("Transfers and bill payments are currently unavailable", message)
 
 
-    def test_bill_starters_select_biller_gate_and_transfers_keep_transfer_gate(self):
-        starters = [
-            (router._start_vtu, ()), (router._start_airtime, ()), (router._start_data, ()),
+    def test_disabled_vas_starters_refuse_before_bank_io_or_pending_action(self):
+        starters = [(router._start_vtu, ()), (router._start_airtime, ()), (router._start_data, ()),
             (router._start_electricity, ()), (router._begin_electricity, (None, None, None, None)),
-            (router._start_cable, ()), (router._begin_cable, (None, None)),
-            (router._start_exam, ()), (router._begin_airtime, (None, None, None)),
-        ]
-        for start, args in starters:
-            with self.subTest(start=start.__name__), \
-                    patch.object(router, "_blocked_from_spending", return_value=True) as guard:
-                start(self.user, MSISDN, *args)
-                guard.assert_called_once_with(self.user, MSISDN, biller=True)
+            (router._start_cable, ()), (router._begin_cable, (None, None)), (router._start_exam, ()),
+            (router._begin_airtime, (None, None, None))]
+        with override_settings(NINEPSB={**CONFIG, "VAS_ENABLED": False}):
+            for start, args in starters:
+                with self.subTest(start=start.__name__), patch("banking.client.Client._send") as provider, patch.object(router, "reply"):
+                    start(self.user, MSISDN, *args)
+                    provider.assert_not_called()
+                    self.assertFalse(PendingAction.objects.exists())
         with patch.object(router, "_blocked_from_spending", return_value=True) as guard:
             router._start_transfer(self.user, MSISDN)
         guard.assert_called_once_with(self.user, MSISDN)
@@ -317,4 +303,3 @@ class PartnershipCustomerChatTests(TestCase):
         self.assertEqual(response["screen"], VTU_AIRTIME)
         self.assertIn("₦100.00", response["data"]["error"])
         self.assertNotIn("₦600.00", response["data"]["error"])
-

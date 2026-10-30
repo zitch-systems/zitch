@@ -6,6 +6,8 @@ on the user (per KYC tier), so they apply identically in the app and on
 WhatsApp. WhatsApp onboarding (BVN -> Tier 2) caps at ₦1,000,000 transfers /
 ₦100,000 bills a day; full app KYC (Tier 3) raises them.
 """
+from django.test import override_settings as _bank_test_settings
+from banking.test_client import CONFIG as _BANK_TEST_CONFIG
 import json
 from decimal import Decimal
 
@@ -14,7 +16,7 @@ from django.test import Client, TestCase
 from common.http import daily_limit_error
 
 from .models import Transaction
-from .tests import make_user
+from banking.test_fixtures import make_bank_user as make_user, mock_bank_io
 
 
 def _seed_out(user, service, amount):
@@ -26,6 +28,7 @@ def _seed_out(user, service, amount):
     )
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class DailyLimitModelTests(TestCase):
     def test_tier_caps(self):
         u2, _ = make_user("08070000001", "d2@zitch.test", tier=2)
@@ -36,6 +39,7 @@ class DailyLimitModelTests(TestCase):
         self.assertEqual(u3.daily_bill_limit, Decimal("500000"))
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class DailyLimitHelperTests(TestCase):
     def test_transfer_daily_cap(self):
         u, _ = make_user("08070000010", "dt@zitch.test", tier=2)
@@ -94,8 +98,10 @@ class DailyLimitHelperTests(TestCase):
         self.assertIsNone(daily_limit_error(u, Decimal("200000"), "transfer"))
 
 
+@_bank_test_settings(NINEPSB={**_BANK_TEST_CONFIG, "TRANSFER_FEE_TOTAL": "0.00"})
 class DailyLimitEndpointTests(TestCase):
     def setUp(self):
+        mock_bank_io(self, directory=True)
         self.client = Client()
         self.sender, self.token = make_user("08070000020", "ds@zitch.test", balance="3000000", tier=2)
         self.sender.face_verified = True  # bypass the >=₦100k face gate for the test
@@ -107,6 +113,7 @@ class DailyLimitEndpointTests(TestCase):
         self._key_seq += 1
         return self.client.post(
             path, data=json.dumps({
+                "expected_fee": "0.00",
                 **payload,
                 "access_token": self.token,
                 "idempotency_key": payload.get("idempotency_key") or f"daily-limit-{self._key_seq}",

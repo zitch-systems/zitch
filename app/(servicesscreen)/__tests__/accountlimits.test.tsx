@@ -35,7 +35,7 @@ jest.mock('@/components/design/ui', () => {
 });
 
 const state = { success: true, tier: 1, transaction_limit: '50000', daily_transfer_limit: '50000',
-  daily_bill_limit: '35000', bvn_verified: true, nin_verified: false, account_provider: 'partnership' };
+  daily_bill_limit: '35000', bvn_verified: true, nin_verified: false, account_provider: '9psb' };
 
 beforeEach(() => {
   mockApiJson.mockReset();
@@ -45,7 +45,7 @@ beforeEach(() => {
 
 it.each([
   { provider: 'wema_vas', can_fund: true, available: true, has_account: true, account_number: '7121234567' },
-  { provider: 'partnership', legacy_funding_review: true, account_setup_state: 'legacy_funding_review' },
+  { provider: '9psb', legacy_funding_review: true, account_setup_state: 'legacy_funding_review' },
 ])('does not advertise held or retired funding or spendable limits: %j', async (funding) => {
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
     success: true, ...funding, bill_payments_available: true, transfers_available: true,
@@ -82,7 +82,7 @@ it('ends a stalled fetch and lets the customer retry without stale responses rep
     await act(async () => { jest.advanceTimersByTime(8000); });
     expect(JSON.stringify(tree.toJSON())).toContain('taking longer than expected');
     mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
-      success: true, provider: 'partnership', legacy_funding_review: true, account_setup_state: 'legacy_funding_review',
+      success: true, provider: '9psb', legacy_funding_review: true, account_setup_state: 'legacy_funding_review',
     });
     await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Try again' }).props.onPress(); });
     await act(async () => { resolveOld.forEach((resolve) => resolve({ success: false })); });
@@ -95,7 +95,7 @@ it('ends a stalled fetch and lets the customer retry without stale responses rep
 });
 
 
-it('never uses a reserved validation prefix even if funding flags claim the account is ready', async () => {
+it('never uses a retired funding provider even if its flags claim the account is ready', async () => {
   mockWallet.accountNumber = '7111234567';
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
     success: true, provider: 'partnership', available: true, has_account: true, can_fund: true,
@@ -109,13 +109,13 @@ it('never uses a reserved validation prefix even if funding flags claim the acco
   act(() => tree.unmount());
 });
 
-it('uses current Partnership account details and authoritative limits without inventing an unlimited balance', async () => {
+it('uses current 9PSB account details and authoritative limits without inventing an unlimited balance', async () => {
   mockWallet.accountNumber = '0450000000';
   mockWallet.accountName = 'Stale Account';
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? {
-    ...state, account_provider: 'partnership', daily_transfer_limit: '123456', daily_bill_limit: '65432',
+    ...state, account_provider: '9psb', daily_transfer_limit: '123456', daily_bill_limit: '65432',
     bank_tier_limits: { single_inflow: '77777', daily_spend: '222222', max_balance: null },
-  } : { success: true, provider: 'partnership', account_number: '0454243073', account_name: 'Current Account', has_account: true, available: true, can_fund: true, account_setup_state: 'ready' });
+  } : { success: true, provider: '9psb', account_number: '0454243073', account_name: 'Current Account', has_account: true, available: true, can_fund: true, account_setup_state: 'ready' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
   const output = JSON.stringify(tree.toJSON());
@@ -131,12 +131,12 @@ it('uses current Partnership account details and authoritative limits without in
   act(() => tree.unmount());
 });
 
-it('does not expose a stale cached Partnership number during account review', async () => {
+it('does not expose a stale cached 9PSB number during account review', async () => {
   mockWallet.accountNumber = '0450000000';
   mockWallet.accountName = 'Stale Account';
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? {
-    ...state, account_provider: 'partnership',
-  } : { success: true, provider: 'partnership', account_number: '', available: false, has_account: false,
+    ...state, account_provider: '9psb',
+  } : { success: true, provider: '9psb', account_number: '', available: false, has_account: false,
     legacy_funding_review: true, account_setup_state: 'legacy_funding_review', migration_message: 'Your account needs review.' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
@@ -150,7 +150,7 @@ it('does not turn boolean limit values into money while retaining a confirmed ze
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? {
     ...state, transaction_limit: false, daily_transfer_limit: true, daily_bill_limit: '0.00',
     bank_tier_limits: { single_inflow: false, daily_spend: true, max_balance: 0 },
-  } : { success: true, provider: 'partnership', account_number: '0454243073',
+  } : { success: true, provider: '9psb', account_number: '0454243073',
     account_name: 'Current Account', has_account: true, available: true, can_fund: true,
     account_setup_state: 'ready' });
   let tree!: renderer.ReactTestRenderer;

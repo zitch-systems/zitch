@@ -1,4 +1,5 @@
 """Email OTP proof stays bound to the inbox that received the challenge."""
+from banking.test_fixtures import bank_channel_case
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -13,6 +14,7 @@ from whatsapp.tests import make_user
 MSISDN = "2348011117711"
 
 
+@bank_channel_case
 class EmailOtpBindingTests(TestCase):
     def setUp(self):
         self.user, _ = make_user(phone="08010007711", email="old@example.com")

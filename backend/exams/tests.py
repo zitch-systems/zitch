@@ -1,4 +1,6 @@
 """Tests for exam PIN purchase."""
+from django.test import override_settings as _bank_test_settings
+from banking.test_client import CONFIG as _BANK_TEST_CONFIG
 import json
 from decimal import Decimal
 from unittest.mock import patch
@@ -6,11 +8,12 @@ from unittest.mock import patch
 from django.test import Client, TestCase
 
 from wallet.services import get_or_create_wallet
-from wallet.tests import make_user
+from banking.test_fixtures import make_bank_user as make_user
 
 from .models import ExamProduct
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class ExamTests(TestCase):
     def setUp(self):
         self.client = Client()

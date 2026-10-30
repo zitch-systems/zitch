@@ -1,8 +1,10 @@
+from banking.test_fixtures import bank_channel_case
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
 
+@bank_channel_case
 class WebStartupQueueRecoveryTests(SimpleTestCase):
     """A deploy must recover rows whose post-webhook daemon was reaped."""
 

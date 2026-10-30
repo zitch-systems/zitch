@@ -1,0 +1,1898 @@
+{
+  "source_commit": "e60196f1bd60fee8b6009eddaaf43c9f9270bfaf",
+  "implementation_archive_branch": "archive/wema-partnership-before-9psb-20261028",
+  "reason": "Transport, hosted-face and callback contracts for the removed provider; standalone Prembly identity lookup is also retired. Shared ledger, historical liability and application control suites remain active.",
+  "files": [
+    {
+      "path": "backend/utility/test_wema.py",
+      "sha256": "e3eff9b8515e50c074b3b4f9163e6cc600790fdec895b57f9204976d2dc9f67a",
+      "test_methods": 144
+    },
+    {
+      "path": "backend/utility/test_bank_response_binding.py",
+      "sha256": "f40e9811cfd408a6a1f18324e8ebf7d3ef7e2958ff3dbf0fdf198024e110ffb7",
+      "test_methods": 17
+    },
+    {
+      "path": "backend/utility/test_history_contract.py",
+      "sha256": "38e36327b1b76809f644fd346b3973b9fd0df5e141435f34ad88a40d896b6104",
+      "test_methods": 8
+    },
+    {
+      "path": "backend/utility/test_wema_safety.py",
+      "sha256": "967cfef8a640b21dfb05ff8ee101c919687310c6dec03316fea0b6565f33634e",
+      "test_methods": 13
+    },
+    {
+      "path": "backend/utility/test_vas_refusal.py",
+      "sha256": "c717845570e028b5f5e783bbca9098abcc4d34494404d0f7e39ecf46e323cb03",
+      "test_methods": 29
+    },
+    {
+      "path": "backend/utility/test_vas_status_entitlement.py",
+      "sha256": "6a22080fbd2b875b086cc65d9892f587c7c890bbc9823330e75b52b42bdfb08f",
+      "test_methods": 13
+    },
+    {
+      "path": "backend/utility/test_vas_legend.py",
+      "sha256": "d298261c5040f77d58349a5cdfe52b9cac53fd4fb0368626e39ae0c041e493d5",
+      "test_methods": 22
+    },
+    {
+      "path": "backend/utility/test_prembly_identity_contract.py",
+      "sha256": "5fa65cf00d70ecc92bd0c421d67c98aa9d24b60531a0d542cd657e4bd834dbe2",
+      "test_methods": 10
+    },
+    {
+      "path": "backend/accounts/test_wema_face.py",
+      "sha256": "c1469e5c40350ba2fd698ac04ab2f6a946a54c587950e4f6f05743e5e99a6231",
+      "test_methods": 70
+    },
+    {
+      "path": "backend/wallet/test_wema_callbacks.py",
+      "sha256": "7cad6b34fb67dcefae6bb73f8d46fef57137bed5da6a7b276b2d62c739a6d8f5",
+      "test_methods": 83
+    }
+  ],
+  "retired_classes": [
+    {
+      "path": "backend/accounts/test_simulate_kyc.py",
+      "class": "SimulateKycTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "4d128ef222485c0fd1e072ea1b84cd1fce18d178a12ca9983485b35d8be388fc",
+      "class_sha256": "9be8e76c02d7b16a38b729b310d3842f45cef4a09d935d1d6946ba88813ea813",
+      "test_methods": 10,
+      "reason": "Retired mock identity issuance endpoint; replacement explicitly refuses old routes.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity"
+      ]
+    },
+    {
+      "path": "backend/accounts/test_partnership_identity.py",
+      "class": "PartnershipIdentityTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "99f62a91c4a19575f1335e9948730a8de7a07661b3159dbd58794d8cb4eb6b2a",
+      "class_sha256": "cc26dcf9c96cd9215e60c9a045f1a9735275d01d23fd2bc010bc4afe85bc9a47",
+      "test_methods": 4,
+      "reason": "Wema-specific identity routing and old HTTP paths were removed.",
+      "replacement_suites": [
+        "banking.test_auth_routing",
+        "banking.test_identity",
+        "banking.test_money"
+      ]
+    },
+    {
+      "path": "backend/accounts/test_kyc_bank_contract.py",
+      "class": "IdentityTierModelTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "9eab55de5ac71e17bff14d5a552445b0b182d2c22c32ba5aa41420b6ce9ca008",
+      "class_sha256": "a6983d56cf9a5699fbcc2b73bf626fc77207cd8187af73b0be1e21815c1aa0d8",
+      "test_methods": 1,
+      "reason": "Wema OTP/upgrade envelopes and standalone Prembly liveness are no longer active contracts. Historical ownership rehydration tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_response_evidence",
+        "accounts.tests"
+      ]
+    },
+    {
+      "path": "backend/accounts/test_kyc_bank_contract.py",
+      "class": "ProviderDocumentEnvelopeTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "9eab55de5ac71e17bff14d5a552445b0b182d2c22c32ba5aa41420b6ce9ca008",
+      "class_sha256": "1dea1fc6ac1ed3ccf3748624dedd6441d791175f622c88015fd16cf2a54fa89c",
+      "test_methods": 7,
+      "reason": "Wema OTP/upgrade envelopes and standalone Prembly liveness are no longer active contracts. Historical ownership rehydration tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_response_evidence",
+        "accounts.tests"
+      ]
+    },
+    {
+      "path": "backend/accounts/test_kyc_bank_contract.py",
+      "class": "ProviderLivenessContractTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "9eab55de5ac71e17bff14d5a552445b0b182d2c22c32ba5aa41420b6ce9ca008",
+      "class_sha256": "4656cf47acece27ac31d8a76b0d3872eff344c19bba0288fddf75b700f1e7f94",
+      "test_methods": 11,
+      "reason": "Wema OTP/upgrade envelopes and standalone Prembly liveness are no longer active contracts. Historical ownership rehydration tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_response_evidence",
+        "accounts.tests"
+      ]
+    },
+    {
+      "path": "backend/accounts/test_kyc_bank_contract.py",
+      "class": "BankKycEnvelopeTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "9eab55de5ac71e17bff14d5a552445b0b182d2c22c32ba5aa41420b6ce9ca008",
+      "class_sha256": "1fabcf7162741379e611171c40081ffbb91d0f46802eb90fa3345638654974e6",
+      "test_methods": 14,
+      "reason": "Wema OTP/upgrade envelopes and standalone Prembly liveness are no longer active contracts. Historical ownership rehydration tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_response_evidence",
+        "accounts.tests"
+      ]
+    },
+    {
+      "path": "backend/accounts/test_kyc_bank_contract.py",
+      "class": "BankUpgradeContractsTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "9eab55de5ac71e17bff14d5a552445b0b182d2c22c32ba5aa41420b6ce9ca008",
+      "class_sha256": "0a617888598e005cfa0f746814ef51e7bd773aa08f3b7fbe9b497c9de572d337",
+      "test_methods": 17,
+      "reason": "Wema OTP/upgrade envelopes and standalone Prembly liveness are no longer active contracts. Historical ownership rehydration tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_response_evidence",
+        "accounts.tests"
+      ]
+    },
+    {
+      "path": "backend/accounts/test_kyc_bank_contract.py",
+      "class": "BankIdentityRoutingTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "9eab55de5ac71e17bff14d5a552445b0b182d2c22c32ba5aa41420b6ce9ca008",
+      "class_sha256": "34f426b788b7fcbea4d71fbb29aa9677b8e33ad0a0ea02f71364c55913252512",
+      "test_methods": 10,
+      "reason": "Wema OTP/upgrade envelopes and standalone Prembly liveness are no longer active contracts. Historical ownership rehydration tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_response_evidence",
+        "accounts.tests"
+      ]
+    },
+    {
+      "path": "backend/utility/test_identity_timeouts.py",
+      "class": "IdentityTimeoutTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "479b6cc86fa8df5c83aee8f014ced3cb6241f22f759adf72b64640b6e52cc4e7",
+      "class_sha256": "363686c7ce7c062faddb553c2605a83e65abf86dc1f525e55e140aa6ce9a9ac8",
+      "test_methods": 4,
+      "reason": "Standalone Prembly BVN/NIN request/deadline adapter is retired.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_client"
+      ]
+    },
+    {
+      "path": "backend/utility/test_prembly_sessions.py",
+      "class": "PremblySessionTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "bdac8915534e34c736ccd5e0bd9cd5b3de8f71c8b44d18bcf223151c0b0134b9",
+      "class_sha256": "dba4e4ada457c3e6db774d30be8a9e4bf38bed7fa48d12ab6a85aba8888d1e30",
+      "test_methods": 10,
+      "reason": "Prembly is no longer the Tier 2 liveness provider; 9PSB owns identity and facial decisions.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_environment"
+      ]
+    },
+    {
+      "path": "backend/utility/test_kyc_status_readback.py",
+      "class": "KycStatusReadbackTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "d65c3b8af26f2250056902331d894451afb14a5a6455db2b89fd65a34b606573",
+      "class_sha256": "9ff61e822aa7ac07f2990889858241b4258b2568efe7450bc951a256f1bcdda0",
+      "test_methods": 4,
+      "reason": "Wema KYC response envelope is replaced by 9PSB correlated readback.",
+      "replacement_suites": [
+        "banking.test_response_evidence",
+        "accounts.tests"
+      ]
+    },
+    {
+      "path": "backend/utility/test_wema_billers.py",
+      "class": "ValidationContractTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "0c6fa7dcca37daa829d0b56a6fd2b9a489904236427e4e91fbb7344816e66b55",
+      "class_sha256": "66c55f69d8f26cf8885e5e9cd21974dc4c3f22a7a9dcc68a95088999a5f73096",
+      "test_methods": 2,
+      "reason": "Wema biller-code catalog and fallback validation contract are retired.",
+      "replacement_suites": [
+        "banking.test_bills",
+        "banking.test_vas",
+        "banking.test_chat"
+      ]
+    },
+    {
+      "path": "backend/utility/test_wema_billers.py",
+      "class": "LegacyVasProviderSettingTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "0c6fa7dcca37daa829d0b56a6fd2b9a489904236427e4e91fbb7344816e66b55",
+      "class_sha256": "560739d8da207048fa229354c7aa6efab5e5354de9df51cb2153ddd511436987",
+      "test_methods": 1,
+      "reason": "Wema biller-code catalog and fallback validation contract are retired.",
+      "replacement_suites": [
+        "banking.test_bills",
+        "banking.test_vas",
+        "banking.test_chat"
+      ]
+    },
+    {
+      "path": "backend/utility/test_wema_billers.py",
+      "class": "VerifyCustomerRailTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "0c6fa7dcca37daa829d0b56a6fd2b9a489904236427e4e91fbb7344816e66b55",
+      "class_sha256": "fdce5ed0b2779918d18c0be1e6791948e1798af270710087825664aefdcd38c7",
+      "test_methods": 3,
+      "reason": "Wema biller-code catalog and fallback validation contract are retired.",
+      "replacement_suites": [
+        "banking.test_bills",
+        "banking.test_vas",
+        "banking.test_chat"
+      ]
+    },
+    {
+      "path": "backend/utility/test_wema_billers.py",
+      "class": "BillerRoutingTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "0c6fa7dcca37daa829d0b56a6fd2b9a489904236427e4e91fbb7344816e66b55",
+      "class_sha256": "690dd482a24f6ad1874c89e8495bc1f6cc788250645f3243bbaf5e45e0903363",
+      "test_methods": 6,
+      "reason": "Wema biller-code catalog and fallback validation contract are retired.",
+      "replacement_suites": [
+        "banking.test_bills",
+        "banking.test_vas",
+        "banking.test_chat"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_async_identity.py",
+      "class": "AsyncIdentityTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "c22cc1fe08841cfc6c042b288e0ae64efc53e0031666bfda7015273ca982d50a",
+      "class_sha256": "6471947d1682e1d2d5fd12fcd208c3e1d65477e9b60a4f4ba4753a962044495c",
+      "test_methods": 16,
+      "reason": "Wema account-creation callback completes the former OTP contract; 9PSB uses bound identity requests and wallet readback.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_environment",
+        "banking.test_response_evidence"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_account_recovery.py",
+      "class": "AccountLookupEvidenceTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "f3d292aa1689a3b2b1991d2fc4666bf1572a2b4178f10e8acc50de719ccf693d",
+      "class_sha256": "65046b1ff9c8145c2a374a56a1090ad36634085b5cbb079529a0c14bd193c798",
+      "test_methods": 1,
+      "reason": "Recovery authorization and hosted Wema face-session callback routes were removed.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_environment"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_account_recovery.py",
+      "class": "AccountRecoveryTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "f3d292aa1689a3b2b1991d2fc4666bf1572a2b4178f10e8acc50de719ccf693d",
+      "class_sha256": "5d8d4b54f04e3903c3607f16f212aed1561fa56153c8a98245c0b74cfa400783",
+      "test_methods": 14,
+      "reason": "Recovery authorization and hosted Wema face-session callback routes were removed.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_environment"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_face_account_state.py",
+      "class": "FaceAccountStateTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "99c41ab2f87e131752e0e1711e2e15465f9f3567f37f901308e9505d824defc8",
+      "class_sha256": "99e3350b97d50fc77f35060ed1a61ada5371d09e33e9d0d36c4145b006f9209e",
+      "test_methods": 5,
+      "reason": "Wema hosted face/account creation state representation is retired.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_response_evidence"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_nin_account_recovery.py",
+      "class": "NinAccountRecoveryTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "bec318aef0980af99d70ec1accb6fc0b304eee6eb8abf934f7f8ab5f5746de86",
+      "class_sha256": "f5de1aa0d088ae054577c21e0fa1bd72e3e025fe3a0d564b431ac07d6bb674e7",
+      "test_methods": 3,
+      "reason": "Wema recovery sweep and the retired wallet account-create endpoint are replaced.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_environment"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_face_kyc.py",
+      "class": "BvnMethodChoiceTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "30066a8ace832eb883e944c65571a1a0d6e83a672cdef2f288ecd547eb26ed72",
+      "class_sha256": "f30507afb0857f277b420d17b88f240044b241048ede1c3b14d76a5ed24f6e7c",
+      "test_methods": 8,
+      "reason": "Hosted Wema face links and standalone Prembly Tier 2 ladder were replaced by the scoped 9PSB web form.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_face_kyc.py",
+      "class": "TheKycRailAlsoOffersFaceBesideItsCodeTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "30066a8ace832eb883e944c65571a1a0d6e83a672cdef2f288ecd547eb26ed72",
+      "class_sha256": "b45683b4e97aed97280a06647964a0c3c350604791abd2108dc55f448a0917ac",
+      "test_methods": 4,
+      "reason": "Hosted Wema face links and standalone Prembly Tier 2 ladder were replaced by the scoped 9PSB web form.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_face_kyc.py",
+      "class": "VerifiedIdentityMissingAccountRecoveryTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "30066a8ace832eb883e944c65571a1a0d6e83a672cdef2f288ecd547eb26ed72",
+      "class_sha256": "611329d6f77ae12e26f15355541fc69151238551e67398054fa36cdf1fc538d4",
+      "test_methods": 1,
+      "reason": "Hosted Wema face links and standalone Prembly Tier 2 ladder were replaced by the scoped 9PSB web form.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_face_kyc.py",
+      "class": "TypedInChatTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "30066a8ace832eb883e944c65571a1a0d6e83a672cdef2f288ecd547eb26ed72",
+      "class_sha256": "d73ce0ac6e6c42524bc7a86a0e27a0b539b4002d0c79b4d637d74eb38ce77ea9",
+      "test_methods": 4,
+      "reason": "Hosted Wema face links and standalone Prembly Tier 2 ladder were replaced by the scoped 9PSB web form.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_face_kyc.py",
+      "class": "FaceCallbackNotifiesChatTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "30066a8ace832eb883e944c65571a1a0d6e83a672cdef2f288ecd547eb26ed72",
+      "class_sha256": "ebb5cd6774dc2c8431c7625ac9efd947dfee06924c13850ea36e13e607328208",
+      "test_methods": 5,
+      "reason": "Hosted Wema face links and standalone Prembly Tier 2 ladder were replaced by the scoped 9PSB web form.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_face_kyc.py",
+      "class": "FaceLinkTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "30066a8ace832eb883e944c65571a1a0d6e83a672cdef2f288ecd547eb26ed72",
+      "class_sha256": "337fd57e3ecda65b1be604ca319cee313b358eb9be865a9c0e0e79b371135def",
+      "test_methods": 8,
+      "reason": "Hosted Wema face links and standalone Prembly Tier 2 ladder were replaced by the scoped 9PSB web form.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_face_kyc.py",
+      "class": "FaceStepLadderTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "30066a8ace832eb883e944c65571a1a0d6e83a672cdef2f288ecd547eb26ed72",
+      "class_sha256": "ca5dbd0d363c52e31a6c857cae37e5a0c334ea24781728c4dc72339b5fa66953",
+      "test_methods": 7,
+      "reason": "Hosted Wema face links and standalone Prembly Tier 2 ladder were replaced by the scoped 9PSB web form.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_identity_otp.py",
+      "class": "InvalidIdentityIsRejectedNotQueuedTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "c7c07d9dabb919640e0f8f561d379eb6fbcfdb80298ec284edab2e2dfcab8966",
+      "class_sha256": "dfbde9587755f2cb19a8761128a8825550125b597f5a6b4ecddddfc3b4a0ac94",
+      "test_methods": 5,
+      "reason": "Old in-chat Wema identity initiation, local OTP and simulated identity issuance are removed. PIN reset and masked-input security tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_web",
+        "banking.test_retirement"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_identity_otp.py",
+      "class": "SimulatedIdentityFlowTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "c7c07d9dabb919640e0f8f561d379eb6fbcfdb80298ec284edab2e2dfcab8966",
+      "class_sha256": "9101a86d396cee7da95e368bfba61cc5209498a2a2d2df2cc90aafb8fe2f05b2",
+      "test_methods": 1,
+      "reason": "Old in-chat Wema identity initiation, local OTP and simulated identity issuance are removed. PIN reset and masked-input security tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_web",
+        "banking.test_retirement"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_identity_otp.py",
+      "class": "IdentityOtpTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "c7c07d9dabb919640e0f8f561d379eb6fbcfdb80298ec284edab2e2dfcab8966",
+      "class_sha256": "6f016f12a227b5d9dbe50770f3f787faa8bc2624358ab9fbb9cdaa9aeea4cc59",
+      "test_methods": 14,
+      "reason": "Old in-chat Wema identity initiation, local OTP and simulated identity issuance are removed. PIN reset and masked-input security tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_web",
+        "banking.test_retirement"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_wema_funding.py",
+      "class": "AccountCreateAdoptsExistingWemaAccountTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "1ffb2c28de14c3196f73cfdd5fdc6655ecf90dbbf55aba7dd157b90cedc030ce",
+      "class_sha256": "f8fb607f9d761abc574ff069be8e409edfd0a209ed6fc02c8e4f849422843f8f",
+      "test_methods": 2,
+      "reason": "Wema account issuance, recovery and statement endpoints are retired. Reversal evidence, migrations and historical liability tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_archive",
+        "banking.test_historical_payout_restoration"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_wema_funding.py",
+      "class": "AdoptExistingWemaAccountTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "1ffb2c28de14c3196f73cfdd5fdc6655ecf90dbbf55aba7dd157b90cedc030ce",
+      "class_sha256": "0793068ccb8e53d80d84d3099e959ef91af0b402ff0127f332630aca721258b3",
+      "test_methods": 4,
+      "reason": "Wema account issuance, recovery and statement endpoints are retired. Reversal evidence, migrations and historical liability tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_archive",
+        "banking.test_historical_payout_restoration"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_wema_funding.py",
+      "class": "WemaAsyncAccountRecoveryTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "1ffb2c28de14c3196f73cfdd5fdc6655ecf90dbbf55aba7dd157b90cedc030ce",
+      "class_sha256": "37a3e48d8a8098d8e9ea7aca5d71b59742e7e4289db068b72497574b90da7a40",
+      "test_methods": 3,
+      "reason": "Wema account issuance, recovery and statement endpoints are retired. Reversal evidence, migrations and historical liability tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_archive",
+        "banking.test_historical_payout_restoration"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_wema_funding.py",
+      "class": "WemaAlatFundingTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "1ffb2c28de14c3196f73cfdd5fdc6655ecf90dbbf55aba7dd157b90cedc030ce",
+      "class_sha256": "54b311b433602031f43281612b0649ae7f9835d563ca3e993d18dc018c7d54e4",
+      "test_methods": 2,
+      "reason": "Wema account issuance, recovery and statement endpoints are retired. Reversal evidence, migrations and historical liability tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_archive",
+        "banking.test_historical_payout_restoration"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_wema_funding.py",
+      "class": "WemaWalletProvisioningTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "1ffb2c28de14c3196f73cfdd5fdc6655ecf90dbbf55aba7dd157b90cedc030ce",
+      "class_sha256": "d37c2dbbbcd18d127d73cbbd398b5d37a943b1b85cb351ffa3ca692fbb9e77e9",
+      "test_methods": 22,
+      "reason": "Wema account issuance, recovery and statement endpoints are retired. Reversal evidence, migrations and historical liability tests remain active.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_archive",
+        "banking.test_historical_payout_restoration"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_settlement_report.py",
+      "class": "SettlementReportTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "b66f3e341e9b9e95f4bded529d5fdb0ed3d609f66401d860ba6a1721941a9c24",
+      "class_sha256": "b336422f8b35b4cecc35cfac0acc1062ee7f5a159d848832c86a015431430217",
+      "test_methods": 19,
+      "reason": "Wema/pool asset reporting and text output have been replaced by read-only 9PSB JSON reports. Current replacement retains discrepancy, outage, historical-liability, currency, exact-tolerance, audit and alert controls.",
+      "replacement_suites": [
+        "banking.test_audit"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_reconcile_balances.py",
+      "class": "ReconcileBalancesTests",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "b911a30de71c85f926e3b9ba7409e73322169b0b4956d0d33bc956add6f4e7dc",
+      "class_sha256": "0ae7ac3236bd5d769373c9cc5c4e51aa6afc7465b91fc8b1b7b692aced3db9c4",
+      "test_methods": 11,
+      "reason": "Wema/pool asset reporting and text output have been replaced by read-only 9PSB JSON reports. Current replacement retains discrepancy, outage, historical-liability, currency, exact-tolerance, audit and alert controls.",
+      "replacement_suites": [
+        "banking.test_audit"
+      ]
+    },
+    {
+      "path": "backend/utility/test_provider_dispatch.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "71a79f7498896700009e48be844bcb671023767fa76f4f970a7c3634e0f0bab1",
+      "reason": "Wema payout/ALAT catalog and independent Prembly identity dispatch removed; replacement requires bound 9PSB accounts and proof.",
+      "replacement_suites": [
+        "banking.test_transfers",
+        "banking.test_identity",
+        "banking.test_bills",
+        "banking.test_retirement"
+      ],
+      "class": "PayoutDispatchTests",
+      "class_sha256": "c6ace4348a84184b99f9c141a49886cf5adb152f380953c438ee723852bfc607",
+      "test_methods": 4
+    },
+    {
+      "path": "backend/utility/test_provider_dispatch.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "71a79f7498896700009e48be844bcb671023767fa76f4f970a7c3634e0f0bab1",
+      "reason": "Wema payout/ALAT catalog and independent Prembly identity dispatch removed; replacement requires bound 9PSB accounts and proof.",
+      "replacement_suites": [
+        "banking.test_transfers",
+        "banking.test_identity",
+        "banking.test_bills",
+        "banking.test_retirement"
+      ],
+      "class": "KycDispatchTests",
+      "class_sha256": "5536f9b36c25290708bb0ca19025560383efbc2574b041e702f050dd22015930",
+      "test_methods": 5
+    },
+    {
+      "path": "backend/utility/test_provider_dispatch.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "71a79f7498896700009e48be844bcb671023767fa76f4f970a7c3634e0f0bab1",
+      "reason": "Wema payout/ALAT catalog and independent Prembly identity dispatch removed; replacement requires bound 9PSB accounts and proof.",
+      "replacement_suites": [
+        "banking.test_transfers",
+        "banking.test_identity",
+        "banking.test_bills",
+        "banking.test_retirement"
+      ],
+      "class": "VasDispatchTests",
+      "class_sha256": "7106fe122d5ce8d1f2d7a45719da0db6683869a7d1e9774bb11b88f2291454a5",
+      "test_methods": 6
+    },
+    {
+      "path": "backend/utility/test_provider_dispatch.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "71a79f7498896700009e48be844bcb671023767fa76f4f970a7c3634e0f0bab1",
+      "reason": "Wema payout/ALAT catalog and independent Prembly identity dispatch removed; replacement requires bound 9PSB accounts and proof.",
+      "replacement_suites": [
+        "banking.test_transfers",
+        "banking.test_identity",
+        "banking.test_bills",
+        "banking.test_retirement"
+      ],
+      "class": "WemaVasRoutingTests",
+      "class_sha256": "f931ab2bb6e9ed51e437e5608d91109b6e7a8a37f7ecc8c8caf2d3838890bbed",
+      "test_methods": 7
+    },
+    {
+      "path": "backend/utility/test_provider_dispatch.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "71a79f7498896700009e48be844bcb671023767fa76f4f970a7c3634e0f0bab1",
+      "reason": "Wema payout/ALAT catalog and independent Prembly identity dispatch removed; replacement requires bound 9PSB accounts and proof.",
+      "replacement_suites": [
+        "banking.test_transfers",
+        "banking.test_identity",
+        "banking.test_bills",
+        "banking.test_retirement"
+      ],
+      "class": "NinIdentityRailTests",
+      "class_sha256": "76f19720ee4fac3a11db6c11e70dd1601650c03ee6921ea15d76680fe49ec8af",
+      "test_methods": 7
+    },
+    {
+      "path": "backend/utility/test_provider_dispatch.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "71a79f7498896700009e48be844bcb671023767fa76f4f970a7c3634e0f0bab1",
+      "reason": "Wema payout/ALAT catalog and independent Prembly identity dispatch removed; replacement requires bound 9PSB accounts and proof.",
+      "replacement_suites": [
+        "banking.test_transfers",
+        "banking.test_identity",
+        "banking.test_bills",
+        "banking.test_retirement"
+      ],
+      "class": "BvnIdentityRailTests",
+      "class_sha256": "f9b7302d2ed99fb779928b75c685b96d5f097b8506a2f6dfdd15765fe34a1e42",
+      "test_methods": 6
+    },
+    {
+      "path": "backend/utility/test_vas_settle_guard.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "0ff1e25d9cb1bfc4cfad427a1ca1ad550161bafbf6a947541e8f252cecbd5eb3",
+      "reason": "ALAT integer status legends and old unbound VAS purchases/requery replaced by product-scoped 9PSB instructions. No simulation can enable current payments.",
+      "replacement_suites": [
+        "banking.test_bills",
+        "banking.test_vas",
+        "banking.test_client",
+        "banking.test_archive"
+      ],
+      "class": "CanSettleTests",
+      "class_sha256": "60a1a9e24bb887375e0d1ec7b02e51f8cf6ca71b1ababc770969d10035af79c7",
+      "test_methods": 9
+    },
+    {
+      "path": "backend/utility/test_vas_settle_guard.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "0ff1e25d9cb1bfc4cfad427a1ca1ad550161bafbf6a947541e8f252cecbd5eb3",
+      "reason": "ALAT integer status legends and old unbound VAS purchases/requery replaced by product-scoped 9PSB instructions. No simulation can enable current payments.",
+      "replacement_suites": [
+        "banking.test_bills",
+        "banking.test_vas",
+        "banking.test_client",
+        "banking.test_archive"
+      ],
+      "class": "PurchaseRefusalTests",
+      "class_sha256": "1fc6c59ed37d765d6c0a49455f568eb6ac2cbf1e2771da240d0c7dbd717937a9",
+      "test_methods": 4
+    },
+    {
+      "path": "backend/utility/test_vas_settle_guard.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "0ff1e25d9cb1bfc4cfad427a1ca1ad550161bafbf6a947541e8f252cecbd5eb3",
+      "reason": "ALAT integer status legends and old unbound VAS purchases/requery replaced by product-scoped 9PSB instructions. No simulation can enable current payments.",
+      "replacement_suites": [
+        "banking.test_bills",
+        "banking.test_vas",
+        "banking.test_client",
+        "banking.test_archive"
+      ],
+      "class": "RefusalRefundsTests",
+      "class_sha256": "fbf8d54bc05df6c2704e1aca3ec35897ffb615867e61a86387edc075ee314571",
+      "test_methods": 6
+    },
+    {
+      "path": "backend/utility/test_vas_settle_guard.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "0ff1e25d9cb1bfc4cfad427a1ca1ad550161bafbf6a947541e8f252cecbd5eb3",
+      "reason": "ALAT integer status legends and old unbound VAS purchases/requery replaced by product-scoped 9PSB instructions. No simulation can enable current payments.",
+      "replacement_suites": [
+        "banking.test_bills",
+        "banking.test_vas",
+        "banking.test_client",
+        "banking.test_archive"
+      ],
+      "class": "RetiredRailRequeryTests",
+      "class_sha256": "2e6ff7f1cea1eb656508ee7007add6a1884e149b24d75ddabd1b908293ec49da",
+      "test_methods": 6
+    },
+    {
+      "path": "backend/utility/test_biller_lifecycle.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "2bd7d973e3de9ee19013b6fc71769e534cf135b69b39808348eab902f374b104",
+      "reason": "Retained Wema biller transport was retired entirely with the bank migration, including read and requery endpoints.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_bills",
+        "banking.test_vas"
+      ],
+      "class": "RetainedBillerBoundaryTests",
+      "class_sha256": "9797257c18b6247b29cadbd8c122f75329230df9158b8ab1d7dd93e2057748b4",
+      "test_methods": 11
+    },
+    {
+      "path": "backend/utility/test_partnership_archive.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "97400bb64f11b231e91ca254534172b4d6c752e20d036323c1b7e74d92b022c0",
+      "reason": "Former policy allowed Wema biller/status calls while archiving accounts. Current retirement prohibits every Wema transport, including reads.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_archive",
+        "banking.test_environment"
+      ],
+      "class": "PartnershipArchiveTests",
+      "class_sha256": "e072a4bb33e3e25c1c483d6bdd870d83445125fb41f3f283d4660fa55d3527ac",
+      "test_methods": 11
+    },
+    {
+      "path": "backend/utility/test_reconciliation.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "0cef3787bf4ecc556f02c82c335dd542b4a2b4a76eb25a4984a18b6ac113cdcc",
+      "reason": "Old Wema callbacks, status legends, poller and cache scheduler replaced by durable 9PSB instructions and per-record claims.",
+      "replacement_suites": [
+        "banking.test_reconciliation",
+        "banking.test_money",
+        "banking.test_environment",
+        "banking.test_environment"
+      ],
+      "class": "ReconciliationSchedulingTests",
+      "class_sha256": "0f7cbd3dd28d2ff0aac73640b94b0adb741bba7b24605202a722553577ffbec0",
+      "test_methods": 13
+    },
+    {
+      "path": "backend/utility/test_reconciliation_exit.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "3a97eacfec0ae61b0e72cfecf6495f17905bcd88f0be24563ea741ee62d49ca8",
+      "reason": "Old three-phase Wema history/bills/account job and flags were removed. Current scheduler records per-record errors and runs bounded 9PSB queues.",
+      "replacement_suites": [
+        "banking.test_reconciliation",
+        "banking.test_audit",
+        "banking.test_environment"
+      ],
+      "class": "ReconciliationExitTests",
+      "class_sha256": "edbdf8ecfe93d7dcb3ee76876db092dda6398a020280a0276698daa5370cf476",
+      "test_methods": 9
+    },
+    {
+      "path": "backend/utility/test_wema_preflight.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "ec56c05efef63da6a02cd5147b9761823a6742a015641690986c81ba3255b02e",
+      "reason": "Wema preflight endpoints and Wema subscription/face/callback requirements are retired. Current bank configuration and sandbox UAT checks replace them.",
+      "replacement_suites": [
+        "banking.test_auth_routing",
+        "banking.test_uat",
+        "banking.test_retirement"
+      ],
+      "class": "PreflightObservedCallbackTests",
+      "class_sha256": "5b2e941bd547971dcd9282bcad36964e136561c8ac67fdc3b7df8193e5706c67",
+      "test_methods": 4
+    },
+    {
+      "path": "backend/utility/test_wema_preflight.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "ec56c05efef63da6a02cd5147b9761823a6742a015641690986c81ba3255b02e",
+      "reason": "Wema preflight endpoints and Wema subscription/face/callback requirements are retired. Current bank configuration and sandbox UAT checks replace them.",
+      "replacement_suites": [
+        "banking.test_auth_routing",
+        "banking.test_uat",
+        "banking.test_retirement"
+      ],
+      "class": "PreflightGoTests",
+      "class_sha256": "6b4edbccae8e8bb51ac5b50ad90bba71dc8b27b82116c4b6f6d235a379038775",
+      "test_methods": 5
+    },
+    {
+      "path": "backend/utility/test_wema_preflight.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "ec56c05efef63da6a02cd5147b9761823a6742a015641690986c81ba3255b02e",
+      "reason": "Wema preflight endpoints and Wema subscription/face/callback requirements are retired. Current bank configuration and sandbox UAT checks replace them.",
+      "replacement_suites": [
+        "banking.test_auth_routing",
+        "banking.test_uat",
+        "banking.test_retirement"
+      ],
+      "class": "PreflightLaunchScopeTests",
+      "class_sha256": "97c991bb22b2139e3da007f673a69aafd8fd737c177d62c69a3a1a81ac29934b",
+      "test_methods": 5
+    },
+    {
+      "path": "backend/utility/test_wema_preflight.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "ec56c05efef63da6a02cd5147b9761823a6742a015641690986c81ba3255b02e",
+      "reason": "Wema preflight endpoints and Wema subscription/face/callback requirements are retired. Current bank configuration and sandbox UAT checks replace them.",
+      "replacement_suites": [
+        "banking.test_auth_routing",
+        "banking.test_uat",
+        "banking.test_retirement"
+      ],
+      "class": "PreflightGateTests",
+      "class_sha256": "bd11f1b58ba101a72824c1bb875510b64e6d9cf96ea4f9612854677717ca069b",
+      "test_methods": 10
+    },
+    {
+      "path": "backend/utility/test_wema_preflight.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "ec56c05efef63da6a02cd5147b9761823a6742a015641690986c81ba3255b02e",
+      "reason": "Wema preflight endpoints and Wema subscription/face/callback requirements are retired. Current bank configuration and sandbox UAT checks replace them.",
+      "replacement_suites": [
+        "banking.test_auth_routing",
+        "banking.test_uat",
+        "banking.test_retirement"
+      ],
+      "class": "PreflightOverHttpTests",
+      "class_sha256": "e9dcfac326d90abe03e71532d1ff2d0686f50c3093acda3d9dda0bac43addd03",
+      "test_methods": 6
+    },
+    {
+      "path": "backend/utility/test_wema_preflight.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "ec56c05efef63da6a02cd5147b9761823a6742a015641690986c81ba3255b02e",
+      "reason": "Wema preflight endpoints and Wema subscription/face/callback requirements are retired. Current bank configuration and sandbox UAT checks replace them.",
+      "replacement_suites": [
+        "banking.test_auth_routing",
+        "banking.test_uat",
+        "banking.test_retirement"
+      ],
+      "class": "NonProductionFaceVerifierIsRefusedTests",
+      "class_sha256": "5bf81d07f70a388704a8f2871a08f045943b2d794643e89df49f316f9fe1541d",
+      "test_methods": 5
+    },
+    {
+      "path": "backend/wallet/test_wema_funding.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "1ffb2c28de14c3196f73cfdd5fdc6655ecf90dbbf55aba7dd157b90cedc030ce",
+      "reason": "Old payout sweep must no longer resolve Wema instructions. Pending historical payouts stay under review; 9PSB uses its own correlated instruction requery.",
+      "replacement_suites": [
+        "banking.test_reconciliation",
+        "banking.test_money",
+        "banking.test_audit",
+        "banking.test_historical_payout_restoration"
+      ],
+      "class": "WemaPayoutSettlementTests",
+      "class_sha256": "da2b1d59eef14be95b9d6c45a181d72d86225daae9eec67d5df6aae500903b1e",
+      "test_methods": 5
+    },
+    {
+      "path": "backend/wallet/test_partnership_return.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "0e6d55fcdae010e4ccfb8c4cf055a4f9fb2a647a6afa919f6a54b220a566a570",
+      "reason": "Original-account Wema restoration policy was removed. Immutable archive and new 9PSB issuance now replace old funding destinations.",
+      "replacement_suites": [
+        "banking.test_archive",
+        "banking.test_identity",
+        "banking.test_historical_payout_restoration"
+      ],
+      "class": "PartnershipReturnTests",
+      "class_sha256": "7fc1b4f326b4d3e2f3b52d74e652209bd2eb88b06a16ed81fa8da74f2d93212c",
+      "test_methods": 9
+    },
+    {
+      "path": "backend/wallet/test_webhook_events.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "530b6db79f42f68908a9db68ecc18b8988e0816a7037ecff0c0e3a46053a9e9f",
+      "reason": "Wema callback routes removed. Model immutability/redaction and WhatsApp forensics remain active; new bank callbacks are independently authenticated and checked.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_identity",
+        "banking.test_money",
+        "wallet.test_webhook_events"
+      ],
+      "class": "WemaCallbackForensicsTests",
+      "class_sha256": "452e46131bd70c81ca6be9f0e4f5d5db565fd190de4962d4bacd32a25cccd8b6",
+      "test_methods": 9
+    },
+    {
+      "path": "backend/wallet/test_simulate_deposit.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "b3bd122ab3631ede37f88d12eb2b537db233f8b5bc5f0347083e6d0591a97206",
+      "reason": "Removed endpoint fabricated bank deposits. Replacement requires authenticated notifications and correlated bank reads.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_money"
+      ],
+      "class": "SimulateDepositTests",
+      "class_sha256": "4a72f5835b60bbfaffe54b19d0ff956ec0c4bc5110403f6158c59156086eb899",
+      "test_methods": 7
+    },
+    {
+      "path": "backend/whatsapp/test_simulation_commands.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "1a5279ea4926de9dd994c4b92d42788c8ac5aed6d714ca75b607322c85e2ed52",
+      "reason": "Removed simulated identity/account/deposit issuance; approved sandbox users go through real 9PSB APIs.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_uat",
+        "banking.test_identity"
+      ],
+      "class": "WhatsAppSimulationCommandTests",
+      "class_sha256": "bf880546074f444afcc18626cd9e52a985ff0976ae923537b2fc5eb1d7d83553",
+      "test_methods": 6
+    },
+    {
+      "path": "backend/whatsapp/test_simulation_commands.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "1a5279ea4926de9dd994c4b92d42788c8ac5aed6d714ca75b607322c85e2ed52",
+      "reason": "Removed simulated identity/account/deposit issuance; approved sandbox users go through real 9PSB APIs.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_uat",
+        "banking.test_identity"
+      ],
+      "class": "SimulatedIdentityLadderTests",
+      "class_sha256": "d5bff6db347835c6b9b0416301836b7ed01ddd79d3d5a12120fa0995d92baa1b",
+      "test_methods": 3
+    },
+    {
+      "path": "backend/whatsapp/test_partnership_journeys.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "a6c72d9b09c03d394782c7c79193ac5c9d9d5eb2038f4748c63e3234aa059d0b",
+      "reason": "Old Wema face sessions, account adoption, callbacks and Prembly address ladder were replaced by scoped 9PSB identity forms.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "banking.test_money",
+        "accounts.tests"
+      ],
+      "class": "PartnershipJourneyTests",
+      "class_sha256": "f05756cb708c54fd99453d36a8c3a17e4c79e364fb267d39d7c54e5efe9f178b",
+      "test_methods": 15
+    },
+    {
+      "path": "backend/utility/test_simulation_mode.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "ca5d8d2fa0d31967f8e5e1578388275b60691ccf9c4f144d7b80d0434b1a18ea",
+      "reason": "Wema simulation and standalone KYC mocks removed. Current sandbox requires explicit credentials and never invents identity approval.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_auth_routing",
+        "banking.test_identity"
+      ],
+      "class": "KycProviderFailClosedTests",
+      "class_sha256": "3afd22ed7d32e2f632b3c3faf2fbaef4c3e70d74d5837a419999324fb543f7e8",
+      "test_methods": 2
+    },
+    {
+      "path": "backend/utility/test_simulation_mode.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "ca5d8d2fa0d31967f8e5e1578388275b60691ccf9c4f144d7b80d0434b1a18ea",
+      "reason": "Wema simulation and standalone KYC mocks removed. Current sandbox requires explicit credentials and never invents identity approval.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_auth_routing",
+        "banking.test_identity"
+      ],
+      "class": "SimulationBeatsKeysTests",
+      "class_sha256": "b910b94aefd8a651500eb85832842189f3431fc1c5bcb5812b9c110c61c52c8b",
+      "test_methods": 6
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "Former in-chat Wema account minter, OTP and Prembly tier ladder removed. Current identity authorization is in the PIN-protected browser and bank-owned OTP flow.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web",
+        "accounts.tests"
+      ],
+      "class": "ChatAccountSetupTests",
+      "class_sha256": "8cd1bc79cda9a352a3e8bf926fce0b8a6abaf43a0b5a2107d510fabd0c28c66c",
+      "test_methods": 12
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "Former in-chat Wema account minter, OTP and Prembly tier ladder removed. Current identity authorization is in the PIN-protected browser and bank-owned OTP flow.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web",
+        "accounts.tests"
+      ],
+      "class": "ChatKycTests",
+      "class_sha256": "2aed728e7e19f44dbbe2257fc86601925e61395ed2bb19c16d9799d1abf8cff6",
+      "test_methods": 12
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "Former in-chat Wema account minter, OTP and Prembly tier ladder removed. Current identity authorization is in the PIN-protected browser and bank-owned OTP flow.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web",
+        "accounts.tests"
+      ],
+      "class": "IdentityNeverFallsBackToChatInProductionTests",
+      "class_sha256": "39a92e913d35d75c8f9aa87ff3753c0014c3aeb1e3a51d9602e3200273f3b565",
+      "test_methods": 3
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "Former in-chat Wema account minter, OTP and Prembly tier ladder removed. Current identity authorization is in the PIN-protected browser and bank-owned OTP flow.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web",
+        "accounts.tests"
+      ],
+      "class": "FailedAccountSetupDoesNotCloseTheFlowGreenTests",
+      "class_sha256": "d26dcd95276640198f4c470ff7c25a8a1126e40921d141ade57026749dfa67f6",
+      "test_methods": 3
+    },
+    {
+      "path": "backend/whatsapp/test_flows.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "569712cd35d2c021999a4bfb03dd40c65fbe00adb7c4c04f84d014c037eb3537",
+      "reason": "Wema in-chat/Meta identity submission is replaced by a scoped browser grant; raw identifiers no longer complete identity inside chat.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web"
+      ],
+      "class": "IdentityFlowTests",
+      "class_sha256": "8fcb049a47ec9056be743692cebf68701126b2ae1b3cafaaa4cc56564310809f",
+      "test_methods": 11
+    },
+    {
+      "path": "backend/whatsapp/test_flows.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "569712cd35d2c021999a4bfb03dd40c65fbe00adb7c4c04f84d014c037eb3537",
+      "reason": "Wema in-chat/Meta identity submission is replaced by a scoped browser grant; raw identifiers no longer complete identity inside chat.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "whatsapp.test_verification_web"
+      ],
+      "class": "BlockedIdentityIsNotRequestedTests",
+      "class_sha256": "7d9609c0af52f2eb1768535bf61df80272009aff4e69f5de55e7f86053ebcd42",
+      "test_methods": 5
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "ALAT static network/package/menu and AI shorthand catalog flow was replaced by bank-validated 9PSB catalogs and server-bound selections.",
+      "replacement_suites": [
+        "banking.test_chat",
+        "banking.test_bills",
+        "banking.test_vas"
+      ],
+      "class": "VtuTests",
+      "class_sha256": "395e6c3c444b39a5f436d62859d6959de0ec0f02f51b522375340c05046cc466",
+      "test_methods": 12
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "ALAT static network/package/menu and AI shorthand catalog flow was replaced by bank-validated 9PSB catalogs and server-bound selections.",
+      "replacement_suites": [
+        "banking.test_chat",
+        "banking.test_bills",
+        "banking.test_vas"
+      ],
+      "class": "AiAirtimeShorthandTests",
+      "class_sha256": "f1f0ae20ecb240ffee56ff86c22cdc92368113fb86ff6d6a3e46c093456f00cd",
+      "test_methods": 4
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "ALAT static network/package/menu and AI shorthand catalog flow was replaced by bank-validated 9PSB catalogs and server-bound selections.",
+      "replacement_suites": [
+        "banking.test_chat",
+        "banking.test_bills",
+        "banking.test_vas"
+      ],
+      "class": "AiDataShorthandTests",
+      "class_sha256": "746b3e6376e96bdcff298a55a2140d568a6f0ba98e5c209a59a800f93d8972d2",
+      "test_methods": 4
+    },
+    {
+      "path": "backend/utility/test_electricity_variants.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "9ef5d5530a1103138aaf1cefda9c7d8236bd72f157ea1a3030b3aec548cb3168",
+      "reason": "Retired ALAT package-code catalog sync; 9PSB supplies its own category/biller/item and required-field contracts.",
+      "replacement_suites": [
+        "banking.test_chat",
+        "banking.test_vas",
+        "banking.test_bills"
+      ],
+      "class": "ElectricityVariantRoutingTests",
+      "class_sha256": "526b7f35bdf6eea26844c9ac6ee067ce509c0b5011f31e6ad280bf736f5156e9",
+      "test_methods": 9
+    },
+    {
+      "path": "backend/utility/test_electricity_variants.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "9ef5d5530a1103138aaf1cefda9c7d8236bd72f157ea1a3030b3aec548cb3168",
+      "reason": "Retired ALAT package-code catalog sync; 9PSB supplies its own category/biller/item and required-field contracts.",
+      "replacement_suites": [
+        "banking.test_chat",
+        "banking.test_vas",
+        "banking.test_bills"
+      ],
+      "class": "ElectricityVariantCatalogueTests",
+      "class_sha256": "a7a5167d628955a24908e992522bd60bb25822c41ef022fcae12e8494d4fe1aa",
+      "test_methods": 15
+    },
+    {
+      "path": "backend/wallet/test_bank_tier.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "6549045b996fb18179ba19290bd8bc334ed76b1f1338126b837ba9bc6ad10f3a",
+      "reason": "ALAT-specific published tier limits and KYC status envelope do not describe 9PSB; replacement uses only configured outgoing limits and bank-owned tiers.",
+      "replacement_suites": [
+        "banking.test_limits",
+        "banking.test_response_evidence",
+        "banking.test_money"
+      ],
+      "class": "BankTierLimitTests",
+      "class_sha256": "c790bfc04d3b7f70da8688b79f167c888110b5b41db24a6807348dbe9d4dc6df",
+      "test_methods": 2
+    },
+    {
+      "path": "backend/wallet/test_bank_tier.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "6549045b996fb18179ba19290bd8bc334ed76b1f1338126b837ba9bc6ad10f3a",
+      "reason": "ALAT-specific published tier limits and KYC status envelope do not describe 9PSB; replacement uses only configured outgoing limits and bank-owned tiers.",
+      "replacement_suites": [
+        "banking.test_limits",
+        "banking.test_response_evidence",
+        "banking.test_money"
+      ],
+      "class": "SyncBankTierTests",
+      "class_sha256": "4ded91d6074a670a09b536da16a89e67a33f0fc12c9ab8f0ef9518d1c9fd593d",
+      "test_methods": 4
+    },
+    {
+      "path": "backend/wallet/test_opening_review.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "5066f764b01b71869111053e2d05289465a2f837dcf30c6c1d74ceb91eda1706",
+      "reason": "Historical Wema provisioning/statement opening reviews are replaced by new-account readback and archived liability controls.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_money",
+        "banking.test_audit",
+        "wallet.test_history_checkpoint"
+      ],
+      "class": "BankOpeningReviewTests",
+      "class_sha256": "85bb748d5eb7e6729a25e002f221660268461f4e0f63a4f0b5c2f6932b6789d9",
+      "test_methods": 5
+    },
+    {
+      "path": "backend/wallet/test_bank_tier.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "6549045b996fb18179ba19290bd8bc334ed76b1f1338126b837ba9bc6ad10f3a",
+      "reason": "Old Wema limits and legacy metadata counting do not describe 9PSB. Dedicated replacement tests retain exact-cap, cumulative pending/success, failed-refund, currency and bank-tier checks.",
+      "replacement_suites": [
+        "banking.test_limits",
+        "wallet.tests_daily_limits"
+      ],
+      "class": "BankSpendErrorTests",
+      "class_sha256": "93fecb64be4723c2fb8c9528ddc95554d210001c305f4db6edd030a233cbde6b",
+      "test_methods": 14
+    },
+    {
+      "path": "backend/utility/test_deploy_simulation.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "2b8dd8adef2e35982b8ad87f3e5f29bfcce9986d9efcacc5212fa2a48243477f",
+      "reason": "Global Wema simulation no longer overrides unrelated provider credentials. New bank sandbox is explicitly authenticated and isolated.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "banking.test_environment",
+        "banking.test_uat"
+      ],
+      "class": "DeployWideSimulationTests",
+      "class_sha256": "4de425c0f0960d2bcae5ce6bdf9f8509d39655cb3d26feccfe3421513faba541",
+      "test_methods": 2
+    },
+    {
+      "path": "backend/utility/test_wema_banks_sync.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "b3a32c78ac791baaa99b109479a2b1a6e78d4be9b92c82030a3382cf49e755f9",
+      "reason": "Retired Wema probe no longer returns bank-code diagnostics. Directory matching and code reconciliation tests remain active.",
+      "replacement_suites": [
+        "banking.test_transfers",
+        "utility.test_wema_banks_sync"
+      ],
+      "class": "BankCodesInProbeTests",
+      "class_sha256": "1af80ac6208d6166baa82331308040e835b0e27098fdf555d61a10eaea7a77e2",
+      "test_methods": 3
+    }
+  ],
+  "retired_methods": [
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_router_cancel_preserves_bank_request_already_pending_review",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "45ab0af2b163dfa33b4555d76b68959156c39220220ea8951c0b749a4117e4d9",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_submitted_pending_link_can_refresh_but_never_submit_address_again",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "ebb467da03f2fa669b7c8fe7e387203a3abbe4aa6bf268de969c23e81a036ad9",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_disabled_new_address_checks_preserve_existing_verified_and_pending_status",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "8045fe6c12d9e0dc002ded5797cf87b2dbfa5e86b48f9612fc2f79690b2c91e8",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_production_service_cannot_be_enabled_by_a_capability_claim_or_bank_account_status",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "ac453ee170dc23e33716439bd9e66da5031dff332d4264333d1faaf4bea2d56c",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_unavailable_address_contract_blocks_form_and_dispatch_before_collection",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "650c6d8bc8aaf4b2390aca7a4200b0e1907f6ab2ee210c91354b68dac5b2949c",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_existing_pending_address_only_shows_authenticated_status_refresh",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "450f4b171c7fdb6d75b7125a984c0acba59fc9a1e53b70b0f430770615ec2c1c",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_pending_bank_check_is_not_marked_verified_or_replayed",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "b770403b93d14f391a921be85eea041947c712ecd28e544f42466e8be480112a",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_client_cannot_disable_document_proof",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "99011e88506eda7ca843c589d14e00c4d797728530c809c1ade46ae43e8941bc",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_document_to_bank_rail_change_does_not_forward_unnecessary_upload",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "678d4f9d8cd46c916bc92473d29b152373d3a9fd1a1ad2a1bf4feb2698d4fb58",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_bank_to_document_rail_change_requires_proof_on_submit",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "97db2e2f4600cce024a63391a7daa7248c5a631b8eb15bdadb946f665689144a",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_bank_rejection_never_requests_a_document_or_falls_back_to_document_provider",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "4d61711ed29c6df716365fd6ebea367d9f7487d08d831a228a0e3599065d6aa8",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_unavailable_bank_rail_does_not_collect_or_verify_a_fallback_document",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "2760254571ec0c1ba8d059141f9d41c73077312be5f4362e68227ad2c4fd9788",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_bank_address_form_forwards_structured_fields_without_client_account",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "51e67aca3c340616ef8fde537e529e2c21fe0cb86798e4d5d06a060e6a102baa",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_backend_email_gate_is_preserved",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "ef1ac1906c5f9dfe59b95d099069b444c157fc2a8317f9447ddc83142d8831a9",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_backend_200_without_verified_state_is_not_success",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "0e6953a7d276427dd9936ed6ee69051fa380cd501f0f3dafbddd6752e22a6a54",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_invalid_or_missing_images_fields_and_duplicate_values_never_dispatch",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "46ea1e7ce7ee434d70314e71543fdbfbaf387b99b8113984859f2862aa8e22c6",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_explicit_fixed_fields_are_forwarded_in_authenticated_context",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "d2c5d056060ea1b6a8d639eb596df166944f140252aad44f977ab2f66e02e762",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_service_validation_rejection_is_preserved",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "59a2cf8826aa6c9da82a7e435d2b34d5a624f7ff390201a407114d522b5e703f",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_address_calls_existing_view_and_consumes_once_without_storing_upload",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "73e162637a40b21f49b207c0708e5aeec400642af56aecba40e34ed6b997cfe5",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_tier3_requires_actual_tier2_identity_flags",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "56a395e4559ad2691137904316087517ee9742bf3a7a55757f31f59e620e34e4",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_tier2_pin_gate_opens_prembly_without_collecting_nin",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "bfd38d7ce4105554945cf17f6f6b84c60ae38e2e4b6f2bd08760d76cd93ef4ce",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_tier2_is_truthful_and_never_calls_still_photo_liveness_or_upgrade",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "5c087f0c5283dba288277bebbe03bf334755a58f4bb73e582a1a71a9260c9f61",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_router_tier2_never_offers_unsupported_web_liveness",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "5ac62009b5c8dc47038698accd70751a803e730474463661ae5e8fdaddb4def5",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_router_tier3_button_opens_bound_portal_without_provider_call_before_pin",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "f15dabf1ac1e9076b051b34f7e7a3a47a95cf1a3ad2b531f5ff923157569e826",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/whatsapp/test_verification_web.py",
+      "method": "VerificationWebTests.test_historical_liability_blocks_new_and_existing_address_capabilities",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "sha256": "cbdc4d4cfe32551cf0e674446d386664ce344f382ab9a887d42778b862c80479",
+      "reason": "Former Wema address / Prembly liveness form contract; current bank adapter refuses unavailable address verification and requires bank-approved tiers. Browser authorization controls remain active.",
+      "replacement_suites": [
+        "banking.test_web",
+        "banking.test_identity",
+        "accounts.tests.KycTierTests",
+        "accounts.tests.FullJourneyE2ETests"
+      ]
+    },
+    {
+      "path": "backend/wallet/test_wema_funding.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "1ffb2c28de14c3196f73cfdd5fdc6655ecf90dbbf55aba7dd157b90cedc030ce",
+      "reason": "Retired PND-lift instruction cannot be sent; current bank restrictions only clear on readback.",
+      "replacement_suites": [
+        "banking.test_money",
+        "banking.test_retirement"
+      ],
+      "method": "WemaReconcileTests.test_retries_pnd_lift_until_the_bank_confirms",
+      "sha256": "151dbe5a3740bf5fc52d827ad2166951ce7df6d67bfb7a7ae03cc9433672d699"
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "Wema-specific account recovery and old lifecycle switch no longer control 9PSB account availability.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_retirement",
+        "banking.test_web"
+      ],
+      "method": "ChannelTests.test_add_money_without_account_starts_setup_in_chat",
+      "sha256": "63806b5701420cc1a4fd2b19aa1a370a13911da68a6857f357334477e6b0d9c8"
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "Wema-specific account recovery and old lifecycle switch no longer control 9PSB account availability.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_retirement",
+        "banking.test_web"
+      ],
+      "method": "ChannelTests.test_verified_bvn_without_nuban_is_escalated",
+      "sha256": "0912c1997a39652bc4cfa19f7ded370e05712f971e24f210ba3f078b10d93585"
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "Wema-specific account recovery and old lifecycle switch no longer control 9PSB account availability.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_retirement",
+        "banking.test_web"
+      ],
+      "method": "ChannelTests.test_verified_bvn_without_nuban_resumes_an_open_nin_attempt",
+      "sha256": "868dd32ec674ef279e58651477cd1959afad57919fd00ebf9e918a68f2e3e5a4"
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "Wema-specific account recovery and old lifecycle switch no longer control 9PSB account availability.",
+      "replacement_suites": [
+        "banking.test_identity",
+        "banking.test_retirement",
+        "banking.test_web"
+      ],
+      "method": "ChannelTests.test_add_money_is_unavailable_when_funding_is_off",
+      "sha256": "646ed5ddce8dcdb3ca2a69d97fa70a1331ec0898f6087ce8d42042698965cb4f"
+    },
+    {
+      "path": "backend/wallet/test_alert_balances.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "2ac6cc876098d1b6f1591100a2bf7a625648c7e5f705cf1687cc8574f12ac93e",
+      "reason": "These cases initiate a Wema debit after archival, which is now prohibited. Current historical refund isolation and pending new-bank reservations have dedicated tests.",
+      "replacement_suites": [
+        "banking.test_money",
+        "banking.test_historical_payout_restoration",
+        "banking.test_audit"
+      ],
+      "method": "TransactionAlertBalanceTests.test_pending_bill_reservation_reduces_available_balance_in_alerts",
+      "sha256": "dc8ccb91e55a34591fe9c91be1a082bd3c2701ca2d014d3308d41b62671ced44"
+    },
+    {
+      "path": "backend/wallet/test_alert_balances.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "2ac6cc876098d1b6f1591100a2bf7a625648c7e5f705cf1687cc8574f12ac93e",
+      "reason": "These cases initiate a Wema debit after archival, which is now prohibited. Current historical refund isolation and pending new-bank reservations have dedicated tests.",
+      "replacement_suites": [
+        "banking.test_money",
+        "banking.test_historical_payout_restoration",
+        "banking.test_audit"
+      ],
+      "method": "TransactionAlertBalanceTests.test_reversal_does_not_release_held_money",
+      "sha256": "5e27ebf1877be833229e3ed6278479020e05c2d84f146f9dd5fac5d74219e014"
+    },
+    {
+      "path": "backend/utility/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "aec479cc9217fc09f3ca3ebc707ff5ebe089ef17df3810b429d1d5d33e04baec",
+      "reason": "Remita is unavailable until the new bank contract supplies a status/requery operation; old successful payment assumptions cannot enable it.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "utility.tests.UtilityTests"
+      ],
+      "method": "UtilityTests.test_payremita_success_debits_once",
+      "sha256": "f5942d622f197f7dd62be27b83aadee3e5a3bdea69ac89508b23aebfae7c3d53"
+    },
+    {
+      "path": "backend/utility/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "aec479cc9217fc09f3ca3ebc707ff5ebe089ef17df3810b429d1d5d33e04baec",
+      "reason": "Remita is unavailable until the new bank contract supplies a status/requery operation; old successful payment assumptions cannot enable it.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "utility.tests.UtilityTests"
+      ],
+      "method": "UtilityTests.test_payremita_refunds_on_failure",
+      "sha256": "0294836a3d921aeb682296bdbc8ec771ea3193274b42167da0ae91ca95e20f9c"
+    },
+    {
+      "path": "backend/utility/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "aec479cc9217fc09f3ca3ebc707ff5ebe089ef17df3810b429d1d5d33e04baec",
+      "reason": "Remita is unavailable until the new bank contract supplies a status/requery operation; old successful payment assumptions cannot enable it.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "utility.tests.UtilityTests"
+      ],
+      "method": "UtilityTests.test_payremita_pending_retry_never_becomes_a_success_receipt",
+      "sha256": "94f8668a3b3852dee4b8e056ea6b29588c606676ddfef58b4138d073c2237b5e"
+    },
+    {
+      "path": "backend/utility/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "aec479cc9217fc09f3ca3ebc707ff5ebe089ef17df3810b429d1d5d33e04baec",
+      "reason": "Old Wema VAS sweep interface removed; current bank requery tests cover pending holds, correlated terminal settlement, duplicate refunds, and stuck-payment alerts.",
+      "replacement_suites": [
+        "banking.test_reconciliation",
+        "banking.test_vas",
+        "banking.test_money"
+      ],
+      "method": "VtuReconciliationTests.test_reconcile_marks_delivered_purchase_successful",
+      "sha256": "cf70371288c14127fc8e9d2875c2828b29d8a762a7247a758fc8faf20331e13d"
+    },
+    {
+      "path": "backend/utility/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "aec479cc9217fc09f3ca3ebc707ff5ebe089ef17df3810b429d1d5d33e04baec",
+      "reason": "Old Wema VAS sweep interface removed; current bank requery tests cover pending holds, correlated terminal settlement, duplicate refunds, and stuck-payment alerts.",
+      "replacement_suites": [
+        "banking.test_reconciliation",
+        "banking.test_vas",
+        "banking.test_money"
+      ],
+      "method": "VtuReconciliationTests.test_reconcile_refunds_definitively_failed_purchase",
+      "sha256": "96a31e7cbec514c6a07c7e243e521d4203bf94c4ef0f307d8293c97d5e0721d9"
+    },
+    {
+      "path": "backend/utility/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "aec479cc9217fc09f3ca3ebc707ff5ebe089ef17df3810b429d1d5d33e04baec",
+      "reason": "Old Wema VAS sweep interface removed; current bank requery tests cover pending holds, correlated terminal settlement, duplicate refunds, and stuck-payment alerts.",
+      "replacement_suites": [
+        "banking.test_reconciliation",
+        "banking.test_vas",
+        "banking.test_money"
+      ],
+      "method": "VtuReconciliationTests.test_reconcile_leaves_still_unknown_pending",
+      "sha256": "50b6935821b13f887ff450e91fd7b6ed8401da9a855f0678b89817fced90057e"
+    },
+    {
+      "path": "backend/utility/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "aec479cc9217fc09f3ca3ebc707ff5ebe089ef17df3810b429d1d5d33e04baec",
+      "reason": "Old Wema VAS sweep interface removed; current bank requery tests cover pending holds, correlated terminal settlement, duplicate refunds, and stuck-payment alerts.",
+      "replacement_suites": [
+        "banking.test_reconciliation",
+        "banking.test_vas",
+        "banking.test_money"
+      ],
+      "method": "VtuReconciliationTests.test_reconcile_settle_is_idempotent",
+      "sha256": "98fabdb45a036cdac118e19d81ebfb49e417b5787d8588d557f632ce83d7cd58"
+    },
+    {
+      "path": "backend/utility/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "aec479cc9217fc09f3ca3ebc707ff5ebe089ef17df3810b429d1d5d33e04baec",
+      "reason": "Old Wema VAS sweep interface removed; current bank requery tests cover pending holds, correlated terminal settlement, duplicate refunds, and stuck-payment alerts.",
+      "replacement_suites": [
+        "banking.test_reconciliation",
+        "banking.test_vas",
+        "banking.test_money"
+      ],
+      "method": "VtuReconciliationTests.test_a_freshly_pending_purchase_does_not_page",
+      "sha256": "fe110c536c40bf64ba4523dda62d1e937ae52b76adc00a266d9699d9c3c5c4d0"
+    },
+    {
+      "path": "backend/utility/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "aec479cc9217fc09f3ca3ebc707ff5ebe089ef17df3810b429d1d5d33e04baec",
+      "reason": "Old Wema VAS sweep interface removed; current bank requery tests cover pending holds, correlated terminal settlement, duplicate refunds, and stuck-payment alerts.",
+      "replacement_suites": [
+        "banking.test_reconciliation",
+        "banking.test_vas",
+        "banking.test_money"
+      ],
+      "method": "VtuReconciliationTests.test_a_purchase_stuck_for_hours_pages",
+      "sha256": "ebe6b2786069155561406548a6423815885eacca94f7dc0f503500f5ed8da98f"
+    },
+    {
+      "path": "backend/utility/test_provider_dispatch.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "71a79f7498896700009e48be844bcb671023767fa76f4f970a7c3634e0f0bab1",
+      "reason": "Retired Wema virtual-card issuance and global provider selection removed. Existing-card explicit ownership routing remains tested.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "utility.test_provider_dispatch.CardDispatchTests"
+      ],
+      "method": "CardDispatchTests.test_wema_card_issue_timeout_is_pending",
+      "sha256": "4b54e48c20d0a5e06983769364e9f8ff67b60dd54e522463d76d426d53ee0ef3"
+    },
+    {
+      "path": "backend/utility/test_provider_dispatch.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "71a79f7498896700009e48be844bcb671023767fa76f4f970a7c3634e0f0bab1",
+      "reason": "Retired Wema virtual-card issuance and global provider selection removed. Existing-card explicit ownership routing remains tested.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "utility.test_provider_dispatch.CardDispatchTests"
+      ],
+      "method": "CardDispatchTests.test_card_issue_routes_to_wema_when_selected",
+      "sha256": "f67205bdff55389cbf3ce95c7bccf68c9beaec4128d3a1ec22cae2ae1df9f2b1"
+    },
+    {
+      "path": "backend/utility/test_provider_dispatch.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "71a79f7498896700009e48be844bcb671023767fa76f4f970a7c3634e0f0bab1",
+      "reason": "Retired Wema virtual-card issuance and global provider selection removed. Existing-card explicit ownership routing remains tested.",
+      "replacement_suites": [
+        "banking.test_retirement",
+        "utility.test_provider_dispatch.CardDispatchTests"
+      ],
+      "method": "CardDispatchTests.test_card_freeze_fund_reveal_route_to_wema",
+      "sha256": "f540eaf525fe400caeee961ea0d081bc1880a2edcb93168999a68961ac119886"
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "ALAT static provider aliases and prefilled meter/IUC shortcut contracts removed. 9PSB category/biller/field selection and bound validation have end-to-end chat tests.",
+      "replacement_suites": [
+        "banking.test_chat",
+        "banking.test_bills",
+        "banking.test_vas"
+      ],
+      "method": "AiIntentTests.test_a_bill_that_names_everything_goes_straight_to_confirm",
+      "sha256": "d35d10c30ddbf3a35318293537a9a07798299d0f9ebea16c84b4b9ea054de709"
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "ALAT static provider aliases and prefilled meter/IUC shortcut contracts removed. 9PSB category/biller/field selection and bound validation have end-to-end chat tests.",
+      "replacement_suites": [
+        "banking.test_chat",
+        "banking.test_bills",
+        "banking.test_vas"
+      ],
+      "method": "AiIntentTests.test_the_only_question_left_is_the_one_they_did_not_answer",
+      "sha256": "e835e916be63461f3c7e7f094f4daf13488c2a1137486155b9a2076c65b175db"
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "ALAT static provider aliases and prefilled meter/IUC shortcut contracts removed. 9PSB category/biller/field selection and bound validation have end-to-end chat tests.",
+      "replacement_suites": [
+        "banking.test_chat",
+        "banking.test_bills",
+        "banking.test_vas"
+      ],
+      "method": "AiIntentTests.test_a_prefilled_bill_still_needs_the_pin",
+      "sha256": "6fbaaa05e023db984b73dd7d4c4545218f19766ea5ef315d84cb75b8d2ecc3f5"
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "ALAT static provider aliases and prefilled meter/IUC shortcut contracts removed. 9PSB category/biller/field selection and bound validation have end-to-end chat tests.",
+      "replacement_suites": [
+        "banking.test_chat",
+        "banking.test_bills",
+        "banking.test_vas"
+      ],
+      "method": "AiIntentTests.test_a_disco_named_at_the_prompt_is_understood",
+      "sha256": "39f76dc5cd852bc9cf111855b6d1bb7890ed8203cdd8aafcbb653cf866bd347e"
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "ALAT static provider aliases and prefilled meter/IUC shortcut contracts removed. 9PSB category/biller/field selection and bound validation have end-to-end chat tests.",
+      "replacement_suites": [
+        "banking.test_chat",
+        "banking.test_bills",
+        "banking.test_vas"
+      ],
+      "method": "AiIntentTests.test_nepa_alone_names_no_disco",
+      "sha256": "31a7b6e07f7bcd19823f304e1f250acaff500c95df3f6a64bd5ae30eea46a1d4"
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "ALAT static provider aliases and prefilled meter/IUC shortcut contracts removed. 9PSB category/biller/field selection and bound validation have end-to-end chat tests.",
+      "replacement_suites": [
+        "banking.test_chat",
+        "banking.test_bills",
+        "banking.test_vas"
+      ],
+      "method": "AiIntentTests.test_an_unverifiable_meter_is_asked_for_again_not_looped",
+      "sha256": "8e5d7fcff22f18cf561e8cdf7c47ff9e3967c811dd36ea42b0bb5431d756c53d"
+    },
+    {
+      "path": "backend/whatsapp/tests.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "8876098d7f589e999d93ae846c49e184c2ceb7a5c9fffca07727d64ce6acd9d4",
+      "reason": "ALAT static provider aliases and prefilled meter/IUC shortcut contracts removed. 9PSB category/biller/field selection and bound validation have end-to-end chat tests.",
+      "replacement_suites": [
+        "banking.test_chat",
+        "banking.test_bills",
+        "banking.test_vas"
+      ],
+      "method": "AiIntentTests.test_a_named_cable_provider_and_card_skip_their_questions",
+      "sha256": "464224404f985ade41949ef9046ae37325a5e90d6f50ab179e83e29912a81919"
+    },
+    {
+      "path": "backend/whatsapp/test_partnership_chat.py",
+      "source_commit": "44ca0a0b6fdcc5e1ae83b49a0eeba8ffa929a5d1",
+      "source_file_sha256": "d7220842a0277941efee6b82619c31466b1f79a8852cd3ee6bbd6adad7a8dfce",
+      "reason": "The prior policy forbade new Wema onboarding during funding review. 9PSB onboarding is now allowed while historical funds remain archived and unspendable.",
+      "replacement_suites": [
+        "banking.test_archive",
+        "banking.test_identity",
+        "banking.test_web",
+        "banking.test_money"
+      ],
+      "method": "PartnershipCustomerChatTests.test_historical_funding_review_does_not_open_a_new_account_or_identity_flow",
+      "sha256": "3cacb50ebdbc127648ce162b4c9433c162a1eb57dc371ce28c81bec9568ec99a"
+    }
+  ]
+}

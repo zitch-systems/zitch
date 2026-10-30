@@ -39,8 +39,7 @@ export const walletBalances = (value: BalancePayload | null | undefined): Wallet
   const totalBalance = finiteAmount(value?.wallet);
   const capabilities = walletCapabilities(value);
   const availableBalance = capabilities.billPaymentsAvailable || capabilities.transfersAvailable
-    ? Math.max(0, Math.min(totalBalance, value?.available_balance == null
-      ? totalBalance : finiteAmount(value.available_balance))) : 0;
+    ? Math.max(0, Math.min(totalBalance, finiteAmount(value?.available_balance))) : 0;
   return {
     totalBalance,
     availableBalance,
@@ -51,13 +50,13 @@ export const walletBalances = (value: BalancePayload | null | undefined): Wallet
 };
 
 export const walletCapabilities = (value: CapabilityPayload | null | undefined): WalletCapabilities => {
-  if (value?.provider !== 'partnership' || value.legacy_funding_review === true
+  if (value?.provider !== '9psb' || value.legacy_funding_review === true
       || value.account_setup_state === 'legacy_funding_review' || value.spending_available === false) {
     return { billPaymentsAvailable: false, transfersAvailable: false };
   }
   return {
-    billPaymentsAvailable: value.bill_payments_available == null ? true : value.bill_payments_available === true,
-    transfersAvailable: value.transfers_available == null ? true : value.transfers_available === true,
+    billPaymentsAvailable: value.bill_payments_available === true,
+    transfersAvailable: value.transfers_available === true,
   };
 };
 
@@ -98,7 +97,7 @@ export type FundingAccount = ApiResult<CapabilityPayload & {
   otp_destination?: string;
   delivery_notice?: string;
   delivery?: string;
-  identity_verification_provider?: 'prembly' | 'wema';
+  identity_verification_provider?: '9psb';
   otp_destination_kind?: string;
   pending?: boolean;
   identity_review_required?: boolean;
@@ -119,30 +118,14 @@ export type FundingAccount = ApiResult<CapabilityPayload & {
 
 /** Never present an unconfirmed or historical account as a funding destination. */
 export const isFundingAccountReady = (value: FundingAccount | null | undefined): boolean =>
-  value?.provider === 'partnership' && value.can_fund === true
+  value?.provider === '9psb' && value.can_fund === true
   && value.available === true && value.has_account === true
   && value.legacy_funding_review !== true
   && ['ready', 'bank_history_review'].includes(value.account_setup_state || '')
-  && /^\d{10}$/.test(value.account_number || '') && !/^711/.test(value.account_number || '');
+  && /^\d{10}$/.test(value.account_number || '');
 
 export const walletService = {
   getBalance: () => apiJson<WalletBalance>(EP.wallet.balance),
   getHistory: () => apiJson<TransactionHistory>(EP.wallet.history),
-  // Partnership funding account: fetch current eligibility or start bank identity verification.
   getAccount: () => apiJson<FundingAccount>(EP.wallet.account),
-  createAccount: (identity: { bvn?: string; nin?: string } | string) =>
-    apiJson<FundingAccount>(
-      EP.wallet.createAccount,
-      typeof identity === 'string' ? { bvn: identity } : identity,
-    ),
-  verifyWemaOtp: (trackingId: string, otp: string, identity: { bvn?: string; nin?: string } = {}) =>
-    apiJson<FundingAccount>(EP.wallet.wemaVerifyOtp, { tracking_id: trackingId, otp, ...identity }),
-  resendWemaOtp: (trackingId: string) =>
-    apiJson<FundingAccount>(EP.wallet.wemaResendOtp, { tracking_id: trackingId }),
-  // One request, or nothing: the bank scores BVN, NIN and the live image
-  // together for an account it has already opened. `live_image` is base64 with
-  // no data: prefix, matching kycService.verifyFace.
-  upgradeTier2: (bvn: string, nin: string, liveImage: string) =>
-    apiJson<FundingAccount>(EP.wallet.wemaUpgradeTier2,
-                            { bvn, nin, live_image: liveImage }),
 };

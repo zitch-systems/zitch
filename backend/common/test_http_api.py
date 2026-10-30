@@ -8,6 +8,7 @@ from common.http import idempotent_replay, spend_key
 from wallet.models import ReversalEvidence, Transaction
 from wallet.services import debit, existing_for_key, get_or_create_wallet
 from wallet.tests import make_user
+from banking.test_fixtures import bank_channel_case
 
 
 class IdempotentReplayTests(SimpleTestCase):
@@ -87,13 +88,14 @@ class IdempotentReplayTests(SimpleTestCase):
         self.assertEqual(body["reference"], "ZTC-UNKNOWN-1")
 
 
+@bank_channel_case
 class IdempotencyBindingTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08010000444", "idem@zitch.test", balance="5000")
 
     def test_same_client_key_with_changed_material_request_is_a_conflict(self):
         first_key = spend_key("client-attempt-1", self.user, "airtime", "mtn", "0801", "500")
-        debit(self.user, "500", "Airtime", idempotency_key=first_key)
+        debit(self.user, "500", "Bank transfer", idempotency_key=first_key)
 
         changed_key = spend_key("client-attempt-1", self.user, "airtime", "mtn", "0801", "1000")
         response = idempotent_replay(existing_for_key(self.user, changed_key))
@@ -104,7 +106,7 @@ class IdempotencyBindingTests(TestCase):
 
     def test_same_client_key_and_request_replays_the_original_attempt(self):
         key = spend_key("client-attempt-2", self.user, "airtime", "mtn", "0801", "500")
-        txn = debit(self.user, "500", "Airtime", idempotency_key=key)
+        txn = debit(self.user, "500", "Bank transfer", idempotency_key=key)
 
         retry_key = spend_key("client-attempt-2", self.user, "airtime", "mtn", "0801", "500")
         response = idempotent_replay(existing_for_key(self.user, retry_key))
