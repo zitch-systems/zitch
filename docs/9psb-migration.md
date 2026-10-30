@@ -192,6 +192,8 @@ test fixtures and a permitted tester. Existing cron schedules can continue
 through the reconciliation alias; consolidation is separate from this release.
 
 Sandbox enrollment accepts explicit user IDs or exact verified phone numbers
-configured in `NINEPSB_SANDBOX_PHONES`. Enrollment cannot bypass the customer
+configured in `NINEPSB_SANDBOX_PHONES`. The step-by-step signup, KYC and test
+NUBAN procedure is in [9psb-sandbox-onboarding-test.md](9psb-sandbox-onboarding-test.md);
+`manage.py bank_tester_status --phone …` names the gate blocking a tester. Enrollment cannot bypass the customer
 activation switch, environment binding or production UAT gate. Keep tester
 identifiers in server configuration, outside this repository.
