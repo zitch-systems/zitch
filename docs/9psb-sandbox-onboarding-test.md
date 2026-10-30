@@ -44,6 +44,13 @@ python manage.py bank_sandbox_check --product waas      # WaaS login + bank dire
 those are expected for this test. `bank_sandbox_check` must report
 `waas_authentication` and `bank_directory` as `passed`.
 
+Every API build also syncs the bank directory. If the build log says
+`9PSB bank directory unconfirmed (<reason>)`, the deploy still completes with
+bank transfers closed. The reason names the cause without secrets:
+`authentication_failed, HTTP 4xx` means the bank rejected the WaaS credentials;
+`network_unavailable` means Render could not reach the sandbox host.
+Account opening needs the same WaaS connection, so fix this before testing.
+
 ## 3. Ask 9PSB for these before testing
 
 Account opening is still untested against the bank. These are the gaps that

@@ -54,13 +54,38 @@ class TransferTests(TestCase):
     def test_directory_preserves_saved_slug_but_replaces_provider_routing_code(self):
         from django.core.management import call_command
         bank = Bank.objects.create(code="nine-payment", name="9 Payment Service Bank", bank_code="OLD")
-        with patch("banking.management.commands.sync_bank_directory.get_banks", return_value={"success": True,
-            "banks": [{"bank_name": "9PAYMENT SERVICE BANK", "bank_code": "120001"}]}):
+        with patch("banking.management.commands.sync_bank_directory.bank_list",
+                   return_value=[{"bank_name": "9PAYMENT SERVICE BANK", "bank_code": "120001"}]):
             call_command("sync_bank_directory", verbosity=0)
         bank.refresh_from_db()
         self.assertEqual(bank.code, "nine-payment")
         self.assertEqual(bank.bank_code, "120001")
         self.assertTrue(bank.active)
+        self.destination.refresh_from_db()
+        self.assertFalse(self.destination.active)
+
+    def test_unconfirmed_directory_names_its_redacted_cause_and_changes_nothing(self):
+        from django.core.management import CommandError, call_command
+        from .client import ProviderError
+        from django.core.cache import cache
+        cache.clear()
+        rejected = ProviderError("authentication_failed", http_status=400, response_code="400")
+        with patch("banking.adapter.Client.banks", side_effect=rejected), self.assertRaises(CommandError) as raised:
+            call_command("sync_bank_directory", "--if-configured", verbosity=0)
+        self.assertIn("authentication_failed, HTTP 400, response code 400", str(raised.exception))
+        self.destination.refresh_from_db()
+        self.assertTrue(self.destination.active)
+
+    def test_deploy_build_closes_routing_instead_of_failing_on_an_unconfirmed_directory(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from .client import ProviderError
+        from django.core.cache import cache
+        cache.clear()
+        out = StringIO()
+        with patch("banking.adapter.Client.banks", side_effect=ProviderError("network_unavailable", uncertain=True)):
+            call_command("sync_bank_directory", "--if-configured", "--close-on-failure", stdout=out)
+        self.assertIn("unconfirmed (network_unavailable); bank transfers remain closed", out.getvalue())
         self.destination.refresh_from_db()
         self.assertFalse(self.destination.active)
 
