@@ -6,9 +6,8 @@ HARD-FAILS while it is set, so the bypass can never reach go-live.
 """
 import json
 from io import StringIO
-from unittest import mock
 
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import Client, TestCase, override_settings
 
 from accounts.models import OTP
@@ -67,24 +66,10 @@ class SignupBypassFlowTests(TestCase):
         self.assertIn("access_token", body)
 
 
-_LIVE_DIAG = {"base_url": "https://api.alat.ng", "channel_id_set": True,
-              "wallet_key_set": True, "security_info_set": True, "wema_live": True,
-              "simulation": False, "status": "configured", "hint": ""}
-
-
 class PreflightTestOtpGateTests(TestCase):
-    @override_settings(TEST_OTP=_TEST, RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
-                       TERMII={"API_KEY": "tk_x", "BASE_URL": "x", "SENDER_ID": "Zitch",
-                               "CHANNEL": "dnd"},
-                       CARD_ISSUER={"API_KEY": "ci_x"})
-    def test_preflight_hard_fails_while_bypass_on(self):
+    @override_settings(TEST_OTP=_TEST)
+    def test_preflight_blocks_go_live_while_bypass_on(self):
         out = StringIO()
-        code = 0
-        with mock.patch("utility.wema.wema_diagnostics", return_value=_LIVE_DIAG):
-            try:
-                call_command("wema_preflight", stdout=out)
-            except SystemExit as exc:
-                code = exc.code
-        self.assertIn("NOT READY", out.getvalue())
-        self.assertIn("Test-OTP", out.getvalue())
-        self.assertEqual(code, 1)
+        with self.assertRaises(CommandError):
+            call_command("bank_preflight", stdout=out)
+        self.assertIn("test_otp_bypass_enabled", json.loads(out.getvalue())["blockers"])

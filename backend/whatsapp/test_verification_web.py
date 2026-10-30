@@ -76,16 +76,9 @@ class VerificationWebTests(TestCase):
             linked_at=timezone.now(),
         )
         # No test can accidentally touch a remote KYC/bank service.
-        self.face = self.enterContext(patch("wallet.views.verify_tier2_liveness"))
-        self.tier2 = self.enterContext(patch("wallet.views.wema_provider.upgrade_tier2"))
-        self.provider = self.enterContext(patch("accounts.views.kyc_verify_address",
+        self.provider = self.enterContext(patch("utility.providers.kyc_verify_address",
                                                 return_value={"success": True}))
-        self.enterContext(patch("accounts.views.kyc_provider", return_value="prembly"))
-        self.enterContext(patch("accounts.views._sync_wema_tier3"))
-        self.bank_address = self.enterContext(patch("accounts.views.wema.upgrade_tier3",
-                                                   return_value={"success": True}))
-        self.bank_status = self.enterContext(patch("utility.wema.get_kyc_status", return_value={
-            "success": True, "tier": 2, "address_verification": "pending"}))
+        self.bank_address = self.enterContext(patch("banking.address._request"))
         # The shared production service intentionally refuses new requests until
         # correlated bank evidence exists. Simulate a completed service result
         # only for these transport/security tests; production-gate tests below

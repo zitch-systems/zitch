@@ -51,13 +51,11 @@ class AddressVerificationPendingTests(TestCase):
         self.state = patch("accounts.views._kyc_state", return_value={})
         self.state.start()
         self.addCleanup(self.state.stop)
-        live = patch("utility.wema.address_verify_live", return_value=True)
-        live.start()
-        self.addCleanup(live.stop)
-        status = patch("utility.wema.get_kyc_status", return_value=self._completed_result())
+        # Any bank read or Tier 3 submission would go through the 9PSB client.
+        status = patch("banking.client.Client.wallet")
         self.status = status.start()
         self.addCleanup(status.stop)
-        submit = patch("utility.wema.upgrade_tier3", return_value={"success": True})
+        submit = patch("banking.client.Client.request")
         self.submit = submit.start()
         self.addCleanup(submit.stop)
 
@@ -120,8 +118,7 @@ class AddressVerificationPendingTests(TestCase):
 
     def test_missing_bank_endpoint_cannot_fall_back_to_document_ocr(self):
         before = self._snapshot()
-        with patch("utility.wema.address_verify_live", return_value=False), \
-                patch("accounts.views.kyc_verify_address", return_value={"success": True}) as ocr:
+        with patch("utility.providers.kyc_verify_address", return_value={"success": True}) as ocr:
             response = verify_kyc_address(self.user, {**self.address, "document": "ZmFrZQ=="})
         self.assertEqual(response.status_code, 503)
         ocr.assert_not_called()
@@ -134,7 +131,7 @@ class AddressVerificationPendingTests(TestCase):
             with self.subTest(provider=provider, new_business_allowed=new_business_allowed), \
                     override_settings(KYC_PROVIDER=provider), \
                     patch("utility.providers.partnership_new_business_allowed", return_value=new_business_allowed), \
-                    patch("accounts.views.kyc_verify_address", return_value={"success": True}) as ocr:
+                    patch("utility.providers.kyc_verify_address", return_value={"success": True}) as ocr:
                 response = verify_kyc_address(self.user, {**self.address, "document": "ZmFrZQ=="})
                 self.assertEqual(response.status_code, 503, response.content)
                 self.assertEqual(json.loads(response.content)["code"], "address_verification_unavailable")

@@ -86,10 +86,8 @@ class AuditTests(TestCase):
 
     def test_legacy_pool_configuration_cannot_hide_new_bank_shortfall(self):
         self.remote[self.bank.number] = "4000"
-        with override_settings(WEMA={"SOURCE_ACCOUNT": "9999999999"}), \
-             patch("utility.wema.get_balance") as old_balance:
+        with override_settings(WEMA={"SOURCE_ACCOUNT": "9999999999"}):
             result = snapshot()
-        old_balance.assert_not_called()
         self.assertEqual(Decimal(result["known_9psb_assets"]), 4000)
         self.assertEqual(result["ledger_over_bank"], 1)
         self.assertIsNone(result["held_total"])

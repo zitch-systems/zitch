@@ -52,7 +52,7 @@ class PartnershipBillFundingTests(TestCase):
         from wallet.tests import make_user as unbanked_user
         self.user, _ = unbanked_user("08088990003", "unbanked@example.test", balance="1000")
         self.wallet = self.user.wallet
-        with patch("utility.wema.wema_live", return_value=True), self.assertRaises(LimitExceeded):
+        with self.assertRaises(LimitExceeded):
             debit(self.user, "100", "Airtime — MTN")
 
     def test_opening_review_limits_and_contact_revocation_still_apply(self):
@@ -126,19 +126,4 @@ class PostgresBillFundingTests(TransactionTestCase):
         txn = debit(self.user, "100", "Airtime — MTN")
         self.assertCountEqual(self.race([lambda: refund(txn), lambda: refund(txn)]), [True, False])
         self.assertEqual(BillFundingRefund.objects.count(), 1)
-        self.assertEqual(Wallet.objects.get(pk=self.wallet.pk).balance, Decimal("1000"))
-
-    def test_retired_authorization_and_refund_cannot_reopen_debit(self):
-        from wallet.wema_callbacks import _authorize_payout
-        txn = debit(self.user, "100", "Airtime — MTN")
-        funding_hold(self.user, "100", credit_funds=False)
-        results = self.race([lambda: _authorize_payout(txn.reference, "", "127.0.0.1"), lambda: refund(txn)])
-        # 9PSB bill funding no longer consults legacy holds, so either call may
-        # take the row lock first. Whichever wins, the refund completes and no
-        # later authorization can reopen the refunded debit.
-        txn.refresh_from_db()
-        self.assertEqual(results[0][0], "wema_auth" in txn.meta)
-        self.assertTrue(results[1])
-        self.assertEqual(txn.transaction_status, Transaction.FAILED)
-        self.assertFalse(_authorize_payout(txn.reference, "", "127.0.0.1")[0])
         self.assertEqual(Wallet.objects.get(pk=self.wallet.pk).balance, Decimal("1000"))

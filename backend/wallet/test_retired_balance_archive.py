@@ -36,7 +36,7 @@ class RetiredBalanceArchiveTests(TestCase):
 
     def test_archive_zeroes_active_wallet_without_forgiving_liability(self):
         before = snapshot()
-        with patch("utility.wema.transfer") as bank:
+        with patch("banking.client.Client.transfer") as bank:
             self.run_archive(apply=True)
             self.run_archive(apply=True)
         bank.assert_not_called()
@@ -56,8 +56,7 @@ class RetiredBalanceArchiveTests(TestCase):
         self.credit.refresh_from_db()
         self.assertEqual(self.credit.amount, Decimal("100"))
         self.assertEqual(UnsettledFunding.objects.get(pk=self.hold.pk).amount, Decimal("100"))
-        with patch("utility.wema.wema_live", return_value=True), \
-             patch("utility.alerts.alert"), self.assertRaises(CommandError):
+        with patch("utility.alerts.alert"), self.assertRaises(CommandError):
             call_command("settlement_report", fail_on_breach=True, stdout=StringIO())
 
     def test_partnership_balance_cannot_be_archived(self):

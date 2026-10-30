@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from django.core.cache import cache
 
-from .accounts import account_for, same_name, update_account
+from .accounts import update_account
 from .client import Client, ProviderError, config, configured, customer_enabled, money, bank_directory
 from .models import BankAccount, Instruction
 from .payments import requery, submit_existing
@@ -105,9 +105,6 @@ def vas_status(reference, txn_type=""):
     return confirm_transfer_status(reference)
 
 
-def holder_name_mismatch(supplied, resolved):
-    return not same_name(supplied, resolved)
-
 
 def classify_transfer_status(status, *, envelope_ok=True):
     if not envelope_ok:
@@ -122,20 +119,6 @@ def bank_tier_limit(tier, key):
               2: {"max_balance": Decimal("500000")}, 3: {}}
     return values.get(tier, {}).get(key)
 
-
-def lift_debit_restriction(account_number, **kwargs):
-    # PND is a bank decision, particularly after an excess inflow. Never invoke
-    # change_wallet_status to evade it. Only read back whether it is absent.
-    result = get_kyc_status(account_number)
-    return {"success": result.get("success") is True and result.get("pnd") is False}
-
-
-def face_verify_live():
-    return customer_enabled()
-
-
-def address_verify_live():
-    return False
 
 
 def bank_diagnostics():

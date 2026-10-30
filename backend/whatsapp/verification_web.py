@@ -185,19 +185,6 @@ def _page(request, screen="closed", *, status=200, message="", **context):
     }, status=status)
 
 
-def _proof_required():
-    # Keep this predicate identical to the shared address service. Re-evaluate
-    # for every form display/submission; no client field decides the provider.
-    from accounts.views import kyc_provider
-
-    return kyc_provider() != "wema"
-
-
-def _bank_address_unavailable():
-    from accounts.views import kyc_provider, wema
-
-    return kyc_provider() == "wema" and not wema.address_verify_live()
-
 
 def _pending_page(request):
     from wallet.address_verification import tier3_address_capability
@@ -231,10 +218,6 @@ def _address_data(request):
     if len(address) < 6 or len(", ".join([address, values["city"], values["state"]])) > 255:
         return None, values, "Enter a full residential address of at most 255 characters."
     data = {**values, "address": address, "country": "Nigeria"}
-    if not _proof_required():
-        # A stale document-rail page may still submit a file after configuration
-        # changes. Do not read/forward/retain that unnecessary image on the bank rail.
-        return data, values, ""
     upload = request.FILES.get("document")
     if upload is None:
         return None, values, "Upload a proof-of-address photo: a utility bill or bank statement."

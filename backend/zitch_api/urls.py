@@ -556,8 +556,8 @@ urlpatterns = [
     path("portal/", admin_portal),
     path("healthz", health),
     path("readyz", readyz),
-    # Both spellings, for the same reason wema_urls.py registers both: operational
-    # probes should not fail merely because a caller included a trailing slash.
+    # Both spellings: operational probes should not fail merely because a caller
+    # included a trailing slash.
     *[p for frag, view in (("bank-diagnose", preflight_diagnose),
                            ("whatsapp-diagnose", whatsapp_diagnose),
                            ("sms-diagnose", sms_diagnose),
@@ -582,11 +582,6 @@ urlpatterns = [
     # app scheme (store links as the no-app fallback).
     path("wa/approve/<str:token>", whatsapp_approve_handoff),
     path("wa/verify/<str:token>", whatsapp_verification_page, name="whatsapp_verification"),
-    # Wema/ALAT bank-called callbacks. The bank PROFILES these exact URLs, and the
-    # rails do not work until it has: account creation is refused without a profiled
-    # Account Creation URL, and transactions fail authentication without the
-    # Authentication URL. The trailing path segment is a shared secret; they sit
-    # outside /api/ because they are bank-authenticated, not user-authenticated.
     # The hosted QR scanner, opened from a WhatsApp button. Outside /api/ because it
     # is a PAGE for a customer's browser, not an authenticated JSON endpoint — the
     # single-use token in the path is what ties a scan to the chat that started it.

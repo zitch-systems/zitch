@@ -21,7 +21,7 @@ from wallet.services import (
     settle_or_refund,
 )
 
-from .models import Bank, Beneficiary
+from .models import Beneficiary
 
 log = logging.getLogger("zitch")
 
@@ -85,114 +85,6 @@ def bank_name_keys(name: str) -> tuple:
     alias = _ALIASES.get(key) or _ALIASES.get(squashed)
     return (key, squashed, f"alias:{alias}" if alias else None)
 
-
-def _suggest(name: str, leftovers: list[dict], limit: int = 5) -> list:
-    """Rail rows that plausibly ARE `name`, for a human to confirm.
-
-    Shares a distinctive word with our name, or contains it as a prefix of one
-    ("Mint" -> "MINT-FINEX"). Purely advisory — nothing is applied off a
-    suggestion, because "plausibly the same bank" is not good enough to route
-    money on.
-    """
-    ours = set(normalize_bank_name(name).split())
-    if not ours:
-        return []
-    scored = []
-    for row in leftovers:
-        theirs = set(normalize_bank_name(row["name"]).split())
-        shared = ours & theirs
-        if not shared:
-            # A word of ours that starts one of theirs (or vice versa) still counts,
-            # so a hyphenated or run-together legal name is not missed.
-            shared = {a for a in ours for b in theirs
-                      if len(a) > 2 and (b.startswith(a) or a.startswith(b))}
-        if shared:
-            scored.append((len(shared), -len(theirs), row))
-    scored.sort(key=lambda s: (-s[0], s[1], s[2]["name"]))
-    return [r for _, _, r in scored[:limit]]
-
-
-def compare_bank_codes(remote: list[dict]) -> dict:
-    """Classify our payout bank codes against the rail's own bank list.
-
-    `remote` is `banking.adapter.get_banks()["banks"]` — `[{bank_name, bank_code}]`.
-    Returns `{agree, differ, ambiguous, unmatched, remote_count, ok}`, where the
-    three problem lists carry `{name, ours, rail}` rows.
-
-    We resolve recipients by `(account_number, bank_code)` in the RAIL's code
-    space, but ours were seeded from a NIBSS/Paystack mirror (see seed_plans), so
-    a code that differs there fails name enquiry for every account number a user
-    types — and the gateway reports that as an invalid account number, never as a
-    bank problem.
-
-    A name matching more than one remote row is `ambiguous`, never resolved by
-    guessing: writing the wrong code here misroutes real money. `rail_unmatched`
-    lists the rail's own leftover names, which is what a human needs to close a
-    gap by hand (or to extend _ALIAS_GROUPS).
-
-    Matching runs key by key (see bank_name_keys) and stops at the first key that
-    hits, so an exact name match is never overridden by a looser one. Each matched
-    row records `via` — exact / squashed / alias — so every rewrite is auditable.
-    """
-    rows = [r for r in (remote or []) if r.get("bank_code")]
-    indexes: list[dict] = [{}, {}, {}]
-    for row in rows:
-        for i, key in enumerate(bank_name_keys(row.get("bank_name", ""))):
-            if key:
-                indexes[i].setdefault(key, []).append(row)
-
-    labels = ("exact", "squashed", "alias")
-    out = {"agree": [], "differ": [], "ambiguous": [], "unmatched": [],
-           "rail_unmatched": [], "remote_count": len(rows)}
-    claimed = set()
-    for bank in Bank.objects.filter(active=True).order_by("name"):
-        row = {"name": bank.name, "ours": bank.bank_code, "code": bank.code}
-        hits, via = [], ""
-        for i, key in enumerate(bank_name_keys(bank.name)):
-            if key and indexes[i].get(key):
-                hits, via = indexes[i][key], labels[i]
-                break
-        if not hits:
-            out["unmatched"].append(row)
-            continue
-        claimed.update(id(h) for h in hits)
-        codes = {h["bank_code"] for h in hits}
-        if len(codes) > 1:
-            out["ambiguous"].append({**row, "rail": sorted(codes), "via": via})
-        elif hits[0]["bank_code"] == bank.bank_code:
-            out["agree"].append(row)
-        else:
-            out["differ"].append({**row, "rail": hits[0]["bank_code"],
-                                  "rail_name": hits[0].get("bank_name", ""), "via": via})
-
-    # What the rail carries that we never matched. Reporting ALL of it was useless
-    # in practice: the live rail returns ~1000 rows, nearly all microfinance banks
-    # we do not list, so the answer for the two banks that mattered was buried in a
-    # wall of names. Each unmatched bank instead carries its own shortlist — the
-    # rail rows sharing one of its distinctive words — which is what a human needs
-    # to close the gap (e.g. "Mint MFB" -> "MINT-FINEX MFB = 090281").
-    leftovers = sorted(
-        ({"name": r.get("bank_name", ""), "code": r["bank_code"]}
-         for r in rows if id(r) not in claimed),
-        key=lambda r: r["name"])
-    for row in out["unmatched"]:
-        row["suggestions"] = _suggest(row["name"], leftovers)
-    out["rail_unmatched_count"] = len(leftovers)
-    out["rail_unmatched"] = leftovers
-    out["ok"] = not (out["differ"] or out["ambiguous"] or out["unmatched"])
-    return out
-
-
-def apply_bank_codes(differ: list[dict]) -> int:
-    """Write the rail's code onto the `differ` rows from compare_bank_codes()."""
-    updated = 0
-    for row in differ or []:
-        bank = Bank.objects.filter(code=row["code"]).first()
-        if bank and row.get("rail"):
-            bank.bank_code = row["rail"]
-            bank.save(update_fields=["bank_code"])
-            updated += 1
-    return updated
 
 
 def detect_account_banks(account_number: str) -> list[dict]:

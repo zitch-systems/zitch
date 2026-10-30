@@ -11,8 +11,6 @@ class ProductionConfigurationTests(SimpleTestCase):
             "test_otp_phone": "",
             "test_otp_code": "",
             "allow_test_otp": False,
-            "simulate_deposit_token": "",
-            "wema_simulation": False,
             "mono_simulation": False,
             "allow_simulation": False,
             "redis_url": "redis://cache:6379/0",
@@ -28,8 +26,7 @@ class ProductionConfigurationTests(SimpleTestCase):
         self.validate(
             is_production=False,
             test_otp_phone="08030000000",
-            simulate_deposit_token="test-token",
-            wema_simulation=True,
+            mono_simulation=True,
             redis_url="",
         )
 
@@ -68,32 +65,18 @@ class ProductionConfigurationTests(SimpleTestCase):
         """Scoped strictly to the OTP bypass: an operator turning it on for
         pre-launch testing must not silently also permit simulated money or a
         single-process cache."""
-        with self.assertRaisesRegex(ImproperlyConfigured, "SIMULATE_DEPOSIT_TOKEN"):
-            self.validate(
-                test_otp_phone="08030000000",
-                test_otp_code="123456",
-                allow_test_otp=True,
-                simulate_deposit_token="test-token",
-            )
         with self.assertRaisesRegex(ImproperlyConfigured, "ALLOW_PRODUCTION_SIMULATION"):
             self.validate(
                 test_otp_phone="08030000000",
                 test_otp_code="123456",
                 allow_test_otp=True,
-                wema_simulation=True,
+                mono_simulation=True,
             )
-
-    def test_simulate_deposit_token_allowed_with_simulation_override(self):
-        self.validate(simulate_deposit_token="test-token", allow_simulation=True)
-
-    def test_simulated_deposit_token_is_rejected(self):
-        with self.assertRaisesRegex(ImproperlyConfigured, "SIMULATE_DEPOSIT_TOKEN"):
-            self.validate(simulate_deposit_token="test-token")
 
     def test_provider_simulation_requires_explicit_isolated_deploy_override(self):
         with self.assertRaisesRegex(ImproperlyConfigured, "ALLOW_PRODUCTION_SIMULATION"):
-            self.validate(wema_simulation=True)
-        self.validate(wema_simulation=True, allow_simulation=True)
+            self.validate(mono_simulation=True)
+        self.validate(mono_simulation=True, allow_simulation=True)
 
     def test_shared_cache_is_required_by_default(self):
         with self.assertRaisesRegex(ImproperlyConfigured, "REDIS_URL"):

@@ -13,7 +13,7 @@ from django.urls import Resolver404, resolve
 from wallet.funding_test_fixtures import funding_hold
 from wallet.models import Transaction, UnsettledFunding, Wallet
 from wallet.partnership import legacy_funding_blockers, partnership_account_number
-from wallet.services import LimitExceeded, customer_funding_account, debit, wallet_balance_payload, wema_provisioned_wallets
+from wallet.services import LimitExceeded, customer_funding_account, debit, wallet_balance_payload
 from wallet.tests import make_user
 
 
@@ -57,16 +57,9 @@ class FundingHoldTests(TestCase):
                 debit(self.user, "1", service)
         self.assertEqual(list(Transaction.objects.values()), before)
 
-    def test_deleted_destination_cannot_be_reused_or_polled(self):
+    def test_deleted_destination_cannot_be_reused(self):
         funding_hold(self.user, "100", self.wallet.account_number)
         self.assertFalse(partnership_account_number(self.wallet.account_number))
-        self.assertNotIn(self.wallet.pk, wema_provisioned_wallets().values_list("pk", flat=True))
-        from wallet.reconciliation import reconcile_account_history
-        from wallet.services import apply_wema_credit
-        with patch("utility.wema.get_transactions") as history:
-            self.assertEqual(reconcile_account_history(self.wallet)["error_code"], "retired_funding_account")
-            self.assertIsNone(apply_wema_credit(self.wallet, {}))
-        history.assert_not_called()
 
     def test_invalid_or_validation_number_never_exposes_bank_details(self):
         for number in ("7111234567", "bad-number"):
@@ -80,8 +73,7 @@ class FundingHoldTests(TestCase):
     def test_historical_bank_assets_are_never_invented(self):
         from whatsapp.models import AuditLog
         funding_hold(self.user, "1000")
-        with patch("utility.wema.wema_live", return_value=True), patch("utility.wema.get_balance", return_value={
-                "success": True, "balance_naira": Decimal("0")}), patch("utility.alerts.alert"):
+        with patch("utility.alerts.alert"):
             for name, flag in (("settlement_report", "--fail-on-breach"), ("reconcile_balances", "--fail-nonzero")):
                 with self.subTest(command=name), self.assertRaises(CommandError):
                     call_command(name, flag, stdout=StringIO(), stderr=StringIO())

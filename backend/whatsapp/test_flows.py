@@ -951,13 +951,12 @@ class SendPayloadsMatchThePublishedScreensTests(TestCase):
 
         self._assert_matches(self._sent(router._start_pin_reset, self.user, MSISDN))  # noqa: SLF001
 
-    def test_the_identity_and_account_otp_screens(self):
+    def test_the_identity_screen(self):
         from whatsapp import router
 
         self.pa.action_type = "kyc"
         self.pa.save(update_fields=["action_type"])
         self._assert_matches(self._sent(router._send_identity_flow, self.pa, "bvn"))  # noqa: SLF001
-        self._assert_matches(self._sent(router._send_account_otp_flow, self.pa))      # noqa: SLF001
 
     def test_the_email_screens(self):
         from whatsapp import router

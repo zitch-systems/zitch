@@ -132,6 +132,17 @@ def endpoint_report(product):
     return result
 
 
+def test_shortcut_blockers():
+    """Pre-launch shortcuts that must be unset before real customers use the bank."""
+    from django.conf import settings
+    blockers = []
+    if settings.TEST_OTP["PHONE"] and settings.TEST_OTP["CODE"]:
+        blockers.append("test_otp_bypass_enabled")
+    if (getattr(settings, "MONO", {}) or {}).get("SIMULATION"):
+        blockers.append("simulation_mode_enabled")
+    return blockers
+
+
 def report():
     conf = config()
     gaps = []
@@ -150,6 +161,7 @@ def report():
         gaps.append("production_https_required")
     if not conf.get("UAT_APPROVED"):
         gaps.append("bank_uat_and_icad_approval_required")
+    gaps.extend(test_shortcut_blockers())
     # These contracts are absent from the supplied materials. A configuration
     # boolean cannot substitute for an implemented and tested contract.
     gaps.extend(["history_and_reversal_contract_unconfirmed", "address_terminal_report_contract_unconfirmed",

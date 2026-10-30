@@ -34,9 +34,9 @@ class PartnershipCustomerChatTests(TestCase):
     def retired_action(self, marker="vas_enroll", state="flow_identity"):
         return PendingAction.objects.create(
             user=self.user, msisdn=MSISDN,
-            action_type="vas_enroll" if marker == "vas_enroll" else "kyc",
+            action_type=marker if marker in ("vas_enroll", "add_account") else "kyc",
             state=state,
-            payload={} if marker == "vas_enroll" else {marker: True},
+            payload={} if marker in ("vas_enroll", "add_account") else {marker: True},
             expires_at=timezone.now() + timedelta(minutes=5),
         )
 
@@ -63,7 +63,7 @@ class PartnershipCustomerChatTests(TestCase):
         self.assertIn("unavailable", reply.call_args.args[1])
 
     def test_retired_chat_sessions_cannot_reinterpret_identity_or_otp_input(self):
-        for marker in ("vas_enroll", "vas_identity", "vas_contacts", "vas_reregister"):
+        for marker in ("vas_enroll", "add_account", "vas_identity", "vas_contacts", "vas_reregister"):
             with self.subTest(marker=marker):
                 pa = self.retired_action(marker)
                 with patch.object(router, "reply") as reply, \
@@ -77,8 +77,6 @@ class PartnershipCustomerChatTests(TestCase):
 
     def test_retired_direct_identity_and_contact_helpers_never_contact_providers(self):
         calls = (
-            (router._account_submit_identity, (self.user, MSISDN, "22222222222"), "fail"),
-            (router.account_flow_otp, ("123456",), ("done", RETIRED_SETUP_MESSAGE)),
             (router.kyc_flow_identity_otp, ("123456",), ("stop", RETIRED_SETUP_MESSAGE)),
             (router.kyc_flow_email_address, ("new@example.com",), ("stop", RETIRED_SETUP_MESSAGE)),
             (router.kyc_flow_email_code, ("123456",), ("stop", RETIRED_SETUP_MESSAGE)),
@@ -90,14 +88,10 @@ class PartnershipCustomerChatTests(TestCase):
                 pa = self.retired_action("vas_identity")
                 with patch.object(router, "reply"), \
                         patch.object(router, "send_sms") as sms, \
-                        patch.object(router, "send_email") as email, \
-                        patch.object(router.wallet_views, "_start_wema_attempt") as create, \
-                        patch.object(router.wallet_views, "complete_wema_provisioning") as complete:
+                        patch.object(router, "send_email") as email:
                     self.assertEqual(fn(pa, *args), expected)
                 sms.assert_not_called()
                 email.assert_not_called()
-                create.assert_not_called()
-                complete.assert_not_called()
                 self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
 
     @override_settings(WHATSAPP_PROCESS_INLINE=False)

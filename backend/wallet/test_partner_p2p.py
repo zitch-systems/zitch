@@ -7,17 +7,14 @@ from django.test import TestCase, override_settings
 
 from transfers.models import Bank
 from wallet.models import BankHistoryCheckpoint, Transaction, Wallet
-from wallet.services import apply_wema_credit, settle_payout
+from wallet.services import settle_payout
 from banking.test_fixtures import make_bank_user as make_user, mock_bank_io
 from banking.test_client import CONFIG
 from banking.models import BankAccount
 from banking.client import Reply
 
 
-@override_settings(NINEPSB={**CONFIG, "TRANSFER_FEE_TOTAL": "0"}, DEBUG=False, TESTING=False, WEMA={
-    "CHANNEL_ID": "test-channel", "KEYS": {"wallet": "test-key"},
-    "SIMULATION": False,
-})
+@override_settings(NINEPSB={**CONFIG, "TRANSFER_FEE_TOTAL": "0"}, DEBUG=False, TESTING=False)
 class PartnerBankP2PTests(TestCase):
     def setUp(self):
         self.sender, self.token = make_user("08010002001", "sender-p2p@zitch.test", balance="5000")
@@ -177,8 +174,7 @@ class PartnerBankP2PTests(TestCase):
 
     def test_restricted_sender_account_never_falls_back_to_pool(self):
         BankAccount.objects.filter(wallet__user=self.sender).update(pnd=True)
-        with override_settings(WEMA={"CHANNEL_ID": "test", "KEYS": {"wallet": "test"}, "SOURCE_ACCOUNT": "0999999999"}):
-            response, provider = self._send({"success": True, "status": "SUCCESS"})
+        response, provider = self._send({"success": True, "status": "SUCCESS"})
         self.assertEqual(response.status_code, 403)
         provider.assert_not_called()
         self.assertEqual(self.balance(self.sender), Decimal("5000"))
@@ -210,9 +206,8 @@ class PartnerBankP2PTests(TestCase):
         provider.assert_called_once()
         self.assertEqual(self.balance(self.sender), Decimal("4000"))
 
-    def test_retired_simulation_does_not_create_local_recipient_credit(self):
-        with override_settings(WEMA={"SIMULATION": True}):
-            response, provider = self._send({"success": True, "status": "SUCCESS"})
+    def test_peer_transfer_never_creates_a_local_recipient_credit(self):
+        response, provider = self._send({"success": True, "status": "SUCCESS"})
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["success"])
         provider.assert_called_once()

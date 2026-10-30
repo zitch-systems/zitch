@@ -98,8 +98,8 @@ class Command(BaseCommand):
         # the Paystack/NIBSS transfer code, verified against two independent
         # mirrors of Paystack's GET /bank (they agreed on every code). The rail
         # resolves recipients in ITS OWN code space, so reconcile these against
-        # its live bank list before go-live: `manage.py wema_banks_sync` prints
-        # ours vs theirs and `--apply` takes theirs. A stale code here surfaces to
+        # its live bank list before go-live: `manage.py sync_bank_directory` replaces
+        # them with the bank's own codes. A stale code here surfaces to
         # the user as "account enquiry failed", never as a bank problem.
         # Heritage Bank is deliberately absent (licence revoked June 2024).
         # Logos are served from the ichtrojan/nigerian-banks repo (the backing
@@ -162,7 +162,7 @@ class Command(BaseCommand):
         # NOTE the split defaults. This command runs on EVERY deploy (build.sh), so
         # anything in `defaults` is rewritten every time. `bank_code` must NOT be:
         # the codes above are a NIBSS/Paystack mirror, while payouts resolve in the
-        # rail's own code space, and `wema_banks_sync` (or the Django-admin action)
+        # rail's own code space, and `sync_bank_directory` (or the Django-admin action)
         # reconciles them against the rail's live list. Re-seeding those away on the
         # next deploy would silently reintroduce "account enquiry failed" for every
         # bank the rail codes differently — a self-healing bug that reappears at the
@@ -184,7 +184,7 @@ class Command(BaseCommand):
         if restored:
             self.stdout.write(self.style.WARNING(
                 f"Set a starting bank_code on {restored} bank(s) with none. Reconcile "
-                f"against the payout rail before going live: manage.py wema_banks_sync"))
+                f"against the payout rail before going live: manage.py sync_bank_directory"))
 
         self.stdout.write(self.style.SUCCESS(
             f"Seeded {d} data plans, {c} cable plans, {e} exam products, "

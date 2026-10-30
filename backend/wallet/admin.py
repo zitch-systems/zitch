@@ -11,7 +11,7 @@ from .models import (
     TransactionAlertDelivery,
     Wallet,
 )
-from .services import attach_existing_bank_account, is_demo_account
+from .services import is_demo_account
 
 
 class _ReadOnlyMoneyAdmin(admin.ModelAdmin):
@@ -49,7 +49,7 @@ class _ReadOnlyMoneyAdmin(admin.ModelAdmin):
 class WalletAdmin(_ReadOnlyMoneyAdmin):
     list_display = ("user", "balance", "account_number", "bank_name", "updated")
     search_fields = ("user__phone", "user__email", "account_number")
-    actions = ["clear_demo_account", "reconnect_bank_account"]
+    actions = ["clear_demo_account"]
 
     def has_recover_permission(self, request):
         # Recovery is a separate named capability from generic form editing.
@@ -57,29 +57,11 @@ class WalletAdmin(_ReadOnlyMoneyAdmin):
         return bool(request.user.is_active and request.user.is_staff
                     and request.user.has_perm("wallet.change_wallet"))
 
-    @admin.action(permissions=["recover"], description="Reconnect the bank account the rail already holds")
-    def reconnect_bank_account(self, request, queryset):
-        """Attach the NUBAN the bank holds for a wallet that has none.
-
-        The in-app path does this automatically when creation is refused, but it
-        needs the customer to get through the setup screen. This is the same
-        recovery for an operator: after clearing a test-mode account, or when a
-        provisioning callback was never received, the wallet has no account number
-        and every payout is refused for having no source to debit.
-
-        Skips a wallet that already has one — replacing a live NUBAN would strand
-        deposits already sent to it.
-        """
-        for wallet in queryset:
-            attached, detail = attach_existing_bank_account(wallet.user)
-            level = messages.SUCCESS if attached and attached.account_number else messages.WARNING
-            self.message_user(request, f"{wallet.user}: {detail}", level)
-
     @admin.action(permissions=["recover"], description="Clear a test-mode funding account so a real one can be issued")
     def clear_demo_account(self, request, queryset):
         """Blank a NUBAN the MOCK rail invented, so the user can be re-provisioned.
 
-        provision_wema_account refuses to replace an existing NUBAN — rightly, since
+        Account provisioning refuses to replace an existing NUBAN — rightly, since
         overwriting a real one strands money already sent to it. But that also traps
         a wallet stamped with a test-mode number: it can never receive a live NUBAN,
         and every payout it attempts is rejected by the rail. Clearing is safe for

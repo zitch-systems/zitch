@@ -78,8 +78,7 @@ class PooledSessionTests(TestCase):
     def test_test_suite_keeps_its_patch_seam(self):
         """Under the test runner the module is returned, so patches still bite.
 
-        Roughly eighty call sites across the suite patch
-        `whatsapp.providers.requests.*` and `utility.wema.requests.*`.
+        Many call sites across the suite patch `whatsapp.providers.requests.*`.
         """
         self.assertIs(providers._graph(), providers.requests)
         self.assertIs(bank_client.requests, requests)

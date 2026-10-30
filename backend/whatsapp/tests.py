@@ -195,7 +195,6 @@ class WhatsAppWorkerAlertSweepTests(TestCase):
              patch("whatsapp.management.commands.whatsapp_worker.connections.close_all"), \
              patch("whatsapp.management.commands.whatsapp_worker.process_once",
                    side_effect=drain_once), \
-             patch("wallet.services.repair_missing_funding_accounts"), \
              patch("wallet.alerts.retry_pending_whatsapp_alerts",
                    return_value=0) as retry, \
              patch("banking.reconciliation.sweep") as reconcile:
@@ -244,7 +243,6 @@ class WhatsAppWorkerAlertSweepTests(TestCase):
              patch("whatsapp.management.commands.whatsapp_worker.connections.close_all"), \
              patch("whatsapp.management.commands.whatsapp_worker.process_once",
                    side_effect=drain_once) as process, \
-             patch("wallet.services.repair_missing_funding_accounts"), \
              patch("wallet.alerts.retry_pending_whatsapp_alerts",
                    side_effect=RuntimeError("Meta is temporarily unavailable")) as retry:
             call_command("whatsapp_worker", stderr=stderr)

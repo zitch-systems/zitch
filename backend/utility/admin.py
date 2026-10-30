@@ -1,82 +1,36 @@
-import io
-
-from django.contrib import admin, messages
-from django.core.management import call_command
+from django.contrib import admin
 
 from .models import CablePlan, DataPlan, WemaBiller
 
 
-class _WemaCatalogueSyncMixin:
-    """Run `seed_wema_plans` from the browser.
-
-    Data and cable purchases cannot be fulfilled at all until a plan carries the
-    rail's own packageCode, and that mapping only existed as a management command —
-    unreachable on a deploy with no shell, which is exactly where it is needed. This runs the same
-    command rather than reimplementing the matching, which is best-effort (price, then a
-    normalised name) and deliberately reviewed rather than trusted.
-
-    Dry-run first, always: the action reports what WOULD change so the matches can be
-    read, because a wrong packageCode sells the customer a different bundle than the one
-    they paid for.
-    """
-
-    def _run_seed(self, request, *, dry: bool, only: str):
-        buf = io.StringIO()
-        try:
-            call_command("seed_wema_plans", dry_run=dry, only=only, stdout=buf, stderr=buf)
-        except Exception as exc:                              # noqa: BLE001
-            self.message_user(request, f"Catalogue sync failed: {exc}", messages.ERROR)
-            return
-        lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
-        if not lines:
-            lines = ["No output — nothing matched, or the catalogue is already in sync."]
-        level = messages.WARNING if dry else messages.SUCCESS
-        self.message_user(request, ("DRY RUN — nothing written. " if dry else "")
-                          + " | ".join(lines[:40]), level)
-
-    @admin.action(description="Preview a Wema catalogue sync (dry run, writes nothing)")
-    def preview_wema_codes(self, request, queryset):
-        self._run_seed(request, dry=True, only=self.wema_sync_only)
-
-    @admin.action(description="Apply the Wema catalogue sync (writes the rail's codes)")
-    def apply_wema_codes(self, request, queryset):
-        self._run_seed(request, dry=False, only=self.wema_sync_only)
-
-
+# 9PSB VAS catalogues are read live from the bank. These local plan tables and
+# the retired provider's biller codes are historical evidence only.
 @admin.register(DataPlan)
-class DataPlanAdmin(_WemaCatalogueSyncMixin, admin.ModelAdmin):
-    list_display = ("network", "plan_type", "name", "validity", "price", "plan_code",
-                    "wema_code", "active")
+class DataPlanAdmin(admin.ModelAdmin):
+    list_display = ("network", "plan_type", "name", "validity", "price", "plan_code", "active")
     list_filter = ("network", "plan_type", "active")
     search_fields = ("name", "plan_code")
-    actions = ["preview_wema_codes", "apply_wema_codes"]
-    # The command syncs both catalogues; each admin scopes it to its own so the output
-    # is about the rows in front of you.
-    wema_sync_only = "data"
 
 
 @admin.register(CablePlan)
-class CablePlanAdmin(_WemaCatalogueSyncMixin, admin.ModelAdmin):
-    list_display = ("provider", "name", "validity", "price", "cable_plan_code",
-                    "wema_code", "active")
+class CablePlanAdmin(admin.ModelAdmin):
+    list_display = ("provider", "name", "validity", "price", "cable_plan_code", "active")
     list_filter = ("provider", "active")
     search_fields = ("name", "cable_plan_code")
-    actions = ["preview_wema_codes", "apply_wema_codes"]
-    wema_sync_only = "cable"
 
 
 @admin.register(WemaBiller)
-class WemaBillerAdmin(_WemaCatalogueSyncMixin, admin.ModelAdmin):
-    """Electricity and betting codes — the two services with no plan catalogue.
-
-    The sync resolves discos by name; betting companies it cannot, because their
-    slugs come from whatever the app offers rather than a list we control. Those are
-    added here by hand, which is also the escape hatch when a disco's catalogue name
-    changes and the sync reports it unresolved. A service with no row here is simply
-    not on sale — providers.vtu_purchase refuses it before any debit.
-    """
+class RetiredBillerAdmin(admin.ModelAdmin):
+    """Retired provider biller codes, retained read-only as historical evidence."""
     list_display = ("service_id", "meter_type", "package_id", "biller_id", "name", "active", "updated")
     list_filter = ("meter_type", "active")
     search_fields = ("service_id", "package_id", "name")
-    actions = ["preview_wema_codes", "apply_wema_codes"]
-    wema_sync_only = "billers"
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

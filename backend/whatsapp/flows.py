@@ -139,10 +139,6 @@ FLOW_VTU_STATE = "flow_vtu"   # ...while the airtime/data form is open (payload[
 FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
 _OB_PREFIX = "ob"             # marks a flow_token that addresses an onboarding, not a money action
 _ID_PREFIX = "id"             # marks a flow_token that addresses a KYC identity step
-#: id_kind for the bank's SMS code that completes account creation. It rides the
-#: identity token because it is the second half of one step: the BVN goes in on
-#: the masked screen and the code that name-matches it comes back on the same.
-ACCOUNT_OTP = "account_otp"
 _AP_PREFIX = "ap"             # marks an app hand-off token (deep-link biometric approval)
 
 #: Confirm states an app hand-off may resolve in. Both mean "armed, awaiting the
@@ -937,8 +933,6 @@ def _handle_flow_request(payload: dict) -> dict:
         if action == "data_exchange":
             if kind == "email":
                 return _submit_email(pa, data)
-            if kind == ACCOUNT_OTP:
-                return _submit_account_otp(pa, data)
             # An armed challenge means this submit is the CODE, not the number:
             # the identity was accepted on the previous exchange of this session.
             if pa.payload.get("id_otp_hash"):
@@ -946,8 +940,6 @@ def _handle_flow_request(payload: dict) -> dict:
             return _submit_identity(pa, data)
         if kind == "email":
             return _email_step_screen(pa)
-        if kind == ACCOUNT_OTP:
-            return _account_otp_screen(pa)
         if pa.payload.get("id_otp_hash"):
             return _identity_otp_screen(pa)
         return _identity_screen(kind)
@@ -1388,13 +1380,9 @@ def _submit_identity(pa, data: dict) -> dict:
     """
     import re
 
-    from .router import _MAX_ID_ATTEMPTS, _account_submit_identity, _kyc_submit_identity
+    from .router import _MAX_ID_ATTEMPTS, _kyc_submit_identity
 
-    # For account setup, the WhatsApp menu stores the selected rail as id_type;
-    # do not let a default/old id_kind turn a NIN submission into BVN.
     kind = pa.payload.get("id_kind") or pa.payload.get("id_type") or "bvn"
-    if pa.action_type == "add_account" and pa.payload.get("id_type") in ("bvn", "nin"):
-        kind = pa.payload["id_type"]
     number = "".join(ch for ch in str(data.get("number", "")) if ch.isdigit())
     if not re.fullmatch(r"\d{11}", number):
         # The retry twin, so the masked box comes back empty - same reasoning as
@@ -1405,124 +1393,35 @@ def _submit_identity(pa, data: dict) -> dict:
                                 screen=IDENTITY_RETRY)
 
     try:
-        # A verified BVN whose account callback was missed cannot be recreated by
-        # SMS: the provider sees a duplicate customer. Its documented face route
-        # completes the original account creation. The raw BVN remains inside the
-        # encrypted Flow and is passed only to the bank-hosted one-time session.
-        if pa.payload.get("id_purpose") in ("account_face", "face"):
-            from .router import _clear_actions, _face_account_setup_held, _send_identity_face_option
-
-            if _face_account_setup_held(pa.user):
-                _clear_actions(pa.msisdn)
-                return _success_screen(
-                    "Your identity check is already complete or processing. "
-                    "Return to the chat and reply 6 to check your funding account; "
-                    "you do not need to repeat face verification.")
-
-            if _send_identity_face_option(pa, pa.user, pa.msisdn, kind, number,
-                                          account_setup=pa.payload.get("id_purpose") == "account_face"):
-                return _success_screen("Face verification is ready. Open the secure face link in the chat. Your result will be confirmed after the bank completes its check.")
-            return _success_screen("Face verification is temporarily unavailable. Return to the chat and try verification again shortly.")
-        # Both entry points collect the same number on the same screen; what
-        # happens next is the action's business, not this module's.
-        if pa.action_type == "add_account":
-            # Persist the selected BVN/NIN rail before provisioning and OTP.
-            if kind in ("bvn", "nin"):
-                pa.payload["id_type"] = kind
-                pa.save(update_fields=["payload"])
-            outcome = _account_submit_identity(pa, pa.user, pa.msisdn, number,
-                                               in_flow=True)
-            if outcome == "otp":
-                # The bank accepted the ID and sent its SMS code - collected on
-                # the NEXT PAGE of this same session, not a second flow message.
-                pa.refresh_from_db()
-                return _account_otp_screen(pa)
-            if outcome == "face":
-                return _success_screen(
-                    "Open the secure face-verification link in the chat. "
-                    "Your verification changes only after the bank confirms it.")
-            if outcome == "processing":
-                return _success_screen(
-                    "Your bank accepted the verification code. Account setup is processing. "
-                    "You do not need to submit your identity or code again.")
-            if outcome == "adopted":
-                return _success_screen("Account found ✅ — see the chat for the bank-upgrade step.")
-            if outcome == "upgrade":
-                # The account is open; only the identity is blocked. Closing on
-                # the failure screen below would say setup failed, which the
-                # chat is at that moment denying.
-                return _success_screen(
-                    "Your account is ready. Further identity checks are needed for an upgrade. "
-                    "See the next steps in the chat.")
-            if outcome == "fail":
-                # A hard failure: the ID was refused, name-matched to a different
-                # person, or the provider was unreachable. _account_submit_identity
-                # has already cleared the pending action and sent a "⚠️ ..." line
-                # to the chat. Falling through to the shared "received ✅" screen
-                # would close the secure Flow on a green success the chat is
-                # simultaneously contradicting. Unlike the KYC branch, there is no
-                # review queue here that would make "received" true.
-                return _success_screen(
-                    "We couldn't finish setting up your account - see the chat for what happened.")
-        else:
-            # In production the Wallet Creation product is Wema's identity
-            # verification rail: it accepts BVN or NIN, sends its own OTP and
-            # name-matches the holder before the identity can lift KYC.  Start
-            # that flow directly instead of treating a standalone lookup error
-            # as a bad identity number.  Keep the existing fallback for local
-            # and test deployments where Wema account creation is unavailable.
-            from wallet import views as wallet_views
-
-            if (wallet_views._wema_funding_enabled()
-                    and not bool((getattr(settings, "WEMA", {}) or {}).get("SIMULATION"))):
-                pa.action_type = "add_account"
-                pa.payload["id_type"] = kind
-                pa.save(update_fields=["action_type", "payload"])
-                outcome = _account_submit_identity(pa, pa.user, pa.msisdn, number,
-                                                   in_flow=True)
-            else:
-                outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
-            if outcome == "invalid":
-                # A wrong number is corrected by the customer, not queued - but
-                # on a FRESH screen, so the refused digits are gone and the retry
-                # is a real retry rather than a resubmit of the same number.
-                pa.refresh_from_db()
-                left = _MAX_ID_ATTEMPTS - int(pa.payload.get("id_bad_attempts") or 0)
-                pa.payload["flow_screen"] = IDENTITY_RETRY
-                pa.save(update_fields=["payload"])
-                return _identity_screen(
-                    kind, screen=IDENTITY_RETRY,
-                    error=f"That {kind.upper()} isn't valid for this account. "
-                          f"Check the digits and try again ({left} attempt(s) left).")
-            if outcome == "stop":
-                return _success_screen(
-                    f"Too many incorrect {kind.upper()} attempts. Reply 8 in the chat to "
-                    "start again.")
-            if outcome == "otp":
-                # The lookup passed and a code is on its way to the line
-                # REGISTERED AGAINST THE IDENTITY - not the account's own
-                # number. Collected on the same open session, so the code never
-                # becomes a chat message either.
-                pa.refresh_from_db()
-                # The KYC branch can switch to Wema account provisioning above.
-                # Its tracking ID and OTP belong to the bank, not the local KYC
-                # challenge cache. Render the matching confirmation screen.
-                if pa.action_type == "add_account":
-                    return _account_otp_screen(pa)
-                return _identity_otp_screen(pa)
-            if outcome == "adopted":
-                return _success_screen(
-                    f"Account found. This does not confirm {kind.upper()} verification. "
-                    "See the chat for the current identity status and next step.")
-            if outcome == "fail":
-                return _success_screen(
-                    f"{kind.upper()} verification did not complete. See the chat for details.")
-            if outcome == "processing":
-                return _success_screen("Your identity check is processing. Return to the chat shortly to continue.")
-            if outcome == "face":
-                return _success_screen(
-                    "Open the secure face-verification link in the chat. "
-                    "Your verification changes only after the bank confirms it.")
+        outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
+        if outcome == "invalid":
+            # A wrong number is corrected by the customer, not queued - but
+            # on a FRESH screen, so the refused digits are gone and the retry
+            # is a real retry rather than a resubmit of the same number.
+            pa.refresh_from_db()
+            left = _MAX_ID_ATTEMPTS - int(pa.payload.get("id_bad_attempts") or 0)
+            pa.payload["flow_screen"] = IDENTITY_RETRY
+            pa.save(update_fields=["payload"])
+            return _identity_screen(
+                kind, screen=IDENTITY_RETRY,
+                error=f"That {kind.upper()} isn't valid for this account. "
+                      f"Check the digits and try again ({left} attempt(s) left).")
+        if outcome == "stop":
+            return _success_screen(
+                f"Too many incorrect {kind.upper()} attempts. Reply 8 in the chat to "
+                "start again.")
+        if outcome == "otp":
+            # The lookup passed and a code is on its way to the line
+            # REGISTERED AGAINST THE IDENTITY - not the account's own
+            # number. Collected on the same open session, so the code never
+            # becomes a chat message either.
+            pa.refresh_from_db()
+            return _identity_otp_screen(pa)
+        if outcome == "fail":
+            return _success_screen(
+                f"{kind.upper()} verification did not complete. See the chat for details.")
+        if outcome == "processing":
+            return _success_screen("Your identity check is processing. Return to the chat shortly to continue.")
     except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("identity flow submission failed for pa=%s", pa.id)
         return _success_screen(
@@ -1543,8 +1442,8 @@ def _identity_otp_screen(pa, error: str = "") -> dict:
     the wrong document and sends the customer looking on the wrong handset.
 
     Adding id_kind as a fallback narrows it but does not close it: id_kind is
-    overloaded. It carries an identity in some places, but also "email" and
-    ACCOUNT_OTP ("account_otp") elsewhere, and neither of those is "nin", so a
+    overloaded. It carries an identity in some places, but also "email" (and,
+    in historical sessions, "account_otp"), and neither is "nin", so a
     `"nin" if kind == "nin" else "BVN"` test relabels exactly the sessions the
     fallback was added to rescue. Each candidate is therefore checked for BEING
     an identity, and when none is, the screen says something true and
@@ -1553,9 +1452,8 @@ def _identity_otp_screen(pa, error: str = "") -> dict:
 
     The code on THIS screen is Zitch's own (secrets.randbelow, sent through
     send_sms), not the bank's - so it says "we sent", and names the masked line
-    it actually went to when we have it. Attributing it to Wema here would be
-    inaccurate; that wording belongs on _account_otp_screen, which really does
-    render the bank's code.
+    it actually went to when we have it. Attributing it to the bank here would
+    be inaccurate.
     """
     kind = ""
     for key in ("id_otp_kind", "id_kind", "id_type"):
@@ -1595,84 +1493,6 @@ def _submit_identity_otp(pa, data: dict) -> dict:
             log.exception("kyc advance failed after identity otp for pa=%s", pa.id)
     return _success_screen(message)
 
-
-def _account_otp_screen(pa, error: str = "") -> dict:
-    """Clean render: whichever code page this session is on (IDENTITY_CHAIN when
-    chained from the BVN entry, CODE_SCREEN when opened fresh). Error render:
-    always CODE_RETRY - legal from both and from itself, and the masked box
-    arrives empty instead of holding the code that just failed."""
-    screen = CODE_RETRY if error else _flow_screen(pa, CODE_SCREEN)
-    # This screen used to mask and show the customer's ZITCH number, on the belief
-    # that ALAT texts the number supplied in the creation request. It does not.
-    # ALAT validates the identity against its register and sends the consent code to
-    # the phone held on THAT record - the NIMC line for a NIN, the BVN line for a
-    # BVN. Naming the Zitch number pointed the customer at a handset that never
-    # receives the code, and left the NIN step looking like it wanted a BVN code.
-    #
-    # There is no number to show instead: ALAT does not return one. Naming the
-    # RECORD is both true and more useful than any masked digits would have been.
-    # `using_bvn` is written when the attempt is opened and is the authoritative
-    # record of which rail this tracking id belongs to; `id_type` is the earlier
-    # menu choice and covers a payload written before that point.
-    # Resolve the label from the server-bound tracking record. Cached Flow
-    # payloads can outlive a previous screen; the tracking record is the authority
-    # used by OTP validation and prevents a NIN challenge being labelled as BVN.
-    from wallet.models import WemaProvisioningAttempt
-
-    # The server-side attempt is the exact rail Wema opened and the same record
-    # OTP validation uses. It must override every client/cached Flow field. Only
-    # fall back to this session's menu choice before a tracking record exists.
-    #
-    # A BLANK tracking id is not a lookup key. Wema does not always return one,
-    # and `filter(tracking_id="")` then matches whatever other attempt row for
-    # this user carries an empty tracking id - for a customer with a verified
-    # BVN that is very likely the BVN row, so the "authoritative" record would
-    # be one with nothing to do with this challenge. No id, no lookup.
-    tracking_id = str(pa.payload.get("tracking_id") or "").strip()
-    attempt = (
-        WemaProvisioningAttempt.objects.filter(user=pa.user, tracking_id=tracking_id)
-        .only("identity_type").first()
-        if tracking_id else None
-    )
-    if attempt is not None:
-        using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
-    else:
-        selected = str(pa.payload.get("id_type") or pa.payload.get("id_kind") or "").lower()
-        using_bvn = (selected == "bvn" if selected in ("bvn", "nin")
-                     else bool(pa.payload.get("using_bvn")))
-    kind = "BVN" if using_bvn else "NIN"
-    return _identity_screen(
-        ACCOUNT_OTP,
-        # Keep delivery guidance in the smaller body text. The summary is a
-        # TextHeading in the published Flow, so paragraphs do not fit there.
-        error=error or ("Not arriving? Our partner bank sends this code to the phone on your "
-                        f"{kind} record. The code must be entered here; "
-                        "face verification is not available for this partner-bank step."),
-        label="SMS code",
-        summary=f"Enter the 6-digit code our partner bank sent to the phone registered on your {kind}.",
-        screen=screen,
-    )
-
-
-def _submit_account_otp(pa, data: dict) -> dict:
-    """The bank's SMS code, entered here rather than in the chat.
-
-    It completes account creation and is what name-matches the BVN, so it is a
-    bearer credential for as long as it lives - the same reason the email code
-    moved off the thread. Collecting the BVN privately and then asking for the
-    code that unlocks it in clear would have been half a fix.
-    """
-    from .router import account_flow_otp
-
-    code = str(data.get("number", "")).strip()
-    try:
-        status, message = account_flow_otp(pa, code)
-    except Exception:  # noqa: BLE001 - never leak a stack into the Flow
-        log.exception("account otp flow submission failed for pa=%s", pa.id)
-        return _success_screen("Something went wrong. Reply 6 in the chat to try again.")
-    if status == "retry":
-        return _account_otp_screen(pa, error=message)
-    return _success_screen(message)
 
 
 def _email_code_screen(pa, error: str = "") -> dict:
