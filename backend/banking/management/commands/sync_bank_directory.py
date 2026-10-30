@@ -10,12 +10,14 @@ from transfers.services import bank_name_keys
 
 
 def reason(exc):
-    """Redacted cause: error code, HTTP status and bank response code only."""
+    """Redacted cause: error code, HTTP status, bank response code and status word."""
     parts = [exc.code]
     if exc.http_status is not None:
         parts.append(f"HTTP {exc.http_status}")
     if exc.response_code:
         parts.append(f"response code {exc.response_code}")
+    if getattr(exc, "provider_status", ""):
+        parts.append(f"status {exc.provider_status}")
     return ", ".join(parts)
 
 

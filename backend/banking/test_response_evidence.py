@@ -35,19 +35,23 @@ class ResponseEvidenceTests(SimpleTestCase):
     def test_bank_directory_rejection_names_only_status_and_numeric_code(self):
         cases = (
             (Reply({"status": "FAILED", "responseCode": "99", "message": "secret detail"}, 200),
-             ("bank_directory_unconfirmed", 200, "99")),
-            (Reply({"message": "Unauthorized"}, 401), ("bank_directory_unconfirmed", 401, "")),
+             ("bank_directory_unconfirmed", 200, "99", "FAILED")),
+            (Reply({"message": "Unauthorized"}, 401), ("bank_directory_unconfirmed", 401, "", "absent")),
             (Reply({"status": "FAILED", "responseCode": "Bad credentials"}, 200),
-             ("bank_directory_unconfirmed", 200, "")),
-            (Reply({"status": "SUCCESS", "data": {"banks": []}}, 200), ("bank_directory_malformed", 200, "")),
+             ("bank_directory_unconfirmed", 200, "withheld", "FAILED")),
+            (Reply({"status": "Successful", "data": {"bankList": []}}, 200),
+             ("bank_directory_unconfirmed", 200, "", "Successful")),
+            (Reply({"status": "secret: 0123456789", "data": {"bankList": []}}, 200),
+             ("bank_directory_unconfirmed", 200, "", "unrecognized")),
+            (Reply({"status": "SUCCESS", "data": {"banks": []}}, 200), ("bank_directory_malformed", 200, "", "")),
             (Reply({"status": "SUCCESS", "data": [{"bankName": "Test Bank"}]}, 200),
-             ("bank_directory_malformed", 200, "")),
+             ("bank_directory_malformed", 200, "", "")),
         )
         for reply, expected in cases:
             with self.subTest(expected=expected), self.assertRaises(ProviderError) as raised:
                 bank_directory(reply)
-            self.assertEqual((raised.exception.code, raised.exception.http_status,
-                              raised.exception.response_code), expected)
+            error = raised.exception
+            self.assertEqual((error.code, error.http_status, error.response_code, error.provider_status), expected)
 
     def test_conflicting_identity_fields_cannot_grant_ownership(self):
         for extra in ({"status": "FAILED"}, {"responseCode": "51"}, {"responseCode": "200"}):

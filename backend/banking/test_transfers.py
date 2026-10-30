@@ -69,10 +69,12 @@ class TransferTests(TestCase):
         from .client import ProviderError
         from django.core.cache import cache
         cache.clear()
-        rejected = ProviderError("authentication_failed", http_status=400, response_code="400")
+        rejected = ProviderError("authentication_failed", http_status=400, response_code="400",
+                                 provider_status="FAILED")
         with patch("banking.adapter.Client.banks", side_effect=rejected), self.assertRaises(CommandError) as raised:
             call_command("sync_bank_directory", "--if-configured", verbosity=0)
-        self.assertIn("authentication_failed, HTTP 400, response code 400", str(raised.exception))
+        self.assertIn("authentication_failed, HTTP 400, response code 400, status FAILED",
+                      str(raised.exception))
         self.destination.refresh_from_db()
         self.assertTrue(self.destination.active)
 
