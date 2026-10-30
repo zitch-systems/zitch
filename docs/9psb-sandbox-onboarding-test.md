@@ -47,9 +47,19 @@ those are expected for this test. `bank_sandbox_check` must report
 Every API build also syncs the bank directory. If the build log says
 `9PSB bank directory unconfirmed (<reason>)`, the deploy still completes with
 bank transfers closed. The reason names the cause without secrets:
-`authentication_failed, HTTP 4xx` means the bank rejected the WaaS credentials;
-`network_unavailable` means Render could not reach the sandbox host.
-Account opening needs the same WaaS connection, so fix this before testing.
+
+| Reason | Meaning |
+|---|---|
+| `authentication_failed, HTTP 4xx` | The bank rejected the WaaS credentials |
+| `network_unavailable` | Render could not reach the sandbox host |
+| `bank_directory_unconfirmed, HTTP n[, response code c]` | Login worked, but the bank refused or failed the `get_banks` call (non-200, status not `SUCCESS`, or a non-`00` code) |
+| `bank_directory_malformed, HTTP 200` | The bank answered success without a `data.bankList` array |
+| `bank_directory_empty` | The list had no usable bank name and numeric code |
+
+The 30 October 09:11 UTC deploy logged `bank_directory_unconfirmed` before the
+status and code were recorded; the next deploy shows them. Account opening uses
+the same WaaS login, which that deploy shows working, but confirm it before
+testing.
 
 ## 3. Ask 9PSB for these before testing
 
