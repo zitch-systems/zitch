@@ -9,7 +9,7 @@ connectivity and flow evidence, not bank UAT or production approval.
 
 | Requirement | Why |
 |---|---|
-| PR #561 and its follow-ups merged and deployed to the API **and** worker | Production still serves `main` without the `/api/banking/` routes. Without them the app has no 9PSB onboarding. |
+| PR #561 and its follow-ups merged and deployed to the API **and** worker | `main` has no `/api/banking/` routes, and per the 29 October release checkpoint production still serves `main`. |
 | An Android test APK built from that merged `main` | The KYC screen calls `/api/banking/identity/*`. Older APKs call retired routes. |
 | Bank-issued sandbox identities (see section 3) | The sandbox is plain HTTP. Never enter a real BVN, NIN, face photo or address. |
 
