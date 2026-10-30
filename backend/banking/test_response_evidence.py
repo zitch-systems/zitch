@@ -25,6 +25,15 @@ class ResponseEvidenceTests(SimpleTestCase):
         ]}}, 200))
         self.assertEqual(result, [{"bank_name": "Test Bank", "bank_code": "090483"}])
 
+    def test_bank_directory_accepts_a_null_or_blank_response_code(self):
+        # Observed on 30 October: HTTP 200, status SUCCESS and a code that is not "00".
+        for body, data in (({"responseCode": None}, {}), ({}, {"responseCode": None}),
+                           ({"responseCode": ""}, {"responseCode": " "}), ({"responseCode": "00"}, {})):
+            with self.subTest(body=body, data=data):
+                reply = Reply({"status": "SUCCESS", **body, "data": {**data, "bankList": [
+                    {"bankName": "Test Bank", "bankCode": "090483"}]}}, 200)
+                self.assertEqual(bank_directory(reply), [{"bank_name": "Test Bank", "bank_code": "090483"}])
+
     def test_bank_directory_failure_code_cannot_refresh_routing(self):
         with self.assertRaises(ProviderError) as raised:
             bank_directory(Reply({"status": "SUCCESS", "data": {"responseCode": "51", "bankList": [
@@ -39,6 +48,8 @@ class ResponseEvidenceTests(SimpleTestCase):
             (Reply({"message": "Unauthorized"}, 401), ("bank_directory_unconfirmed", 401, "", "absent")),
             (Reply({"status": "FAILED", "responseCode": "Bad credentials"}, 200),
              ("bank_directory_unconfirmed", 200, "withheld", "FAILED")),
+            (Reply({"status": "SUCCESS", "responseCode": "0", "data": {"bankList": []}}, 200),
+             ("bank_directory_unconfirmed", 200, "0", "SUCCESS")),
             (Reply({"status": "Successful", "data": {"bankList": []}}, 200),
              ("bank_directory_unconfirmed", 200, "", "Successful")),
             (Reply({"status": "secret: 0123456789", "data": {"bankList": []}}, 200),

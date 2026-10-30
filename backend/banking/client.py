@@ -126,16 +126,22 @@ def wallet_number(data):
     return ""
 
 
+def _directory_code(value):
+    # JSON null or a blank field carries no code. str(None) is "None", which used
+    # to read as a failure code and refused every successful directory.
+    return "" if value is None else str(value).strip()
+
+
 def bank_directory(reply):
     data = reply.data if isinstance(reply.data, dict) else {}
-    codes = [str(reply.body.get("responseCode", "00")), str(data.get("responseCode", "00"))]
-    rejected = next((code for code in codes if code != "00"), "")
+    codes = [_directory_code(reply.body.get("responseCode")), _directory_code(data.get("responseCode"))]
+    rejected = next((code for code in codes if code not in ("", "00")), "")
     if not reply.ok or rejected:
-        # Name only the HTTP status, a numeric bank code and a one-word status;
+        # Name only the HTTP status, a short code token and a one-word status;
         # never the message or body.
         status = str(reply.body.get("status", "")).strip()
         raise ProviderError("bank_directory_unconfirmed", http_status=reply.http_status,
-            response_code=(rejected if re.fullmatch(r"[0-9]{2,4}", rejected)
+            response_code=(rejected if re.fullmatch(r"[A-Za-z0-9_-]{1,24}", rejected)
                            else "withheld" if rejected else ""),
             provider_status=(status if re.fullmatch(r"[A-Za-z][A-Za-z_-]{0,23}", status)
                              else "unrecognized" if status else "absent"))
