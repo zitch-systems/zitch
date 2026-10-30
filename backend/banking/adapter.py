@@ -25,16 +25,20 @@ def bank_simulation():
     return False
 
 
-def get_banks():
-    try:
-        client = Client()
-        key = "9psb:banks:v2:" + client._cache_key()
-        data = cache.get(key)
-        if data is not None:
-            return {"success": True, "banks": data}
+def bank_list():
+    """Confirmed directory rows; a failure raises ProviderError with its reason."""
+    client = Client()
+    key = "9psb:banks:v2:" + client._cache_key()
+    data = cache.get(key)
+    if data is None:
         data = bank_directory(client.banks())
         cache.set(key, data, timeout=86400)
-        return {"success": True, "banks": data}
+    return data
+
+
+def get_banks():
+    try:
+        return {"success": True, "banks": bank_list()}
     except ProviderError:
         return unavailable()
 

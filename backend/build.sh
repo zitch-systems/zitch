@@ -28,7 +28,9 @@ if [ -n "${ZITCH_RECONCILIATION_EVIDENCE_USERS:-}" ]; then
     --user-ids "$ZITCH_RECONCILIATION_EVIDENCE_USERS" --days 90 --max-rows 50 \
     || echo "==> Reconciliation evidence unavailable; launch review remains open."
 fi
-python manage.py sync_bank_directory --if-configured
+# An unconfirmed directory closes payout routing and prints its redacted cause;
+# it does not block deploying identity/account changes.
+python manage.py sync_bank_directory --if-configured --close-on-failure
 
 # Auto-provision a super_admin operator from env vars (Render free tier has no
 # shell, so this is the only way to bootstrap admin access without one). Skipped

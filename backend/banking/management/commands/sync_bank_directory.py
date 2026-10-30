@@ -3,10 +3,20 @@ import hashlib
 from collections import defaultdict
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
-from banking.adapter import get_banks
-from banking.client import configured
+from banking.adapter import bank_list
+from banking.client import ProviderError, configured
 from transfers.models import Bank
 from transfers.services import bank_name_keys
+
+
+def reason(exc):
+    """Redacted cause: error code, HTTP status and bank response code only."""
+    parts = [exc.code]
+    if exc.http_status is not None:
+        parts.append(f"HTTP {exc.http_status}")
+    if exc.response_code:
+        parts.append(f"response code {exc.response_code}")
+    return ", ".join(parts)
 
 
 class Command(BaseCommand):
@@ -14,6 +24,8 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--if-configured", action="store_true")
+        parser.add_argument("--close-on-failure", action="store_true",
+            help="Deploy builds: close payout routing and continue when the directory is unconfirmed")
 
     def handle(self, *args, **options):
         if not configured() and options["if_configured"]:
@@ -21,11 +33,19 @@ class Command(BaseCommand):
             Bank.objects.update(active=False)
             self.stdout.write("9PSB directory unavailable; bank transfers remain closed.")
             return
-        result = get_banks()
-        if not result.get("success") or not result.get("banks"):
-            raise CommandError("The bank directory could not be confirmed; no routing changes applied")
+        try:
+            rows = bank_list()
+        except ProviderError as exc:
+            if options["close_on_failure"]:
+                # A bank outage must not block unrelated deploys, and an
+                # unconfirmed directory must not leave earlier codes routable.
+                Bank.objects.update(active=False)
+                self.stdout.write(f"9PSB bank directory unconfirmed ({reason(exc)}); bank transfers remain closed.")
+                return
+            raise CommandError(f"The bank directory could not be confirmed ({reason(exc)}); "
+                               "no routing changes applied") from None
         by_code = defaultdict(list)
-        for row in result["banks"]:
+        for row in rows:
             by_code[row["bank_code"]].append(row["bank_name"])
         with transaction.atomic():
             current = list(Bank.objects.select_for_update().all())

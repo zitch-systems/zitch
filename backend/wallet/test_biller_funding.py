@@ -133,6 +133,12 @@ class PostgresBillFundingTests(TransactionTestCase):
         txn = debit(self.user, "100", "Airtime — MTN")
         funding_hold(self.user, "100", credit_funds=False)
         results = self.race([lambda: _authorize_payout(txn.reference, "", "127.0.0.1"), lambda: refund(txn)])
-        self.assertFalse(results[0][0])
+        # 9PSB bill funding no longer consults legacy holds, so either call may
+        # take the row lock first. Whichever wins, the refund completes and no
+        # later authorization can reopen the refunded debit.
+        txn.refresh_from_db()
+        self.assertEqual(results[0][0], "wema_auth" in txn.meta)
         self.assertTrue(results[1])
+        self.assertEqual(txn.transaction_status, Transaction.FAILED)
         self.assertFalse(_authorize_payout(txn.reference, "", "127.0.0.1")[0])
+        self.assertEqual(Wallet.objects.get(pk=self.wallet.pk).balance, Decimal("1000"))
