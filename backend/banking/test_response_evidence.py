@@ -26,9 +26,28 @@ class ResponseEvidenceTests(SimpleTestCase):
         self.assertEqual(result, [{"bank_name": "Test Bank", "bank_code": "090483"}])
 
     def test_bank_directory_failure_code_cannot_refresh_routing(self):
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(ProviderError) as raised:
             bank_directory(Reply({"status": "SUCCESS", "data": {"responseCode": "51", "bankList": [
                 {"bankName": "Test Bank", "bankCode": "090483"}]}}, 200))
+        self.assertEqual((raised.exception.code, raised.exception.http_status,
+                          raised.exception.response_code), ("bank_directory_unconfirmed", 200, "51"))
+
+    def test_bank_directory_rejection_names_only_status_and_numeric_code(self):
+        cases = (
+            (Reply({"status": "FAILED", "responseCode": "99", "message": "secret detail"}, 200),
+             ("bank_directory_unconfirmed", 200, "99")),
+            (Reply({"message": "Unauthorized"}, 401), ("bank_directory_unconfirmed", 401, "")),
+            (Reply({"status": "FAILED", "responseCode": "Bad credentials"}, 200),
+             ("bank_directory_unconfirmed", 200, "")),
+            (Reply({"status": "SUCCESS", "data": {"banks": []}}, 200), ("bank_directory_malformed", 200, "")),
+            (Reply({"status": "SUCCESS", "data": [{"bankName": "Test Bank"}]}, 200),
+             ("bank_directory_malformed", 200, "")),
+        )
+        for reply, expected in cases:
+            with self.subTest(expected=expected), self.assertRaises(ProviderError) as raised:
+                bank_directory(reply)
+            self.assertEqual((raised.exception.code, raised.exception.http_status,
+                              raised.exception.response_code), expected)
 
     def test_conflicting_identity_fields_cannot_grant_ownership(self):
         for extra in ({"status": "FAILED"}, {"responseCode": "51"}, {"responseCode": "200"}):

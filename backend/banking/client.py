@@ -126,11 +126,16 @@ def wallet_number(data):
 
 
 def bank_directory(reply):
-    rows = reply.data.get("bankList") if isinstance(reply.data, dict) else None
-    if (not reply.ok or not isinstance(rows, list)
-            or str(reply.body.get("responseCode", "00")) != "00"
-            or str(reply.data.get("responseCode", "00")) != "00"):
-        raise ProviderError("bank_directory_unconfirmed")
+    data = reply.data if isinstance(reply.data, dict) else {}
+    codes = [str(reply.body.get("responseCode", "00")), str(data.get("responseCode", "00"))]
+    rejected = next((code for code in codes if code != "00"), "")
+    if not reply.ok or rejected:
+        # Name only the HTTP status and a numeric bank code; never the body.
+        raise ProviderError("bank_directory_unconfirmed", http_status=reply.http_status,
+            response_code=rejected if re.fullmatch(r"[0-9]{2,4}", rejected) else "")
+    rows = data.get("bankList")
+    if not isinstance(rows, list):
+        raise ProviderError("bank_directory_malformed", http_status=reply.http_status)
     result = []
     for row in rows:
         if not isinstance(row, dict) or not isinstance(row.get("bankName"), str):
