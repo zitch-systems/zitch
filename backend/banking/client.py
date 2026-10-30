@@ -22,11 +22,12 @@ _PREFIX = {"waas": "/waas/api/v1/", "vas": "/vas/api/v1/"}
 
 
 class ProviderError(Exception):
-    def __init__(self, code, *, uncertain=False, http_status=None, response_code=""):
+    def __init__(self, code, *, uncertain=False, http_status=None, response_code="", provider_status=""):
         self.code = code
         self.uncertain = uncertain
         self.http_status = http_status
         self.response_code = response_code
+        self.provider_status = provider_status
         super().__init__(code)
 
 
@@ -130,9 +131,14 @@ def bank_directory(reply):
     codes = [str(reply.body.get("responseCode", "00")), str(data.get("responseCode", "00"))]
     rejected = next((code for code in codes if code != "00"), "")
     if not reply.ok or rejected:
-        # Name only the HTTP status and a numeric bank code; never the body.
+        # Name only the HTTP status, a numeric bank code and a one-word status;
+        # never the message or body.
+        status = str(reply.body.get("status", "")).strip()
         raise ProviderError("bank_directory_unconfirmed", http_status=reply.http_status,
-            response_code=rejected if re.fullmatch(r"[0-9]{2,4}", rejected) else "")
+            response_code=(rejected if re.fullmatch(r"[0-9]{2,4}", rejected)
+                           else "withheld" if rejected else ""),
+            provider_status=(status if re.fullmatch(r"[A-Za-z][A-Za-z_-]{0,23}", status)
+                             else "unrecognized" if status else "absent"))
     rows = data.get("bankList")
     if not isinstance(rows, list):
         raise ProviderError("bank_directory_malformed", http_status=reply.http_status)

@@ -52,14 +52,14 @@ bank transfers closed. The reason names the cause without secrets:
 |---|---|
 | `authentication_failed, HTTP 4xx` | The bank rejected the WaaS credentials |
 | `network_unavailable` | Render could not reach the sandbox host |
-| `bank_directory_unconfirmed, HTTP n[, response code c]` | Login worked, but the bank refused or failed the `get_banks` call (non-200, status not `SUCCESS`, or a non-`00` code) |
+| `bank_directory_unconfirmed, HTTP n[, response code c], status s` | Login worked, but the bank refused or failed the `get_banks` call (non-200, status not `SUCCESS`, or a non-`00` code). `s` is the reply's one-word status, or `absent`/`unrecognized`; a non-numeric code shows as `withheld` |
 | `bank_directory_malformed, HTTP 200` | The bank answered success without a `data.bankList` array |
 | `bank_directory_empty` | The list had no usable bank name and numeric code |
 
-The 30 October 09:11 UTC deploy logged `bank_directory_unconfirmed` before the
-status and code were recorded; the next deploy shows them. Account opening uses
-the same WaaS login, which that deploy shows working, but confirm it before
-testing.
+On 30 October the 13:18 UTC deploy logged `bank_directory_unconfirmed, HTTP 200`
+with no numeric code: 9PSB answered, but not with status `SUCCESS`. The next
+deploy also logs the status word. Account opening uses the same WaaS login, which
+works, and does not depend on the bank directory.
 
 ## 3. Ask 9PSB for these before testing
 
