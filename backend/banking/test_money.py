@@ -82,6 +82,20 @@ class MoneyTests(TestCase):
             with self.subTest(nuban=invalid), self.assertRaises(ProviderError):
                 update_account(self.bank, Reply({"status": "SUCCESS", "data": {**data, "nuban": invalid}}, 200))
 
+    def test_account_readback_accepts_the_sandbox_success_code(self):
+        # The sandbox answers get_banks with responseCode SUCCESS; a readback in
+        # the same envelope must not strand a newly opened account.
+        data = {"nuban": self.bank.number, "name": self.bank.name, "status": "Active", "tier": "1",
+            "isSuccessful": True, "pndstatus": "InActive", "freezeStatus": "InActive"}
+        for envelope, nested in (({"responseCode": "SUCCESS"}, {}), ({}, {"responseCode": "SUCCESS"}),
+                                 ({"responseCode": "00"}, {"responseCode": None})):
+            with self.subTest(envelope=envelope, nested=nested):
+                update_account(self.bank, Reply({"status": "SUCCESS", **envelope, "data": {**data, **nested}}, 200))
+                self.assertEqual(self.bank.tier, 1)
+        for code in ("51", "SUCCESSFUL", "0"):
+            with self.subTest(code=code), self.assertRaises(ProviderError):
+                update_account(self.bank, Reply({"status": "SUCCESS", "responseCode": code, "data": data}, 200))
+
     def test_historical_refund_never_becomes_new_bank_money(self):
         from wallet.services import refund
         PreviousBankArchive.objects.create(wallet=self.wallet, balance=500, account_number="old")

@@ -126,16 +126,25 @@ def wallet_number(data):
     return ""
 
 
-def _directory_code(value):
-    # JSON null or a blank field carries no code. str(None) is "None", which used
-    # to read as a failure code and refused every successful directory.
+def _code(value):
+    # JSON null or a blank field carries no code; str(None) would read as "None".
     return "" if value is None else str(value).strip()
+
+
+def affirmative_code(value):
+    """Success code on a read-only WaaS enquiry (bank directory, account readback).
+
+    The WaaS Postman samples confirm with "00"; the sandbox's get_banks answers
+    responseCode "SUCCESS" (30 October build log). Payment and identity replies
+    keep their stricter, sample-based codes.
+    """
+    return _code(value).upper() in {"", "00", "SUCCESS"}
 
 
 def bank_directory(reply):
     data = reply.data if isinstance(reply.data, dict) else {}
-    codes = [_directory_code(reply.body.get("responseCode")), _directory_code(data.get("responseCode"))]
-    rejected = next((code for code in codes if code not in ("", "00")), "")
+    codes = [_code(reply.body.get("responseCode")), _code(data.get("responseCode"))]
+    rejected = next((code for code in codes if not affirmative_code(code)), "")
     if not reply.ok or rejected:
         # Name only the HTTP status, a short code token and a one-word status;
         # never the message or body.

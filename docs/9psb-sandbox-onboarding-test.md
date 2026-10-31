@@ -52,15 +52,17 @@ bank transfers closed. The reason names the cause without secrets:
 |---|---|
 | `authentication_failed, HTTP 4xx` | The bank rejected the WaaS credentials |
 | `network_unavailable` | Render could not reach the sandbox host |
-| `bank_directory_unconfirmed, HTTP n[, response code c], status s` | Login worked, but the bank refused or failed the `get_banks` call (non-200, status not `SUCCESS`, or a non-`00` code). `s` is the reply's one-word status, or `absent`/`unrecognized`; a code that is not a short token shows as `withheld` |
+| `bank_directory_unconfirmed, HTTP n[, response code c], status s` | Login worked, but the bank refused or failed the `get_banks` call (non-200, status not `SUCCESS`, or a code other than `00`/`SUCCESS`). `s` is the reply's one-word status, or `absent`/`unrecognized`; a code that is not a short token shows as `withheld` |
 | `bank_directory_malformed, HTTP 200` | The bank answered success without a `data.bankList` array |
 | `bank_directory_empty` | The list had no usable bank name and numeric code |
 
 On 30 October the 14:01 UTC deploy logged `bank_directory_unconfirmed, HTTP 200,
-response code withheld, status SUCCESS`: 9PSB returned the directory successfully
-with a `responseCode` that is not `00`. A JSON `null` code was read as the text
-`None` and refused; a null or blank code is now treated as absent. Any other code
-is logged verbatim when it is a short token. Account opening uses the same WaaS
+response code withheld, status SUCCESS`. Once short codes were logged verbatim,
+the 15:02 UTC deploy showed the code: `response code SUCCESS, status SUCCESS`.
+The sandbox's `get_banks` confirms with `responseCode: "SUCCESS"`, not the `00`
+of the WaaS Postman samples. Read-only WaaS enquiries (the bank directory and the
+account readback after opening) now accept `00`, `SUCCESS` or no code. Payment and
+identity replies keep their sample-based codes. Account opening uses the same WaaS
 login, which works, and does not depend on the bank directory.
 
 ## 3. Ask 9PSB for these before testing

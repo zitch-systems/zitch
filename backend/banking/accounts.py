@@ -12,7 +12,8 @@ from django.utils import timezone
 from accounts.models import User, hash_identifier, record_identity_proof
 from wallet.models import Wallet
 
-from .client import Client, ProviderError, config, customer_enabled, sandbox, phone, require_environment, wallet_number
+from .client import (Client, ProviderError, affirmative_code, config, customer_enabled, sandbox, phone,
+    require_environment, wallet_number)
 from .models import BankAccount, IdentityChallenge, PreviousBankArchive
 from .secrets import seal, unseal
 from .validation import wallet_profile
@@ -346,8 +347,8 @@ def update_account(bank, reply=None):
     if not reply.ok or wallet_number(data) != bank.number:
         raise ProviderError("account_confirmation_failed")
     successful = data.get("isSuccessful", True)
-    if (str(reply.body.get("responseCode", "00")) != "00"
-            or str(data.get("responseCode", "00")) != "00"
+    if (not affirmative_code(reply.body.get("responseCode"))
+            or not affirmative_code(data.get("responseCode"))
             or (successful is not True and successful not in ("true", "True"))):
         raise ProviderError("account_confirmation_failed")
     if not same_name(bank.name, data.get("name", "")):

@@ -25,9 +25,10 @@ class ResponseEvidenceTests(SimpleTestCase):
         ]}}, 200))
         self.assertEqual(result, [{"bank_name": "Test Bank", "bank_code": "090483"}])
 
-    def test_bank_directory_accepts_a_null_or_blank_response_code(self):
-        # Observed on 30 October: HTTP 200, status SUCCESS and a code that is not "00".
-        for body, data in (({"responseCode": None}, {}), ({}, {"responseCode": None}),
+    def test_bank_directory_accepts_success_null_or_blank_response_code(self):
+        # The 30 October sandbox build log: HTTP 200, status SUCCESS, responseCode SUCCESS.
+        for body, data in (({"responseCode": "SUCCESS"}, {}), ({}, {"responseCode": "success"}),
+                           ({"responseCode": None}, {}), ({}, {"responseCode": None}),
                            ({"responseCode": ""}, {"responseCode": " "}), ({"responseCode": "00"}, {})):
             with self.subTest(body=body, data=data):
                 reply = Reply({"status": "SUCCESS", **body, "data": {**data, "bankList": [
@@ -50,6 +51,8 @@ class ResponseEvidenceTests(SimpleTestCase):
              ("bank_directory_unconfirmed", 200, "withheld", "FAILED")),
             (Reply({"status": "SUCCESS", "responseCode": "0", "data": {"bankList": []}}, 200),
              ("bank_directory_unconfirmed", 200, "0", "SUCCESS")),
+            (Reply({"status": "SUCCESS", "responseCode": "SUCCESSFUL", "data": {"bankList": []}}, 200),
+             ("bank_directory_unconfirmed", 200, "SUCCESSFUL", "SUCCESS")),
             (Reply({"status": "Successful", "data": {"bankList": []}}, 200),
              ("bank_directory_unconfirmed", 200, "", "Successful")),
             (Reply({"status": "secret: 0123456789", "data": {"bankList": []}}, 200),
