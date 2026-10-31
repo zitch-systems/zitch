@@ -2849,11 +2849,15 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
     try:
         url = start_verification(user, msisdn, tier)
     except (ValueError, ImproperlyConfigured):
-        return reply(msisdn, "Secure bank verification is currently unavailable. Please try again later.")
-    body = ("Complete your 9PSB identity and account verification securely. "
-            "The bank verifies your BVN, NIN and face. Tier 2 requires BVN, NIN and a utility bill; "
-            "Tier 3 also requires Prembly address verification. "
-            "Enter your Zitch PIN on the secure page. This link expires in 15 minutes.")
+        return reply(msisdn, "Secure verification is currently unavailable. Please try again later.")
+    # One step per link, in Zitch's own words: customers never see partner names.
+    body = {
+        1: "Open your Zitch account. Confirm your details, then verify your NIN or BVN "
+           "with a code or a quick selfie.",
+        2: "Upgrade to Tier 2. Have your BVN, NIN, a utility bill and photos of your ID ready.",
+        3: "Upgrade to Tier 3 by verifying your home address.",
+    }.get(tier, "Verify your Zitch account.") + (
+        " Enter your Zitch PIN on the secure page. This link expires in 15 minutes.")
     sent = send_cta_url(msisdn, body, url, cta="Verify account", footer="Return to WhatsApp when finished")
     if not sent.get("success"):
         reply(msisdn, body + "\n\n" + url)

@@ -34,7 +34,7 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
         proof = IdentityProof.objects.filter(user=user, identity_type=kind,
             identity_hash=hash_identifier(str(payload.get(kind, ""))), source__in=["9psb_otp", "9psb_face"]).exists()
         if not proof:
-            raise ValueError("Verify both BVN and NIN with 9PSB before upgrading")
+            raise ValueError("Verify both your BVN and NIN before upgrading")
     address = None
     # Client-uploaded address proof is not provider verification.
     payload = {k: v for k, v in payload.items() if k != "proofOfAddressVerification"}
@@ -73,7 +73,7 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
     request.refresh_from_db()
     return {"success": request.state == "approved", "pending": request.state != "approved",
         "reference": request.reference, "bank_tier": bank.tier,
-        "message": "Upgrade approved." if request.state == "approved" else "Your upgrade is being reviewed by 9PSB."}
+        "message": "Upgrade approved." if request.state == "approved" else "Your upgrade is being reviewed."}
 
 
 def refresh_upgrade(bank):

@@ -117,13 +117,13 @@ def account_payload(user):
         "maximum_single_deposit": str(bank.maximum_deposit) if bank and bank.maximum_deposit is not None else None,
         "maximum_balance": str(bank.maximum_balance) if bank and bank.maximum_balance is not None else None,
         "pnd": bank.pnd if bank else None,
-        "migration_message": "Your bank account balance needs review. Contact support before spending." if opening_review else "" if ready else "Complete your 9PSB account setup to continue banking."}
+        "migration_message": "Your bank account balance needs review. Contact support before spending." if opening_review else "" if ready else "Complete your Zitch account setup to continue banking."}
 
 
 def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
     require_enabled(user)
     if not user.email_verified or not user.phone_verified:
-        raise ValueError("Verify your email address and phone number before bank identity verification")
+        raise ValueError("Verify your email address and phone number first")
     if kind not in {"bvn", "nin"} or not re.fullmatch(r"[0-9]{11}", identifier or ""):
         raise ValueError("Enter an eleven-digit BVN or NIN")
     if method not in {"OTP", "FACIAL"}:
@@ -136,7 +136,7 @@ def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
     if phone(profile["phoneNo"]) != phone(user.phone):
         raise ValueError("Use your verified Zitch phone number")
     if kind == "nin" and not profile.get("ninUserId") and not account_for(user):
-        raise ValueError("NIN user ID is required for a NIN-only wallet")
+        raise ValueError("Enter your NIMC User ID. It is different from your 11-digit NIN.")
     if not same_name(user.get_full_name(), profile["otherNames"] + " " + profile["lastName"]):
         raise ValueError("Use the legal name on your Zitch profile")
     digest = hash_identifier(identifier)
@@ -185,7 +185,7 @@ def challenge_payload(challenge):
         "tracking_id": challenge.reference, "reference": challenge.reference,
         "otp_required": challenge.method == "OTP" and challenge.state == "pending",
         "account_setup_state": challenge.state, "expires_at": challenge.expires_at.isoformat(),
-        "message": "Enter the code sent by 9PSB." if challenge.state == "pending" and challenge.method == "OTP"
+        "message": "Enter the 6-digit code we sent by SMS." if challenge.state == "pending" and challenge.method == "OTP"
                    else "This verification has expired. Start again." if challenge.state == "expired"
                    else "Verification was declined. Check your details." if challenge.state == "failed"
                    else "Verification is being processed."}

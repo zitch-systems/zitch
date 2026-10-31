@@ -44,7 +44,9 @@ jest.mock('@/components/design/ui', () => {
   const { View, Pressable, Text, TextInput } = jest.requireActual('react-native');
   return { Screen: ({ children }: any) => ReactActual.createElement(View, null, children), Header: () => null,
     Field: ({ label, ...props }: any) => ReactActual.createElement(TextInput, { accessibilityLabel: label, ...props }),
-    Btn: ({ label, ...props }: any) => ReactActual.createElement(Pressable, { accessibilityLabel: label, ...props }, ReactActual.createElement(Text, null, label)) };
+    Btn: ({ label, ...props }: any) => ReactActual.createElement(Pressable, { accessibilityLabel: label, ...props }, ReactActual.createElement(Text, null, label)),
+    PillTabs: ({ options, value, onChange }: any) => ReactActual.createElement(View, null, options.map((o: any) => ReactActual.createElement(Pressable,
+      { key: o.v, accessibilityLabel: o.label, accessibilityState: { selected: value === o.v }, onPress: () => onChange(o.v) }, ReactActual.createElement(Text, null, o.label)))) };
 });
 
 const profile = { otherNames: 'Ada', lastName: 'Eze', phoneNo: '08011112222', email: 'ada@example.test', dateOfBirth: '01/01/1990', address: '1 Test Road', gender: 1 };
@@ -55,9 +57,16 @@ const control = (label: string) => tree.root.findByProps({ accessibilityLabel: l
 const field = (label: string) => tree.root.findAllByProps({ accessibilityLabel: label }).find((node) => node.props.onChangeText)!;
 const output = () => JSON.stringify(tree.toJSON());
 async function mount() { await act(async () => { tree = renderer.create(<Kyc />); }); }
+const pill = (label: string) => tree.root.findAllByProps({ accessibilityLabel: label }).find((node) => node.props.onPress && !node.props.onChangeText)!;
 async function enter(kind = 'bvn') {
-  if (kind === 'nin') await act(async () => { tree.root.findAllByProps({ accessibilityLabel: 'NIN' }).find((node) => node.props.onPress)!.props.onPress(); });
+  await act(async () => { pill(kind.toUpperCase()).props.onPress(); });
   await act(async () => { field(kind.toUpperCase()).props.onChangeText('12345678901'); });
+  if (kind === 'nin') await act(async () => { field('NIMC User ID').props.onChangeText('NIMC-123'); });
+}
+const sent = (kind: string) => (kind === 'nin' ? { ...profile, ninUserId: 'NIMC-123' } : profile);
+async function openFaceStep() {
+  await act(async () => { pill('Face check').props.onPress(); });
+  await act(async () => { control('Continue to face check').props.onPress(); });
 }
 beforeEach(() => {
   jest.clearAllMocks(); mockGeneration = 1; mockAuthenticated = true;
@@ -74,26 +83,58 @@ afterEach(async () => { if (tree) await act(async () => tree.unmount()); });
 
 it.each(['bvn', 'nin'])('uses a bank-bound %s OTP and keeps account opening pending after acceptance', async (kind) => {
   await mount(); await enter(kind);
-  await act(async () => { await control('Verify with bank OTP').props.onPress(); });
-  expect(mockIdentity).toHaveBeenCalledWith(kind, '12345678901', profile);
-  await act(async () => { field('Six-digit bank OTP').props.onChangeText('123456'); });
-  await act(async () => { await control('Confirm bank OTP').props.onPress(); });
+  await act(async () => { await control('Send my code').props.onPress(); });
+  expect(mockIdentity).toHaveBeenCalledWith(kind, '12345678901', sent(kind));
+  await act(async () => { field('Six-digit code').props.onChangeText('123456'); });
+  await act(async () => { await control('Confirm code').props.onPress(); });
   expect(mockConfirm).toHaveBeenCalledWith('bound-bank-ref', '123456');
   expect(output()).toContain('Check verification status');
-  expect(output()).not.toContain('Verify with bank OTP');
+  expect(output()).not.toContain('Send my code');
 });
 
-it.each(['bvn', 'nin'])('offers direct bank facial verification for %s without sending OTP first', async (kind) => {
-  await mount(); await enter(kind);
-  await act(async () => { await control('Verify with a face photo').props.onPress(); });
+it.each(['bvn', 'nin'])('verifies %s with a selfie on its own face-check screen without sending a code', async (kind) => {
+  await mount(); await enter(kind); await openFaceStep();
+  expect(output()).toContain('Take a selfie'); expect(output()).not.toContain('Send my code');
+  await act(async () => { await control('Take a selfie').props.onPress(); });
+  expect(mockIdentity).not.toHaveBeenCalled();
+  expect(output()).toContain('Retake selfie');
+  await act(async () => { await control('Verify my face').props.onPress(); });
   expect(mockIdentity).toHaveBeenCalledTimes(1);
-  expect(mockIdentity).toHaveBeenCalledWith(kind, '12345678901', profile, 'face-image');
+  expect(mockIdentity).toHaveBeenCalledWith(kind, '12345678901', sent(kind), 'face-image');
   expect(mockConfirm).not.toHaveBeenCalled();
+  expect(output()).toContain('Check verification status');
+});
+
+it('returns from the face-check screen without sending anything', async () => {
+  await mount(); await enter('bvn'); await openFaceStep();
+  await act(async () => { await control('Back to your details').props.onPress(); });
+  expect(output()).toContain('Continue to face check'); expect(mockCamera).not.toHaveBeenCalled(); expect(mockIdentity).not.toHaveBeenCalled();
+});
+
+it('masks the date of birth to DD/MM/YYYY digits and rejects impossible dates', async () => {
+  await mount();
+  await act(async () => { field('Date of birth').props.onChangeText('03a08b1994'); });
+  expect(field('Date of birth').props.value).toBe('03/08/1994');
+  expect(field('Date of birth').props.keyboardType).toBe('number-pad');
+  await enter('bvn');
+  await act(async () => { field('Date of birth').props.onChangeText('31021990'); });
+  expect(field('Date of birth').props.error).toBe('Enter a real date of birth');
+  expect(control('Send my code').props.disabled).toBe(true);
+});
+
+it('asks for the NIMC User ID only for NIN and explains it is not the NIN', async () => {
+  await mount(); await enter('nin');
+  expect(output()).toContain('not your 11-digit NIN');
+  await act(async () => { field('NIMC User ID').props.onChangeText(''); });
+  expect(control('Send my code').props.disabled).toBe(true);
+  await act(async () => { pill('BVN').props.onPress(); });
+  expect(output()).not.toContain('NIMC User ID');
+  expect(output()).not.toContain('9PSB'); expect(output()).not.toContain('Prembly');
 });
 
 it('resumes the authenticated customer challenge without storing the identifier locally', async () => {
   mockStatus.mockResolvedValue({ ...ready, identity_challenge: { ...pending, kind: 'nin' } }); await mount();
-  expect(output()).toContain('Six-digit bank OTP');
+  expect(output()).toContain('Six-digit code');
   expect(field('NIN').props.value).toBe('');
   expect(mockIdentity).not.toHaveBeenCalled();
 });
@@ -102,7 +143,7 @@ it.each(['expired', 'failed'])('lets the customer start again after a terminal %
   mockStatus.mockResolvedValue({ ...ready, identity_challenge: { ...pending, kind: 'bvn' } });
   mockProgress.mockResolvedValue({ success: false, account_setup_state: state }); await mount();
   await act(async () => { await control('Check verification status').props.onPress(); });
-  expect(output()).toContain('Verify with bank OTP'); expect(output()).not.toContain('Six-digit bank OTP');
+  expect(output()).toContain('Send my code'); expect(output()).not.toContain('Six-digit code');
 });
 
 it('does not fetch or mount identity collection while signed out', async () => {
@@ -111,20 +152,20 @@ it('does not fetch or mount identity collection while signed out', async () => {
 
 it('does not collect identities when the server disables verification', async () => {
   mockStatus.mockResolvedValue({ ...ready, identity_available: false }); await mount();
-  expect(output()).not.toContain('Verify with bank OTP'); expect(output()).not.toContain('Residential address');
+  expect(output()).not.toContain('Send my code'); expect(output()).not.toContain('Home address');
 });
 
 it('completes email verification before collecting bank identity', async () => {
   mockStatus.mockResolvedValueOnce({ ...ready, email_verified: false, identity_available: false });
   await mount();
   expect(field('Email address').props.value).toBe(profile.email);
-  expect(output()).not.toContain('Verify with bank OTP');
+  expect(output()).not.toContain('Send my code');
   await act(async () => { await control('Send email code').props.onPress(); });
   expect(mockStartEmail).toHaveBeenCalledWith(profile.email);
   await act(async () => { field('Six-digit email code').props.onChangeText('654321'); });
   await act(async () => { await control('Confirm email code').props.onPress(); });
   expect(mockConfirmEmail).toHaveBeenCalledWith('654321');
-  expect(output()).toContain('Verify with bank OTP');
+  expect(output()).toContain('Send my code');
   expect(output()).not.toContain('Six-digit email code');
   expect(mockIdentity).not.toHaveBeenCalled();
 });
@@ -137,7 +178,7 @@ it('keeps an incorrect email code in the email step without granting bank access
   await act(async () => { field('Six-digit email code').props.onChangeText('000000'); });
   await act(async () => { await control('Confirm email code').props.onPress(); });
   expect(output()).toContain('Invalid code');
-  expect(output()).not.toContain('Verify with bank OTP');
+  expect(output()).not.toContain('Send my code');
   expect(mockStatus).toHaveBeenCalledTimes(1);
 });
 
@@ -185,33 +226,36 @@ it('clears the email code when changing the address or leaving verification', as
 it('offers retry after an unsuccessful status read without inventing a verification step', async () => {
   mockStatus.mockRejectedValueOnce(new Error('offline')); await mount();
   expect(output()).toContain('Could not load verification status');
-  expect(output()).not.toContain('Verify with bank OTP');
+  expect(output()).not.toContain('Send my code');
   await act(async () => { await control('Refresh verification status').props.onPress(); });
-  expect(output()).toContain('Verify with bank OTP');
+  expect(output()).toContain('Send my code');
 });
 
 it('discards a challenge response from a replaced session', async () => {
   let finish!: (value: unknown) => void;
   mockIdentity.mockReturnValue(new Promise((resolve) => { finish = resolve; })); await mount(); await enter();
-  await act(async () => { control('Verify with bank OTP').props.onPress(); });
+  await act(async () => { control('Send my code').props.onPress(); });
   mockGeneration += 1;
   await act(async () => { finish(pending); });
-  expect(output()).not.toContain('Six-digit bank OTP');
+  expect(output()).not.toContain('Six-digit code');
 });
 
 it('discards a delayed camera capture after route blur and refocus', async () => {
   let finish!: (value: unknown) => void;
-  mockCamera.mockReturnValue(new Promise((resolve) => { finish = resolve; })); await mount(); await enter();
-  await act(async () => { control('Verify with a face photo').props.onPress(); });
+  mockCamera.mockReturnValue(new Promise((resolve) => { finish = resolve; })); await mount(); await enter(); await openFaceStep();
+  await act(async () => { control('Take a selfie').props.onPress(); });
   await act(async () => { mockBlur(); mockBlur = mockFocus(); });
   await act(async () => { finish({ canceled: false, assets: [{ base64: 'old-face' }] }); });
   expect(mockIdentity).not.toHaveBeenCalled(); expect(field('BVN').props.value).toBe('');
 });
 
 it('prevents simultaneous camera verification requests', async () => {
-  await mount(); await enter(); const launch = control('Verify with a face photo').props.onPress;
+  await mount(); await enter(); await openFaceStep(); const launch = control('Take a selfie').props.onPress;
   await act(async () => { launch(); launch(); });
-  expect(mockCamera).toHaveBeenCalledTimes(1); expect(mockIdentity).toHaveBeenCalledTimes(1);
+  expect(mockCamera).toHaveBeenCalledTimes(1); expect(mockIdentity).not.toHaveBeenCalled();
+  const confirm = control('Verify my face').props.onPress;
+  await act(async () => { confirm(); confirm(); });
+  expect(mockIdentity).toHaveBeenCalledTimes(1);
 });
 
 it('accepts PDFs only for utility bills and keeps identity/signature uploads image-only', async () => {
@@ -236,7 +280,7 @@ it('discards uploaded documents when their session changes during file reading',
 it('does not collect a new residential address or offer submission while verification is unavailable', async () => {
   await mount(); await act(async () => { control('Tier 3 address').props.onPress(); });
   expect(output()).toContain('Address verification is temporarily unavailable');
-  expect(output()).not.toContain('Full residential address');
+  expect(output()).not.toContain('Full home address');
   expect(control('Request address verification').props.disabled).toBe(true);
   expect(mockAddress).not.toHaveBeenCalled();
 });

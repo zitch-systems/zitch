@@ -30,7 +30,7 @@ def spending_account(user, *, refresh=False):
         raise LimitExceeded(str(exc)) from None
     bank = account_for(user)
     if not bank:
-        raise LimitExceeded("Complete your 9PSB account setup first")
+        raise LimitExceeded("Complete your Zitch account setup first")
     if not user.email_verified or not user.phone_verified or user.tier < 1:
         raise LimitExceeded("Verify your contact details and bank identity before spending")
     if refresh:

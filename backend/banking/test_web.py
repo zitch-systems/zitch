@@ -121,3 +121,73 @@ class WebTests(TestCase):
 
     def test_tampered_link_is_closed(self):
         self.assertEqual(self.browser.get(self.path[:-2]+"xx", secure=True).status_code, 410)
+
+    def open_tier(self, tier):
+        self.path = urlsplit(start_verification(self.user, self.msisdn, tier)).path
+        self.browser = Client(enforce_csrf_checks=True)
+        self.unlock()
+        return self.browser.get(self.path, secure=True)
+
+    def test_each_link_shows_only_its_own_tier(self):
+        page = self.open_tier(1)
+        self.assertContains(page, "Open your Zitch account")
+        self.assertContains(page, 'name="identifier"')
+        self.assertContains(page, 'name="kind" value="nin" checked')
+        self.assertNotContains(page, 'value="upgrade"')
+        self.assertNotContains(page, 'value="address"')
+
+        page = self.open_tier(2)
+        self.assertContains(page, "Upgrade to Tier 2")
+        self.assertContains(page, '<input type="hidden" name="tier" value="2">', html=True)
+        self.assertNotContains(page, 'name="identifier"')
+        self.assertNotContains(page, 'value="address"')
+        self.assertNotContains(page, 'name="tier" value="3"')
+        # What Zitch already holds is prefilled; only new details are typed.
+        self.assertContains(page, 'value="jane@example.test"')
+
+        page = self.open_tier(3)
+        self.assertContains(page, "Upgrade to Tier 3")
+        self.assertContains(page, '<input type="hidden" name="tier" value="3">', html=True)
+        self.assertNotContains(page, 'name="identifier"')
+        self.assertNotContains(page, 'name="tier" value="2"')
+
+    def test_customer_page_never_names_partners_and_explains_the_nimc_id(self):
+        for tier in (1, 2, 3):
+            with self.subTest(tier=tier):
+                page = self.open_tier(tier).content.decode()
+                for partner in ("9PSB", "9psb", "Prembly"):
+                    self.assertNotIn(partner, page)
+        page = self.open_tier(1)
+        self.assertContains(page, "NIMC User ID")
+        self.assertContains(page, "not your 11-digit NIN")
+        self.assertNotContains(page, "NIN-only account")
+        self.assertNotContains(page, "required by bank")
+        # Date of birth opens the number keypad and is masked to DD/MM/YYYY.
+        self.assertContains(page, 'inputmode="numeric"')
+        self.assertContains(page, 'data-mask="date"')
+
+    def test_face_step_is_offered_and_its_preview_is_allowed_only_from_the_device(self):
+        page = self.open_tier(1)
+        self.assertContains(page, 'id="face-step"')
+        self.assertContains(page, 'capture="user"')
+        policy = page["Content-Security-Policy"]
+        self.assertIn("img-src blob:", policy)
+        self.assertNotIn("unsafe-inline", policy)
+        self.assertNotIn("img-src *", policy)
+
+    def test_face_method_without_a_selfie_asks_for_one(self):
+        from django.utils.datastructures import MultiValueDict
+        from banking.web_verification import submit
+        with patch("banking.accounts.require_enabled"), patch("banking.accounts.start_identity") as start, \
+                self.assertRaisesMessage(ValueError, "Take a selfie to continue"):
+            submit(self.user, "identity", {"method": "FACIAL", "kind": "nin", "identifier": "12345678901"},
+                   MultiValueDict(), {})
+        start.assert_not_called()
+
+    def test_unreadable_or_future_birth_dates_get_a_clear_message(self):
+        from banking.validation import wallet_profile
+        from .test_identity import PROFILE
+        for value in ("1990-01-01", "31/02/1990", "01/01/2999", "abc"):
+            with self.subTest(value=value), self.assertRaisesMessage(ValueError, "Enter a valid date of birth as DD/MM/YYYY"):
+                wallet_profile({**PROFILE, "dateOfBirth": value})
+        self.assertEqual(wallet_profile(PROFILE)["dateOfBirth"], "01/01/1990")

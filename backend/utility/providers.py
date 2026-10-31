@@ -486,11 +486,11 @@ def _kyc_mock_or_unavailable() -> dict:
 
 
 def kyc_verify_nin_document(*args, **kwargs):
-    return {"success": False, "unavailable": True, "message": "Complete verification through the 9PSB identity flow."}
+    return {"success": False, "unavailable": True, "message": "Complete verification in Zitch account setup."}
 
 
 def kyc_verify_face(*args, **kwargs):
-    return {"success": False, "unavailable": True, "message": "Complete verification through the 9PSB identity flow."}
+    return {"success": False, "unavailable": True, "message": "Complete verification in Zitch account setup."}
 
 
 def _prembly_liveness_response_passed(data, status_code: int) -> bool:
@@ -584,7 +584,7 @@ def kyc_verify_address(address: str, document: str = "") -> dict:
 
 
 def kyc_verify_id_document(*args, **kwargs):
-    return {"success": False, "unavailable": True, "message": "Complete verification through the 9PSB identity flow."}
+    return {"success": False, "unavailable": True, "message": "Complete verification in Zitch account setup."}
 
 
 # ---------------------------------------------------------------------------
@@ -600,15 +600,15 @@ def kyc_provider() -> str:
 
 
 def verify_bvn(*args, **kwargs):
-    return {"success": False, "unavailable": True, "message": "Complete verification through the 9PSB identity flow."}
+    return {"success": False, "unavailable": True, "message": "Complete verification in Zitch account setup."}
 
 
 def prembly_verify_bvn(*args, **kwargs):
-    return {"success": False, "unavailable": True, "message": "Complete verification through the 9PSB identity flow."}
+    return {"success": False, "unavailable": True, "message": "Complete verification in Zitch account setup."}
 
 
 def _prembly_identity_lookup(*args, **kwargs):
-    return {"success": False, "unavailable": True, "message": "Complete verification through the 9PSB identity flow."}
+    return {"success": False, "unavailable": True, "message": "Complete verification in Zitch account setup."}
 
 
 #: Field names the BVN and NIN records use for the registered line. Both are
@@ -703,14 +703,14 @@ def identity_otp_delivery_payload(phone: str, *, email: str = "",
 
 
 def verify_nin(*args, **kwargs):
-    return {"success": False, "unavailable": True, "message": "Complete verification through the 9PSB identity flow."}
+    return {"success": False, "unavailable": True, "message": "Complete verification in Zitch account setup."}
 
 
 def prembly_verify_nin(*args, **kwargs):
-    return {"success": False, "unavailable": True, "message": "Complete verification through the 9PSB identity flow."}
+    return {"success": False, "unavailable": True, "message": "Complete verification in Zitch account setup."}
 
 def verify_vnin(*args, **kwargs):
-    return {"success": False, "unavailable": True, "message": "Complete verification through the 9PSB identity flow."}
+    return {"success": False, "unavailable": True, "message": "Complete verification in Zitch account setup."}
 
 
 # ---------------------------------------------------------------------------

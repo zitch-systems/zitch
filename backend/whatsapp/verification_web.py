@@ -378,7 +378,7 @@ def verification_page(request, token):
             response = _page(request, status=403)
         elif request.method == "POST" and int(request.META.get("CONTENT_LENGTH") or 0) > MAX_REQUEST_BYTES:
             response = _page(request, "error", status=413,
-                             message="Choose a JPEG or PNG proof-of-address photo under 2 MB.")
+                             message="That photo is too large. Choose a JPEG or PNG under 2 MB.")
         elif request.method == "POST" and request.content_type not in (
             "application/x-www-form-urlencoded", "multipart/form-data"
         ):
@@ -398,6 +398,8 @@ def verification_page(request, token):
         "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; "
         f"style-src 'nonce-{request.verification_nonce}'; "
         f"script-src 'nonce-{request.verification_nonce}'; connect-src 'self'; "
-        "object-src 'none'"
+        # blob: only: the page previews and downsizes the selfie the customer
+        # just took on their own device. No remote image is ever loaded.
+        "img-src blob:; object-src 'none'"
     )
     return response

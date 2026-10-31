@@ -36,8 +36,9 @@ function AddMoneyContent() {
   return <Screen header={<Header title="Add money" />}><View style={{ gap: 18 }}>
     {status?.sandbox && <Text style={text}>Test environment. Do not transfer real money to a test account.</Text>}
     {status && isFundingAccountReady(status) ? <>
-      <Text style={text}>Transfer to your dedicated 9PSB account. Your wallet updates after the bank confirms the deposit.</Text>
-      <Text style={text}>Bank: 9PSB</Text><Text style={text}>Name: {status.account_name}</Text>
+      <Text style={text}>Send money to your Zitch account from any bank app. Your balance updates once the deposit is confirmed.</Text>
+      {/* The receiving bank's name stays: senders must pick it from their bank's list. */}
+      <Text style={text}>Bank name: 9PSB</Text><Text style={text}>Account name: {status.account_name}</Text>
       <Text selectable style={{ ...text, fontSize: 26 }}>{status.account_number}</Text>
       <Btn label="Copy account number" onPress={async () => {
         if (!current() || !isFundingAccountReady(status)) return;
@@ -47,7 +48,7 @@ function AddMoneyContent() {
       {status.maximum_single_deposit != null && <Text style={text}>Maximum single deposit: ₦{Number(status.maximum_single_deposit).toLocaleString()}</Text>}
       {status.maximum_balance != null && <Text style={text}>Maximum balance: ₦{Number(status.maximum_balance).toLocaleString()}</Text>}
       <Text style={text}>The bank may restrict outgoing payments if an incoming deposit exceeds your tier's limit.</Text>
-    </> : status ? <><Text style={text}>{status.migration_message || 'Complete your 9PSB identity and account setup to receive transfers.'}</Text>
+    </> : status ? <><Text style={text}>{status.migration_message || 'Complete your Zitch account setup to receive transfers.'}</Text>
       {status.identity_available === true && <Btn label="Set up my account" onPress={() => router.push('/(auth)/kyc')} />}
     </> : busy ? <Text style={text}>Loading account details…</Text> : null}
     {!!message && <Text style={text}>{message}</Text>}
