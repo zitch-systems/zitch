@@ -65,6 +65,29 @@ def ingest(event, body):
     return notice
 
 
+def _sandbox_float_credit(wallet, notice, amount, ref):
+    """Bind a sandbox test-funding notice to the credit already recorded for it.
+
+    `bank_sandbox_fund` records its deposit when the bank confirms the credit.
+    If the sandbox also delivers a transfer notice for it, that notice must not
+    credit the wallet a second time. Sandbox only; production never matches.
+    """
+    if notice.account.environment != "sandbox":
+        return None
+    recent = (Transaction.objects.select_for_update()
+              .filter(user_id=wallet.user_id, amount=amount, direction=Transaction.IN,
+                      reference__startswith="9PSF", created__gte=timezone.now() - timedelta(days=2))
+              .order_by("created"))
+    for txn in recent:
+        meta = txn.meta or {}
+        if (meta.get("sandbox_float_credit") and not meta.get("bank_notification")
+                and meta.get("account_number") == notice.account.number):
+            txn.meta = {**meta, "bank_notification": ref}
+            txn.save(update_fields=["meta"])
+            return txn
+    return None
+
+
 def process(notice):
     require_environment(notice.account.environment)
     if notice.state == "complete":
@@ -117,7 +140,8 @@ def process(notice):
                     raise ProviderError("duplicate_inflow_conflict")
                 txn = prior
             else:
-                txn = credit(wallet.user, amount, "Bank transfer received", reference=ledger_ref,
+                txn = _sandbox_float_credit(wallet, notice, amount, ref) or credit(
+                    wallet.user, amount, "Bank transfer received", reference=ledger_ref,
                     meta={"provider": "9psb", "bank_notification": ref, "account_number": number,
                           "environment": notice.account.environment})
             locked.state, locked.transaction, locked.next_check = "complete", txn, None

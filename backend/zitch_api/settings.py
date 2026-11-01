@@ -892,6 +892,9 @@ NINEPSB = {
     "SANDBOX_CUSTOMERS_ENABLED": env_bool("NINEPSB_SANDBOX_CUSTOMERS_ENABLED", False),
     "SANDBOX_PHONES": [x.strip() for x in os.environ.get("NINEPSB_SANDBOX_PHONES", "").split(",") if x.strip()],
     "SANDBOX_USER_IDS": [x.strip() for x in os.environ.get("NINEPSB_SANDBOX_USER_IDS", "").split(",") if x.strip()],
+    # Sandbox testing only: treat any well-formed BVN/NIN as verified and go
+    # straight to opening the sandbox wallet. Ignored unless ENVIRONMENT is sandbox.
+    "SANDBOX_AUTO_VERIFY": env_bool("NINEPSB_SANDBOX_AUTO_VERIFY", False),
     **{key: env_text("NINEPSB_" + key) for key in (
         "WAAS_USERNAME", "WAAS_PASSWORD", "WAAS_CLIENT_ID", "WAAS_CLIENT_SECRET",
         "VAS_USERNAME", "VAS_PASSWORD", "WEBHOOK_USERNAME", "WEBHOOK_PASSWORD")},

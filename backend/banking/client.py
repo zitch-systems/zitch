@@ -56,6 +56,16 @@ def sandbox():
     return config().get("ENVIRONMENT", "sandbox") == "sandbox"
 
 
+def sandbox_auto_verify():
+    """Sandbox-only shortcut for testers: skip the bank's identity check.
+
+    It never applies outside the sandbox environment, whatever the flag says,
+    and it only replaces the identity step: the wallet is still opened, read
+    back and name-checked at the bank exactly as in the normal flow.
+    """
+    return sandbox() and config().get("SANDBOX_AUTO_VERIFY") is True
+
+
 def customer_enabled():
     """Sandbox credentials are never a production customer money rail."""
     conf = config()

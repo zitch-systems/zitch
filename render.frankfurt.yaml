@@ -197,6 +197,8 @@ services:
     sync: false
   - key: NINEPSB_SANDBOX_PHONES
     sync: false
+  - key: NINEPSB_SANDBOX_AUTO_VERIFY
+    sync: false
   - key: NINEPSB_TRANSFER_FEE_TOTAL
     sync: false
   - key: NINEPSB_SINGLE_OUTBOUND_LIMITS
@@ -498,6 +500,11 @@ services:
       type: web
       name: zitch-api-ry6y
       envVarKey: NINEPSB_SANDBOX_PHONES
+  - key: NINEPSB_SANDBOX_AUTO_VERIFY
+    fromService:
+      type: web
+      name: zitch-api-ry6y
+      envVarKey: NINEPSB_SANDBOX_AUTO_VERIFY
   - key: NINEPSB_TRANSFER_FEE_TOTAL
     fromService:
       type: web
@@ -713,6 +720,11 @@ services:
       type: web
       name: zitch-api-ry6y
       envVarKey: NINEPSB_SANDBOX_PHONES
+  - key: NINEPSB_SANDBOX_AUTO_VERIFY
+    fromService:
+      type: web
+      name: zitch-api-ry6y
+      envVarKey: NINEPSB_SANDBOX_AUTO_VERIFY
   - key: NINEPSB_TRANSFER_FEE_TOTAL
     fromService:
       type: web
