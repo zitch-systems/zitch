@@ -1,0 +1,63 @@
+<form method="post" enctype="multipart/form-data" autocomplete="off" class="upgrade-form">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="upgrade">
+  <input type="hidden" name="tier" value="{{ upgrade_tier }}">
+  <section class="card">
+    <h2>Your BVN and NIN</h2>
+    <p class="hint">Both are needed to raise your limits.</p>
+    <label for="up-bvn">BVN (11 digits)</label>
+    <input id="up-bvn" name="bvn" type="password" inputmode="numeric" pattern="[0-9]{11}" minlength="11" maxlength="11" required autocomplete="off" data-digits="11">
+    <label for="up-nin">NIN (11 digits)</label>
+    <input id="up-nin" name="nin" type="password" inputmode="numeric" pattern="[0-9]{11}" minlength="11" maxlength="11" required autocomplete="off" data-digits="11">
+  </section>
+  <section class="card">
+    <h2>Contact</h2>
+    {% for field in details|slice:":3" %}
+      <label for="up-{{ field.key }}">{{ field.label }}</label>
+      <input id="up-{{ field.key }}" name="{{ field.key }}" type="{{ field.type }}" value="{{ field.value }}" maxlength="150" {% if field.required %}required{% endif %}>
+    {% endfor %}
+  </section>
+  <section class="card">
+    <h2>Your ID document</h2>
+    <fieldset>
+      <legend>ID type</legend>
+      <div class="options two">
+        {% for value, label in id_types %}
+          <label class="option"><input type="radio" name="idType" value="{{ value }}" {% if forloop.first %}checked{% endif %}><span><strong>{{ label }}</strong></span></label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    {% for field in details|slice:"3:6" %}
+      <label for="up-{{ field.key }}">{{ field.label }}</label>
+      <input id="up-{{ field.key }}" name="{{ field.key }}" type="{{ field.type }}" maxlength="150" {% if field.required %}required{% endif %}>
+    {% endfor %}
+  </section>
+  <section class="card">
+    <h2>Your home address</h2>
+    {% for field in details|slice:"6:" %}
+      <label for="up-{{ field.key }}">{{ field.label }}</label>
+      <input id="up-{{ field.key }}" name="{{ field.key }}" type="{{ field.type }}" maxlength="150" {% if field.required %}required{% endif %}>
+    {% endfor %}
+    <fieldset>
+      <legend>Are you a politically exposed person?</legend>
+      <p class="hint">For example a senior public official, or their close family.</p>
+      <div class="segmented">
+        <label><input type="radio" name="pep" value="NO" checked><span>No</span></label>
+        <label><input type="radio" name="pep" value="YES"><span>Yes</span></label>
+      </div>
+    </fieldset>
+  </section>
+  <section class="card">
+    <h2>Documents</h2>
+    <p class="hint">Clear JPEG or PNG photos. The utility bill can also be a PDF.</p>
+    {% for field in documents %}
+      <label for="up-{{ field.key }}">{{ field.label }}</label>
+      <input id="up-{{ field.key }}" name="{{ field.key }}" type="file" class="file" accept="image/jpeg,image/png{% if field.key == 'utilityBill' %},application/pdf{% endif %}" required>
+    {% endfor %}
+    <button type="submit">Submit for review</button>
+  </section>
+</form>
+<form method="post">
+  {% csrf_token %}
+  <button class="secondary" name="action" value="upgrade_status">Check upgrade status</button>
+</form>

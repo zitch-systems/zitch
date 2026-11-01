@@ -9,6 +9,17 @@ from PIL import Image
 from .client import phone
 
 
+def _date(value, fmt, message, *, past=False):
+    """Parse a customer-entered date with a readable error, never strptime's."""
+    try:
+        parsed = datetime.strptime(str(value).strip(), fmt).date()
+    except (TypeError, ValueError):
+        raise ValueError(message) from None
+    if past and (parsed >= datetime.now().date() or parsed.year < 1900):
+        raise ValueError(message)
+    return parsed
+
+
 def base64_file(value, *, maximum_bytes=None, maximum_chars=None, image_only=False):
     if not isinstance(value, str) or not value:
         raise ValueError("A document is required")
@@ -49,8 +60,8 @@ def wallet_profile(data):
     if len(data["lastName"] + " " + data["otherNames"]) > 160:
         raise ValueError("The full account name exceeds the bank limit")
     if data["gender"] not in (0, 1) or isinstance(data["gender"], bool):
-        raise ValueError("Select the gender required by the bank")
-    datetime.strptime(data["dateOfBirth"], "%d/%m/%Y")
+        raise ValueError("Select your gender")
+    _date(data["dateOfBirth"], "%d/%m/%Y", "Enter a valid date of birth as DD/MM/YYYY", past=True)
     result = {k: data[k] for k in required}
     result["phoneNo"] = phone(data["phoneNo"])
     if len(str(result["address"])) > 100:
@@ -77,13 +88,13 @@ def upgrade_profile(tier, data):
             raise ValueError("Both BVN and NIN must contain eleven digits")
     if str(data["idType"]) not in {"1", "2", "3", "4"} or data["pep"] not in {"YES", "NO"}:
         raise ValueError("Invalid ID type or PEP declaration")
-    datetime.strptime(data["idIssueDate"], "%Y-%m-%d")
+    _date(data["idIssueDate"], "%Y-%m-%d", "Enter a valid ID issue date")
     if str(data["idType"]) != "1" and not data.get("idExpiryDate"):
         raise ValueError("ID expiry date is required for this document")
     if str(tier) == "3" and not data.get("idNumber"):
         raise ValueError("ID number is required for Tier 3")
     if data.get("idExpiryDate"):
-        datetime.strptime(data["idExpiryDate"], "%Y-%m-%d")
+        _date(data["idExpiryDate"], "%Y-%m-%d", "Enter a valid ID expiry date")
     result = {k: data[k] for k in required}
     result.update(tier=str(tier), phoneNumber=phone(data["phoneNumber"]))
     for key in ("idNumber", "idExpiryDate", "placeOfBirth"):

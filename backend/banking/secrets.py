@@ -17,10 +17,11 @@ def seal(value):
     return _keys()[0].encrypt(json.dumps(value, separators=(",", ":")).encode()).decode()
 
 
-def unseal(value):
+def unseal(value, *, ttl=None):
+    """Decrypt a sealed value; with ttl (seconds), one sealed longer ago is refused."""
     for key in _keys():
         try:
-            return json.loads(key.decrypt(value.encode()))
+            return json.loads(key.decrypt(value.encode(), ttl=ttl))
         except InvalidToken:
             continue
     raise InvalidToken("Banking request cannot be decrypted")
