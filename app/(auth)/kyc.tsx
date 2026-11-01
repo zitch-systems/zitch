@@ -48,8 +48,11 @@ function KycScreenContent() {
   const { c } = useTheme();
   const [status, setStatus] = useState<BankStatus | null>(null);
   const [profile, setProfile] = useState<BankProfile>(emptyProfile);
-  const [kind, setKind] = useState<'bvn' | 'nin'>('nin');
+  // BVN is the default ID. The identity form is two pages (details, then ID),
+  // and face verification is its own screen opened from the ID page.
+  const [kind, setKind] = useState<'bvn' | 'nin'>('bvn');
   const [method, setMethod] = useState<'OTP' | 'FACIAL'>('OTP');
+  const [page, setPage] = useState<'details' | 'id'>('details');
   const [step, setStep] = useState<'details' | 'face'>('details');
   const [photo, setPhoto] = useState('');
   const [identifier, setIdentifier] = useState('');
@@ -85,7 +88,7 @@ function KycScreenContent() {
         if (result.email_verified) { setEmailCode(''); setEmailSent(false); }
         const challenge = result.identity_challenge;
         setTracking(challenge?.tracking_id || ''); setNeedsOtp(challenge?.otp_required === true);
-        if (challenge) setKind(challenge.kind);
+        if (challenge) { setKind(challenge.kind); setPage('id'); }
       }
       else { setStatus(null); setMessage(result.message || 'Could not load verification status.'); }
     } catch { if (current(owner) && serial === readSerial.current) { setStatus(null); setMessage('Could not load verification status. Please try again.'); } }
@@ -97,7 +100,7 @@ function KycScreenContent() {
       setBusy(false); setStatus(null); setIdentifier(''); setOtp(''); setTracking(''); setNeedsOtp(false);
       setProfile(emptyProfile); setUpgrade({ pep: 'NO', idType: '1' }); setAddressRef('');
       setEmail(''); setEmailCode(''); setEmailSent(false); setMessage('');
-      setStep('details'); setPhoto(''); setMethod('OTP');
+      setStep('details'); setPage('details'); setPhoto(''); setMethod('OTP');
     };
   }, []));
   const verifyEmail = async (confirm: boolean) => {
@@ -133,15 +136,15 @@ function KycScreenContent() {
     } catch { if (current(owner)) setMessage('Connection interrupted. Check the request status before submitting again.'); }
     finally { if (current(owner)) { inFlight.current = false; setBusy(false); } }
   };
-  // The selfie is captured on its own screen and only sent when the customer confirms it.
-  const takeSelfie = async () => {
+  // The photo is taken on the face verification screen and only sent when the customer confirms it.
+  const takePhoto = async () => {
     if (!identifier || !current() || inFlight.current) return;
     const owner = ownership.current;
     inFlight.current = true; setBusy(true);
     try {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!current(owner)) return;
-      if (!permission.granted) { notify('Camera access needed', 'Allow the camera to take your selfie.'); return; }
+      if (!permission.granted) { notify('Camera access needed', 'Allow the camera to verify your face.'); return; }
       beginExternalActivity();
       let shot: ImagePicker.ImagePickerResult;
       try { shot = await ImagePicker.launchCameraAsync({ cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.5 }); } finally { endExternalActivity(); }
@@ -192,22 +195,24 @@ function KycScreenContent() {
     <View style={{ gap: 16 }}><Text style={text}>{message || (!status ? 'Loading verification status…' : 'Verification is currently unavailable for this account. Please verify your email and phone number, or contact support.')}</Text>
       <Btn label="Refresh verification status" variant="outline" onPress={() => void load()} /></View>
   </Screen>;
-  if (step === 'face') return <Screen header={<Header title="Face check" onBack={busy ? undefined : () => { setPhoto(''); setStep('details'); }} />}>
+  if (step === 'face') return <Screen header={<Header title="Face verification" onBack={busy ? undefined : () => { setPhoto(''); setStep('details'); }} />}>
     <View style={{ gap: 16, paddingBottom: 32 }}>
-      <Text style={text}>Take a clear selfie so we can match it to your ID.</Text>
+      <Text style={text}>{`We match a photo of your face to the photo on your ${kind.toUpperCase()} record. No code needed.`}</Text>
+      <Text style={heading}>Before you start</Text>
       <Text style={text}>{'•  Face the camera in good light\n•  Remove glasses, hats and face coverings\n•  Keep your whole face inside the frame'}</Text>
-      {!!photo && <Image accessibilityLabel="Your selfie" source={{ uri: `data:image/jpeg;base64,${photo}` }}
+      {!!photo && <Image accessibilityLabel="Your photo" source={{ uri: `data:image/jpeg;base64,${photo}` }}
         style={{ width: 180, height: 180, borderRadius: 90, alignSelf: 'center', borderWidth: 3, borderColor: c.brand }} />}
       {!!message && <Text accessibilityLiveRegion="polite" style={text}>{message}</Text>}
-      <Btn label={photo ? 'Retake selfie' : 'Take a selfie'} variant={photo ? 'outline' : 'primary'} disabled={busy} onPress={() => void takeSelfie()} />
+      <Btn label={photo ? 'Retake photo' : 'Open camera'} variant={photo ? 'outline' : 'primary'} disabled={busy} onPress={() => void takePhoto()} />
       {!!photo && <Btn label={busy ? 'Please wait…' : 'Verify my face'} disabled={busy} onPress={() => void submitFace()} />}
-      <Btn label="Back to your details" variant="outline" disabled={busy} onPress={() => { setPhoto(''); setStep('details'); }} />
+      <Btn label="Back" variant="outline" disabled={busy} onPress={() => { setPhoto(''); setStep('details'); }} />
     </View>
   </Screen>;
   const needsNimcId = kind === 'nin' && !status?.account_number;
   const dobError = profile.dateOfBirth.length === 10 && !validDob(profile.dateOfBirth) ? 'Enter a real date of birth' : undefined;
-  const detailsReady = identifier.length === 11 && validDob(profile.dateOfBirth) && (profile.gender === 0 || profile.gender === 1)
-    && (!needsNimcId || !!profile.ninUserId?.trim());
+  const detailsReady = !!profile.otherNames.trim() && !!profile.lastName.trim() && !!profile.phoneNo.trim()
+    && validDob(profile.dateOfBirth) && (profile.gender === 0 || profile.gender === 1) && !!profile.address.trim();
+  const idReady = identifier.length === 11 && (!needsNimcId || !!profile.ninUserId?.trim());
   return <Screen header={<Header title="Verify your account" />}>
     <View style={{ gap: 16, paddingBottom: 32 }}>
       <Text style={text}>Zitch verifies your identity securely. Your details are only used to open and protect your account.</Text>
@@ -215,9 +220,10 @@ function KycScreenContent() {
       <Text style={text}>Account tier: {status?.bank_tier || 'Not set up'} · BVN: {status?.bvn_verified ? 'Verified' : 'Not verified'} · NIN: {status?.nin_verified ? 'Verified' : 'Not verified'}</Text>
       <View style={{ gap: 8 }}>{(['identity', 'upgrade', 'address'] as const).map((value) => <Btn key={value} label={value === 'identity' ? 'Identity & account setup' : value === 'upgrade' ? 'Tier upgrade' : 'Tier 3 address'} variant={tab === value ? 'primary' : 'outline'} onPress={() => setTab(value)} disabled={busy} />)}</View>
       {!!message && <Text accessibilityLiveRegion="polite" style={text}>{message}</Text>}
-      {tab === 'identity' && <>
+      {tab === 'identity' && page === 'details' && <>
+        <Text style={hint}>Step 1 of 2</Text>
         <Text style={heading}>Your details</Text>
-        <Text style={hint}>Use your name exactly as it appears on your NIN or BVN.</Text>
+        <Text style={hint}>Use your name exactly as it appears on your BVN or NIN.</Text>
         <Field editable={!busy} label="First and middle names" value={profile.otherNames} onChangeText={(otherNames) => setProfile({ ...profile, otherNames })} />
         <Field editable={!busy} label="Surname" value={profile.lastName} onChangeText={(lastName) => setProfile({ ...profile, lastName })} />
         <Field editable={!busy && !status?.profile?.phoneNo} label="Phone number" value={profile.phoneNo} keyboardType="phone-pad" onChangeText={(phoneNo) => setProfile({ ...profile, phoneNo })} />
@@ -229,8 +235,13 @@ function KycScreenContent() {
             value={profile.gender === 0 || profile.gender === 1 ? String(profile.gender) : ''}
             onChange={(value) => { if (!busy) setProfile({ ...profile, gender: Number(value) }); }} /></View>
         <Field editable={!busy} label="Home address" value={profile.address} maxLength={100} onChangeText={(address) => setProfile({ ...profile, address })} />
+        <Btn label="Next" disabled={busy || !detailsReady} onPress={() => { setMessage(''); setPage('id'); }} />
+      </>}
+      {tab === 'identity' && page === 'id' && <>
+        <Btn label="Back to your details" variant="outline" disabled={busy} onPress={() => setPage('details')} />
+        <Text style={hint}>Step 2 of 2</Text>
         <Text style={heading}>Your ID</Text>
-        <PillTabs scroll={false} options={[{ v: 'nin', label: 'NIN' }, { v: 'bvn', label: 'BVN' }]} value={kind}
+        <PillTabs scroll={false} options={[{ v: 'bvn', label: 'BVN' }, { v: 'nin', label: 'NIN' }]} value={kind}
           onChange={(value) => { if (busy || tracking) return; setKind(value as 'bvn' | 'nin'); setIdentifier(''); }} />
         <Field editable={!busy} label={kind.toUpperCase()} placeholder="11 digits" value={identifier} maxLength={11} keyboardType="number-pad" secureTextEntry onChangeText={(value) => setIdentifier(digits(value, 11))} />
         {needsNimcId && <View style={{ gap: 6 }}>
@@ -239,10 +250,10 @@ function KycScreenContent() {
         </View>}
         {!tracking && <>
           <Text style={heading}>How should we verify you?</Text>
-          <PillTabs scroll={false} check options={[{ v: 'OTP', label: 'Text me a code' }, { v: 'FACIAL', label: 'Face check' }]} value={method}
+          <PillTabs scroll={false} check options={[{ v: 'OTP', label: 'Text me a code' }, { v: 'FACIAL', label: 'Verify my face' }]} value={method}
             onChange={(value) => { if (!busy) setMethod(value as 'OTP' | 'FACIAL'); }} />
-          <Text style={hint}>{method === 'FACIAL' ? 'Take a quick selfie on the next screen. No code needed.' : 'We send a 6-digit code by SMS.'}</Text>
-          <Btn label={busy ? 'Please wait…' : method === 'FACIAL' ? 'Continue to face check' : 'Send my code'} disabled={busy || !detailsReady}
+          <Text style={hint}>{method === 'FACIAL' ? 'Opens Zitch face verification. No code needed.' : 'We send a 6-digit code by SMS.'}</Text>
+          <Btn label={busy ? 'Please wait…' : method === 'FACIAL' ? 'Continue to face verification' : 'Send my code'} disabled={busy || !detailsReady || !idReady}
             onPress={() => {
               if (method === 'FACIAL') { setMessage(''); setPhoto(''); setStep('face'); return; }
               void run(() => banking.identity(kind, identifier, profile));

@@ -58,15 +58,17 @@ const field = (label: string) => tree.root.findAllByProps({ accessibilityLabel: 
 const output = () => JSON.stringify(tree.toJSON());
 async function mount() { await act(async () => { tree = renderer.create(<Kyc />); }); }
 const pill = (label: string) => tree.root.findAllByProps({ accessibilityLabel: label }).find((node) => node.props.onPress && !node.props.onChangeText)!;
+async function next() { await act(async () => { control('Next').props.onPress(); }); }
 async function enter(kind = 'bvn') {
+  await next();
   await act(async () => { pill(kind.toUpperCase()).props.onPress(); });
   await act(async () => { field(kind.toUpperCase()).props.onChangeText('12345678901'); });
   if (kind === 'nin') await act(async () => { field('NIMC User ID').props.onChangeText('NIMC-123'); });
 }
 const sent = (kind: string) => (kind === 'nin' ? { ...profile, ninUserId: 'NIMC-123' } : profile);
 async function openFaceStep() {
-  await act(async () => { pill('Face check').props.onPress(); });
-  await act(async () => { control('Continue to face check').props.onPress(); });
+  await act(async () => { pill('Verify my face').props.onPress(); });
+  await act(async () => { control('Continue to face verification').props.onPress(); });
 }
 beforeEach(() => {
   jest.clearAllMocks(); mockGeneration = 1; mockAuthenticated = true;
@@ -92,12 +94,35 @@ it.each(['bvn', 'nin'])('uses a bank-bound %s OTP and keeps account opening pend
   expect(output()).not.toContain('Send my code');
 });
 
-it.each(['bvn', 'nin'])('verifies %s with a selfie on its own face-check screen without sending a code', async (kind) => {
+it('starts with BVN and shows the details first, with Next to the ID page', async () => {
+  await mount();
+  expect(output()).toContain('Step 1 of 2'); expect(output()).not.toContain('11 digits');
+  expect(control('Next').props.disabled).toBe(false);
+  await next();
+  expect(output()).toContain('Step 2 of 2'); expect(output()).not.toContain('Home address');
+  expect(pill('BVN').props.accessibilityState.selected).toBe(true);
+  expect(pill('NIN').props.accessibilityState.selected).toBe(false);
+  expect(output()).not.toContain('NIMC User ID');
+  await act(async () => { control('Back to your details').props.onPress(); });
+  expect(output()).toContain('Home address'); expect(output()).toContain('Step 1 of 2');
+});
+
+it('keeps Next disabled until the details are complete', async () => {
+  mockStatus.mockResolvedValue({ ...ready, profile: { ...profile, address: '', gender: undefined } }); await mount();
+  expect(control('Next').props.disabled).toBe(true);
+  await act(async () => { field('Home address').props.onChangeText('2 Test Road'); });
+  expect(control('Next').props.disabled).toBe(true);
+  await act(async () => { pill('Female').props.onPress(); });
+  expect(control('Next').props.disabled).toBe(false);
+});
+
+it.each(['bvn', 'nin'])('verifies %s on its own face verification screen without sending a code', async (kind) => {
   await mount(); await enter(kind); await openFaceStep();
-  expect(output()).toContain('Take a selfie'); expect(output()).not.toContain('Send my code');
-  await act(async () => { await control('Take a selfie').props.onPress(); });
+  expect(output()).toContain('Open camera'); expect(output()).not.toContain('Send my code');
+  expect(output()).toContain(`photo on your ${kind.toUpperCase()} record`);
+  await act(async () => { await control('Open camera').props.onPress(); });
   expect(mockIdentity).not.toHaveBeenCalled();
-  expect(output()).toContain('Retake selfie');
+  expect(output()).toContain('Retake photo');
   await act(async () => { await control('Verify my face').props.onPress(); });
   expect(mockIdentity).toHaveBeenCalledTimes(1);
   expect(mockIdentity).toHaveBeenCalledWith(kind, '12345678901', sent(kind), 'face-image');
@@ -105,10 +130,10 @@ it.each(['bvn', 'nin'])('verifies %s with a selfie on its own face-check screen 
   expect(output()).toContain('Check verification status');
 });
 
-it('returns from the face-check screen without sending anything', async () => {
+it('returns from the face verification screen without sending anything', async () => {
   await mount(); await enter('bvn'); await openFaceStep();
-  await act(async () => { await control('Back to your details').props.onPress(); });
-  expect(output()).toContain('Continue to face check'); expect(mockCamera).not.toHaveBeenCalled(); expect(mockIdentity).not.toHaveBeenCalled();
+  await act(async () => { await control('Back').props.onPress(); });
+  expect(output()).toContain('Continue to face verification'); expect(mockCamera).not.toHaveBeenCalled(); expect(mockIdentity).not.toHaveBeenCalled();
 });
 
 it('masks the date of birth to DD/MM/YYYY digits and rejects impossible dates', async () => {
@@ -116,10 +141,9 @@ it('masks the date of birth to DD/MM/YYYY digits and rejects impossible dates', 
   await act(async () => { field('Date of birth').props.onChangeText('03a08b1994'); });
   expect(field('Date of birth').props.value).toBe('03/08/1994');
   expect(field('Date of birth').props.keyboardType).toBe('number-pad');
-  await enter('bvn');
   await act(async () => { field('Date of birth').props.onChangeText('31021990'); });
   expect(field('Date of birth').props.error).toBe('Enter a real date of birth');
-  expect(control('Send my code').props.disabled).toBe(true);
+  expect(control('Next').props.disabled).toBe(true);
 });
 
 it('asks for the NIMC User ID only for NIN and explains it is not the NIN', async () => {
@@ -165,7 +189,7 @@ it('completes email verification before collecting bank identity', async () => {
   await act(async () => { field('Six-digit email code').props.onChangeText('654321'); });
   await act(async () => { await control('Confirm email code').props.onPress(); });
   expect(mockConfirmEmail).toHaveBeenCalledWith('654321');
-  expect(output()).toContain('Send my code');
+  expect(output()).toContain('Your details'); expect(output()).toContain('Next');
   expect(output()).not.toContain('Six-digit email code');
   expect(mockIdentity).not.toHaveBeenCalled();
 });
@@ -228,7 +252,7 @@ it('offers retry after an unsuccessful status read without inventing a verificat
   expect(output()).toContain('Could not load verification status');
   expect(output()).not.toContain('Send my code');
   await act(async () => { await control('Refresh verification status').props.onPress(); });
-  expect(output()).toContain('Send my code');
+  expect(output()).toContain('Your details'); expect(output()).toContain('Next');
 });
 
 it('discards a challenge response from a replaced session', async () => {
@@ -243,14 +267,15 @@ it('discards a challenge response from a replaced session', async () => {
 it('discards a delayed camera capture after route blur and refocus', async () => {
   let finish!: (value: unknown) => void;
   mockCamera.mockReturnValue(new Promise((resolve) => { finish = resolve; })); await mount(); await enter(); await openFaceStep();
-  await act(async () => { control('Take a selfie').props.onPress(); });
+  await act(async () => { control('Open camera').props.onPress(); });
   await act(async () => { mockBlur(); mockBlur = mockFocus(); });
   await act(async () => { finish({ canceled: false, assets: [{ base64: 'old-face' }] }); });
-  expect(mockIdentity).not.toHaveBeenCalled(); expect(field('BVN').props.value).toBe('');
+  expect(mockIdentity).not.toHaveBeenCalled(); expect(output()).not.toContain('old-face');
+  expect(output()).toContain('Step 1 of 2'); await next(); expect(field('BVN').props.value).toBe('');
 });
 
 it('prevents simultaneous camera verification requests', async () => {
-  await mount(); await enter(); await openFaceStep(); const launch = control('Take a selfie').props.onPress;
+  await mount(); await enter(); await openFaceStep(); const launch = control('Open camera').props.onPress;
   await act(async () => { launch(); launch(); });
   expect(mockCamera).toHaveBeenCalledTimes(1); expect(mockIdentity).not.toHaveBeenCalled();
   const confirm = control('Verify my face').props.onPress;

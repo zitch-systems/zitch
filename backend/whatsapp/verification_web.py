@@ -103,6 +103,12 @@ def start_verification(user, msisdn, tier):
             user=current, msisdn=msisdn, action_type=ACTION_TYPE,
             state__in=(PIN, READY),
         ).update(state="web_retired", expires_at=timezone.now())
+        # Ended links keep no identity details waiting for a face photo.
+        for ended in PendingAction.objects.select_for_update().filter(
+                user=current, action_type=ACTION_TYPE, expires_at__lte=timezone.now(),
+                payload__has_key="face_request"):
+            ended.payload.pop("face_request", None)
+            ended.save(update_fields=["payload"])
         pa = PendingAction.objects.create(
             user=current, msisdn=msisdn, action_type=ACTION_TYPE, state=PIN,
             expires_at=timezone.now() + timedelta(seconds=TTL_SECONDS),
@@ -193,12 +199,21 @@ def _pending_page(request):
                  needs_review=tier3_address_capability()["tier3_address_available"] is False)
 
 
-def _form(request, pa, user, *, message="", status=200, values=None, refresh_status=True):
+def _form(request, pa, user, *, message="", status=200, values=None, refresh_status=True, step=None):
     if not _has_proof(request, pa, user):
         return _page(request, "pin", status=status, message=message)
     from banking.web_verification import context
-    return render(request, "whatsapp/bank_verification.html",
-        {"nonce": request.verification_nonce, "message": message, **context(user, pa.payload)}, status=status)
+    if step is None and request.method == "GET":
+        step = request.GET.get("step")
+    page = context(user, pa.payload)
+    if values:
+        page["values"] = {**page["values"], **values}
+    # Face verification is its own page, opened from the details page once the
+    # details are confirmed. Without confirmed details it falls back to them.
+    template = ("whatsapp/bank_face.html" if step == "face" and page["face_pending"] and page["page_tier"] == 1
+                else "whatsapp/bank_verification.html")
+    return render(request, template, {"nonce": request.verification_nonce, "message": message,
+                                      "path": request.path, **page}, status=status)
 
 
 @sensitive_variables()
@@ -294,11 +309,11 @@ def _submit(request, claims):
         try:
             validate_fields(action, request.POST, request.FILES)
         except ValueError as exc:
-            return _form(request, pa, user, message=str(exc), status=400)
+            return _form(request, pa, user, message=str(exc), status=400, step=action)
         if action in OPERATION_LIMITS:
             scope, limit, window = OPERATION_LIMITS[action]
             if ratelimit(scope, limit, window)(lambda _request: None)(request) is not None:
-                return _form(request, pa, user, status=429,
+                return _form(request, pa, user, status=429, step=action,
                              message="Too many requests. Please wait before trying again.")
         # Claim the browser action before leaving the transaction for bank I/O.
         # Chat cancellation and a second POST cannot re-enter this operation.
@@ -306,13 +321,16 @@ def _submit(request, claims):
         pa.save(update_fields=["state"])
     from banking.web_verification import submit
     from banking.client import ProviderError
-    status, uncertain = 200, False
+    status, uncertain, values = 200, False, None
     try:
         result = submit(user, action, request.POST, request.FILES, pa.payload)
         message = result.get("message") or ("Verification completed." if result.get("success") else "Your bank verification is processing.")
     except ValueError as exc:
         result, message = {}, str(exc)
         status = 400
+        if action == "identity":
+            from banking.web_verification import entered
+            values = entered(request.POST)
     except ProviderError:
         result, message = {}, "The service could not confirm the result. Check status before submitting again."
         status = 503
@@ -329,11 +347,21 @@ def _submit(request, claims):
         for key in ("identity_reference", "address_reference"):
             if result.get(key):
                 current.payload[key] = result[key]
+        # Encrypted details awaiting the face photo: kept until the photo is
+        # sent or the customer chooses a code instead, then erased.
+        if "face_request" in result:
+            if result["face_request"]:
+                current.payload["face_request"] = result["face_request"]
+            else:
+                current.payload.pop("face_request", None)
         current.state = REVIEW if uncertain else READY
         current.save(update_fields=["payload", "state"])
     if uncertain:
         return _page(request, "error", status=status, message=message)
-    return _form(request, current, owner, message=message, status=status)
+    # A face photo that was refused can be retaken on the same page.
+    retry_face = action == "face" and current.payload.get("face_request")
+    return _form(request, current, owner, message=message, status=status, values=values,
+                 step="face" if retry_face else "")
 
 
 @csrf_protect

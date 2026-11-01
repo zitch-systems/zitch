@@ -4,7 +4,9 @@ from django.utils import timezone
 from . import accounts, address, upgrades
 from .client import ProviderError, config
 from .models import IdentityChallenge, AddressVerification
-from .secrets import unseal
+from cryptography.fernet import InvalidToken
+
+from .secrets import seal, unseal
 
 # Customer-facing labels. The bank partner is never named on this page: the
 # customer is verifying with Zitch. Field keys are the bank contract.
@@ -22,8 +24,11 @@ ADDRESS = [("house_number", "House number"), ("street", "Street"), ("address", "
     ("city", "City"), ("state", "State"), ("lga", "Local government area"), ("landmark", "Nearest landmark")]
 ID_TYPES = [("1", "National ID (NIN)"), ("2", "Driver’s licence"), ("3", "Voter’s card"), ("4", "International passport")]
 
+FACE_REQUEST_SECONDS = 15 * 60
+
 OPERATION_LIMITS = {
     "identity": ("bank_identity_start", 5, 600),
+    "face": ("bank_identity_start", 5, 600),
     "otp": ("bank_identity_confirm", 10, 600),
     "upgrade": ("bank_upgrade", 3, 600),
     "address": ("address_start", 2, 3600),
@@ -35,11 +40,11 @@ def validate_fields(action, data, files):
     """A browser grant authorizes only these server-defined KYC operations."""
     fields = {
         "identity": {key for key, _ in PROFILE} | {"gender", "kind", "identifier", "method"},
-        "otp": {"otp"}, "identity_status": set(),
+        "otp": {"otp"}, "identity_status": set(), "face": set(),
         "upgrade": {key for key, _ in DETAILS} | {"bvn", "nin", "idType", "pep", "tier"},
         "upgrade_status": set(), "address": {key for key, _ in ADDRESS}, "address_status": set(),
     }
-    uploads = {"identity": {"face"}, "upgrade": {key for key, _ in DOCUMENTS}}
+    uploads = {"identity": {"face"}, "face": {"face"}, "upgrade": {key for key, _ in DOCUMENTS}}
     if (action not in fields or set(data) - fields[action] - {"action", "csrfmiddlewaretoken"}
             or set(files) - uploads.get(action, set())):
         raise ValueError("Use the fields and actions shown on this verification page")
@@ -71,8 +76,10 @@ def context(user, payload):
              "phoneNumber": user.phone or "", "email": user.email or ""}
     return {"tier": user.tier, "page_tier": page_tier, "bank": account,
         "profile": [{"key": key, "label": label, "value": profile.get(key, "")} for key, label in PROFILE],
+        # BVN is the default ID; a code is the default way to confirm it.
         "values": {**{key: profile.get(key, "") or "" for key, _ in PROFILE},
-                   "gender": profile.get("gender") if profile.get("gender") in (0, 1) else None},
+                   "gender": profile.get("gender") if profile.get("gender") in (0, 1) else None,
+                   "kind": "bvn", "method": "OTP"},
         "details": [{"key": key, "label": label, "value": known.get(key, ""),
                      "type": "date" if key in DATE_DETAILS else "email" if key == "email" else "tel" if key == "phoneNumber" else "text",
                      "required": key not in OPTIONAL_DETAILS} for key, label in DETAILS],
@@ -81,7 +88,20 @@ def context(user, payload):
         "address_fields": [{"key": key, "label": label} for key, label in ADDRESS],
         "identity_reference": payload.get("identity_reference", ""),
         "challenge": _challenge(user, payload.get("identity_reference", "")),
+        # Details confirmed for face verification; the photo is taken on its own page.
+        "face_pending": bool(payload.get("face_request")),
         "address_reference": payload.get("address_reference", "")}
+
+
+def entered(data):
+    """What the customer typed on the details form, to show it again after an
+    error. The ID number itself is never echoed back."""
+    values = {key: str(data.get(key, ""))[:100] for key, _ in PROFILE}
+    gender = data.get("gender")
+    values["gender"] = int(gender) if gender in ("0", "1") else None
+    values["kind"] = data.get("kind") if data.get("kind") in ("bvn", "nin") else "bvn"
+    values["method"] = data.get("method") if data.get("method") in ("OTP", "FACIAL") else "OTP"
+    return values
 
 
 def uploaded(files, key, *, missing="Choose a document within the displayed size limit"):
@@ -97,12 +117,33 @@ def submit(user, action, data, files, scope):
     accounts.require_enabled(user)
     if action == "identity":
         profile = {key: data.get(key, "") for key, _ in PROFILE}
-        profile["gender"] = int(data.get("gender", "-1"))
+        # Anything but male (0) or female (1) is refused as "Select your gender".
+        profile["gender"] = int(data["gender"]) if data.get("gender") in ("0", "1") else -1
         profile["email"] = user.email
         method = data.get("method", "OTP")
-        result = accounts.start_identity(user, data.get("kind"), data.get("identifier", ""), profile,
-            method=method, image=uploaded(files, "face", missing="Take a selfie to continue") if method == "FACIAL" else "")
-        return {**result, "identity_reference": result.get("reference", "")}
+        kind, identifier = data.get("kind"), data.get("identifier", "")
+        if method == "FACIAL" and not files.get("face"):
+            # Confirm everything now, contact the bank only once the face page
+            # sends the photo. The identity number is held encrypted, for this
+            # 15-minute link only, and erased when the photo is submitted.
+            accounts.check_identity_request(user, kind, identifier, profile, method=method)
+            return {"face_request": seal({"kind": kind, "identifier": identifier, "profile": profile}),
+                    "message": "Your details are confirmed. Now open face verification."}
+        result = accounts.start_identity(user, kind, identifier, profile,
+            method=method, image=uploaded(files, "face", missing="Take your photo to continue") if method == "FACIAL" else "")
+        return {**result, "identity_reference": result.get("reference", ""), "face_request": ""}
+    if action == "face":
+        sealed = scope.get("face_request", "")
+        try:
+            # Usable only within the 15-minute life of the verification link.
+            pending = unseal(sealed, ttl=FACE_REQUEST_SECONDS) if sealed else None
+        except InvalidToken:
+            pending = None
+        if not isinstance(pending, dict):
+            raise ValueError("Enter your details first, then open face verification")
+        result = accounts.start_identity(user, pending.get("kind"), pending.get("identifier", ""), pending.get("profile") or {},
+            method="FACIAL", image=uploaded(files, "face", missing="Take your photo to continue"))
+        return {**result, "identity_reference": result.get("reference", ""), "face_request": ""}
     if action in {"otp", "identity_status"}:
         ref = scope.get("identity_reference", "")
         if action == "otp":

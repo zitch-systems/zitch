@@ -120,17 +120,19 @@ def account_payload(user):
         "migration_message": "Your bank account balance needs review. Contact support before spending." if opening_review else "" if ready else "Complete your Zitch account setup to continue banking."}
 
 
-def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
-    require_enabled(user)
+def check_identity_request(user, kind, identifier, profile, *, method="OTP"):
+    """Every check made before contacting the bank, without contacting it.
+
+    Returns the normalized profile and identity digest. The face page uses this
+    to confirm details before the photo step, so a rejected name or identity is
+    reported before the customer is sent to the camera.
+    """
     if not user.email_verified or not user.phone_verified:
         raise ValueError("Verify your email address and phone number first")
     if kind not in {"bvn", "nin"} or not re.fullmatch(r"[0-9]{11}", identifier or ""):
         raise ValueError("Enter an eleven-digit BVN or NIN")
     if method not in {"OTP", "FACIAL"}:
         raise ValueError("Choose OTP or face verification")
-    if method == "FACIAL":
-        from .validation import base64_file
-        image = base64_file(image, maximum_bytes=5*1024*1024, image_only=True)
     profile = wallet_profile(profile)
     profile["email"] = user.email
     if phone(profile["phoneNo"]) != phone(user.phone):
@@ -144,6 +146,15 @@ def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
         raise ValueError("This identity is already linked to an account")
     if IdentityChallenge.objects.exclude(user=user).filter(identity_hash=digest, verified_at__isnull=False).exists():
         raise ValueError("This identity is already linked to an account")
+    return profile, digest
+
+
+def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
+    require_enabled(user)
+    profile, digest = check_identity_request(user, kind, identifier, profile, method=method)
+    if method == "FACIAL":
+        from .validation import base64_file
+        image = base64_file(image, maximum_bytes=5*1024*1024, image_only=True)
     with transaction.atomic():
         User.objects.select_for_update().get(pk=user.pk)
         previous = IdentityChallenge.objects.filter(user=user, expires_at__gt=timezone.now(),
