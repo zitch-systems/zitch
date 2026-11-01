@@ -11,7 +11,7 @@ from django.utils import timezone
 from accounts.models import IdentityProof, User
 from wallet.models import Transaction, Wallet
 
-from .accounts import start_identity
+from .accounts import confirm_identity, start_identity
 from .client import Reply
 from .models import BankAccount, IdentityChallenge
 from .notifications import ingest, process
@@ -39,36 +39,77 @@ class Base(TestCase):
 
 @override_settings(NINEPSB=SANDBOX)
 class AutoVerifyTests(Base):
-    def test_any_eleven_digit_bvn_opens_a_sandbox_wallet_without_the_identity_check(self):
+    def start(self, identifier="22222222222", sms=None):
         with patch("banking.client.Client.initiate_identity") as identity, \
+                patch("utility.providers.send_sms", return_value=sms or {"success": True}) as sent, \
+                patch("banking.client.Client.open_wallet") as opened:
+            started = start_identity(self.user, "bvn", identifier, PROFILE)
+        identity.assert_not_called()
+        opened.assert_not_called()
+        return started, sent
+
+    def test_any_bvn_gets_a_real_code_and_any_code_opens_the_wallet(self):
+        started, sent = self.start()
+        self.assertTrue(started["otp_required"])
+        self.assertEqual(started["account_setup_state"], "pending")
+        sent.assert_called_once()
+        self.assertEqual(sent.call_args.args[0], self.user.phone)
+        self.assertRegex(sent.call_args.args[1], r"^Your Zitch verification code is [0-9]{6}$")
+        with patch("banking.client.Client.verify_identity") as verify, \
                 patch("banking.client.Client.open_wallet", return_value=OPENED) as opened, \
                 patch("banking.client.Client.wallet", return_value=readback()):
-            result = start_identity(self.user, "bvn", "22222222222", PROFILE)
-        identity.assert_not_called()
+            result = confirm_identity(self.user, started["reference"], "000000")
+        verify.assert_not_called()
         opened.assert_called_once()
         self.assertTrue(result["success"])
         self.assertEqual(BankAccount.objects.get().number, "1100000001")
-        proof = IdentityProof.objects.get()
-        self.assertTrue(proof.provider_reference.startswith("SANDBOX-AUTO-"))
+        self.assertTrue(IdentityProof.objects.get().provider_reference.startswith("SANDBOX-AUTO-"))
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
+
+    def test_the_code_must_still_be_six_digits(self):
+        started, _ = self.start()
+        with patch("banking.client.Client.open_wallet") as opened, \
+                self.assertRaisesMessage(ValueError, "Enter the six-digit code"):
+            confirm_identity(self.user, started["reference"], "12ab")
+        opened.assert_not_called()
+
+    def test_an_undelivered_sms_does_not_block_testing(self):
+        started, _ = self.start(sms={"success": False})
+        self.assertTrue(started["otp_required"])
+
+    def test_face_verification_needs_no_code(self):
+        from io import BytesIO
+        from base64 import b64encode
+        from PIL import Image
+        raw = BytesIO()
+        Image.new("RGB", (8, 8), "white").save(raw, "PNG")
+        with patch("banking.client.Client.initiate_identity") as identity, \
+                patch("utility.providers.send_sms") as sent, \
+                patch("banking.client.Client.open_wallet", return_value=OPENED) as opened, \
+                patch("banking.client.Client.wallet", return_value=readback()):
+            result = start_identity(self.user, "bvn", "22222222222", PROFILE, method="FACIAL",
+                                    image=b64encode(raw.getvalue()).decode())
+        identity.assert_not_called()
+        sent.assert_not_called()
+        opened.assert_called_once()
+        self.assertTrue(result["success"])
 
     def test_a_stuck_earlier_check_is_replaced(self):
         IdentityChallenge.objects.create(user=self.user, reference="ZISTUCK", kind="bvn", method="OTP",
             identity_hash="other", last4="1111", environment="sandbox", state="unconfirmed",
             encrypted_input="sealed", expires_at=timezone.now() + timedelta(minutes=5))
-        with patch("banking.client.Client.open_wallet", return_value=OPENED), \
-                patch("banking.client.Client.wallet", return_value=readback()):
-            result = start_identity(self.user, "bvn", "22222222222", PROFILE)
-        self.assertTrue(result["success"])
+        started, _ = self.start()
+        self.assertTrue(started["otp_required"])
         stuck = IdentityChallenge.objects.get(reference="ZISTUCK")
         self.assertEqual((stuck.state, stuck.encrypted_input), ("expired", ""))
 
     def test_the_bank_reason_is_shown_when_the_sandbox_will_not_open_the_wallet(self):
+        started, _ = self.start()
         refused = Reply({"status": "FAILED", "responseCode": "99", "message": "Invalid BVN supplied"}, 200)
         with patch("banking.client.Client.open_wallet", return_value=refused), \
                 self.assertLogs("banking.accounts", "WARNING") as logs:
-            result = start_identity(self.user, "bvn", "22222222222", PROFILE)
+            result = confirm_identity(self.user, started["reference"], "123456")
         self.assertFalse(result["success"])
         self.assertIn("Invalid BVN supplied", result["message"])
         self.assertTrue(any("bank_wallet_open_not_confirmed" in line for line in logs.output))
@@ -79,18 +120,26 @@ class AutoVerifyTests(Base):
     def test_the_flag_never_applies_outside_the_sandbox(self):
         with patch("banking.client.Client.initiate_identity",
                    return_value=Reply({"status": "SUCCESS", "message": "PENDING"}, 200)) as identity, \
+                patch("utility.providers.send_sms") as sent, \
                 patch("banking.client.Client.open_wallet") as opened:
             result = start_identity(self.user, "bvn", "22222222222", PROFILE)
+            with patch("banking.client.Client.verify_identity",
+                       return_value=Reply({"message": "FAILED"}, 200)) as verify:
+                confirm_identity(self.user, result["reference"], "000000")
         identity.assert_called_once()
+        verify.assert_called_once()
+        sent.assert_not_called()
         opened.assert_not_called()
-        self.assertTrue(result["otp_required"])
+        self.assertFalse(BankAccount.objects.exists())
 
     @override_settings(NINEPSB={**SANDBOX, "SANDBOX_AUTO_VERIFY": False})
     def test_without_the_flag_the_sandbox_uses_the_bank_check(self):
         with patch("banking.client.Client.initiate_identity",
-                   return_value=Reply({"status": "SUCCESS", "message": "PENDING"}, 200)) as identity:
+                   return_value=Reply({"status": "SUCCESS", "message": "PENDING"}, 200)) as identity, \
+                patch("utility.providers.send_sms") as sent:
             start_identity(self.user, "bvn", "22222222222", PROFILE)
         identity.assert_called_once()
+        sent.assert_not_called()
 
 
 @override_settings(NINEPSB=SANDBOX)

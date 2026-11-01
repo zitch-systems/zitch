@@ -178,11 +178,18 @@ def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
             encrypted_input=seal({"profile": profile, "identifier": identifier}),
             expires_at=timezone.now() + timedelta(minutes=10))
     if sandbox_auto_verify():
-        # Sandbox testing: the identity check passes for any well-formed number.
-        # Opening the wallet below still goes to the bank sandbox for a NUBAN.
+        # Sandbox testing: any well-formed BVN/NIN is accepted. The bank is not
+        # asked to check it; opening the wallet still goes to the bank sandbox.
+        # Server-generated values only in logs; the challenge row holds the ID type.
+        if method == "OTP":
+            # Keep the real customer journey: text a real code to the tester's
+            # verified phone. confirm_identity accepts any six-digit code here.
+            IdentityChallenge.objects.filter(pk=challenge.pk).update(state="pending")
+            challenge.refresh_from_db()
+            _send_sandbox_code(user, challenge.reference)
+            return challenge_payload(challenge)
         IdentityChallenge.objects.filter(pk=challenge.pk).update(state="verified", verified_at=timezone.now())
         challenge.refresh_from_db()
-        # Server-generated values only; the challenge row holds the ID type.
         log.warning("sandbox_identity_auto_verified user=%s ref=%s", user.pk, challenge.reference)
         return complete_account(challenge)
     try:
@@ -202,6 +209,18 @@ def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
     if state == "SUCCESS":
         return complete_account(challenge)
     return challenge_payload(challenge)
+
+
+def _send_sandbox_code(user, reference):
+    """Sandbox only: text a real code so testers see the normal OTP step."""
+    from utility.providers import send_sms
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    try:
+        delivery = send_sms(user.phone, f"Your Zitch verification code is {code}")
+    except Exception:  # The code is a courtesy here; any code is accepted.
+        delivery = {"success": False}
+    log.warning("sandbox_identity_code_sent user=%s ref=%s delivered=%s",
+                user.pk, reference, bool(delivery.get("success")) and not delivery.get("mock"))
 
 
 def challenge_payload(challenge):
@@ -236,6 +255,12 @@ def confirm_identity(user, ref, otp):
     claimed = IdentityChallenge.objects.filter(pk=challenge.pk, state="pending", method="OTP").update(state="verifying")
     if not claimed:
         return challenge_payload(challenge)
+    if sandbox_auto_verify():
+        # Sandbox testing: any six-digit code passes; the bank is not asked.
+        challenge.verified_at, challenge.state = timezone.now(), "verified"
+        challenge.save(update_fields=["state", "verified_at", "updated"])
+        log.warning("sandbox_identity_code_accepted user=%s ref=%s", user.pk, challenge.reference)
+        return complete_account(challenge)
     try:
         response = Client().verify_identity(ref, otp)
     except ProviderError:
