@@ -1,6 +1,7 @@
 """Bank account and identity lifecycle shared by app and WhatsApp."""
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 from datetime import timedelta
@@ -13,10 +14,12 @@ from accounts.models import User, hash_identifier, record_identity_proof
 from wallet.models import Wallet
 
 from .client import (Client, ProviderError, affirmative_code, config, customer_enabled, sandbox, phone,
-    require_environment, wallet_number)
+    require_environment, sandbox_auto_verify, wallet_number)
 from .models import BankAccount, IdentityChallenge, PreviousBankArchive
 from .secrets import seal, unseal
 from .validation import wallet_profile
+
+log = logging.getLogger(__name__)
 
 
 def sandbox_tester(user):
@@ -159,6 +162,11 @@ def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
         User.objects.select_for_update().get(pk=user.pk)
         previous = IdentityChallenge.objects.filter(user=user, expires_at__gt=timezone.now(),
             state__in=["initiating", "pending", "verifying", "verified", "opening", "unconfirmed"]).first()
+        if previous and sandbox_auto_verify() and not previous.verified_at:
+            # A sandbox tester may be stuck on a check the sandbox can never
+            # finish. Retire it; the auto-verified attempt below replaces it.
+            IdentityChallenge.objects.filter(pk=previous.pk).update(state="expired", encrypted_input="")
+            previous = None
         if previous:
             require_environment(previous.environment)
             if previous.identity_hash == digest and previous.method == method:
@@ -169,6 +177,14 @@ def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
             environment=config().get("ENVIRONMENT", "sandbox"),
             encrypted_input=seal({"profile": profile, "identifier": identifier}),
             expires_at=timezone.now() + timedelta(minutes=10))
+    if sandbox_auto_verify():
+        # Sandbox testing: the identity check passes for any well-formed number.
+        # Opening the wallet below still goes to the bank sandbox for a NUBAN.
+        IdentityChallenge.objects.filter(pk=challenge.pk).update(state="verified", verified_at=timezone.now())
+        challenge.refresh_from_db()
+        # Server-generated values only; the challenge row holds the ID type.
+        log.warning("sandbox_identity_auto_verified user=%s ref=%s", user.pk, challenge.reference)
+        return complete_account(challenge)
     try:
         response = Client().initiate_identity(challenge.reference, kind, identifier,
             method=method, mobile=profile["phoneNo"], image=image)
@@ -265,7 +281,15 @@ def complete_account(challenge):
     number = wallet_number(data)
     name = data.get("fullName") or data.get("name") or ""
     if not response.ok or not re.fullmatch(r"[0-9]{10}", number):
-        return {**challenge_payload(challenge), "pending": True, "otp_required": False}
+        # Record why the bank did not return an account, without personal data.
+        bank_message = str(response.body.get("message") or response.body.get("responseMessage") or "")[:160]
+        log.warning("bank_wallet_open_not_confirmed ref=%s http=%s code=%s message=%r",
+                    challenge.reference, response.http_status, response.body.get("responseCode"), bank_message)
+        payload = {**challenge_payload(challenge), "pending": True, "otp_required": False}
+        if sandbox() and bank_message:
+            # Testers need the bank's reason; customers keep the neutral message.
+            payload["message"] = "Your account could not be opened yet: " + bank_message
+        return payload
     if not same_name(user.get_full_name(), name):
         IdentityChallenge.objects.filter(pk=challenge.pk).update(state="review")
         raise ValueError("Bank account details need review. Contact support")
@@ -320,7 +344,9 @@ def _finish_identity(challenge, bank):
         raise ValueError("Identity changes require support review")
     record_identity_proof(user, challenge.kind, challenge.identity_hash, prehashed=True,
         source="9psb_face" if challenge.method == "FACIAL" else "9psb_otp",
-        provider_reference=challenge.reference, verified_name=bank.name)
+        # Marked so sandbox shortcuts are never mistaken for real checks.
+        provider_reference=("SANDBOX-AUTO-" if sandbox_auto_verify() else "") + challenge.reference,
+        verified_name=bank.name)
     setattr(user, challenge.kind + "_hash", challenge.identity_hash)
     setattr(user, challenge.kind + "_last4", challenge.last4)
     setattr(user, challenge.kind + "_verified", True)
