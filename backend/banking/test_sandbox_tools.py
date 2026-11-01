@@ -11,7 +11,7 @@ from django.utils import timezone
 from accounts.models import IdentityProof, User
 from wallet.models import Transaction, Wallet
 
-from .accounts import confirm_identity, start_identity
+from .accounts import complete_account, confirm_identity, start_identity
 from .client import Reply
 from .models import BankAccount, IdentityChallenge
 from .notifications import ingest, process
@@ -115,6 +115,35 @@ class AutoVerifyTests(Base):
         self.assertTrue(any("bank_wallet_open_not_confirmed" in line for line in logs.output))
         self.assertTrue(all("22222222222" not in line for line in logs.output))
         self.assertFalse(BankAccount.objects.exists())
+
+    def test_the_sandbox_wallet_is_accepted_in_the_name_the_bank_gives_it(self):
+        started, _ = self.start()
+        dummy = Reply({"status": "SUCCESS", "data": {"accountNumber": "1100000001", "fullName": "Sandbox Test Person"}}, 200)
+        with patch("banking.client.Client.open_wallet", return_value=dummy), \
+                patch("banking.client.Client.wallet", return_value=readback(name="Sandbox Test Person")):
+            result = confirm_identity(self.user, started["reference"], "000000")
+        self.assertTrue(result["success"])
+        self.assertEqual(BankAccount.objects.get().name, "Sandbox Test Person")
+
+    def test_the_read_back_must_still_match_the_banks_own_name(self):
+        started, _ = self.start()
+        dummy = Reply({"status": "SUCCESS", "data": {"accountNumber": "1100000001", "fullName": "Sandbox Test Person"}}, 200)
+        with patch("banking.client.Client.open_wallet", return_value=dummy), \
+                patch("banking.client.Client.wallet", return_value=readback(name="Someone Else")):
+            result = confirm_identity(self.user, started["reference"], "000000")
+        self.assertFalse(result["success"])
+        self.assertFalse(BankAccount.objects.exists())
+
+    def test_an_unfinished_attempt_expires_and_the_tester_can_start_again(self):
+        stuck = IdentityChallenge.objects.create(user=self.user, reference="ZIOPENING", kind="bvn", method="OTP",
+            identity_hash="other", last4="1111", environment="sandbox", state="opening", verified_at=timezone.now(),
+            encrypted_input="sealed", expires_at=timezone.now() - timedelta(minutes=1))
+        with patch("banking.client.Client.lookup_wallet") as lookup:
+            payload = complete_account(stuck)
+        lookup.assert_not_called()
+        self.assertEqual(payload["account_setup_state"], "expired")
+        started, _ = self.start()
+        self.assertTrue(started["otp_required"])
 
     @override_settings(NINEPSB={**SANDBOX, "ENVIRONMENT": "production", "UAT_APPROVED": True})
     def test_the_flag_never_applies_outside_the_sandbox(self):

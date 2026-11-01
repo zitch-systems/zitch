@@ -223,8 +223,22 @@ def _send_sandbox_code(user, reference):
                 user.pk, reference, bool(delivery.get("success")) and not delivery.get("mock"))
 
 
+def holder_matches(user, bank_name):
+    """The bank's account holder must be the customer.
+
+    Sandbox auto-verify is the one exception: a made-up test BVN carries the
+    sandbox's own dummy name, so the wallet the sandbox opens is accepted in
+    that name. The read-back below still has to match the name the bank gave.
+    """
+    return sandbox_auto_verify() or same_name(user.get_full_name(), bank_name)
+
+
 def challenge_payload(challenge):
-    if not challenge.verified_at and challenge.expires_at <= timezone.now() and challenge.state not in {"complete", "failed", "expired"}:
+    # In sandbox auto-verify mode an attempt the sandbox never finished must not
+    # block the tester for good; outside it, a verified attempt may still be
+    # opening a real account and is never expired here.
+    stale = challenge.expires_at <= timezone.now() and (not challenge.verified_at or sandbox_auto_verify())
+    if stale and challenge.state not in {"complete", "failed", "expired"}:
         challenge.state, challenge.encrypted_input = "expired", ""
         challenge.save(update_fields=["state", "encrypted_input", "updated"])
     return {"success": challenge.state == "complete", "pending": challenge.state not in {"complete", "failed", "expired"},
@@ -282,6 +296,9 @@ def confirm_identity(user, ref, otp):
 
 def complete_account(challenge):
     require_environment(challenge.environment)
+    if (sandbox_auto_verify() and challenge.state != "complete"
+            and challenge.expires_at <= timezone.now()):
+        return challenge_payload(challenge)  # Retires a sandbox attempt that never finished.
     if not challenge.verified_at or not challenge.encrypted_input:
         raise ValueError("Complete bank identity verification first")
     user = challenge.user
@@ -315,7 +332,7 @@ def complete_account(challenge):
             # Testers need the bank's reason; customers keep the neutral message.
             payload["message"] = "Your account could not be opened yet: " + bank_message
         return payload
-    if not same_name(user.get_full_name(), name):
+    if not holder_matches(user, name):
         IdentityChallenge.objects.filter(pk=challenge.pk).update(state="review")
         raise ValueError("Bank account details need review. Contact support")
     # Read back the new account before attaching any funding destination.
@@ -360,7 +377,7 @@ def _finish_identity(challenge, bank):
     require_environment(challenge.environment)
     if challenge.state == "complete":
         return {"success": True, **account_payload(user)}
-    if not challenge.verified_at or not same_name(user.get_full_name(), bank.name):
+    if not challenge.verified_at or not holder_matches(user, bank.name):
         raise ValueError("Bank identity requires review")
     if User.objects.exclude(pk=user.pk).filter(**{challenge.kind + "_hash": challenge.identity_hash}).exists():
         raise ValueError("This identity is already linked to an account")
