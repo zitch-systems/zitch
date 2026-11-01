@@ -182,7 +182,8 @@ def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
         # Opening the wallet below still goes to the bank sandbox for a NUBAN.
         IdentityChallenge.objects.filter(pk=challenge.pk).update(state="verified", verified_at=timezone.now())
         challenge.refresh_from_db()
-        log.warning("sandbox_identity_auto_verified user=%s kind=%s ref=%s", user.pk, kind, challenge.reference)
+        # Server-generated values only; the challenge row holds the ID type.
+        log.warning("sandbox_identity_auto_verified user=%s ref=%s", user.pk, challenge.reference)
         return complete_account(challenge)
     try:
         response = Client().initiate_identity(challenge.reference, kind, identifier,
