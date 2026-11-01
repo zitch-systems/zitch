@@ -45,7 +45,7 @@
     .message { background: #e3f1e8; border-radius: 12px; padding: 12px 14px; }
     .tips { margin: 10px 0 0; padding-left: 20px; color: #3c5149; }
     .camera { display: flex; align-items: center; justify-content: center; min-height: 52px; border: 1.5px dashed #14583d; border-radius: 14px; color: #14583d; margin-top: 16px; cursor: pointer; font-weight: 700; }
-    #face-preview { display: block; width: 180px; height: 180px; object-fit: cover; border-radius: 50%; margin: 16px auto 0; border: 3px solid #14583d; }
+    #face-preview { display: block; width: 180px; height: 180px; border-radius: 50%; margin: 16px auto 0; border: 3px solid #14583d; }
     .visually-hidden { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
     .js #face-step { display: none; }
     .js .face-mode #face-step { display: block; }
@@ -168,7 +168,7 @@
             <li>Remove glasses, hats and face coverings</li>
             <li>Keep your whole face inside the frame</li>
           </ul>
-          <img id="face-preview" alt="Your selfie" hidden>
+          <canvas id="face-preview" width="360" height="360" role="img" aria-label="Your selfie" hidden></canvas>
           <label class="camera" for="face"><span id="face-cta">Take a selfie</span></label>
           <input id="face" name="face" type="file" accept="image/jpeg,image/png" capture="user" class="visually-hidden">
           <button type="submit" id="face-submit">Verify my face</button>
@@ -296,6 +296,12 @@
         canvas.width = Math.round(img.naturalWidth * scale);
         canvas.height = Math.round(img.naturalHeight * scale);
         canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        // Preview: a centred square of the decoded photo, drawn (not linked).
+        var side = Math.min(img.naturalWidth, img.naturalHeight);
+        var view = preview.getContext("2d");
+        view.clearRect(0, 0, preview.width, preview.height);
+        view.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side,
+          0, 0, preview.width, preview.height);
         URL.revokeObjectURL(url);
         canvas.toBlob(function (blob) {
           done(blob ? new File([blob], "selfie.jpg", { type: "image/jpeg" }) : null);
@@ -306,16 +312,14 @@
     };
     face.addEventListener("change", function () {
       var file = face.files && face.files[0];
-      if (!file) { faceSubmit.disabled = true; return; }
+      if (!file) { faceSubmit.disabled = true; preview.hidden = true; return; }
       cta.textContent = "Preparing photo…";
       // Phone cameras produce multi-megabyte photos; send a smaller JPEG.
       shrink(file, function (small) {
         if (small && window.DataTransfer) {
           try { var list = new DataTransfer(); list.items.add(small); face.files = list.files; file = small; } catch (e) { /* keep the original */ }
         }
-        if (preview.src) URL.revokeObjectURL(preview.src);
-        preview.src = URL.createObjectURL(file);
-        preview.hidden = false;
+        preview.hidden = !small;
         cta.textContent = "Retake selfie";
         faceSubmit.disabled = false;
       });
