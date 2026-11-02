@@ -33,6 +33,10 @@ POSES = ("straight", "left", "right")
 MIN_POSE_CHANGE = 6.0
 
 
+class FaceCheckError(ValueError):
+    """A customer-facing reason the face check didn't pass."""
+
+
 def _nonce_key(user_id):
     return f"bank-liveness:{user_id}"
 
@@ -62,19 +66,19 @@ def _user_for(token):
 
 def _frame(value):
     if not isinstance(value, str) or not value.startswith("data:image/jpeg;base64,"):
-        raise ValueError("Camera frames must be JPEG images")
+        raise FaceCheckError("Camera frames must be JPEG images")
     value = value.partition(",")[2]
     if not value or len(value) > FRAME_MAX_CHARS:
-        raise ValueError("A camera frame is missing or too large")
+        raise FaceCheckError("A camera frame is missing or too large")
     try:
         raw = base64.b64decode(value, validate=True)
         with Image.open(BytesIO(raw)) as im:
             if im.format != "JPEG" or im.width < 160 or im.height < 160:
-                raise ValueError("A camera frame is too small")
+                raise FaceCheckError("A camera frame is too small")
             small = im.convert("L").resize((48, 48))
             return value, list(small.getdata())
     except (binascii.Error, OSError, Image.DecompressionBombError):
-        raise ValueError("A camera frame could not be read") from None
+        raise FaceCheckError("A camera frame could not be read") from None
 
 
 def _change(a, b):
@@ -84,11 +88,11 @@ def _change(a, b):
 def check_frames(frames):
     """Return the straight-on frame (base64 JPEG) if the poses show a moving face."""
     if not isinstance(frames, dict) or set(frames) != set(POSES):
-        raise ValueError("Complete all three steps")
+        raise FaceCheckError("Complete all three steps")
     parsed = {pose: _frame(frames[pose]) for pose in POSES}
     straight = parsed["straight"][1]
     if min(_change(straight, parsed[pose][1]) for pose in ("left", "right")) < MIN_POSE_CHANGE:
-        raise ValueError("We couldn't see you turn your head. Please try again, turning a little more")
+        raise FaceCheckError("We couldn't see you turn your head. Please try again, turning a little more")
     return parsed["straight"][0]
 
 
@@ -130,10 +134,13 @@ def liveness_submit(request, token):
     if int(request.META.get("CONTENT_LENGTH") or 0) > 3 * FRAME_MAX_CHARS + 4096:
         return _headers(JsonResponse({"success": False, "message": "The photos are too large."}, status=413), nonce)
     try:
-        frames = json.loads(request.body or b"{}").get("frames")
-        photo = check_frames(frames)
+        body = json.loads(request.body or b"{}")
+        photo = check_frames(body.get("frames") if isinstance(body, dict) else None)
         upgrades.store_document(user, "userPhoto", photo)
-    except (ValueError, AttributeError) as exc:
-        return _headers(JsonResponse({"success": False, "message": str(exc)}, status=400), nonce)
+    except FaceCheckError as exc:
+        return _headers(JsonResponse({"success": False, "message": exc.args[0]}, status=400), nonce)
+    except ValueError:  # Unreadable request or photo: never echo parser details.
+        return _headers(JsonResponse({"success": False, "message": "We could not check your face. Please try again."},
+                                     status=400), nonce)
     cache.delete(_nonce_key(user.pk))  # Single use.
     return _headers(JsonResponse({"success": True}), nonce)
