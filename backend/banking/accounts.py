@@ -318,9 +318,16 @@ def confirm_identity(user, ref, otp):
     return complete_account(challenge) if challenge.verified_at else challenge_payload(challenge)
 
 
-def complete_account(challenge):
+def complete_account(challenge, *, known_number=None):
+    """Attach the bank account for a verified identity check.
+
+    known_number (sandbox only) attaches a test wallet the bank already opened
+    for this tester, read back by its account number.
+    """
     require_environment(challenge.environment)
-    if (sandbox_auto_verify() and challenge.state != "complete"
+    if known_number and not sandbox():
+        raise ValueError("Attaching a known wallet is for the bank sandbox only")
+    if (not known_number and sandbox_auto_verify() and challenge.state != "complete"
             and challenge.expires_at <= timezone.now()):
         return challenge_payload(challenge)  # Retires a sandbox attempt that never finished.
     if not challenge.verified_at or not challenge.encrypted_input:
@@ -336,7 +343,9 @@ def complete_account(challenge):
         # second account. Tier 2 still requires both identities and bank approval.
         return _finish_identity(challenge, current)
     claimed = IdentityChallenge.objects.filter(pk=challenge.pk, state="verified").update(state="opening")
-    if not claimed:
+    if known_number:
+        response = Client().wallet(known_number)
+    elif not claimed:
         if challenge.state != "opening":
             return {**challenge_payload(challenge), "pending": True, "otp_required": False}
         response = Client().lookup_wallet(challenge.kind, stored["identifier"])
@@ -418,12 +427,15 @@ def _sandbox_existing_wallet(challenge, stored):
         seen.add((kind, identifier))
         try:
             reply = client.lookup_wallet(kind, identifier)
-        except (ProviderError, ValueError):
+        except (ProviderError, ValueError) as exc:
+            log.warning("sandbox_existing_wallet_lookup ref=%s error=%s", challenge.reference, getattr(exc, "code", "invalid"))
             continue
         data = reply.data if isinstance(reply.data, dict) else {}
         if reply.ok and re.fullmatch(r"[0-9]{10}", wallet_number(data)):
             log.info("sandbox_existing_wallet_found ref=%s", challenge.reference)
             return reply
+        log.warning("sandbox_existing_wallet_lookup ref=%s http=%s message=%r", challenge.reference,
+                    reply.http_status, str(reply.body.get("message") or "")[:120])
     return None
 
 

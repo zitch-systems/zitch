@@ -180,6 +180,26 @@ def bank_directory(reply):
     return result
 
 
+def found_wallet(reply, kind, identifier):
+    """The get_wallet reply lists wallets under data.wallet. Return a reply whose
+    data is the one wallet opened with this identity, in the open_wallet shape."""
+    entries = reply.data.get("wallet") if isinstance(reply.data, dict) else None
+    if not isinstance(entries, list):
+        return reply
+    field = "bvn" if kind == "bvn" else "nationalIdentityNumber"
+    matches = [w for w in entries if isinstance(w, dict) and str(w.get(field, "")) == identifier]
+    if len(matches) != 1:
+        return Reply({**reply.body, "data": {}}, reply.http_status)
+    wallet = matches[0]
+    name = str(wallet.get("accountName") or "")
+    merchant = str(wallet.get("merchantId") or "")
+    # The bank prefixes the account name with the merchant id: "MERCHANT/Jane Doe".
+    if merchant and name.upper().startswith(merchant.upper() + "/"):
+        name = name[len(merchant) + 1:]
+    return Reply({**reply.body, "data": {"accountNumber": wallet.get("accountNumber"), "fullName": name.strip()}},
+                 reply.http_status)
+
+
 @dataclass(frozen=True)
 class Reply:
     body: dict
@@ -458,7 +478,12 @@ class Client:
             raise ValueError("Verified identity is required")
         # July v3.1 explicitly specifies GET with a JSON request body. Keep
         # personal identifiers out of URL query strings and access logs.
-        return self.request("get_wallet", {kind: identifier}, method="GET")
+        reply = self.request("get_wallet", {kind: identifier}, method="GET")
+        if reply.http_status >= 500 and sandbox():
+            # Sandbox only: some gateways drop a GET body. Test identities may
+            # appear in the URL; real ones never do.
+            reply = self.request("get_wallet", method="GET", params={kind: identifier})
+        return found_wallet(reply, kind, identifier)
 
     def banks(self):
         return self.request("get_banks", method="GET")

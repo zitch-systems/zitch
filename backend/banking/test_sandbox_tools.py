@@ -205,6 +205,47 @@ class AutoVerifyTests(Base):
         with self.assertRaisesRegex(ValueError, "again"):
             resend_code(self.user, started["reference"])
 
+    def test_the_bank_lists_wallets_and_the_one_for_this_bvn_is_attached(self):
+        # get_wallet answers with data.wallet: a list, names prefixed with the merchant id.
+        started, _ = self.start()
+        exists = Reply({"status": "FAILED", "message": "A Wallet Already Exists For This User"}, 400)
+        listed = Reply({"status": "SUCCESS", "message": "Wallet Information Request Successful", "data": {"wallet": [
+            {"accountName": "ZITCH/Jane Doe", "accountNumber": "1100000001", "merchantId": "ZITCH",
+             "bvn": "22222222222", "phoneNumber": PROFILE["phoneNo"]}]}}, 200)
+        with patch("banking.client.Client.open_wallet", return_value=exists), \
+                patch("banking.client.Client.request", return_value=listed) as request, \
+                patch("banking.client.Client.wallet", return_value=readback()):
+            result = confirm_identity(self.user, started["reference"], "123456")
+        self.assertTrue(result["success"], result)
+        self.assertEqual(request.call_args.args[0], "get_wallet")
+        bank = BankAccount.objects.get()
+        self.assertEqual((bank.number, bank.name), ("1100000001", "Jane Doe"))
+
+    def test_a_listed_wallet_for_another_identity_is_not_attached(self):
+        from .client import found_wallet
+        listed = Reply({"status": "SUCCESS", "data": {"wallet": [{"accountNumber": "1100000001", "bvn": "99999999999"}]}}, 200)
+        self.assertEqual(found_wallet(listed, "bvn", "22222222222").data, {})
+
+    def test_a_test_wallet_is_attached_by_its_account_number(self):
+        started, _ = self.start()
+        exists = Reply({"status": "FAILED", "message": "A Wallet Already Exists For This User"}, 400)
+        missing = Reply({"status": "FAILED", "message": "An error occurred"}, 500)
+        with patch("banking.client.Client.open_wallet", return_value=exists), \
+                patch("banking.client.Client.lookup_wallet", return_value=missing):
+            self.assertFalse(confirm_identity(self.user, started["reference"], "123456")["success"])
+        out = StringIO()
+        with patch("banking.client.Client.wallet", return_value=readback()):
+            call_command("bank_sandbox_attach", phone=PROFILE["phoneNo"], account="1100000001", stdout=out)
+        self.assertIn('"attached": true', out.getvalue())
+        self.assertEqual(BankAccount.objects.get().number, "1100000001")
+        with self.assertRaisesRegex(CommandError, "already"):
+            call_command("bank_sandbox_attach", phone=PROFILE["phoneNo"], account="1100000001", stdout=StringIO())
+
+    @override_settings(NINEPSB={**CONFIG, "ENVIRONMENT": "production"})
+    def test_attaching_a_known_wallet_is_refused_outside_the_sandbox(self):
+        with self.assertRaisesRegex(CommandError, "sandbox"):
+            call_command("bank_sandbox_attach", phone=PROFILE["phoneNo"], account="1100000001", stdout=StringIO())
+
 
 @override_settings(NINEPSB=SANDBOX)
 class SandboxFundingTests(Base):
