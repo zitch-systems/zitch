@@ -26,24 +26,16 @@ def profile(**changes):
 
 
 class UpgradeRuleTests(SimpleTestCase):
-    def test_a_nin_needs_no_dates_or_back_and_uses_the_nin_as_its_id_number(self):
-        body = upgrade_profile(2, profile(idCardBack=None))
-        self.assertNotIn("idIssueDate", body)
-        self.assertNotIn("idExpiryDate", body)
-        self.assertNotIn("idCardBack", body)
+    def test_the_nin_is_the_id_with_no_type_choice_dates_or_back(self):
+        body = upgrade_profile(2, profile(idType="2", idCardBack=None, idIssueDate="2020-01-01", placeOfBirth="Lagos"))
+        self.assertEqual(body["idType"], "1")
         self.assertEqual(body["idNumber"], "10987654321")
+        for gone in ("idIssueDate", "idExpiryDate", "idCardBack", "placeOfBirth"):
+            self.assertNotIn(gone, body)
 
-    def test_a_passport_has_no_back_but_needs_its_dates(self):
-        with self.assertRaisesRegex(ValueError, "required"):
-            upgrade_profile(2, profile(idType="4", idCardBack=None))
-        body = upgrade_profile(2, profile(idType="4", idCardBack=None, idNumber="A1234567",
-                                          idIssueDate="2020-01-01", idExpiryDate="2030-01-01"))
-        self.assertNotIn("idCardBack", body)
-        self.assertEqual(body["idExpiryDate"], "2030-01-01")
-
-    def test_a_drivers_licence_still_needs_its_back(self):
+    def test_the_nin_slip_photo_is_required(self):
         with self.assertRaisesRegex(ValueError, "document"):
-            upgrade_profile(2, profile(idType="2", idCardBack=None, idIssueDate="2020-01-01", idExpiryDate="2030-01-01"))
+            upgrade_profile(2, profile(idCardFront=None))
 
     def test_a_large_face_photo_is_shrunk_to_the_bank_limit(self):
         large = picture(side=900, noise=True)
@@ -56,3 +48,12 @@ class UpgradeRuleTests(SimpleTestCase):
     def test_no_face_photo_asks_for_face_verification(self):
         with self.assertRaisesRegex(ValueError, "face"):
             upgrade_profile(2, profile(userPhoto=None))
+
+
+class WalletProfileTests(SimpleTestCase):
+    def test_only_the_banks_mandatory_opening_fields_are_sent(self):
+        from .validation import wallet_profile
+        body = wallet_profile({"lastName": "Doe", "otherNames": "Jane", "phoneNo": "08011112222", "gender": 1,
+            "dateOfBirth": "01/01/1990", "address": "1 Test Road", "email": "jane@example.test", "ninUserId": "X",
+            "placeOfBirth": "Lagos", "accountName": "Jane", "nextOfKinName": "John", "nextOfKinPhoneNo": "08022223333"})
+        self.assertEqual(set(body), {"lastName", "otherNames", "phoneNo", "gender", "dateOfBirth", "address"})

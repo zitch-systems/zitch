@@ -132,9 +132,9 @@ class WebTests(TestCase):
         page = self.open_tier(1)
         self.assertContains(page, "Open your Zitch account")
         self.assertContains(page, 'name="identifier"')
-        # BVN is the default ID, and the long form is split by a Next button.
-        self.assertContains(page, 'name="kind" value="bvn" checked')
-        self.assertNotContains(page, 'name="kind" value="nin" checked')
+        # The account is opened with the BVN only, and the long form is split by a Next button.
+        self.assertContains(page, '<input type="hidden" name="kind" value="bvn">', html=True)
+        self.assertNotContains(page, 'value="nin"')
         self.assertContains(page, 'id="next"')
         # No test-mode banners or narration on the customer page.
         self.assertNotContains(page, "Test mode")
@@ -159,14 +159,15 @@ class WebTests(TestCase):
         self.assertNotContains(page, 'name="identifier"')
         self.assertNotContains(page, 'name="tier" value="2"')
 
-    def test_customer_page_never_names_partners_and_explains_the_nimc_id(self):
+    def test_customer_page_never_names_partners_or_asks_optional_bank_fields(self):
         for tier in (1, 2, 3):
             with self.subTest(tier=tier):
                 page = self.open_tier(tier).content.decode()
                 for partner in ("9PSB", "9psb", "Prembly"):
                     self.assertNotIn(partner, page)
         page = self.open_tier(1)
-        self.assertContains(page, "NIMC User ID")
+        for optional in ("NIMC User ID", "ninUserId", "Place of birth", "Next of kin", 'name="idNumber"'):
+            self.assertNotContains(page, optional)
         self.assertNotContains(page, "NIN-only account")
         self.assertNotContains(page, "required by bank")
         # Date of birth opens the number keypad and is masked to DD/MM/YYYY.
@@ -293,12 +294,11 @@ class WebTests(TestCase):
     def test_details_survive_an_error_but_the_id_number_is_not_echoed(self):
         self.open_tier(1)
         with patch("banking.client.Client.initiate_identity") as send:
-            page = self.post(self.details(dateOfBirth="31/02/1990", kind="nin", ninUserId=""))
+            page = self.post(self.details(dateOfBirth="31/02/1990"))
         send.assert_not_called()
         self.assertEqual(page.status_code, 400)
         self.assertContains(page, 'value="31/02/1990"', status_code=400)
         self.assertContains(page, 'value="1 Test Road"', status_code=400)
-        self.assertContains(page, 'name="kind" value="nin" checked', status_code=400)
         self.assertContains(page, 'name="method" value="FACIAL" checked', status_code=400)
         self.assertNotContains(page, "12345678901", status_code=400)
 

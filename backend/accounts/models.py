@@ -352,7 +352,7 @@ class User(AbstractUser):
         if not bank or bank.tier < 1:
             return
         kinds = set(IdentityProof.objects.filter(user=self,
-            source__in=["9psb_otp", "9psb_face"]).values_list("identity_type", flat=True))
+            source__in=["9psb_otp", "9psb_face", "9psb_upgrade"]).values_list("identity_type", flat=True))
         if not kinds.intersection({"bvn", "nin"}):
             return
         self.tier = 1
@@ -427,6 +427,7 @@ class IdentityProof(models.Model):
     SOURCE_CHOICES = (
         ("9psb_otp", "9PSB identity OTP"),
         ("9psb_face", "9PSB facial verification"),
+        ("9psb_upgrade", "9PSB approved Tier 2 upgrade"),
         (WEMA_WALLET_OTP, "Wema wallet OTP"),
         (WEMA_FACE, "Wema hosted face verification"),
         (WEMA_TIER2, "Wema Tier 2 upgrade"),

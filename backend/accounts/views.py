@@ -1132,7 +1132,7 @@ def _kyc_state(user) -> dict:
     from banking.client import config
     from accounts.models import IdentityProof
     bank = account_for(user)
-    proofs = set(IdentityProof.objects.filter(user=user, source__in=["9psb_otp", "9psb_face"]).values_list("identity_type", flat=True))
+    proofs = set(IdentityProof.objects.filter(user=user, source__in=["9psb_otp", "9psb_face", "9psb_upgrade"]).values_list("identity_type", flat=True))
     return {**account_payload(user), "tier": user.tier, "tier_name": _TIER_NAMES.get(user.tier, "Unverified"),
         "transaction_limit": str(user.transaction_limit), "daily_transfer_limit": str(user.daily_transfer_limit),
         "daily_bill_limit": str(user.daily_bill_limit), "limit_source": "Zitch platform limits",

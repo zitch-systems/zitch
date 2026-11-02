@@ -33,7 +33,8 @@ function KycScreenContent() {
   const [status, setStatus] = useState<BankStatus | null>(null);
   const [profile, setProfile] = useState<BankProfile>(emptyProfile);
   // BVN is the default ID. Details come first, then one page for the ID and its code.
-  const [kind, setKind] = useState<'bvn' | 'nin'>('bvn');
+  // Tier 1 is opened with the BVN only; the NIN is given on the Tier 2 upgrade.
+  const kind = 'bvn' as const;
   const [page, setPage] = useState<'details' | 'id'>('details');
   const [step, setStep] = useState<'details' | 'face'>('details');
   const [photo, setPhoto] = useState('');
@@ -75,9 +76,9 @@ function KycScreenContent() {
         if (result.email_verified) { setEmailCode(''); setEmailSent(false); }
         const challenge = result.identity_challenge;
         setTracking(challenge?.tracking_id || ''); setNeedsOtp(challenge?.otp_required === true);
-        if (challenge) { setKind(challenge.kind); setPage('id'); }
+        if (challenge) setPage('id');
         // An existing account already holds the details: go straight to the ID.
-        else if (result.account_number) { setPage('id'); setKind(result.bvn_verified && !result.nin_verified ? 'nin' : 'bvn'); }
+        else if (result.account_number) setPage('id');
       }
       else { setStatus(null); setMessage(result.message || 'Could not load verification status.'); }
     } catch { if (current(owner) && serial === readSerial.current) { setStatus(null); setMessage('Could not load verification status. Please try again.'); } }
@@ -189,12 +190,11 @@ function KycScreenContent() {
   </Screen>;
 
   const hasAccount = !!status.account_number;
-  const needsNimcId = kind === 'nin' && !hasAccount;
   const dobError = profile.dateOfBirth.length === 10 && !validDob(profile.dateOfBirth) ? 'Enter a real date of birth' : undefined;
   const detailsReady = !!profile.otherNames.trim() && !!profile.lastName.trim() && !!profile.phoneNo.trim()
     && validDob(profile.dateOfBirth) && (profile.gender === 0 || profile.gender === 1) && !!profile.address.trim();
-  const idReady = identifier.length === 11 && (!needsNimcId || !!profile.ninUserId?.trim());
-  const verified = kind === 'bvn' ? status.bvn_verified : status.nin_verified;
+  const idReady = identifier.length === 11;
+  const verified = status.bvn_verified;
 
   if (page === 'details' && !hasAccount) return <Screen header={<Header title="Your details" />}>
     <View style={{ gap: 16, paddingBottom: 32 }}>
@@ -213,19 +213,15 @@ function KycScreenContent() {
     </View>
   </Screen>;
 
-  return <Screen header={<Header title="Verify your identity" onBack={busy || hasAccount ? undefined : () => setPage('details')} />}>
+  return <Screen header={<Header title="Verify your BVN" onBack={busy || hasAccount ? undefined : () => setPage('details')} />}>
     <View style={{ gap: 16, paddingBottom: 32 }}>
       {hasAccount && <Card>
         <Text style={heading}>{status.account_name}</Text>
         <Text style={{ ...text, marginTop: 4 }}>{`${status.account_number} · Tier ${status.bank_tier || 1}`}</Text>
       </Card>}
-      <PillTabs scroll={false} options={[{ v: 'bvn', label: 'BVN' }, { v: 'nin', label: 'NIN' }]} value={kind}
-        onChange={(value) => { if (busy || tracking) return; setKind(value as 'bvn' | 'nin'); setIdentifier(''); setMessage(''); }} />
       {verified && !tracking ? <Text style={{ ...text, fontFamily: font.bold }}>{`${kind.toUpperCase()} verified`}</Text> : <>
         <Field editable={!busy && !tracking} label={kind.toUpperCase()} placeholder="11 digits" value={identifier} maxLength={11} keyboardType="number-pad"
           secureTextEntry onChangeText={(value) => setIdentifier(digits(value, 11))} />
-        {needsNimcId && <Field editable={!busy && !tracking} label="NIMC User ID" value={profile.ninUserId || ''} autoCapitalize="none" autoCorrect={false}
-          onChangeText={(ninUserId) => setProfile({ ...profile, ninUserId })} />}
         {!tracking && <>
           <Btn label={busy ? 'Please wait…' : 'Send code'} disabled={busy || !idReady || (!hasAccount && !detailsReady)} onPress={() => void sendCode()} />
           <Btn label="Verify with my face instead" variant="ghost" disabled={busy || !idReady || (!hasAccount && !detailsReady)}

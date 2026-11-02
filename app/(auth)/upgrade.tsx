@@ -14,17 +14,11 @@ import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { getSessionGeneration } from '@/lib/secureStore';
 import { NIGERIA_LGAS, NIGERIA_STATES } from '@/lib/data/nigeria';
 
-const idTypes = [{ v: '1', label: 'NIN' }, { v: '2', label: 'Driver’s licence' }, { v: '3', label: 'Voter’s card' }, { v: '4', label: 'Passport' }];
-// A NIN slip and a passport data page have no back side.
-const noBack = new Set(['1', '4']);
-const docs = { idCardFront: ['ID front', 100000], idCardBack: ['ID back', 100000], utilityBill: ['Utility bill', 50000], customerSignature: ['Signature', 680000] } as const;
+// The NIN is the ID: its number is the ID number and its slip is the ID image.
+const docs = { idCardFront: ['NIN slip', 100000], utilityBill: ['Utility bill', 50000], customerSignature: ['Signature', 680000] } as const;
 type Doc = keyof typeof docs;
-const fresh = () => ({ pep: 'NO', idType: '1' } as Record<string, string>);
+const fresh = () => ({ pep: 'NO' } as Record<string, string>);
 const digits = (value: string, max: number) => value.replace(/\D/g, '').slice(0, max);
-const isoDate = (value: string) => {
-  const d = value.replace(/\D/g, '').slice(0, 8);
-  return d.length > 6 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}` : d.length > 4 ? `${d.slice(0, 4)}-${d.slice(4)}` : d;
-};
 const lgasFor = (state: string) => NIGERIA_LGAS[NIGERIA_STATES.find((s) => s.toLowerCase() === state.trim().toLowerCase()) || ''] || [];
 
 function UpgradeContent() {
@@ -102,10 +96,6 @@ function UpgradeContent() {
     <Card><Text style={heading}>You’re on Tier 3</Text><Text style={{ ...text, marginTop: 4 }}>Your account has the highest limits.</Text></Card>
   </Screen>;
   const target = tier + 1;
-  if (!status.bvn_verified || !status.nin_verified) return <Screen header={<Header title={`Upgrade to Tier ${target}`} />}>
-    <View style={{ gap: 16 }}><Text style={text}>{`Verify your ${status.bvn_verified ? 'NIN' : 'BVN'} first.`}</Text>
-      <Btn label={`Verify my ${status.bvn_verified ? 'NIN' : 'BVN'}`} onPress={() => router.push('/kyc')} /></View>
-  </Screen>;
 
   const notice = !!message && <Text accessibilityLiveRegion="polite" style={{ ...text, color: c.brand }}>{message}</Text>;
   const addressFields = (prefix: '' | 'addr_') => <>
@@ -152,17 +142,13 @@ function UpgradeContent() {
     </Screen>;
   }
 
-  const nin = form.idType === '1';
-  const needsBack = !noBack.has(form.idType);
-  const required = ['bvn', 'nin', 'idCardFront', 'utilityBill', 'customerSignature', 'userPhoto',
-    ...(nin ? [] : ['idNumber', 'idIssueDate', 'idExpiryDate']), ...(needsBack ? ['idCardBack'] : []),
+  const askBvn = !status.bvn_on_file;
+  const required = ['nin', 'idCardFront', 'utilityBill', 'customerSignature', 'userPhoto', ...(askBvn ? ['bvn'] : []),
     ...(target === 2 ? ['houseNumber', 'streetName', 'city', 'state', 'localGovernment', 'nearestLandmark'] : [])];
-  const ready = required.every((k) => !!form[k]?.trim()) && form.bvn?.length === 11 && form.nin?.length === 11;
+  const ready = required.every((k) => !!form[k]?.trim()) && (!askBvn || form.bvn?.length === 11) && form.nin?.length === 11;
   const docButton = (key: Doc) => <Btn key={key} variant="outline" label={`${form[key] ? '✓ ' : 'Upload '}${docs[key][0]}`} disabled={busy} onPress={() => void upload(key)} />;
   const submit = () => guarded(async (owner) => {
     const body: Record<string, string> = { ...form, accountName: status.account_name || '', phoneNumber: status.profile?.phoneNo || '', email: status.profile?.email || '' };
-    if (nin) { delete body.idIssueDate; delete body.idExpiryDate; delete body.idNumber; }
-    if (!needsBack) delete body.idCardBack;
     Object.keys(body).filter((k) => k.startsWith('addr_')).forEach((k) => delete body[k]);
     const result = await banking.upgrade(target, body);
     if (!current(owner)) return;
@@ -178,19 +164,10 @@ function UpgradeContent() {
 
   return <Screen header={<Header title={`Upgrade to Tier ${target}`} />}>
     <View style={{ gap: 16, paddingBottom: 32 }}>
-      <Text style={heading}>BVN and NIN</Text>
-      <Field editable={!busy} label="BVN" value={form.bvn || ''} maxLength={11} keyboardType="number-pad" secureTextEntry onChangeText={(v) => set('bvn', digits(v, 11))} />
+      <Text style={heading}>NIN</Text>
+      {askBvn && <Field editable={!busy} label="BVN" value={form.bvn || ''} maxLength={11} keyboardType="number-pad" secureTextEntry onChangeText={(v) => set('bvn', digits(v, 11))} />}
       <Field editable={!busy} label="NIN" value={form.nin || ''} maxLength={11} keyboardType="number-pad" secureTextEntry onChangeText={(v) => set('nin', digits(v, 11))} />
-
-      <Text style={heading}>ID document</Text>
-      <PillTabs check options={idTypes} value={form.idType} onChange={(v) => { if (!busy) set('idType', v); }} />
-      {!nin && <>
-        <Field editable={!busy} label="ID number" value={form.idNumber || ''} autoCapitalize="characters" onChangeText={(v) => set('idNumber', v)} />
-        <Field editable={!busy} label="Issue date" placeholder="YYYY-MM-DD" value={form.idIssueDate || ''} keyboardType="number-pad" maxLength={10} onChangeText={(v) => set('idIssueDate', isoDate(v))} />
-        <Field editable={!busy} label="Expiry date" placeholder="YYYY-MM-DD" value={form.idExpiryDate || ''} keyboardType="number-pad" maxLength={10} onChangeText={(v) => set('idExpiryDate', isoDate(v))} />
-      </>}
       {docButton('idCardFront')}
-      {needsBack && docButton('idCardBack')}
 
       {target === 2 && <><Text style={heading}>Home address</Text>{addressFields('')}</>}
 

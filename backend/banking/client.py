@@ -448,8 +448,6 @@ class Client:
             raise ValueError("Verified identity is required")
         payload = {"transactionTrackingRef": reference(ref), **wallet_profile(profile)}
         payload["bvn" if kind == "bvn" else "nationalIdentityNo"] = identifier
-        if kind == "nin" and not payload.get("ninUserId"):
-            raise ValueError("Enter your NIMC User ID. It is different from your 11-digit NIN.")
         return self.request("open_wallet", payload)
 
     def wallet(self, number):
