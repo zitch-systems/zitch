@@ -141,8 +141,6 @@ def check_identity_request(user, kind, identifier, profile, *, method="OTP"):
     profile["email"] = user.email
     if phone(profile["phoneNo"]) != phone(user.phone):
         raise ValueError("Use your verified Zitch phone number")
-    if kind == "nin" and not profile.get("ninUserId") and not account_for(user):
-        raise ValueError("Enter your NIMC User ID. It is different from your 11-digit NIN.")
     if not same_name(user.get_full_name(), profile["otherNames"] + " " + profile["lastName"]):
         raise ValueError("Use the legal name on your Zitch profile")
     digest = hash_identifier(identifier)

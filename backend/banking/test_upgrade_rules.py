@@ -26,17 +26,18 @@ def profile(**changes):
 
 
 class UpgradeRuleTests(SimpleTestCase):
-    def test_a_nin_needs_no_dates_or_back_and_uses_the_nin_as_its_id_number(self):
+    def test_a_nin_needs_no_dates_or_back_and_no_optional_fields_are_sent(self):
         body = upgrade_profile(2, profile(idCardBack=None))
         self.assertNotIn("idIssueDate", body)
         self.assertNotIn("idExpiryDate", body)
         self.assertNotIn("idCardBack", body)
-        self.assertEqual(body["idNumber"], "10987654321")
+        self.assertNotIn("idNumber", body)
+        self.assertNotIn("placeOfBirth", upgrade_profile(2, profile(idCardBack=None, placeOfBirth="Lagos")))
 
     def test_a_passport_has_no_back_but_needs_its_dates(self):
         with self.assertRaisesRegex(ValueError, "required"):
             upgrade_profile(2, profile(idType="4", idCardBack=None))
-        body = upgrade_profile(2, profile(idType="4", idCardBack=None, idNumber="A1234567",
+        body = upgrade_profile(2, profile(idType="4", idCardBack=None,
                                           idIssueDate="2020-01-01", idExpiryDate="2030-01-01"))
         self.assertNotIn("idCardBack", body)
         self.assertEqual(body["idExpiryDate"], "2030-01-01")
@@ -56,3 +57,12 @@ class UpgradeRuleTests(SimpleTestCase):
     def test_no_face_photo_asks_for_face_verification(self):
         with self.assertRaisesRegex(ValueError, "face"):
             upgrade_profile(2, profile(userPhoto=None))
+
+
+class WalletProfileTests(SimpleTestCase):
+    def test_only_the_banks_mandatory_opening_fields_are_sent(self):
+        from .validation import wallet_profile
+        body = wallet_profile({"lastName": "Doe", "otherNames": "Jane", "phoneNo": "08011112222", "gender": 1,
+            "dateOfBirth": "01/01/1990", "address": "1 Test Road", "email": "jane@example.test", "ninUserId": "X",
+            "placeOfBirth": "Lagos", "accountName": "Jane", "nextOfKinName": "John", "nextOfKinPhoneNo": "08022223333"})
+        self.assertEqual(set(body), {"lastName", "otherNames", "phoneNo", "gender", "dateOfBirth", "address"})

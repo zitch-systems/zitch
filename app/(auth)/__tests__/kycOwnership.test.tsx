@@ -68,9 +68,8 @@ async function enter(kind = 'bvn') {
   await next();
   await act(async () => { pill(kind.toUpperCase()).props.onPress(); });
   await act(async () => { field(kind.toUpperCase()).props.onChangeText('12345678901'); });
-  if (kind === 'nin') await act(async () => { field('NIMC User ID').props.onChangeText('NIMC-123'); });
 }
-const sent = (kind: string) => (kind === 'nin' ? { ...profile, ninUserId: 'NIMC-123' } : profile);
+const sent = (_kind: string) => profile;
 async function openFaceStep() {
   await act(async () => { control('Verify with my face instead').props.onPress(); });
 }
@@ -176,12 +175,9 @@ it('masks the date of birth to DD/MM/YYYY digits and rejects impossible dates', 
   expect(control('Next').props.disabled).toBe(true);
 });
 
-it('asks for the NIMC User ID only for NIN', async () => {
+it('asks only for the NIN when opening with NIN, never a NIMC User ID', async () => {
   await mount(); await enter('nin');
-  await act(async () => { field('NIMC User ID').props.onChangeText(''); });
-  expect(control('Send code').props.disabled).toBe(true);
-  await act(async () => { pill('BVN').props.onPress(); });
-  expect(output()).not.toContain('NIMC User ID');
+  expect(output()).not.toContain('NIMC'); expect(control('Send code').props.disabled).toBe(false);
   expect(output()).not.toContain('9PSB'); expect(output()).not.toContain('Prembly');
 });
 

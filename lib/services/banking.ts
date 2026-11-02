@@ -3,7 +3,7 @@ import type { ApiResult } from './types';
 
 export type BankProfile = {
   lastName: string; otherNames: string; phoneNo: string; email?: string;
-  gender?: number; dateOfBirth: string; address: string; ninUserId?: string;
+  gender?: number; dateOfBirth: string; address: string;
 };
 export type BankStatus = ApiResult<{
   provider: '9psb'; bank_tier: number; tier: number; sandbox: boolean;

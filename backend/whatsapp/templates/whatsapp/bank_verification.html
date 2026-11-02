@@ -89,10 +89,6 @@
         </fieldset>
         <label for="identifier" id="identifier-label">BVN</label>
         <input id="identifier" name="identifier" type="password" inputmode="numeric" pattern="[0-9]{11}" minlength="11" maxlength="11" required autocomplete="off" data-digits="11">
-        <div id="nimc-field">
-          <label for="ninUserId">NIMC User ID</label>
-          <input id="ninUserId" name="ninUserId" value="{{ values.ninUserId }}" maxlength="100" autocomplete="off">
-        </div>
         <fieldset>
           <legend>Verify with</legend>
           <div class="options two">
@@ -176,8 +172,6 @@
   var form = document.getElementById("identity-form");
   if (form) {
     var detailsStep = document.getElementById("details-step");
-    var nimc = document.getElementById("nimc-field");
-    var nimcInput = document.getElementById("ninUserId");
     var idLabel = document.getElementById("identifier-label");
     var next = document.getElementById("next");
     var back = document.getElementById("back");
@@ -186,9 +180,6 @@
 
     var syncKind = function () {
       var nin = checked("kind") === "nin";
-      nimc.hidden = !nin;
-      nimcInput.disabled = !nin;
-      nimcInput.required = nin;
       idLabel.textContent = nin ? "NIN" : "BVN";
     };
     var syncMethod = function () {
@@ -245,7 +236,7 @@
       var type = el ? el.value : "1";
       upgrade.querySelectorAll("[data-not-nin]").forEach(function (box) {
         box.hidden = type === "1";
-        box.querySelectorAll("input").forEach(function (i) { i.disabled = type === "1"; i.required = type !== "1" && i.name !== "idNumber"; });
+        box.querySelectorAll("input").forEach(function (i) { i.disabled = type === "1"; i.required = type !== "1"; });
       });
       upgrade.querySelectorAll("[data-back]").forEach(function (box) {
         var none = type === "1" || type === "4";

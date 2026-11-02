@@ -189,11 +189,10 @@ function KycScreenContent() {
   </Screen>;
 
   const hasAccount = !!status.account_number;
-  const needsNimcId = kind === 'nin' && !hasAccount;
   const dobError = profile.dateOfBirth.length === 10 && !validDob(profile.dateOfBirth) ? 'Enter a real date of birth' : undefined;
   const detailsReady = !!profile.otherNames.trim() && !!profile.lastName.trim() && !!profile.phoneNo.trim()
     && validDob(profile.dateOfBirth) && (profile.gender === 0 || profile.gender === 1) && !!profile.address.trim();
-  const idReady = identifier.length === 11 && (!needsNimcId || !!profile.ninUserId?.trim());
+  const idReady = identifier.length === 11;
   const verified = kind === 'bvn' ? status.bvn_verified : status.nin_verified;
 
   if (page === 'details' && !hasAccount) return <Screen header={<Header title="Your details" />}>
@@ -224,8 +223,6 @@ function KycScreenContent() {
       {verified && !tracking ? <Text style={{ ...text, fontFamily: font.bold }}>{`${kind.toUpperCase()} verified`}</Text> : <>
         <Field editable={!busy && !tracking} label={kind.toUpperCase()} placeholder="11 digits" value={identifier} maxLength={11} keyboardType="number-pad"
           secureTextEntry onChangeText={(value) => setIdentifier(digits(value, 11))} />
-        {needsNimcId && <Field editable={!busy && !tracking} label="NIMC User ID" value={profile.ninUserId || ''} autoCapitalize="none" autoCorrect={false}
-          onChangeText={(ninUserId) => setProfile({ ...profile, ninUserId })} />}
         {!tracking && <>
           <Btn label={busy ? 'Please wait…' : 'Send code'} disabled={busy || !idReady || (!hasAccount && !detailsReady)} onPress={() => void sendCode()} />
           <Btn label="Verify with my face instead" variant="ghost" disabled={busy || !idReady || (!hasAccount && !detailsReady)}

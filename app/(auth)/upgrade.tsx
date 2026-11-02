@@ -155,13 +155,13 @@ function UpgradeContent() {
   const nin = form.idType === '1';
   const needsBack = !noBack.has(form.idType);
   const required = ['bvn', 'nin', 'idCardFront', 'utilityBill', 'customerSignature', 'userPhoto',
-    ...(nin ? [] : ['idNumber', 'idIssueDate', 'idExpiryDate']), ...(needsBack ? ['idCardBack'] : []),
+    ...(nin ? [] : ['idIssueDate', 'idExpiryDate']), ...(needsBack ? ['idCardBack'] : []),
     ...(target === 2 ? ['houseNumber', 'streetName', 'city', 'state', 'localGovernment', 'nearestLandmark'] : [])];
   const ready = required.every((k) => !!form[k]?.trim()) && form.bvn?.length === 11 && form.nin?.length === 11;
   const docButton = (key: Doc) => <Btn key={key} variant="outline" label={`${form[key] ? '✓ ' : 'Upload '}${docs[key][0]}`} disabled={busy} onPress={() => void upload(key)} />;
   const submit = () => guarded(async (owner) => {
     const body: Record<string, string> = { ...form, accountName: status.account_name || '', phoneNumber: status.profile?.phoneNo || '', email: status.profile?.email || '' };
-    if (nin) { delete body.idIssueDate; delete body.idExpiryDate; delete body.idNumber; }
+    if (nin) { delete body.idIssueDate; delete body.idExpiryDate; }
     if (!needsBack) delete body.idCardBack;
     Object.keys(body).filter((k) => k.startsWith('addr_')).forEach((k) => delete body[k]);
     const result = await banking.upgrade(target, body);
@@ -185,7 +185,6 @@ function UpgradeContent() {
       <Text style={heading}>ID document</Text>
       <PillTabs check options={idTypes} value={form.idType} onChange={(v) => { if (!busy) set('idType', v); }} />
       {!nin && <>
-        <Field editable={!busy} label="ID number" value={form.idNumber || ''} autoCapitalize="characters" onChangeText={(v) => set('idNumber', v)} />
         <Field editable={!busy} label="Issue date" placeholder="YYYY-MM-DD" value={form.idIssueDate || ''} keyboardType="number-pad" maxLength={10} onChangeText={(v) => set('idIssueDate', isoDate(v))} />
         <Field editable={!busy} label="Expiry date" placeholder="YYYY-MM-DD" value={form.idExpiryDate || ''} keyboardType="number-pad" maxLength={10} onChangeText={(v) => set('idExpiryDate', isoDate(v))} />
       </>}

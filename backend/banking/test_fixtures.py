@@ -18,8 +18,7 @@ class BankIdentityAPI:
     def identity_profile(self, user):
         return {"lastName": user.last_name, "otherNames": user.first_name,
                 "phoneNo": user.phone, "email": user.email, "gender": 1,
-                "dateOfBirth": "01/01/1990", "address": "1 Test Road",
-                "ninUserId": "SYNTHETIC-NIN-USER"}
+                "dateOfBirth": "01/01/1990", "address": "1 Test Road"}
 
     def identity_post(self, user, token, kind="bvn", identifier="12345678901", **extra):
         return self.client.post("/api/banking/identity/start/", data={

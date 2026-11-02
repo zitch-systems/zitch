@@ -67,7 +67,7 @@ it('asks no dates and no back side for a NIN, and none of the passport photo upl
   expect(output()).not.toContain('Issue date'); expect(output()).not.toContain('Expiry date');
   expect(output()).not.toContain('ID back'); expect(output()).not.toContain('Passport photo');
   await act(async () => { control('Passport').props.onPress(); });
-  expect(output()).toContain('Issue date'); expect(output()).not.toContain('ID back');
+  expect(output()).toContain('Issue date'); expect(output()).not.toContain('ID back'); expect(output()).not.toContain('ID number');
   await act(async () => { control('Driver’s licence').props.onPress(); });
   expect(output()).toContain('Upload ID back');
 });

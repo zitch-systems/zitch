@@ -14,13 +14,13 @@ from .secrets import seal, unseal
 # Customer-facing labels. The bank partner is never named on this page: the
 # customer is verifying with Zitch. Field keys are the bank contract.
 PROFILE = [("lastName", "Surname"), ("otherNames", "First and middle names"), ("phoneNo", "Phone number"),
-           ("dateOfBirth", "Date of birth"), ("address", "Home address"), ("ninUserId", "NIMC User ID")]
+           ("dateOfBirth", "Date of birth"), ("address", "Home address")]
 DETAILS = [("accountName", "Full legal name"), ("phoneNumber", "Phone number"), ("email", "Email"),
-    ("idNumber", "ID number"), ("idIssueDate", "ID issue date"), ("idExpiryDate", "ID expiry date"),
+    ("idIssueDate", "ID issue date"), ("idExpiryDate", "ID expiry date"),
     ("houseNumber", "House number"), ("streetName", "Street"), ("state", "State"), ("city", "City"),
     ("localGovernment", "Local government area"), ("nearestLandmark", "Nearest landmark")]
 DATE_DETAILS = {"idIssueDate", "idExpiryDate"}
-OPTIONAL_DETAILS = {"idNumber", "idIssueDate", "idExpiryDate"}  # Not asked for a NIN.
+OPTIONAL_DETAILS = {"idIssueDate", "idExpiryDate"}  # Not asked for a NIN.
 # userPhoto is taken with the camera on the page (face capture), never uploaded.
 DOCUMENTS = [("userPhoto", "Your face"), ("idCardFront", "ID front"),
     ("idCardBack", "ID back"), ("utilityBill", "Utility bill"), ("customerSignature", "Signature")]

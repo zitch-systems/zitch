@@ -66,9 +66,7 @@ def wallet_profile(data):
     result["phoneNo"] = phone(data["phoneNo"])
     if len(str(result["address"])) > 100:
         raise ValueError("Address must be at most 100 characters")
-    for key in ("email", "accountName", "placeOfBirth", "nextOfKinName", "nextOfKinPhoneNo", "ninUserId"):
-        if data.get(key):
-            result[key] = str(data[key])
+    # Only the bank's mandatory fields are sent; its optional ones are never collected.
     # BVN/NIN belong to the verified challenge. A client cannot replace them here.
     return result
 
@@ -115,9 +113,6 @@ def upgrade_profile(tier, data):
     id_type = str(data.get("idType", ""))
     if id_type not in {"1", "2", "3", "4"}:
         raise ValueError("Choose your ID type")
-    data = dict(data)
-    if id_type == "1" and not data.get("idNumber"):
-        data["idNumber"] = data.get("nin", "")  # The NIN is the ID number of a NIN slip.
     required = ["bvn", "nin", "accountName", "phoneNumber", "email", "idType",
                 "houseNumber", "streetName", "state", "city", "localGovernment", "pep", "nearestLandmark"]
     if id_type != "1":
@@ -134,13 +129,10 @@ def upgrade_profile(tier, data):
         if not data.get("idExpiryDate"):
             raise ValueError("ID expiry date is required for this document")
         _date(data["idExpiryDate"], "%Y-%m-%d", "Enter a valid ID expiry date")
-    if str(tier) == "3" and not data.get("idNumber"):
-        raise ValueError("ID number is required for Tier 3")
     result = {k: data[k] for k in required}
     result.update(tier=str(tier), phoneNumber=phone(data["phoneNumber"]))
-    for key in ("idNumber", "placeOfBirth") + (() if id_type == "1" else ("idExpiryDate",)):
-        if data.get(key):
-            result[key] = data[key]
+    if id_type != "1":
+        result["idExpiryDate"] = data["idExpiryDate"]  # Optional for a NIN, so not asked.
     result["userPhoto"] = fit_photo(data.get("userPhoto"), maximum_chars=100000)
     sides = ("idCardFront",) if id_type in NO_BACK_ID_TYPES else ("idCardFront", "idCardBack")
     for key, chars in [(side, 100000) for side in sides] + [("utilityBill", 50000)]:
