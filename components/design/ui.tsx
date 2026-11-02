@@ -532,7 +532,10 @@ export const Field = ({
           autoCapitalize={capitalize}
           autoCorrect={correct}
           autoComplete={autoComplete}
-          textContentType={textContentType}
+          textContentType={autoComplete === 'off' ? 'none' : textContentType}
+          // Identity numbers are masked like passwords; without this, password
+          // managers treat every BVN/NIN field as a login and offer to fill it.
+          importantForAutofill={autoComplete === 'off' ? 'no' : undefined}
           returnKeyType={returnKeyType}
           onSubmitEditing={onSubmitEditing}
           style={{ flex: 1, minWidth: 0, paddingVertical: 0, fontSize: 16, color: c.ink1, fontFamily: font.medium }}

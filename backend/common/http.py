@@ -715,20 +715,25 @@ def parse_json_object(request, *, limit: int | None = None):
     return data, None
 
 
-def api(view):
-    """POST-only, size-bounded JSON parsed into ``request.data``."""
+def api(view=None, *, max_body=None):
+    """POST-only, size-bounded JSON parsed into ``request.data``.
 
-    @csrf_exempt
-    @functools.wraps(view)
-    def wrapper(request, *args, **kwargs):
-        if request.method != "POST":
-            return fail("Method not allowed", status=405)
-        request.data, error = parse_json_object(request)
-        if error is not None:
-            return error
-        return view(request, *args, **kwargs)
+    ``@api`` uses API_MAX_BODY_BYTES; ``@api(max_body=...)`` raises the bound for
+    the few endpoints that carry one document upload.
+    """
+    def decorate(view):
+        @csrf_exempt
+        @functools.wraps(view)
+        def wrapper(request, *args, **kwargs):
+            if request.method != "POST":
+                return fail("Method not allowed", status=405)
+            request.data, error = parse_json_object(request, limit=max_body() if callable(max_body) else max_body)
+            if error is not None:
+                return error
+            return view(request, *args, **kwargs)
+        return wrapper
 
-    return wrapper
+    return decorate(view) if view is not None else decorate
 
 
 def resolve_token(request) -> str:

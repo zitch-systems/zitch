@@ -94,6 +94,17 @@ def retain_historical_refund(txn, amount=None):
             raise ValueError("Historical settlement amount conflicts with retained evidence")
 
 
+def display_name(name):
+    """The bank names wallets "MERCHANT/CUSTOMER NAME"; customers see just their name."""
+    return re.sub(r"^[A-Za-z0-9_.-]{2,30}/\s*", "", name or "").strip()
+
+
+def tier_limits():
+    """Per-transaction and daily limits for each tier, shown before upgrading."""
+    return {str(t): {"per_transaction": str(User.TIER_LIMITS[t]), "daily_transfer": str(User.DAILY_TRANSFER_LIMITS[t]),
+                     "daily_bills": str(User.DAILY_BILL_LIMITS[t])} for t in (1, 2, 3)}
+
+
 def account_payload(user):
     bank = account_for(user)
     allowed = customer_enabled() and user.is_active
@@ -111,8 +122,8 @@ def account_payload(user):
     return {"provider": "9psb", "bank_name": "9PSB" if ready else "",
         "identity_available": bool(allowed and user.email_verified and user.phone_verified),
         "address_verification_available": False,
-        "account_number": bank.number if ready else "", "account_name": bank.name if ready else "",
-        "bank_accounts": ([{"account_number": bank.number, "account_name": bank.name, "bank_name": "9PSB"}] if ready else []),
+        "account_number": bank.number if ready else "", "account_name": display_name(bank.name) if ready else "",
+        "bank_accounts": ([{"account_number": bank.number, "account_name": display_name(bank.name), "bank_name": "9PSB"}] if ready else []),
         "has_account": ready, "available": ready, "can_fund": ready,
         "bank_tier": bank.tier if bank else 0, "sandbox": sandbox(),
         "transfers_available": can_spend and transfer_fee(1) is not None, "spending_available": can_spend,

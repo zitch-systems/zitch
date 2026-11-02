@@ -34,7 +34,7 @@ class UpgradeRuleTests(SimpleTestCase):
             self.assertNotIn(gone, body)
 
     def test_the_nin_slip_photo_is_required(self):
-        with self.assertRaisesRegex(ValueError, "document"):
+        with self.assertRaisesRegex(ValueError, "NIN slip"):
             upgrade_profile(2, profile(idCardFront=None))
 
     def test_a_large_face_photo_is_shrunk_to_the_bank_limit(self):
@@ -57,3 +57,75 @@ class WalletProfileTests(SimpleTestCase):
             "dateOfBirth": "01/01/1990", "address": "1 Test Road", "email": "jane@example.test", "ninUserId": "X",
             "placeOfBirth": "Lagos", "accountName": "Jane", "nextOfKinName": "John", "nextOfKinPhoneNo": "08022223333"})
         self.assertEqual(set(body), {"lastName", "otherNames", "phoneNo", "gender", "dateOfBirth", "address"})
+
+
+def pdf_bytes(pages=1):
+    import pypdfium2
+    pdf = pypdfium2.PdfDocument.new()
+    for _ in range(pages):
+        pdf.new_page(595, 842)
+    out = BytesIO()
+    pdf.save(out)
+    pdf.close()
+    return out.getvalue()
+
+
+class FitDocumentTests(SimpleTestCase):
+    def test_a_large_photo_in_another_format_becomes_a_jpeg_within_the_limit(self):
+        from .validation import fit_document
+        image = Image.effect_noise((1800, 1800), 90).convert("RGB")
+        out = BytesIO()
+        image.save(out, format="WEBP", quality=95)
+        fitted = fit_document(base64.b64encode(out.getvalue()).decode(), maximum_chars=50000)
+        self.assertLessEqual(len(fitted), 50000)
+        with Image.open(BytesIO(base64.b64decode(fitted))) as result:
+            self.assertEqual(result.format, "JPEG")
+
+    def test_a_small_pdf_bill_is_kept_and_a_large_one_becomes_an_image(self):
+        from .validation import fit_document
+        small = base64.b64encode(pdf_bytes()).decode()
+        self.assertEqual(fit_document(small, maximum_chars=50000, allow_pdf=True), small)
+        rendered = fit_document(small, maximum_chars=20000, allow_pdf=False)  # A PDF where only images are accepted.
+        with Image.open(BytesIO(base64.b64decode(rendered))) as result:
+            self.assertEqual(result.format, "JPEG")
+
+    def test_files_over_5_mb_and_unreadable_files_are_refused(self):
+        from .validation import fit_document
+        with self.assertRaisesRegex(ValueError, "5 MB"):
+            fit_document("A" * (8 * 1024 * 1024), maximum_chars=50000)
+        with self.assertRaisesRegex(ValueError, "photo"):
+            fit_document(base64.b64encode(b"not an image at all").decode(), maximum_chars=10)
+
+
+from django.test import TestCase, override_settings  # noqa: E402
+
+from .test_client import CONFIG  # noqa: E402
+
+
+@override_settings(NINEPSB=CONFIG)
+class UpgradeDocumentEndpointTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+        from .test_fixtures import make_bank_user
+        cache.clear()
+        self.user, self.token = make_bank_user("08077770001", "docs@zitch.test")
+
+    def post(self, **body):
+        import json
+        return self.client.post("/api/banking/upgrade/document/", data=json.dumps({"access_token": self.token, **body}),
+                                content_type="application/json")
+
+    def test_a_large_photo_is_accepted_converted_and_held_for_the_upgrade(self):
+        from .upgrades import stored_documents
+        image = Image.effect_noise((1180, 1180), 90).convert("RGB")
+        out = BytesIO()
+        image.save(out, format="PNG")
+        encoded = base64.b64encode(out.getvalue()).decode()
+        self.assertGreater(len(encoded), 4 * 1024 * 1024)  # Over the normal request limit.
+        response = self.post(kind="idCardFront", file=encoded)
+        self.assertEqual(response.status_code, 200, response.content)
+        held = stored_documents(self.user)
+        self.assertLessEqual(len(held["idCardFront"]), 100000)
+
+    def test_unknown_kinds_are_refused(self):
+        self.assertEqual(self.post(kind="passport", file=picture()).status_code, 400)

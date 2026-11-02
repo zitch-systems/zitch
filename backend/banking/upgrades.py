@@ -31,6 +31,10 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
             return {"success": True, "bank_tier": bank.tier, "message": "Your bank tier is already active."}
         raise ValueError("Bank tier evidence needs review before this upgrade can be enabled")
     payload = dict(payload)
+    # Documents uploaded beforehand fill in whatever the request doesn't carry.
+    for kind, document in stored_documents(user).items():
+        if not payload.get(kind):
+            payload[kind] = document
     # The BVN is the one the account was opened with; the customer doesn't type it again.
     if bank.encrypted_bvn:
         payload["bvn"] = unseal(bank.encrypted_bvn)
@@ -75,6 +79,7 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
         request = AccountUpgrade.objects.create(account=bank, reference="ZU" + secrets.token_hex(10).upper(),
             tier=tier, bvn_hash=hash_identifier(body["bvn"]), nin_hash=hash_identifier(body["nin"]),
             address_verification=address, request_digest=digest(body))
+    clear_documents(user)  # Sent to the bank now; Zitch keeps no copy.
     try:
         response = Client().upgrade(bank.number, tier, body)
     except ProviderError:
@@ -84,7 +89,10 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
     # HTTP success means submission. Approval requires a separate bank read-back.
     AccountUpgrade.objects.filter(pk=request.pk).update(state="submitted" if response.ok else "review",
         last_error="" if response.ok else "bank_submission_needs_review")
-    refresh_upgrade(bank)
+    try:
+        refresh_upgrade(bank)
+    except ProviderError:
+        pass  # Submitted; the status read-back is retried later. Not a failed upgrade.
     request.refresh_from_db()
     return {"success": request.state == "approved", "pending": request.state != "approved",
         "reference": request.reference, "bank_tier": bank.tier,
@@ -137,3 +145,49 @@ def refresh_upgrade(bank):
         locked.checked_at = timezone.now()
         locked.save(update_fields=["state", "last_error", "checked_at"])
     return locked.state == "approved"
+
+
+# Documents are uploaded one at a time, converted to the bank's size limits at
+# once, and held sealed for an hour until the upgrade is submitted.
+DOCUMENT_KINDS = {"idCardFront": ("Upload your NIN slip", 100000, False),
+                  "utilityBill": ("Upload a utility bill", 50000, True),
+                  "customerSignature": ("Upload your signature", (500 * 1024 + 2) // 3 * 4, False),
+                  "userPhoto": ("Verify your face to continue", 100000, False)}
+DOCUMENT_SECONDS = 60 * 60
+
+
+def _document_key(user, kind):
+    return f"bank-upgrade-doc:{user.pk}:{kind}"
+
+
+def store_document(user, kind, value):
+    from django.core.cache import cache
+    from .secrets import seal
+    from .validation import fit_document
+    if kind not in DOCUMENT_KINDS:
+        raise ValueError("Choose a document to upload")
+    missing, limit, allow_pdf = DOCUMENT_KINDS[kind]
+    fitted = fit_document(value, maximum_chars=limit, missing=missing, allow_pdf=allow_pdf)
+    cache.set(_document_key(user, kind), seal({"document": fitted}), DOCUMENT_SECONDS)
+    return {"success": True, "kind": kind}
+
+
+def stored_documents(user):
+    """The documents this customer uploaded for the upgrade, still within their hour."""
+    from django.core.cache import cache
+    from cryptography.fernet import InvalidToken
+    found = {}
+    for kind in DOCUMENT_KINDS:
+        sealed = cache.get(_document_key(user, kind))
+        if not sealed:
+            continue
+        try:
+            found[kind] = unseal(sealed)["document"]
+        except (InvalidToken, KeyError, TypeError, ValueError):
+            continue
+    return found
+
+
+def clear_documents(user):
+    from django.core.cache import cache
+    cache.delete_many([_document_key(user, kind) for kind in DOCUMENT_KINDS])

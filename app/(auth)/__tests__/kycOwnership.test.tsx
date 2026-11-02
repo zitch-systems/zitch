@@ -135,13 +135,16 @@ it('resends by reference when the app no longer holds the ID number', async () =
   expect(mockResend).toHaveBeenCalledWith('bound-bank-ref'); expect(mockIdentity).not.toHaveBeenCalled();
 });
 
-it('keeps Next disabled until the details are complete', async () => {
+it('marks missing details in red and stays on the details page until they are complete', async () => {
   mockStatus.mockResolvedValue({ ...ready, profile: { ...profile, address: '', gender: undefined } }); await mount();
-  expect(control('Next').props.disabled).toBe(true);
+  await next();
+  expect(output()).toContain('Your details');
+  expect(field('Home address').props.error).toBe('This field is required');
+  expect(output()).toContain('This field is required');
   await act(async () => { field('Home address').props.onChangeText('2 Test Road'); });
-  expect(control('Next').props.disabled).toBe(true);
   await act(async () => { pill('Female').props.onPress(); });
-  expect(control('Next').props.disabled).toBe(false);
+  await next();
+  expect(output()).toContain('Verify your BVN');
 });
 
 it.each(['bvn'])('verifies %s on its own face verification screen without sending a code', async (kind) => {
@@ -171,7 +174,8 @@ it('masks the date of birth to DD/MM/YYYY digits and rejects impossible dates', 
   expect(field('Date of birth').props.keyboardType).toBe('number-pad');
   await act(async () => { field('Date of birth').props.onChangeText('31021990'); });
   expect(field('Date of birth').props.error).toBe('Enter a real date of birth');
-  expect(control('Next').props.disabled).toBe(true);
+  await next();
+  expect(output()).toContain('Your details');
 });
 
 it('resumes the authenticated customer challenge without storing the identifier locally', async () => {

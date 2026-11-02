@@ -28,6 +28,18 @@ describe('applyAndroidSecurity', () => {
     ]);
   });
 
+  it('keeps the activity running when a foldable opens or closes', () => {
+    const manifest = {
+      manifest: {
+        application: [{ $: {}, activity: [{ $: { 'android:name': '.MainActivity', 'android:configChanges': 'keyboard|orientation|screenSize' } }] }],
+      },
+    };
+    applyAndroidSecurity(manifest);
+    const changes = manifest.manifest.application[0].activity[0].$['android:configChanges'].split('|');
+    for (const change of ['screenSize', 'smallestScreenSize', 'screenLayout', 'orientation']) expect(changes).toContain(change);
+    expect(new Set(changes).size).toBe(changes.length);
+  });
+
   it('refuses to silently succeed when the manifest has no application', () => {
     expect(() => applyAndroidSecurity({ manifest: {} })).toThrow(/no <application>/);
   });

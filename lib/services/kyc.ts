@@ -6,7 +6,7 @@ import type { ApiResult } from '@/lib/services/types';
 export type KycStatus = ApiResult<{
   tier: number; bank_tier?: number; bvn_verified: boolean; nin_verified: boolean;
   face_verified: boolean; address_verified?: boolean; identity_verification_provider?: '9psb';
-  account_provider?: '9psb'; address_rail?: 'prembly';
+  account_provider?: '9psb'; address_rail?: 'prembly'; email?: string; email_verified?: boolean;
 }>;
 export const kycService = {
   getStatus: () => apiJson<KycStatus>(EP.kyc.status),

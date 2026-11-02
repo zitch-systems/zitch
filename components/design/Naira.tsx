@@ -1,12 +1,13 @@
 import React from 'react';
 import { Platform, Text, TextProps, TextStyle, StyleProp } from 'react-native';
 
-// The platform system font has a better-designed ₦ glyph than Inter on most
-// devices (Apple SF on iOS, Roboto on Android). These helpers render the ₦
-// symbol in the system font without disturbing the surrounding Inter text.
-const SYS_FONT = Platform.select({ ios: 'System', android: 'sans-serif', default: undefined });
+// iOS: Apple's system font has a cleaner ₦ than Inter, so the glyph uses it.
+// Android: "sans-serif" is whatever the phone maker ships (Samsung's own font on
+// Galaxy phones), and its ₦ lost the amount's weight and looked out of place,
+// so on Android the ₦ stays in the surrounding font and weight.
+const SYS_FONT = Platform.select({ ios: 'System', default: undefined });
 
-const nairaStyle: TextStyle = { fontFamily: SYS_FONT as any };
+const nairaStyle: TextStyle = SYS_FONT ? { fontFamily: SYS_FONT as any } : {};
 
 export const Naira = ({ style, ...rest }: TextProps) => (
   <Text {...rest} style={[style, nairaStyle]}>₦</Text>
