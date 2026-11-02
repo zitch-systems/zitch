@@ -268,6 +268,19 @@ class DataSubjectErasureTests(TestCase):
         self.assertEqual(Transaction.objects.filter(user=self.user).count(), before)
         self.assertIn("ledger_transactions", outcome["retained"])
 
+    def test_erasure_clears_the_sealed_bank_identity(self):
+        # The BVN is kept sealed for the Tier 2 upgrade; erasure must not leave it behind.
+        from banking.models import BankAccount
+        from banking.secrets import seal
+        from banking.test_fixtures import bind_test_bank
+        bind_test_bank(self.user, tier=1)
+        BankAccount.objects.filter(wallet__user=self.user).update(
+            encrypted_bvn=seal("12345678901"), encrypted_profile=seal({"lastName": "Doe"}))
+        outcome = erase_user_data(self.user)
+        bank = BankAccount.objects.get(wallet__user=self.user)
+        self.assertEqual((bank.encrypted_bvn, bank.encrypted_profile), ("", ""))
+        self.assertTrue(outcome["bank_identity_cleared"])
+
     def test_erasure_kills_the_session(self):
         # A live token would keep the "erased" account reachable as if nothing happened.
         from accounts.models import AccessToken
