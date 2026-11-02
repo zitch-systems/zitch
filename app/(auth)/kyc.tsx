@@ -1,11 +1,9 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Image, Text, View } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
 import AuthGuard from '@/components/AuthGuard';
-import { Screen, Header, Field, Btn, PillTabs } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, PillTabs, Card } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { banking, type BankProfile, type BankStatus } from '@/lib/services/banking';
@@ -14,26 +12,12 @@ import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { getSessionGeneration } from '@/lib/secureStore';
 
 const emptyProfile: BankProfile = { lastName: '', otherNames: '', phoneNo: '', email: '', dateOfBirth: '', address: '' };
-const upgradeFields = [
-  ['bvn', 'BVN'], ['nin', 'NIN'],
-  ['idNumber', 'ID number'], ['idIssueDate', 'ID issue date (YYYY-MM-DD)'], ['idExpiryDate', 'ID expiry date (optional for NIN)'],
-  ['houseNumber', 'House number'], ['streetName', 'Street'], ['city', 'City'], ['state', 'State'],
-  ['localGovernment', 'Local government area'], ['nearestLandmark', 'Nearest landmark'],
-] as const;
-const idTypes = [{ v: '1', label: 'National ID (NIN)' }, { v: '2', label: 'Driver’s licence' },
-  { v: '3', label: 'Voter’s card' }, { v: '4', label: 'Passport' }];
-const files = [['userPhoto', 'Passport photo', 100000], ['idCardFront', 'ID front', 100000],
-  ['idCardBack', 'ID back', 100000], ['utilityBill', 'Utility bill', 50000], ['customerSignature', 'Signature', 680000]] as const;
-const numericFields = new Set(['bvn', 'nin', 'idIssueDate', 'idExpiryDate']);
+const RESEND_SECONDS = 60;
 
-/** Digits only, shaped while typing: DD/MM/YYYY for a birth date, YYYY-MM-DD for ID dates. */
+/** Digits only, shaped to DD/MM/YYYY while typing. */
 const maskDob = (value: string) => {
   const d = value.replace(/\D/g, '').slice(0, 8);
   return d.length > 4 ? `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}` : d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d;
-};
-const maskIsoDate = (value: string) => {
-  const d = value.replace(/\D/g, '').slice(0, 8);
-  return d.length > 6 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}` : d.length > 4 ? `${d.slice(0, 4)}-${d.slice(4)}` : d;
 };
 const validDob = (value: string) => {
   const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(value);
@@ -48,10 +32,8 @@ function KycScreenContent() {
   const { c } = useTheme();
   const [status, setStatus] = useState<BankStatus | null>(null);
   const [profile, setProfile] = useState<BankProfile>(emptyProfile);
-  // BVN is the default ID. The identity form is two pages (details, then ID),
-  // and face verification is its own screen opened from the ID page.
+  // BVN is the default ID. Details come first, then one page for the ID and its code.
   const [kind, setKind] = useState<'bvn' | 'nin'>('bvn');
-  const [method, setMethod] = useState<'OTP' | 'FACIAL'>('OTP');
   const [page, setPage] = useState<'details' | 'id'>('details');
   const [step, setStep] = useState<'details' | 'face'>('details');
   const [photo, setPhoto] = useState('');
@@ -61,10 +43,8 @@ function KycScreenContent() {
   const [needsOtp, setNeedsOtp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const [tab, setTab] = useState<'identity' | 'upgrade' | 'address'>('identity');
-  const [tier, setTier] = useState(2);
-  const [upgrade, setUpgrade] = useState<Record<string, string>>({ pep: 'NO', idType: '1' });
-  const [addressRef, setAddressRef] = useState('');
+  const [resendAt, setResendAt] = useState(0);
+  const [now, setNow] = useState(Date.now());
   const [email, setEmail] = useState('');
   const [emailCode, setEmailCode] = useState('');
   const [emailSent, setEmailSent] = useState(false);
@@ -75,8 +55,15 @@ function KycScreenContent() {
   const inFlight = useRef(false);
   const current = (owner = ownership.current) => active.current && owner === ownership.current && generation.current === getSessionGeneration();
   const text = { color: c.ink1, fontFamily: font.regular, lineHeight: 22 };
-  const heading = { color: c.ink1, fontFamily: font.bold, fontSize: 17, marginTop: 8 };
-  const hint = { color: c.ink3 ?? c.ink1, fontFamily: font.regular, fontSize: 13.5, lineHeight: 19 };
+  const heading = { color: c.ink1, fontFamily: font.bold, fontSize: 17 };
+  const waitSeconds = Math.max(0, Math.ceil((resendAt - now) / 1000));
+  const counting = waitSeconds > 0;
+  useEffect(() => {
+    if (!counting) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [counting]);
+  const codeSent = () => { setResendAt(Date.now() + RESEND_SECONDS * 1000); setNow(Date.now()); };
   const load = async () => {
     const owner = ownership.current, serial = ++readSerial.current;
     try {
@@ -89,6 +76,8 @@ function KycScreenContent() {
         const challenge = result.identity_challenge;
         setTracking(challenge?.tracking_id || ''); setNeedsOtp(challenge?.otp_required === true);
         if (challenge) { setKind(challenge.kind); setPage('id'); }
+        // An existing account already holds the details: go straight to the ID.
+        else if (result.account_number) { setPage('id'); setKind(result.bvn_verified && !result.nin_verified ? 'nin' : 'bvn'); }
       }
       else { setStatus(null); setMessage(result.message || 'Could not load verification status.'); }
     } catch { if (current(owner) && serial === readSerial.current) { setStatus(null); setMessage('Could not load verification status. Please try again.'); } }
@@ -98,9 +87,8 @@ function KycScreenContent() {
     return () => {
       active.current = false; ownership.current += 1; inFlight.current = false;
       setBusy(false); setStatus(null); setIdentifier(''); setOtp(''); setTracking(''); setNeedsOtp(false);
-      setProfile(emptyProfile); setUpgrade({ pep: 'NO', idType: '1' }); setAddressRef('');
-      setEmail(''); setEmailCode(''); setEmailSent(false); setMessage('');
-      setStep('details'); setPage('details'); setPhoto(''); setMethod('OTP');
+      setProfile(emptyProfile); setEmail(''); setEmailCode(''); setEmailSent(false); setMessage('');
+      setStep('details'); setPage('details'); setPhoto(''); setResendAt(0);
     };
   }, []));
   const verifyEmail = async (confirm: boolean) => {
@@ -127,14 +115,24 @@ function KycScreenContent() {
     try {
       const result = await action();
       if (!current(owner) || !result) return;
-      setMessage(result.message || (result.success ? 'Verification completed.' : result.pending ? 'Your request is being processed.' : 'We could not complete this request.'));
-      if (result.tracking_id) { setTracking(result.tracking_id); setNeedsOtp(result.otp_required === true); }
+      setMessage(result.success ? '' : result.message || (result.pending ? '' : 'We could not complete this request.'));
+      if (result.tracking_id) {
+        setTracking(result.tracking_id); setNeedsOtp(result.otp_required === true);
+        if (result.otp_required === true) setOtp('');
+      }
       if (['expired', 'failed'].includes(result.account_setup_state)) { setTracking(''); setNeedsOtp(false); setOtp(''); }
-      if ((result.success || result.pending) && tab === 'upgrade') setUpgrade({ pep: 'NO', idType: '1' });
       if (result.success) { setOtp(''); setIdentifier(''); setTracking(''); setNeedsOtp(false); await load(); }
       return result;
-    } catch { if (current(owner)) setMessage('Connection interrupted. Check the request status before submitting again.'); }
+    } catch { if (current(owner)) setMessage('Connection interrupted. Check the status before trying again.'); }
     finally { if (current(owner)) { inFlight.current = false; setBusy(false); } }
+  };
+  const sendCode = async () => {
+    const result = await run(() => banking.identity(kind, identifier, profile));
+    if (result?.otp_required) codeSent();
+  };
+  const resend = async () => {
+    const result = await run(() => (identifier.length === 11 ? banking.identity(kind, identifier, profile) : banking.resend(tracking)));
+    if (result?.otp_required) codeSent();
   };
   // The photo is taken on the face verification screen and only sent when the customer confirms it.
   const takePhoto = async () => {
@@ -159,27 +157,11 @@ function KycScreenContent() {
     const result = await run(() => banking.identity(kind, identifier, profile, photo));
     if (result && current(owner)) { setPhoto(''); setStep('details'); }
   };
-  const upload = async (key: string, label: string, max: number) => {
-    if (!current() || inFlight.current) return;
-    const owner = ownership.current;
-    inFlight.current = true; setBusy(true);
-    try {
-    beginExternalActivity();
-    let result: DocumentPicker.DocumentPickerResult;
-    try { result = await DocumentPicker.getDocumentAsync({ type: key === 'utilityBill' ? ['application/pdf', 'image/jpeg', 'image/png'] : ['image/jpeg', 'image/png'], copyToCacheDirectory: true }); } finally { endExternalActivity(); }
-    if (result.canceled || !current(owner)) return;
-    const file = result.assets[0];
-    if (file.size && file.size > Math.floor(max * 3 / 4)) { notify('File too large', `${label} must be smaller than ${Math.floor(max * 3 / 4096)} KB.`); return; }
-    const encoded = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.Base64 });
-    if (encoded.length > max) { notify('File too large', 'Compress this document and try again.'); return; }
-    if (current(owner)) setUpgrade((p) => ({ ...p, [key]: encoded }));
-    } catch { if (current(owner)) setMessage('Could not read this document. Please try again.'); }
-    finally { if (current(owner)) { inFlight.current = false; setBusy(false); } }
-  };
+  const notice = !!message && <Text accessibilityLiveRegion="polite" style={{ ...text, color: c.brand }}>{message}</Text>;
+
   if (status?.email_verified === false) return <Screen header={<Header title="Verify your email" />}>
     <View style={{ gap: 16 }}>
-      <Text style={text}>Confirm your email address before setting up your Zitch account.</Text>
-      {!!message && <Text accessibilityLiveRegion="polite" style={text}>{message}</Text>}
+      {notice}
       <Field label="Email address" value={email} maxLength={254} keyboardType="email-address" autoCapitalize="none" autoCorrect={false}
         editable={!busy && !emailSent} onChangeText={setEmail} />
       {emailSent ? <>
@@ -187,111 +169,77 @@ function KycScreenContent() {
           editable={!busy} onChangeText={setEmailCode} />
         <Btn label="Confirm email code" disabled={busy || !/^[0-9]{6}$/.test(emailCode)} onPress={() => void verifyEmail(true)} />
         <Btn label="Resend email code" variant="outline" disabled={busy} onPress={() => void verifyEmail(false)} />
-        <Btn label="Change email address" variant="outline" disabled={busy} onPress={() => { setEmailSent(false); setEmailCode(''); setMessage(''); }} />
+        <Btn label="Change email address" variant="ghost" disabled={busy} onPress={() => { setEmailSent(false); setEmailCode(''); setMessage(''); }} />
       </> : <Btn label="Send email code" disabled={busy || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())} onPress={() => void verifyEmail(false)} />}
     </View>
   </Screen>;
   if (!status || !status.identity_available) return <Screen header={<Header title="Verify your account" />}>
-    <View style={{ gap: 16 }}><Text style={text}>{message || (!status ? 'Loading verification status…' : 'Verification is currently unavailable for this account. Please verify your email and phone number, or contact support.')}</Text>
+    <View style={{ gap: 16 }}><Text style={text}>{message || (!status ? 'Loading…' : 'Verification is unavailable for this account. Please contact support.')}</Text>
       <Btn label="Refresh verification status" variant="outline" onPress={() => void load()} /></View>
   </Screen>;
-  if (step === 'face') return <Screen header={<Header title="Face verification" onBack={busy ? undefined : () => { setPhoto(''); setStep('details'); }} />}>
+  if (step === 'face') return <Screen header={<Header title="Verify your face" onBack={busy ? undefined : () => { setPhoto(''); setStep('details'); }} />}>
     <View style={{ gap: 16, paddingBottom: 32 }}>
-      <Text style={text}>{`We match a photo of your face to the photo on your ${kind.toUpperCase()} record. No code needed.`}</Text>
-      <Text style={heading}>Before you start</Text>
-      <Text style={text}>{'•  Face the camera in good light\n•  Remove glasses, hats and face coverings\n•  Keep your whole face inside the frame'}</Text>
       {!!photo && <Image accessibilityLabel="Your photo" source={{ uri: `data:image/jpeg;base64,${photo}` }}
         style={{ width: 180, height: 180, borderRadius: 90, alignSelf: 'center', borderWidth: 3, borderColor: c.brand }} />}
-      {!!message && <Text accessibilityLiveRegion="polite" style={text}>{message}</Text>}
+      {notice}
       <Btn label={photo ? 'Retake photo' : 'Open camera'} variant={photo ? 'outline' : 'primary'} disabled={busy} onPress={() => void takePhoto()} />
       {!!photo && <Btn label={busy ? 'Please wait…' : 'Verify my face'} disabled={busy} onPress={() => void submitFace()} />}
-      <Btn label="Back" variant="outline" disabled={busy} onPress={() => { setPhoto(''); setStep('details'); }} />
+      <Btn label="Back" variant="ghost" disabled={busy} onPress={() => { setPhoto(''); setStep('details'); }} />
     </View>
   </Screen>;
-  const needsNimcId = kind === 'nin' && !status?.account_number;
+
+  const hasAccount = !!status.account_number;
+  const needsNimcId = kind === 'nin' && !hasAccount;
   const dobError = profile.dateOfBirth.length === 10 && !validDob(profile.dateOfBirth) ? 'Enter a real date of birth' : undefined;
   const detailsReady = !!profile.otherNames.trim() && !!profile.lastName.trim() && !!profile.phoneNo.trim()
     && validDob(profile.dateOfBirth) && (profile.gender === 0 || profile.gender === 1) && !!profile.address.trim();
   const idReady = identifier.length === 11 && (!needsNimcId || !!profile.ninUserId?.trim());
-  return <Screen header={<Header title="Verify your account" />}>
+  const verified = kind === 'bvn' ? status.bvn_verified : status.nin_verified;
+
+  if (page === 'details' && !hasAccount) return <Screen header={<Header title="Your details" />}>
     <View style={{ gap: 16, paddingBottom: 32 }}>
-      <Text style={text}>Zitch verifies your identity securely. Your details are only used to open and protect your account.</Text>
-      {status?.sandbox && <Text style={{ ...text, color: c.brand }}>Test mode — use test identities only. No real money moves.</Text>}
-      <Text style={text}>Account tier: {status?.bank_tier || 'Not set up'} · BVN: {status?.bvn_verified ? 'Verified' : 'Not verified'} · NIN: {status?.nin_verified ? 'Verified' : 'Not verified'}</Text>
-      <View style={{ gap: 8 }}>{(['identity', 'upgrade', 'address'] as const).map((value) => <Btn key={value} label={value === 'identity' ? 'Identity & account setup' : value === 'upgrade' ? 'Tier upgrade' : 'Tier 3 address'} variant={tab === value ? 'primary' : 'outline'} onPress={() => setTab(value)} disabled={busy} />)}</View>
-      {!!message && <Text accessibilityLiveRegion="polite" style={text}>{message}</Text>}
-      {tab === 'identity' && page === 'details' && <>
-        <Text style={hint}>Step 1 of 2</Text>
-        <Text style={heading}>Your details</Text>
-        <Text style={hint}>Use your name exactly as it appears on your BVN or NIN.</Text>
-        <Field editable={!busy} label="First and middle names" value={profile.otherNames} onChangeText={(otherNames) => setProfile({ ...profile, otherNames })} />
-        <Field editable={!busy} label="Surname" value={profile.lastName} onChangeText={(lastName) => setProfile({ ...profile, lastName })} />
-        <Field editable={!busy && !status?.profile?.phoneNo} label="Phone number" value={profile.phoneNo} keyboardType="phone-pad" onChangeText={(phoneNo) => setProfile({ ...profile, phoneNo })} />
-        <Field editable={false} label="Verified email" value={profile.email} keyboardType="email-address" />
-        <Field editable={!busy} label="Date of birth" placeholder="DD/MM/YYYY" value={profile.dateOfBirth} keyboardType="number-pad" maxLength={10}
-          error={dobError} onChangeText={(value) => setProfile({ ...profile, dateOfBirth: maskDob(value) })} />
-        <View style={{ gap: 8 }}><Text style={heading}>Gender</Text>
-          <PillTabs scroll={false} options={[{ v: '0', label: 'Male' }, { v: '1', label: 'Female' }]}
-            value={profile.gender === 0 || profile.gender === 1 ? String(profile.gender) : ''}
-            onChange={(value) => { if (!busy) setProfile({ ...profile, gender: Number(value) }); }} /></View>
-        <Field editable={!busy} label="Home address" value={profile.address} maxLength={100} onChangeText={(address) => setProfile({ ...profile, address })} />
-        <Btn label="Next" disabled={busy || !detailsReady} onPress={() => { setMessage(''); setPage('id'); }} />
-      </>}
-      {tab === 'identity' && page === 'id' && <>
-        <Btn label="Back to your details" variant="outline" disabled={busy} onPress={() => setPage('details')} />
-        <Text style={hint}>Step 2 of 2</Text>
-        <Text style={heading}>Your ID</Text>
-        <PillTabs scroll={false} options={[{ v: 'bvn', label: 'BVN' }, { v: 'nin', label: 'NIN' }]} value={kind}
-          onChange={(value) => { if (busy || tracking) return; setKind(value as 'bvn' | 'nin'); setIdentifier(''); }} />
-        <Field editable={!busy} label={kind.toUpperCase()} placeholder="11 digits" value={identifier} maxLength={11} keyboardType="number-pad" secureTextEntry onChangeText={(value) => setIdentifier(digits(value, 11))} />
-        {needsNimcId && <View style={{ gap: 6 }}>
-          <Field editable={!busy} label="NIMC User ID" value={profile.ninUserId || ''} autoCapitalize="none" autoCorrect={false} onChangeText={(ninUserId) => setProfile({ ...profile, ninUserId })} />
-          <Text style={hint}>A separate ID from NIMC, not your 11-digit NIN. Only needed when you open your account with NIN.</Text>
-        </View>}
+      {notice}
+      <Field editable={!busy} label="First and middle names" value={profile.otherNames} onChangeText={(otherNames) => setProfile({ ...profile, otherNames })} />
+      <Field editable={!busy} label="Surname" value={profile.lastName} onChangeText={(lastName) => setProfile({ ...profile, lastName })} />
+      <Field editable={!busy && !status.profile?.phoneNo} label="Phone number" value={profile.phoneNo} keyboardType="phone-pad" onChangeText={(phoneNo) => setProfile({ ...profile, phoneNo })} />
+      <Field editable={!busy} label="Date of birth" placeholder="DD/MM/YYYY" value={profile.dateOfBirth} keyboardType="number-pad" maxLength={10}
+        error={dobError} onChangeText={(value) => setProfile({ ...profile, dateOfBirth: maskDob(value) })} />
+      <View style={{ gap: 8 }}><Text style={heading}>Gender</Text>
+        <PillTabs scroll={false} options={[{ v: '0', label: 'Male' }, { v: '1', label: 'Female' }]}
+          value={profile.gender === 0 || profile.gender === 1 ? String(profile.gender) : ''}
+          onChange={(value) => { if (!busy) setProfile({ ...profile, gender: Number(value) }); }} /></View>
+      <Field editable={!busy} label="Home address" value={profile.address} maxLength={100} onChangeText={(address) => setProfile({ ...profile, address })} />
+      <Btn label="Next" disabled={busy || !detailsReady} onPress={() => { setMessage(''); setPage('id'); }} />
+    </View>
+  </Screen>;
+
+  return <Screen header={<Header title="Verify your identity" onBack={busy || hasAccount ? undefined : () => setPage('details')} />}>
+    <View style={{ gap: 16, paddingBottom: 32 }}>
+      {hasAccount && <Card>
+        <Text style={heading}>{status.account_name}</Text>
+        <Text style={{ ...text, marginTop: 4 }}>{`${status.account_number} · Tier ${status.bank_tier || 1}`}</Text>
+      </Card>}
+      <PillTabs scroll={false} options={[{ v: 'bvn', label: 'BVN' }, { v: 'nin', label: 'NIN' }]} value={kind}
+        onChange={(value) => { if (busy || tracking) return; setKind(value as 'bvn' | 'nin'); setIdentifier(''); setMessage(''); }} />
+      {verified && !tracking ? <Text style={{ ...text, fontFamily: font.bold }}>{`${kind.toUpperCase()} verified`}</Text> : <>
+        <Field editable={!busy && !tracking} label={kind.toUpperCase()} placeholder="11 digits" value={identifier} maxLength={11} keyboardType="number-pad"
+          secureTextEntry onChangeText={(value) => setIdentifier(digits(value, 11))} />
+        {needsNimcId && <Field editable={!busy && !tracking} label="NIMC User ID" value={profile.ninUserId || ''} autoCapitalize="none" autoCorrect={false}
+          onChangeText={(ninUserId) => setProfile({ ...profile, ninUserId })} />}
         {!tracking && <>
-          <Text style={heading}>How should we verify you?</Text>
-          <PillTabs scroll={false} check options={[{ v: 'OTP', label: 'Text me a code' }, { v: 'FACIAL', label: 'Verify my face' }]} value={method}
-            onChange={(value) => { if (!busy) setMethod(value as 'OTP' | 'FACIAL'); }} />
-          <Text style={hint}>{method === 'FACIAL' ? 'Opens Zitch face verification. No code needed.' : 'We send a 6-digit code by SMS.'}</Text>
-          <Btn label={busy ? 'Please wait…' : method === 'FACIAL' ? 'Continue to face verification' : 'Send my code'} disabled={busy || !detailsReady || !idReady}
-            onPress={() => {
-              if (method === 'FACIAL') { setMessage(''); setPhoto(''); setStep('face'); return; }
-              void run(() => banking.identity(kind, identifier, profile));
-            }} />
+          <Btn label={busy ? 'Please wait…' : 'Send code'} disabled={busy || !idReady || (!hasAccount && !detailsReady)} onPress={() => void sendCode()} />
+          <Btn label="Verify with my face instead" variant="ghost" disabled={busy || !idReady || (!hasAccount && !detailsReady)}
+            onPress={() => { setMessage(''); setPhoto(''); setStep('face'); }} />
         </>}
-        {needsOtp && <><Field editable={!busy} label="Six-digit code" value={otp} maxLength={6} keyboardType="number-pad" secureTextEntry onChangeText={(value) => setOtp(digits(value, 6))} /><Btn label="Confirm code" disabled={busy || otp.length !== 6} onPress={() => void run(() => banking.confirm(tracking, otp))} /></>}
-        {!!tracking && <Btn label="Check verification status" variant="outline" disabled={busy} onPress={() => void run(() => banking.progress(tracking))} />}
-        <Text style={hint}>Codes expire after 10 minutes. If you’ve already started, check the status before starting again.</Text>
-      </>}
-      {tab === 'upgrade' && <>
-        <Text style={text}>Tier 2 needs your verified BVN and NIN, a utility bill and the documents below. Tier 3 also needs a completed address check. Your tier changes once the review is approved.</Text>
-        <PillTabs scroll={false} options={[{ v: '2', label: 'Tier 2' }, { v: '3', label: 'Tier 3' }]} value={String(tier)} onChange={(value) => { if (!busy) setTier(Number(value)); }} />
-        {upgradeFields.map(([key, label]) => <Field editable={!busy} key={key} label={label} value={upgrade[key] || ''} secureTextEntry={key === 'bvn' || key === 'nin'}
-          keyboardType={numericFields.has(key) ? 'number-pad' : undefined} maxLength={key === 'bvn' || key === 'nin' ? 11 : numericFields.has(key) ? 10 : undefined}
-          onChangeText={(value) => setUpgrade((p) => ({ ...p, [key]: key === 'bvn' || key === 'nin' ? digits(value, 11) : key === 'idIssueDate' || key === 'idExpiryDate' ? maskIsoDate(value) : value }))} />)}
-        <View style={{ gap: 8 }}><Text style={heading}>ID type</Text>
-          <PillTabs check options={idTypes} value={upgrade.idType || '1'} onChange={(value) => { if (!busy) setUpgrade((p) => ({ ...p, idType: value })); }} /></View>
-        <View style={{ gap: 8 }}><Text style={heading}>Are you a politically exposed person?</Text>
-          <Text style={hint}>For example a senior public official, or their close family.</Text>
-          <PillTabs scroll={false} options={[{ v: 'NO', label: 'No' }, { v: 'YES', label: 'Yes' }]} value={upgrade.pep || 'NO'} onChange={(value) => { if (!busy) setUpgrade((p) => ({ ...p, pep: value })); }} /></View>
-        {files.map(([key, label, max]) => <Btn key={key} variant="outline" label={`${upgrade[key] ? 'Attached: ' : 'Upload '}${label}`} disabled={busy} onPress={() => void upload(key, label, max)} />)}
-        {tier === 3 && <Field editable={!busy} label="Address check reference" value={addressRef} onChangeText={setAddressRef} />}
-        <Btn label="Submit for bank review" disabled={busy} onPress={() => void run(() => banking.upgrade(tier, { ...upgrade, accountName: status?.account_name || '', phoneNumber: profile.phoneNo, email: profile.email }, addressRef))} />
-      </>}
-      {tab === 'address' && <>
-        <Text style={text}>Zitch checks your home address. Submitting doesn’t unlock Tier 3 straight away.</Text>
-        {status.address_verification_available === true && <>
-          {upgradeFields.filter(([key]) => ['houseNumber', 'streetName', 'city', 'state', 'localGovernment', 'nearestLandmark'].includes(key)).map(([key, label]) => <Field editable={!busy} key={key} label={label} value={upgrade[key] || ''} onChangeText={(value) => setUpgrade((p) => ({ ...p, [key]: value }))} />)}
-          <Field editable={!busy} label="Full home address" value={profile.address} onChangeText={(address) => setProfile({ ...profile, address })} />
+        {needsOtp && <>
+          <Field editable={!busy} label="Six-digit code" value={otp} maxLength={6} keyboardType="number-pad" secureTextEntry onChangeText={(value) => setOtp(digits(value, 6))} />
+          <Btn label={busy ? 'Please wait…' : 'Verify'} disabled={busy || otp.length !== 6} onPress={() => void run(() => banking.confirm(tracking, otp))} />
+          <Btn label={waitSeconds ? `Resend code in ${waitSeconds}s` : 'Resend code'} variant="ghost" disabled={busy || waitSeconds > 0} onPress={() => void resend()} />
         </>}
-        {status.address_verification_available !== true && <Text style={text}>Address verification is temporarily unavailable. Please contact support.</Text>}
-        <Btn label="Request address verification" disabled={busy || !status.address_verification_available || (status?.bank_tier || 0) < 2} onPress={() => void run(async () => {
-          const result = await banking.address({ house_number: upgrade.houseNumber || '', street: upgrade.streetName || '', city: upgrade.city || '', state: upgrade.state || '', lga: upgrade.localGovernment || '', landmark: upgrade.nearestLandmark || '', address: profile.address });
-          if (current() && result.reference) setAddressRef(result.reference); return result;
-        })} />
-        <Field editable={!busy} label="Address request reference" value={addressRef} onChangeText={setAddressRef} />
-        <Btn label="Check address status" variant="outline" disabled={busy || !addressRef} onPress={() => void run(() => banking.addressStatus(addressRef))} />
+        {!!tracking && !needsOtp && <Btn label="Check status" variant="outline" disabled={busy} onPress={() => void run(() => banking.progress(tracking))} />}
       </>}
+      {notice}
+      {hasAccount && <Btn label="Upgrade account" variant="outline" disabled={busy} onPress={() => router.push('/upgrade')} />}
     </View>
   </Screen>;
 }

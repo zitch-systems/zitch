@@ -7,6 +7,7 @@ import secrets
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
+from cryptography.fernet import InvalidToken
 from django.db import transaction
 from django.utils import timezone
 
@@ -152,6 +153,9 @@ def check_identity_request(user, kind, identifier, profile, *, method="OTP"):
     return profile, digest
 
 
+RESEND_AFTER = timedelta(seconds=60)
+
+
 def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
     require_enabled(user)
     profile, digest = check_identity_request(user, kind, identifier, profile, method=method)
@@ -165,6 +169,15 @@ def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
         if previous and sandbox_auto_verify() and not previous.verified_at:
             # A sandbox tester may be stuck on a check the sandbox can never
             # finish. Retire it; the auto-verified attempt below replaces it.
+            IdentityChallenge.objects.filter(pk=previous.pk).update(state="expired", encrypted_input="")
+            previous = None
+        if previous:
+            require_environment(previous.environment)
+        if (previous and previous.state == "pending" and previous.method == "OTP" == method
+                and previous.identity_hash == digest and not previous.verified_at):
+            # "Resend code": replace the unanswered code with a new one, at most once a minute.
+            if previous.created > timezone.now() - RESEND_AFTER:
+                return {**challenge_payload(previous), "message": "Please wait a minute before requesting a new code."}
             IdentityChallenge.objects.filter(pk=previous.pk).update(state="expired", encrypted_input="")
             previous = None
         if previous:
@@ -209,6 +222,16 @@ def start_identity(user, kind, identifier, profile, *, method="OTP", image=""):
     if state == "SUCCESS":
         return complete_account(challenge)
     return challenge_payload(challenge)
+
+
+def resend_code(user, reference):
+    """Text a new code for an identity check that is still waiting for one."""
+    challenge = IdentityChallenge.objects.filter(user=user, reference=reference, method="OTP",
+        state="pending", verified_at__isnull=True).exclude(encrypted_input="").first()
+    if not challenge:
+        raise ValueError("Start your verification again")
+    stored = unseal(challenge.encrypted_input)
+    return start_identity(user, challenge.kind, stored["identifier"], stored["profile"], method="OTP")
 
 
 def _send_sandbox_code(user, reference):
@@ -319,6 +342,9 @@ def complete_account(challenge):
     else:
         response = Client().open_wallet(challenge.reference, stored["profile"],
             kind=challenge.kind, identifier=stored["identifier"])
+    if sandbox() and (not claimed or "already exist" in str(response.body.get("message") or "").lower()) and not (
+            response.ok and re.fullmatch(r"[0-9]{10}", wallet_number(response.data if isinstance(response.data, dict) else {}))):
+        response = _sandbox_existing_wallet(challenge, stored) or response
     data = response.data if isinstance(response.data, dict) else {}
     number = wallet_number(data)
     name = data.get("fullName") or data.get("name") or ""
@@ -365,6 +391,38 @@ def complete_account(challenge):
         current.save(update_fields=["opening_review_required"])
         update_account(current, inquiry)
     return _finish_identity(challenge, current)
+
+
+def _sandbox_existing_wallet(challenge, stored):
+    """Sandbox only: find the test wallet an earlier attempt already opened.
+
+    The test bank keeps one wallet per tester. A retry with another test BVN is
+    refused as "A Wallet Already Exists", and looking it up needs the identity
+    it was opened with, so try this tester's earlier test identities too.
+    Production never uses another challenge's identity.
+    """
+    candidates = [(challenge.kind, stored["identifier"])]
+    earlier = IdentityChallenge.objects.filter(user=challenge.user, environment=challenge.environment,
+        verified_at__isnull=False).exclude(pk=challenge.pk).exclude(encrypted_input="").order_by("-created")[:5]
+    for row in earlier:
+        try:
+            candidates.append((row.kind, unseal(row.encrypted_input)["identifier"]))
+        except (InvalidToken, KeyError, TypeError, ValueError):  # Unreadable: not a candidate.
+            continue
+    client, seen = Client(), set()
+    for kind, identifier in candidates:
+        if (kind, identifier) in seen:
+            continue
+        seen.add((kind, identifier))
+        try:
+            reply = client.lookup_wallet(kind, identifier)
+        except (ProviderError, ValueError):
+            continue
+        data = reply.data if isinstance(reply.data, dict) else {}
+        if reply.ok and re.fullmatch(r"[0-9]{10}", wallet_number(data)):
+            log.info("sandbox_existing_wallet_found ref=%s", challenge.reference)
+            return reply
+    return None
 
 
 @transaction.atomic

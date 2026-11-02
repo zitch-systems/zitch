@@ -11,11 +11,7 @@
 <body>
 <main>
   <div class="brand">zitch</div>
-  <p class="eyebrow">Face verification · From WhatsApp</p>
   <h1>Verify your face</h1>
-  <p class="lead">We match a photo of your face to the photo on your BVN or NIN record. No code needed.</p>
-
-  {% if bank.sandbox %}<p class="notice">Test mode: use test identities only. No real money moves.</p>{% endif %}
   {% if message %}<p class="message" role="status">{{ message }}</p>{% endif %}
 
   <section class="card">
@@ -36,7 +32,6 @@
     </form>
   </section>
 
-  <p class="privacy">Your photo is used only to verify your identity. This link works only with your linked WhatsApp account and expires in 15 minutes.</p>
 </main>
 <script nonce="{{ nonce }}">
 (function () {

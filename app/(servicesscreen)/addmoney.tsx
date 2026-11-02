@@ -34,9 +34,7 @@ function AddMoneyContent() {
   useEffect(() => { generation.current = getSessionGeneration(); void load(); return () => { generation.current = -1; }; }, []);
   const text = { color: c.ink1, fontFamily: font.regular, lineHeight: 24 };
   return <Screen header={<Header title="Add money" />}><View style={{ gap: 18 }}>
-    {status?.sandbox && <Text style={text}>Test environment. Do not transfer real money to a test account.</Text>}
     {status && isFundingAccountReady(status) ? <>
-      <Text style={text}>Send money to your Zitch account from any bank app. Your balance updates once the deposit is confirmed.</Text>
       {/* The receiving bank's name stays: senders must pick it from their bank's list. */}
       <Text style={text}>Bank name: 9PSB</Text><Text style={text}>Account name: {status.account_name}</Text>
       <Text selectable style={{ ...text, fontSize: 26 }}>{status.account_number}</Text>
@@ -47,7 +45,6 @@ function AddMoneyContent() {
       }} />
       {status.maximum_single_deposit != null && <Text style={text}>Maximum single deposit: ₦{Number(status.maximum_single_deposit).toLocaleString()}</Text>}
       {status.maximum_balance != null && <Text style={text}>Maximum balance: ₦{Number(status.maximum_balance).toLocaleString()}</Text>}
-      <Text style={text}>The bank may restrict outgoing payments if an incoming deposit exceeds your tier's limit.</Text>
     </> : status ? <><Text style={text}>{status.migration_message || 'Complete your Zitch account setup to receive transfers.'}</Text>
       {status.identity_available === true && <Btn label="Set up my account" onPress={() => router.push('/(auth)/kyc')} />}
     </> : busy ? <Text style={text}>Loading account details…</Text> : null}

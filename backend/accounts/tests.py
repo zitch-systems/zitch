@@ -568,7 +568,7 @@ class KycTierTests(BankIdentityAPI, TestCase):
             response, body = self.post("/api/banking/upgrade/", {"access_token": self.token, "tier": 3,
                 "profile": {**self.upgrade_profile(self.user), "proofOfAddressVerification": "untrusted"}})
         self.assertEqual(response.status_code, 400)
-        self.assertIn("Prembly", body["message"])
+        self.assertIn("Verify your home address", body["message"])
         send.assert_not_called()
         self.user.refresh_from_db()
         self.assertEqual(self.user.tier, 2)

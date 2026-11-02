@@ -171,6 +171,41 @@ class AutoVerifyTests(Base):
         sent.assert_not_called()
 
 
+    def test_a_wallet_an_earlier_attempt_opened_is_found_with_that_attempts_identity(self):
+        # The first attempt opened the test wallet but never attached it.
+        first, _ = self.start(identifier="33333333333")
+        IdentityChallenge.objects.filter(reference=first["reference"]).update(
+            state="review", verified_at=timezone.now())
+        started, _ = self.start()
+        exists = Reply({"status": "FAILED", "message": "A Wallet Already Exists For This User"}, 400)
+        found = Reply({"status": "SUCCESS", "data": {"accountNumber": "1100000001", "fullName": "Jane Doe"}}, 200)
+        missing = Reply({"status": "FAILED", "message": "An error occurred"}, 500)
+        lookups = []
+
+        def lookup(kind, identifier):
+            lookups.append(identifier)
+            return found if identifier == "33333333333" else missing
+        with patch("banking.client.Client.open_wallet", return_value=exists), \
+                patch("banking.client.Client.lookup_wallet", side_effect=lookup), \
+                patch("banking.client.Client.wallet", return_value=readback()):
+            result = confirm_identity(self.user, started["reference"], "123456")
+        self.assertTrue(result["success"], result)
+        self.assertEqual(lookups, ["22222222222", "33333333333"])
+        self.assertEqual(BankAccount.objects.get().number, "1100000001")
+
+    def test_resend_texts_a_new_code_for_the_same_check(self):
+        from .accounts import resend_code
+        started, _ = self.start()
+        with patch("utility.providers.send_sms", return_value={"success": True}) as sent:
+            again = resend_code(self.user, started["reference"])
+        sent.assert_called_once()
+        self.assertTrue(again["otp_required"])
+        self.assertNotEqual(again["reference"], started["reference"])
+        self.assertEqual(IdentityChallenge.objects.get(reference=started["reference"]).state, "expired")
+        with self.assertRaisesRegex(ValueError, "again"):
+            resend_code(self.user, started["reference"])
+
+
 @override_settings(NINEPSB=SANDBOX)
 class SandboxFundingTests(Base):
     def setUp(self):

@@ -73,35 +73,78 @@ def wallet_profile(data):
     return result
 
 
+# ID types: 1 NIN, 2 driver's licence, 3 voter's card, 4 international passport.
+# A NIN slip and a passport data page have no back side to photograph.
+NO_BACK_ID_TYPES = {"1", "4"}
+
+
+def fit_photo(value, *, maximum_chars):
+    """Return a JPEG of the customer's face that fits the bank's size limit.
+
+    Phone cameras produce photos far larger than the bank accepts, so the
+    in-app face capture is re-encoded here rather than refused.
+    """
+    if isinstance(value, str) and value.startswith("data:"):
+        value = value.partition(",")[2]
+    if not isinstance(value, str) or not value:
+        raise ValueError("Verify your face to continue")
+    if len(value) <= maximum_chars:
+        return base64_file(value, maximum_chars=maximum_chars, image_only=True)
+    if len(value) > 8 * 1024 * 1024:
+        raise ValueError("Your photo is too large. Please retake it")
+    base64_file(value, maximum_bytes=6 * 1024 * 1024, image_only=True)
+    with Image.open(BytesIO(base64.b64decode(value))) as im:
+        im = im.convert("RGB")
+        for side, quality in ((640, 80), (480, 75), (400, 65), (320, 60), (240, 55)):
+            copy = im.copy()
+            copy.thumbnail((side, side))
+            out = BytesIO()
+            copy.save(out, format="JPEG", quality=quality, optimize=True)
+            encoded = base64.b64encode(out.getvalue()).decode()
+            if len(encoded) <= maximum_chars:
+                return encoded
+    raise ValueError("Your photo is too large. Please retake it")
+
+
 def upgrade_profile(tier, data):
     if not isinstance(data, dict):
         raise ValueError("Provide account upgrade fields")
     import re
     if str(tier) not in {"2", "3"}:
         raise ValueError("Choose Tier 2 or Tier 3")
-    required = ("bvn", "nin", "accountName", "phoneNumber", "email", "idType", "idIssueDate",
-                "houseNumber", "streetName", "state", "city", "localGovernment", "pep", "nearestLandmark")
+    id_type = str(data.get("idType", ""))
+    if id_type not in {"1", "2", "3", "4"}:
+        raise ValueError("Choose your ID type")
+    data = dict(data)
+    if id_type == "1" and not data.get("idNumber"):
+        data["idNumber"] = data.get("nin", "")  # The NIN is the ID number of a NIN slip.
+    required = ["bvn", "nin", "accountName", "phoneNumber", "email", "idType",
+                "houseNumber", "streetName", "state", "city", "localGovernment", "pep", "nearestLandmark"]
+    if id_type != "1":
+        required.append("idIssueDate")  # A NIN has no issue or expiry date.
     if any(data.get(k) in (None, "") for k in required):
         raise ValueError("Complete all required bank KYC details")
     for key in ("bvn", "nin"):
         if not re.fullmatch(r"[0-9]{11}", str(data[key])):
             raise ValueError("Both BVN and NIN must contain eleven digits")
-    if str(data["idType"]) not in {"1", "2", "3", "4"} or data["pep"] not in {"YES", "NO"}:
+    if data["pep"] not in {"YES", "NO"}:
         raise ValueError("Invalid ID type or PEP declaration")
-    _date(data["idIssueDate"], "%Y-%m-%d", "Enter a valid ID issue date")
-    if str(data["idType"]) != "1" and not data.get("idExpiryDate"):
-        raise ValueError("ID expiry date is required for this document")
+    if id_type != "1":
+        _date(data["idIssueDate"], "%Y-%m-%d", "Enter a valid ID issue date")
+        if not data.get("idExpiryDate"):
+            raise ValueError("ID expiry date is required for this document")
+        _date(data["idExpiryDate"], "%Y-%m-%d", "Enter a valid ID expiry date")
     if str(tier) == "3" and not data.get("idNumber"):
         raise ValueError("ID number is required for Tier 3")
-    if data.get("idExpiryDate"):
-        _date(data["idExpiryDate"], "%Y-%m-%d", "Enter a valid ID expiry date")
     result = {k: data[k] for k in required}
     result.update(tier=str(tier), phoneNumber=phone(data["phoneNumber"]))
-    for key in ("idNumber", "idExpiryDate", "placeOfBirth"):
+    for key in ("idNumber", "placeOfBirth") + (() if id_type == "1" else ("idExpiryDate",)):
         if data.get(key):
             result[key] = data[key]
-    for key, chars in (("userPhoto", 100000), ("idCardFront", 100000), ("idCardBack", 100000), ("utilityBill", 50000)):
-        result[key] = base64_file(data.get(key), maximum_chars=chars, image_only=key in {"userPhoto", "idCardFront", "idCardBack"})
+    result["userPhoto"] = fit_photo(data.get("userPhoto"), maximum_chars=100000)
+    sides = ("idCardFront",) if id_type in NO_BACK_ID_TYPES else ("idCardFront", "idCardBack")
+    for key, chars in [(side, 100000) for side in sides] + [("utilityBill", 50000)]:
+        result[key] = base64_file(data.get(key), maximum_chars=chars, image_only=key != "utilityBill")
     result["customerSignature"] = base64_file(data.get("customerSignature"), maximum_bytes=500 * 1024, image_only=True)
     if str(tier) == "3":
         result["proofOfAddressVerification"] = base64_file(data.get("proofOfAddressVerification"), maximum_chars=50000)

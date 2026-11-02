@@ -269,7 +269,7 @@ class VerificationWebTests(TestCase):
         with patch("whatsapp.router.send_menu") as menu:
             handle_inbound(MSISDN, "menu")
         menu.assert_called_once_with(MSISDN)
-        self.assertContains(self.get(), 'name="bvn"')  # Tier 3 page's private form
+        self.assertContains(self.get(), 'value="upgrade_status"')  # Tier 3 page's private form
         with patch("banking.web_verification.submit", return_value={"pending": True}):
             self.assertEqual(self.post({"action": "identity_status"}).status_code, 200)
 
@@ -404,7 +404,7 @@ class VerificationWebTests(TestCase):
         self.assertEqual(cookie["path"], self.path)
         self.assertNotEqual(self.pa.payload["browser_proof"], cookie.value)
         self.assertNotIn(GOOD_PIN, json.dumps(self.pa.payload))
-        self.assertContains(self.get(), 'name="bvn"')  # Tier 3 page's private form
+        self.assertContains(self.get(), 'value="upgrade_status"')  # Tier 3 page's private form
         self.assertFalse(AccessToken.objects.exists())
 
     def test_fetch_pin_redirect_has_refreshed_form_csrf_and_no_referer_required(self):

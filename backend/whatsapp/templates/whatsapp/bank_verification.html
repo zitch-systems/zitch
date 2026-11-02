@@ -11,27 +11,16 @@
 <body>
 <main>
   <div class="brand">zitch</div>
-  <p class="eyebrow">Secure verification · From WhatsApp</p>
 
-  {% if page_tier == 1 %}
-    <h1>Open your Zitch account</h1>
-    <p class="lead">Two short steps: your details, then your BVN or NIN.</p>
-  {% elif page_tier == 2 %}
-    <h1>Upgrade to Tier 2</h1>
-    <p class="lead">Add your BVN, NIN and a few documents to raise your limits. Your tier changes once the review is approved.</p>
-  {% else %}
-    <h1>Upgrade to Tier 3</h1>
-    <p class="lead">Verify your home address, then submit your Tier 3 upgrade. Your tier changes once the review is approved.</p>
-  {% endif %}
+  {% if page_tier == 1 %}<h1>Open your Zitch account</h1>
+  {% else %}<h1>Upgrade to Tier {{ page_tier }}</h1>{% endif %}
 
-  {% if bank.sandbox %}<p class="notice">Test mode: use test identities only. No real money moves.</p>{% endif %}
   {% if message %}<p class="message" role="status">{{ message }}</p>{% endif %}
 
   {% if page_tier == 1 %}
     {% if face_pending %}
       <section class="card" id="face-link">
         <h2>Verify your face</h2>
-        <p class="hint">Take a quick photo with your camera on the next page. No code needed.</p>
         <a class="button" href="?step=face">Open face verification</a>
       </section>
       <details>
@@ -40,22 +29,24 @@
       <section class="card" id="code-step">
         {% if challenge.code_required %}
           <h2>Enter your code</h2>
-          <p class="hint">We sent a 6-digit code by SMS. It expires after 10 minutes.</p>
           <form method="post" autocomplete="off">
             {% csrf_token %}
             <input type="hidden" name="action" value="otp">
             <label for="otp">6-digit code</label>
             <input id="otp" name="otp" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required data-digits="6">
-            <button type="submit">Verify code</button>
+            <button type="submit">Verify</button>
+          </form>
+          <form method="post">
+            {% csrf_token %}
+            <button class="secondary" name="action" value="resend">Resend code</button>
           </form>
         {% else %}
-          <h2>We’re checking your details</h2>
-          <p class="hint">This usually takes a moment. Check the status below instead of starting again.</p>
+          <h2>Opening your account</h2>
+          <form method="post">
+            {% csrf_token %}
+            <button class="secondary" name="action" value="identity_status">Check status</button>
+          </form>
         {% endif %}
-        <form method="post">
-          {% csrf_token %}
-          <button class="secondary" name="action" value="identity_status">Check status</button>
-        </form>
       </section>
       <details>
         <summary>Start again with different details</summary>
@@ -65,16 +56,13 @@
       {% csrf_token %}
       <input type="hidden" name="action" value="identity">
       <section class="card" id="details-step">
-        <p class="step">Step 1 of 2</p>
         <h2 tabindex="-1" id="details-title">Your details</h2>
-        <p class="hint">Use your name exactly as it appears on your BVN or NIN.</p>
         <label for="lastName">Surname</label>
         <input id="lastName" name="lastName" value="{{ values.lastName }}" maxlength="80" required autocomplete="family-name">
         <label for="otherNames">First and middle names</label>
         <input id="otherNames" name="otherNames" value="{{ values.otherNames }}" maxlength="80" required autocomplete="given-name">
         <label for="phoneNo">Phone number</label>
         <input id="phoneNo" name="phoneNo" type="tel" value="{{ values.phoneNo }}" maxlength="15" required {% if values.phoneNo %}readonly{% endif %}>
-        {% if values.phoneNo %}<p class="hint">Your verified Zitch number.</p>{% endif %}
         <label for="dateOfBirth">Date of birth</label>
         <input id="dateOfBirth" name="dateOfBirth" type="text" value="{{ values.dateOfBirth }}" placeholder="DD/MM/YYYY" inputmode="numeric" maxlength="10" pattern="(0[1-9]|[12][0-9]|3[01])/(0[1-9]|1[0-2])/(19|20)[0-9]{2}" title="Day, month and year, for example 03/08/1994" required autocomplete="bday" data-mask="date">
         <fieldset>
@@ -91,7 +79,6 @@
 
       <section class="card idcard" id="id-step">
         <button type="button" class="back" id="back" hidden>← Back</button>
-        <p class="step">Step 2 of 2</p>
         <h2 tabindex="-1" id="id-title">Your ID</h2>
         <fieldset>
           <legend>ID type</legend>
@@ -100,18 +87,17 @@
             <label><input type="radio" name="kind" value="nin" {% if values.kind == "nin" %}checked{% endif %}><span>NIN</span></label>
           </div>
         </fieldset>
-        <label for="identifier" id="identifier-label">BVN or NIN (11 digits)</label>
+        <label for="identifier" id="identifier-label">BVN</label>
         <input id="identifier" name="identifier" type="password" inputmode="numeric" pattern="[0-9]{11}" minlength="11" maxlength="11" required autocomplete="off" data-digits="11">
         <div id="nimc-field">
           <label for="ninUserId">NIMC User ID</label>
           <input id="ninUserId" name="ninUserId" value="{{ values.ninUserId }}" maxlength="100" autocomplete="off">
-          <p class="hint">A separate ID from NIMC, not your 11-digit NIN. Only needed when you open your account with NIN.</p>
         </div>
         <fieldset>
-          <legend>How should we verify you?</legend>
-          <div class="options">
-            <label class="option"><input type="radio" name="method" value="OTP" {% if values.method != "FACIAL" %}checked{% endif %}><span><strong>Text me a code</strong><small>We send a 6-digit code by SMS.</small></span></label>
-            <label class="option"><input type="radio" name="method" value="FACIAL" {% if values.method == "FACIAL" %}checked{% endif %}><span><strong>Verify my face</strong><small>Opens Zitch face verification. No code needed.</small></span></label>
+          <legend>Verify with</legend>
+          <div class="options two">
+            <label class="option"><input type="radio" name="method" value="OTP" {% if values.method != "FACIAL" %}checked{% endif %}><span><strong>Text me a code</strong></span></label>
+            <label class="option"><input type="radio" name="method" value="FACIAL" {% if values.method == "FACIAL" %}checked{% endif %}><span><strong>Verify my face</strong></span></label>
           </div>
         </fieldset>
         <button type="submit" id="continue">Continue</button>
@@ -124,20 +110,25 @@
 
   {% else %}
     <section class="card">
-      <h2>Step 1 · Address check</h2>
-      <p class="hint">We visit or confirm the address you give here.</p>
-      {% if bank.address_verification_available %}
+      <h2>Verify your home address</h2>
+      {% if address_verified %}
+        <p class="message">Your address is verified.</p>
+      {% elif bank.address_verification_available %}
         <form method="post" autocomplete="off">
           {% csrf_token %}
           <input type="hidden" name="action" value="address">
           {% for field in address_fields %}
             <label for="addr-{{ field.key }}">{{ field.label }}</label>
-            <input id="addr-{{ field.key }}" name="{{ field.key }}" maxlength="255" required>
+            <input id="addr-{{ field.key }}" name="{{ field.key }}" maxlength="255" required
+              {% if field.key == "house_number" %}inputmode="numeric"{% elif field.key == "state" %}list="ng-states" autocomplete="off"{% elif field.key == "lga" %}list="ng-lgas" autocomplete="off"{% endif %}>
           {% endfor %}
-          <button type="submit">Request address check</button>
+          <datalist id="ng-states">{% for state in states %}<option value="{{ state }}">{% endfor %}</datalist>
+          <datalist id="ng-lgas"></datalist>
+          {{ nigeria_lgas|json_script:"ng-lga-data" }}
+          <button type="submit">Verify my address</button>
         </form>
       {% else %}
-        <p class="notice">Address checks are temporarily unavailable. Please contact support.</p>
+        <p class="notice">Address verification is not available yet.</p>
       {% endif %}
       {% if address_reference %}
         <form method="post">
@@ -146,11 +137,13 @@
         </form>
       {% endif %}
     </section>
-    <h2>Step 2 · Tier 3 upgrade</h2>
-    {% include "whatsapp/_bank_upgrade_form.html" with upgrade_tier=3 %}
+    {% if address_verified %}{% include "whatsapp/_bank_upgrade_form.html" with upgrade_tier=3 %}
+    {% else %}<form method="post">
+      {% csrf_token %}
+      <button class="secondary" name="action" value="upgrade_status">Check upgrade status</button>
+    </form>{% endif %}
   {% endif %}
 
-  <p class="privacy">This link works only with your linked WhatsApp account and expires in 15 minutes. Never send your PIN, codes or ID numbers as chat messages.</p>
 </main>
 <script nonce="{{ nonce }}">
 (function () {
@@ -196,7 +189,7 @@
       nimc.hidden = !nin;
       nimcInput.disabled = !nin;
       nimcInput.required = nin;
-      idLabel.textContent = nin ? "NIN (11 digits)" : "BVN (11 digits)";
+      idLabel.textContent = nin ? "NIN" : "BVN";
     };
     var syncMethod = function () {
       cont.textContent = checked("method") === "FACIAL" ? "Continue to face verification" : "Send my code";
@@ -225,6 +218,68 @@
       // Enter on step 1 moves to step 2 instead of submitting half the form.
       if (!form.classList.contains("on-id")) { event.preventDefault(); next.click(); return; }
       window.setTimeout(function () { cont.disabled = true; cont.textContent = "Please wait…"; }, 0);
+    });
+  }
+
+  // State and LGA pickers: suggestions from the list, typing still allowed.
+  var lgaData = document.getElementById("ng-lga-data");
+  var lgas = lgaData ? JSON.parse(lgaData.textContent) : {};
+  var lgaList = document.getElementById("ng-lgas");
+  document.querySelectorAll("input[list=ng-states]").forEach(function (state) {
+    var fill = function () {
+      if (!lgaList) return;
+      var match = Object.keys(lgas).filter(function (k) { return k.toLowerCase() === state.value.trim().toLowerCase(); })[0];
+      lgaList.innerHTML = "";
+      (match ? lgas[match] : []).forEach(function (name) {
+        var option = document.createElement("option"); option.value = name; lgaList.appendChild(option);
+      });
+    };
+    state.addEventListener("input", fill); fill();
+  });
+
+  // Upgrade form: a NIN needs no ID number or dates; a NIN slip or passport has no back.
+  var upgrade = document.getElementById("upgrade-form");
+  if (upgrade) {
+    var syncId = function () {
+      var el = upgrade.querySelector("input[name=idType]:checked");
+      var type = el ? el.value : "1";
+      upgrade.querySelectorAll("[data-not-nin]").forEach(function (box) {
+        box.hidden = type === "1";
+        box.querySelectorAll("input").forEach(function (i) { i.disabled = type === "1"; i.required = type !== "1" && i.name !== "idNumber"; });
+      });
+      upgrade.querySelectorAll("[data-back]").forEach(function (box) {
+        var none = type === "1" || type === "4";
+        box.hidden = none;
+        box.querySelectorAll("input").forEach(function (i) { i.disabled = none; i.required = !none; });
+      });
+    };
+    upgrade.querySelectorAll("input[name=idType]").forEach(function (el) { el.addEventListener("change", syncId); });
+    syncId();
+    // Face capture: a front-camera photo, shrunk before upload and shown as a preview.
+    var face = document.getElementById("up-userPhoto");
+    var preview = document.getElementById("up-face-preview");
+    var cta = document.getElementById("up-face-cta");
+    face.addEventListener("change", function () {
+      var file = face.files && face.files[0];
+      if (!file || !/^image\//.test(file.type)) return;
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        var scale = Math.min(1, 640 / Math.max(img.naturalWidth, img.naturalHeight));
+        var canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.naturalWidth * scale); canvas.height = Math.round(img.naturalHeight * scale);
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        var side = Math.min(img.naturalWidth, img.naturalHeight);
+        preview.getContext("2d").drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, preview.width, preview.height);
+        preview.hidden = false; cta.textContent = "Retake photo";
+        URL.revokeObjectURL(url);
+        canvas.toBlob(function (blob) {
+          if (!blob || !window.DataTransfer) return;
+          try { var list = new DataTransfer(); list.items.add(new File([blob], "face.jpg", { type: "image/jpeg" })); face.files = list.files; } catch (e) { /* keep the original */ }
+        }, "image/jpeg", 0.8);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); };
+      img.src = url;
     });
   }
 

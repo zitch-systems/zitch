@@ -34,6 +34,8 @@ def verification_status(user):
             "historical_verified" if historical_verified else "not_verified",
         "historical_address_verified": historical_verified,
         "historical_address_verification_pending": historical_pending,
+        # Lets the app resume an address check without asking for its reference.
+        "address_reference": row.reference if row and row.state in {"pending", "submitted", "review", "verified"} else "",
     }
 
 
