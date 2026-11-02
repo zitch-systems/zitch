@@ -26,25 +26,16 @@ def profile(**changes):
 
 
 class UpgradeRuleTests(SimpleTestCase):
-    def test_a_nin_needs_no_dates_or_back_and_no_optional_fields_are_sent(self):
-        body = upgrade_profile(2, profile(idCardBack=None))
-        self.assertNotIn("idIssueDate", body)
-        self.assertNotIn("idExpiryDate", body)
-        self.assertNotIn("idCardBack", body)
-        self.assertNotIn("idNumber", body)
-        self.assertNotIn("placeOfBirth", upgrade_profile(2, profile(idCardBack=None, placeOfBirth="Lagos")))
+    def test_the_nin_is_the_id_with_no_type_choice_dates_or_back(self):
+        body = upgrade_profile(2, profile(idType="2", idCardBack=None, idIssueDate="2020-01-01", placeOfBirth="Lagos"))
+        self.assertEqual(body["idType"], "1")
+        self.assertEqual(body["idNumber"], "10987654321")
+        for gone in ("idIssueDate", "idExpiryDate", "idCardBack", "placeOfBirth"):
+            self.assertNotIn(gone, body)
 
-    def test_a_passport_has_no_back_but_needs_its_dates(self):
-        with self.assertRaisesRegex(ValueError, "required"):
-            upgrade_profile(2, profile(idType="4", idCardBack=None))
-        body = upgrade_profile(2, profile(idType="4", idCardBack=None,
-                                          idIssueDate="2020-01-01", idExpiryDate="2030-01-01"))
-        self.assertNotIn("idCardBack", body)
-        self.assertEqual(body["idExpiryDate"], "2030-01-01")
-
-    def test_a_drivers_licence_still_needs_its_back(self):
+    def test_the_nin_slip_photo_is_required(self):
         with self.assertRaisesRegex(ValueError, "document"):
-            upgrade_profile(2, profile(idType="2", idCardBack=None, idIssueDate="2020-01-01", idExpiryDate="2030-01-01"))
+            upgrade_profile(2, profile(idCardFront=None))
 
     def test_a_large_face_photo_is_shrunk_to_the_bank_limit(self):
         large = picture(side=900, noise=True)

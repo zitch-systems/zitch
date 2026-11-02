@@ -133,8 +133,11 @@ def check_identity_request(user, kind, identifier, profile, *, method="OTP"):
     """
     if not user.email_verified or not user.phone_verified:
         raise ValueError("Verify your email address and phone number first")
-    if kind not in {"bvn", "nin"} or not re.fullmatch(r"[0-9]{11}", identifier or ""):
-        raise ValueError("Enter an eleven-digit BVN or NIN")
+    # Tier 1 is opened with the BVN only; the NIN is given with the Tier 2 upgrade.
+    if kind != "bvn":
+        raise ValueError("Use your BVN to open your account")
+    if not re.fullmatch(r"[0-9]{11}", identifier or ""):
+        raise ValueError("Enter your eleven-digit BVN")
     if method not in {"OTP", "FACIAL"}:
         raise ValueError("Choose OTP or face verification")
     profile = wallet_profile(profile)
@@ -374,7 +377,8 @@ def complete_account(challenge):
             if wallet.account_number and not PreviousBankArchive.objects.filter(wallet=wallet).exists():
                 raise ValueError("Previous account archive must complete before bank setup")
             current = BankAccount.objects.create(wallet=wallet, number=number, name=name,
-                environment=config().get("ENVIRONMENT", "sandbox"), encrypted_profile=seal(stored["profile"]))
+                environment=config().get("ENVIRONMENT", "sandbox"), encrypted_profile=seal(stored["profile"]),
+                encrypted_bvn=seal(stored["identifier"]) if challenge.kind == "bvn" else "")
             wallet.account_number, wallet.account_name, wallet.bank_name = number, name, "9PSB"
             wallet.account_reference = "9PSB-" + str(user.pk)
             wallet.bank_accounts = []

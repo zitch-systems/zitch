@@ -10,7 +10,7 @@ export type BankStatus = ApiResult<{
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean; address_verified: boolean;
   profile: BankProfile; account_number?: string; account_name?: string;
   identity_available?: boolean; address_verification_available?: boolean;
-  address_verification_pending?: boolean; address_reference?: string;
+  address_verification_pending?: boolean; address_reference?: string; bvn_on_file?: boolean;
   email_verified?: boolean; phone_verified?: boolean; email_verification_required?: boolean;
   can_fund?: boolean; available?: boolean; has_account?: boolean;
   legacy_funding_review?: boolean; migration_message?: string;

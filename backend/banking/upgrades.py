@@ -5,7 +5,7 @@ import secrets
 from django.db import transaction
 from django.utils import timezone
 
-from accounts.models import IdentityProof, User, hash_identifier
+from accounts.models import IdentityProof, User, hash_identifier, record_identity_proof
 from wallet.models import Wallet
 
 from .accounts import account_for, require_enabled, update_account
@@ -30,11 +30,20 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
         if approved and user.tier >= tier:
             return {"success": True, "bank_tier": bank.tier, "message": "Your bank tier is already active."}
         raise ValueError("Bank tier evidence needs review before this upgrade can be enabled")
-    for kind in ("bvn", "nin"):
-        proof = IdentityProof.objects.filter(user=user, identity_type=kind,
-            identity_hash=hash_identifier(str(payload.get(kind, ""))), source__in=["9psb_otp", "9psb_face"]).exists()
-        if not proof:
-            raise ValueError("Verify both your BVN and NIN before upgrading")
+    payload = dict(payload)
+    # The BVN is the one the account was opened with; the customer doesn't type it again.
+    if bank.encrypted_bvn:
+        payload["bvn"] = unseal(bank.encrypted_bvn)
+    if not IdentityProof.objects.filter(user=user, identity_type="bvn", identity_hash=hash_identifier(str(payload.get("bvn", ""))),
+            source__in=["9psb_otp", "9psb_face"]).exists():
+        raise ValueError("Enter the BVN your account was opened with")
+    # The NIN is checked by the bank with the upgrade; it must not belong to anyone else here.
+    nin_hash = hash_identifier(str(payload.get("nin", "")))
+    if User.objects.exclude(pk=user.pk).filter(nin_hash=nin_hash).exists() or \
+            IdentityProof.objects.exclude(user=user).filter(identity_type="nin", identity_hash=nin_hash).exists():
+        raise ValueError("This NIN is already linked to another account")
+    if user.nin_hash and not hmac.compare_digest(user.nin_hash, nin_hash):
+        raise ValueError("Use the NIN already on your account")
     address = None
     # Client-uploaded address proof is not provider verification.
     payload = {k: v for k, v in payload.items() if k != "proofOfAddressVerification"}
@@ -105,7 +114,8 @@ def refresh_upgrade(bank):
         wallet = Wallet.objects.select_for_update().get(pk=bank.wallet_id)
         user = User.objects.select_for_update().get(pk=wallet.user_id)
         locked = AccountUpgrade.objects.select_for_update().get(pk=request.pk)
-        if not hmac.compare_digest(user.bvn_hash, locked.bvn_hash) or not hmac.compare_digest(user.nin_hash, locked.nin_hash):
+        if not hmac.compare_digest(user.bvn_hash, locked.bvn_hash) or (
+                user.nin_hash and not hmac.compare_digest(user.nin_hash, locked.nin_hash)):
             locked.state, locked.last_error = "review", "identity_changed"
         elif locked.tier == 3 and (not locked.address_verification or locked.address_verification.state != "verified"):
             locked.state, locked.last_error = "review", "address_evidence_unconfirmed"
@@ -113,6 +123,12 @@ def refresh_upgrade(bank):
             locked.state = "approved"
             # Tier recomputation reads the durable approval in this transaction.
             locked.save(update_fields=["state"])
+            if not user.nin_hash:
+                # The bank approved the upgrade with this NIN: that is its verification.
+                record_identity_proof(user, "nin", locked.nin_hash, prehashed=True, source="9psb_upgrade",
+                                      provider_reference=locked.reference, verified_name=bank.name)
+                user.nin_hash, user.nin_verified = locked.nin_hash, True
+                user.save(update_fields=["nin_hash", "nin_verified"])
             if locked.tier == 3:
                 user.address_verified = True
                 user.address_verification_pending = False

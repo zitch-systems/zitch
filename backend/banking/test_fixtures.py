@@ -67,10 +67,10 @@ class BankIdentityAPI:
         Image.new("RGB", (20, 20), "white").save(image, format="PNG")
         document = base64.b64encode(image.getvalue()).decode()
         return {"bvn": "12345678901", "nin": "10987654321", "accountName": user.get_full_name(),
-                "phoneNumber": user.phone, "email": user.email, "idType": "1", "idIssueDate": "2020-01-01",
+                "phoneNumber": user.phone, "email": user.email,
                 "houseNumber": "1", "streetName": "Test Road", "state": "Lagos", "city": "Ikeja",
                 "localGovernment": "Ikeja", "pep": "NO", "nearestLandmark": "Test school",
-                **{key: document for key in ("userPhoto", "idCardFront", "idCardBack", "utilityBill", "customerSignature")}}
+                **{key: document for key in ("userPhoto", "idCardFront", "utilityBill", "customerSignature")}}
 
     def approve_tier2(self, user, token):
         from unittest.mock import patch

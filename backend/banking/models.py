@@ -8,6 +8,8 @@ class BankAccount(models.Model):
     number = models.CharField(max_length=10, unique=True)
     name = models.CharField(max_length=160)
     encrypted_profile = models.TextField(blank=True)
+    # The BVN the account was opened with, kept sealed so a Tier 2 upgrade needn't ask for it again.
+    encrypted_bvn = models.TextField(blank=True)
     environment = models.CharField(max_length=10, choices=[("sandbox", "Sandbox"), ("production", "Production")])
     tier = models.PositiveSmallIntegerField(default=0)
     # Unknown restrictions fail closed; never treat absence as PND removed.

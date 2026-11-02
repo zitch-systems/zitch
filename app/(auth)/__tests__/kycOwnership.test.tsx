@@ -66,7 +66,6 @@ const pill = (label: string) => tree.root.findAllByProps({ accessibilityLabel: l
 async function next() { await act(async () => { control('Next').props.onPress(); }); }
 async function enter(kind = 'bvn') {
   await next();
-  await act(async () => { pill(kind.toUpperCase()).props.onPress(); });
   await act(async () => { field(kind.toUpperCase()).props.onChangeText('12345678901'); });
 }
 const sent = (_kind: string) => profile;
@@ -86,7 +85,7 @@ beforeEach(() => {
 });
 afterEach(async () => { if (tree) await act(async () => tree.unmount()); });
 
-it.each(['bvn', 'nin'])('uses a bank-bound %s OTP and keeps account opening pending after acceptance', async (kind) => {
+it.each(['bvn'])('uses a bank-bound %s OTP and keeps account opening pending after acceptance', async (kind) => {
   await mount(); await enter(kind);
   await act(async () => { await control('Send code').props.onPress(); });
   expect(mockIdentity).toHaveBeenCalledWith(kind, '12345678901', sent(kind));
@@ -102,9 +101,9 @@ it('starts with BVN and shows the details first, with Next to one ID page', asyn
   expect(output()).toContain('Your details'); expect(output()).not.toContain('Step 1 of 2');
   expect(control('Next').props.disabled).toBe(false);
   await next();
-  expect(output()).toContain('Verify your identity'); expect(output()).not.toContain('Home address');
-  expect(pill('BVN').props.accessibilityState.selected).toBe(true);
-  expect(pill('NIN').props.accessibilityState.selected).toBe(false);
+  expect(output()).toContain('Verify your BVN'); expect(output()).not.toContain('Home address');
+  // Tier 1 is opened with the BVN only: there is no NIN choice.
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'NIN' })).toHaveLength(0);
   expect(output()).not.toContain('NIMC User ID');
   // No tier tabs, status narration or test-mode notes on this page.
   for (const gone of ['Tier upgrade', 'Tier 3 address', 'Codes expire', 'Test mode', 'Account tier']) expect(output()).not.toContain(gone);
@@ -145,7 +144,7 @@ it('keeps Next disabled until the details are complete', async () => {
   expect(control('Next').props.disabled).toBe(false);
 });
 
-it.each(['bvn', 'nin'])('verifies %s on its own face verification screen without sending a code', async (kind) => {
+it.each(['bvn'])('verifies %s on its own face verification screen without sending a code', async (kind) => {
   mockIdentity.mockResolvedValue({ ...pending, otp_required: false, account_setup_state: 'opening' });
   await mount(); await enter(kind); await openFaceStep();
   expect(output()).toContain('Open camera'); expect(output()).not.toContain('Send code');
@@ -175,16 +174,10 @@ it('masks the date of birth to DD/MM/YYYY digits and rejects impossible dates', 
   expect(control('Next').props.disabled).toBe(true);
 });
 
-it('asks only for the NIN when opening with NIN, never a NIMC User ID', async () => {
-  await mount(); await enter('nin');
-  expect(output()).not.toContain('NIMC'); expect(control('Send code').props.disabled).toBe(false);
-  expect(output()).not.toContain('9PSB'); expect(output()).not.toContain('Prembly');
-});
-
 it('resumes the authenticated customer challenge without storing the identifier locally', async () => {
-  mockStatus.mockResolvedValue({ ...ready, identity_challenge: { ...pending, kind: 'nin' } }); await mount();
+  mockStatus.mockResolvedValue({ ...ready, identity_challenge: { ...pending, kind: 'bvn' } }); await mount();
   expect(output()).toContain('Six-digit code');
-  expect(field('NIN').props.value).toBe('');
+  expect(field('BVN').props.value).toBe('');
   expect(mockIdentity).not.toHaveBeenCalled();
 });
 

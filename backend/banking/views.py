@@ -31,7 +31,7 @@ def status(request):
     bank = accounts.account_for(user)
     from .secrets import unseal
     from accounts.models import IdentityProof
-    proofs = set(IdentityProof.objects.filter(user=user, source__in=["9psb_otp", "9psb_face"]).values_list("identity_type", flat=True))
+    proofs = set(IdentityProof.objects.filter(user=user, source__in=["9psb_otp", "9psb_face", "9psb_upgrade"]).values_list("identity_type", flat=True))
     profile = unseal(bank.encrypted_profile) if bank and bank.encrypted_profile else {
         "lastName": user.last_name, "otherNames": user.first_name, "phoneNo": user.phone, "email": user.email}
     challenge = IdentityChallenge.objects.filter(user=user, environment=config().get("ENVIRONMENT", "sandbox")).exclude(state__in=["complete", "failed", "expired"]).order_by("-created").first()
@@ -43,6 +43,8 @@ def status(request):
         email_verification_required=not user.email_verified,
         identity_challenge=({**progress, "kind": challenge.kind} if progress else None),
         bvn_verified="bvn" in proofs, nin_verified="nin" in proofs,
+        # Accounts opened before the BVN was kept must enter it once on the upgrade.
+        bvn_on_file=bool(bank and bank.encrypted_bvn),
         face_verified=IdentityProof.objects.filter(user=user, source="9psb_face").exists(),
         **address.verification_status(user),
         identity_verification_provider="9psb", face_rail="9psb", address_rail="prembly",

@@ -79,14 +79,8 @@
 
       <section class="card idcard" id="id-step">
         <button type="button" class="back" id="back" hidden>← Back</button>
-        <h2 tabindex="-1" id="id-title">Your ID</h2>
-        <fieldset>
-          <legend>ID type</legend>
-          <div class="segmented">
-            <label><input type="radio" name="kind" value="bvn" {% if values.kind != "nin" %}checked{% endif %}><span>BVN</span></label>
-            <label><input type="radio" name="kind" value="nin" {% if values.kind == "nin" %}checked{% endif %}><span>NIN</span></label>
-          </div>
-        </fieldset>
+        <h2 tabindex="-1" id="id-title">Your BVN</h2>
+        <input type="hidden" name="kind" value="bvn">
         <label for="identifier" id="identifier-label">BVN</label>
         <input id="identifier" name="identifier" type="password" inputmode="numeric" pattern="[0-9]{11}" minlength="11" maxlength="11" required autocomplete="off" data-digits="11">
         <fieldset>
@@ -172,22 +166,16 @@
   var form = document.getElementById("identity-form");
   if (form) {
     var detailsStep = document.getElementById("details-step");
-    var idLabel = document.getElementById("identifier-label");
     var next = document.getElementById("next");
     var back = document.getElementById("back");
     var cont = document.getElementById("continue");
     var checked = function (name) { var el = form.querySelector("input[name=" + name + "]:checked"); return el ? el.value : ""; };
 
-    var syncKind = function () {
-      var nin = checked("kind") === "nin";
-      idLabel.textContent = nin ? "NIN" : "BVN";
-    };
     var syncMethod = function () {
       cont.textContent = checked("method") === "FACIAL" ? "Continue to face verification" : "Send my code";
     };
-    form.querySelectorAll("input[name=kind]").forEach(function (el) { el.addEventListener("change", syncKind); });
     form.querySelectorAll("input[name=method]").forEach(function (el) { el.addEventListener("change", syncMethod); });
-    syncKind(); syncMethod();
+    syncMethod();
 
     // Step 1 → Next → step 2. Without JavaScript both steps show on one page.
     next.hidden = false; back.hidden = false;
@@ -228,24 +216,9 @@
     state.addEventListener("input", fill); fill();
   });
 
-  // Upgrade form: a NIN needs no ID number or dates; a NIN slip or passport has no back.
+  // Upgrade form.
   var upgrade = document.getElementById("upgrade-form");
   if (upgrade) {
-    var syncId = function () {
-      var el = upgrade.querySelector("input[name=idType]:checked");
-      var type = el ? el.value : "1";
-      upgrade.querySelectorAll("[data-not-nin]").forEach(function (box) {
-        box.hidden = type === "1";
-        box.querySelectorAll("input").forEach(function (i) { i.disabled = type === "1"; i.required = type !== "1"; });
-      });
-      upgrade.querySelectorAll("[data-back]").forEach(function (box) {
-        var none = type === "1" || type === "4";
-        box.hidden = none;
-        box.querySelectorAll("input").forEach(function (i) { i.disabled = none; i.required = !none; });
-      });
-    };
-    upgrade.querySelectorAll("input[name=idType]").forEach(function (el) { el.addEventListener("change", syncId); });
-    syncId();
     // Face capture: a front-camera photo, shrunk before upload and shown as a preview.
     var face = document.getElementById("up-userPhoto");
     var preview = document.getElementById("up-face-preview");

@@ -511,10 +511,15 @@ class KycTierTests(BankIdentityAPI, TestCase):
         self.assertTrue(body["phone_verified"])
         self.assertFalse(body["identity_available"])
 
-    def test_bvn_plus_nin_promote_to_tier_1(self):
+    def test_bvn_opens_tier_1_and_nin_is_left_for_the_upgrade(self):
         self.assertEqual(self.complete_identity(self.user, self.token)["tier"], 1)
-        self.assertEqual(self.complete_identity(self.user, self.token, "nin", "10987654321")["tier"], 1)
         self.assertEqual(BankAccount.objects.count(), 1)
+        self.assertTrue(BankAccount.objects.get().encrypted_bvn)
+        with patch("banking.client.Client.initiate_identity") as send:
+            response = self.identity_post(self.user, self.token, "nin", "10987654321")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("BVN", response.json()["message"])
+        send.assert_not_called()
 
     def test_an_unverified_phone_holds_the_tier_at_zero(self):
         self.user.phone_verified = False
@@ -561,8 +566,9 @@ class KycTierTests(BankIdentityAPI, TestCase):
 
     def test_kyc_ladder_stops_at_unavailable_tier_3(self):
         self.complete_identity(self.user, self.token)
-        self.complete_identity(self.user, self.token, "nin", "10987654321")
         self.approve_tier2(self.user, self.token)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.nin_verified)  # The approved upgrade verified the NIN.
         with patch("banking.client.Client.wallet", return_value=self.bank_wallet_reply(self.user, tier=2)), \
              patch("banking.client.Client.upgrade") as send:
             response, body = self.post("/api/banking/upgrade/", {"access_token": self.token, "tier": 3,
@@ -602,10 +608,8 @@ class KycTierTests(BankIdentityAPI, TestCase):
     def test_bvn_nin_stored_hashed_not_raw(self):
         from accounts.models import hash_identifier
         self.complete_identity(self.user, self.token)
-        self.complete_identity(self.user, self.token, "nin", "10987654321")
         self.user.refresh_from_db()
         self.assertEqual(self.user.bvn_last4, "8901")
-        self.assertEqual(self.user.nin_last4, "4321")
         self.assertEqual(self.user.bvn_hash, hash_identifier("12345678901"))
         self.assertNotIn("12345678901", self.user.bvn_hash)
         self.assertFalse(hasattr(self.user, "bvn"))
@@ -617,7 +621,7 @@ class KycTierTests(BankIdentityAPI, TestCase):
         other.set_nin("10987654321")
         other.save(update_fields=["bvn_hash", "bvn_last4", "nin_hash", "nin_last4"])
         with patch("banking.client.Client.initiate_identity") as send:
-            for kind, identifier in (("bvn", "12345678901"), ("nin", "10987654321")):
+            for kind, identifier in (("bvn", "12345678901"),):
                 response = self.identity_post(self.user, self.token, kind, identifier)
                 self.assertEqual(response.status_code, 400)
                 self.assertIn("already linked", response.json()["message"])
@@ -839,12 +843,12 @@ class FullJourneyE2ETests(BankIdentityAPI, BankIOCase):
         identity = self.complete_identity(user, token)
         self.assertEqual(identity["tier"], 1)
         self.assertEqual(identity["bank_name"], "9PSB")
-        self.complete_identity(user, token, "nin", "10987654321")
         status, body = self.post("/api/banking/status/", access_token=token)
         self.assertEqual(status, 200)
         self.assertEqual(body["account_number"], identity["account_number"])
         self.assertTrue(body["bvn_verified"])
-        self.assertTrue(body["nin_verified"])
+        self.assertTrue(body["bvn_on_file"])
+        self.assertFalse(body["nin_verified"])
         self.fund(user, "50000.00", "JOURNEY-DEPOSIT-1")
         status, body = self.post("/api/wallet_balance/", access_token=token)
         self.assertEqual(body["wallet"], "50000.00")

@@ -4,34 +4,15 @@
   <input type="hidden" name="tier" value="{{ upgrade_tier }}">
   {% for field in details|slice:":3" %}<input type="hidden" name="{{ field.key }}" value="{{ field.value }}">{% endfor %}
   <section class="card">
-    <h2>BVN and NIN</h2>
+    <h2>NIN</h2>
+    {% if not bvn_on_file %}
     <label for="up-bvn">BVN</label>
     <input id="up-bvn" name="bvn" type="password" inputmode="numeric" pattern="[0-9]{11}" minlength="11" maxlength="11" required autocomplete="off" data-digits="11">
+    {% endif %}
     <label for="up-nin">NIN</label>
     <input id="up-nin" name="nin" type="password" inputmode="numeric" pattern="[0-9]{11}" minlength="11" maxlength="11" required autocomplete="off" data-digits="11">
-  </section>
-  <section class="card">
-    <h2>ID document</h2>
-    <fieldset>
-      <legend>ID type</legend>
-      <div class="options two">
-        {% for value, label in id_types %}
-          <label class="option"><input type="radio" name="idType" value="{{ value }}" {% if forloop.first %}checked{% endif %}><span><strong>{{ label }}</strong></span></label>
-        {% endfor %}
-      </div>
-    </fieldset>
-    <div data-not-nin hidden>
-      <label for="up-idIssueDate">Issue date</label>
-      <input id="up-idIssueDate" name="idIssueDate" type="date" disabled>
-      <label for="up-idExpiryDate">Expiry date</label>
-      <input id="up-idExpiryDate" name="idExpiryDate" type="date" disabled>
-    </div>
-    <label for="up-idCardFront">ID front</label>
+    <label for="up-idCardFront">NIN slip photo</label>
     <input id="up-idCardFront" name="idCardFront" type="file" class="file" accept="image/jpeg,image/png" required>
-    <div data-back hidden>
-      <label for="up-idCardBack">ID back</label>
-      <input id="up-idCardBack" name="idCardBack" type="file" class="file" accept="image/jpeg,image/png" disabled>
-    </div>
   </section>
   {% if upgrade_tier == 2 %}
   <section class="card">

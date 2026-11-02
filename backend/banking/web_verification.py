@@ -16,18 +16,15 @@ from .secrets import seal, unseal
 PROFILE = [("lastName", "Surname"), ("otherNames", "First and middle names"), ("phoneNo", "Phone number"),
            ("dateOfBirth", "Date of birth"), ("address", "Home address")]
 DETAILS = [("accountName", "Full legal name"), ("phoneNumber", "Phone number"), ("email", "Email"),
-    ("idIssueDate", "ID issue date"), ("idExpiryDate", "ID expiry date"),
     ("houseNumber", "House number"), ("streetName", "Street"), ("state", "State"), ("city", "City"),
     ("localGovernment", "Local government area"), ("nearestLandmark", "Nearest landmark")]
-DATE_DETAILS = {"idIssueDate", "idExpiryDate"}
-OPTIONAL_DETAILS = {"idIssueDate", "idExpiryDate"}  # Not asked for a NIN.
-# userPhoto is taken with the camera on the page (face capture), never uploaded.
-DOCUMENTS = [("userPhoto", "Your face"), ("idCardFront", "ID front"),
-    ("idCardBack", "ID back"), ("utilityBill", "Utility bill"), ("customerSignature", "Signature")]
-NO_BACK_ID_TYPES = {"1", "4"}  # A NIN slip and a passport have no back side.
+DATE_DETAILS = set()
+OPTIONAL_DETAILS = set()
+# The NIN is the ID: its slip is the ID image. userPhoto is taken with the camera on the page.
+DOCUMENTS = [("userPhoto", "Your face"), ("idCardFront", "NIN slip"),
+    ("utilityBill", "Utility bill"), ("customerSignature", "Signature")]
 ADDRESS = [("house_number", "House number"), ("street", "Street"), ("address", "Full home address"),
     ("city", "City"), ("state", "State"), ("lga", "Local government area"), ("landmark", "Nearest landmark")]
-ID_TYPES = [("1", "National ID (NIN)"), ("2", "Driver’s licence"), ("3", "Voter’s card"), ("4", "International passport")]
 
 FACE_REQUEST_SECONDS = 15 * 60
 
@@ -50,7 +47,7 @@ def validate_fields(action, data, files):
     fields = {
         "identity": {key for key, _ in PROFILE} | {"gender", "kind", "identifier", "method"},
         "otp": {"otp"}, "identity_status": set(), "resend": set(), "face": set(),
-        "upgrade": {key for key, _ in DETAILS} | {"bvn", "nin", "idType", "pep", "tier"},
+        "upgrade": {key for key, _ in DETAILS} | {"bvn", "nin", "pep", "tier"},
         "upgrade_status": set(), "address": {key for key, _ in ADDRESS}, "address_status": set(),
     }
     uploads = {"identity": {"face"}, "face": {"face"}, "upgrade": {key for key, _ in DOCUMENTS}}
@@ -92,7 +89,6 @@ def context(user, payload):
         "details": [{"key": key, "label": label, "value": known.get(key, ""),
                      "type": "date" if key in DATE_DETAILS else "email" if key == "email" else "tel" if key == "phoneNumber" else "text",
                      "required": key not in OPTIONAL_DETAILS} for key, label in DETAILS],
-        "id_types": ID_TYPES,
         "documents": [{"key": key, "label": label} for key, label in DOCUMENTS],
         "address_fields": [{"key": key, "label": label} for key, label in ADDRESS],
         "identity_reference": payload.get("identity_reference", ""),
@@ -101,6 +97,7 @@ def context(user, payload):
         "face_pending": bool(payload.get("face_request")),
         "address_reference": payload.get("address_reference", ""),
         "address_verified": address.verification_status(user)["address_verified"],
+        "bvn_on_file": bool(bank and bank.encrypted_bvn),
         "nigeria_lgas": NIGERIA_LGAS, "states": list(NIGERIA_LGAS)}
 
 
@@ -170,10 +167,9 @@ def submit(user, action, data, files, scope):
         return accounts.challenge_payload(row)
     if action == "upgrade":
         profile = {key: data.get(key, "") for key, _ in DETAILS}
-        profile.update({key: data.get(key, "") for key in ("bvn", "nin", "idType", "pep")})
-        skip = {"idCardBack"} if profile.get("idType") in NO_BACK_ID_TYPES else set()
+        profile.update({key: data.get(key, "") for key in ("bvn", "nin", "pep")})
         profile.update({key: uploaded(files, key, missing="Verify your face to continue" if key == "userPhoto"
-                        else "Choose a document within the displayed size limit") for key, _ in DOCUMENTS if key not in skip})
+                        else "Choose a document within the displayed size limit") for key, _ in DOCUMENTS})
         return upgrades.submit_upgrade(user, data.get("tier"), profile, address_reference=scope.get("address_reference", ""))
     if action == "upgrade_status":
         bank = accounts.account_for(user)

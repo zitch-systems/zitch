@@ -62,14 +62,15 @@ it('goes straight to the next tier with no tier tabs', async () => {
   expect(output()).not.toContain('Tier 3 address'); expect(output()).not.toContain('Submit for bank review');
 });
 
-it('asks no dates and no back side for a NIN, and none of the passport photo upload', async () => {
+it('asks only for the NIN and its slip photo, never an ID type, number, dates, back side or BVN', async () => {
+  mockStatus.mockResolvedValue({ ...tier1, bvn_on_file: true }); await mount();
+  expect(field('NIN')).toBeTruthy(); expect(output()).toContain('Upload NIN slip');
+  for (const gone of ['BVN"', 'Issue date', 'Expiry date', 'ID back', 'ID number', 'Driver', 'Passport photo']) expect(output()).not.toContain(gone);
+});
+
+it('asks for the BVN once when the account was opened before it was kept', async () => {
   await mount();
-  expect(output()).not.toContain('Issue date'); expect(output()).not.toContain('Expiry date');
-  expect(output()).not.toContain('ID back'); expect(output()).not.toContain('Passport photo');
-  await act(async () => { control('Passport').props.onPress(); });
-  expect(output()).toContain('Issue date'); expect(output()).not.toContain('ID back'); expect(output()).not.toContain('ID number');
-  await act(async () => { control('Driver’s licence').props.onPress(); });
-  expect(output()).toContain('Upload ID back');
+  expect(field('BVN')).toBeTruthy();
 });
 
 it('uses the number keypad for the house number and suggests states and their LGAs', async () => {
@@ -91,7 +92,7 @@ it('captures the face in the app and sends it with the upgrade, then drops the d
   await type('BVN', '12345678901'); await type('NIN', '10987654321');
   await type('House number', '12'); await type('Street', 'Test Road'); await type('City or town', 'Ikeja');
   await type('State', 'Lagos'); await type('Local government area', 'Ikeja'); await type('Nearest landmark', 'School');
-  for (const doc of ['Upload ID front', 'Upload Utility bill', 'Upload Signature']) await act(async () => { await control(doc).props.onPress(); });
+  for (const doc of ['Upload NIN slip', 'Upload Utility bill', 'Upload Signature']) await act(async () => { await control(doc).props.onPress(); });
   expect(control('Upgrade to Tier 2').props.disabled).toBe(true);
   await act(async () => { await control('Verify your face').props.onPress(); });
   expect(mockCamera).toHaveBeenCalledWith(expect.objectContaining({ cameraType: 'front' }));
@@ -99,8 +100,8 @@ it('captures the face in the app and sends it with the upgrade, then drops the d
   await act(async () => { await control('Upgrade to Tier 2').props.onPress(); });
   const [tier, body] = mockUpgrade.mock.calls[0];
   expect(tier).toBe(2);
-  expect(body).toEqual(expect.objectContaining({ userPhoto: 'face-image', idType: '1', houseNumber: '12', state: 'Lagos', accountName: 'Ada Eze' }));
-  expect(body).not.toHaveProperty('idCardBack'); expect(body).not.toHaveProperty('idIssueDate');
+  expect(body).toEqual(expect.objectContaining({ userPhoto: 'face-image', nin: '10987654321', idCardFront: 'encoded-document', houseNumber: '12', state: 'Lagos', accountName: 'Ada Eze' }));
+  for (const gone of ['idType', 'idNumber', 'idCardBack', 'idIssueDate', 'idExpiryDate']) expect(body).not.toHaveProperty(gone);
   expect(output()).toContain('Your upgrade is being reviewed.'); expect(output()).not.toContain('encoded-document');
 });
 
@@ -116,7 +117,3 @@ it('shows the Tier 3 form without an address section once the address is verifie
   expect(output()).toContain('Upgrade to Tier 3'); expect(output()).not.toContain('House number');
 });
 
-it('sends customers without both identities back to verify the missing one', async () => {
-  mockStatus.mockResolvedValue({ ...tier1, nin_verified: false }); await mount();
-  expect(output()).toContain('Verify my NIN');
-});
