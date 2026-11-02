@@ -27,6 +27,7 @@ const validDob = (value: string) => {
   return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day && date < new Date() && year >= 1900;
 };
 const digits = (value: string, max: number) => value.replace(/\D/g, '').slice(0, max);
+const naira = (value: string) => `\u20a6${Number(value).toLocaleString('en-NG')}`;
 
 function KycScreenContent() {
   const { c } = useTheme();
@@ -45,6 +46,7 @@ function KycScreenContent() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [resendAt, setResendAt] = useState(0);
+  const [tried, setTried] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [email, setEmail] = useState('');
   const [emailCode, setEmailCode] = useState('');
@@ -89,7 +91,7 @@ function KycScreenContent() {
       active.current = false; ownership.current += 1; inFlight.current = false;
       setBusy(false); setStatus(null); setIdentifier(''); setOtp(''); setTracking(''); setNeedsOtp(false);
       setProfile(emptyProfile); setEmail(''); setEmailCode(''); setEmailSent(false); setMessage('');
-      setStep('details'); setPage('details'); setPhoto(''); setResendAt(0);
+      setStep('details'); setPage('details'); setPhoto(''); setResendAt(0); setTried(false);
     };
   }, []));
   const verifyEmail = async (confirm: boolean) => {
@@ -190,7 +192,12 @@ function KycScreenContent() {
   </Screen>;
 
   const hasAccount = !!status.account_number;
-  const dobError = profile.dateOfBirth.length === 10 && !validDob(profile.dateOfBirth) ? 'Enter a real date of birth' : undefined;
+  const REQUIRED = 'This field is required';
+  const need = (value: string | undefined) => (tried && !value?.trim() ? REQUIRED : undefined);
+  const dobError = tried && !profile.dateOfBirth ? REQUIRED
+    : profile.dateOfBirth.length === 10 && !validDob(profile.dateOfBirth) ? 'Enter a real date of birth'
+      : tried && !validDob(profile.dateOfBirth) ? 'Enter your date of birth as DD/MM/YYYY' : undefined;
+  const genderMissing = tried && profile.gender !== 0 && profile.gender !== 1;
   const detailsReady = !!profile.otherNames.trim() && !!profile.lastName.trim() && !!profile.phoneNo.trim()
     && validDob(profile.dateOfBirth) && (profile.gender === 0 || profile.gender === 1) && !!profile.address.trim();
   const idReady = identifier.length === 11;
@@ -199,17 +206,18 @@ function KycScreenContent() {
   if (page === 'details' && !hasAccount) return <Screen header={<Header title="Your details" />}>
     <View style={{ gap: 16, paddingBottom: 32 }}>
       {notice}
-      <Field editable={!busy} label="First and middle names" value={profile.otherNames} onChangeText={(otherNames) => setProfile({ ...profile, otherNames })} />
-      <Field editable={!busy} label="Surname" value={profile.lastName} onChangeText={(lastName) => setProfile({ ...profile, lastName })} />
-      <Field editable={!busy && !status.profile?.phoneNo} label="Phone number" value={profile.phoneNo} keyboardType="phone-pad" onChangeText={(phoneNo) => setProfile({ ...profile, phoneNo })} />
+      <Field editable={!busy} label="Surname" value={profile.lastName} error={need(profile.lastName)} onChangeText={(lastName) => setProfile({ ...profile, lastName })} />
+      <Field editable={!busy} label="First and middle names" value={profile.otherNames} error={need(profile.otherNames)} onChangeText={(otherNames) => setProfile({ ...profile, otherNames })} />
+      <Field editable={!busy && !status.profile?.phoneNo} label="Phone number" value={profile.phoneNo} keyboardType="phone-pad" error={need(profile.phoneNo)} onChangeText={(phoneNo) => setProfile({ ...profile, phoneNo })} />
       <Field editable={!busy} label="Date of birth" placeholder="DD/MM/YYYY" value={profile.dateOfBirth} keyboardType="number-pad" maxLength={10}
         error={dobError} onChangeText={(value) => setProfile({ ...profile, dateOfBirth: maskDob(value) })} />
       <View style={{ gap: 8 }}><Text style={heading}>Gender</Text>
         <PillTabs scroll={false} options={[{ v: '0', label: 'Male' }, { v: '1', label: 'Female' }]}
           value={profile.gender === 0 || profile.gender === 1 ? String(profile.gender) : ''}
-          onChange={(value) => { if (!busy) setProfile({ ...profile, gender: Number(value) }); }} /></View>
-      <Field editable={!busy} label="Home address" value={profile.address} maxLength={100} onChangeText={(address) => setProfile({ ...profile, address })} />
-      <Btn label="Next" disabled={busy || !detailsReady} onPress={() => { setMessage(''); setPage('id'); }} />
+          onChange={(value) => { if (!busy) setProfile({ ...profile, gender: Number(value) }); }} />
+        {genderMissing && <Text accessibilityRole="alert" style={{ color: c.red, fontSize: 13, fontFamily: font.medium }}>{REQUIRED}</Text>}</View>
+      <Field editable={!busy} label="Home address" value={profile.address} maxLength={100} error={need(profile.address)} onChangeText={(address) => setProfile({ ...profile, address })} />
+      <Btn label="Next" disabled={busy} onPress={() => { setTried(true); if (!detailsReady) return; setTried(false); setMessage(''); setPage('id'); }} />
     </View>
   </Screen>;
 
@@ -221,21 +229,32 @@ function KycScreenContent() {
       </Card>}
       {verified && !tracking ? <Text style={{ ...text, fontFamily: font.bold }}>{`${kind.toUpperCase()} verified`}</Text> : <>
         <Field editable={!busy && !tracking} label={kind.toUpperCase()} placeholder="11 digits" value={identifier} maxLength={11} keyboardType="number-pad"
-          secureTextEntry onChangeText={(value) => setIdentifier(digits(value, 11))} />
+          error={tried && identifier.length !== 11 ? (identifier ? 'Enter your 11-digit BVN' : REQUIRED) : undefined}
+          secureTextEntry autoComplete="off" onChangeText={(value) => setIdentifier(digits(value, 11))} />
         {!tracking && <>
-          <Btn label={busy ? 'Please wait…' : 'Send code'} disabled={busy || !idReady || (!hasAccount && !detailsReady)} onPress={() => void sendCode()} />
-          <Btn label="Verify with my face instead" variant="ghost" disabled={busy || !idReady || (!hasAccount && !detailsReady)}
-            onPress={() => { setMessage(''); setPhoto(''); setStep('face'); }} />
+          <Btn label={busy ? 'Please wait…' : 'Send code'} disabled={busy} onPress={() => { setTried(true); if (idReady && (hasAccount || detailsReady)) void sendCode(); }} />
+          <Btn label="Verify with my face instead" variant="ghost" disabled={busy}
+            onPress={() => { setTried(true); if (!idReady || (!hasAccount && !detailsReady)) return; setMessage(''); setPhoto(''); setStep('face'); }} />
         </>}
         {needsOtp && <>
-          <Field editable={!busy} label="Six-digit code" value={otp} maxLength={6} keyboardType="number-pad" secureTextEntry onChangeText={(value) => setOtp(digits(value, 6))} />
+          <Field editable={!busy} label="Six-digit code" value={otp} maxLength={6} keyboardType="number-pad" secureTextEntry autoComplete="off" onChangeText={(value) => setOtp(digits(value, 6))} />
           <Btn label={busy ? 'Please wait…' : 'Verify'} disabled={busy || otp.length !== 6} onPress={() => void run(() => banking.confirm(tracking, otp))} />
           <Btn label={waitSeconds ? `Resend code in ${waitSeconds}s` : 'Resend code'} variant="ghost" disabled={busy || waitSeconds > 0} onPress={() => void resend()} />
         </>}
         {!!tracking && !needsOtp && <Btn label="Check status" variant="outline" disabled={busy} onPress={() => void run(() => banking.progress(tracking))} />}
       </>}
       {notice}
-      {hasAccount && <Btn label="Upgrade account" variant="outline" disabled={busy} onPress={() => router.push('/upgrade')} />}
+      {hasAccount && (status.bank_tier || 1) < 3 && <>
+        <View style={{ gap: 10 }}>
+          {[1, 2].map((t) => status.tier_limits?.[String(t)] && <Card key={t}>
+            <Text style={heading}>{`Tier ${t}${(status.bank_tier || 1) === t ? ' · your tier' : ''}`}</Text>
+            <Text style={{ ...text, marginTop: 4 }}>{`Per transaction: ${naira(status.tier_limits[String(t)].per_transaction)}`}</Text>
+            <Text style={text}>{`Daily transfers: ${naira(status.tier_limits[String(t)].daily_transfer)}`}</Text>
+            <Text style={text}>{`Daily bill payments: ${naira(status.tier_limits[String(t)].daily_bills)}`}</Text>
+          </Card>)}
+        </View>
+        <Btn label={`Upgrade to Tier ${(status.bank_tier || 1) + 1}`} disabled={busy} onPress={() => router.push('/upgrade')} />
+      </>}
     </View>
   </Screen>;
 }

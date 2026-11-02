@@ -300,7 +300,9 @@ if TESTING:
 # Bound JSON/KYC uploads before parsing. The KYC UI caps decoded images at about
 # 2 MiB; 4 MiB leaves base64 + JSON overhead without allowing unbounded bodies.
 API_MAX_BODY_BYTES = int(os.environ.get("API_MAX_BODY_BYTES", str(4 * 1024 * 1024)))
-DATA_UPLOAD_MAX_MEMORY_SIZE = API_MAX_BODY_BYTES
+# One KYC document per request: up to 5 MB, base64-encoded, plus the JSON envelope.
+API_DOCUMENT_BODY_BYTES = int(os.environ.get("API_DOCUMENT_BODY_BYTES", str(7 * 1024 * 1024 + 512 * 1024)))
+DATA_UPLOAD_MAX_MEMORY_SIZE = max(API_MAX_BODY_BYTES, API_DOCUMENT_BODY_BYTES)
 # Current mobile clients use Authorization: Bearer. Body tokens are retained only
 # for local/test compatibility because bodies are routinely captured by WAF and
 # error telemetry while auth headers receive special redaction.

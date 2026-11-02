@@ -7,6 +7,11 @@ const mockStatus = jest.fn();
 const mockUpgrade = jest.fn();
 const mockAddress = jest.fn();
 const mockAddressStatus = jest.fn();
+const mockUploadDocument = jest.fn();
+const mockDocuments = jest.fn();
+const mockLiveness = jest.fn();
+const mockOpenBrowser = jest.fn();
+jest.mock('expo-web-browser', () => ({ openBrowserAsync: (...args: any[]) => mockOpenBrowser(...args) }));
 const mockCameraPermission = jest.fn();
 const mockCamera = jest.fn();
 const mockPick = jest.fn();
@@ -21,6 +26,8 @@ jest.mock('@/lib/session', () => ({ beginExternalActivity: jest.fn(), endExterna
 jest.mock('@/lib/services/banking', () => ({ banking: {
   status: () => mockStatus(), upgrade: (...args: any[]) => mockUpgrade(...args),
   address: (...args: any[]) => mockAddress(...args), addressStatus: (...args: any[]) => mockAddressStatus(...args),
+  uploadDocument: (...args: any[]) => mockUploadDocument(...args), documents: () => mockDocuments(),
+  livenessStart: () => mockLiveness(),
 } }));
 jest.mock('expo-image-picker', () => ({ CameraType: { front: 'front' }, requestCameraPermissionsAsync: () => mockCameraPermission(), launchCameraAsync: (...args: any[]) => mockCamera(...args) }));
 jest.mock('expo-document-picker', () => ({ getDocumentAsync: (...args: any[]) => mockPick(...args) }));
@@ -34,7 +41,7 @@ jest.mock('@/components/design/ui', () => {
     Header: ({ title }: any) => ReactActual.createElement(Text, null, title),
     Card: ({ children }: any) => ReactActual.createElement(View, null, children),
     Field: ({ label, ...props }: any) => ReactActual.createElement(TextInput, { accessibilityLabel: label, ...props }),
-    Btn: ({ label, ...props }: any) => ReactActual.createElement(Pressable, { accessibilityLabel: label, ...props }, ReactActual.createElement(Text, null, label)),
+    Btn: ({ label, style, ...props }: any) => ReactActual.createElement(Pressable, { accessibilityLabel: label, ...props }, ReactActual.createElement(Text, null, label)),
     PillTabs: ({ options, value, onChange }: any) => ReactActual.createElement(View, null, options.map((o: any) => ReactActual.createElement(Pressable,
       { key: o.v, accessibilityLabel: o.label, accessibilityState: { selected: value === o.v }, onPress: () => onChange(o.v) }, ReactActual.createElement(Text, null, o.label)))) };
 });
@@ -53,6 +60,9 @@ beforeEach(() => {
   mockCameraPermission.mockResolvedValue({ granted: true });
   mockCamera.mockResolvedValue({ canceled: false, assets: [{ base64: 'face-image' }] });
   mockPick.mockResolvedValue({ canceled: false, assets: [{ uri: 'local-document', size: 100 }] }); mockRead.mockResolvedValue('encoded-document');
+  mockUploadDocument.mockReset().mockResolvedValue({ success: true }); mockDocuments.mockReset().mockResolvedValue({ success: true, documents: [] });
+  mockLiveness.mockReset().mockResolvedValue({ success: true, url: 'https://api.example/verify/face/token' });
+  mockOpenBrowser.mockReset().mockImplementation(async () => { mockDocuments.mockResolvedValue({ success: true, documents: ['idCardFront', 'utilityBill', 'customerSignature', 'userPhoto'] }); });
 });
 afterEach(async () => { if (tree) await act(async () => tree.unmount()); });
 
@@ -87,22 +97,38 @@ it('uses the number keypad for the house number and suggests states and their LG
   expect(field('Local government area').props.value).toBe('My own LGA');
 });
 
-it('captures the face in the app and sends it with the upgrade, then drops the documents', async () => {
+it('uploads each file as it is picked, opens the face-check link, and sends the upgrade', async () => {
   await mount();
   await type('BVN', '12345678901'); await type('NIN', '10987654321');
   await type('House number', '12'); await type('Street', 'Test Road'); await type('City or town', 'Ikeja');
   await type('State', 'Lagos'); await type('Local government area', 'Ikeja'); await type('Nearest landmark', 'School');
-  for (const doc of ['Upload NIN slip', 'Upload Utility bill', 'Upload Signature']) await act(async () => { await control(doc).props.onPress(); });
-  expect(control('Upgrade to Tier 2').props.disabled).toBe(true);
+  for (const doc of ['Upload NIN slip', 'Upload utility bill', 'Upload signature']) await act(async () => { await control(doc).props.onPress(); });
+  expect(mockPick).toHaveBeenCalledWith(expect.objectContaining({ type: ['image/*', 'application/pdf'] }));
+  expect(mockUploadDocument).toHaveBeenCalledWith('idCardFront', 'encoded-document');
   await act(async () => { await control('Verify your face').props.onPress(); });
-  expect(mockCamera).toHaveBeenCalledWith(expect.objectContaining({ cameraType: 'front' }));
-  expect(mockPick).toHaveBeenCalledWith(expect.objectContaining({ type: ['application/pdf', 'image/jpeg', 'image/png'] }));
+  expect(mockOpenBrowser).toHaveBeenCalledWith('https://api.example/verify/face/token');
+  expect(output()).toContain('Face verified');
   await act(async () => { await control('Upgrade to Tier 2').props.onPress(); });
   const [tier, body] = mockUpgrade.mock.calls[0];
   expect(tier).toBe(2);
-  expect(body).toEqual(expect.objectContaining({ userPhoto: 'face-image', nin: '10987654321', idCardFront: 'encoded-document', houseNumber: '12', state: 'Lagos', accountName: 'Ada Eze' }));
-  for (const gone of ['idType', 'idNumber', 'idCardBack', 'idIssueDate', 'idExpiryDate']) expect(body).not.toHaveProperty(gone);
-  expect(output()).toContain('Your upgrade is being reviewed.'); expect(output()).not.toContain('encoded-document');
+  expect(body).toEqual(expect.objectContaining({ nin: '10987654321', houseNumber: '12', state: 'Lagos', accountName: 'Ada Eze' }));
+  for (const gone of ['idType', 'idNumber', 'idCardFront', 'userPhoto']) expect(body).not.toHaveProperty(gone);
+  expect(output()).toContain('Your upgrade is being reviewed.');
+});
+
+it('marks every missing field in red instead of sending an incomplete upgrade', async () => {
+  await mount();
+  await act(async () => { await control('Upgrade to Tier 2').props.onPress(); });
+  expect(mockUpgrade).not.toHaveBeenCalled();
+  expect(output()).toContain('This field is required');
+  expect(field('NIN').props.error).toBe('This field is required');
+  expect(field('House number').props.error).toBe('This field is required');
+});
+
+it('refuses files over 5 MB before uploading', async () => {
+  mockPick.mockResolvedValue({ canceled: false, assets: [{ uri: 'big', size: 6 * 1024 * 1024 }] }); await mount();
+  await act(async () => { await control('Upload NIN slip').props.onPress(); });
+  expect(mockUploadDocument).not.toHaveBeenCalled();
 });
 
 it('asks Tier 3 customers to verify their address first and says so when it is unavailable', async () => {

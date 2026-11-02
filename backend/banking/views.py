@@ -3,6 +3,7 @@ import binascii
 import hmac
 import json
 
+from django.conf import settings
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
@@ -48,6 +49,7 @@ def status(request):
         face_verified=IdentityProof.objects.filter(user=user, source="9psb_face").exists(),
         **address.verification_status(user),
         identity_verification_provider="9psb", face_rail="9psb", address_rail="prembly",
+        tier_limits=accounts.tier_limits(),
         upgrade_requirements={"2": ["BVN", "NIN", "Utility bill", "Identity documents", "Signature"],
                               "3": ["BVN", "NIN", "Utility bill", "Prembly address verification"]})
 
@@ -97,6 +99,34 @@ def identity_status(request):
         except (ValueError, ProviderError) as exc:
             return _error(exc)
     return ok(accounts.challenge_payload(challenge))
+
+
+@api(max_body=lambda: settings.API_DOCUMENT_BODY_BYTES)
+@ratelimit("bank_upgrade_document", limit=30, window=600)
+@require_user
+def upgrade_document(request):
+    try:
+        return ok(upgrades.store_document(request.user_obj, request.data.get("kind", ""), request.data.get("file", "")))
+    except ValueError as exc:
+        return _error(exc)
+
+
+@api
+@ratelimit("bank_liveness_start", limit=10, window=600)
+@require_user
+def liveness_start(request):
+    from . import liveness
+    try:
+        return ok(liveness.create_link(request.user_obj))
+    except ValueError as exc:
+        return _error(exc)
+
+
+@api
+@require_user
+def upgrade_documents(request):
+    """Which upgrade documents (including the face check) are ready to send."""
+    return ok(success=True, documents=sorted(upgrades.stored_documents(request.user_obj)))
 
 
 @api

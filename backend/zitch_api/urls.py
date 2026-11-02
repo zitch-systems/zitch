@@ -1,6 +1,7 @@
 import ipaddress
 import json
 
+from banking import liveness as bank_liveness
 from django.conf import settings
 from django.contrib import admin
 from django.http import HttpResponse, JsonResponse
@@ -591,6 +592,8 @@ urlpatterns = [
     path("api/whatsapp/", include("whatsapp.urls")),
     path("api/ops/", include("portal.urls")),
     path("9psb/webhook", bank_webhook),
+    path("verify/face/<str:token>", bank_liveness.liveness_page, name="bank_liveness"),
+    path("verify/face/<str:token>/submit", bank_liveness.liveness_submit, name="bank_liveness_submit"),
     path("api/banking/", include("banking.urls")),
     path("api/", include("accounts.urls")),
     path("api/", include("wallet.urls")),

@@ -71,32 +71,91 @@ def wallet_profile(data):
     return result
 
 
-def fit_photo(value, *, maximum_chars):
-    """Return a JPEG of the customer's face that fits the bank's size limit.
+# Customers may upload up to 5 MB in any common photo format or a PDF. The bank
+# accepts far smaller files, so documents are converted and shrunk here.
+UPLOAD_MAX_BYTES = 5 * 1024 * 1024
 
-    Phone cameras produce photos far larger than the bank accepts, so the
-    in-app face capture is re-encoded here rather than refused.
-    """
+
+def _decoded_upload(value, missing):
     if isinstance(value, str) and value.startswith("data:"):
         value = value.partition(",")[2]
     if not isinstance(value, str) or not value:
-        raise ValueError("Verify your face to continue")
+        raise ValueError(missing)
+    if len(value) > (UPLOAD_MAX_BYTES + 2) // 3 * 4:
+        raise ValueError("Choose a file smaller than 5 MB")
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except (ValueError, binascii.Error):
+        raise ValueError("This file could not be read. Please try another") from None
+    if not raw:
+        raise ValueError(missing)
+    return value, raw
+
+
+def _open_image(raw):
+    """Any photo format Pillow can read (JPEG, PNG, WEBP, HEIC, BMP, GIF, TIFF), or a PDF's first page."""
+    if raw.startswith(b"%PDF-"):
+        import pypdfium2
+        try:
+            pdf = pypdfium2.PdfDocument(raw)
+            try:
+                if len(pdf) < 1:
+                    raise ValueError("This PDF has no pages")
+                return pdf[0].render(scale=1.5).to_pil()
+            finally:
+                pdf.close()
+        except pypdfium2.PdfiumError:
+            raise ValueError("This PDF could not be read. Please try another") from None
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except ImportError:  # HEIC support is optional; other formats still work.
+        pass
+    try:
+        image = Image.open(BytesIO(raw))
+        if image.width * image.height > 40000000:
+            raise ValueError("This image is too large. Please try another")
+        image.load()
+        return image
+    except (OSError, Image.DecompressionBombError):
+        raise ValueError("Use a photo (JPEG, PNG, HEIC…) or a PDF") from None
+
+
+def fit_document(value, *, maximum_chars, missing="A document is required", allow_pdf=False):
+    """Return the upload as the bank accepts it: within maximum_chars of base64,
+    as the original JPEG/PNG (or PDF when allowed) if it already fits, otherwise
+    converted to a JPEG small enough to fit."""
+    value, raw = _decoded_upload(value, missing)
     if len(value) <= maximum_chars:
-        return base64_file(value, maximum_chars=maximum_chars, image_only=True)
-    if len(value) > 8 * 1024 * 1024:
-        raise ValueError("Your photo is too large. Please retake it")
-    base64_file(value, maximum_bytes=6 * 1024 * 1024, image_only=True)
-    with Image.open(BytesIO(base64.b64decode(value))) as im:
-        im = im.convert("RGB")
-        for side, quality in ((640, 80), (480, 75), (400, 65), (320, 60), (240, 55)):
-            copy = im.copy()
-            copy.thumbnail((side, side))
-            out = BytesIO()
-            copy.save(out, format="JPEG", quality=quality, optimize=True)
-            encoded = base64.b64encode(out.getvalue()).decode()
-            if len(encoded) <= maximum_chars:
-                return encoded
-    raise ValueError("Your photo is too large. Please retake it")
+        if allow_pdf and raw.startswith(b"%PDF-"):
+            return value
+        try:
+            with Image.open(BytesIO(raw)) as im:
+                if im.format in {"JPEG", "PNG"}:
+                    im.verify()
+                    return value
+        except (OSError, Image.DecompressionBombError):
+            pass
+    image = _open_image(raw)
+    if image.mode not in {"RGB", "L"}:
+        background = Image.new("RGB", image.size, "white")
+        background.paste(image, mask=image.convert("RGBA").split()[-1])
+        image = background
+    image = image.convert("RGB")
+    for side, quality in ((1600, 85), (1280, 80), (1024, 75), (800, 70), (640, 65), (480, 60), (360, 55), (280, 50)):
+        copy = image.copy()
+        copy.thumbnail((side, side))
+        out = BytesIO()
+        copy.save(out, format="JPEG", quality=quality, optimize=True)
+        encoded = base64.b64encode(out.getvalue()).decode()
+        if len(encoded) <= maximum_chars:
+            return encoded
+    raise ValueError("This file could not be made small enough. Please try a clearer, simpler photo")
+
+
+def fit_photo(value, *, maximum_chars):
+    """A JPEG of the customer's face within the bank's size limit."""
+    return fit_document(value, maximum_chars=maximum_chars, missing="Verify your face to continue")
 
 
 def upgrade_profile(tier, data):
@@ -120,9 +179,11 @@ def upgrade_profile(tier, data):
     result = {k: data[k] for k in required}
     result.update(tier=str(tier), phoneNumber=phone(data["phoneNumber"]), idType="1", idNumber=str(data["nin"]))
     result["userPhoto"] = fit_photo(data.get("userPhoto"), maximum_chars=100000)
-    result["idCardFront"] = base64_file(data.get("idCardFront"), maximum_chars=100000, image_only=True)
-    result["utilityBill"] = base64_file(data.get("utilityBill"), maximum_chars=50000)
-    result["customerSignature"] = base64_file(data.get("customerSignature"), maximum_bytes=500 * 1024, image_only=True)
+    result["idCardFront"] = fit_document(data.get("idCardFront"), maximum_chars=100000, missing="Upload your NIN slip")
+    result["utilityBill"] = fit_document(data.get("utilityBill"), maximum_chars=50000, missing="Upload a utility bill",
+                                         allow_pdf=True)
+    result["customerSignature"] = fit_document(data.get("customerSignature"), maximum_chars=(500 * 1024 + 2) // 3 * 4,
+                                               missing="Upload your signature")
     if str(tier) == "3":
         result["proofOfAddressVerification"] = base64_file(data.get("proofOfAddressVerification"), maximum_chars=50000)
     return result
