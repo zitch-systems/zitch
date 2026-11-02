@@ -39,10 +39,16 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
     # Client-uploaded address proof is not provider verification.
     payload = {k: v for k, v in payload.items() if k != "proofOfAddressVerification"}
     if tier == 3:
-        address = AddressVerification.objects.filter(user=user, reference=address_reference, state="verified").first()
+        verified = AddressVerification.objects.filter(user=user, state="verified")
+        address = (verified.filter(reference=address_reference) if address_reference else verified.order_by("-created", "-pk")).first()
         if not address or not address.encrypted_report:
-            raise ValueError("Complete Prembly address verification before Tier 3")
+            raise ValueError("Verify your home address before Tier 3")
         stored_address = unseal(address.encrypted_address)
+        # The verified address is the Tier 3 address: the customer isn't asked to type it again.
+        for field, key in (("houseNumber", "house_number"), ("streetName", "street"), ("city", "city"),
+                           ("state", "state"), ("localGovernment", "lga"), ("nearestLandmark", "landmark")):
+            if not str(payload.get(field) or "").strip():
+                payload[field] = stored_address.get(key, "")
         expected = {"house_number": payload.get("houseNumber"), "street": payload.get("streetName"),
             "city": payload.get("city"), "state": payload.get("state"), "lga": payload.get("localGovernment")}
         if any(str(stored_address.get(k, "")).strip().casefold() != str(v or "").strip().casefold() for k, v in expected.items()):

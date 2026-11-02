@@ -135,8 +135,10 @@ class WebTests(TestCase):
         # BVN is the default ID, and the long form is split by a Next button.
         self.assertContains(page, 'name="kind" value="bvn" checked')
         self.assertNotContains(page, 'name="kind" value="nin" checked')
-        self.assertContains(page, "Step 1 of 2")
         self.assertContains(page, 'id="next"')
+        # No test-mode banners or narration on the customer page.
+        self.assertNotContains(page, "Test mode")
+        self.assertNotContains(page, "Step 1 of 2")
         self.assertNotContains(page, 'value="upgrade"')
         self.assertNotContains(page, 'value="address"')
 
@@ -149,9 +151,11 @@ class WebTests(TestCase):
         # What Zitch already holds is prefilled; only new details are typed.
         self.assertContains(page, 'value="jane@example.test"')
 
+        # The address must be verified first; only then does the Tier 3 form appear.
         page = self.open_tier(3)
         self.assertContains(page, "Upgrade to Tier 3")
-        self.assertContains(page, '<input type="hidden" name="tier" value="3">', html=True)
+        self.assertContains(page, "Verify your home address")
+        self.assertNotContains(page, 'name="tier" value="3"')
         self.assertNotContains(page, 'name="identifier"')
         self.assertNotContains(page, 'name="tier" value="2"')
 
@@ -163,7 +167,6 @@ class WebTests(TestCase):
                     self.assertNotIn(partner, page)
         page = self.open_tier(1)
         self.assertContains(page, "NIMC User ID")
-        self.assertContains(page, "not your 11-digit NIN")
         self.assertNotContains(page, "NIN-only account")
         self.assertNotContains(page, "required by bank")
         # Date of birth opens the number keypad and is masked to DD/MM/YYYY.

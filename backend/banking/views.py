@@ -64,6 +64,16 @@ def identity_start(request):
 
 
 @api
+@ratelimit("bank_identity_start", limit=5, window=600)
+@require_user
+def identity_resend(request):
+    try:
+        return ok(accounts.resend_code(request.user_obj, request.data.get("reference", "")))
+    except (ValueError, ProviderError) as exc:
+        return _error(exc)
+
+
+@api
 @ratelimit("bank_identity_confirm", limit=10, window=600)
 @require_user
 def identity_confirm(request):

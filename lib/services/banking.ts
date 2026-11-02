@@ -10,6 +10,7 @@ export type BankStatus = ApiResult<{
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean; address_verified: boolean;
   profile: BankProfile; account_number?: string; account_name?: string;
   identity_available?: boolean; address_verification_available?: boolean;
+  address_verification_pending?: boolean; address_reference?: string;
   email_verified?: boolean; phone_verified?: boolean; email_verification_required?: boolean;
   can_fund?: boolean; available?: boolean; has_account?: boolean;
   legacy_funding_review?: boolean; migration_message?: string;
@@ -31,6 +32,7 @@ export const banking = {
     apiJson<BankProgress>('/api/banking/identity/start/', { kind, identifier, profile,
       method: image ? 'FACIAL' : 'OTP', ...(image ? { image } : {}) }),
   confirm: (reference: string, otp: string) => apiJson<BankProgress>('/api/banking/identity/confirm/', { reference, otp }),
+  resend: (reference: string) => apiJson<BankProgress>('/api/banking/identity/resend/', { reference }),
   progress: (reference: string) => apiJson<BankProgress>('/api/banking/identity/status/', { reference }),
   upgrade: (tier: number, profile: Record<string, unknown>, address_reference?: string) =>
     apiJson<BankProgress>('/api/banking/upgrade/', { tier, profile, address_reference }),

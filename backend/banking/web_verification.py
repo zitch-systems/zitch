@@ -1,5 +1,8 @@
 """Action-scoped form adapter. Authentication, PIN and CSRF live in WhatsApp's shell."""
 import base64
+import json
+from pathlib import Path
+
 from django.utils import timezone
 from . import accounts, address, upgrades
 from .client import ProviderError, config
@@ -13,23 +16,29 @@ from .secrets import seal, unseal
 PROFILE = [("lastName", "Surname"), ("otherNames", "First and middle names"), ("phoneNo", "Phone number"),
            ("dateOfBirth", "Date of birth"), ("address", "Home address"), ("ninUserId", "NIMC User ID")]
 DETAILS = [("accountName", "Full legal name"), ("phoneNumber", "Phone number"), ("email", "Email"),
-    ("idNumber", "ID number"), ("idIssueDate", "ID issue date"), ("idExpiryDate", "ID expiry date (optional for NIN)"),
+    ("idNumber", "ID number"), ("idIssueDate", "ID issue date"), ("idExpiryDate", "ID expiry date"),
     ("houseNumber", "House number"), ("streetName", "Street"), ("state", "State"), ("city", "City"),
     ("localGovernment", "Local government area"), ("nearestLandmark", "Nearest landmark")]
 DATE_DETAILS = {"idIssueDate", "idExpiryDate"}
-OPTIONAL_DETAILS = {"idNumber", "idExpiryDate"}
-DOCUMENTS = [("userPhoto", "Passport photo (JPEG or PNG, up to 75 KB)"), ("idCardFront", "ID card, front (up to 75 KB)"),
-    ("idCardBack", "ID card, back (up to 75 KB)"), ("utilityBill", "Utility bill (up to 37 KB)"), ("customerSignature", "Signature (up to 500 KB)")]
+OPTIONAL_DETAILS = {"idNumber", "idIssueDate", "idExpiryDate"}  # Not asked for a NIN.
+# userPhoto is taken with the camera on the page (face capture), never uploaded.
+DOCUMENTS = [("userPhoto", "Your face"), ("idCardFront", "ID front"),
+    ("idCardBack", "ID back"), ("utilityBill", "Utility bill"), ("customerSignature", "Signature")]
+NO_BACK_ID_TYPES = {"1", "4"}  # A NIN slip and a passport have no back side.
 ADDRESS = [("house_number", "House number"), ("street", "Street"), ("address", "Full home address"),
     ("city", "City"), ("state", "State"), ("lga", "Local government area"), ("landmark", "Nearest landmark")]
 ID_TYPES = [("1", "National ID (NIN)"), ("2", "Driver’s licence"), ("3", "Voter’s card"), ("4", "International passport")]
 
 FACE_REQUEST_SECONDS = 15 * 60
 
+# States and their local government areas, for the State and LGA pickers.
+NIGERIA_LGAS = json.loads((Path(__file__).with_name("nigeria_lgas.json")).read_text(encoding="utf-8"))
+
 OPERATION_LIMITS = {
     "identity": ("bank_identity_start", 5, 600),
     "face": ("bank_identity_start", 5, 600),
     "otp": ("bank_identity_confirm", 10, 600),
+    "resend": ("bank_identity_start", 5, 600),
     "upgrade": ("bank_upgrade", 3, 600),
     "address": ("address_start", 2, 3600),
     "address_status": ("address_status", 5, 600),
@@ -40,7 +49,7 @@ def validate_fields(action, data, files):
     """A browser grant authorizes only these server-defined KYC operations."""
     fields = {
         "identity": {key for key, _ in PROFILE} | {"gender", "kind", "identifier", "method"},
-        "otp": {"otp"}, "identity_status": set(), "face": set(),
+        "otp": {"otp"}, "identity_status": set(), "resend": set(), "face": set(),
         "upgrade": {key for key, _ in DETAILS} | {"bvn", "nin", "idType", "pep", "tier"},
         "upgrade_status": set(), "address": {key for key, _ in ADDRESS}, "address_status": set(),
     }
@@ -90,7 +99,9 @@ def context(user, payload):
         "challenge": _challenge(user, payload.get("identity_reference", "")),
         # Details confirmed for face verification; the photo is taken on its own page.
         "face_pending": bool(payload.get("face_request")),
-        "address_reference": payload.get("address_reference", "")}
+        "address_reference": payload.get("address_reference", ""),
+        "address_verified": address.verification_status(user)["address_verified"],
+        "nigeria_lgas": NIGERIA_LGAS, "states": list(NIGERIA_LGAS)}
 
 
 def entered(data):
@@ -144,6 +155,9 @@ def submit(user, action, data, files, scope):
         result = accounts.start_identity(user, pending.get("kind"), pending.get("identifier", ""), pending.get("profile") or {},
             method="FACIAL", image=uploaded(files, "face", missing="Take your photo to continue"))
         return {**result, "identity_reference": result.get("reference", ""), "face_request": ""}
+    if action == "resend":
+        result = accounts.resend_code(user, scope.get("identity_reference", ""))
+        return {**result, "identity_reference": result.get("reference", "")}
     if action in {"otp", "identity_status"}:
         ref = scope.get("identity_reference", "")
         if action == "otp":
@@ -157,7 +171,9 @@ def submit(user, action, data, files, scope):
     if action == "upgrade":
         profile = {key: data.get(key, "") for key, _ in DETAILS}
         profile.update({key: data.get(key, "") for key in ("bvn", "nin", "idType", "pep")})
-        profile.update({key: uploaded(files, key) for key, _ in DOCUMENTS})
+        skip = {"idCardBack"} if profile.get("idType") in NO_BACK_ID_TYPES else set()
+        profile.update({key: uploaded(files, key, missing="Verify your face to continue" if key == "userPhoto"
+                        else "Choose a document within the displayed size limit") for key, _ in DOCUMENTS if key not in skip})
         return upgrades.submit_upgrade(user, data.get("tier"), profile, address_reference=scope.get("address_reference", ""))
     if action == "upgrade_status":
         bank = accounts.account_for(user)

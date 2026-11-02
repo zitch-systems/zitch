@@ -5,6 +5,7 @@ urlpatterns = [
     path("status/", views.status),
     path("identity/start/", views.identity_start),
     path("identity/confirm/", views.identity_confirm),
+    path("identity/resend/", views.identity_resend),
     path("identity/status/", views.identity_status),
     path("upgrade/", views.upgrade),
     path("address/start/", views.address_start),
