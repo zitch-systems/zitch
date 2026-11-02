@@ -16,4 +16,4 @@ pypdfium2>=4.30.0,<5   # render a PDF utility bill to an image that fits the ban
 zxing-cpp>=3.1.1,<4   # payment-QR decoding (manylinux wheels; no system libzbar needed)
 qrcode>=8.2,<9   # QR rendering, and building fixture codes in the QR tests
 django-storages[s3]>=1.14.6,<2   # durable profile-photo storage on Render (S3-compatible)
-boto3>=1.43.90,<2   # explicit pin for the django-storages S3 backend
+boto3>=1.43.96,<2   # explicit pin for the django-storages S3 backend
