@@ -12,6 +12,7 @@ jest.mock('react-native/Libraries/Components/ScrollView/ScrollView', () => {
 
 let mockGeneration = 1;
 const mockStatus = jest.fn();
+const mockRefreshUpgrade = jest.fn();
 const mockUpgrade = jest.fn();
 const mockAddress = jest.fn();
 const mockAddressStatus = jest.fn();
@@ -32,7 +33,7 @@ jest.mock('expo-router', () => ({ router: { push: jest.fn(), replace: jest.fn(),
 jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => mockGeneration }));
 jest.mock('@/lib/session', () => ({ beginExternalActivity: jest.fn(), endExternalActivity: jest.fn() }));
 jest.mock('@/lib/services/banking', () => ({ banking: {
-  status: () => mockStatus(), upgrade: (...args: any[]) => mockUpgrade(...args),
+  status: () => mockStatus(), refreshUpgrade: () => mockRefreshUpgrade(), upgrade: (...args: any[]) => mockUpgrade(...args),
   address: (...args: any[]) => mockAddress(...args), addressStatus: (...args: any[]) => mockAddressStatus(...args),
   uploadDocument: (...args: any[]) => mockUploadDocument(...args), documents: () => mockDocuments(),
   livenessStart: () => mockLiveness(),
@@ -49,7 +50,7 @@ jest.mock('@/components/design/ui', () => {
     Header: ({ title }: any) => ReactActual.createElement(Text, null, title),
     Card: ({ children }: any) => ReactActual.createElement(View, null, children),
     Field: ({ label, ...props }: any) => ReactActual.createElement(TextInput, { accessibilityLabel: label, ...props }),
-    Btn: ({ label, style, ...props }: any) => ReactActual.createElement(Pressable, { accessibilityLabel: label, ...props }, ReactActual.createElement(Text, null, label)),
+    Btn: ({ label, style: _style, ...props }: any) => ReactActual.createElement(Pressable, { accessibilityLabel: label, ...props }, ReactActual.createElement(Text, null, label)),
     PillTabs: ({ options, value, onChange }: any) => ReactActual.createElement(View, null, options.map((o: any) => ReactActual.createElement(Pressable,
       { key: o.v, accessibilityLabel: o.label, accessibilityState: { selected: value === o.v }, onPress: () => onChange(o.v) }, ReactActual.createElement(Text, null, o.label)))) };
 });
@@ -65,6 +66,7 @@ async function mount() { await act(async () => { tree = renderer.create(<Upgrade
 beforeEach(() => {
   jest.clearAllMocks(); mockGeneration = 1;
   mockStatus.mockReset().mockResolvedValue(tier1); mockUpgrade.mockReset().mockResolvedValue({ pending: true, message: 'Your upgrade is being reviewed.' });
+  mockRefreshUpgrade.mockReset().mockResolvedValue(tier1);
   mockCameraPermission.mockResolvedValue({ granted: true });
   mockCamera.mockResolvedValue({ canceled: false, assets: [{ base64: 'face-image' }] });
   mockPick.mockResolvedValue({ canceled: false, assets: [{ uri: 'local-document', size: 100 }] }); mockRead.mockResolvedValue('encoded-document');
@@ -73,6 +75,39 @@ beforeEach(() => {
   mockOpenBrowser.mockReset().mockImplementation(async () => { mockDocuments.mockResolvedValue({ success: true, documents: ['idCardFront', 'utilityBill', 'customerSignature', 'userPhoto'] }); });
 });
 afterEach(async () => { if (tree) await act(async () => tree.unmount()); });
+
+it('resumes a pending upgrade without requesting another set of documents', async () => {
+  mockStatus.mockResolvedValue({ ...tier1, upgrade_status: { reference: 'ZU-existing', tier: 2, state: 'submitted', pending: true } });
+  await mount();
+  expect(output()).toContain('Your upgrade is being processed.');
+  expect(control('Check upgrade status')).toBeTruthy();
+  expect(output()).not.toContain('Upload NIN slip');
+  expect(mockUpgrade).not.toHaveBeenCalled();
+});
+
+it('checks the existing bank upgrade and shows approval without submitting again', async () => {
+  mockStatus.mockResolvedValue({ ...tier1, upgrade_status: { reference: 'ZU-existing', tier: 2, state: 'submitted', pending: true } });
+  mockRefreshUpgrade.mockResolvedValue({ ...tier1, bank_tier: 2, tier: 2,
+    upgrade_status: { reference: 'ZU-existing', tier: 2, state: 'approved', pending: false } });
+  await mount();
+  await act(async () => { await control('Check upgrade status').props.onPress(); });
+  expect(mockRefreshUpgrade).toHaveBeenCalledTimes(1);
+  expect(mockUpgrade).not.toHaveBeenCalled();
+  expect(output()).toContain('Upgrade approved.');
+  expect(output()).toContain('Upgrade to Tier 2');
+  expect(output()).not.toContain('Verify your home address');
+});
+
+it('preserves a pending upgrade during a status outage', async () => {
+  const pending = { ...tier1, upgrade_status: { reference: 'ZU-existing', tier: 3, state: 'review', pending: true } };
+  mockStatus.mockResolvedValue(pending);
+  mockRefreshUpgrade.mockResolvedValue({ ...pending, upgrade_refresh_unavailable: true });
+  await mount();
+  await act(async () => { await control('Check upgrade status').props.onPress(); });
+  expect(output()).toContain('Could not refresh your upgrade status.');
+  expect(control('Check upgrade status')).toBeTruthy();
+  expect(mockUpgrade).not.toHaveBeenCalled();
+});
 
 it('goes straight to the next tier with no tier tabs', async () => {
   await mount();

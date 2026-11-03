@@ -145,10 +145,13 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
         catch { /* A replay remains safe if local marker cleanup fails. */ }
         if (!current()) return;
       }
-      if (outcome === 'success' || outcome === 'pending' || outcome === 'unknown') {
+      if (outcome === 'success' || outcome === 'pending' || outcome === 'unknown'
+        || (outcome === 'failed' && result.reference)) {
         setFinished(true); setStep(null); setReference(String(result.reference || ''));
-        setPaymentStatus(outcome === 'success' ? 'Successful' : 'Pending');
-        setMessage(outcome === 'success' ? 'Payment completed.' + (result.token ? ` Your token: ${result.token}` : result.receipt_pending ? ' Your token is being retrieved. Check transaction history shortly.' : '') + (result.electricity_units ? ` Units: ${result.electricity_units}` : '') : 'Payment is processing. Check transaction history before trying again.');
+        setPaymentStatus(outcome === 'success' ? 'Successful' : outcome === 'failed' ? 'Failed' : 'Pending');
+        setMessage(outcome === 'success' ? 'Payment completed.' + (result.token ? ` Your token: ${result.token}` : result.receipt_pending ? ' Your token is being retrieved. Check transaction history shortly.' : '') + (result.electricity_units ? ` Units: ${result.electricity_units}` : '')
+          : outcome === 'failed' ? result.message || 'Payment could not be completed. View transaction history for details.'
+            : 'Payment is processing. Check transaction history before trying again.');
         // A wallet refresh failure cannot replace a confirmed purchase receipt.
         try { await reload(); } catch { /* Preserve the confirmed result. */ }
       } else { setPinError(result.message || 'Payment could not be completed.'); }
@@ -171,7 +174,10 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
         if (active.current) return;
         catalogSerial.current += 1; setBusy(false); setPhone(localPhone(v)); setProduct(''); setPlans([]); invalidate();
       }} />
-      {kind === 'data' && <><Btn label="Load data plans for this phone" disabled={busy || phone.length !== 11} onPress={() => void fetchCatalog('data', { phone }, setPlans)} />
+      {kind === 'data' && <><Btn label="Load data plans for this phone" disabled={busy || phone.length !== 11} onPress={() => {
+        setProduct(''); setAmount(''); invalidate();
+        void fetchCatalog('data', { phone }, setPlans);
+      }} />
         {plans.map((p) => <Btn key={String(p.productId)} variant={product === String(p.productId) ? 'primary' : 'outline'} label={`${p.dataBundle || 'Data plan'} · ${p.validity || ''} · ${money(Number(p.amount))}`} disabled={busy} onPress={() => { setProduct(String(p.productId)); setAmount(String(p.amount)); }} />)}</>}
       {kind === 'bill' && <>
         {!categories.length && <Btn label="Retry loading bill categories" variant="outline" disabled={busy} onPress={() => void fetchCatalog('categories', {}, setCategories)} />}
