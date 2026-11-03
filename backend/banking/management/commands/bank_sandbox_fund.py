@@ -47,11 +47,17 @@ class Command(BaseCommand):
             raise CommandError("This tester has no active bank account yet; finish account setup first")
 
         reference = "ZSF" + secrets.token_hex(8).upper()
+        known_balance = bank.available_balance
         try:
             reply = Client().float_transfer("credit", reference, amount, bank.number, "Zitch sandbox test funding")
         except ProviderError as exc:
-            raise CommandError(f"The bank did not confirm the credit ({exc.code}); nothing was recorded. "
-                               f"Reference {reference}") from None
+            # A lost reply to a submitted credit is not a refusal: the bank may
+            # have applied it. Only a failure raised before the instruction left
+            # (authentication, for one) establishes that no money moved.
+            if exc.uncertain:
+                raise self._unresolved(bank, reference, amount, exc.code, known_balance) from None
+            raise CommandError(f"The bank did not accept the credit ({exc.code}); no money moved and nothing "
+                               f"was recorded. Reference {reference} went unused; retry when the bank answers.") from None
         state = reply.payment_state()
         if state != "success":
             message = str(reply.body.get("message") or reply.body.get("responseMessage") or "")[:160]
@@ -75,3 +81,24 @@ class Command(BaseCommand):
         self.stdout.write(json.dumps({"state": "success", "reference": reference, "amount": str(amount),
             "recorded_in_zitch": True, "transaction_id": ledger.pk, "nuban_last4": bank.number[-4:],
             "bank_available_balance": available}, sort_keys=True))
+
+    def _unresolved(self, bank, reference, amount, code, known_balance):
+        """Describe a credit the bank never confirmed, without calling it failed.
+
+        The amount may already be in the tester's wallet. Funding again would
+        move it twice from the float, so report both balances and stop.
+        """
+        try:
+            update_account(bank)
+            bank.refresh_from_db()
+            balance = str(bank.available_balance)
+        except ProviderError:
+            balance = "not refreshed"
+        self.stdout.write(json.dumps({"state": "unknown", "reference": reference, "amount": str(amount),
+            "provider_error": code, "recorded_in_zitch": False, "last_known_balance": str(known_balance),
+            "bank_available_balance": balance}, sort_keys=True))
+        return CommandError(
+            f"The bank's reply was lost ({code}); the credit is unconfirmed and may already have been applied, "
+            f"so nothing was recorded in Zitch. Do not fund this tester again until you know which: compare the "
+            f"balances above, and if the credit did land, the bank's inflow notice for it records the deposit. "
+            f"Reference {reference}")
