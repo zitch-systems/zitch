@@ -20,6 +20,7 @@ const mockUploadDocument = jest.fn();
 const mockDocuments = jest.fn();
 const mockLiveness = jest.fn();
 const mockOpenBrowser = jest.fn();
+let mockFocus: () => (() => void);
 jest.mock('expo-web-browser', () => ({ openBrowserAsync: (...args: any[]) => mockOpenBrowser(...args) }));
 const mockCameraPermission = jest.fn();
 const mockCamera = jest.fn();
@@ -28,6 +29,7 @@ const mockRead = jest.fn();
 jest.mock('@/components/AuthGuard', () => ({ children }: any) => children);
 jest.mock('expo-router', () => ({ router: { push: jest.fn(), replace: jest.fn(), back: jest.fn() }, useFocusEffect: (callback: () => (() => void)) => {
   const ReactActual = jest.requireActual('react');
+  mockFocus = callback;
   ReactActual.useEffect(() => callback(), [callback]);
 } }));
 jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => mockGeneration }));
@@ -107,6 +109,31 @@ it('preserves a pending upgrade during a status outage', async () => {
   expect(output()).toContain('Could not refresh your upgrade status.');
   expect(control('Check upgrade status')).toBeTruthy();
   expect(mockUpgrade).not.toHaveBeenCalled();
+});
+
+it('does not let an older status read overwrite a newly confirmed upgrade', async () => {
+  const pending = { ...tier1, upgrade_status: { reference: 'ZU-existing', tier: 2, state: 'submitted', pending: true } };
+  mockStatus.mockResolvedValue(pending);
+  mockRefreshUpgrade.mockResolvedValue({ ...tier1, bank_tier: 2, tier: 2,
+    upgrade_status: { reference: 'ZU-existing', tier: 2, state: 'approved', pending: false } });
+  await mount();
+  let finishOld!: (value: unknown) => void;
+  mockStatus.mockReturnValueOnce(new Promise((resolve) => { finishOld = resolve; }));
+  await act(async () => { mockFocus(); });
+  await act(async () => { await control('Check upgrade status').props.onPress(); });
+  await act(async () => { finishOld(pending); });
+  expect(output()).toContain('Upgrade approved.');
+  expect(output()).not.toContain('Your upgrade is being processed.');
+});
+
+it('keeps a newly uploaded document when an older document-list read arrives late', async () => {
+  let finishOld!: (value: unknown) => void;
+  mockDocuments.mockReturnValueOnce(new Promise((resolve) => { finishOld = resolve; }));
+  await mount();
+  await act(async () => { await control('Upload NIN slip').props.onPress(); });
+  await act(async () => { finishOld({ success: true, documents: [] }); });
+  expect(output()).toContain('NIN slip uploaded');
+  expect(mockUploadDocument).toHaveBeenCalledTimes(1);
 });
 
 it('goes straight to the next tier with no tier tabs', async () => {

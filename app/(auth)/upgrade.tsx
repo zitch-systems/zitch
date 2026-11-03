@@ -37,6 +37,8 @@ function UpgradeContent() {
   const generation = useRef(getSessionGeneration());
   const active = useRef(true);
   const ownership = useRef(0);
+  const statusRequest = useRef(0);
+  const documentRequest = useRef(0);
   const inFlight = useRef(false);
   const current = useCallback((owner = ownership.current) => active.current && owner === ownership.current && generation.current === getSessionGeneration(), []);
   const text = { color: c.ink1, fontFamily: font.regular, lineHeight: 22 };
@@ -45,20 +47,22 @@ function UpgradeContent() {
 
   const load = useCallback(async (refreshUpgrade = false) => {
     const owner = ownership.current;
+    const serial = ++statusRequest.current;
     try {
       const result = await (refreshUpgrade ? banking.refreshUpgrade() : banking.status());
-      if (!current(owner)) return;
+      if (!current(owner) || serial !== statusRequest.current) return;
       if (result.success) setStatus(result); else setMessage(result.message || 'Could not load your account.');
       if (result.upgrade_refresh_unavailable) setMessage('Could not refresh your upgrade status. Please try again.');
       else if (refreshUpgrade && result.success) setMessage('');
       return result;
-    } catch { if (current(owner)) setMessage('Could not load your account. Please try again.'); }
+    } catch { if (current(owner) && serial === statusRequest.current) setMessage('Could not load your account. Please try again.'); }
   }, [current]);
   const loadDocuments = useCallback(async () => {
     const owner = ownership.current;
+    const serial = ++documentRequest.current;
     try {
       const result = await banking.documents();
-      if (current(owner) && result.success) setReady(new Set(result.documents || []));
+      if (current(owner) && serial === documentRequest.current && result.success) setReady(new Set(result.documents || []));
     } catch { /* The list refreshes on the next visit. */ }
   }, [current]);
   useFocusEffect(useCallback(() => {
@@ -91,7 +95,7 @@ function UpgradeContent() {
     if (encoded.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4) { notify('File too large', `${docs[key]} must be 5 MB or smaller.`); return; }
     const sent = await banking.uploadDocument(key, encoded);
     if (!current(owner)) return;
-    if (sent.success) setReady((p) => new Set(p).add(key));
+    if (sent.success) { documentRequest.current += 1; setReady((p) => new Set(p).add(key)); }
     else notify('Could not upload', sent.message || 'Please try another file.');
   });
   // The face check is Zitch's own page, opened in the browser: it uses the live
