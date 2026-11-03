@@ -13,6 +13,13 @@ from utility.launch_readiness import financial_controls_report
 from wallet.models import BankHistoryCheckpoint, Wallet
 from whatsapp.models import AuditLog
 
+BALANCED_BANK_REPORT = {
+    "wallets": 0, "checked_wallets": 0, "unreachable": 0,
+    "ledger_over_bank": 0, "bank_over_ledger": 0, "pending_wallets": 0,
+    "opening_reviews": 0, "historical_opening_reviews": 0, "reversal_reviews": 0,
+    "legacy_funding_required": False, "tolerance": "0.00", "incomplete": False,
+}
+
 
 class FinancialControlsReadinessTests(TestCase):
     def setUp(self):
@@ -24,9 +31,7 @@ class FinancialControlsReadinessTests(TestCase):
 
     def passing(self):
         self.record("recon.integrity_check", {"wallets": 1, "mismatches": 0})
-        self.record("recon.balance_check", {"wallets": 0, "unreachable": 0,
-                    "ledger_over_bank": 0, "bank_over_ledger": 0,
-                    "legacy_funding_required": False, "tolerance": "0.00"})
+        self.record("recon.balance_check", BALANCED_BANK_REPORT)
         self.record("recon.settlement_report", {"incomplete": False, "nuban_wallets": 0, "held_total": "0.00",
                     "position": "0.00", "ledger_liability": "0.00", "stored_liability": "0.00"})
 
@@ -89,9 +94,27 @@ class FinancialControlsReadinessTests(TestCase):
         self.passing()
         for tolerance in (None, "1.00", "NaN", "-1", "Infinity"):
             with self.subTest(tolerance=tolerance):
-                self.record("recon.balance_check", {"wallets": 0, "unreachable": 0,
-                    "ledger_over_bank": 0, "bank_over_ledger": 0,
-                    "legacy_funding_required": False, "tolerance": tolerance})
+                self.record("recon.balance_check", {**BALANCED_BANK_REPORT, "tolerance": tolerance})
+                self.assertEqual(financial_controls_report()["checks"]["bank_balances"], "failed")
+
+    def test_incomplete_bank_checks_and_unresolved_payments_cannot_certify_readiness(self):
+        self.passing()
+        for changes in ({"incomplete": True}, {"incomplete": None}, {"checked_wallets": 1},
+                        {"checked_wallets": False}, {"pending_wallets": 1}, {"pending_wallets": "0"},
+                        {"opening_reviews": 1}, {"historical_opening_reviews": 1}, {"reversal_reviews": 1}):
+            with self.subTest(changes=changes):
+                self.record("recon.balance_check", {**BALANCED_BANK_REPORT, **changes})
+                report = financial_controls_report()
+                self.assertEqual(report["checks"]["bank_balances"], "failed")
+                self.assertFalse(report["financial_controls_ready"])
+
+    def test_missing_review_evidence_cannot_certify_readiness(self):
+        self.passing()
+        for key in ("incomplete", "checked_wallets", "pending_wallets", "opening_reviews",
+                    "historical_opening_reviews", "reversal_reviews"):
+            with self.subTest(missing=key):
+                data = {k: v for k, v in BALANCED_BANK_REPORT.items() if k != key}
+                self.record("recon.balance_check", data)
                 self.assertEqual(financial_controls_report()["checks"]["bank_balances"], "failed")
 
     def test_unresolved_legacy_exposure_blocks_older_passing_controls(self):

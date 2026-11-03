@@ -1,6 +1,7 @@
 """Durable scheduling for status lookups; callbacks do not use this delay."""
 from datetime import timedelta
 from hashlib import sha256
+import json
 
 from django.core.cache import cache
 from django.db import transaction
@@ -55,9 +56,12 @@ def alert_due(kind, references):
     """Alert immediately for a changed set, then remind hourly while unresolved.
     Cache failure must not hide an operational incident.
     """
-    digest = sha256("|".join(sorted(references)).encode()).hexdigest()
+    # Incident labels contain spaces and may include non-ASCII text. Hash the
+    # whole identity so every cache backend receives a bounded, private key.
+    digest = sha256(json.dumps([kind, sorted(references)], ensure_ascii=True,
+                              separators=(",", ":")).encode()).hexdigest()
     try:
-        return cache.add(f"wema:reconcile-alert:{kind}:{digest}", True, timeout=3600)
+        return cache.add(f"bank:reconcile-alert:{digest}", True, timeout=3600)
     except Exception:
         return True
 

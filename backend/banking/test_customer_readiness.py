@@ -93,6 +93,18 @@ class CustomerReadinessTests(TestCase):
         update_account(self.bank, self.reply())
         self.assertTrue(self.bank.opening_review_required)
 
+    def test_reconciliation_counts_reviews_after_the_fresh_bank_confirmation(self):
+        from .audit import snapshot
+        self.bank.opening_review_required = True
+        self.bank.save(update_fields=["opening_review_required"])
+        with patch("banking.client.Client.wallet", return_value=self.reply()):
+            report = snapshot()
+        self.bank.refresh_from_db()
+        self.assertFalse(self.bank.opening_review_required)
+        self.assertEqual(report["opening_reviews"], 0)
+        self.assertFalse(report["incomplete"])
+        self.assertEqual(Decimal(report["position"]), 0)
+
     @override_settings(NINEPSB={**CONFIG, "SANDBOX_AUTO_VERIFY": True})
     def test_production_opening_reviews_cannot_be_released_by_sandbox_receipts(self):
         self.bank.opening_review_required = True
