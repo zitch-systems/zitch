@@ -34,8 +34,13 @@ def _valid_result(name, data):
         except (InvalidOperation, TypeError, ValueError):
             return False
         return (tolerance.is_finite() and tolerance == 0
+                and data.get("incomplete") is False
                 and type(data.get("wallets")) is int and data["wallets"] >= 0
-                and _zero_counts(data, "unreachable", "ledger_over_bank", "bank_over_ledger")
+                and type(data.get("checked_wallets")) is int
+                and data["checked_wallets"] == data["wallets"]
+                and _zero_counts(data, "unreachable", "ledger_over_bank", "bank_over_ledger",
+                                 "pending_wallets", "opening_reviews", "historical_opening_reviews",
+                                 "reversal_reviews")
                 and data.get("legacy_funding_required") is False)
     if data.get("incomplete") is not False:
         return False

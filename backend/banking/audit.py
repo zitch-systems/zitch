@@ -48,7 +48,6 @@ def snapshot(*, budget_seconds=60):
             unreachable += bank_count - checked
             break
         checked += 1
-        opening += int(bank.opening_review_required)
         if Transaction.objects.filter(user_id=bank.wallet.user_id, meta__provider="9psb", transaction_status=Transaction.PENDING).exists():
             pending += 1
         try:
@@ -56,6 +55,10 @@ def snapshot(*, budget_seconds=60):
         except (ProviderError, ValueError):
             unreachable += 1
             continue
+        finally:
+            # Refresh can resolve a proven opening review. Report the decision
+            # from that read, retaining the stored hold if the read failed.
+            opening += int(bank.opening_review_required)
         if bank.ledger_balance is None:
             unreachable += 1
             continue

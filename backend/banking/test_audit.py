@@ -84,6 +84,16 @@ class AuditTests(TestCase):
         self.assertEqual(result["ledger_over_bank"], 0)
         self.assertEqual(Decimal(result["ledger_liability"]), 5000)
 
+    def test_a_failed_read_keeps_the_stored_opening_review_visible(self):
+        self.bank.opening_review_required = True
+        self.bank.save(update_fields=["opening_review_required"])
+        self.remote[self.bank.number] = ProviderError("network_unavailable")
+        report = snapshot()
+        self.assertEqual(report["opening_reviews"], 1)
+        self.assertEqual(report["unreachable"], 1)
+        self.assertTrue(report["incomplete"])
+        self.assertIsNone(report["held_total"])
+
     def test_legacy_pool_configuration_cannot_hide_new_bank_shortfall(self):
         self.remote[self.bank.number] = "4000"
         with override_settings(WEMA={"SOURCE_ACCOUNT": "9999999999"}):
