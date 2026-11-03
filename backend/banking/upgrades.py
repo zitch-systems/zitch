@@ -8,7 +8,7 @@ from django.utils import timezone
 from accounts.models import IdentityProof, User, hash_identifier, record_identity_proof
 from wallet.models import Wallet
 
-from .accounts import account_for, require_enabled, update_account
+from .accounts import account_for, display_name, require_enabled, same_name, update_account
 from .client import Client, ProviderError, require_environment
 from .models import AccountUpgrade, AddressVerification
 from .payments import digest
@@ -68,8 +68,16 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
             raise ValueError("The upgrade address must match the verified address")
         payload["proofOfAddressVerification"] = unseal(address.encrypted_report)["document"]
     body = upgrade_profile(tier, payload)
-    if body["accountName"].strip().casefold() != bank.name.strip().casefold():
+    # The bank names a wallet "MERCHANT/CUSTOMER NAME", and the customer is only
+    # ever shown, and only ever submits, the customer part of it. Compare on that
+    # part, the way `account_payload` already presents it, and compare it the way
+    # every other name check here does: the same person may be written in a
+    # different order or spacing, and the merchant prefix is never theirs to send.
+    confirmed = display_name(bank.name)
+    if not same_name(body["accountName"], confirmed):
         raise ValueError("Use the name confirmed on your bank account")
+    # Submit the bank's own spelling, whatever order the client sent.
+    body["accountName"] = confirmed
     with transaction.atomic():
         Wallet.objects.select_for_update().get(pk=bank.wallet_id)
         existing = AccountUpgrade.objects.filter(account=bank, state__in=["pending", "submitted", "review"]).first()

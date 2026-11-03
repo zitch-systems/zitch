@@ -1,5 +1,6 @@
 """Fund a sandbox tester's bank wallet from the Zitch float, for testing only."""
 import json
+import re
 import secrets
 from decimal import Decimal, InvalidOperation
 
@@ -15,6 +16,17 @@ from wallet.services import credit
 # Tier 1's single-deposit limit. Larger sandbox credits would be refused or put
 # the test wallet under a restriction that hides what is being tested.
 MAXIMUM = Decimal("50000.00")
+
+
+def _code(value):
+    """A bounded machine code only; never an echo of the bank's free text."""
+    text = str(value if value is not None else "").strip().upper()
+    return text if re.fullmatch(r"[A-Z0-9]{1,4}", text) else ""
+
+
+def _word(value):
+    text = str(value if value is not None else "").strip().upper()
+    return text if re.fullmatch(r"[A-Z_]{1,24}", text) else ""
 
 
 class Command(BaseCommand):
@@ -61,7 +73,16 @@ class Command(BaseCommand):
         state = reply.payment_state()
         if state != "success":
             message = str(reply.body.get("message") or reply.body.get("responseMessage") or "")[:160]
+            # An unconfirmed credit is decided by the reply's codes, not its
+            # message. Report the bounded machine codes too, so an undecided
+            # reply can be diagnosed without sending the credit a second time.
+            data = reply.data if isinstance(reply.data, dict) else {}
             self.stdout.write(json.dumps({"state": state, "reference": reference, "bank_message": message,
+                "http_status": reply.http_status,
+                "response_code": _code(reply.body.get("responseCode", reply.body.get("statusCode"))),
+                "bank_status": _word(reply.body.get("status")),
+                "data_response_code": _code(data.get("responseCode")),
+                "data_status": _word(data.get("transactionStatus", data.get("status"))),
                 "recorded_in_zitch": False}, sort_keys=True))
             if state == "failed":
                 raise CommandError("The bank refused the credit; nothing was recorded")
