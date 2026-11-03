@@ -31,42 +31,49 @@ function UpgradeContent() {
   const [form, setForm] = useState<Record<string, string>>(fresh);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const [submitted, setSubmitted] = useState(false);
+  const [submitted, setSubmitted] = useState<number | null>(null);
   const [ready, setReady] = useState<Set<string>>(new Set());
   const [tried, setTried] = useState(false);
   const generation = useRef(getSessionGeneration());
   const active = useRef(true);
   const ownership = useRef(0);
+  const statusRequest = useRef(0);
+  const documentRequest = useRef(0);
   const inFlight = useRef(false);
-  const current = (owner = ownership.current) => active.current && owner === ownership.current && generation.current === getSessionGeneration();
+  const current = useCallback((owner = ownership.current) => active.current && owner === ownership.current && generation.current === getSessionGeneration(), []);
   const text = { color: c.ink1, fontFamily: font.regular, lineHeight: 22 };
   const heading = { color: c.ink1, fontFamily: font.bold, fontSize: 16 };
   const set = (key: string, value: string) => setForm((p) => ({ ...p, [key]: value }));
 
-  const load = async () => {
+  const load = useCallback(async (refreshUpgrade = false) => {
     const owner = ownership.current;
+    const serial = ++statusRequest.current;
     try {
-      const result = await banking.status();
-      if (!current(owner)) return;
+      const result = await (refreshUpgrade ? banking.refreshUpgrade() : banking.status());
+      if (!current(owner) || serial !== statusRequest.current) return;
       if (result.success) setStatus(result); else setMessage(result.message || 'Could not load your account.');
-    } catch { if (current(owner)) setMessage('Could not load your account. Please try again.'); }
-  };
-  const loadDocuments = async () => {
+      if (result.upgrade_refresh_unavailable) setMessage('Could not refresh your upgrade status. Please try again.');
+      else if (refreshUpgrade && result.success) setMessage('');
+      return result;
+    } catch { if (current(owner) && serial === statusRequest.current) setMessage('Could not load your account. Please try again.'); }
+  }, [current]);
+  const loadDocuments = useCallback(async () => {
     const owner = ownership.current;
+    const serial = ++documentRequest.current;
     try {
       const result = await banking.documents();
-      if (current(owner) && result.success) setReady(new Set(result.documents || []));
+      if (current(owner) && serial === documentRequest.current && result.success) setReady(new Set(result.documents || []));
     } catch { /* The list refreshes on the next visit. */ }
-  };
+  }, [current]);
   useFocusEffect(useCallback(() => {
     generation.current = getSessionGeneration(); active.current = true; void load(); void loadDocuments();
-    return () => { active.current = false; ownership.current += 1; inFlight.current = false; setBusy(false); setForm(fresh()); setMessage(''); setSubmitted(false); setTried(false); };
-  }, []));
+    return () => { active.current = false; ownership.current += 1; inFlight.current = false; setBusy(false); setForm(fresh()); setMessage(''); setSubmitted(null); setTried(false); };
+  }, [load, loadDocuments]));
   // Returning from the face-check page refreshes what is ready.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => { if (state === 'active') void loadDocuments(); });
     return () => sub.remove();
-  }, []);
+  }, [loadDocuments]);
   const guarded = async (work: (owner: number) => Promise<void>) => {
     if (!current() || inFlight.current) return;
     const owner = ownership.current;
@@ -88,7 +95,7 @@ function UpgradeContent() {
     if (encoded.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4) { notify('File too large', `${docs[key]} must be 5 MB or smaller.`); return; }
     const sent = await banking.uploadDocument(key, encoded);
     if (!current(owner)) return;
-    if (sent.success) setReady((p) => new Set(p).add(key));
+    if (sent.success) { documentRequest.current += 1; setReady((p) => new Set(p).add(key)); }
     else notify('Could not upload', sent.message || 'Please try another file.');
   });
   // The face check is Zitch's own page, opened in the browser: it uses the live
@@ -111,12 +118,33 @@ function UpgradeContent() {
     <View style={{ gap: 16 }}><Text style={text}>Open your Zitch account first.</Text>
       <Btn label="Open my account" onPress={() => router.replace('/kyc')} /></View>
   </Screen>;
+  const pendingUpgrade = status.upgrade_status?.pending ? status.upgrade_status : null;
+  if (pendingUpgrade) return <Screen header={<Header title={`Upgrade to Tier ${pendingUpgrade.tier}`} />}>
+    <View style={{ gap: 16 }}>
+      <Card><Text style={text}>{pendingUpgrade.state === 'review' ? 'Your upgrade is being reviewed.' : 'Your upgrade is being processed.'}</Text></Card>
+      {!!message && <Text accessibilityLiveRegion="polite" style={text}>{message}</Text>}
+      <Btn label={busy ? 'Checking…' : 'Check upgrade status'} disabled={busy} variant="outline" onPress={() => void guarded(async (owner) => {
+        const result = await load(true);
+        if (current(owner) && result?.upgrade_status?.state === 'approved'
+          && result.bank_tier >= pendingUpgrade.tier && result.tier >= pendingUpgrade.tier) {
+          setSubmitted(pendingUpgrade.tier); setMessage('Upgrade approved.');
+        }
+      })} />
+      <Btn label="Done" onPress={() => router.back()} />
+    </View>
+  </Screen>;
+  if (submitted) return <Screen header={<Header title={`Upgrade to Tier ${submitted}`} />}>
+    <View style={{ gap: 16 }}><Card><Text style={text}>{message || 'Your upgrade is being reviewed.'}</Text></Card>
+      <Btn label="Done" onPress={() => router.back()} /></View>
+  </Screen>;
   if (tier >= 3) return <Screen header={<Header title="Upgrade account" />}>
     <Card><Text style={heading}>You’re on Tier 3</Text><Text style={{ ...text, marginTop: 4 }}>Your account has the highest limits.</Text></Card>
   </Screen>;
   const target = tier + 1;
 
-  const notice = !!message && <Text accessibilityLiveRegion="polite" style={{ ...text, color: c.brand }}>{message}</Text>;
+  const statusMessage = message || (status.upgrade_status?.state === 'declined'
+    ? 'Your previous upgrade was not approved. Review your details before submitting again.' : '');
+  const notice = !!statusMessage && <Text accessibilityLiveRegion="polite" style={{ ...text, color: c.brand }}>{statusMessage}</Text>;
   const missing = (key: string) => (tried && !form[key]?.trim() ? REQUIRED : undefined);
   const addressFields = (prefix: '' | 'addr_') => <>
     <Field editable={!busy} label="House number" value={form[prefix + 'houseNumber'] || ''} keyboardType="number-pad" maxLength={20}
@@ -191,14 +219,9 @@ function UpgradeContent() {
       const result = await banking.upgrade(target, body);
       if (!current(owner)) return;
       setMessage(result.message || (result.success ? 'Upgrade approved.' : 'We could not submit your upgrade.'));
-      if (result.success || result.pending) { setForm(fresh()); setReady(new Set()); setSubmitted(true); await load(); }
+      if (result.success || result.pending) { setForm(fresh()); setReady(new Set()); setSubmitted(target); await load(); }
     });
   };
-
-  if (submitted) return <Screen header={<Header title={`Upgrade to Tier ${target}`} />}>
-    <View style={{ gap: 16 }}><Card><Text style={text}>{message || 'Your upgrade is being reviewed.'}</Text></Card>
-      <Btn label="Done" onPress={() => router.back()} /></View>
-  </Screen>;
 
   return <Screen header={<Header title={`Upgrade to Tier ${target}`} />}>
     <View style={{ gap: 16, paddingBottom: 32 }}>

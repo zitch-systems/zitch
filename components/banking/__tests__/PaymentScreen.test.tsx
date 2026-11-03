@@ -52,6 +52,39 @@ beforeEach(() => {
 });
 afterEach(async () => { if (tree) await act(async () => { tree.unmount(); }); jest.useRealTimers(); });
 
+it('shows a recorded provider failure as a receipt instead of asking for the PIN again', async () => {
+  mockPost.mockResolvedValue({ status: 400, json: async () => ({ success: false, reference: 'FAILED-REF', message: 'Payment could not be completed.' }) });
+  await mount(); await review();
+  await act(async () => { await mockPin.onComplete('582940'); });
+  expect(mockPin.open).toBe(false);
+  expect(control('View payment status')).toBeTruthy();
+  await act(async () => { control('View payment status').props.onPress(); });
+  expect(router.push).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ reference: 'FAILED-REF', status: 'Failed' }) }));
+  expect(mockReload).toHaveBeenCalled();
+  expect(mockClear).toHaveBeenCalledTimes(1);
+});
+
+it('keeps a rejected PIN editable when no payment was recorded', async () => {
+  mockPost.mockResolvedValue({ status: 403, json: async () => ({ success: false, message: 'Incorrect PIN' }) });
+  await mount(); await review();
+  await act(async () => { await mockPin.onComplete('582940'); });
+  expect(mockPin.open).toBe(true);
+  expect(mockPin.error).toBe('Incorrect PIN');
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'View payment status' })).toHaveLength(0);
+});
+
+it('requires a fresh selection when the data-plan catalogue is reloaded', async () => {
+  mockCatalog.mockResolvedValue({ success: true, data: [{ productId: 'PLAN-1', dataBundle: '1GB', amount: 100 }] });
+  await mount('data');
+  await act(async () => { control('Load data plans for this phone').props.onPress(); });
+  await act(async () => { control('1GB ·  · NGN 100').props.onPress(); });
+  expect(control('Review payment').props.disabled).toBe(false);
+  mockCatalog.mockResolvedValue({ success: true, data: [{ productId: 'PLAN-2', dataBundle: '2GB', amount: 200 }] });
+  await act(async () => { control('Load data plans for this phone').props.onPress(); });
+  expect(control('Review payment').props.disabled).toBe(true);
+  expect(control('Amount (NGN)').props.value).toBe('');
+});
+
 it('refreshes a processing purchase and shows bank-confirmed success without buying again', async () => {
   jest.useFakeTimers();
   mockPost.mockImplementation(async (path: string) => path === '/api/transaction/status/'

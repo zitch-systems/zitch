@@ -9,11 +9,48 @@ from accounts.models import IdentityProof, User, hash_identifier, record_identit
 from wallet.models import Wallet
 
 from .accounts import account_for, display_name, require_enabled, same_name, update_account
-from .client import Client, ProviderError, require_environment
+from .client import Client, ProviderError, affirmative_code, require_environment
 from .models import AccountUpgrade, AddressVerification
 from .payments import digest
 from .secrets import unseal
 from .validation import upgrade_profile
+
+ACTIVE_UPGRADE_STATES = {"pending", "submitted", "review"}
+
+
+def upgrade_payload(user):
+    bank = account_for(user)
+    row = (AccountUpgrade.objects.filter(account=bank).order_by("-created", "-pk").first()
+           if bank else None)
+    if not row:
+        return None
+    return {"reference": row.reference, "tier": row.tier, "state": row.state,
+            "pending": row.state in ACTIVE_UPGRADE_STATES}
+
+
+def refresh_customer_upgrade(user):
+    """Check an owner's existing request with a shared, bounded read budget."""
+    from django.core.cache import cache
+    bank = account_for(user)
+    if not bank or not AccountUpgrade.objects.filter(account=bank, state__in=ACTIVE_UPGRADE_STATES).exists():
+        return False
+    require_enabled(user)
+    try:
+        claimed = cache.add(f"bank-upgrade-refresh:{bank.environment}:{bank.pk}", True, timeout=20)
+    except Exception:
+        return True
+    if not claimed:
+        return False
+    try:
+        refresh_upgrade(bank, timeout=(2, 4))
+    except ProviderError:
+        return True
+    return False
+
+
+def _pending_result(request):
+    return {"success": False, "pending": True, "reference": request.reference,
+            "message": "Your bank upgrade is being processed."}
 
 
 def submit_upgrade(user, tier, payload, *, address_reference=""):
@@ -21,9 +58,14 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
     bank = account_for(user)
     if not bank:
         raise ValueError("Complete bank account setup first")
-    tier = int(tier)
-    if tier not in {2, 3}:
+    if str(tier) not in {"2", "3"}:
         raise ValueError("Choose Tier 2 or Tier 3")
+    tier = int(tier)
+    existing = AccountUpgrade.objects.filter(account=bank, state__in=ACTIVE_UPGRADE_STATES).first()
+    if existing:
+        return _pending_result(existing)
+    if not isinstance(payload, dict):
+        raise ValueError("Complete your upgrade details")
     update_account(bank)
     if bank.tier >= tier:
         approved = AccountUpgrade.objects.filter(account=bank, tier__gte=tier, state="approved").exists()
@@ -82,8 +124,7 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
         Wallet.objects.select_for_update().get(pk=bank.wallet_id)
         existing = AccountUpgrade.objects.filter(account=bank, state__in=["pending", "submitted", "review"]).first()
         if existing:
-            return {"success": False, "pending": True, "reference": existing.reference,
-                    "message": "Your bank upgrade is being processed."}
+            return _pending_result(existing)
         request = AccountUpgrade.objects.create(account=bank, reference="ZU" + secrets.token_hex(10).upper(),
             tier=tier, bvn_hash=hash_identifier(body["bvn"]), nin_hash=hash_identifier(body["nin"]),
             address_verification=address, request_digest=digest(body))
@@ -107,23 +148,30 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
         "message": "Upgrade approved." if request.state == "approved" else "Your upgrade is being reviewed."}
 
 
-def refresh_upgrade(bank):
+def refresh_upgrade(bank, *, timeout=None):
     require_environment(bank.environment)
     request = AccountUpgrade.objects.filter(account=bank, state__in=["pending", "submitted", "review"]).order_by("created").first()
     if not request:
         return False
-    response = Client().upgrade_status(bank.number)
+    response = Client(**({"timeout": timeout} if timeout else {})).upgrade_status(bank.number)
     data = response.data if isinstance(response.data, dict) else {}
     # The documented account-level status must be read for our account, and any
     # echoed account must agree. The callback's status alone is never accepted.
-    if not response.ok or (data.get("accountNumber") and data["accountNumber"] != bank.number):
-        raise ProviderError("upgrade_status_unconfirmed")
     status = str(data.get("status", "")).upper()
+    successful = data.get("isSuccessful", True)
+    if (not response.ok or not affirmative_code(response.body.get("responseCode"))
+            or (status == "APPROVED" and (not affirmative_code(data.get("responseCode"))
+                or (successful is not True and successful not in ("true", "True"))))
+            or (data.get("accountNumber") and data["accountNumber"] != bank.number)):
+        raise ProviderError("upgrade_status_unconfirmed")
     if status == "DECLINED":
         AccountUpgrade.objects.filter(pk=request.pk).update(state="declined", checked_at=timezone.now())
         return False
-    update_account(bank)
-    if status != "APPROVED" or bank.tier < request.tier:
+    if status != "APPROVED":
+        AccountUpgrade.objects.filter(pk=request.pk).update(checked_at=timezone.now())
+        return False
+    update_account(bank, **({"timeout": timeout} if timeout else {}))
+    if bank.tier < request.tier:
         AccountUpgrade.objects.filter(pk=request.pk).update(checked_at=timezone.now())
         return False
     with transaction.atomic():

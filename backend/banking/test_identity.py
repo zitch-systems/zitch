@@ -146,6 +146,11 @@ class IdentityTests(TestCase):
         with override_settings(NINEPSB={**CONFIG, "WEBHOOK_USERNAME": "hook", "WEBHOOK_PASSWORD": "secret"}):
             header = "Basic " + base64.b64encode(b"hook:wrong").decode()
             self.assertEqual(client.post("/9psb/webhook?event=transfer", data={}, content_type="application/json", HTTP_AUTHORIZATION=header).status_code, 401)
+            for credential in ("héllo:wrong".encode(), b"hook:\xff"):
+                with self.subTest(credential=credential), patch("banking.views.notifications.ingest") as ingest:
+                    header = "Basic " + base64.b64encode(credential).decode()
+                    self.assertEqual(client.post("/9psb/webhook?event=transfer", data={}, content_type="application/json", HTTP_AUTHORIZATION=header).status_code, 401)
+                    ingest.assert_not_called()
         self.assertEqual(self.wallet.balance, 0)
 
     def test_old_bank_routes_no_longer_resolve(self):

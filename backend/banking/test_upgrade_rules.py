@@ -153,6 +153,17 @@ class UpgradeAccountNameTests(TestCase):
             checked_at=timezone.now(), available_balance=0, ledger_balance=0, opening_review_required=False)
         record_identity_proof(self.user, "bvn", "12345678901", source="9psb_otp")
 
+    def test_invalid_tier_and_profile_types_fail_before_any_bank_request(self):
+        with patch("banking.client.Client.wallet") as read, patch("banking.client.Client.upgrade") as send:
+            for tier in (None, [], {}, 2.5, True):
+                with self.subTest(tier=tier), self.assertRaisesRegex(ValueError, "Choose Tier"):
+                    submit_upgrade(self.user, tier, {})
+            for profile in (None, [], "invalid"):
+                with self.subTest(profile=profile), self.assertRaisesRegex(ValueError, "upgrade details"):
+                    submit_upgrade(self.user, 2, profile)
+        read.assert_not_called()
+        send.assert_not_called()
+
     def submit(self, **changes):
         sent = {}
 

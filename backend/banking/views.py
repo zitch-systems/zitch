@@ -30,6 +30,13 @@ def _error(exc):
 def status(request):
     user = request.user_obj
     accounts.refresh_for_display(user)
+    refresh_unavailable = False
+    if request.data.get("refresh_upgrade") is True:
+        try:
+            refresh_unavailable = upgrades.refresh_customer_upgrade(user)
+        except (ProviderError, ValueError):
+            refresh_unavailable = True
+        user.refresh_from_db()
     bank = accounts.account_for(user)
     from .secrets import unseal
     from accounts.models import IdentityProof
@@ -44,6 +51,7 @@ def status(request):
         email_verified=user.email_verified, phone_verified=user.phone_verified,
         email_verification_required=not user.email_verified,
         identity_challenge=({**progress, "kind": challenge.kind} if progress else None),
+        upgrade_status=upgrades.upgrade_payload(user), upgrade_refresh_unavailable=refresh_unavailable,
         bvn_verified="bvn" in proofs, nin_verified="nin" in proofs,
         # Accounts opened before the BVN was kept must enter it once on the upgrade.
         bvn_on_file=bool(bank and bank.encrypted_bvn),
@@ -251,10 +259,10 @@ def webhook(request):
     authorization = request.headers.get("Authorization", "")
     try:
         scheme, encoded = authorization.split(" ", 1)
-        decoded = base64.b64decode(encoded, validate=True).decode()
+        decoded = base64.b64decode(encoded, validate=True)
     except (ValueError, UnicodeError, binascii.Error):
         return JsonResponse({"success": False}, status=401)
-    if not user or not password or scheme.lower() != "basic" or not hmac.compare_digest(decoded, user + ":" + password):
+    if not user or not password or scheme.lower() != "basic" or not hmac.compare_digest(decoded, (user + ":" + password).encode()):
         return JsonResponse({"success": False}, status=401)
     try:
         payload = json.loads(request.body)

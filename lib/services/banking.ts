@@ -11,6 +11,8 @@ export type BankStatus = ApiResult<{
   profile: BankProfile; account_number?: string; account_name?: string;
   identity_available?: boolean; address_verification_available?: boolean;
   address_verification_pending?: boolean; address_reference?: string; bvn_on_file?: boolean;
+  upgrade_status?: { reference: string; tier: number; state: string; pending: boolean } | null;
+  upgrade_refresh_unavailable?: boolean;
   tier_limits?: Record<string, { per_transaction: string; daily_transfer: string; daily_bills: string }>;
   email_verified?: boolean; phone_verified?: boolean; email_verification_required?: boolean;
   can_fund?: boolean; available?: boolean; has_account?: boolean;
@@ -29,6 +31,7 @@ export type CatalogItem = { id?: string; name?: string; productId?: string; amou
 
 export const banking = {
   status: () => apiJson<BankStatus>('/api/banking/status/'),
+  refreshUpgrade: () => apiJson<BankStatus>('/api/banking/status/', { refresh_upgrade: true }),
   identity: (kind: 'bvn' | 'nin', identifier: string, profile: BankProfile, image?: string) =>
     apiJson<BankProgress>('/api/banking/identity/start/', { kind, identifier, profile,
       method: image ? 'FACIAL' : 'OTP', ...(image ? { image } : {}) }),
