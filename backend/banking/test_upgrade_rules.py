@@ -1,10 +1,19 @@
 """Upgrade form rules that depend on the ID document and the in-app face capture."""
 import base64
 from io import BytesIO
+from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 from PIL import Image
 
+from accounts.models import User, record_identity_proof
+from wallet.models import Wallet
+
+from .client import Reply
+from .models import BankAccount
+from .test_client import CONFIG
+from .upgrades import submit_upgrade
 from .validation import fit_photo, upgrade_profile
 
 
@@ -129,3 +138,45 @@ class UpgradeDocumentEndpointTests(TestCase):
 
     def test_unknown_kinds_are_refused(self):
         self.assertEqual(self.post(kind="passport", file=picture()).status_code, 400)
+
+
+@override_settings(NINEPSB=CONFIG)
+class UpgradeAccountNameTests(TestCase):
+    """The bank names a wallet "MERCHANT/CUSTOMER NAME"; the customer sends only their own."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="upgrade", first_name="Jane", last_name="Doe",
+            phone="07041267880", email="jane@example.test", phone_verified=True, email_verified=True)
+        self.wallet = Wallet.objects.create(user=self.user)
+        self.bank = BankAccount.objects.create(wallet=self.wallet, number="1100000001", name="ZITCH/Jane Doe",
+            environment="production", tier=1, pnd=False, frozen=False, status="active",
+            checked_at=timezone.now(), available_balance=0, ledger_balance=0, opening_review_required=False)
+        record_identity_proof(self.user, "bvn", "12345678901", source="9psb_otp")
+
+    def submit(self, **changes):
+        sent = {}
+
+        def capture(number, tier, body):
+            sent.update(body)
+            return Reply({"status": "SUCCESS", "responseCode": "00"}, 200)
+
+        with patch("banking.upgrades.update_account"), \
+                patch("banking.upgrades.refresh_upgrade"), \
+                patch("banking.client.Client.upgrade", side_effect=capture):
+            return submit_upgrade(self.user, 2, profile(**changes)), sent
+
+    def test_the_merchant_prefix_does_not_block_the_customers_own_name(self):
+        result, sent = self.submit()
+        self.assertTrue(result["pending"])
+        self.assertEqual(sent["accountName"], "Jane Doe")
+
+    def test_a_different_word_order_is_the_same_person_and_is_sent_as_the_bank_spells_it(self):
+        result, sent = self.submit(accountName="DOE  JANE")
+        self.assertTrue(result["pending"])
+        self.assertEqual(sent["accountName"], "Jane Doe")
+
+    def test_someone_elses_name_is_still_refused(self):
+        with self.assertRaisesMessage(ValueError, "name confirmed on your bank account"):
+            self.submit(accountName="John Smith")
+        with self.assertRaisesMessage(ValueError, "name confirmed on your bank account"):
+            self.submit(accountName="Jane Doe Smith")
