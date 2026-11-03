@@ -60,11 +60,11 @@ def sandbox():
 
 
 def sandbox_auto_verify():
-    """Sandbox-only shortcut for testers: skip the bank's identity check.
+    """Sandbox-only identity and address fixtures for enrolled testers.
 
     It never applies outside the sandbox environment, whatever the flag says,
-    and it only replaces the identity step: the wallet is still opened, read
-    back and name-checked at the bank exactly as in the normal flow.
+    Wallet opening and tier upgrades still need the bank's own response and
+    independent readback. Address fixtures never initiate a physical visit.
     """
     return sandbox() and config().get("SANDBOX_AUTO_VERIFY") is True
 
@@ -299,10 +299,11 @@ class Reply:
 
 
 class Client:
-    def __init__(self, product="waas"):
+    def __init__(self, product="waas", *, timeout=None):
         if product not in _PREFIX:
             raise ValueError("Unknown bank product")
         self.product = product
+        self.timeout = timeout
 
     @staticmethod
     def _validated_url(value):
@@ -382,7 +383,7 @@ class Client:
         return "9psb:token:" + self.product + ":" + hashlib.sha256(material.encode()).hexdigest()
 
     @staticmethod
-    def _send(method, url, *, payload=None, params=None, token=None):
+    def _send(method, url, *, payload=None, params=None, token=None, timeout=None):
         session = getattr(_local, "session", None)
         if session is None:
             session = _local.session = requests.Session()
@@ -393,7 +394,7 @@ class Client:
             headers["Authorization"] = "Bearer " + token
         try:
             response = session.request(method, url, json=payload, params=params,
-                                       headers=headers, timeout=TIMEOUT, allow_redirects=False)
+                                       headers=headers, timeout=timeout or TIMEOUT, allow_redirects=False)
         except requests.RequestException as exc:
             # Without this, every transport failure reaches the operator as a
             # bare "network_unavailable" and nothing records which one it was.
@@ -425,7 +426,8 @@ class Client:
             raise ProviderError("authentication_in_progress")
         try:
             try:
-                result = self._send("POST", self._auth_url(), payload=self._credentials())
+                result = self._send("POST", self._auth_url(), payload=self._credentials(),
+                                    **({"timeout": self.timeout} if self.timeout else {}))
             except ProviderError as exc:
                 raise ProviderError(exc.code, uncertain=False) from None
             data = result.body if self.product == "waas" else result.data
@@ -455,7 +457,8 @@ class Client:
             raise ValueError("The provider endpoint does not match its product")
         token = self.token()  # Auth failures happen before the instruction.
         result = self._send(method, self._api_base() + "/" + path,
-                            payload=payload, params=params, token=token)
+                            payload=payload, params=params, token=token,
+                            **({"timeout": self.timeout} if self.timeout else {}))
         if result.http_status == 401:
             cache.delete(self._cache_key())
             # Never automatically resubmit a money instruction after auth failure.

@@ -43,9 +43,9 @@ def get_banks():
         return unavailable()
 
 
-def resolve_account(account_number, bank_code):
+def resolve_account(account_number, bank_code, *, timeout=None):
     try:
-        result = Client().resolve(account_number, bank_code)
+        result = Client(timeout=timeout).resolve(account_number, bank_code)
         # Sandbox confirms this endpoint is a top-level NIP envelope, not the
         # usual WaaS status/data wrapper. Bind both identifiers before using name.
         data = result.body.get("customer", {}).get("account", {})

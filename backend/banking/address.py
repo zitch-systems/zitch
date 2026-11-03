@@ -14,11 +14,56 @@ from django.utils import timezone
 
 from accounts.models import User
 
-from .accounts import account_for, require_enabled
-from .client import ProviderError
+from .accounts import account_for, require_enabled, sandbox_tester
+from .client import ProviderError, sandbox_auto_verify
 from .models import AddressVerification
 from .payments import digest
 from .secrets import seal
+
+
+def available(user):
+    bank = account_for(user)
+    return bool(bank and bank.tier >= 2 and sandbox_auto_verify() and sandbox_tester(user))
+
+
+def _address_details(address):
+    required = ("house_number", "street", "address", "city", "state", "lga", "landmark")
+    if not isinstance(address, dict) or any(not isinstance(address.get(k), str)
+            or not address[k].strip() or len(address[k]) > 255 for k in required):
+        raise ValueError("Complete all residential address fields")
+    return {k: address[k].strip() for k in required}
+
+
+def _sandbox_address(user, address):
+    """An enrolled sandbox fixture; never a physical Prembly verification.
+
+    Keep fixture provenance with the sealed report. The bank's own Tier 3
+    decision/readback is still required before granting a tier.
+    """
+    import base64
+    import textwrap
+    from io import BytesIO
+    from PIL import Image, ImageDraw, ImageFont
+    address = _address_details(address)
+    with transaction.atomic():
+        User.objects.select_for_update().get(pk=user.pk)
+        existing = AddressVerification.objects.filter(user=user, address_digest=digest(address),
+            state="verified", provider_job__startswith="SANDBOX-AUTO-").first()
+        if existing:
+            return existing
+        ref = "ZA" + secrets.token_hex(16)
+        lines = ["Address confirmation", user.get_full_name(), ref, ""]
+        for value in (address["address"], address["city"], address["state"], address["lga"], address["landmark"]):
+            lines.extend(textwrap.wrap(value, width=65))
+        report = Image.new("RGB", (900, max(650, 70 + len(lines) * 28)), "white")
+        draw, font = ImageDraw.Draw(report), ImageFont.load_default(size=20)
+        draw.multiline_text((30, 25), "\n".join(lines), fill="black", font=font, spacing=8)
+        data = BytesIO()
+        report.save(data, "JPEG", quality=75)
+        return AddressVerification.objects.create(user=user, reference=ref, address_digest=digest(address),
+            encrypted_address=seal(address), provider_job="SANDBOX-AUTO-" + ref, state="verified",
+            encrypted_report=seal({"document": base64.b64encode(data.getvalue()).decode(),
+                                   "source": "sandbox_address_fixture", "reference": ref}), checked_at=timezone.now())
 
 
 def verification_status(user):
@@ -57,6 +102,8 @@ def _request(path, body):
 
 def start(user, address):
     require_enabled(user)
+    if available(user):
+        return _sandbox_address(user, address)
     # Starting a chargeable physical visit is inappropriate while the provider's
     # terminal decision/report contract is unavailable. A config toggle cannot
     # bypass this integration requirement.

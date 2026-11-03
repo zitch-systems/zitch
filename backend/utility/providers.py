@@ -1117,7 +1117,7 @@ def funding_verify(reference: str, provider: str = "") -> dict:
 # --- Payout (bank transfer) dispatch — 9PSB ---
 def payout_resolve_account(account_number: str, bank_code: str) -> dict:
     from banking.adapter import resolve_account
-    return resolve_account(account_number, bank_code)
+    return resolve_account(account_number, bank_code, timeout=(1, 4))
 
 
 def payout_send(amount_naira, reference: str, narration: str, bank_code: str,

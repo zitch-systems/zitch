@@ -170,11 +170,15 @@ class BankTransferTests(BankIOCase):
         # payload must always carry the field â€” blank when unset.
         self.assertIn("logo", body["banks"][0])
 
-    def test_detection_never_sweeps_paid_name_enquiries(self):
+    def test_detection_checks_only_matching_checksum_candidates(self):
+        from django.core.cache import cache
         from transfers.services import detect_account_banks
+        cache.clear()
         Bank.objects.create(code="acc", name="Access Bank", bank_code="044", popular=True)
-        self.assertEqual(detect_account_banks("0000000001"), [])
-        self.enquiry.assert_not_called()
+        with patch("banking.client.Client.token", return_value="token"):
+            matches = detect_account_banks("0000000001")
+        self.assertEqual(matches, [{"bank": "gtb", "bank_name": "GTBank", "name": "JOHN DOE"}])
+        self.enquiry.assert_called_once_with("0000000001", "058")
 
     def test_resolve_requires_10_digits(self):
         res, _ = self.post("/api/transfers/resolve/", {"access_token": self.token, "account_number": "123", "bank": "gtb"})

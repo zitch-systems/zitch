@@ -22,6 +22,7 @@ python manage.py bank_preflight --report-only
 # An unconfirmed directory closes payout routing and prints its redacted cause;
 # it does not block deploying identity/account changes.
 python manage.py sync_bank_directory --if-configured --close-on-failure
+python manage.py bank_service_check
 
 # Auto-provision a super_admin operator from env vars (Render free tier has no
 # shell, so this is the only way to bootstrap admin access without one). Skipped

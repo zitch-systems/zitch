@@ -29,6 +29,7 @@ def _error(exc):
 @require_user
 def status(request):
     user = request.user_obj
+    accounts.refresh_for_display(user)
     bank = accounts.account_for(user)
     from .secrets import unseal
     from accounts.models import IdentityProof
@@ -146,8 +147,9 @@ def upgrade(request):
 def address_start(request):
     try:
         row = address.start(request.user_obj, request.data.get("address", {}))
-        return ok(success=False, pending=True, reference=row.reference, state=row.state,
-                  message="Your address has been submitted for physical verification.")
+        confirmed = row.state == "verified"
+        return ok(success=confirmed, pending=not confirmed, reference=row.reference, state=row.state,
+                  message="Address confirmed. Continue your upgrade." if confirmed else "Your address is being verified.")
     except (ValueError, ProviderError) as exc:
         return _error(exc)
 

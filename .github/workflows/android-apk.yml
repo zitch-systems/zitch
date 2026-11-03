@@ -101,13 +101,13 @@ jobs:
       - name: Verify and stage the exact installable APK
         run: |
           mkdir -p release-apk
-          cp android/app/build/outputs/apk/release/app-release.apk release-apk/Zitch-Android-Test.apk
+          cp android/app/build/outputs/apk/release/app-release.apk release-apk/Zitch.apk
           python3 scripts/verify-android-apk.py \
-            --apk release-apk/Zitch-Android-Test.apk \
+            --apk release-apk/Zitch.apk \
             --keystore android/app/debug.keystore --signing preview \
             --revision "$GITHUB_SHA" --metadata release-apk/build-info.json
           cd release-apk
-          sha256sum Zitch-Android-Test.apk > SHA256SUMS.txt
+          sha256sum Zitch.apk > SHA256SUMS.txt
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -148,7 +148,7 @@ jobs:
           disable-animations: true
           script: |
             cd release-apk && sha256sum -c SHA256SUMS.txt && cd ..
-            adb install release-apk/Zitch-Android-Test.apk
+            adb install release-apk/Zitch.apk
             python3 scripts/android-release-smoke.py --package com.zitch.app --output-dir android-smoke-results
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
@@ -159,7 +159,7 @@ jobs:
           retention-days: 30
 
   publish:
-    name: Publish downloadable test APK
+    name: Publish downloadable APK
     needs: [build, smoke]
     if: startsWith(github.ref, 'refs/tags/zitch-android-test-') || startsWith(github.ref, 'refs/heads/release/zitch-android-test-')
     runs-on: ubuntu-latest
@@ -197,20 +197,12 @@ jobs:
           cd release-apk
           sha256sum -c SHA256SUMS.txt
           cat > release-notes.md <<'NOTES'
-          Download **Zitch-Android-Test.apk** under Assets on your Android phone and open it to install. The Source code ZIP files are not needed.
+          Download **Zitch.apk** under Assets and open it on your Android phone to install.
 
-          This is an internal Android test build, signed with the existing debug/test key. It connects to https://api.zitch.ng and is not a Play Store production release. If Android reports a signing conflict with an existing installation, keep that installation and report the conflict before removing it.
+          Includes wallet balance refresh, bank detection and search, and account-upgrade improvements.
 
-          Automated checks cover the exact revision's app tests, native package/version, APK signature, permissions, embedded JavaScript, and emulator startup/sign-in validation. Bank activation, real OTP, push notification delivery, device biometrics, and live money settlement require separate verification.
-
-          build-info.json reports whether Firebase configuration is embedded in this APK. When android_push.firebase_config_present is false, remote push notifications are unavailable in this build. Even when present, live delivery needs the matching FCM v1 credential in the Expo project and a physical-device check.
-
-          This build integrates 9PSB WaaS on the app and WhatsApp. Sandbox access is restricted to enrolled testers; production banking and VAS remain disabled for this release. Previous-bank balances, held receipts and unresolved liabilities remain protected for reconciliation and cannot fund new-bank payments.
-
-          Identity verification and NUBAN opening require bank-approved synthetic test identities and successful bank confirmation. Tier 2 requires the documented identity evidence and bank upgrade approval. New Tier 3 address requests remain unavailable pending the terminal address-verification contract. Authentication and account reads alone do not prove onboarding, funded transfers or go-live readiness.
-
-          SHA256SUMS.txt verifies the downloaded APK. build-info.json records its source commit, version, and signing certificate.
+          SHA256SUMS.txt and build-info.json contain the download checksum and build details.
           NOTES
-          gh release create "$release_tag" Zitch-Android-Test.apk SHA256SUMS.txt build-info.json \
+          gh release create "$release_tag" Zitch.apk SHA256SUMS.txt build-info.json \
             --repo "$GITHUB_REPOSITORY" "${tag_args[@]}" --prerelease --latest=false \
-            --title "Zitch Android test APK — $release_tag" --notes-file release-notes.md
+            --title "Zitch Android — ${GITHUB_SHA:0:7}" --notes-file release-notes.md

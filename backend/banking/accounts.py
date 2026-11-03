@@ -47,7 +47,7 @@ def require_enabled(user):
     if not user.is_active or not customer_enabled():
         raise ValueError("Banking setup is temporarily unavailable")
     if sandbox() and not sandbox_tester(user):
-        raise ValueError("This bank connection is available to enrolled sandbox testers only")
+        raise ValueError("Banking is not yet enabled for this account")
     existing = BankAccount.objects.filter(wallet__user_id=user.pk).first()
     if existing:
         require_environment(existing.environment)
@@ -118,10 +118,11 @@ def account_payload(user):
     if can_spend:
         can_spend = not PreviousBankArchive.objects.filter(wallet=bank.wallet, pending_transactions__gt=0).exists()
     from .fees import transfer_fee
+    from .address import available as address_available
     opening_review = bool(ready and bank.opening_review_required)
     return {"provider": "9psb", "bank_name": "9PSB" if ready else "",
         "identity_available": bool(allowed and user.email_verified and user.phone_verified),
-        "address_verification_available": False,
+        "address_verification_available": address_available(user),
         "account_number": bank.number if ready else "", "account_name": display_name(bank.name) if ready else "",
         "bank_accounts": ([{"account_number": bank.number, "account_name": display_name(bank.name), "bank_name": "9PSB"}] if ready else []),
         "has_account": ready, "available": ready, "can_fund": ready,
@@ -502,9 +503,59 @@ def _restriction(value):
     return None
 
 
-def update_account(bank, reply=None):
+def refresh_for_display(user):
+    """Refresh stale bank evidence when the customer refreshes their wallet.
+
+    A short read budget and shared lease prevent a provider outage tying up
+    every web thread. A failed read never manufactures available funds.
+    """
+    from django.core.cache import cache
+    bank = account_for(user)
+    if not bank or not customer_enabled() or (sandbox() and not sandbox_tester(user)):
+        return bank
+    if bank.checked_at and bank.checked_at >= timezone.now() - timedelta(minutes=3):
+        from .upgrades import restore_approved_state
+        restore_approved_state(user, bank)
+        return bank
+    key = f"bank-balance-refresh:{bank.environment}:{bank.pk}"
+    if not cache.add(key, True, timeout=20):
+        return bank
+    try:
+        update_account(bank, timeout=(2, 4))
+        from .upgrades import restore_approved_state
+        restore_approved_state(user, bank)
+    except ProviderError as exc:
+        log.info("bank_balance_refresh_unconfirmed account_id=%s code=%s", bank.pk, exc.code)
+        cache.set(key, True, timeout=15)
+    else:
+        cache.delete(key)
+    return bank
+
+
+def _sandbox_opening_review_resolved(bank, wallet):
+    """Only the explicitly enrolled account's bank-backed receipts release this hold."""
+    from wallet.models import Transaction
+    from wallet.services import wallet_expected_balance
+    from .models import Instruction
+    if not (sandbox() and bank.environment == "sandbox" and sandbox_tester(wallet.user)
+            and bank.pnd is False and bank.frozen is False and bank.available_balance is not None
+            and wallet.balance == bank.available_balance and historical_balance(wallet) == 0):
+        return False
+    if PreviousBankArchive.objects.filter(wallet=wallet, pending_transactions__gt=0).exists():
+        return False
+    if Instruction.objects.filter(account=bank, state__in=["prepared", "sending", "pending"]).exists():
+        return False
+    if wallet_expected_balance(wallet.user_id) != wallet.balance:
+        return False
+    return Transaction.objects.filter(user_id=wallet.user_id, direction=Transaction.IN,
+        transaction_status=Transaction.SUCCESS, meta__provider="9psb", meta__environment="sandbox",
+        meta__account_number=bank.number,
+        meta__evidence__in=["bank_balance_enquiry", "bank_credit_and_balance_enquiry"]).exists()
+
+
+def update_account(bank, reply=None, *, timeout=None):
     require_environment(bank.environment)
-    reply = reply or Client().wallet(bank.number)
+    reply = reply or Client(timeout=timeout).wallet(bank.number)
     data = reply.data if isinstance(reply.data, dict) else {}
     if not reply.ok or wallet_number(data) != bank.number:
         raise ProviderError("account_confirmation_failed")
@@ -523,10 +574,20 @@ def update_account(bank, reply=None):
     bank.ledger_balance = _amount(data.get("ledgerBalance"))
     bank.maximum_deposit = _amount(data.get("maximumDeposit"))
     bank.maximum_balance = _amount(data.get("maximumBalance"))
-    bank.status = ("review" if bank.opening_review_required else
-        "active" if str(data.get("status", "")).upper() == "ACTIVE" else "restricted")
     bank.checked_at = timezone.now()
-    bank.save()
-    Wallet.objects.filter(pk=bank.wallet_id).update(bank_tier=bank.tier,
-        pnd_lifted=bank.pnd is False and bank.frozen is False)
+    fields = ["tier", "pnd", "frozen", "available_balance", "ledger_balance", "maximum_deposit",
+              "maximum_balance", "checked_at", "status"]
+    active = str(data.get("status", "")).upper() == "ACTIVE"
+    with transaction.atomic():
+        wallet = Wallet.objects.select_for_update().select_related("user").get(pk=bank.wallet_id)
+        locked = BankAccount.objects.select_for_update().get(pk=bank.pk)
+        # A concurrent read must not reinstate a hold that was already resolved.
+        bank.opening_review_required = locked.opening_review_required
+        if bank.opening_review_required and active and _sandbox_opening_review_resolved(bank, wallet):
+            bank.opening_review_required = False
+            fields.append("opening_review_required")
+        bank.status = "restricted" if not active else "review" if bank.opening_review_required else "active"
+        bank.save(update_fields=fields)
+        Wallet.objects.filter(pk=bank.wallet_id).update(bank_tier=bank.tier,
+            pnd_lifted=bank.pnd is False and bank.frozen is False)
     return bank

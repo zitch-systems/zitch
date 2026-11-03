@@ -55,6 +55,7 @@ export const transfersService = {
     apiJson<ResolveResult>(
       EP.transfers.resolve,
       bank ? { account_number: accountNumber, bank } : { account_number: accountNumber },
+      12000,
     ),
   resolveLegacy: (identifier: string) => apiJson<ResolveResult>(EP.transfers.resolveLegacy, { identifier }),
   send: (body: SendBody) => apiJson<SendResult>(EP.transfers.send, body),
