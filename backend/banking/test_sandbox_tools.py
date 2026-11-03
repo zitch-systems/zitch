@@ -345,6 +345,59 @@ class SandboxFundingTests(Base):
             self.fund()
         self.assertFalse(Transaction.objects.exists())
 
+    def reconcile(self, apply=False, balance="149970.00"):
+        out = StringIO()
+        with patch("banking.client.Client.wallet", return_value=readback(availableBalance=balance,
+                                                                         ledgerBalance=balance)):
+            call_command("bank_sandbox_reconcile", phone=PROFILE["phoneNo"], apply=apply, stdout=out)
+        return out.getvalue()
+
+    def test_a_dry_run_reports_the_shortfall_and_records_nothing(self):
+        report = self.reconcile()
+        self.assertIn('"shortfall": "149970.00"', report)
+        self.assertIn('"applied": false', report)
+        self.assertIn('"reason": "dry_run"', report)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("0"))
+        self.assertFalse(Transaction.objects.exists())
+
+    def test_applying_credits_the_shortfall_once_and_is_then_in_line(self):
+        report = self.reconcile(apply=True)
+        self.assertIn('"applied": true', report)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("149970.00"))
+        txn = Transaction.objects.get()
+        self.assertEqual(txn.amount, Decimal("149970.00"))
+        self.assertEqual(txn.meta["evidence"], "bank_balance_enquiry")
+        # Running it again finds nothing left to do rather than crediting twice.
+        again = self.reconcile(apply=True)
+        self.assertIn('"reason": "already_in_line"', again)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("149970.00"))
+        self.assertEqual(Transaction.objects.count(), 1)
+
+    def test_an_unconfirmed_balance_never_becomes_a_credit(self):
+        with patch("banking.client.Client.wallet", side_effect=ProviderError("network_unavailable")), \
+                self.assertRaisesMessage(CommandError, "did not confirm the balance"):
+            call_command("bank_sandbox_reconcile", phone=PROFILE["phoneNo"], apply=True, stdout=StringIO())
+        self.assertFalse(Transaction.objects.exists())
+
+    def test_zitch_ahead_of_the_bank_is_never_debited_here(self):
+        self.wallet.balance = Decimal("200000.00")
+        self.wallet.save(update_fields=["balance"])
+        with self.assertRaisesMessage(CommandError, "needs review"):
+            self.reconcile(apply=True)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("200000.00"))
+        self.assertFalse(Transaction.objects.exists())
+
+    @override_settings(NINEPSB={**SANDBOX, "ENVIRONMENT": "production", "UAT_APPROVED": True})
+    def test_reconciliation_is_never_available_in_production(self):
+        with patch("banking.client.Client.wallet") as enquiry, \
+                self.assertRaisesMessage(CommandError, "only with the bank sandbox"):
+            call_command("bank_sandbox_reconcile", phone=PROFILE["phoneNo"], stdout=StringIO())
+        enquiry.assert_not_called()
+
     @override_settings(NINEPSB={**SANDBOX, "ENVIRONMENT": "production", "UAT_APPROVED": True})
     def test_never_available_in_production(self):
         with patch("banking.client.Client.float_transfer") as credit, \
