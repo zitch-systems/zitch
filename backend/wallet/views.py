@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.contrib.auth import get_user_model
 from django.db import transaction as db_transaction
+from django.utils import timezone
 
 from common.http import (
     MIN_TRANSFER, api, check_daily_limit, check_send_limits, fail, idempotent_replay,
@@ -137,7 +138,7 @@ def _txn_row(t, review_kind=_REVIEW_UNSET) -> dict:
         "review_kind": review_kind,
         "status_message": ("We are confirming the provider's final outcome. Do not retry."
                            if under_review else ""),
-        "date": t.created.strftime("%Y-%m-%d %H:%M"),
+        "date": timezone.localtime(t.created).strftime("%Y-%m-%d %H:%M"),
         "reference": t.reference,
         "direction": t.direction,
         # The customer's own note. `note` is what a bank transfer stores
@@ -175,6 +176,8 @@ def transaction_status(request):
         user.transactions.filter(reference=reference)).first()
     if txn is None:
         return fail("Transaction not found", status=404)
+    from banking.payments import refresh_payment_status
+    refresh_payment_status(txn)
     row = _txn_row(txn)
     # Recover purchased value after an app restart or a late provider settlement.
     # Keep it out of bulk history, and never expose a token while the payment is

@@ -91,6 +91,31 @@ def bank_name_keys(name: str) -> tuple:
 
 _NAME_ENQUIRIES = ThreadPoolExecutor(max_workers=6, thread_name_prefix="bank-name")
 
+# Clearing/NUBAN institution codes identify the checksum input. Provider NIP
+# routing codes are a separate namespace and must remain untouched for payouts.
+_CBN_BANKS = (
+    ("access", "Access Bank", "044"), ("gtb", "GTBank", "058"),
+    ("zenith", "Zenith Bank", "057"), ("uba", "UBA", "033"),
+    ("firstbank", "First Bank", "011"), ("fcmb", "FCMB", "214"),
+    ("fidelity", "Fidelity Bank", "070"), ("wema", "Wema Bank", "035"),
+    ("sterling", "Sterling Bank", "232"), ("union", "Union Bank", "032"),
+    ("stanbic", "Stanbic IBTC", "221"), ("ecobank", "Ecobank", "050"),
+    ("citi", "Citibank Nigeria", "023"), ("scb", "Standard Chartered", "068"),
+    ("unity", "Unity Bank", "215"), ("keystone", "Keystone Bank", "082"),
+    ("polaris", "Polaris Bank", "076"),
+)
+_CBN_BY_SLUG = {slug: code for slug, _, code in _CBN_BANKS}
+_CBN_BY_NAME = {key: code for _, name, code in _CBN_BANKS
+                for key in bank_name_keys(name) if key}
+
+
+def _bank_nuban_candidate(number, bank):
+    institution = _CBN_BY_SLUG.get(bank.code) or next(
+        (_CBN_BY_NAME[key] for key in bank_name_keys(bank.name) if key in _CBN_BY_NAME), None)
+    if not institution:
+        institution = bank.bank_code if re.fullmatch(r"[0-9]{3}", bank.bank_code or "") else None
+    return nuban_candidate(number, institution) if institution else None
+
 
 def nuban_candidate(number, bank_code):
     """CBN's check digit narrows DMB candidates; it never verifies a recipient.
@@ -135,9 +160,9 @@ def detect_account_banks(account_number: str, *, user=None) -> list[dict]:
                 known.append({"bank": bank.code, "bank_name": bank.name, "name": saved.name})
         if known:
             return known
-    candidates = [bank for bank in banks if nuban_candidate(account_number, bank.bank_code) is True]
+    candidates = [bank for bank in banks if _bank_nuban_candidate(account_number, bank) is True]
     # Popular OFIs are manually routable even when NIP and CBN identifiers differ.
-    candidates += [bank for bank in banks if bank.popular and nuban_candidate(account_number, bank.bank_code) is None][:4]
+    candidates += [bank for bank in banks if bank.popular and _bank_nuban_candidate(account_number, bank) is None][:4]
     candidates = candidates[:8]
     if not candidates or not configured():
         return []
@@ -148,30 +173,34 @@ def detect_account_banks(account_number: str, *, user=None) -> list[dict]:
     if cached is not None:
         return cached
     if not cache.add(key + ":lease", True, timeout=12):
-        return []
+        raise ProviderError("name_enquiry_unavailable")
     try:
         client.token()  # Warm the shared token before starting concurrent reads.
         pending = {_NAME_ENQUIRIES.submit(resolve_account, account_number, bank.bank_code,
-                                         timeout=(1, 3)): bank for bank in candidates}
-        done, remaining = wait(pending, timeout=5)
+                                         timeout=(2, 6)): bank for bank in candidates}
+        done, remaining = wait(pending, timeout=8)
         results = []
+        unavailable = bool(remaining)
         for future in done:
             bank = pending[future]
             try:
                 resolved = future.result()
             except Exception:
+                unavailable = True
                 continue
             if not isinstance(resolved, dict):
+                unavailable = True
                 continue
+            unavailable = unavailable or resolved.get("retryable") is True
             if resolved.get("success") is True and isinstance(resolved.get("name"), str) and resolved["name"].strip():
                 results.append({"bank": bank.code, "bank_name": bank.name, "name": resolved["name"].strip()})
         for future in remaining:
             future.cancel()
+        if not results and unavailable:
+            raise ProviderError("name_enquiry_unavailable")
         results.sort(key=lambda row: next(i for i, bank in enumerate(candidates) if bank.code == row["bank"]))
         cache.set(key, results, timeout=60 if results else 5)
         return results
-    except ProviderError:
-        return []
     finally:
         cache.delete(key + ":lease")
 

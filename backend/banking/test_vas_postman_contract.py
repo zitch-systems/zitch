@@ -99,7 +99,14 @@ class VasSampleJourneyTests(TestCase):
         self.assertEqual(wire["amount"], "100")
         self.assertEqual(len(wire["transactionReference"]), 18)
         self.assertNotEqual(wire["transactionReference"], "2304031007421680414")
-        self.assert_balance("400")
+
+    def test_unused_airtime_product_metadata_does_not_turn_a_confirmed_topup_pending(self):
+        for index, value in enumerate((None, '', 'PROVIDER-AIRTIME')):
+            with self.subTest(product=value):
+                txn, _ = self.topup('airtime', sample({'recipient': '07041267880', 'amount': '100',
+                    'network': 'MTN', 'productId': value}), key='airtime-metadata-' + str(index))
+                self.assertEqual(txn.transaction_status, Transaction.SUCCESS)
+        self.assert_balance("200")
 
     def test_documented_data_success_for_a_dotted_plan_settles_at_the_catalog_price(self):
         txn, wire = self.topup("data", sample({"recipient": "07041267880", "network": "MTN",

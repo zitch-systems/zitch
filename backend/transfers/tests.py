@@ -201,8 +201,18 @@ class BankTransferTests(BankIOCase):
         with patch("banking.client.Client.resolve", side_effect=ProviderError("network_unavailable")):
             res, body = self.post("/api/transfers/resolve/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb"})
-        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.status_code, 503)
         self.assertFalse(body.get("success"))
+        self.assertTrue(body["retryable"])
+        self.assertNotIn("name", body)
+
+    def test_auto_detection_outage_is_retryable_instead_of_account_not_found(self):
+        with patch("transfers.views.detect_account_banks", side_effect=ProviderError("name_enquiry_unavailable")):
+            res, body = self.post("/api/transfers/resolve/", {
+                "access_token": self.token, "account_number": "0123456789"})
+        self.assertEqual(res.status_code, 503)
+        self.assertTrue(body["retryable"])
+        self.assertEqual(body["code"], "bank_lookup_unavailable")
         self.assertNotIn("name", body)
 
     def test_send_debits_and_saves_beneficiary(self):

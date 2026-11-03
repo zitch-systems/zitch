@@ -5,6 +5,7 @@ from django.test import TestCase, override_settings
 
 from accounts.models import User
 from banking.test_client import CONFIG
+from banking.client import ProviderError
 from .models import Bank, Beneficiary
 from .services import detect_account_banks, nuban_candidate
 
@@ -55,3 +56,31 @@ class BankDetectionTests(TestCase):
         self.assertEqual(result, [{"bank": "first", "bank_name": "First Bank", "name": "Jane Doe"}])
         token.assert_not_called()
         read.assert_not_called()
+
+    def test_nip_routing_codes_do_not_replace_the_cbn_checksum_identity(self):
+        bank = Bank.objects.create(code='wema', name='Wema Bank', bank_code='000017', popular=True)
+        with patch('banking.client.Client.token', return_value='token'), \
+                patch('banking.adapter.resolve_account', return_value={'success': True, 'name': 'Jane Doe'}) as query:
+            matches = detect_account_banks('0228565772')
+        self.assertIn(bank.code, {row['bank'] for row in matches})
+        self.assertIn('000017', {call.args[1] for call in query.call_args_list})
+
+    def test_a_routing_code_that_looks_like_another_cbn_code_is_not_a_checksum_match(self):
+        bank = Bank.objects.create(code='unity', name='Unity Bank', bank_code='000011', popular=True)
+        with patch('banking.client.Client.token', return_value='token'), \
+                patch('banking.adapter.resolve_account', return_value={'success': True, 'name': 'Jane Doe'}) as query:
+            matches = detect_account_banks('0000014579')
+        self.assertNotIn(bank.code, {row['bank'] for row in matches})
+
+    def test_timeouts_are_retryable_service_failures_not_missing_recipients(self):
+        with patch('banking.client.Client.token', return_value='token'), \
+                patch('banking.adapter.resolve_account', return_value={'success': False, 'retryable': True}), \
+                self.assertRaises(ProviderError):
+            detect_account_banks('0000014579')
+
+    def test_an_in_progress_lookup_does_not_report_the_recipient_missing(self):
+        with patch('banking.client.Client.token') as token, \
+                patch('django.core.cache.cache.add', return_value=False), \
+                self.assertRaises(ProviderError):
+            detect_account_banks('0000014579')
+        token.assert_not_called()

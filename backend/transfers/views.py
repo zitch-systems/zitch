@@ -233,12 +233,20 @@ def resolve_account(request):
             return fail("Select a bank", status=404)
         res = payout_resolve_account(acct, bank.bank_code)
         if not res.get("success"):
+            if res.get("retryable") is True:
+                return fail(res.get("message", "Bank lookup is temporarily unavailable. Please try again."),
+                            status=503, code="bank_lookup_unavailable", retryable=True)
             return fail(res.get("message", "Could not verify this account number"), status=400)
         return ok(success=True, name=res.get("name", ""), bank=bank.code, bank_name=bank.name,
                   mock=bool(res.get("mock")),
                   matches=[{"bank": bank.code, "bank_name": bank.name, "name": res.get("name", "")}])
 
-    matches = detect_account_banks(acct, user=request.user_obj)
+    from banking.client import ProviderError
+    try:
+        matches = detect_account_banks(acct, user=request.user_obj)
+    except ProviderError:
+        return fail("Bank lookup is temporarily unavailable. Please try again.",
+                    status=503, code="bank_lookup_unavailable", retryable=True)
     if not matches:
         return fail("Couldn't detect the bank for this account number — pick the bank manually.", status=404)
     top = matches[0]
