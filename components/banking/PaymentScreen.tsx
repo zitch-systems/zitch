@@ -12,6 +12,7 @@ import { getSessionGeneration } from '@/lib/secureStore';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse } from '@/lib/spendOutcome';
 import { normalizeAmountInput } from '@/lib/amounts';
+import { txnState } from '@/lib/transactionStatus';
 
 type Kind = 'airtime' | 'data' | 'bill';
 const localPhone = (value: string) => value.replace(/[\s()+-]/g, '').replace(/^234/, '0');
@@ -77,6 +78,39 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
     return () => { generation.current = -1; catalogSerial.current += 1; };
   }, [kind, billPaymentsAvailable, fetchCatalog]);
   useEffect(() => { if (phoneNumber) setPhone((prior) => prior || localPhone(phoneNumber)); }, [phoneNumber]);
+  useEffect(() => {
+    if (!finished || !reference || paymentStatus !== 'Pending' || !attempt) return;
+    let alive = true;
+    let polls = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const owner = generation.current;
+    const poll = async () => {
+      try {
+        const response = await apiPost('/api/transaction/status/', { reference }, 10000);
+        const result = await response.json();
+        if (!alive || owner !== getSessionGeneration() || !current()) return;
+        const row = result.success ? result.transaction : null;
+        if (row && row.reference === reference && row.under_review !== true) {
+          const state = txnState(row.transaction_status);
+          if (state === 'success' || state === 'failed') {
+            try { await clearSpendAttempt('9psb-' + kind, attempt.fingerprint, attempt.key); }
+            catch { /* A stale retry marker cannot hide a confirmed bank outcome. */ }
+            if (!alive || owner !== getSessionGeneration() || !current()) return;
+            setPaymentStatus(state === 'success' ? 'Successful' : 'Failed');
+            setMessage(state === 'success'
+              ? 'Payment completed.' + (row.token ? ` Your token: ${row.token}` : row.receipt_pending ? ' Your token is being retrieved. Check transaction history shortly.' : '') + (row.electricity_units ? ` Units: ${row.electricity_units}` : '')
+              : 'Payment could not be completed. View transaction history for details.');
+            try { await reload(); } catch { /* Keep the confirmed payment outcome. */ }
+            return;
+          }
+        }
+      } catch { /* Preserve the processing receipt during a status outage. */ }
+      polls += 1;
+      if (alive && owner === getSessionGeneration() && current() && polls < 5) timer = setTimeout(poll, 4000);
+    };
+    timer = setTimeout(poll, 2000);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [finished, reference, paymentStatus, attempt, current, kind, reload]);
   const validate = async () => {
     if (!current() || busy || validating.current) return;
     const captured = validationIntent;
@@ -107,7 +141,8 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
       if (!current()) return;
       const outcome = classifySpendResponse(result, response.status);
       if (outcome === 'success' || outcome === 'failed') {
-        await clearSpendAttempt('9psb-' + kind, captured, key);
+        try { await clearSpendAttempt('9psb-' + kind, captured, key); }
+        catch { /* A replay remains safe if local marker cleanup fails. */ }
         if (!current()) return;
       }
       if (outcome === 'success' || outcome === 'pending' || outcome === 'unknown') {

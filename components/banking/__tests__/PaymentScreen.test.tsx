@@ -50,7 +50,52 @@ beforeEach(() => {
   mockClear.mockResolvedValue(undefined);
   mockPost.mockResolvedValue({ status: 202, json: async () => ({ success: false, pending: true, reference: 'BANK-REF' }) });
 });
-afterEach(async () => { if (tree) await act(async () => { tree.unmount(); }); });
+afterEach(async () => { if (tree) await act(async () => { tree.unmount(); }); jest.useRealTimers(); });
+
+it('refreshes a processing purchase and shows bank-confirmed success without buying again', async () => {
+  jest.useFakeTimers();
+  mockPost.mockImplementation(async (path: string) => path === '/api/transaction/status/'
+    ? { status: 200, json: async () => ({ success: true, transaction: { reference: 'BANK-REF', transaction_status: 'Successful' } }) }
+    : { status: 202, json: async () => ({ pending: true, reference: 'BANK-REF' }) });
+  await mount(); await review();
+  await act(async () => { await mockPin.onComplete('582940'); });
+  await act(async () => { jest.advanceTimersByTime(2000); });
+  expect(mockPost.mock.calls.filter(([path]) => path === '/api/banking/purchase/')).toHaveLength(1);
+  expect(mockPost).toHaveBeenCalledWith('/api/transaction/status/', { reference: 'BANK-REF' }, 10000);
+  expect(mockClear).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(tree.toJSON())).toContain('Payment completed.');
+});
+
+it.each([
+  { reference: 'DIFFERENT', transaction_status: 'Successful' },
+  { reference: 'BANK-REF', transaction_status: 'Successful', under_review: true },
+  { reference: 'BANK-REF', transaction_status: 'Pending' },
+])('retains the processing key for an unconfirmed or unrelated status: %p', async (transaction) => {
+  jest.useFakeTimers();
+  mockPost.mockImplementation(async (path: string) => path === '/api/transaction/status/'
+    ? { status: 200, json: async () => ({ success: true, transaction }) }
+    : { status: 202, json: async () => ({ pending: true, reference: 'BANK-REF' }) });
+  await mount(); await review();
+  await act(async () => { await mockPin.onComplete('582940'); });
+  await act(async () => { jest.advanceTimersByTime(2000); });
+  expect(mockClear).not.toHaveBeenCalled();
+  expect(JSON.stringify(tree.toJSON())).toContain('Payment is processing.');
+});
+
+it('drops a status response after the account session changes', async () => {
+  jest.useFakeTimers();
+  let resolveStatus!: (value: unknown) => void;
+  mockPost.mockImplementation(async (path: string) => path === '/api/transaction/status/'
+    ? new Promise((resolve) => { resolveStatus = resolve; })
+    : { status: 202, json: async () => ({ pending: true, reference: 'BANK-REF' }) });
+  await mount(); await review();
+  await act(async () => { await mockPin.onComplete('582940'); });
+  await act(async () => { jest.advanceTimersByTime(2000); });
+  mockGeneration += 1;
+  await act(async () => { resolveStatus({ status: 200, json: async () => ({ success: true,
+    transaction: { reference: 'BANK-REF', transaction_status: 'Successful' } }) }); });
+  expect(mockClear).not.toHaveBeenCalled();
+});
 
 it('normalizes the verified Nigerian phone and requires a valid amount', async () => {
   await mount();

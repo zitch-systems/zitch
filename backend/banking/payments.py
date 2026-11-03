@@ -1,6 +1,7 @@
 """Durable, single-submission payment orchestration and terminal settlement."""
 import hashlib
 import json
+import logging
 import re
 import secrets
 from datetime import timedelta
@@ -17,6 +18,8 @@ from .accounts import account_for, require_enabled, spendable, update_account
 from .client import Client, ProviderError, config, money, phone, require_environment
 from .models import Instruction, PreviousBankArchive
 from .secrets import seal, unseal
+
+log = logging.getLogger(__name__)
 
 
 def digest(value):
@@ -163,7 +166,7 @@ def _vas_response_matches(instruction, data, body):
             if "network" in data and (not isinstance(data["network"], str)
                     or data["network"].strip().upper() != body["network"].strip().upper()):
                 return False
-            if "productId" in data and data["productId"] != body.get("product_id"):
+            if instruction.operation == "data" and "productId" in data and data["productId"] != body.get("product_id"):
                 return False
         else:
             for key, expected in (("billerId", "biller_id"), ("itemId", "item_id"), ("customerId", "customer")):
@@ -248,7 +251,53 @@ def finish(instruction, state, *, token="", error="", receipt=None, receipt_pend
     return result
 
 
-def requery(instruction):
+def refresh_payment_status(txn):
+    """An owner's status refresh queries an existing instruction, never sends one.
+
+    Keep a shared cooldown across API workers so tapping refresh, polling and
+    background recovery cannot flood the provider with status reads.
+    """
+    from django.core.cache import cache
+    if (txn.meta or {}).get("provider") != "9psb" or txn.direction != Transaction.OUT:
+        return
+    instruction = Instruction.objects.select_related("account", "transaction").filter(transaction=txn).first()
+    if not instruction or instruction.state == "prepared":
+        return
+    if instruction.account.environment != config().get("ENVIRONMENT", "sandbox"):
+        return
+    try:
+        require_enabled(txn.user)
+    except (ValueError, ProviderError):
+        return
+    if instruction.state in {"success", "failed"} and not instruction.receipt_pending:
+        return
+    try:
+        claimed = cache.add(f"bank-payment-status:{instruction.pk}", True, timeout=15)
+    except Exception:
+        return  # Keep the persisted outcome; recovery remains scheduled.
+    if not claimed:
+        return
+    requery(instruction, timeout=(2, 6))
+    txn.refresh_from_db()
+
+
+def _log_pending_status(instruction, response, data, matches):
+    def code(value):
+        value = str(value or "")
+        return value if re.fullmatch(r"[0-9]{2,4}", value) else "absent"
+    def state(value):
+        value = str(value or "").strip().upper()
+        return value if value in {"SUCCESS", "SUCCESSFUL", "COMPLETED", "FAILED", "PENDING", "PROCESSING"} else "unrecognized"
+    keys = [key for key in ("transactionStatus", "status", "isSuccessful", "transactionId",
+            "transactionReference", "reference", "responseCode", "amount", "debitAccount", "recipient", "network") if key in data]
+    log.info("bank_payment_status_pending suffix=%s product=%s operation=%s http=%s code=%s nested_code=%s "
+             "envelope=%s transaction_status=%s nested_status=%s echoes_match=%s fields=%s",
+             instruction.transaction.reference[-6:], instruction.product, instruction.operation, response.http_status,
+             code(response.body.get("responseCode")), code(data.get("responseCode")), state(response.body.get("status")),
+             state(data.get("transactionStatus")), state(data.get("status")), matches, ",".join(keys))
+
+
+def requery(instruction, *, timeout=None):
     require_environment(instruction.account.environment)
     if instruction.state in {"success", "failed"} and not instruction.receipt_pending:
         return _result(instruction.state, instruction)
@@ -257,7 +306,7 @@ def requery(instruction):
         # Prepared material was already authorized and durably reserved.
         return dispatch(instruction)
     try:
-        client = Client(instruction.product)
+        client = Client(instruction.product, **({"timeout": timeout} if timeout else {}))
         if instruction.product == "vas":
             response = client.vas_status(instruction.reference, bill=instruction.operation == "bill")
         else:
@@ -266,7 +315,10 @@ def requery(instruction):
         state = response.payment_state(product=instruction.product, query=True)
         data = response.data if isinstance(response.data, dict) else {}
         if instruction.product == "vas":
-            if not _vas_response_matches(instruction, data, unseal(instruction.encrypted_request)):
+            matches = _vas_response_matches(instruction, data, unseal(instruction.encrypted_request))
+            if state == "pending" or not matches:
+                _log_pending_status(instruction, response, data, matches)
+            if not matches:
                 return finish(instruction, "pending", error="vas_status_mismatch")
             from .vas import receipt as bill_receipt
             receipt = bill_receipt(data, query=True) if state == "success" and instruction.operation == "bill" else {}

@@ -110,6 +110,7 @@ jest.mock('@/components/design/ui', () => {
       label?: string; placeholder?: string; value: string; onChangeText?: (value: string) => void;
     }) => ReactActual.createElement(TextInput, {
       accessibilityLabel: label || placeholder,
+      placeholder,
       value,
       onChangeText,
     }),
@@ -221,6 +222,24 @@ describe('SendMoney recipient response binding', () => {
     expect(control(tree, 'Bank B')).toBeTruthy();
     await act(async () => { control(tree, 'Search banks').props.onChangeText('unlisted bank'); });
     expect(JSON.stringify(tree.toJSON())).toContain('No banks match your search.');
+    act(() => tree.unmount());
+  });
+
+  it('retries a failed lookup for the current account without editing the number', async () => {
+    loadBankCatalogue();
+    mockResolveBank.mockResolvedValueOnce({ success: false, retryable: true,
+      message: 'Bank lookup is temporarily unavailable. Please try again.' })
+      .mockResolvedValueOnce({ success: true, matches: [{ bank: 'bank-a', bank_name: 'Bank A', name: 'Confirmed Holder' }] });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<SendMoney />); });
+    expect(control(tree, 'Bank').props.placeholder).toBe('Select bank');
+    await act(async () => { control(tree, 'Account number').props.onChangeText('0123456789'); });
+    await act(async () => { jest.advanceTimersByTime(500); });
+    await act(async () => { control(tree, 'Try bank lookup again').props.onPress(); });
+    await act(async () => { jest.advanceTimersByTime(500); });
+    expect(mockResolveBank).toHaveBeenCalledTimes(2);
+    expect(mockResolveBank).toHaveBeenLastCalledWith('0123456789');
+    expect(JSON.stringify(tree.toJSON())).toContain('Confirmed Holder');
     act(() => tree.unmount());
   });
 

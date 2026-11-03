@@ -6,7 +6,7 @@ from django.core.management.base import BaseCommand
 
 from banking.accounts import account_payload, sandbox_tester, spendable, update_account
 from banking.client import Client, ProviderError, config, configured, customer_enabled, sandbox
-from banking.models import BankAccount
+from banking.models import BankAccount, Instruction
 from banking.payments import digest
 from banking.uat import sandbox_checks
 
@@ -19,7 +19,7 @@ class Command(BaseCommand):
             self.stdout.write(json.dumps({"bank_service_check": "not_applicable"}))
             return
         keys = [Client(product)._cache_key() for product in ("waas", "vas") if configured(product)]
-        key = "bank-service-check:v1:" + digest(keys)
+        key = "bank-service-check:v2:" + digest(keys)
         report = cache.get(key)
         if report is not None:
             self.stdout.write(json.dumps(report, sort_keys=True))
@@ -48,6 +48,16 @@ class Command(BaseCommand):
                     }
                 except ProviderError as exc:
                     report["account_readiness"] = {"confirmed": False, "reason": exc.code}
+                # Internal records only: this does not submit or query a
+                # payment. Suffixes identify enrolled account diagnostics
+                # without exposing account numbers, phone numbers or names.
+                report["recent_payments"] = [{
+                    "reference_suffix": row.transaction.reference[-6:],
+                    "operation": row.operation, "state": row.state,
+                    "transaction_status": row.transaction.transaction_status,
+                    "last_error": row.last_error,
+                } for row in Instruction.objects.filter(account=bank)
+                    .select_related("transaction").order_by("-created")[:5]]
             cache.set(key, report, timeout=600)
             self.stdout.write(json.dumps(report, sort_keys=True))
         finally:

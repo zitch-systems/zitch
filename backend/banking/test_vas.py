@@ -289,7 +289,9 @@ class VasJourneyTests(TestCase):
         self.assertTrue(response.json()["pending"])
         self.assertNotIn("11111111111111111111", response.content.decode())
         txn = Instruction.objects.get().transaction
-        detail = self.post("/api/transaction/status/", {"reference": txn.reference})
+        with patch.object(Client, "vas_status", return_value=Reply({"status": "pending", "responseCode": "202",
+                "data": {"isToken": True, "token": "11111111111111111111"}}, 200)):
+            detail = self.post("/api/transaction/status/", {"reference": txn.reference})
         self.assertNotIn("token", detail.json()["transaction"])
 
     def test_foreign_environment_validation_cannot_authorize_a_debit(self):

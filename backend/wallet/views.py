@@ -175,6 +175,8 @@ def transaction_status(request):
         user.transactions.filter(reference=reference)).first()
     if txn is None:
         return fail("Transaction not found", status=404)
+    from banking.payments import refresh_payment_status
+    refresh_payment_status(txn)
     row = _txn_row(txn)
     # Recover purchased value after an app restart or a late provider settlement.
     # Keep it out of bulk history, and never expose a token while the payment is

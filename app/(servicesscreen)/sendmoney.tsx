@@ -123,6 +123,7 @@ const SendMoney = () => {
   const [bankNameFor, setBankNameFor] = useState('');
   const [resolvingBank, setResolvingBank] = useState(false);
   const [bankErr, setBankErr] = useState('');
+  const [bankLookupRetry, setBankLookupRetry] = useState(0);
   const [matches, setMatches] = useState<BankMatch[]>([]);  // shown when >1 bank matches
   const bankResolveGeneration = useRef(0);
 
@@ -161,7 +162,7 @@ const SendMoney = () => {
       }
     }, 500);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [acct, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [acct, mode, bankLookupRetry]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Manual override: resolve at the specific bank the user picks from the sheet.
   const chooseBank = async (b: Bank) => {
@@ -485,7 +486,7 @@ const SendMoney = () => {
               label="Bank"
               value={bank?.name || ''}
               editable={false}
-              placeholder={resolvingBank ? 'Detecting…' : 'Auto-detected from account — or tap to choose'}
+              placeholder={resolvingBank ? 'Finding bank…' : 'Select bank'}
               prefix={bank ? <View style={{ width: 18, height: 18, borderRadius: 5, backgroundColor: bank.color }} /> : <ZIcon name="bank" size={18} color={c.ink3} />}
               suffix={<ZIcon name="down" size={16} color={c.ink3} />}
               pointerEvents="none"
@@ -514,7 +515,11 @@ const SendMoney = () => {
           ) : activeBankName ? (
             <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 12.5, marginTop: 8 }}>✓ {activeBankName}</Text>
           ) : bankErr ? (
-            <Text style={{ color: c.red, fontFamily: font.semibold, fontSize: 12.5, marginTop: 8 }}>{bankErr}</Text>
+            <View style={{ gap: 8, marginTop: 8 }}>
+              <Text style={{ color: c.red, fontFamily: font.semibold, fontSize: 12.5 }}>{bankErr}</Text>
+              <Btn label="Try bank lookup again" variant="outline" size="sm" full={false}
+                onPress={() => { if (bank) void chooseBank(bank); else setBankLookupRetry((value) => value + 1); }} />
+            </View>
           ) : null}
           <View style={{ height: 16 }} />
         </>

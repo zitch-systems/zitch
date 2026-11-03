@@ -46,6 +46,9 @@ def get_banks():
 def resolve_account(account_number, bank_code, *, timeout=None):
     try:
         result = Client(timeout=timeout).resolve(account_number, bank_code)
+        if result.http_status in {408, 429} or result.http_status >= 500:
+            return {"success": False, "retryable": True, "code": "bank_lookup_unavailable",
+                    "message": "Bank lookup is temporarily unavailable. Please try again."}
         # Sandbox confirms this endpoint is a top-level NIP envelope, not the
         # usual WaaS status/data wrapper. Bind both identifiers before using name.
         data = result.body.get("customer", {}).get("account", {})
@@ -56,7 +59,10 @@ def resolve_account(account_number, bank_code, *, timeout=None):
                 and isinstance(name, str) and 0 < len(name.strip()) <= 160):
             return {"success": True, "name": name.strip(), "account_number": account_number,
                     "bank_code": str(bank_code)}
-    except (ProviderError, ValueError, AttributeError):
+    except ProviderError:
+        return {"success": False, "retryable": True, "code": "bank_lookup_unavailable",
+                "message": "Bank lookup is temporarily unavailable. Please try again."}
+    except (ValueError, AttributeError):
         pass
     return {"success": False, "message": "We could not confirm this recipient. Check the account and bank."}
 
