@@ -35,8 +35,12 @@ class CustomerReadinessTests(TestCase):
             phone=PHONE, email="jane@example.test", email_verified=True, phone_verified=True,
             bvn_hash=hash_identifier("12345678901"), bvn_verified=True, tier=1)
         self.wallet = Wallet.objects.create(user=self.user)
+        bank_environment = "production" if self._testMethodName in {
+            "test_production_opening_reviews_cannot_be_released_by_sandbox_receipts",
+            "test_tier3_fixture_never_applies_in_production",
+        } else "sandbox"
         self.bank = BankAccount.objects.create(wallet=self.wallet, number="1100000001", name="ZITCH/Jane Doe",
-            encrypted_bvn=seal("12345678901"), environment="sandbox", tier=1, pnd=False, frozen=False,
+            encrypted_bvn=seal("12345678901"), environment=bank_environment, tier=1, pnd=False, frozen=False,
             status="active", checked_at=timezone.now()-timedelta(minutes=20), available_balance=0,
             ledger_balance=0, opening_review_required=False)
         record_identity_proof(self.user, "bvn", "12345678901", source="9psb_otp")
@@ -91,8 +95,8 @@ class CustomerReadinessTests(TestCase):
 
     @override_settings(NINEPSB={**CONFIG, "SANDBOX_AUTO_VERIFY": True})
     def test_production_opening_reviews_cannot_be_released_by_sandbox_receipts(self):
-        self.bank.environment, self.bank.opening_review_required = "production", True
-        self.bank.save(update_fields=["environment", "opening_review_required"])
+        self.bank.opening_review_required = True
+        self.bank.save(update_fields=["opening_review_required"])
         update_account(self.bank, self.reply())
         self.assertTrue(self.bank.opening_review_required)
 
@@ -166,8 +170,6 @@ class CustomerReadinessTests(TestCase):
 
     @override_settings(NINEPSB={**CONFIG, "SANDBOX_AUTO_VERIFY": True})
     def test_tier3_fixture_never_applies_in_production(self):
-        self.bank.environment = "production"
-        self.bank.save(update_fields=["environment"])
         self.tier2()
         with self.assertRaisesRegex(ValueError, "awaiting provider setup"):
             start(self.user, ADDRESS)
