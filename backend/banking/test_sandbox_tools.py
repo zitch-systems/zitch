@@ -1,4 +1,5 @@
 """Sandbox-only testing shortcuts: auto-verified identity and float test funding."""
+import json
 from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
@@ -256,12 +257,12 @@ class SandboxFundingTests(Base):
             environment="sandbox", tier=1, pnd=False, frozen=False, status="active", checked_at=timezone.now(),
             available_balance=0, ledger_balance=0, opening_review_required=False)
 
-    def fund(self, amount="5000", reply=None):
+    def fund(self, amount="5000", reply=None, balance="5000.00"):
         out = StringIO()
         reply = reply or Reply({"status": "SUCCESS", "responseCode": "00", "message": "Approved"}, 200)
         with patch("banking.client.Client.float_transfer", return_value=reply) as credit, \
-                patch("banking.client.Client.wallet", return_value=readback(availableBalance="5000.00",
-                                                                            ledgerBalance="5000.00")):
+                patch("banking.client.Client.wallet", return_value=readback(availableBalance=balance,
+                                                                            ledgerBalance=balance)):
             call_command("bank_sandbox_fund", phone=PROFILE["phoneNo"], amount=amount, stdout=out)
         return credit, out.getvalue()
 
@@ -276,6 +277,41 @@ class SandboxFundingTests(Base):
         self.assertEqual(self.bank.available_balance, Decimal("5000.00"))
         self.assertIn('"recorded_in_zitch": true', out)
 
+    def test_the_observed_nested_success_records_the_100_naira_credit(self):
+        reply = Reply({"status": "SUCCESS", "message": "Approved by Financial Institution",
+                       "data": {"responseCode": "00"}}, 200)
+        sent, out = self.fund(amount="100", reply=reply)
+        sent.assert_called_once()
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("100.00"))
+        self.assertEqual(Transaction.objects.get().amount, Decimal("100.00"))
+        self.assertTrue(json.loads(out)["recorded_in_zitch"])
+
+    def test_funding_records_only_the_balance_backed_credit_after_a_bank_charge(self):
+        _, out = self.fund(amount="100", balance="90.00")
+        report = json.loads(out)
+        self.assertEqual(report["requested_amount"], "100.00")
+        self.assertEqual(report["amount"], "90.00")
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("90.00"))
+        self.assertEqual(Transaction.objects.get().meta["evidence"], "bank_credit_and_balance_enquiry")
+
+    def test_an_approved_credit_without_a_fresh_balance_is_not_overcredited_or_retried(self):
+        out = StringIO()
+        with patch("banking.client.Client.float_transfer", return_value=Reply({"status": "SUCCESS",
+                "data": {"responseCode": "00"}}, 200)) as sent, \
+                patch("banking.client.Client.wallet", side_effect=ProviderError("network_unavailable")), \
+                self.assertRaisesRegex(CommandError, "Do not fund again"):
+            call_command("bank_sandbox_fund", phone=PROFILE["phoneNo"], amount="100", stdout=out)
+        sent.assert_called_once()
+        self.assertFalse(json.loads(out.getvalue())["recorded_in_zitch"])
+        self.assertFalse(Transaction.objects.exists())
+
+    def test_an_approved_credit_with_no_balance_gap_does_not_create_unbacked_money(self):
+        with self.assertRaisesRegex(CommandError, "Do not fund again"):
+            self.fund(amount="100", balance="0.00")
+        self.assertFalse(Transaction.objects.exists())
+
     def test_a_later_bank_notice_for_the_credit_does_not_count_twice(self):
         self.fund()
         body = {"code": "00", "message": "SUCCESS", "accountnumber": "1100000001", "amount": "5000.00",
@@ -287,6 +323,18 @@ class SandboxFundingTests(Base):
         self.assertEqual(self.wallet.balance, Decimal("5000.00"))
         self.assertEqual(Transaction.objects.filter(user=self.user).count(), 1)
         self.assertEqual(Transaction.objects.get().meta["bank_notification"], "SANDBOX-SESSION")
+
+    def test_a_later_notice_for_the_requested_amount_does_not_repeat_a_net_credit(self):
+        self.fund(amount="100", balance="90.00")
+        body = {"code": "00", "message": "SUCCESS", "accountnumber": self.bank.number, "amount": "100.00",
+                "nipsessionid": "SANDBOX-NET-SESSION", "narration": "Zitch sandbox test funding"}
+        notice = ingest("transfer", body)
+        with patch("banking.client.Client.notification", return_value=Reply({"status": "SUCCESS", "data": body}, 200)):
+            self.assertTrue(process(notice))
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("90.00"))
+        self.assertEqual(Transaction.objects.count(), 1)
+        self.assertEqual(Transaction.objects.get().meta["bank_notification_amount"], "100.00")
 
     def test_a_refused_or_unconfirmed_credit_records_nothing(self):
         for reply in (Reply({"status": "FAILED", "responseCode": "51", "message": "Insufficient float"}, 200),
@@ -364,6 +412,11 @@ class SandboxFundingTests(Base):
     def test_applying_credits_the_shortfall_once_and_is_then_in_line(self):
         report = self.reconcile(apply=True)
         self.assertIn('"applied": true', report)
+        applied = json.loads(report)
+        self.assertEqual(applied["zitch_balance_before"], "0.00")
+        self.assertEqual(applied["zitch_balance"], "149970.00")
+        self.assertEqual(applied["credited_amount"], "149970.00")
+        self.assertEqual(applied["shortfall"], "0.00")
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.balance, Decimal("149970.00"))
         txn = Transaction.objects.get()
@@ -379,6 +432,12 @@ class SandboxFundingTests(Base):
     def test_an_unconfirmed_balance_never_becomes_a_credit(self):
         with patch("banking.client.Client.wallet", side_effect=ProviderError("network_unavailable")), \
                 self.assertRaisesMessage(CommandError, "did not confirm the balance"):
+            call_command("bank_sandbox_reconcile", phone=PROFILE["phoneNo"], apply=True, stdout=StringIO())
+        self.assertFalse(Transaction.objects.exists())
+
+    def test_a_missing_bank_balance_is_reported_without_recording_a_credit(self):
+        with patch("banking.client.Client.wallet", return_value=readback(availableBalance=None)), \
+                self.assertRaisesRegex(CommandError, "account_balance_unconfirmed"):
             call_command("bank_sandbox_reconcile", phone=PROFILE["phoneNo"], apply=True, stdout=StringIO())
         self.assertFalse(Transaction.objects.exists())
 

@@ -238,12 +238,13 @@ class Reply:
         body = self.body
         data = self.data if isinstance(self.data, dict) else {}
         # A null or absent code carries no decision; str(None) would read "NONE".
-        code = _code(body.get("responseCode", body.get("statusCode"))).upper()
+        code = _code(body.get("responseCode")).upper() or _code(body.get("statusCode")).upper()
         nested_code = _code(data.get("responseCode")).upper()
         # The sandbox answers credit/transfer with the response code under data
-        # and none at the top level, so read the decision from whichever one the
-        # bank actually sent. Both absent still decides nothing.
-        confirmed = code or nested_code
+        # and none at the top level, so read either code for WaaS. VAS keeps
+        # its separate envelope-code contract; requery below still requires
+        # explicit terminal transaction evidence. Both absent decides nothing.
+        confirmed = code or (nested_code if product == "waas" else "")
         success_code = "200" if product == "vas" else "00"
         # A successful status lookup does not mean the queried payment succeeded.
         if query:

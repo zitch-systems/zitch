@@ -50,6 +50,8 @@ class Command(BaseCommand):
         try:
             update_account(bank)
             bank.refresh_from_db()
+            if bank.available_balance is None:
+                raise ProviderError("account_balance_unconfirmed")
         except ProviderError as exc:
             raise CommandError(f"The bank did not confirm the balance ({exc.code}); nothing was "
                                f"recorded. Reconciliation needs a fresh enquiry.") from None
@@ -60,6 +62,7 @@ class Command(BaseCommand):
             confirmed = Decimal(bank.available_balance)
             shortfall = confirmed - wallet.balance
             report = {"reference": reference, "bank_available_balance": str(confirmed),
+                      "zitch_balance_before": str(wallet.balance),
                       "zitch_balance": str(wallet.balance), "shortfall": str(shortfall)}
             if shortfall < 0:
                 # Zitch ahead of the bank is a different fault with a different
@@ -77,5 +80,10 @@ class Command(BaseCommand):
                       "account_number": bank.number, "sandbox_balance_reconciliation": reference,
                       "evidence": "bank_balance_enquiry", "bank_available_balance": str(confirmed),
                       "zitch_balance_before": str(wallet.balance)})
+            # credit() locks and updates its own Wallet instance. Refresh this
+            # one before reporting; the old output showed zero after a credit.
+            wallet.refresh_from_db(fields=["balance"])
+            report.update(zitch_balance=str(wallet.balance), shortfall=str(confirmed - wallet.balance),
+                          credited_amount=str(ledger.amount))
         self.stdout.write(json.dumps({**report, "applied": True, "transaction_id": ledger.pk,
             "nuban_last4": bank.number[-4:]}, sort_keys=True))

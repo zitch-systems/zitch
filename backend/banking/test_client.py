@@ -60,6 +60,37 @@ class ClientTests(SimpleTestCase):
         ]:
             self.assertEqual(Reply(body, 200).payment_state(), "pending")
 
+    def test_waas_credit_accepts_the_success_code_inside_data(self):
+        # Observed sandbox credit/transfer reply: no envelope responseCode.
+        for envelope in ({}, {"responseCode": ""}, {"responseCode": None}, {"responseCode": " "}):
+            with self.subTest(envelope=envelope):
+                reply = Reply({"status": "SUCCESS", "message": "Approved by Financial Institution",
+                               **envelope, "data": {"responseCode": "00"}}, 200)
+                self.assertEqual(reply.payment_state(), "success")
+                # A requery still needs explicit terminal transaction evidence.
+                self.assertEqual(reply.payment_state(query=True), "pending")
+                self.assertEqual(reply.payment_state(product="vas"), "pending")
+        # Observing a different WaaS envelope must not broaden VAS evidence.
+        self.assertEqual(Reply({"status": "SUCCESS", "data": {"responseCode": "200"}}, 200)
+                         .payment_state(product="vas"), "pending")
+
+    def test_nested_waas_success_still_requires_consistent_completed_evidence(self):
+        for http, envelope, data in (
+            (400, {}, {"responseCode": "00"}),
+            (202, {}, {"responseCode": "00"}),
+            (200, {"status": "FAILED"}, {"responseCode": "00"}),
+            (200, {"responseCode": "51"}, {"responseCode": "00"}),
+            (200, {"statusCode": "51"}, {"responseCode": "00"}),
+            (200, {}, {"responseCode": "00", "isSuccessful": False}),
+            (200, {}, {"responseCode": "00", "status": "PENDING"}),
+            (200, {}, {"responseCode": "00", "transactionStatus": "FAILED"}),
+            (200, {}, {"responseCode": "51"}),
+            (200, {}, {}),
+        ):
+            with self.subTest(http=http, envelope=envelope, data=data):
+                self.assertEqual(Reply({"status": "SUCCESS", **envelope, "data": data}, http).payment_state(),
+                                 "pending")
+
     def test_ambiguous_errors_never_refund(self):
         for status in [408, 409, 429, 500, 502, 504]:
             self.assertEqual(Reply({"status": "FAILED", "responseCode": "51"}, status).payment_state(), "pending")

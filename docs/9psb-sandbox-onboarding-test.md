@@ -80,6 +80,28 @@ notification** for a float credit and answers `wallet_transactions` with an empt
 list, so neither `notifications.process` nor a statement can reconcile a credit
 Zitch failed to record; `bank_sandbox_reconcile` exists for that case.
 
+`bank_sandbox_fund` now reads the fresh bank balance before recording an approved
+credit. It records at most the requested amount and the confirmed balance gap,
+so a charge deducted by the sandbox cannot create unbacked Zitch funds. Its
+`requested_amount` is the float instruction; `amount` is the credit actually
+recorded. If the balance cannot be confirmed, it does not send another credit.
+
+For a previously approved credit that was not recorded, run
+`python manage.py bank_sandbox_reconcile --phone <tester-phone>` first, then add
+`--apply` only if a positive shortfall needs recording. This records the existing
+bank balance without sending another float credit. Applied output now shows
+`zitch_balance_before`, the updated `zitch_balance`, `credited_amount`, and the
+remaining `shortfall`. Repeating reconciliation when the balances match is a
+no-op. Reopen the app or refresh the wallet to fetch the updated balance.
+
+The Tier 2 message “Use the name confirmed on your bank account” was caused by
+comparing the customer name displayed by the app with the bank's raw
+`MERCHANT/CUSTOMER NAME`. The API now compares the displayed customer name and
+submits the bank's customer spelling. A regression test drives the authenticated
+app endpoint with stored documents and BVN through bank submission, independent
+approval readback, and the resulting Tier 2/NIN state. It uses simulated bank
+responses and does not establish approval of an individual tester's account.
+
 ## 3. Ask 9PSB for these before testing
 
 Account opening is still untested against the bank. These are the gaps that

@@ -180,3 +180,46 @@ class UpgradeAccountNameTests(TestCase):
             self.submit(accountName="John Smith")
         with self.assertRaisesMessage(ValueError, "name confirmed on your bank account"):
             self.submit(accountName="Jane Doe Smith")
+
+    def test_app_submission_with_stored_documents_and_bvn_reaches_tier2_approval(self):
+        from accounts.models import AccessToken, hash_identifier
+        from .models import AccountUpgrade
+        from .secrets import seal
+        from .upgrades import store_document
+
+        # Match the durable user fields written by completed BVN onboarding.
+        self.user.bvn_hash, self.user.bvn_verified = hash_identifier("12345678901"), True
+        self.user.recompute_tier()
+        self.user.save(update_fields=["bvn_hash", "bvn_verified", "tier"])
+        token = AccessToken.issue(self.user).key
+        self.bank.encrypted_bvn = seal("12345678901")
+        self.bank.save(update_fields=["encrypted_bvn"])
+        status = self.client.post("/api/banking/status/", data={"access_token": token},
+                                  content_type="application/json").json()
+        self.assertEqual(status["account_name"], "Jane Doe")
+        self.assertTrue(status["bvn_on_file"])
+        body = profile(accountName=status["account_name"], bvn=None)
+        for kind in ("userPhoto", "idCardFront", "utilityBill", "customerSignature"):
+            store_document(self.user, kind, body.pop(kind))
+
+        def readback(tier):
+            return Reply({"status": "SUCCESS", "data": {
+                "nuban": self.bank.number, "name": self.bank.name, "status": "Active", "tier": str(tier),
+                "pndstatus": "InActive", "freezeStatus": "InActive", "ledgerBalance": "0.00",
+                "availableBalance": "0.00"}}, 200)
+
+        with patch("banking.client.Client.wallet", side_effect=[readback(1), readback(2)]), \
+                patch("banking.client.Client.upgrade", return_value=Reply({"status": "SUCCESS"}, 200)) as sent, \
+                patch("banking.client.Client.upgrade_status", return_value=Reply({"status": "SUCCESS", "data": {
+                    "accountNumber": self.bank.number, "status": "APPROVED"}}, 200)):
+            response = self.client.post("/api/banking/upgrade/", data={"access_token": token, "tier": 2,
+                "profile": body}, content_type="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()["success"], response.content)
+        self.assertEqual(response.json()["bank_tier"], 2)
+        self.assertEqual(sent.call_args.args[2]["accountName"], "Jane Doe")
+        self.assertEqual(sent.call_args.args[2]["bvn"], "12345678901")
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 2)
+        self.assertTrue(self.user.nin_verified)
+        self.assertEqual(AccountUpgrade.objects.get().state, "approved")
