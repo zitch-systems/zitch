@@ -10,7 +10,7 @@ from django.db import transaction
 from banking.accounts import account_for, sandbox_tester, update_account
 from banking.client import Client, ProviderError, customer_enabled, money, sandbox
 from banking.readiness import find_tester
-from wallet.models import Transaction
+from wallet.models import Transaction, Wallet
 from wallet.services import credit
 
 # Tier 1's single-deposit limit. Larger sandbox credits would be refused or put
@@ -86,22 +86,44 @@ class Command(BaseCommand):
                 "recorded_in_zitch": False}, sort_keys=True))
             if state == "failed":
                 raise CommandError("The bank refused the credit; nothing was recorded")
-            raise CommandError("The bank has not confirmed the credit yet; nothing was recorded in Zitch")
+            raise CommandError("The bank has not confirmed the credit yet; nothing was recorded in Zitch. "
+                               "Do not fund again; check bank_sandbox_reconcile first.")
 
-        with transaction.atomic():
-            ledger = Transaction.objects.filter(reference="9PSF" + reference).first() or credit(
-                user, amount, "Test funding", reference="9PSF" + reference,
-                meta={"provider": "9psb", "environment": bank.environment, "account_number": bank.number,
-                      "sandbox_float_credit": reference})
+        # The sandbox may deduct a charge from the credited amount. Record no
+        # more than the requested credit or the fresh, bank-backed ledger gap.
+        # An approved instruction with an unavailable/unchanged balance must
+        # be reconciled later, never retried as another float credit.
         try:
             update_account(bank)
             bank.refresh_from_db()
-            available = str(bank.available_balance)
-        except ProviderError:
-            available = "not refreshed"
-        self.stdout.write(json.dumps({"state": "success", "reference": reference, "amount": str(amount),
+            if bank.available_balance is None:
+                raise ProviderError("account_balance_unconfirmed")
+        except ProviderError as exc:
+            self.stdout.write(json.dumps({"state": "success", "reference": reference,
+                "requested_amount": str(amount), "recorded_in_zitch": False,
+                "provider_error": exc.code}, sort_keys=True))
+            raise CommandError("The bank approved the credit but its balance could not be confirmed. "
+                               "Do not fund again; use bank_sandbox_reconcile to record the confirmed balance.") from None
+        with transaction.atomic():
+            wallet = Wallet.objects.select_for_update().get(pk=bank.wallet_id)
+            backed_amount = min(amount, bank.available_balance - wallet.balance)
+            ledger = Transaction.objects.filter(reference="9PSF" + reference).first()
+            if ledger is None and backed_amount > 0:
+                ledger = credit(user, backed_amount, "Test funding", reference="9PSF" + reference,
+                meta={"provider": "9psb", "environment": bank.environment, "account_number": bank.number,
+                      "sandbox_float_credit": reference, "requested_amount": str(amount),
+                      "evidence": "bank_credit_and_balance_enquiry",
+                      "bank_available_balance": str(bank.available_balance)})
+        if ledger is None:
+            self.stdout.write(json.dumps({"state": "success", "reference": reference,
+                "requested_amount": str(amount), "recorded_in_zitch": False,
+                "bank_available_balance": str(bank.available_balance)}, sort_keys=True))
+            raise CommandError("The bank approved the credit but no additional balance is confirmed for Zitch. "
+                               "Do not fund again; check bank_sandbox_reconcile.")
+        self.stdout.write(json.dumps({"state": "success", "reference": reference, "amount": str(ledger.amount),
+            "requested_amount": str(amount),
             "recorded_in_zitch": True, "transaction_id": ledger.pk, "nuban_last4": bank.number[-4:],
-            "bank_available_balance": available}, sort_keys=True))
+            "bank_available_balance": str(bank.available_balance)}, sort_keys=True))
 
     def _unresolved(self, bank, reference, amount, code, known_balance):
         """Describe a credit the bank never confirmed, without calling it failed.
@@ -121,5 +143,5 @@ class Command(BaseCommand):
         return CommandError(
             f"The bank's reply was lost ({code}); the credit is unconfirmed and may already have been applied, "
             f"so nothing was recorded in Zitch. Do not fund this tester again until you know which: compare the "
-            f"balances above, and if the credit did land, the bank's inflow notice for it records the deposit. "
+            f"balances above and use bank_sandbox_reconcile to record a bank-confirmed shortfall. "
             f"Reference {reference}")

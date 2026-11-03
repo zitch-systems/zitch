@@ -3,7 +3,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone
 
 from wallet.models import Transaction, Wallet
@@ -75,14 +75,15 @@ def _sandbox_float_credit(wallet, notice, amount, ref):
     if notice.account.environment != "sandbox":
         return None
     recent = (Transaction.objects.select_for_update()
-              .filter(user_id=wallet.user_id, amount=amount, direction=Transaction.IN,
+              .filter(user_id=wallet.user_id, direction=Transaction.IN,
                       reference__startswith="9PSF", created__gte=timezone.now() - timedelta(days=2))
+              .filter(Q(amount=amount) | Q(meta__requested_amount=money(amount)))
               .order_by("created"))
     for txn in recent:
         meta = txn.meta or {}
         if (meta.get("sandbox_float_credit") and not meta.get("bank_notification")
                 and meta.get("account_number") == notice.account.number):
-            txn.meta = {**meta, "bank_notification": ref}
+            txn.meta = {**meta, "bank_notification": ref, "bank_notification_amount": str(amount)}
             txn.save(update_fields=["meta"])
             return txn
     return None

@@ -60,6 +60,37 @@ class ClientTests(SimpleTestCase):
         ]:
             self.assertEqual(Reply(body, 200).payment_state(), "pending")
 
+    def test_waas_credit_accepts_the_success_code_inside_data(self):
+        # Observed sandbox credit/transfer reply: no envelope responseCode.
+        for envelope in ({}, {"responseCode": ""}, {"responseCode": None}, {"responseCode": " "}):
+            with self.subTest(envelope=envelope):
+                reply = Reply({"status": "SUCCESS", "message": "Approved by Financial Institution",
+                               **envelope, "data": {"responseCode": "00"}}, 200)
+                self.assertEqual(reply.payment_state(), "success")
+                # A requery still needs explicit terminal transaction evidence.
+                self.assertEqual(reply.payment_state(query=True), "pending")
+                self.assertEqual(reply.payment_state(product="vas"), "pending")
+        # Observing a different WaaS envelope must not broaden VAS evidence.
+        self.assertEqual(Reply({"status": "SUCCESS", "data": {"responseCode": "200"}}, 200)
+                         .payment_state(product="vas"), "pending")
+
+    def test_nested_waas_success_still_requires_consistent_completed_evidence(self):
+        for http, envelope, data in (
+            (400, {}, {"responseCode": "00"}),
+            (202, {}, {"responseCode": "00"}),
+            (200, {"status": "FAILED"}, {"responseCode": "00"}),
+            (200, {"responseCode": "51"}, {"responseCode": "00"}),
+            (200, {"statusCode": "51"}, {"responseCode": "00"}),
+            (200, {}, {"responseCode": "00", "isSuccessful": False}),
+            (200, {}, {"responseCode": "00", "status": "PENDING"}),
+            (200, {}, {"responseCode": "00", "transactionStatus": "FAILED"}),
+            (200, {}, {"responseCode": "51"}),
+            (200, {}, {}),
+        ):
+            with self.subTest(http=http, envelope=envelope, data=data):
+                self.assertEqual(Reply({"status": "SUCCESS", **envelope, "data": data}, http).payment_state(),
+                                 "pending")
+
     def test_ambiguous_errors_never_refund(self):
         for status in [408, 409, 429, 500, 502, 504]:
             self.assertEqual(Reply({"status": "FAILED", "responseCode": "51"}, status).payment_state(), "pending")
@@ -137,6 +168,32 @@ class ClientTests(SimpleTestCase):
                 # The request path and its payload stay out of the log.
                 self.assertNotIn("credit/transfer", line)
                 self.assertNotIn("1100000001", line)
+
+    def test_an_approval_coded_only_under_data_is_a_success(self):
+        """The sandbox's credit/transfer reply, observed 3 November."""
+        reply = Reply({"status": "SUCCESS", "message": "Approved by Financial Institution",
+                       "data": {"responseCode": "00"}}, 200)
+        self.assertEqual(reply.payment_state(), "success")
+
+    def test_a_null_top_level_code_is_no_code_rather_than_a_contradiction(self):
+        reply = Reply({"status": "SUCCESS", "responseCode": None, "data": {"responseCode": "00"}}, 200)
+        self.assertEqual(reply.payment_state(), "success")
+
+    def test_two_codes_that_disagree_are_still_undecided(self):
+        reply = Reply({"status": "SUCCESS", "responseCode": "00", "data": {"responseCode": "51"}}, 200)
+        self.assertEqual(reply.payment_state(), "pending")
+
+    def test_an_approval_with_no_code_anywhere_decides_nothing(self):
+        self.assertEqual(Reply({"status": "SUCCESS"}, 200).payment_state(), "pending")
+        self.assertEqual(Reply({"status": "SUCCESS", "data": {}}, 200).payment_state(), "pending")
+
+    def test_a_refusal_coded_only_under_data_is_still_a_refusal(self):
+        reply = Reply({"status": "FAILED", "data": {"responseCode": "51"}}, 200)
+        self.assertEqual(reply.payment_state(), "failed")
+
+    def test_an_existing_transaction_coded_only_under_data_is_requeried(self):
+        reply = Reply({"status": "SUCCESS", "data": {"responseCode": "42"}}, 200)
+        self.assertEqual(reply.payment_state(), "pending")
 
     def test_http_only_allowed_for_exact_documented_sandbox(self):
         for environment, url, permitted in [
