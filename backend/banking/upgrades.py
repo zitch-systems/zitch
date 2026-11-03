@@ -157,13 +157,13 @@ def refresh_upgrade(bank, *, timeout=None):
     data = response.data if isinstance(response.data, dict) else {}
     # The documented account-level status must be read for our account, and any
     # echoed account must agree. The callback's status alone is never accepted.
+    status = str(data.get("status", "")).upper()
     successful = data.get("isSuccessful", True)
     if (not response.ok or not affirmative_code(response.body.get("responseCode"))
-            or not affirmative_code(data.get("responseCode"))
-            or (successful is not True and successful not in ("true", "True"))
+            or (status == "APPROVED" and (not affirmative_code(data.get("responseCode"))
+                or (successful is not True and successful not in ("true", "True"))))
             or (data.get("accountNumber") and data["accountNumber"] != bank.number)):
         raise ProviderError("upgrade_status_unconfirmed")
-    status = str(data.get("status", "")).upper()
     if status == "DECLINED":
         AccountUpgrade.objects.filter(pk=request.pk).update(state="declined", checked_at=timezone.now())
         return False

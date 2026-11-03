@@ -75,7 +75,7 @@ class CustomerUpgradeStatusTests(TestCase):
         wallet.assert_not_called()
 
     def test_decline_allows_the_customer_to_correct_their_details(self):
-        with patch('banking.client.Client.upgrade_status', return_value=self.decision('DECLINED')):
+        with patch('banking.client.Client.upgrade_status', return_value=self.decision('DECLINED', isSuccessful=False)):
             response = self.status(refresh=True)
         self.assertEqual(response.json()['upgrade_status']['state'], 'declined')
         self.assertFalse(response.json()['upgrade_status']['pending'])
