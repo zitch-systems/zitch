@@ -238,7 +238,7 @@ def resolve_account(request):
                   mock=bool(res.get("mock")),
                   matches=[{"bank": bank.code, "bank_name": bank.name, "name": res.get("name", "")}])
 
-    matches = detect_account_banks(acct)  # auto-detect across banks
+    matches = detect_account_banks(acct, user=request.user_obj)
     if not matches:
         return fail("Couldn't detect the bank for this account number — pick the bank manually.", status=404)
     top = matches[0]

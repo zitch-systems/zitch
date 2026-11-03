@@ -38,11 +38,11 @@ describe('walletService', () => {
 describe('transfersService', () => {
   it('resolve scopes to a bank when a code is given (key is `bank`)', async () => {
     await transfersService.resolve('0123456789', '058');
-    expect(mockApiJson).toHaveBeenCalledWith(EP.transfers.resolve, { account_number: '0123456789', bank: '058' });
+    expect(mockApiJson).toHaveBeenCalledWith(EP.transfers.resolve, { account_number: '0123456789', bank: '058' }, 12000);
   });
   it('resolve omits the bank for auto-detect', async () => {
     await transfersService.resolve('0123456789');
-    expect(mockApiJson).toHaveBeenCalledWith(EP.transfers.resolve, { account_number: '0123456789' });
+    expect(mockApiJson).toHaveBeenCalledWith(EP.transfers.resolve, { account_number: '0123456789' }, 12000);
   });
   it('send passes the body through (incl. idempotency key)', async () => {
     const body = { account_number: '0123456789', bank: '058', amount: 5000, transaction_pin: '1234', idempotency_key: 'idem-key-1' };

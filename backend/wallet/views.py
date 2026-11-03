@@ -42,6 +42,8 @@ def wallet_balance(request):
     from accounts.views import avatar_url, spend_account_namespace
 
     user = request.user_obj
+    from banking.accounts import refresh_for_display
+    refresh_for_display(user)
     wallet = get_or_create_wallet(user)
     return ok(
         success=True,
@@ -124,7 +126,7 @@ def _txn_row(t, review_kind=_REVIEW_UNSET) -> dict:
         review_kind = review_kind or ""
     under_review = bool(review_kind)
     return {
-        "service": t.service,
+        "service": "Wallet funding" if meta.get("sandbox_float_credit") or meta.get("sandbox_balance_reconciliation") else t.service,
         "amount": str(t.amount),
         # A terminal-looking row with unresolved bank evidence is not a terminal
         # customer outcome. Expose it as Pending until finance resolves the hold;

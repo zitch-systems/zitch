@@ -139,12 +139,14 @@ def refresh_upgrade(bank):
             locked.state = "approved"
             # Tier recomputation reads the durable approval in this transaction.
             locked.save(update_fields=["state"])
-            if not user.nin_hash:
-                # The bank approved the upgrade with this NIN: that is its verification.
-                record_identity_proof(user, "nin", locked.nin_hash, prehashed=True, source="9psb_upgrade",
-                                      provider_reference=locked.reference, verified_name=bank.name)
-                user.nin_hash, user.nin_verified = locked.nin_hash, True
-                user.save(update_fields=["nin_hash", "nin_verified"])
+            # Approval verifies this NIN even when an earlier integration
+            # already stored its hash. A pre-existing hash is not a substitute
+            # for the new bank's durable proof, and must not strand the app on
+            # Tier 1 after the bank has approved Tier 2 or Tier 3.
+            record_identity_proof(user, "nin", locked.nin_hash, prehashed=True, source="9psb_upgrade",
+                                  provider_reference=locked.reference, verified_name=bank.name)
+            user.nin_hash, user.nin_verified = locked.nin_hash, True
+            user.save(update_fields=["nin_hash", "nin_verified"])
             if locked.tier == 3:
                 user.address_verified = True
                 user.address_verification_pending = False
@@ -153,6 +155,35 @@ def refresh_upgrade(bank):
         locked.checked_at = timezone.now()
         locked.save(update_fields=["state", "last_error", "checked_at"])
     return locked.state == "approved"
+
+
+def restore_approved_state(user, bank):
+    """Repair flags from this account's durable approval and fresh bank tier."""
+    require_environment(bank.environment)
+    approval = AccountUpgrade.objects.filter(account=bank, state="approved", tier__lte=bank.tier)
+    approval = approval.select_related("address_verification").order_by("-tier", "-created").first()
+    if not approval or not hmac.compare_digest(user.bvn_hash, approval.bvn_hash) or (
+            user.nin_hash and not hmac.compare_digest(user.nin_hash, approval.nin_hash)):
+        return
+    if user.tier >= approval.tier and user.nin_verified and IdentityProof.objects.filter(user=user,
+            identity_type="nin", identity_hash=approval.nin_hash, source="9psb_upgrade").exists():
+        return
+    with transaction.atomic():
+        Wallet.objects.select_for_update().get(pk=bank.wallet_id)
+        current = User.objects.select_for_update().get(pk=user.pk)
+        if not hmac.compare_digest(current.bvn_hash, approval.bvn_hash) or (
+                current.nin_hash and not hmac.compare_digest(current.nin_hash, approval.nin_hash)):
+            return
+        record_identity_proof(current, "nin", approval.nin_hash, prehashed=True, source="9psb_upgrade",
+            provider_reference=approval.reference, verified_name=bank.name)
+        current.nin_hash, current.nin_verified = approval.nin_hash, True
+        if approval.tier == 3 and approval.address_verification and approval.address_verification.state == "verified":
+            current.address_verified, current.address_verification_pending = True, False
+        current.recompute_tier()
+        fields = ["nin_hash", "nin_verified", "address_verified", "address_verification_pending", "tier"]
+        current.save(update_fields=fields)
+        for field in fields:
+            setattr(user, field, getattr(current, field))
 
 
 # Documents are uploaded one at a time, converted to the bank's size limits at

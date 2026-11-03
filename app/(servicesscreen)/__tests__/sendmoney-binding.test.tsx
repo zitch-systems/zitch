@@ -33,6 +33,14 @@ jest.mock('react-native/Libraries/Components/ScrollView/ScrollView', () => {
     return ReactActual.createElement(View, props, children);
   };
 });
+jest.mock('react-native/Libraries/Lists/FlatList', () => {
+  const ReactActual = jest.requireActual<typeof import('react')>('react');
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+  return function MockFlatList({ data, renderItem, keyExtractor, ListEmptyComponent, ...props }: any) {
+    return ReactActual.createElement(View, props, data.length ? data.map((item: any, index: number) =>
+      ReactActual.createElement(ReactActual.Fragment, { key: keyExtractor(item) }, renderItem({ item, index }))) : ListEmptyComponent);
+  };
+});
 
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: (...args: unknown[]) => mockRouterPush(...args), replace: jest.fn() },
@@ -199,6 +207,21 @@ describe('SendMoney recipient response binding', () => {
     mockRouterPush.mockReset();
     mockReloadWallet.mockReset();
     global.fetch = originalFetch;
+  });
+
+  it('filters the bank picker by name and shows a clear empty result', async () => {
+    loadBankCatalogue();
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<SendMoney />); });
+    await act(async () => { control(tree, 'Select bank').props.onPress(); });
+    expect(control(tree, 'Bank A')).toBeTruthy();
+    expect(control(tree, 'Bank B')).toBeTruthy();
+    await act(async () => { control(tree, 'Search banks').props.onChangeText('bank b'); });
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Bank A' })).toHaveLength(0);
+    expect(control(tree, 'Bank B')).toBeTruthy();
+    await act(async () => { control(tree, 'Search banks').props.onChangeText('unlisted bank'); });
+    expect(JSON.stringify(tree.toJSON())).toContain('No banks match your search.');
+    act(() => tree.unmount());
   });
 
   afterEach(() => {

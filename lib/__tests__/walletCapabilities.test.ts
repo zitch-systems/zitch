@@ -29,6 +29,11 @@ describe('9PSB account capabilities', () => {
       .toEqual({ totalBalance: 6000, availableBalance: 0, historicalBalance: 6000 });
     expect(walletBalances({ provider: 'wema_vas', wallet: '6000', available_balance: '6000' }).availableBalance).toBe(0);
   });
+  it('shows confirmed money independently of whether a payment product is enabled', () => {
+    expect(walletBalances({ provider: '9psb', spending_available: true, transfers_available: false,
+      bill_payments_available: false, wallet: '150150', available_balance: '150150', historical_balance: '0' }))
+      .toEqual({ totalBalance: 150150, availableBalance: 150150, historicalBalance: 0 });
+  });
   it.each(['invalid', '-10', 'Infinity'])('does not publish invalid available funds: %s', (amount) => {
     expect(walletBalances({ provider: '9psb', bill_payments_available: true, wallet: '6000', available_balance: amount }).availableBalance).toBe(0);
   });

@@ -6,6 +6,8 @@ Callers do their own auth / PIN / tier-limit checks and name-enquiry first, then
 hand a resolved account name to `execute_payout`.
 """
 import logging
+import re
+from concurrent.futures import ThreadPoolExecutor, wait
 from decimal import Decimal
 
 from django.db.models import F
@@ -87,10 +89,91 @@ def bank_name_keys(name: str) -> tuple:
 
 
 
-def detect_account_banks(account_number: str) -> list[dict]:
-    # Account numbers are not a unique bank identifier. Avoid a paid multi-bank
-    # sweep for every keystroke; the customer selects one bank for name enquiry.
-    return []
+_NAME_ENQUIRIES = ThreadPoolExecutor(max_workers=6, thread_name_prefix="bank-name")
+
+
+def nuban_candidate(number, bank_code):
+    """CBN's check digit narrows DMB candidates; it never verifies a recipient.
+
+    The 2018 CBN standard pads a DMB code to six digits and applies repeating
+    weights 3,7,3 to that code plus the nine-digit account serial. Other NIP
+    routing codes cannot be assumed to be CBN institution identifiers.
+    """
+    if not re.fullmatch(r"[0-9]{10}", number or ""):
+        return False
+    if not re.fullmatch(r"(?:[0-9]{3}|000[0-9]{3}|9[0-9]{5})", bank_code or ""):
+        return None
+    digits = bank_code.zfill(6) + number[:9]
+    check = (10 - sum(int(value) * (3, 7, 3)[i % 3] for i, value in enumerate(digits)) % 10) % 10
+    return check == int(number[-1])
+
+
+def detect_account_banks(account_number: str, *, user=None) -> list[dict]:
+    from django.core.cache import cache
+    from banking.accounts import require_enabled
+    from banking.adapter import resolve_account
+    from banking.client import Client, ProviderError, configured
+    from banking.payments import digest
+    from .models import Bank
+
+    if not re.fullmatch(r"[0-9]{10}", account_number or ""):
+        return []
+    if user is not None:
+        try:
+            require_enabled(user)
+        except ValueError:
+            return []
+    banks = list(Bank.objects.filter(active=True).exclude(bank_code="").order_by("-popular", "name"))
+    by_slug = {bank.code: bank for bank in banks}
+    # A customer's own completed payment history is the fastest source of a
+    # bank hint. The payout still performs its own fresh recipient enquiry.
+    if user is not None:
+        known = []
+        for saved in Beneficiary.objects.filter(user=user, account_number=account_number):
+            bank = by_slug.get(saved.bank_code)
+            if bank and saved.name:
+                known.append({"bank": bank.code, "bank_name": bank.name, "name": saved.name})
+        if known:
+            return known
+    candidates = [bank for bank in banks if nuban_candidate(account_number, bank.bank_code) is True]
+    # Popular OFIs are manually routable even when NIP and CBN identifiers differ.
+    candidates += [bank for bank in banks if bank.popular and nuban_candidate(account_number, bank.bank_code) is None][:4]
+    candidates = candidates[:8]
+    if not candidates or not configured():
+        return []
+    client = Client(timeout=(1, 3))
+    key = "bank-detection:" + digest([client._cache_key(), account_number,
+                                      [(bank.code, bank.bank_code) for bank in candidates]])
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    if not cache.add(key + ":lease", True, timeout=12):
+        return []
+    try:
+        client.token()  # Warm the shared token before starting concurrent reads.
+        pending = {_NAME_ENQUIRIES.submit(resolve_account, account_number, bank.bank_code,
+                                         timeout=(1, 3)): bank for bank in candidates}
+        done, remaining = wait(pending, timeout=5)
+        results = []
+        for future in done:
+            bank = pending[future]
+            try:
+                resolved = future.result()
+            except Exception:
+                continue
+            if not isinstance(resolved, dict):
+                continue
+            if resolved.get("success") is True and isinstance(resolved.get("name"), str) and resolved["name"].strip():
+                results.append({"bank": bank.code, "bank_name": bank.name, "name": resolved["name"].strip()})
+        for future in remaining:
+            future.cancel()
+        results.sort(key=lambda row: next(i for i, bank in enumerate(candidates) if bank.code == row["bank"]))
+        cache.set(key, results, timeout=60 if results else 5)
+        return results
+    except ProviderError:
+        return []
+    finally:
+        cache.delete(key + ":lease")
 
 
 class PayoutError(Exception):

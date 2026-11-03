@@ -2,6 +2,14 @@ import React from 'react';
 import renderer, { act } from 'react-test-renderer';
 import Upgrade from '../upgrade';
 
+// Native scroll scheduling is outside this form test. Keep the actual option
+// filtering and selection while rendering the scroll container synchronously.
+jest.mock('react-native/Libraries/Components/ScrollView/ScrollView', () => {
+  const ReactActual = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+  return ({ children, ...props }: any) => ReactActual.createElement(View, props, children);
+});
+
 let mockGeneration = 1;
 const mockStatus = jest.fn();
 const mockUpgrade = jest.fn();

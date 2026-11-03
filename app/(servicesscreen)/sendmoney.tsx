@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
+import { View, Text, Alert, Pressable, ScrollView, FlatList, useWindowDimensions } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { getToken, getSessionGeneration } from '@/lib/secureStore';
 import { apiPost, publicPost } from '@/lib/api';
@@ -22,13 +22,14 @@ const AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 // Mirrors backend User.LARGE_TXN_THRESHOLD — drives the device biometric step-up.
 const LARGE_TXN = 100000;
 type Step = null | 'confirm' | 'pin';
-type Bank = { code: string; name: string; color: string };
+type Bank = { code: string; name: string; color: string; aliases?: string[]; short?: string };
 type Beneficiary = { id: number; name: string; account_number: string; bank_name: string; bank_code?: string; initials: string; color: string };
 type BankMatch = { bank: string; bank_name: string; name: string };
 type PendingAttempt = { scope: string; fingerprint: string; key: string };
 
 const SendMoney = () => {
   const { c } = useTheme();
+  const { height } = useWindowDimensions();
   const sessionGeneration = useRef(getSessionGeneration());
   const isCurrentSession = () => sessionGeneration.current === getSessionGeneration();
   const { balance, reload, transfersAvailable } = useWallet();
@@ -59,6 +60,7 @@ const SendMoney = () => {
   const [feeFor, setFeeFor] = useState(0);
   const [note, setNote] = useState('');
   const [bankSheet, setBankSheet] = useState(false);
+  const [bankQuery, setBankQuery] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -97,6 +99,8 @@ const SendMoney = () => {
   }, []);
 
   const amount = Number(amt || 0);
+  const filteredBanks = banks.filter((b) => [b.name, b.short || '', ...(b.aliases || [])]
+    .some((name) => name.toLowerCase().includes(bankQuery.trim().toLowerCase())));
   useEffect(() => {
     let active = true;
     setFee(null);
@@ -566,17 +570,21 @@ const SendMoney = () => {
       )}
 
       {/* Bank picker */}
-      <Sheet open={bankSheet} onClose={() => setBankSheet(false)} title="Select bank">
+      <Sheet open={bankSheet} onClose={() => setBankSheet(false)} title="Select bank" scrollable={false}>
+        <Field label="Search banks" placeholder="Search bank name" value={bankQuery} onChangeText={setBankQuery} autoCorrect={false} />
         {banksLoading ? <Text style={{ color: c.ink2, marginBottom: 12 }}>Loading banks…</Text> : banks.length === 0 ? <View><Text style={{ color: c.ink2, marginBottom: 12 }}>We could not load the bank list. Check your connection and try again.</Text><Btn label="Retry bank list" variant="outline" onPress={() => setBankRevision((value) => value + 1)} /></View> : null}
-        {banks.map((b, i) => (
+        <FlatList data={filteredBanks} keyExtractor={(b) => b.code} style={{ maxHeight: Math.max(120, height * 0.42), flexGrow: 0, flexShrink: 1 }}
+          keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" initialNumToRender={12}
+          ListEmptyComponent={!banksLoading && banks.length > 0 ? <Text style={{ color: c.ink2, paddingVertical: 16 }}>No banks match your search.</Text> : null}
+          renderItem={({ item: b, index: i }) => (
           <Pressable key={b.code} accessibilityRole="button" accessibilityLabel={b.name} onPress={() => chooseBank(b)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}>
-            <View style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: b.color, alignItems: 'center', justifyContent: 'center' }}>
+            <View style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: b.color || c.brand, alignItems: 'center', justifyContent: 'center' }}>
               <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: 13 }}>{(b.name || '').replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase()}</Text>
             </View>
             <Text style={{ flex: 1, fontFamily: font.semibold, color: c.ink1 }}>{b.name}</Text>
             {bank?.code === b.code && <ZIcon name="check" size={18} color={c.brand} />}
           </Pressable>
-        ))}
+        )} />
       </Sheet>
 
       <ConfirmSheet

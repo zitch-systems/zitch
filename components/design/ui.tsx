@@ -565,6 +565,7 @@ export const Sheet = ({
   children,
   title,
   protectScreen = false,
+  scrollable = true,
 }: {
   open: boolean;
   onClose: () => void;
@@ -572,6 +573,8 @@ export const Sheet = ({
   title?: string;
   /** Block screenshots only while a PIN-entry sheet is actually visible. */
   protectScreen?: boolean;
+  /** Virtualized lists supply their own scroll container. */
+  scrollable?: boolean;
 }) => {
   const { c } = useTheme();
   const { width } = useWindowDimensions();
@@ -630,7 +633,7 @@ export const Sheet = ({
           </View>
           {/* "handled": first tap on a row/button inside the sheet activates it
               instead of only dismissing the keyboard. */}
-          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">{children}</ScrollView>
+          {scrollable ? <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">{children}</ScrollView> : children}
         </View>
       </KeyboardAvoidingView>
     </Modal>

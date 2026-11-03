@@ -37,8 +37,11 @@ const finiteAmount = (value: number | string | undefined): number => {
 
 export const walletBalances = (value: BalancePayload | null | undefined): WalletBalances => {
   const totalBalance = finiteAmount(value?.wallet);
-  const capabilities = walletCapabilities(value);
-  const availableBalance = capabilities.billPaymentsAvailable || capabilities.transfersAvailable
+  // Product availability (for example a fee quote) does not change how much
+  // money the bank confirms. The API owns the monetary balance and its holds.
+  const eligible = value?.provider === '9psb' && value.legacy_funding_review !== true
+    && value.account_setup_state !== 'legacy_funding_review' && value.spending_available !== false;
+  const availableBalance = eligible
     ? Math.max(0, Math.min(totalBalance, finiteAmount(value?.available_balance))) : 0;
   return {
     totalBalance,
