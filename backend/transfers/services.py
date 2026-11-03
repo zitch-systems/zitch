@@ -173,7 +173,7 @@ def detect_account_banks(account_number: str, *, user=None) -> list[dict]:
     if cached is not None:
         return cached
     if not cache.add(key + ":lease", True, timeout=12):
-        return []
+        raise ProviderError("name_enquiry_unavailable")
     try:
         client.token()  # Warm the shared token before starting concurrent reads.
         pending = {_NAME_ENQUIRIES.submit(resolve_account, account_number, bank.bank_code,

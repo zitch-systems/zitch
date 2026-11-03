@@ -77,3 +77,10 @@ class BankDetectionTests(TestCase):
                 patch('banking.adapter.resolve_account', return_value={'success': False, 'retryable': True}), \
                 self.assertRaises(ProviderError):
             detect_account_banks('0000014579')
+
+    def test_an_in_progress_lookup_does_not_report_the_recipient_missing(self):
+        with patch('banking.client.Client.token') as token, \
+                patch('django.core.cache.cache.add', return_value=False), \
+                self.assertRaises(ProviderError):
+            detect_account_banks('0000014579')
+        token.assert_not_called()

@@ -137,7 +137,7 @@ def _txn_row(t, review_kind=_REVIEW_UNSET) -> dict:
         "review_kind": review_kind,
         "status_message": ("We are confirming the provider's final outcome. Do not retry."
                            if under_review else ""),
-        "date": t.created.strftime("%Y-%m-%d %H:%M"),
+        "date": timezone.localtime(t.created).strftime("%Y-%m-%d %H:%M"),
         "reference": t.reference,
         "direction": t.direction,
         # The customer's own note. `note` is what a bank transfer stores
