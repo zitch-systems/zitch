@@ -237,8 +237,13 @@ class Reply:
             return "pending"
         body = self.body
         data = self.data if isinstance(self.data, dict) else {}
-        code = str(body.get("responseCode", body.get("statusCode", ""))).upper()
-        nested_code = str(data.get("responseCode", "")).upper()
+        # A null or absent code carries no decision; str(None) would read "NONE".
+        code = _code(body.get("responseCode", body.get("statusCode"))).upper()
+        nested_code = _code(data.get("responseCode")).upper()
+        # The sandbox answers credit/transfer with the response code under data
+        # and none at the top level, so read the decision from whichever one the
+        # bank actually sent. Both absent still decides nothing.
+        confirmed = code or nested_code
         success_code = "200" if product == "vas" else "00"
         # A successful status lookup does not mean the queried payment succeeded.
         if query:
@@ -266,27 +271,28 @@ class Reply:
             return "pending"
         status = str(body.get("status", "")).upper()
         nested_status = str(data.get("transactionStatus", data.get("status", ""))).upper()
-        if (nested_code and nested_code != code) or nested_status not in {"", status}:
+        # Two codes that disagree contradict each other; one absent code does not.
+        if (code and nested_code and nested_code != code) or nested_status not in {"", status}:
             return "pending"
         if status == "SUCCESS" and data.get("isSuccessful", True) is not True:
             return "pending"
         if status == "FAILED" and data.get("isSuccessful", False) is not False:
             return "pending"
         if product == "vas":
-            if self.ok and code == "200":
+            if self.ok and confirmed == "200":
                 return "success"
             # The supplied Postman duplicate-reference example is HTTP 200 /
             # failed / 300. It does not prove the original debit failed. Query
             # its existing reference; never refund or replay this instruction.
-            if status == "FAILED" and code in {"400", "401", "403"}:
+            if status == "FAILED" and confirmed in {"400", "401", "403"}:
                 return "failed"
         else:
             # 42 is an existing transaction and must be requeried, not refunded.
-            if code in {"09", "42", "96", "97", "99"}:
+            if confirmed in {"09", "42", "96", "97", "99"}:
                 return "pending"
-            if self.ok and code == "00":
+            if self.ok and confirmed == "00":
                 return "success"
-            if status == "FAILED" and code in {"03", "05", "06", "07", "08", "12", "13", "15", "16", "17", "25", "26", "51", "61", "93", "94", "95"}:
+            if status == "FAILED" and confirmed in {"03", "05", "06", "07", "08", "12", "13", "15", "16", "17", "25", "26", "51", "61", "93", "94", "95"}:
                 return "failed"
         return "pending"
 

@@ -65,6 +65,21 @@ account readback after opening) now accept `00`, `SUCCESS` or no code. Payment a
 identity replies keep their sample-based codes. Account opening uses the same WaaS
 login, which works, and does not depend on the bank directory.
 
+On 3 November the sandbox's `credit/transfer` answered an approved float credit
+with HTTP 200, `status: "SUCCESS"`, `message: "Approved by Financial
+Institution"` and **no top-level `responseCode` at all**: the code `"00"` came
+only as `data.responseCode`. `payment_state` required the nested code to equal
+the top-level one, so an absent top-level code read as a contradiction and every
+approved credit settled as `pending`, recording nothing in Zitch while the money
+moved. The decision is now taken from whichever code the bank sends, and two
+codes contradict each other only when both are present and differ.
+
+Two further observations from the same runs. The sandbox charges a **10.00 fee
+per float credit** (three 50,000 credits left 149,970.00). It sends **no inflow
+notification** for a float credit and answers `wallet_transactions` with an empty
+list, so neither `notifications.process` nor a statement can reconcile a credit
+Zitch failed to record; `bank_sandbox_reconcile` exists for that case.
+
 ## 3. Ask 9PSB for these before testing
 
 Account opening is still untested against the bank. These are the gaps that

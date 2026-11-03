@@ -138,6 +138,32 @@ class ClientTests(SimpleTestCase):
                 self.assertNotIn("credit/transfer", line)
                 self.assertNotIn("1100000001", line)
 
+    def test_an_approval_coded_only_under_data_is_a_success(self):
+        """The sandbox's credit/transfer reply, observed 3 November."""
+        reply = Reply({"status": "SUCCESS", "message": "Approved by Financial Institution",
+                       "data": {"responseCode": "00"}}, 200)
+        self.assertEqual(reply.payment_state(), "success")
+
+    def test_a_null_top_level_code_is_no_code_rather_than_a_contradiction(self):
+        reply = Reply({"status": "SUCCESS", "responseCode": None, "data": {"responseCode": "00"}}, 200)
+        self.assertEqual(reply.payment_state(), "success")
+
+    def test_two_codes_that_disagree_are_still_undecided(self):
+        reply = Reply({"status": "SUCCESS", "responseCode": "00", "data": {"responseCode": "51"}}, 200)
+        self.assertEqual(reply.payment_state(), "pending")
+
+    def test_an_approval_with_no_code_anywhere_decides_nothing(self):
+        self.assertEqual(Reply({"status": "SUCCESS"}, 200).payment_state(), "pending")
+        self.assertEqual(Reply({"status": "SUCCESS", "data": {}}, 200).payment_state(), "pending")
+
+    def test_a_refusal_coded_only_under_data_is_still_a_refusal(self):
+        reply = Reply({"status": "FAILED", "data": {"responseCode": "51"}}, 200)
+        self.assertEqual(reply.payment_state(), "failed")
+
+    def test_an_existing_transaction_coded_only_under_data_is_requeried(self):
+        reply = Reply({"status": "SUCCESS", "data": {"responseCode": "42"}}, 200)
+        self.assertEqual(reply.payment_state(), "pending")
+
     def test_http_only_allowed_for_exact_documented_sandbox(self):
         for environment, url, permitted in [
             ("production", "http://102.216.128.75:9090", False),
