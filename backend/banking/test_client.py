@@ -118,6 +118,26 @@ class ClientTests(SimpleTestCase):
         self.assertEqual(session.request.call_count, 1)
         self.assertFalse(session.request.call_args.kwargs["allow_redirects"])
 
+    def test_a_transport_failure_names_its_cause_in_the_log(self):
+        """network_unavailable alone cannot be diagnosed; the log must say which."""
+        from . import client
+        for error, name in ((requests.ConnectionError(), "ConnectionError"),
+                            (requests.Timeout(), "Timeout")):
+            session = Mock()
+            session.request.side_effect = error
+            with self.subTest(error=name), patch.object(client._local, "session", session, create=True):
+                with self.assertLogs("banking.client", level="WARNING") as logs, \
+                        self.assertRaises(ProviderError):
+                    Client._send("POST", "http://102.216.128.75:9090/waas/api/v1/credit/transfer",
+                                 payload={"accountNo": "1100000001"})
+                line = logs.output[0]
+                self.assertIn("method=POST", line)
+                self.assertIn("host=102.216.128.75:9090", line)
+                self.assertIn("error=" + name, line)
+                # The request path and its payload stay out of the log.
+                self.assertNotIn("credit/transfer", line)
+                self.assertNotIn("1100000001", line)
+
     def test_http_only_allowed_for_exact_documented_sandbox(self):
         for environment, url, permitted in [
             ("production", "http://102.216.128.75:9090", False),

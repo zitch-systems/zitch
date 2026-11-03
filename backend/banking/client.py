@@ -6,6 +6,7 @@ No request/response bodies, tokens or personal identifiers are logged here.
 """
 import hashlib
 import json
+import logging
 import re
 import threading
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from django.conf import settings
 from django.core.cache import cache
 
 TIMEOUT = (5, 20)
+log = logging.getLogger(__name__)
+
 _local = threading.local()
 _PREFIX = {"waas": "/waas/api/v1/", "vas": "/vas/api/v1/"}
 
@@ -384,7 +387,14 @@ class Client:
         try:
             response = session.request(method, url, json=payload, params=params,
                                        headers=headers, timeout=TIMEOUT, allow_redirects=False)
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            # Without this, every transport failure reaches the operator as a
+            # bare "network_unavailable" and nothing records which one it was.
+            # Log the host and the exception class only: a requests message can
+            # quote the request, and the host is already in the bank readiness
+            # report, so neither credentials nor payloads are disclosed.
+            log.warning("bank_transport_failed method=%s host=%s error=%s",
+                        method, urlsplit(url).netloc, type(exc).__name__)
             raise ProviderError("network_unavailable", uncertain=method != "GET") from None
         if 300 <= response.status_code < 400:
             raise ProviderError("redirect_refused", uncertain=method != "GET")
