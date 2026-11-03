@@ -12,7 +12,7 @@ from accounts.models import IdentityProof, User
 from wallet.models import Transaction, Wallet
 
 from .accounts import complete_account, confirm_identity, start_identity
-from .client import Reply
+from .client import ProviderError, Reply
 from .models import BankAccount, IdentityChallenge
 from .notifications import ingest, process
 from .test_client import CONFIG
@@ -295,6 +295,45 @@ class SandboxFundingTests(Base):
                 self.fund(reply=reply)
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.balance, Decimal("0"))
+        self.assertFalse(Transaction.objects.exists())
+
+    def test_an_unsent_credit_is_reported_as_a_safe_retry(self):
+        out = StringIO()
+        with patch("banking.client.Client.float_transfer",
+                   side_effect=ProviderError("authentication_failed")) as credit, \
+                self.assertRaisesMessage(CommandError, "no money moved"):
+            call_command("bank_sandbox_fund", phone=PROFILE["phoneNo"], amount="5000", stdout=out)
+        credit.assert_called_once()
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("0"))
+        self.assertFalse(Transaction.objects.exists())
+
+    def test_a_lost_reply_is_unconfirmed_and_never_reported_as_a_refusal(self):
+        out = StringIO()
+        with patch("banking.client.Client.float_transfer",
+                   side_effect=ProviderError("network_unavailable", uncertain=True)), \
+                patch("banking.client.Client.wallet", return_value=readback(availableBalance="50000.00",
+                                                                            ledgerBalance="50000.00")), \
+                self.assertRaisesRegex(CommandError, "may already have been applied"):
+            call_command("bank_sandbox_fund", phone=PROFILE["phoneNo"], amount="50000", stdout=out)
+        report = out.getvalue()
+        self.assertIn('"state": "unknown"', report)
+        self.assertIn('"recorded_in_zitch": false', report)
+        # The operator is shown the balance either side of the lost reply.
+        self.assertIn('"last_known_balance": "0.00"', report)
+        self.assertIn('"bank_available_balance": "50000.00"', report)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("0"))
+        self.assertFalse(Transaction.objects.exists())
+
+    def test_a_lost_reply_still_reports_when_the_balance_cannot_be_read(self):
+        out = StringIO()
+        with patch("banking.client.Client.float_transfer",
+                   side_effect=ProviderError("network_unavailable", uncertain=True)), \
+                patch("banking.client.Client.wallet", side_effect=ProviderError("network_unavailable")), \
+                self.assertRaisesRegex(CommandError, "unconfirmed"):
+            call_command("bank_sandbox_fund", phone=PROFILE["phoneNo"], amount="5000", stdout=out)
+        self.assertIn('"bank_available_balance": "not refreshed"', out.getvalue())
         self.assertFalse(Transaction.objects.exists())
 
     def test_limits_and_targets(self):
