@@ -52,6 +52,17 @@ def resolve_account(account_number, bank_code, *, timeout=None):
         recipient = confirmed_recipient(result, account_number, bank_code)
         if recipient:
             return {"success": True, **recipient}
+        # NIP can return HTTP 200 with no holder and a routing/system failure.
+        # This is an unavailable lookup, not evidence of a missing recipient.
+        # Keep the retry path used for transport failures without relaxing the
+        # exact account/route/name requirements for a confirmed recipient.
+        envelopes = [result.body]
+        if isinstance(result.data, dict):
+            envelopes.append(result.data)
+        if any(str(envelope.get(field, "")).strip() in {"91", "92", "96", "97", "99"}
+               for envelope in envelopes for field in ("code", "responseCode", "statusCode")):
+            return {"success": False, "retryable": True, "code": "bank_lookup_unavailable",
+                    "message": "Bank lookup is temporarily unavailable. Please try again."}
     except ProviderError:
         return {"success": False, "retryable": True, "code": "bank_lookup_unavailable",
                 "message": "Bank lookup is temporarily unavailable. Please try again."}
