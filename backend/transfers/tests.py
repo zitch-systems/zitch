@@ -190,6 +190,16 @@ class BankTransferTests(BankIOCase):
         self.assertTrue(body["name"])
         self.assertEqual(body["bank"], "gtb")  # echoes the bank back
 
+    def test_resolve_accepts_matching_recipient_inside_a_waas_data_wrapper(self):
+        reply = Reply({"status": "SUCCESS", "data": {"customer": {"account": {
+            "number": "0123456789", "bank": "058", "name": "JOHN DOE"}}}}, 200)
+        with patch("banking.client.Client.resolve", return_value=reply):
+            res, body = self.post("/api/transfers/resolve/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["name"], "JOHN DOE")
+        self.assertEqual(body["bank"], "gtb")
+
     def test_resolve_requires_a_selected_bank_without_paid_detection(self):
         res, body = self.post("/api/transfers/resolve/", {
             "access_token": self.token, "account_number": "0123456789"})
@@ -226,6 +236,23 @@ class BankTransferTests(BankIOCase):
         # Ledger row settled, beneficiary auto-saved & deduped.
         self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.SUCCESS)
         self.assertEqual(Beneficiary.objects.filter(user=self.user, account_number="0123456789").count(), 1)
+
+    def test_wrapped_recipient_confirmation_preserves_transfer_replay_controls(self):
+        reply = Reply({"status": "SUCCESS", "data": {"customer": {"account": {
+            "number": "0123456789", "bank": "058", "name": "JOHN DOE"}}}}, 200)
+        payload = {"access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+            "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            "expected_fee": "0.00", "idempotency_key": "wrapped-transfer-1"}
+        with patch("banking.client.Client.resolve", return_value=reply):
+            first, body = self.post("/api/transfers/send/", payload)
+            second, replay = self.post("/api/transfers/send/", payload)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertTrue(body["success"])
+        self.assertTrue(replay["duplicate"])
+        self.assertEqual(body["reference"], replay["reference"])
+        self.assertEqual(self.balance(), Decimal("40000"))
+        self.bank_send.assert_called_once()
 
     def test_send_dedupes_beneficiary_on_repeat(self):
         payload = {"access_token": self.token, "account_number": "0123456789", "bank": "gtb",

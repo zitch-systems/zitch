@@ -52,3 +52,17 @@ class SandboxCheckTests(SimpleTestCase):
         with patch("banking.uat.Client") as client, self.assertRaises(ValueError):
             sandbox_checks({"bvn": "12345678901"})
         client.assert_not_called()
+
+    def test_readiness_uses_the_same_wrapped_recipient_contract_as_transfers(self):
+        replies = {
+            "get_banks": Reply({"status": "SUCCESS", "data": {"bankList": [
+                {"bankCode": "120001", "bankName": "9 Payment Service Bank"}]}}, 200),
+            "wallet_enquiry": Reply({"status": "SUCCESS", "data": {"number": "1100000001",
+                "name": "Test Customer", "availableBalance": "100", "ledgerBalance": "100"}}, 200),
+            "other_banks_enquiry": Reply({"status": "SUCCESS", "data": {"customer": {"account": {
+                "number": "1100000001", "bank": "120001", "name": "Test Customer"}}}}, 200),
+        }
+        with patch("banking.client.Client.token", return_value="private-token"), \
+                patch("banking.client.Client.request", side_effect=lambda path, *a, **kw: replies[path]):
+            result = sandbox_checks({"account_number": "1100000001"}, product="waas")
+        self.assertTrue(result["connectivity_passed"])

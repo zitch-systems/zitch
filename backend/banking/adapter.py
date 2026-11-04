@@ -8,7 +8,7 @@ from decimal import Decimal
 from django.core.cache import cache
 
 from .accounts import update_account
-from .client import Client, ProviderError, config, configured, customer_enabled, money, bank_directory
+from .client import Client, ProviderError, config, configured, customer_enabled, money, bank_directory, confirmed_recipient
 from .models import BankAccount, Instruction
 from .payments import requery, submit_existing
 
@@ -49,16 +49,9 @@ def resolve_account(account_number, bank_code, *, timeout=None):
         if result.http_status in {408, 429} or result.http_status >= 500:
             return {"success": False, "retryable": True, "code": "bank_lookup_unavailable",
                     "message": "Bank lookup is temporarily unavailable. Please try again."}
-        # Sandbox confirms this endpoint is a top-level NIP envelope, not the
-        # usual WaaS status/data wrapper. Bind both identifiers before using name.
-        data = result.body.get("customer", {}).get("account", {})
-        name = data.get("name")
-        if (result.http_status == 200 and str(result.body.get("code")) == "00"
-                and str(data.get("number")) == account_number
-                and str(data.get("bank")) == str(bank_code)
-                and isinstance(name, str) and 0 < len(name.strip()) <= 160):
-            return {"success": True, "name": name.strip(), "account_number": account_number,
-                    "bank_code": str(bank_code)}
+        recipient = confirmed_recipient(result, account_number, bank_code)
+        if recipient:
+            return {"success": True, **recipient}
     except ProviderError:
         return {"success": False, "retryable": True, "code": "bank_lookup_unavailable",
                 "message": "Bank lookup is temporarily unavailable. Please try again."}
