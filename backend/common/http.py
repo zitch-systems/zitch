@@ -402,10 +402,14 @@ def idempotent_replay(prior):
 
         if not hmac.compare_digest(expected, stored):
             return fail(
-                "That retry key belongs to a different transaction. Start a new request.",
+                "This retry key belongs to an earlier transaction. Check its status before starting another payment.",
                 status=409,
                 code="idempotency_conflict",
                 duplicate=True,
+                # existing_for_key scopes this row to the authenticated owner.
+                # Keep this distinct from reference: its outcome does not prove
+                # that the caller's changed payment details were executed.
+                previous_reference=prior.reference,
             )
     quarantine = meta.get("wema_reversal_quarantine") or {}
     under_reversal_review = (
@@ -431,7 +435,8 @@ def idempotent_replay(prior):
             duplicate=True,
         )
     if prior.transaction_status == Transaction.FAILED:
-        return fail("This request already failed — please start a new one", status=409, code="duplicate")
+        return fail("This payment failed. Review the details before starting another payment.",
+                    status=400, code="duplicate", duplicate=True, reference=prior.reference)
     if prior.transaction_status == Transaction.PENDING:
         # A duplicate key proves only that we already accepted this ATTEMPT. It
         # does not prove that the provider delivered it. Reporting every
