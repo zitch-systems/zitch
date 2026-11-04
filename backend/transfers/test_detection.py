@@ -5,7 +5,7 @@ from django.test import TestCase, override_settings
 
 from accounts.models import User
 from banking.test_client import CONFIG
-from banking.client import ProviderError
+from banking.client import ProviderError, Reply
 from .models import Bank, Beneficiary
 from .services import detect_account_banks, nuban_candidate
 
@@ -18,6 +18,16 @@ class BankDetectionTests(TestCase):
         self.access = Bank.objects.create(code="access", name="Access Bank", bank_code="044", popular=True)
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058", popular=True)
         Bank.objects.create(code="inactive", name="Inactive Bank", bank_code="011", active=False)
+
+    def test_auto_detection_reads_a_matching_recipient_from_the_waas_wrapper(self):
+        def enquiry(number, code):
+            return Reply({"status": "SUCCESS" if code == "011" else "FAILED", "data": {
+                "customer": {"account": {"number": number, "bank": code, "name": "Jane Doe"}}}}, 200)
+        with patch("banking.client.Client.token", return_value="token"), \
+                patch("banking.client.Client.resolve", side_effect=enquiry) as query:
+            matches = detect_account_banks("0000014579")
+        self.assertEqual(matches, [{"bank": "first", "bank_name": "First Bank", "name": "Jane Doe"}])
+        query.assert_any_call("0000014579", "011")
 
     def test_cbn_dmb_and_ofi_examples_and_invalid_accounts(self):
         self.assertTrue(nuban_candidate("0000014579", "011"))

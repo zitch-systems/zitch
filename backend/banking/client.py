@@ -183,6 +183,47 @@ def bank_directory(reply):
     return result
 
 
+def confirmed_recipient(reply, number, bank_code):
+    """Bind a successful name enquiry to the exact requested account and route.
+
+    Keep the observed top-level NIP payload and support that same customer/account
+    object inside the July WaaS PDF's status/data envelope. Conflicting echoes
+    must never be resolved by picking whichever representation looks successful.
+    """
+    if reply.http_status != 200 or not isinstance(reply.body, dict):
+        return None
+    body = reply.body
+    if not (reply.ok or _code(body.get("code")) == "00"):
+        return None
+    data = body.get("data")
+    if data is not None and not isinstance(data, dict):
+        return None
+    envelopes = [body, *([data] if isinstance(data, dict) else [])]
+    names = []
+    for envelope in envelopes:
+        for field in ("code", "responseCode", "statusCode"):
+            if not affirmative_code(envelope.get(field)):
+                return None
+        if _code(envelope.get("status")).upper() not in {"", "SUCCESS"}:
+            return None
+        if envelope.get("isSuccessful", True) is not True:
+            return None
+        if "customer" not in envelope:
+            continue
+        customer = envelope["customer"]
+        info = customer.get("account") if isinstance(customer, dict) else None
+        if not isinstance(info, dict):
+            return None
+        name = info.get("name")
+        if (str(info.get("number")) != number or str(info.get("bank")) != str(bank_code)
+                or not isinstance(name, str) or not 0 < len(name.strip()) <= 160):
+            return None
+        names.append(name.strip())
+    if not names or len({" ".join(name.casefold().split()) for name in names}) != 1:
+        return None
+    return {"name": names[0], "account_number": number, "bank_code": str(bank_code)}
+
+
 def found_wallet(reply, kind, identifier):
     """The get_wallet reply lists wallets under data.wallet. Return a reply whose
     data is the one wallet opened with this identity, in the open_wallet shape."""

@@ -6,7 +6,7 @@ identity or callback acceptance, and never enables any runtime feature flag.
 import re
 from decimal import Decimal, InvalidOperation
 
-from .client import Client, ProviderError, account, config, phone, bank_directory, wallet_number
+from .client import Client, ProviderError, account, config, phone, bank_directory, wallet_number, confirmed_recipient
 from .readiness import endpoint_report
 
 
@@ -67,10 +67,7 @@ def sandbox_checks(fixtures=None, *, product="all"):
                     in {"9psb", "9paymentservicebank", "9paymentservicebanklimited"}]
                 if len(codes) == 1:
                     def valid_enquiry(r):
-                        data = r.body.get("customer", {}).get("account", {})
-                        return (r.http_status == 200 and str(r.body.get("code")) == "00"
-                            and str(data.get("number")) == number and str(data.get("bank")) == codes[0]
-                            and isinstance(data.get("name"), str) and bool(data["name"].strip()))
+                        return confirmed_recipient(r, number, codes[0]) is not None
                     check("provided_test_wallet_name_enquiry", lambda: waas.resolve(number, codes[0]), valid_enquiry)
                 else:
                     blocked("provided_test_wallet_name_enquiry", "unambiguous_bank_route_required")
