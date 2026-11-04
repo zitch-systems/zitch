@@ -29,6 +29,9 @@ changing customer-facing text is not evidence that the provider contract works.
   durable key, and a fresh review and PIN are required before execution.
 - A same-intent, definitively failed replay returns HTTP 400 with its reference,
   avoiding the generic ambiguous-409 path. Reversal review still takes precedence.
+- Sandbox balance reconciliation refuses unresolved outflows, instructions and
+  reversal review. It holds the wallet lock through its fresh balance read and
+  credit so an unsettled reservation cannot be mistaken for missing funding.
 
 ## Provider verification still blocked
 

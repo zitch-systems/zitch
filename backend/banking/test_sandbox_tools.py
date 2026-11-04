@@ -10,11 +10,12 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import IdentityProof, User
-from wallet.models import Transaction, Wallet
+from wallet.models import ReversalEvidence, Transaction, Wallet
+from wallet.services import debit
 
 from .accounts import complete_account, confirm_identity, start_identity
 from .client import ProviderError, Reply
-from .models import BankAccount, IdentityChallenge
+from .models import BankAccount, IdentityChallenge, Instruction
 from .notifications import ingest, process
 from .test_client import CONFIG
 from .test_identity import PROFILE
@@ -428,6 +429,50 @@ class SandboxFundingTests(Base):
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.balance, Decimal("149970.00"))
         self.assertEqual(Transaction.objects.count(), 1)
+
+    def test_pending_reservation_is_not_credited_back_as_missing_funding(self):
+        self.fund(amount="500", balance="500.00")
+        debit(self.user, "200", "Airtime", enforce_limits=False)
+        for apply in (False, True):
+            with self.subTest(apply=apply), patch("banking.client.Client.wallet") as enquiry, \
+                    self.assertRaisesMessage(CommandError, "Outstanding payments"):
+                call_command("bank_sandbox_reconcile", phone=PROFILE["phoneNo"], apply=apply, stdout=StringIO())
+            enquiry.assert_not_called()
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("300.00"))
+        self.assertEqual(Transaction.objects.count(), 2)
+
+    def test_unresolved_instruction_blocks_even_with_a_terminal_ledger_status(self):
+        txn = Transaction.objects.create(user=self.user, direction=Transaction.OUT, amount="200",
+            service="Airtime", transaction_status=Transaction.FAILED, reference="RECONCILE-OUTBOX")
+        Instruction.objects.create(transaction=txn, account=self.bank, reference="RECONCILE-INSTRUCTION",
+            product="vas", operation="airtime", amount="200", state="sending", request_digest="a" * 64)
+        with patch("banking.client.Client.wallet") as enquiry, \
+                self.assertRaisesMessage(CommandError, "Outstanding payments"):
+            call_command("bank_sandbox_reconcile", phone=PROFILE["phoneNo"], apply=True, stdout=StringIO())
+        enquiry.assert_not_called()
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("0"))
+        self.assertEqual(Transaction.objects.count(), 1)
+
+    def test_reversal_review_blocks_reconciliation_of_a_failed_payment(self):
+        txn = Transaction.objects.create(user=self.user, direction=Transaction.OUT, amount="200",
+            service="Airtime", transaction_status=Transaction.FAILED, reference="RECONCILE-REVIEW")
+        ReversalEvidence.objects.create(provider=ReversalEvidence.WEMA,
+            provider_reference="RECONCILE-REVIEW", provider_reference_hash="b" * 64,
+            user=self.user, payout=txn, amount="200", initial_reason="provider_status_conflict",
+            reason="provider_status_conflict", state=ReversalEvidence.CONFLICT)
+        with self.assertRaisesMessage(CommandError, "Outstanding payments"):
+            self.reconcile(apply=True)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("0"))
+        self.assertEqual(Transaction.objects.count(), 1)
+
+    def test_another_customers_reservation_does_not_block_reconciliation(self):
+        other = User.objects.create_user(username="other-sandbox-customer")
+        Transaction.objects.create(user=other, direction=Transaction.OUT, amount="200", service="Airtime",
+            transaction_status=Transaction.PENDING, reference="OTHER-PENDING")
+        self.assertTrue(json.loads(self.reconcile(apply=True))["applied"])
 
     def test_an_unconfirmed_balance_never_becomes_a_credit(self):
         with patch("banking.client.Client.wallet", side_effect=ProviderError("network_unavailable")), \

@@ -12,11 +12,13 @@ from decimal import Decimal
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.models import Q
 
 from banking.accounts import account_for, sandbox_tester, update_account
 from banking.client import ProviderError, customer_enabled, sandbox
+from banking.models import Instruction
 from banking.readiness import find_tester
-from wallet.models import Transaction, Wallet
+from wallet.models import ReversalEvidence, Transaction, Wallet
 from wallet.services import credit
 
 
@@ -45,20 +47,32 @@ class Command(BaseCommand):
         if not bank or bank.status != "active":
             raise CommandError("This tester has no active bank account yet")
 
-        # Never reconcile against a stored balance. A credit written from a stale
-        # figure is indistinguishable from one the bank never made.
-        try:
-            update_account(bank)
-            bank.refresh_from_db()
-            if bank.available_balance is None:
-                raise ProviderError("account_balance_unconfirmed")
-        except ProviderError as exc:
-            raise CommandError(f"The bank did not confirm the balance ({exc.code}); nothing was "
-                               f"recorded. Reconciliation needs a fresh enquiry.") from None
-
         reference = "ZSR" + secrets.token_hex(8).upper()
         with transaction.atomic():
             wallet = Wallet.objects.select_for_update().get(pk=bank.wallet_id)
+            # A reservation reduces the local balance before the bank debits.
+            # That difference is not missing funding. Hold the wallet lock from
+            # this check through the fresh enquiry and credit, so a new payment
+            # cannot reserve or settle between reading and applying the balance.
+            unresolved = (Transaction.objects.filter(user=user, direction=Transaction.OUT)
+                .exclude(transaction_status__in=(Transaction.SUCCESS, Transaction.FAILED)).exists()
+                or Instruction.objects.filter(account=bank).exclude(state__in=("success", "failed")).exists()
+                or ReversalEvidence.objects.filter(
+                    Q(user=user) | Q(payout__user=user) | Q(associated_payouts__user=user),
+                    state__in=(ReversalEvidence.ACTIVE, ReversalEvidence.CONFLICT),
+                ).exists())
+            if unresolved:
+                raise CommandError("Outstanding payments need a confirmed outcome before balance reconciliation; "
+                                   "nothing was recorded")
+            # A stored balance cannot serve as evidence of new funding.
+            try:
+                update_account(bank)
+                bank.refresh_from_db()
+                if bank.available_balance is None:
+                    raise ProviderError("account_balance_unconfirmed")
+            except ProviderError as exc:
+                raise CommandError(f"The bank did not confirm the balance ({exc.code}); nothing was "
+                                   f"recorded. Reconciliation needs a fresh enquiry.") from None
             confirmed = Decimal(bank.available_balance)
             shortfall = confirmed - wallet.balance
             report = {"reference": reference, "bank_available_balance": str(confirmed),
