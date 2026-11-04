@@ -367,7 +367,7 @@ class CardTests(TestCase):
 
         with patch("cards.views.issuer_fund_card") as retry_fund:
             replay, replay_body = self.post("/api/cards/fund/", payload)
-        self.assertEqual(replay.status_code, 409)
+        self.assertEqual(replay.status_code, 400)
         self.assertEqual(replay_body["code"], "duplicate")
         retry_fund.assert_not_called()
         self.assertEqual(self.balance(), Decimal("50000"))

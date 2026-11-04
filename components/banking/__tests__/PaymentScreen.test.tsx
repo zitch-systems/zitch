@@ -73,6 +73,58 @@ it('keeps a rejected PIN editable when no payment was recorded', async () => {
   expect(tree.root.findAllByProps({ accessibilityLabel: 'View payment status' })).toHaveLength(0);
 });
 
+it.each(['Successful', 'Failed'])('recovers a conflicting old key through owner status and fresh review: %s', async (state) => {
+  jest.useFakeTimers();
+  mockAcquire.mockResolvedValueOnce('old-key').mockResolvedValue('fresh-key');
+  mockPost.mockImplementation(async (path: string) => path === '/api/transaction/status/'
+    ? { status: 200, json: async () => ({ success: true, transaction: { reference: 'OLD-REF', transaction_status: state } }) }
+    : { status: 409, json: async () => ({ code: 'idempotency_conflict', duplicate: true, previous_reference: 'OLD-REF' }) });
+  await mount(); await review();
+  await act(async () => { await mockPin.onComplete('582940'); });
+  expect(mockClear).not.toHaveBeenCalled();
+  expect(JSON.stringify(tree.toJSON())).toContain('This retry belongs to a previous payment.');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Payment is processing.');
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Start a new payment' })).toHaveLength(0);
+  await act(async () => { jest.advanceTimersByTime(2000); });
+  expect(mockClear).toHaveBeenCalledWith('9psb-airtime', expect.any(String), 'old-key');
+  expect(JSON.stringify(tree.toJSON())).toContain(state === 'Successful' ? 'Your previous payment completed.' : 'Your previous payment failed.');
+  await act(async () => { control('Start a new payment').props.onPress(); });
+  expect(mockPost.mock.calls.filter(([path]) => path === '/api/banking/purchase/')).toHaveLength(1);
+  expect(mockPin.open).toBe(false);
+  await act(async () => { await mockPin.onComplete('582940'); });
+  expect(mockPost.mock.calls.filter(([path]) => path === '/api/banking/purchase/')).toHaveLength(1);
+  await review();
+  await act(async () => { await mockPin.onComplete('582940'); });
+  expect(mockPost).toHaveBeenLastCalledWith('/api/banking/purchase/', expect.objectContaining({ idempotency_key: 'fresh-key' }));
+});
+
+it.each([
+  { reference: 'OTHER-REF', transaction_status: 'Successful' },
+  { reference: 'OLD-REF', transaction_status: 'Failed', under_review: true },
+  { reference: 'OLD-REF', transaction_status: 'Pending' },
+])('preserves a conflicting attempt until its own outcome is confirmed: %p', async (transaction) => {
+  jest.useFakeTimers();
+  mockPost.mockImplementation(async (path: string) => path === '/api/transaction/status/'
+    ? { status: 200, json: async () => ({ success: true, transaction }) }
+    : { status: 409, json: async () => ({ code: 'idempotency_conflict', previous_reference: 'OLD-REF' }) });
+  await mount(); await review();
+  await act(async () => { await mockPin.onComplete('582940'); });
+  await act(async () => { jest.advanceTimersByTime(2000); });
+  expect(mockClear).not.toHaveBeenCalled();
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Start a new payment' })).toHaveLength(0);
+  expect(mockPost.mock.calls.filter(([path]) => path === '/api/banking/purchase/')).toHaveLength(1);
+});
+
+it('does not reset checkout if the settled durable key could not be cleared', async () => {
+  mockPost.mockResolvedValue({ status: 400, json: async () => ({ reference: 'FAILED-REF' }) });
+  await mount(); await review();
+  await act(async () => { await mockPin.onComplete('582940'); });
+  await act(async () => { control('Start a new payment').props.onPress(); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Could not prepare a new payment.');
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Review payment' })).toHaveLength(0);
+  expect(mockPost).toHaveBeenCalledTimes(1);
+});
+
 it('requires a fresh selection when the data-plan catalogue is reloaded', async () => {
   mockCatalog.mockResolvedValue({ success: true, data: [{ productId: 'PLAN-1', dataBundle: '1GB', amount: 100 }] });
   await mount('data');

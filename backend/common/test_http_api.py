@@ -53,10 +53,12 @@ class IdempotentReplayTests(SimpleTestCase):
             reference="ZTC-FAILED-1",
         ))
 
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 400)
         self.assertEqual(self._body(response), {
-            "message": "This request already failed — please start a new one",
+            "message": "This payment failed. Review the details before starting another payment.",
             "code": "duplicate",
+            "duplicate": True,
+            "reference": "ZTC-FAILED-1",
         })
 
     def test_failed_row_with_active_bank_conflict_replays_as_review_not_retry(self):
@@ -95,14 +97,24 @@ class IdempotencyBindingTests(TestCase):
 
     def test_same_client_key_with_changed_material_request_is_a_conflict(self):
         first_key = spend_key("client-attempt-1", self.user, "airtime", "mtn", "0801", "500")
-        debit(self.user, "500", "Bank transfer", idempotency_key=first_key)
+        txn = debit(self.user, "500", "Bank transfer", idempotency_key=first_key)
 
         changed_key = spend_key("client-attempt-1", self.user, "airtime", "mtn", "0801", "1000")
         response = idempotent_replay(existing_for_key(self.user, changed_key))
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(json.loads(response.content)["code"], "idempotency_conflict")
+        self.assertEqual(json.loads(response.content)["previous_reference"], txn.reference)
+        self.assertNotIn("reference", json.loads(response.content))
+        self.assertNotIn("success", json.loads(response.content))
         self.assertEqual(get_or_create_wallet(self.user).balance, 4500)
+
+    def test_conflict_lookup_cannot_disclose_another_owners_reference(self):
+        key = spend_key("shared-client-key", self.user, "airtime", "500")
+        debit(self.user, "500", "Airtime", idempotency_key=key)
+        other, _ = make_user("08010000445", "idem-other@zitch.test", balance="5000")
+        other_key = spend_key("shared-client-key", other, "airtime", "1000")
+        self.assertIsNone(idempotent_replay(existing_for_key(other, other_key)))
 
     def test_same_client_key_and_request_replays_the_original_attempt(self):
         key = spend_key("client-attempt-2", self.user, "airtime", "mtn", "0801", "500")

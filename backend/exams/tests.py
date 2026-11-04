@@ -93,7 +93,7 @@ class ExamTests(TestCase):
         res1, _ = self.post("/api/exams/buy/", payload)
         res2, body2 = self.post("/api/exams/buy/", payload)
         self.assertEqual(res1.status_code, 422)
-        self.assertEqual(res2.status_code, 409)
+        self.assertEqual(res2.status_code, 400)
         self.assertEqual(body2.get("code"), "duplicate")
         self.assertEqual(self.balance(), Decimal("10000"))
 

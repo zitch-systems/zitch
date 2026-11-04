@@ -44,6 +44,9 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
   const [finished, setFinished] = useState(false);
   const [reference, setReference] = useState('');
   const [paymentStatus, setPaymentStatus] = useState('Pending');
+  const [previousPayment, setPreviousPayment] = useState(false);
+  const [statusRefresh, setStatusRefresh] = useState(0);
+  const [settled, setSettled] = useState(false);
   const [attempt, setAttempt] = useState<{ fingerprint: string; key: string } | null>(null);
   const generation = useRef(getSessionGeneration());
   const active = useRef(false);
@@ -97,7 +100,12 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
             catch { /* A stale retry marker cannot hide a confirmed bank outcome. */ }
             if (!alive || owner !== getSessionGeneration() || !current()) return;
             setPaymentStatus(state === 'success' ? 'Successful' : 'Failed');
-            setMessage(state === 'success'
+            setSettled(true);
+            setMessage(previousPayment
+              ? state === 'success'
+                ? 'Your previous payment completed. Review its details before starting another payment.'
+                : 'Your previous payment failed. You can review and start a new payment.'
+              : state === 'success'
               ? 'Payment completed.' + (row.token ? ` Your token: ${row.token}` : row.receipt_pending ? ' Your token is being retrieved. Check transaction history shortly.' : '') + (row.electricity_units ? ` Units: ${row.electricity_units}` : '')
               : 'Payment could not be completed. View transaction history for details.');
             try { await reload(); } catch { /* Keep the confirmed payment outcome. */ }
@@ -110,7 +118,7 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
     };
     timer = setTimeout(poll, 2000);
     return () => { alive = false; clearTimeout(timer); };
-  }, [finished, reference, paymentStatus, attempt, current, kind, reload]);
+  }, [finished, reference, paymentStatus, attempt, current, kind, reload, previousPayment, statusRefresh]);
   const validate = async () => {
     if (!current() || busy || validating.current) return;
     const captured = validationIntent;
@@ -139,6 +147,15 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
         validation_reference: validation, transaction_pin: pin, idempotency_key: key });
       const result = await response.json();
       if (!current()) return;
+      if (response.status === 409 && result.code === 'idempotency_conflict') {
+        // The reference belongs to an older authorization, not this checkout.
+        // Never rotate its key or label the changed intent paid/processing.
+        setFinished(true); setStep(null); setPreviousPayment(true); setSettled(false);
+        setReference(typeof result.previous_reference === 'string' ? result.previous_reference : '');
+        setPaymentStatus('Pending');
+        setMessage('This retry belongs to a previous payment. Check its status before starting another payment.');
+        return;
+      }
       const outcome = classifySpendResponse(result, response.status);
       if (outcome === 'success' || outcome === 'failed') {
         try { await clearSpendAttempt('9psb-' + kind, captured, key); }
@@ -149,6 +166,7 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
         || (outcome === 'failed' && result.reference)) {
         setFinished(true); setStep(null); setReference(String(result.reference || ''));
         setPaymentStatus(outcome === 'success' ? 'Successful' : outcome === 'failed' ? 'Failed' : 'Pending');
+        setSettled(outcome === 'success' || outcome === 'failed');
         setMessage(outcome === 'success' ? 'Payment completed.' + (result.token ? ` Your token: ${result.token}` : result.receipt_pending ? ' Your token is being retrieved. Check transaction history shortly.' : '') + (result.electricity_units ? ` Units: ${result.electricity_units}` : '')
           : outcome === 'failed' ? result.message || 'Payment could not be completed. View transaction history for details.'
             : 'Payment is processing. Check transaction history before trying again.');
@@ -159,6 +177,23 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
       if (requested) { setStep(null); setFinished(true); setMessage('The response was interrupted. Check transaction history; your payment reference is retained for a safe retry.'); }
       else setPinError('Could not safely save this payment request. Please try again.');
     } }
+    finally { active.current = false; if (current()) setBusy(false); }
+  };
+  const startNewPayment = async () => {
+    if (!current() || active.current || !settled || !attempt) return;
+    active.current = true; setBusy(true);
+    try {
+      // Cleanup can fail on device storage. Positively verify that a fresh
+      // attempt is available before returning to review and PIN authorization.
+      const key = await acquireSpendAttempt('9psb-' + kind, attempt.fingerprint);
+      if (!current()) return;
+      if (key === attempt.key) {
+        setMessage('Could not prepare a new payment. Please try again.');
+        return;
+      }
+      reviewed.current = ''; setAttempt(null); setReference(''); setFinished(false);
+      setPreviousPayment(false); setSettled(false); setPaymentStatus('Pending'); setMessage('');
+    } catch { if (current()) setMessage('Could not prepare a new payment. Please try again.'); }
     finally { active.current = false; if (current()) setBusy(false); }
   };
   const numeric = Number(amount);
@@ -201,10 +236,12 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
       {kind === 'bill' && <><Btn label="Verify customer" disabled={busy || !biller || !fieldsReady || (hasSelection && !item) || !customer.trim() || numeric <= 0 || extraFields.some((field) => !inputs[field.fieldName!]?.trim())} onPress={() => void validate()} />{!!customerName && <Text style={text}>Customer: {customerName}</Text>}</>}
       <Btn label="Review payment" disabled={!valid} onPress={() => { reviewed.current = fingerprint; setStep('review'); }} />
     </>}
-    {finished && !!reference && attempt && <Btn label="View payment status" onPress={() => router.push({
+    {finished && !!reference && attempt && <Btn label={previousPayment ? 'View previous payment' : 'View payment status'} onPress={() => router.push({
       pathname: '/(homepage)/txndetail', params: { reference, status: paymentStatus,
         spendScope: '9psb-' + kind, spendFingerprint: attempt.fingerprint, spendKey: attempt.key },
     })} />}
+    {finished && !!reference && !settled && <Btn label="Refresh payment status" variant="outline" onPress={() => setStatusRefresh((value) => value + 1)} />}
+    {finished && settled && <Btn label="Start a new payment" disabled={busy} onPress={() => void startNewPayment()} />}
     {finished && <Btn label="View transaction history" variant="outline" onPress={() => router.push('/(homepage)/history')} />}
     {!!reference && <Text selectable style={text}>Reference: {reference}</Text>}
     <ConfirmSheet open={step === 'review'} onClose={() => setStep(null)} title={title} total={numeric} balance={balance}
