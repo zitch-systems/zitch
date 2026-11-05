@@ -19,7 +19,9 @@ from .client import Client, ProviderError, config, money, phone, require_environ
 from .models import Instruction, PreviousBankArchive
 from .secrets import seal, unseal
 
-log = logging.getLogger(__name__)
+# The root logger is WARNING. Use the configured application audit stream so
+# these bounded outcome records reach operators without exposing payloads.
+log = logging.getLogger("zitch.banking.payments")
 
 
 def digest(value):
@@ -190,7 +192,9 @@ def dispatch(instruction):
         reply = _invoke(instruction, body)
         state = reply.payment_state(product=instruction.product)
         data = reply.data if isinstance(reply.data, dict) else {}
-        if instruction.product == "vas" and not _vas_response_matches(instruction, data, body):
+        matches = instruction.product != "vas" or _vas_response_matches(instruction, data, body)
+        _log_provider_reply(instruction, reply, data, matches, phase="submit", decision=state if matches else "pending")
+        if not matches:
             return finish(instruction, "pending", error="vas_response_mismatch")
         from .vas import receipt as bill_receipt
         receipt = bill_receipt(data) if instruction.operation == "bill" and state == "success" else {}
@@ -281,7 +285,7 @@ def refresh_payment_status(txn):
     txn.refresh_from_db()
 
 
-def _log_pending_status(instruction, response, data, matches):
+def _log_provider_reply(instruction, response, data, matches, *, phase, decision):
     def code(value):
         value = str(value or "")
         return value if re.fullmatch(r"[0-9]{2,4}", value) else "absent"
@@ -290,9 +294,9 @@ def _log_pending_status(instruction, response, data, matches):
         return value if value in {"SUCCESS", "SUCCESSFUL", "COMPLETED", "FAILED", "PENDING", "PROCESSING"} else "unrecognized"
     keys = [key for key in ("transactionStatus", "status", "isSuccessful", "transactionId",
             "transactionReference", "reference", "responseCode", "amount", "debitAccount", "recipient", "network") if key in data]
-    log.info("bank_payment_status_pending suffix=%s product=%s operation=%s http=%s code=%s nested_code=%s "
+    log.info("bank_payment_result suffix=%s product=%s operation=%s phase=%s decision=%s http=%s code=%s nested_code=%s "
              "envelope=%s transaction_status=%s nested_status=%s echoes_match=%s fields=%s",
-             instruction.transaction.reference[-6:], instruction.product, instruction.operation, response.http_status,
+             instruction.transaction.reference[-6:], instruction.product, instruction.operation, phase, decision, response.http_status,
              code(response.body.get("responseCode")), code(data.get("responseCode")), state(response.body.get("status")),
              state(data.get("transactionStatus")), state(data.get("status")), matches, ",".join(keys))
 
@@ -316,8 +320,7 @@ def requery(instruction, *, timeout=None):
         data = response.data if isinstance(response.data, dict) else {}
         if instruction.product == "vas":
             matches = _vas_response_matches(instruction, data, unseal(instruction.encrypted_request))
-            if state == "pending" or not matches:
-                _log_pending_status(instruction, response, data, matches)
+            _log_provider_reply(instruction, response, data, matches, phase="status", decision=state if matches else "pending")
             if not matches:
                 return finish(instruction, "pending", error="vas_status_mismatch")
             from .vas import receipt as bill_receipt
@@ -328,9 +331,12 @@ def requery(instruction, *, timeout=None):
         # amount. Contradictions are review cases, never terminal settlement.
         returned = data.get("transactionId") or data.get("transactionReference") or data.get("reference")
         if returned is not None and str(returned) != instruction.reference:
+            _log_provider_reply(instruction, response, data, False, phase="status", decision="pending")
             return finish(instruction, "pending", error="status_reference_mismatch")
         if data.get("amount") is not None and Decimal(money(data["amount"])) != instruction.amount:
+            _log_provider_reply(instruction, response, data, False, phase="status", decision="pending")
             return finish(instruction, "pending", error="status_amount_mismatch")
+        _log_provider_reply(instruction, response, data, True, phase="status", decision=state)
         return finish(instruction, state)
     except (ProviderError, ValueError):
         Instruction.objects.filter(pk=instruction.pk).update(next_check=timezone.now() + timedelta(minutes=5), last_error="status_unavailable")

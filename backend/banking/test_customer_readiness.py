@@ -14,7 +14,7 @@ from wallet.models import Wallet
 from wallet.services import credit
 from .accounts import account_payload, update_account
 from .address import start, verification_status
-from .client import ProviderError, Reply
+from .client import Client, ProviderError, Reply
 from .models import AccountUpgrade, AddressVerification, BankAccount, PreviousBankArchive
 from .secrets import seal, unseal
 from .test_client import CONFIG
@@ -73,6 +73,20 @@ class CustomerReadinessTests(TestCase):
             first = self.post("/api/wallet_balance/")
             self.post("/api/wallet_balance/")
         self.assertEqual(first.json()["available_balance"], "0.00")
+        read.assert_called_once()
+
+    def test_bank_read_taking_six_seconds_can_refresh_the_wallet(self):
+        def bank_read(method, url, **kwargs):
+            self.assertTrue(url.endswith("/wallet_enquiry"))
+            if kwargs["timeout"][1] < 6:
+                raise ProviderError("network_unavailable")
+            return self.reply()
+        with patch.object(Client, "token", return_value="synthetic"), \
+                patch.object(Client, "_send", side_effect=bank_read) as read:
+            response = self.post("/api/wallet_balance/")
+        self.assertEqual(response.json()["available_balance"], "150150.00", response.content)
+        self.assertTrue(response.json()["bill_payments_available"])
+        self.assertTrue(response.json()["transfers_available"])
         read.assert_called_once()
 
     def test_a_fresh_bank_read_releases_only_a_reconciled_sandbox_opening_review(self):

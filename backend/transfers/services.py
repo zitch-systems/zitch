@@ -166,13 +166,16 @@ def detect_account_banks(account_number: str, *, user=None) -> list[dict]:
     candidates = candidates[:8]
     if not candidates or not configured():
         return []
-    client = Client(timeout=(1, 3))
+    # Cold authentication takes longer than three seconds on the supplied
+    # endpoint. Its budget plus the eight-second enquiry window fits within
+    # the app's existing twenty-second deadline.
+    client = Client(timeout=(1, 8))
     key = "bank-detection:" + digest([client._cache_key(), account_number,
                                       [(bank.code, bank.bank_code) for bank in candidates]])
     cached = cache.get(key)
     if cached is not None:
         return cached
-    if not cache.add(key + ":lease", True, timeout=12):
+    if not cache.add(key + ":lease", True, timeout=20):
         raise ProviderError("name_enquiry_unavailable")
     try:
         client.token()  # Warm the shared token before starting concurrent reads.
