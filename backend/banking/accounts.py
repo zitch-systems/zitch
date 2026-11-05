@@ -518,10 +518,12 @@ def refresh_for_display(user):
         restore_approved_state(user, bank)
         return bank
     key = f"bank-balance-refresh:{bank.environment}:{bank.pk}"
-    if not cache.add(key, True, timeout=20):
+    if not cache.add(key, True, timeout=30):
         return bank
     try:
-        update_account(bank, timeout=(2, 4))
+        # Successful sandbox reads commonly take 4-7 seconds. Allow them to
+        # finish while keeping a cold auth + enquiry below the app's deadline.
+        update_account(bank, timeout=(2, 8))
         from .upgrades import restore_approved_state
         restore_approved_state(user, bank)
     except ProviderError as exc:
