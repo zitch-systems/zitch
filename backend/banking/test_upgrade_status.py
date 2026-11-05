@@ -119,3 +119,36 @@ class CustomerUpgradeStatusTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()['upgrade_refresh_unavailable'])
         read.assert_not_called()
+
+
+@override_settings(NINEPSB=CONFIG, SECURE_SSL_REDIRECT=False, RATELIMIT_ENABLE=False,
+    PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
+class UndecidedUpgradeEvidenceTests(TestCase):
+    """An upgrade the bank has not decided must say so, not just move checked_at."""
+
+    def setUp(self):
+        cache.clear()
+        test_upgrade_rules.UpgradeAccountNameTests.setUp(self)
+        self.upgrade = AccountUpgrade.objects.create(account=self.bank, tier=2, state="submitted",
+            reference="ZU-undecided-upgrade", bvn_hash=self.user.bvn_hash,
+            nin_hash=hash_identifier("10987654321"), request_digest="bound-request")
+
+    def refresh(self, state):
+        from .upgrades import refresh_upgrade
+        reply = Reply({"status": "SUCCESS", "responseCode": "00",
+                       "data": {"accountNumber": self.bank.number, "status": state}}, 200)
+        with patch("banking.client.Client.upgrade_status", return_value=reply):
+            approved = refresh_upgrade(self.bank)
+        self.upgrade.refresh_from_db()
+        return approved
+
+    def test_a_bank_still_deciding_is_recorded_rather_than_left_blank(self):
+        self.assertFalse(self.refresh("PENDING"))
+        self.assertEqual(self.upgrade.state, "submitted")
+        self.assertEqual(self.upgrade.last_error, "status_pending")
+        self.assertIsNotNone(self.upgrade.checked_at)
+
+    def test_a_status_this_build_does_not_know_is_distinguishable_from_waiting(self):
+        self.assertFalse(self.refresh("AWAITING-COMPLIANCE-REVIEW"))
+        self.assertEqual(self.upgrade.state, "submitted")
+        self.assertEqual(self.upgrade.last_error, "status_unrecognized")
