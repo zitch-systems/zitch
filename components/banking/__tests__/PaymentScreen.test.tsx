@@ -299,7 +299,7 @@ it('validates and purchases a no-plan bill without inventing an item', async () 
   await chooseNoPlanBill();
   expect(control('Verify customer').props.disabled).toBe(false);
   await verifyBill(); await payBill();
-  expect(mockValidate).toHaveBeenCalledWith({ biller_id: 'B1', item_id: '', customer: 'customer-1', amount: '100', inputs: {} });
+  expect(mockValidate).toHaveBeenCalledWith({ biller_id: 'B1', item_id: '', customer: 'customer-1', amount: '100', inputs: {}, phone: '07041267880' });
   expect(mockPost).toHaveBeenCalledTimes(1);
 });
 
@@ -315,6 +315,16 @@ it('collects required customer names and invalidates approval when they change',
   await verifyBill();
   expect(mockValidate).toHaveBeenCalledWith(expect.objectContaining({ inputs: { firstname: 'Ada', lastname: 'Eze' } }));
   await act(async () => { control('Customer last name').props.onChangeText('Changed'); });
+  expect(control('Review payment').props.disabled).toBe(true);
+});
+
+it('validates the displayed electricity contact and requires verification after it changes', async () => {
+  await chooseNoPlanBill([{ fieldName: 'customerPhone', validation: 'Y' }]);
+  await act(async () => { control('Phone number').props.onChangeText('07041267881'); });
+  await verifyBill();
+  expect(mockValidate).toHaveBeenLastCalledWith(expect.objectContaining({ phone: '07041267881' }));
+  expect(control('Review payment').props.disabled).toBe(false);
+  await act(async () => { control('Phone number').props.onChangeText('07041267882'); });
   expect(control('Review payment').props.disabled).toBe(true);
 });
 

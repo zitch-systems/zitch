@@ -97,7 +97,7 @@ def _confirm(pa, user):
     if pa.payload["kind"] == "bill":
         result = bills.validate(user, pa.payload["biller_id"], pa.payload["item_id"],
                                 pa.payload["customer"], pa.payload["amount"],
-                                inputs=pa.payload.get("validation_inputs", {}))
+                                inputs=pa.payload.get("validation_inputs", {}), mobile=pa.payload["phone"])
         pa.payload.update(validation_reference=result["validation_reference"], customer_name=result["customer_name"])
     else:
         network = bills.catalog("network", phone=pa.payload["phone"]).get("network")

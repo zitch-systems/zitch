@@ -51,7 +51,7 @@ def catalog(kind, **params):
     return data
 
 
-def validate(user, biller, item, customer, amount, *, inputs=None):
+def validate(user, biller, item, customer, amount, *, inputs=None, mobile=None):
     require_vas(user)
     fields = fields_schema(catalog("fields", biller=biller))
     amount = selection_amount(fields, item, amount)
@@ -62,6 +62,13 @@ def validate(user, biller, item, customer, amount, *, inputs=None):
     if not isinstance(inputs, dict) or set(inputs) - {"firstname", "lastname"}:
         raise ValueError("Refresh the biller fields before validating")
     params = {}
+    validated_phone = ""
+    for field, param in (("customerPhone", "customer_phone"), ("phoneNumber", "phone_number")):
+        if fields.get(field, {}).get("validation") == "Y":
+            # Older builds default their contact field to the verified phone.
+            # Send the exact field required by the selected biller's catalog.
+            validated_phone = phone(user.phone if mobile is None else mobile)
+            params[param] = validated_phone
     for key, value in (("itemId", item), ("amount", amount)):
         if key in fields and fields[key]["validation"] == "Y":
             params["item" if key == "itemId" else key] = value
@@ -87,7 +94,8 @@ def validate(user, biller, item, customer, amount, *, inputs=None):
     row = BillerValidation.objects.create(user=user, reference=secrets.token_urlsafe(24),
         environment=config().get("ENVIRONMENT", "sandbox"),
         biller_id=biller, item_id=item, customer_digest=digest(customer), amount=amount,
-        encrypted_result=seal({"customer": customer, "name": name.strip(), "other_field": other_field}),
+        encrypted_result=seal({"customer": customer, "name": name.strip(), "other_field": other_field,
+                               **({"phone": validated_phone} if validated_phone else {})}),
         expires_at=timezone.now() + timedelta(minutes=10))
     return {"success": True, "validation_reference": row.reference, "customer_name": str(result["customerName"]),
             "amount": str(amount), "expires_at": row.expires_at.isoformat()}
@@ -103,6 +111,8 @@ def purchase_bill(user, validation_ref, mobile, idempotency_key, *, channel="app
         if row.consumed or row.expires_at <= timezone.now():
             raise ValueError("Customer validation expired. Verify again")
         result = unseal(row.encrypted_result)
+        if result.get("phone") and result["phone"] != mobile:
+            raise ValueError("The contact phone changed. Verify the customer again")
         txn = debit(user, row.amount, "Utility bill payment", meta={"provider": "9psb", "provider_purchase": True,
             "vas_rail": "9psb", "vas_type": "bill", "reconcile": True, "biller_id": row.biller_id,
             "item_id": row.item_id, "customer_name": result["name"], "channel": channel}, idempotency_key=idempotency_key)

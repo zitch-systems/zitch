@@ -42,12 +42,13 @@ Connectivity checks use the same recipient parser as transfers.
 
 ## Remaining verification
 
-This parser correction does not explain or resolve the observed provider
-`ReadTimeout` errors. No new bank request, credential disclosure, source-account
-substitution or financial transaction was performed for this review. Direct
-provider diagnostics remain blocked by automatic approval review pending
-explicit approval to send credentials/account data to the supplied endpoint.
-The WaaS Postman collection or a successful external-bank enquiry example is
-still needed to verify its complete nested schema and bank-code format.
+This parser correction did not explain or resolve the observed provider
+`ReadTimeout` errors. No provider requests were performed for that initial
+review. The earlier WaaS Postman collection was subsequently recovered, and the
+user explicitly approved sending the supplied credentials/account details to
+the supplied endpoint. The resulting authenticated checks and remaining
+external-enquiry failure are recorded in
+[the provider check report](9psb-provider-checks-20261105.md). No further document
+upload is needed; a successful external-bank enquiry is still unverified.
 
 This change is server-side and requires no replacement APK for version 1.0.13.

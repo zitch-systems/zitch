@@ -88,6 +88,16 @@ class BankDetectionTests(TestCase):
                 self.assertRaises(ProviderError):
             detect_account_banks('0000014579')
 
+    def test_nip_system_failure_is_not_an_empty_detected_bank_list(self):
+        def enquiry(number, code):
+            return Reply({'code': '96', 'customer': {'account': {
+                'number': number, 'bank': code, 'name': None}}}, 200)
+        with patch('banking.client.Client.token', return_value='token'), \
+                patch('banking.client.Client.resolve', side_effect=enquiry), \
+                self.assertRaises(ProviderError) as failure:
+            detect_account_banks('0000014579')
+        self.assertEqual(failure.exception.code, 'name_enquiry_unavailable')
+
     def test_an_in_progress_lookup_does_not_report_the_recipient_missing(self):
         with patch('banking.client.Client.token') as token, \
                 patch('django.core.cache.cache.add', return_value=False), \

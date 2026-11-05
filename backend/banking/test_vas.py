@@ -79,6 +79,24 @@ class VasWireTests(SimpleTestCase):
                 Client("vas").token()
             self.assertIsNone(cache.get(Client("vas")._cache_key()))
 
+    def test_live_phone_and_composite_item_are_json_values_on_the_documented_routes(self):
+        client = Client("vas")
+        item = "ng_dstv_compe36+ng_dstv_gwalle36"
+        with patch.object(Client, "token", return_value="synthetic"), \
+                patch.object(Client, "_send", return_value=success({})) as send:
+            client.validate_customer("B1", "CUSTOMER-1", item=item, customer_phone="+2347041267880",
+                                     phone_number="+2347041267880")
+            client.pay_bill("Z90000000000000001", "100", "1100000001", biller="B1", item=item,
+                            customer="CUSTOMER-1", mobile="07041267880", name="Jane Doe")
+        self.assertEqual(send.call_args_list[0].kwargs["payload"], {"billerId": "B1", "customerId": "CUSTOMER-1",
+                         "itemId": item, "customerPhone": "07041267880", "phoneNumber": "07041267880"})
+        self.assertEqual(send.call_args_list[1].kwargs["payload"]["itemId"], item)
+        self.assertTrue(send.call_args_list[0].args[1].endswith("/billspayment/validate"))
+        for value in ("../item", "https://example.test/item", "base++addon", "base+", "x" * 81):
+            with self.subTest(value=value), patch.object(Client, "_send") as unsafe, self.assertRaises(ValueError):
+                client.validate_customer("B1", "CUSTOMER-1", item=value)
+            unsafe.assert_not_called()
+
     def test_duplicate_code_300_cannot_refund_the_original_instruction(self):
         reply = Reply({"status": "failed", "responseCode": "300",
             "message": "Duplicate Slip/Instrument No. 'SYNTHETIC' detected."}, 200)
@@ -107,6 +125,20 @@ class VasWireTests(SimpleTestCase):
         for value in variants:
             with self.subTest(value=value), self.assertRaises(ProviderError):
                 fields_schema(value)
+
+    def test_repeated_catalog_ids_collapse_only_when_price_and_package_agree(self):
+        rows = deepcopy(BILL_FIELDS)
+        rows[2]["items"] = [
+            {"itemId": "A", "itemName": "Package A", "amount": "100"},
+            {"itemId": "A", "itemName": "Package A", "amount": "100.00"},
+            {"itemId": "B", "itemName": "Package B", "amount": "200"},
+            {"itemId": "B", "itemName": "Different package", "amount": "300"},
+            {"itemId": "B", "itemName": "Package B", "amount": "200"}]
+        self.assertEqual(fields_schema(rows)["itemId"]["items"], [
+            {"itemId": "A", "itemName": "Package A", "amount": "100.00"}])
+        rows[2]["items"] = rows[2]["items"][2:]
+        with self.assertRaises(ProviderError):
+            fields_schema(rows)
 
     def test_wrong_product_cannot_reach_authentication_or_a_money_endpoint(self):
         with patch.object(Client, "_send") as send:
@@ -155,12 +187,13 @@ class VasJourneyTests(TestCase):
         return self.client.post(path, body, content_type="application/json",
             HTTP_AUTHORIZATION="Bearer " + (token or self.token))
 
-    def validate(self, fields=None, *, item="I1", inputs=None, reply=None):
+    def validate(self, fields=None, *, item="I1", inputs=None, reply=None, mobile=None):
         with patch.object(Client, "fields", return_value=success(fields if fields is not None else BILL_FIELDS)), \
              patch.object(Client, "validate_customer", return_value=reply or success({
                  "customerName": "Jane Doe", "otherField": "bound-value"})) as validate:
             result = self.post("/api/banking/bills/validate/", {"biller_id": "B1", "item_id": item,
-                "customer": "CUSTOMER-1", "amount": "100", "inputs": inputs or {}})
+                "customer": "CUSTOMER-1", "amount": "100", "inputs": inputs or {},
+                **({"phone": mobile} if mobile is not None else {})})
         return result, validate
 
     def purchase(self, validation, **changes):
@@ -214,6 +247,75 @@ class VasJourneyTests(TestCase):
         result, validate = self.validate(fields, item="VT01")
         self.assertEqual(result.status_code, 200, result.content)
         validate.assert_called_once_with("B1", "CUSTOMER-1", item="VT01", amount=Decimal("100.00"))
+
+    def test_live_electricity_contact_is_validated_and_bound_before_any_debit(self):
+        fields = BILL_FIELDS[:2] + [{"fieldName": "customerPhone", "validation": "Y"},
+            {**BILL_FIELDS[2], "items": [{"itemId": "VT01", "itemName": "PREPAID"}]}]
+        result, validate = self.validate(fields, item="VT01", mobile="+2347041267880")
+        self.assertEqual(result.status_code, 200, result.content)
+        validate.assert_called_once_with("B1", "CUSTOMER-1", customer_phone="07041267880",
+                                       item="VT01", amount=Decimal("100.00"))
+        ref = result.json()["validation_reference"]
+        with patch("banking.payments._invoke") as send:
+            changed = self.purchase(ref, phone="07041267881")
+        self.assertEqual(changed.status_code, 400, changed.content)
+        send.assert_not_called()
+        self.assertFalse(Instruction.objects.exists())
+        self.assert_balance("500")
+        with patch.object(Client, "token", return_value="synthetic"), \
+                patch.object(Client, "_send", return_value=success({"isToken": False})) as send:
+            paid = self.purchase(ref)
+        self.assertTrue(paid.json()["success"], paid.content)
+        self.assertEqual(send.call_args.kwargs["payload"]["customerPhone"], "07041267880")
+        self.assert_balance("400")
+
+    def test_older_builds_validate_the_verified_contact_when_phone_is_omitted(self):
+        result, validate = self.validate(BILL_FIELDS + [{"fieldName": "customerPhone", "validation": "Y"}])
+        self.assertEqual(result.status_code, 200, result.content)
+        validate.assert_called_once_with("B1", "CUSTOMER-1", customer_phone=self.user.phone,
+                                       item="I1", amount=Decimal("100.00"))
+
+    def test_betting_phone_number_uses_the_exact_catalog_validation_key(self):
+        fields = BILL_FIELDS[:2] + [{"fieldName": "phoneNumber", "validation": "Y"}]
+        result, validate = self.validate(fields, item="", mobile="+2347041267880")
+        self.assertEqual(result.status_code, 200, result.content)
+        validate.assert_called_once_with("B1", "CUSTOMER-1", phone_number="07041267880",
+                                       amount=Decimal("100.00"))
+        ref = result.json()["validation_reference"]
+        with patch("banking.payments._invoke") as send:
+            changed = self.purchase(ref, phone="07041267881")
+        self.assertEqual(changed.status_code, 400, changed.content)
+        send.assert_not_called()
+        self.assertFalse(Instruction.objects.exists())
+        self.assert_balance("500")
+
+    def test_composite_cable_item_survives_catalog_validation_and_payment(self):
+        item = "ng_dstv_compe36+ng_dstv_gwalle36"
+        fields = [BILL_FIELDS[0], {**BILL_FIELDS[1], "validation": "N"},
+            {"fieldName": "itemId", "isSelectData": "Y", "items": [
+                {"itemId": item, "itemName": "Package plus add-on", "amount": "100"}]}]
+        result, validate = self.validate(fields, item=item)
+        self.assertEqual(result.status_code, 200, result.content)
+        validate.assert_called_once_with("B1", "CUSTOMER-1")
+        with patch.object(Client, "token", return_value="synthetic"), \
+                patch.object(Client, "_send", return_value=success({"isToken": False})) as send:
+            paid = self.purchase(result.json()["validation_reference"])
+        self.assertTrue(paid.json()["success"], paid.content)
+        self.assertEqual(send.call_args.kwargs["payload"]["itemId"], item)
+        self.assert_balance("400")
+
+    def test_conflicting_cable_price_cannot_authorize_a_purchase(self):
+        fields = deepcopy(BILL_FIELDS)
+        fields[2]["items"] = [
+            {"itemId": "SAFE", "itemName": "Other package", "amount": "50"},
+            {"itemId": "AMBIGUOUS", "itemName": "Package", "amount": "100"},
+            {"itemId": "AMBIGUOUS", "itemName": "Different package", "amount": "200"}]
+        result, validate = self.validate(fields, item="AMBIGUOUS")
+        self.assertEqual(result.status_code, 400, result.content)
+        validate.assert_not_called()
+        self.assertFalse(BillerValidation.objects.exists())
+        self.assertFalse(Instruction.objects.exists())
+        self.assert_balance("500")
 
     def test_changed_validation_price_and_untrusted_other_field_are_rejected(self):
         for extra in ({"amount": "101"}, {"amount": "nan"}, {"otherField": {"untrusted": True}}):

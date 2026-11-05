@@ -87,3 +87,28 @@ class RecipientEnquiryTests(SimpleTestCase):
             result = resolve_account(self.number, self.route)
         self.assertTrue(result["retryable"])
         self.assertNotIn("name", result)
+
+    def test_observed_http_200_system_failure_keeps_the_lookup_retryable(self):
+        account = {"bank": self.route, "number": self.number, "name": None,
+                   "kyc": None, "senderaccountnumber": None, "sendername": None}
+        body = {"code": "96", "customer": {"account": account}}
+        with patch.object(Client, "resolve", return_value=Reply(body, 200)):
+            result = resolve_account(self.number, self.route)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["retryable"])
+        self.assertEqual(result["code"], "bank_lookup_unavailable")
+        self.assertNotIn("name", result)
+
+    def test_wrapped_provider_outage_never_verifies_an_echoed_name(self):
+        body = {"status": "SUCCESS", "data": {"responseCode": "96", "customer": self.customer}}
+        with patch.object(Client, "resolve", return_value=Reply(body, 200)):
+            result = resolve_account(self.number, self.route)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["retryable"])
+        self.assertNotIn("name", result)
+
+    def test_invalid_account_response_does_not_become_a_retryable_outage(self):
+        with patch.object(Client, "resolve", return_value=Reply({"code": "14"}, 200)):
+            result = resolve_account(self.number, self.route)
+        self.assertFalse(result["success"])
+        self.assertFalse(result.get("retryable", False))

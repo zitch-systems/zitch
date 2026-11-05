@@ -197,7 +197,7 @@ def bill_validate(request):
     body = request.data
     try:
         return ok(bills.validate(request.user_obj, body.get("biller_id", ""), body.get("item_id", ""),
-            body.get("customer", ""), body.get("amount"), inputs=body.get("inputs")))
+            body.get("customer", ""), body.get("amount"), inputs=body.get("inputs"), mobile=body.get("phone")))
     except (ProviderError, ValueError) as exc:
         return _error(exc)
 

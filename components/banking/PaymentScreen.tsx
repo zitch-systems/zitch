@@ -124,7 +124,7 @@ function PaymentScreenContent({ kind = 'bill' }: { kind?: Kind }) {
     const captured = validationIntent;
     validating.current = true; setBusy(true); invalidate();
     try {
-      const result = await banking.validate({ biller_id: biller, item_id: item, customer, amount, inputs });
+      const result = await banking.validate({ biller_id: biller, item_id: item, customer, amount, inputs, phone });
       if (!current() || liveValidationIntent.current !== captured) return;
       if (result.success && result.validation_reference && Number(result.amount) === Number(amount)) {
         setValidation(result.validation_reference); setCustomerName(result.customer_name || ''); setMessage('');

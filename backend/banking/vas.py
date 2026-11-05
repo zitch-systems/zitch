@@ -6,9 +6,9 @@ only inspected for the documented token/units labels after confirmed success.
 import re
 from decimal import Decimal, InvalidOperation
 
-from .client import ProviderError, money
+from .client import Client, ProviderError, money
 
-INPUT_NAMES = {"customerId", "amount", "itemId", "firstname", "lastname"}
+INPUT_NAMES = {"customerId", "customerPhone", "phoneNumber", "amount", "itemId", "firstname", "lastname"}
 
 
 def text_value(value, *, maximum=160):
@@ -30,7 +30,10 @@ def fields_schema(rows):
             name = row.get("fieldName")
             if name not in INPUT_NAMES or name in result:
                 raise ValueError
-            validation = row.get("validation", "").upper()
+            # Live cable item selections omit this flag. Only an explicit Y
+            # adds an optional field to validation; the selected item and price
+            # remain bound to the subsequent payment either way.
+            validation = row.get("validation", "N").upper()
             select = row.get("isSelectData", "N").upper()
             if validation not in {"Y", "N"} or select not in {"Y", "N"}:
                 raise ValueError
@@ -40,13 +43,10 @@ def fields_schema(rows):
                 # The supplied contract defines itemId as the selection value.
                 if name != "itemId" or not isinstance(row.get("items"), list) or not row["items"]:
                     raise ValueError
-                items, seen = [], set()
+                items, ambiguous = {}, set()
                 for item in row["items"]:
                     item_id = item.get("itemId")
-                    if (not isinstance(item_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", item_id)
-                            or item_id in seen):
-                        raise ValueError
-                    seen.add(item_id)
+                    Client._item_id(item_id)
                     label = text_value(item.get("itemName"))
                     if not label:
                         raise ValueError
@@ -58,8 +58,17 @@ def fields_schema(rows):
                             raise ValueError
                         price = Decimal(str(value))
                         option["amount"] = "0.00" if price == 0 else money(value)
-                    items.append(option)
-                field["items"] = items
+                    # The live cable catalog repeats some IDs. Collapse exact
+                    # duplicates; exclude every version of a conflicting ID so
+                    # neither a guessed price nor an ambiguous package is paid.
+                    if item_id in items and items[item_id] != option:
+                        ambiguous.add(item_id)
+                        items.pop(item_id)
+                    elif item_id not in ambiguous:
+                        items[item_id] = option
+                if not items:
+                    raise ValueError
+                field["items"] = list(items.values())
             elif name == "itemId" or row.get("items"):
                 raise ValueError
             result[name] = field
