@@ -633,16 +633,27 @@ class Client:
             raise ValueError("Invalid catalog ID")
         return value
 
-    def validate_customer(self, biller, customer, *, item="", amount=None, firstname="", lastname=""):
+    @staticmethod
+    def _item_id(value):
+        # Bundle selections are JSON values, not URL path segments. Live cable
+        # catalogs join component IDs with '+', e.g. a package plus an add-on.
+        if (not isinstance(value, str) or len(value) > 80
+                or not re.fullmatch(r"[A-Za-z0-9_-]+(?:\+[A-Za-z0-9_-]+)*", value)):
+            raise ValueError("Invalid bill item ID")
+        return value
+
+    def validate_customer(self, biller, customer, *, item="", amount=None, firstname="", lastname="", customer_phone=""):
         payload = {"billerId": self._catalog_id(biller), "customerId": str(customer)}
         if item:
-            payload["itemId"] = self._catalog_id(item)
+            payload["itemId"] = self._item_id(item)
         if amount is not None:
             payload["amount"] = vas_amount(amount)
         for key, value in (("firstname", firstname), ("lastname", lastname)):
             if value:
                 from .vas import text_value
                 payload[key] = text_value(value, maximum=100)
+        if customer_phone:
+            payload["customerPhone"] = phone(customer_phone)
         return self.request("billspayment/validate", payload)
 
     def topup(self, kind, ref, amount, number, mobile, network, *, product_id=""):
@@ -662,7 +673,7 @@ class Client:
         # The collection's no-plan bill payment omits itemId. Never invent an
         # item for a biller whose fields have no selection.
         if item:
-            payload["itemId"] = self._catalog_id(item)
+            payload["itemId"] = self._item_id(item)
         return self.request("billspayment/pay", payload)
 
     def vas_status(self, ref, *, bill=False):

@@ -18,6 +18,8 @@ The application baseline was `878db5f` (PR #588).
 | VAS categories | HTTP 200, success/code 200, five categories |
 | Phone network | HTTP 200, success/code 200 |
 | Data plans | HTTP 200, success/code 200, 46 plans |
+| Electricity, betting and cable billers | HTTP 200, populated lists (11, 17 and 3 respectively) |
+| Exams and internet billers | HTTP 400/code 400, failed provider response |
 
 Both wallet enquiries distinguish a 17-digit internal `number` from the public
 10-digit `nuban`. The supplied VAS debit account matches its public NUBAN, not
@@ -63,4 +65,30 @@ the external provider's code 96 or prove transfers, VAS purchase delivery,
 Tier 2 or Tier 3 completed. Purchase validation did not yield a financial result;
 no completed purchase or debit reconciliation is claimed. The customer source,
 payment instructions, ledger, pending reservations and settlement rules remain
-unchanged. This server-side change needs no new APK for version 1.0.13.
+unchanged.
+
+## Additional bill catalog corrections
+
+Live electricity definitions include `customerPhone` with `validation=Y`, a
+field the parser previously rejected. Validation now sends the normalized
+displayed contact phone when the bank requires it. The app and WhatsApp both
+provide that contact; the server binds it to the validation record and refuses
+a changed phone before any debit. Earlier app builds that omit the phone use
+the verified account contact. An update is needed to validate a different
+displayed contact correctly from those builds.
+
+Live cable catalogs include composite item IDs such as a package joined to an
+add-on with `+`, omitted validation flags, and repeated item IDs. One repeated
+ID describes different packages with different prices. The former parser
+rejected the entire catalog. A separate bounded JSON item validator now
+supports composite selections in fields, validation and payment. Missing
+validation flags default to exclusion from optional validation inputs. Exact
+duplicate options collapse; every version of a conflicting ID is excluded, so
+the remaining packages are usable without guessing a price. If no unambiguous
+selection remains, the biller stays unavailable. URL path IDs retain their
+original validation, and the payment remains bound to its exact item and price.
+
+After these corrections, the sampled electricity, betting and cable field
+definitions pass the application parser. This is catalog compatibility evidence,
+not proof of a customer validation, purchased token or delivered subscription.
+Version 1.0.14 (22) includes the contact validation request update.

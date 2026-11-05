@@ -64,7 +64,7 @@ class ChatTests(TestCase):
         pa = self.current()
         self.assertEqual(pa.payload["validation_reference"], "SERVER-REF")
         self.assertEqual(pa.state, "pin")
-        validate.assert_called_once_with(self.user, "B1", "I1", "METER-123", "100.00", inputs={})
+        validate.assert_called_once_with(self.user, "B1", "I1", "METER-123", "100.00", inputs={}, mobile=self.user.phone)
 
     def test_no_plan_biller_collects_required_names_then_validates_once(self):
         values = {"categories": [{"id": "4", "name": "Subscriptions"}],
@@ -81,7 +81,7 @@ class ChatTests(TestCase):
         self.assertEqual(pa.state, "pin")
         self.assertEqual(pa.payload["item_id"], "")
         validate.assert_called_once_with(self.user, "B1", "", "CUSTOMER-1", "100.00",
-            inputs={"firstname": "Jane", "lastname": "Doe"})
+            inputs={"firstname": "Jane", "lastname": "Doe"}, mobile=self.user.phone)
         self.assertEqual(self.confirm.call_count, 1)
 
     def test_electricity_vend_options_without_prices_request_customer_amount(self):
@@ -98,7 +98,7 @@ class ChatTests(TestCase):
             validate.assert_not_called()
             chat.advance(self.current(), self.user, self.msisdn, "150")
         self.assertEqual(self.current().state, "pin")
-        validate.assert_called_once_with(self.user, "BP-IKEJA", "VT01", "CUSTOMER-1", "150.00", inputs={})
+        validate.assert_called_once_with(self.user, "BP-IKEJA", "VT01", "CUSTOMER-1", "150.00", inputs={}, mobile=self.user.phone)
 
     def test_replayed_authorized_chat_action_does_not_resend(self):
         with patch("banking.bills.catalog", return_value={"network": "MTN"}):
