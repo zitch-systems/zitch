@@ -8,7 +8,7 @@ from decimal import Decimal, InvalidOperation
 
 from .client import Client, ProviderError, money
 
-INPUT_NAMES = {"customerId", "customerPhone", "amount", "itemId", "firstname", "lastname"}
+INPUT_NAMES = {"customerId", "customerPhone", "phoneNumber", "amount", "itemId", "firstname", "lastname"}
 
 
 def text_value(value, *, maximum=160):

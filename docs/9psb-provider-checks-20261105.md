@@ -70,7 +70,10 @@ unchanged.
 ## Additional bill catalog corrections
 
 Live electricity definitions include `customerPhone` with `validation=Y`, a
-field the parser previously rejected. Validation now sends the normalized
+field the parser previously rejected. BETLAND similarly requires `phoneNumber`.
+Validation now sends the normalized contact under the exact requested key.
+The complete field sweep covered all 31 electricity, betting and cable billers;
+all 31 form definitions pass after these fixes. Validation now uses the
 displayed contact phone when the bank requires it. The app and WhatsApp both
 provide that contact; the server binds it to the validation record and refuses
 a changed phone before any debit. Earlier app builds that omit the phone use

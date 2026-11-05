@@ -642,7 +642,8 @@ class Client:
             raise ValueError("Invalid bill item ID")
         return value
 
-    def validate_customer(self, biller, customer, *, item="", amount=None, firstname="", lastname="", customer_phone=""):
+    def validate_customer(self, biller, customer, *, item="", amount=None, firstname="", lastname="",
+                          customer_phone="", phone_number=""):
         payload = {"billerId": self._catalog_id(biller), "customerId": str(customer)}
         if item:
             payload["itemId"] = self._item_id(item)
@@ -654,6 +655,8 @@ class Client:
                 payload[key] = text_value(value, maximum=100)
         if customer_phone:
             payload["customerPhone"] = phone(customer_phone)
+        if phone_number:
+            payload["phoneNumber"] = phone(phone_number)
         return self.request("billspayment/validate", payload)
 
     def topup(self, kind, ref, amount, number, mobile, network, *, product_id=""):

@@ -63,11 +63,12 @@ def validate(user, biller, item, customer, amount, *, inputs=None, mobile=None):
         raise ValueError("Refresh the biller fields before validating")
     params = {}
     validated_phone = ""
-    if fields.get("customerPhone", {}).get("validation") == "Y":
-        # Older app builds omit this property and default their contact field
-        # to the verified user phone. New builds send the displayed contact.
-        validated_phone = phone(user.phone if mobile is None else mobile)
-        params["customer_phone"] = validated_phone
+    for field, param in (("customerPhone", "customer_phone"), ("phoneNumber", "phone_number")):
+        if fields.get(field, {}).get("validation") == "Y":
+            # Older builds default their contact field to the verified phone.
+            # Send the exact field required by the selected biller's catalog.
+            validated_phone = phone(user.phone if mobile is None else mobile)
+            params[param] = validated_phone
     for key, value in (("itemId", item), ("amount", amount)):
         if key in fields and fields[key]["validation"] == "Y":
             params["item" if key == "itemId" else key] = value

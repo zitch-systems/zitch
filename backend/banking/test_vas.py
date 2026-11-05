@@ -84,11 +84,12 @@ class VasWireTests(SimpleTestCase):
         item = "ng_dstv_compe36+ng_dstv_gwalle36"
         with patch.object(Client, "token", return_value="synthetic"), \
                 patch.object(Client, "_send", return_value=success({})) as send:
-            client.validate_customer("B1", "CUSTOMER-1", item=item, customer_phone="+2347041267880")
+            client.validate_customer("B1", "CUSTOMER-1", item=item, customer_phone="+2347041267880",
+                                     phone_number="+2347041267880")
             client.pay_bill("Z90000000000000001", "100", "1100000001", biller="B1", item=item,
                             customer="CUSTOMER-1", mobile="07041267880", name="Jane Doe")
         self.assertEqual(send.call_args_list[0].kwargs["payload"], {"billerId": "B1", "customerId": "CUSTOMER-1",
-                         "itemId": item, "customerPhone": "07041267880"})
+                         "itemId": item, "customerPhone": "07041267880", "phoneNumber": "07041267880"})
         self.assertEqual(send.call_args_list[1].kwargs["payload"]["itemId"], item)
         self.assertTrue(send.call_args_list[0].args[1].endswith("/billspayment/validate"))
         for value in ("../item", "https://example.test/item", "base++addon", "base+", "x" * 81):
@@ -273,6 +274,20 @@ class VasJourneyTests(TestCase):
         self.assertEqual(result.status_code, 200, result.content)
         validate.assert_called_once_with("B1", "CUSTOMER-1", customer_phone=self.user.phone,
                                        item="I1", amount=Decimal("100.00"))
+
+    def test_betting_phone_number_uses_the_exact_catalog_validation_key(self):
+        fields = BILL_FIELDS[:2] + [{"fieldName": "phoneNumber", "validation": "Y"}]
+        result, validate = self.validate(fields, item="", mobile="+2347041267880")
+        self.assertEqual(result.status_code, 200, result.content)
+        validate.assert_called_once_with("B1", "CUSTOMER-1", phone_number="07041267880",
+                                       amount=Decimal("100.00"))
+        ref = result.json()["validation_reference"]
+        with patch("banking.payments._invoke") as send:
+            changed = self.purchase(ref, phone="07041267881")
+        self.assertEqual(changed.status_code, 400, changed.content)
+        send.assert_not_called()
+        self.assertFalse(Instruction.objects.exists())
+        self.assert_balance("500")
 
     def test_composite_cable_item_survives_catalog_validation_and_payment(self):
         item = "ng_dstv_compe36+ng_dstv_gwalle36"
