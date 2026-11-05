@@ -1,5 +1,7 @@
 """9PSB tier upgrades with independent, correlated address evidence."""
 import hmac
+import logging
+import re
 import secrets
 
 from django.db import transaction
@@ -15,7 +17,41 @@ from .payments import digest
 from .secrets import unseal
 from .validation import upgrade_profile
 
+# The root logger is WARNING. Use the configured application audit stream so
+# these bounded outcome records reach operators without exposing payloads.
+log = logging.getLogger("zitch.banking.upgrades")
+
 ACTIVE_UPGRADE_STATES = {"pending", "submitted", "review"}
+
+
+def _reported_state(value):
+    value = str(value or "").strip().upper()
+    return value if value in {"APPROVED", "DECLINED", "PENDING", "PROCESSING",
+                              "REVIEW", "SUBMITTED", "FAILED"} else "unrecognized"
+
+
+def _log_upgrade_status(request, response, data, bank, decision):
+    """Bounded evidence for what the bank reports about one upgrade.
+
+    A request can sit in `submitted` for hours while the bank neither approves
+    nor declines it. Without this the only trace is `checked_at` moving, and an
+    operator cannot tell a silent provider from an unrecognised status: the
+    reference, tier and bounded codes are the whole diagnosis. Customer data,
+    account numbers, holder names and raw messages stay out.
+    """
+    def code(value):
+        value = str(value or "")
+        return value if re.fullmatch(r"[0-9]{2,4}", value) else "absent"
+    echoed = data.get("accountNumber")
+    keys = [key for key in ("status", "responseCode", "isSuccessful", "accountNumber",
+                            "tier", "message") if key in data]
+    log.info("bank_upgrade_status suffix=%s tier=%s stored=%s decision=%s http=%s code=%s "
+             "nested_code=%s envelope=%s reported=%s account_echo=%s fields=%s",
+             request.reference[-6:], request.tier, request.state, decision, response.http_status,
+             code(response.body.get("responseCode")), code(data.get("responseCode")),
+             _reported_state(response.body.get("status")), _reported_state(data.get("status")),
+             "absent" if not echoed else ("match" if echoed == bank.number else "mismatch"),
+             ",".join(keys))
 
 
 def upgrade_payload(user):
@@ -163,13 +199,21 @@ def refresh_upgrade(bank, *, timeout=None):
             or (status == "APPROVED" and (not affirmative_code(data.get("responseCode"))
                 or (successful is not True and successful not in ("true", "True"))))
             or (data.get("accountNumber") and data["accountNumber"] != bank.number)):
+        _log_upgrade_status(request, response, data, bank, "unconfirmed")
         raise ProviderError("upgrade_status_unconfirmed")
     if status == "DECLINED":
+        _log_upgrade_status(request, response, data, bank, "declined")
         AccountUpgrade.objects.filter(pk=request.pk).update(state="declined", checked_at=timezone.now())
         return False
     if status != "APPROVED":
-        AccountUpgrade.objects.filter(pk=request.pk).update(checked_at=timezone.now())
+        # Record what the bank last reported, not just that it was asked: an
+        # upgrade can wait here for hours, and an empty last_error cannot tell
+        # a bank still deciding from a status this build does not recognise.
+        _log_upgrade_status(request, response, data, bank, "undecided")
+        AccountUpgrade.objects.filter(pk=request.pk).update(
+            checked_at=timezone.now(), last_error="status_" + _reported_state(status).lower())
         return False
+    _log_upgrade_status(request, response, data, bank, "approved")
     update_account(bank, **({"timeout": timeout} if timeout else {}))
     if bank.tier < request.tier:
         AccountUpgrade.objects.filter(pk=request.pk).update(checked_at=timezone.now())

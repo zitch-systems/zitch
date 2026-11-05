@@ -37,3 +37,48 @@ class PaymentOutcomeLoggingTests(SimpleTestCase):
         self.assertIn("code=absent", line)
         self.assertIn("envelope=unrecognized", line)
         self.assertIn("echoes_match=False", line)
+
+
+class UpgradeStatusLoggingTests(SimpleTestCase):
+    """An upgrade can wait at the bank for hours; the wait must leave evidence."""
+
+    def request(self):
+        return SimpleNamespace(reference="ZU-SYNTHETIC-ABCDEF", tier=2, state="submitted")
+
+    def test_an_undecided_reply_records_what_the_bank_reported(self):
+        from .upgrades import _log_upgrade_status
+        bank = SimpleNamespace(number="1100000001")
+        response = Reply({"status": "SUCCESS", "responseCode": "00",
+                          "data": {"status": "PENDING", "accountNumber": "1100000001"}}, 200)
+        with self.assertLogs("zitch", level="INFO") as records:
+            _log_upgrade_status(self.request(), response, response.data, bank, "undecided")
+        line = " ".join(records.output)
+        self.assertIn("suffix=ABCDEF", line)
+        self.assertIn("decision=undecided", line)
+        self.assertIn("reported=PENDING", line)
+        self.assertIn("stored=submitted", line)
+        self.assertIn("tier=2", line)
+        self.assertIn("account_echo=match", line)
+
+    def test_an_unrecognised_status_is_named_as_such_rather_than_echoed(self):
+        from .upgrades import _log_upgrade_status
+        bank = SimpleNamespace(number="1100000001")
+        response = Reply({"status": "SUCCESS", "data": {"status": "AWAITING-COMPLIANCE-REVIEW"}}, 200)
+        with self.assertLogs("zitch", level="INFO") as records:
+            _log_upgrade_status(self.request(), response, response.data, bank, "undecided")
+        line = " ".join(records.output)
+        self.assertIn("reported=unrecognized", line)
+        self.assertNotIn("AWAITING-COMPLIANCE-REVIEW", line)
+        self.assertIn("account_echo=absent", line)
+
+    def test_a_mismatched_account_echo_is_reported_without_the_numbers(self):
+        from .upgrades import _log_upgrade_status
+        bank = SimpleNamespace(number="1100000001")
+        response = Reply({"status": "SUCCESS", "data": {"status": "APPROVED",
+                                                        "accountNumber": "2200000002"}}, 200)
+        with self.assertLogs("zitch", level="INFO") as records:
+            _log_upgrade_status(self.request(), response, response.data, bank, "unconfirmed")
+        line = " ".join(records.output)
+        self.assertIn("account_echo=mismatch", line)
+        for private in ("1100000001", "2200000002", "ZU-SYNTHETIC-ABCDEF"):
+            self.assertNotIn(private, line)
