@@ -626,10 +626,10 @@ class Client:
 
     @staticmethod
     def _product_id(value):
-        # Supplied data plans include IDs such as "MTN-2.5GB-27". Product IDs
+        # Live plans include "MTN-2.5GB-27" and "MTN-2GB 2-75". Product IDs
         # are JSON body values, never URL path segments.
         value = str(value)
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", value) or ".." in value:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,79}", value) or ".." in value:
             raise ValueError("Invalid catalog ID")
         return value
 

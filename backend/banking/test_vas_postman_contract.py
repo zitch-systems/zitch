@@ -19,7 +19,8 @@ from .payments import requery
 from .test_client import CONFIG
 
 PLANS = [{"productId": "MTN-200MB-2", "dataBundle": "200MB", "amount": "200", "validity": "2days"},
-         {"productId": "MTN-2.5GB-27", "dataBundle": "2.5GB", "amount": "100", "validity": "2days"}]
+         {"productId": "MTN-2.5GB-27", "dataBundle": "2.5GB", "amount": "100", "validity": "2days"},
+         {"productId": "MTN-2GB 2-75", "dataBundle": "2GB", "amount": "100", "validity": "2days"}]
 
 
 def sample(data, *, message="Airtime topup successful"):
@@ -40,13 +41,13 @@ class VasWireFormatTests(SimpleTestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 vas_amount(value)
 
-    def test_dotted_data_plan_ids_from_the_catalog_reach_the_wire(self):
+    def test_catalog_data_plan_ids_reach_the_wire_without_normalization(self):
         with patch.object(Client, "request", return_value=sample({})) as request:
-            for product in ("MTN-2.5GB-27", "MTN-1.5GB-4", "MTN-4.5GB-6", "MTN-200MB-2"):
+            for product in ("MTN-2.5GB-27", "MTN-1.5GB-4", "MTN-4.5GB-6", "MTN-200MB-2", "MTN-2GB 2-75"):
                 Client("vas").topup("data", "Z90000000000000001", "500", "1100000001",
                                     "08000000001", "MTN", product_id=product)
                 self.assertEqual(request.call_args.args[1]["productId"], product)
-        for product in ("", ".5GB", "MTN..1", "MTN/1", "MTN 1"):
+        for product in ("", ".5GB", "MTN..1", "MTN/1", "MTN\t1", "MTN\n1", " MTN-1"):
             with self.subTest(product=product), self.assertRaises(ValueError):
                 Client("vas").topup("data", "Z90000000000000001", "500", "1100000001",
                                     "08000000001", "MTN", product_id=product)
@@ -54,6 +55,8 @@ class VasWireFormatTests(SimpleTestCase):
     def test_dotted_ids_remain_invalid_as_url_path_segments(self):
         with self.assertRaises(ValueError):
             Client("vas").billers("1.5")
+        with self.assertRaises(ValueError):
+            Client("vas").billers("MTN-2GB 2-75")
 
     def test_sample_millisecond_expiry_is_bounded_to_one_hour(self):
         # The sample says expiresIn 7200000 for a two-hour token; the PDF says seconds.
@@ -114,6 +117,13 @@ class VasSampleJourneyTests(TestCase):
             message="Data topup Successful"), product="MTN-2.5GB-27")
         self.assertEqual(txn.transaction_status, Transaction.SUCCESS)
         self.assertEqual((wire["productId"], wire["amount"]), ("MTN-2.5GB-27", "100"))
+        self.assert_balance("400")
+
+    def test_live_spaced_data_plan_id_survives_reservation_dispatch_and_settlement(self):
+        txn, wire = self.topup("data", sample({"recipient": "07041267880", "network": "MTN",
+            "amount": "100", "dataPlan": "MTN-2GB 2-75"}), product="MTN-2GB 2-75")
+        self.assertEqual(txn.transaction_status, Transaction.SUCCESS)
+        self.assertEqual((wire["productId"], wire["amount"]), ("MTN-2GB 2-75", "100"))
         self.assert_balance("400")
 
     def test_echoed_recipient_or_amount_contradiction_still_holds_the_payment(self):
