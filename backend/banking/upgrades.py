@@ -178,10 +178,10 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
         request = AccountUpgrade.objects.create(account=bank, reference="ZU" + secrets.token_hex(10).upper(),
             tier=tier, bvn_hash=hash_identifier(body["bvn"]), nin_hash=hash_identifier(body["nin"]),
             address_verification=address, request_digest=digest(body))
-    clear_documents(user)  # Sent to the bank now; Zitch keeps no copy.
     try:
         response = Client().upgrade(bank.number, tier, body)
     except ProviderError:
+        clear_documents(user)
         AccountUpgrade.objects.filter(pk=request.pk).update(last_error="submission_unconfirmed")
         return {"success": False, "pending": True, "reference": request.reference,
                 "message": "Your upgrade is awaiting bank confirmation. Do not submit it again."}
@@ -194,8 +194,11 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
         pass  # Submitted; the status read-back is retried later. Not a failed upgrade.
     request.refresh_from_db()
     if request.state == "declined":
+        # The form remains open for correction. Its uploads retain their
+        # original expiry so the app's uploaded-document state stays accurate.
         return {"success": False, "pending": False, "reference": request.reference, "bank_tier": bank.tier,
                 "message": "The bank declined your upgrade. Review your details before trying again."}
+    clear_documents(user)
     return {"success": request.state == "approved", "pending": request.state != "approved",
         "reference": request.reference, "bank_tier": bank.tier,
         "message": "Upgrade approved." if request.state == "approved" else "Your upgrade is being reviewed."}

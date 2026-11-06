@@ -148,14 +148,30 @@ class CustomerUpgradeStatusTests(TestCase):
         self.assertEqual(self.upgrade.state, 'approved')
 
     def test_immediate_decline_is_reported_on_submission(self):
+        from .upgrades import store_document, stored_documents
+        profile = test_upgrade_rules.profile()
+        store_document(self.user, 'utilityBill', profile.pop('utilityBill'))
         self.upgrade.delete()
         with patch('banking.upgrades.update_account'), \
                 patch('banking.client.Client.upgrade', return_value=Reply({'status': 'SUCCESS'}, 200)), \
                 patch('banking.client.Client.upgrade_status', return_value=self.decision('Successful', message='Declined')):
-            result = submit_upgrade(self.user, 2, test_upgrade_rules.profile())
+            result = submit_upgrade(self.user, 2, profile)
         self.assertFalse(result['pending'])
         self.assertFalse(result['success'])
         self.assertEqual(AccountUpgrade.objects.get().state, 'declined')
+        self.assertIn('utilityBill', stored_documents(self.user))
+
+    def test_accepted_submission_releases_the_uploaded_documents(self):
+        from .upgrades import store_document, stored_documents
+        profile = test_upgrade_rules.profile()
+        store_document(self.user, 'utilityBill', profile.pop('utilityBill'))
+        self.upgrade.delete()
+        with patch('banking.upgrades.update_account'), \
+                patch('banking.client.Client.upgrade', return_value=Reply({'status': 'SUCCESS'}, 200)), \
+                patch('banking.client.Client.upgrade_status', return_value=self.decision('Successful', message='Pending')):
+            result = submit_upgrade(self.user, 2, profile)
+        self.assertTrue(result['pending'])
+        self.assertEqual(stored_documents(self.user), {})
 
     def test_other_customers_cannot_read_or_refresh_the_request(self):
         other = User.objects.create_user(username='different-upgrade-owner')
