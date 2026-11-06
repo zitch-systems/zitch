@@ -296,6 +296,13 @@ class Reply:
                 status = str(data.get("transactionStatus", "")).upper()
                 if code != "200" or nested_code not in {"", "200"}:
                     return "pending"
+                # The sandbox also labels a missing transaction FAILED. An
+                # absent reference cannot establish the original debit outcome.
+                description = data.get("description")
+                if isinstance(description, str) and re.fullmatch(
+                        r"Transaction with Reference:\s*\S+\s+not found\.?",
+                        description.strip(), flags=re.IGNORECASE):
+                    return "pending"
                 if status == "SUCCESS" and data.get("isSuccessful", True) is True:
                     return "success"
                 if status == "FAILED" and data.get("isSuccessful", False) is False:

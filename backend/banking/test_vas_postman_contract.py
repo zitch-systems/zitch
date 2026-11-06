@@ -156,3 +156,25 @@ class VasSampleJourneyTests(TestCase):
         with patch.object(Client, "vas_status", return_value=missing):
             self.assertTrue(requery(Instruction.objects.get())["pending"])
         self.assert_balance("400")
+
+    def test_failed_status_for_a_missing_reference_keeps_the_original_reservation(self):
+        txn, _ = self.topup("airtime", Reply({"status": "pending", "responseCode": "202"}, 200))
+        instruction = Instruction.objects.get()
+        missing = sample({"transactionStatus": "FAILED", "description":
+            "Transaction with Reference: ZTC-" + instruction.reference + " not found"})
+        with patch.object(Client, "vas_status", return_value=missing), \
+                patch.object(Client, "topup") as send:
+            self.assertTrue(requery(instruction)["pending"])
+        txn.refresh_from_db()
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)
+        self.assert_balance("400")
+        send.assert_not_called()
+
+    def test_an_explicit_failed_transaction_remains_refundable(self):
+        txn, _ = self.topup("airtime", Reply({"status": "pending", "responseCode": "202"}, 200))
+        with patch.object(Client, "vas_status", return_value=sample({
+                "transactionStatus": "FAILED", "description": "Transaction failed"})):
+            self.assertFalse(requery(Instruction.objects.get())["pending"])
+        txn.refresh_from_db()
+        self.assertEqual(txn.transaction_status, Transaction.FAILED)
+        self.assert_balance("500")
