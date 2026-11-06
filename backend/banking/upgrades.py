@@ -22,12 +22,26 @@ from .validation import upgrade_profile
 log = logging.getLogger("zitch.banking.upgrades")
 
 ACTIVE_UPGRADE_STATES = {"pending", "submitted", "review"}
+_BANK_UPGRADE_STATES = {"APPROVED", "DECLINED", "PENDING", "PROCESSING", "REVIEW", "SUBMITTED", "FAILED"}
+_REQUEST_SUCCESS = {"SUCCESS", "SUCCESSFUL"}
 
 
 def _reported_state(value):
     value = str(value or "").strip().upper()
-    return value if value in {"APPROVED", "DECLINED", "PENDING", "PROCESSING",
-                              "REVIEW", "SUBMITTED", "FAILED"} else "unrecognized"
+    return value if value in _BANK_UPGRADE_STATES or value in _REQUEST_SUCCESS else "unrecognized"
+
+
+def _upgrade_outcome(data):
+    status = _reported_state(data.get("status"))
+    message = _reported_state(data.get("message"))
+    # Live status enquiries use data.status="Successful" for the enquiry and
+    # data.message="Pending" for the upgrade. Accept only exact state words.
+    if message in _BANK_UPGRADE_STATES:
+        if status in _REQUEST_SUCCESS:
+            return message
+        if status in _BANK_UPGRADE_STATES and status != message:
+            return "conflict"
+    return status if status in _BANK_UPGRADE_STATES else "unrecognized"
 
 
 def _log_upgrade_status(request, response, data, bank, decision):
@@ -49,7 +63,7 @@ def _log_upgrade_status(request, response, data, bank, decision):
              "nested_code=%s envelope=%s reported=%s account_echo=%s fields=%s",
              request.reference[-6:], request.tier, request.state, decision, response.http_status,
              code(response.body.get("responseCode")), code(data.get("responseCode")),
-             _reported_state(response.body.get("status")), _reported_state(data.get("status")),
+             _reported_state(response.body.get("status")), _upgrade_outcome(data),
              "absent" if not echoed else ("match" if echoed == bank.number else "mismatch"),
              ",".join(keys))
 
@@ -164,21 +178,27 @@ def submit_upgrade(user, tier, payload, *, address_reference=""):
         request = AccountUpgrade.objects.create(account=bank, reference="ZU" + secrets.token_hex(10).upper(),
             tier=tier, bvn_hash=hash_identifier(body["bvn"]), nin_hash=hash_identifier(body["nin"]),
             address_verification=address, request_digest=digest(body))
-    clear_documents(user)  # Sent to the bank now; Zitch keeps no copy.
     try:
         response = Client().upgrade(bank.number, tier, body)
     except ProviderError:
+        clear_documents(user)
         AccountUpgrade.objects.filter(pk=request.pk).update(last_error="submission_unconfirmed")
         return {"success": False, "pending": True, "reference": request.reference,
                 "message": "Your upgrade is awaiting bank confirmation. Do not submit it again."}
     # HTTP success means submission. Approval requires a separate bank read-back.
-    AccountUpgrade.objects.filter(pk=request.pk).update(state="submitted" if response.ok else "review",
+    AccountUpgrade.objects.filter(pk=request.pk, state="pending").update(state="submitted" if response.ok else "review",
         last_error="" if response.ok else "bank_submission_needs_review")
     try:
         refresh_upgrade(bank)
     except ProviderError:
         pass  # Submitted; the status read-back is retried later. Not a failed upgrade.
     request.refresh_from_db()
+    if request.state == "declined":
+        # The form remains open for correction. Its uploads retain their
+        # original expiry so the app's uploaded-document state stays accurate.
+        return {"success": False, "pending": False, "reference": request.reference, "bank_tier": bank.tier,
+                "message": "The bank declined your upgrade. Review your details before trying again."}
+    clear_documents(user)
     return {"success": request.state == "approved", "pending": request.state != "approved",
         "reference": request.reference, "bank_tier": bank.tier,
         "message": "Upgrade approved." if request.state == "approved" else "Your upgrade is being reviewed."}
@@ -193,42 +213,44 @@ def refresh_upgrade(bank, *, timeout=None):
     data = response.data if isinstance(response.data, dict) else {}
     # The documented account-level status must be read for our account, and any
     # echoed account must agree. The callback's status alone is never accepted.
-    status = str(data.get("status", "")).upper()
+    status = _upgrade_outcome(data)
     successful = data.get("isSuccessful", True)
-    if (not response.ok or not affirmative_code(response.body.get("responseCode"))
+    if (status == "conflict" or not response.ok or not affirmative_code(response.body.get("responseCode"))
             or (status == "APPROVED" and (not affirmative_code(data.get("responseCode"))
                 or (successful is not True and successful not in ("true", "True"))))
             or (data.get("accountNumber") and data["accountNumber"] != bank.number)):
         _log_upgrade_status(request, response, data, bank, "unconfirmed")
         raise ProviderError("upgrade_status_unconfirmed")
+    active = AccountUpgrade.objects.filter(pk=request.pk, state__in=ACTIVE_UPGRADE_STATES)
     if status == "DECLINED":
         _log_upgrade_status(request, response, data, bank, "declined")
-        AccountUpgrade.objects.filter(pk=request.pk).update(state="declined", checked_at=timezone.now())
+        active.update(state="declined", last_error="", checked_at=timezone.now())
         return False
     if status != "APPROVED":
         # Record what the bank last reported, not just that it was asked: an
         # upgrade can wait here for hours, and an empty last_error cannot tell
         # a bank still deciding from a status this build does not recognise.
         _log_upgrade_status(request, response, data, bank, "undecided")
-        AccountUpgrade.objects.filter(pk=request.pk).update(
-            checked_at=timezone.now(), last_error="status_" + _reported_state(status).lower())
+        active.update(checked_at=timezone.now(), last_error="status_" + status.lower())
         return False
     _log_upgrade_status(request, response, data, bank, "approved")
     update_account(bank, **({"timeout": timeout} if timeout else {}))
     if bank.tier < request.tier:
-        AccountUpgrade.objects.filter(pk=request.pk).update(checked_at=timezone.now())
+        active.update(checked_at=timezone.now())
         return False
     with transaction.atomic():
         wallet = Wallet.objects.select_for_update().get(pk=bank.wallet_id)
         user = User.objects.select_for_update().get(pk=wallet.user_id)
         locked = AccountUpgrade.objects.select_for_update().get(pk=request.pk)
+        if locked.state not in ACTIVE_UPGRADE_STATES:
+            return locked.state == "approved"
         if not hmac.compare_digest(user.bvn_hash, locked.bvn_hash) or (
                 user.nin_hash and not hmac.compare_digest(user.nin_hash, locked.nin_hash)):
             locked.state, locked.last_error = "review", "identity_changed"
         elif locked.tier == 3 and (not locked.address_verification or locked.address_verification.state != "verified"):
             locked.state, locked.last_error = "review", "address_evidence_unconfirmed"
         else:
-            locked.state = "approved"
+            locked.state, locked.last_error = "approved", ""
             # Tier recomputation reads the durable approval in this transaction.
             locked.save(update_fields=["state"])
             # Approval verifies this NIN even when an earlier integration

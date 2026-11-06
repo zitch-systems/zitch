@@ -185,7 +185,7 @@ def catalog(request):
         bills.require_vas(request.user_obj)
         body = request.data
         result = bills.catalog(body.get("kind"), **{k: body[k] for k in ("phone", "category", "biller") if k in body})
-        return ok(success=True, data=result)
+        return ok({"success": True, "data": result})
     except (ProviderError, ValueError, KeyError) as exc:
         return _error(exc)
 

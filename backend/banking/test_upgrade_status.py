@@ -74,6 +74,27 @@ class CustomerUpgradeStatusTests(TestCase):
         read.assert_called_once()
         wallet.assert_not_called()
 
+    def test_successful_status_enquiry_with_pending_message_keeps_request_open(self):
+        reply = Reply({"status": "SUCCESS", "message": "Status request successful",
+                       "data": {"status": "Successful", "message": "Pending"}}, 200)
+        with patch('banking.client.Client.upgrade_status', return_value=reply), \
+                patch('banking.client.Client.wallet') as wallet:
+            result = self.status(refresh=True).json()
+        self.assertTrue(result['upgrade_status']['pending'])
+        self.upgrade.refresh_from_db()
+        self.assertEqual(self.upgrade.last_error, 'status_pending')
+        wallet.assert_not_called()
+
+    def test_explicit_message_approval_still_needs_the_requested_wallet_tier(self):
+        with patch('banking.client.Client.upgrade_status', return_value=self.decision('Successful', message='Approved')), \
+                patch('banking.client.Client.wallet', side_effect=[self.wallet_reply(1), self.wallet_reply(2)]):
+            first = self.status(refresh=True).json()
+            cache.clear()
+            second = self.status(refresh=True).json()
+        self.assertTrue(first['upgrade_status']['pending'])
+        self.assertEqual(second['upgrade_status']['state'], 'approved')
+        self.assertEqual(second['tier'], 2)
+
     def test_decline_allows_the_customer_to_correct_their_details(self):
         with patch('banking.client.Client.upgrade_status', return_value=self.decision('DECLINED', isSuccessful=False)):
             response = self.status(refresh=True)
@@ -91,7 +112,9 @@ class CustomerUpgradeStatusTests(TestCase):
 
     def test_contradictory_approval_codes_or_accounts_never_promote_a_customer(self):
         replies = [self.decision(responseCode='51'), self.decision(isSuccessful=False),
-                   self.decision(accountNumber='1100000002'),
+                   self.decision(accountNumber='1100000002'), self.decision('APPROVED', message='Pending'),
+                   self.decision('Successful', message='Approved', responseCode='51'),
+                   self.decision('Successful', message='Approved', isSuccessful=False),
                    Reply({'status': 'SUCCESS', 'responseCode': '51', 'data': {
                        'accountNumber': self.bank.number, 'status': 'APPROVED'}}, 200)]
         for reply in replies:
@@ -104,6 +127,51 @@ class CustomerUpgradeStatusTests(TestCase):
                 wallet.assert_not_called()
         self.upgrade.refresh_from_db()
         self.assertEqual(self.upgrade.state, 'submitted')
+
+    def test_success_word_or_free_text_does_not_approve_an_upgrade(self):
+        for message in ('Successful', 'Your request was approved yesterday', ''):
+            with self.subTest(message=message), \
+                    patch('banking.client.Client.upgrade_status', return_value=self.decision('Successful', message=message)), \
+                    patch('banking.client.Client.wallet') as wallet:
+                cache.clear()
+                self.assertTrue(self.status(refresh=True).json()['upgrade_status']['pending'])
+                wallet.assert_not_called()
+
+    def test_delayed_decline_cannot_replace_an_already_recorded_approval(self):
+        def late_reply(_):
+            AccountUpgrade.objects.filter(pk=self.upgrade.pk).update(state='approved')
+            return self.decision('Successful', message='Declined')
+        from .upgrades import refresh_upgrade
+        with patch('banking.client.Client.upgrade_status', side_effect=late_reply):
+            refresh_upgrade(self.bank)
+        self.upgrade.refresh_from_db()
+        self.assertEqual(self.upgrade.state, 'approved')
+
+    def test_immediate_decline_is_reported_on_submission(self):
+        from .upgrades import store_document, stored_documents
+        profile = test_upgrade_rules.profile()
+        store_document(self.user, 'utilityBill', profile.pop('utilityBill'))
+        self.upgrade.delete()
+        with patch('banking.upgrades.update_account'), \
+                patch('banking.client.Client.upgrade', return_value=Reply({'status': 'SUCCESS'}, 200)), \
+                patch('banking.client.Client.upgrade_status', return_value=self.decision('Successful', message='Declined')):
+            result = submit_upgrade(self.user, 2, profile)
+        self.assertFalse(result['pending'])
+        self.assertFalse(result['success'])
+        self.assertEqual(AccountUpgrade.objects.get().state, 'declined')
+        self.assertIn('utilityBill', stored_documents(self.user))
+
+    def test_accepted_submission_releases_the_uploaded_documents(self):
+        from .upgrades import store_document, stored_documents
+        profile = test_upgrade_rules.profile()
+        store_document(self.user, 'utilityBill', profile.pop('utilityBill'))
+        self.upgrade.delete()
+        with patch('banking.upgrades.update_account'), \
+                patch('banking.client.Client.upgrade', return_value=Reply({'status': 'SUCCESS'}, 200)), \
+                patch('banking.client.Client.upgrade_status', return_value=self.decision('Successful', message='Pending')):
+            result = submit_upgrade(self.user, 2, profile)
+        self.assertTrue(result['pending'])
+        self.assertEqual(stored_documents(self.user), {})
 
     def test_other_customers_cannot_read_or_refresh_the_request(self):
         other = User.objects.create_user(username='different-upgrade-owner')

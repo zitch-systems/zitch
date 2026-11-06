@@ -187,6 +187,24 @@ class VasJourneyTests(TestCase):
         return self.client.post(path, body, content_type="application/json",
             HTTP_AUTHORIZATION="Bearer " + (token or self.token))
 
+    def test_catalog_endpoint_preserves_the_app_data_field_for_every_kind(self):
+        field = {"fieldName": "customerId", "fieldDescription": "Customer ID",
+                 "validation": "Y", "isSelectData": "N"}
+        cases = [
+            ("categories", "categories", {}, [{"id": "1", "name": "Electricity"}]),
+            ("billers", "billers", {"category": "1"}, [{"id": "B1", "name": "Biller"}]),
+            ("billers", "billers", {"category": "2"}, []),
+            ("fields", "fields", {"biller": "B1"}, [field]),
+            ("data", "data_plans", {"phone": "07041267880"}, [
+                {"productId": "P1", "dataBundle": "1GB", "amount": "100", "validity": "1 day"}]),
+            ("network", "network", {"phone": "07041267880"}, {"network": "MTN"}),
+        ]
+        for kind, method, params, catalog in cases:
+            with self.subTest(kind=kind, params=params), patch.object(Client, method, return_value=success(catalog)):
+                response = self.post("/api/banking/catalog/", {"kind": kind, **params})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"success": True, "data": catalog})
+
     def validate(self, fields=None, *, item="I1", inputs=None, reply=None, mobile=None):
         with patch.object(Client, "fields", return_value=success(fields if fields is not None else BILL_FIELDS)), \
              patch.object(Client, "validate_customer", return_value=reply or success({
