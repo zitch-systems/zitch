@@ -13,7 +13,7 @@ from django.db import connection
 def evaluate_cutover(counts):
     """Conservative blockers; absence of a blocker is not Wema bank approval."""
     blockers = []
-    if counts.get("banking_migrations", 0):
+    if counts.get("banking_migrations", 0) and not counts.get("wema_forward_migration_applied"):
         blockers.append("9psb_era_migrations_need_forward_compatibility")
     if counts.get("bank_accounts", 0):
         blockers.append("9psb_accounts_require_bank_side_closeout_and_reconciliation")
@@ -23,6 +23,10 @@ def evaluate_cutover(counts):
         blockers.append("historical_bank_balances_or_pending_items_require_review")
     if counts.get("pending_transfers", 0):
         blockers.append("pending_wallet_transfers_require_provider_outcome_review")
+    if counts.get("bank_instructions_unresolved", 0):
+        blockers.append("unresolved_9psb_instructions_require_bank_finality")
+    if counts.get("bank_notifications_unresolved", 0):
+        blockers.append("unresolved_9psb_inflows_require_banked_ledger_evidence")
     if counts.get("unsettled_funding", 0):
         blockers.append("unsettled_funding_requires_attributable_bank_evidence")
     if counts.get("archived_bank_wallets", 0) and not counts.get("active_wema_wallets", 0):
@@ -46,8 +50,15 @@ class Command(BaseCommand):
             if "django_migrations" in tables:
                 cur.execute("SELECT COUNT(*) FROM django_migrations WHERE app = %s", ["banking"])
                 counts["banking_migrations"] = int(cur.fetchone()[0])
+                cur.execute(
+                    "SELECT EXISTS(SELECT 1 FROM django_migrations "
+                    "WHERE app = %s AND name = %s)",
+                    ["accounts", "0036_restore_wema_partnership_identity_choices"],
+                )
+                counts["wema_forward_migration_applied"] = bool(cur.fetchone()[0])
             else:
                 counts["banking_migrations"] = 0
+                counts["wema_forward_migration_applied"] = False
 
             def count(table, where="1=1"):
                 if table not in tables:
@@ -57,6 +68,20 @@ class Command(BaseCommand):
                 return int(cur.fetchone()[0])
 
             counts["bank_accounts"] = count("banking_bankaccount")
+            # An in-flight payment instruction or uncredited inbound notification
+            # can still settle after a provider switch. Keep the bank's original
+            # reconciliation capability until its outcome is independently proven.
+            # Unknown state strings are deliberately treated as unresolved.
+            counts["bank_instructions_unresolved"] = count(
+                "banking_instruction",
+                "receipt_pending = TRUE OR state IS NULL OR "
+                "LOWER(state) NOT IN ('settled','failed','reversed','refunded',"
+                "'cancelled','completed','success','successful')")
+            counts["bank_notifications_unresolved"] = count(
+                "banking_notification",
+                "state IS NULL OR LOWER(state) NOT IN ('applied','credited',"
+                "'ignored','failed','rejected','reversed','duplicate')")
+
             counts["archived_bank_wallets"] = count(
                 "banking_previousbankarchive", "account_number IS NOT NULL AND account_number <> ''")
             counts["archived_bank_reviews"] = count(
@@ -83,9 +108,9 @@ class Command(BaseCommand):
         }
         self.stdout.write(json.dumps(report, indent=2) if options["as_json"] else (
             f"Wema Partnership cutover preflight: {len(blockers)} blockers; "
-            f"bank UAT still required.\\n" +
-            "\\n".join(f"- {item}" for item in blockers) +
-            f"\\nAggregate counts: {counts}"
+            f"bank UAT still required.\n" +
+            "\n".join(f"- {item}" for item in blockers) +
+            f"\nAggregate counts: {counts}"
         ))
         if blockers:
             raise CommandError("Wema Partnership cutover is not cleared; preserve all financial evidence.")
