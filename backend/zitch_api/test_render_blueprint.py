@@ -93,12 +93,18 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
                 for key in keys:
                     self.inherited(services[name], key)
 
-    def test_bank_configuration_and_encryption_are_shared_by_all_consumers(self):
+    def test_shared_encryption_and_identity_configuration_reaches_all_consumers(self):
+        """No provider credentials are shared any more, because none exist.
+
+        This asserted that every NINEPSB_* key on the API was inherited by the
+        worker and the scheduler. With 9PSB removed there are no such keys, so
+        what it now guards is the configuration that outlived the bank: the
+        sealing keys still used by banking/secrets.py, the identity provider,
+        and the shared cache every consumer needs.
+        """
         for _, _, services in self.blueprints():
-            keys = re.findall(r"^  - key: (NINEPSB_[A-Z_]+)$", services[API], re.M)
-            self.assertGreater(len(keys), 10)
             for name in (WORKER, MAINTENANCE):
-                for key in keys + ["BANKING_ENCRYPTION_KEYS", "PREMBLY_API_KEY"]:
+                for key in ("BANKING_ENCRYPTION_KEYS", "PREMBLY_API_KEY"):
                     self.inherited(services[name], key)
                 self.assertIn("value: 'true'", env(services[name], "DJANGO_REQUIRE_SHARED_CACHE"))
 
@@ -110,7 +116,9 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
             self.assertTrue(scalar(services[MAINTENANCE], "startCommand").endswith("manage.py run_maintenance"))
             self.assertIn("value: 'false'", env(services[WORKER], "WHATSAPP_WORKER_RECONCILE"))
         controls = {name: (schedule, options) for name, schedule, options in JOBS}
-        self.assertEqual(len(controls), 7)
+        # Six, not seven: reconcile_9psb went with the bank it reconciled.
+        self.assertEqual(len(controls), 6)
+        self.assertNotIn("reconcile_9psb", controls)
         self.assertEqual(controls["run_maturities"][0], (1, 5))
         self.assertEqual(controls["settlement_report"], ((6, 15), {"fail_on_breach": True}))
         self.assertEqual(controls["integrity_check"][1], {"fail_nonzero": True})
@@ -119,5 +127,9 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
     def test_retired_credentials_and_prembly_face_sdk_are_absent(self):
         for _, text, _ in self.blueprints():
             self.assertNotIn("WEMA_", text)
+            # 9PSB followed Wema out. Asserted here so a blueprint edit cannot
+            # quietly reintroduce credentials for a bank with no code behind it.
+            self.assertNotIn("NINEPSB_", text)
+            self.assertNotIn("9psb", text)
             self.assertNotIn("PREMBLY_FACE_", text)
             self.assertNotIn("WHATSAPP_FLOW_VAS_", text)
