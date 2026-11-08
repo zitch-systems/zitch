@@ -5,6 +5,7 @@ match on submit. Legacy sessions that were already open when the Flow changed
 still submit bank_search plus a Dropdown bank code, so their filtering contract
 remains covered until those sessions expire.
 """
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 
 from django.test import TestCase
@@ -23,6 +24,7 @@ BANKS = [
 ]
 
 
+@bank_channel_case
 class BankSearchTests(TestCase):
 
     def setUp(self):
@@ -170,6 +172,7 @@ class BankSearchTests(TestCase):
             self.assertEqual(set(r["data"]), declared[r["screen"]], label)
 
 
+@bank_channel_case
 class BankNamedInChatTests(TestCase):
     """A customer who says "send 5k to my Kuda account" has already told us the
     bank. Opening the form on all ~200 of them asks the same question again, which

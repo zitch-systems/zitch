@@ -7,6 +7,7 @@ pair here), and every screen the server can answer with must be a legal move
 from the screen the customer is standing on — the class Meta only reveals on
 a live device.
 """
+from banking.test_fixtures import bank_channel_case
 import collections
 import json
 from pathlib import Path
@@ -68,6 +69,7 @@ KNOWN_SELF_RENDERS = [
 ]
 
 
+@bank_channel_case
 class FlowFileContractTests(SimpleTestCase):
 
     def test_only_active_partnership_screens_are_publishable(self):
@@ -217,6 +219,7 @@ class FlowFileContractTests(SimpleTestCase):
         self.assertEqual(len(all_srcs), 1)
 
 
+@bank_channel_case
 class BuildersMatchDeclaredKeysTests(TestCase):
     """Each screen builder must supply exactly the keys its screen declares —
     an extra key fails the exchange at Meta; a missing one renders a hole."""

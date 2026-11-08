@@ -8,7 +8,7 @@ paid on every WhatsApp message we send and on every call to the bank rail.
 
 Reusing one connection pool per rail keeps those connections warm between calls.
 Measured against a host one hop away: 96ms -> 65ms per call, and the saving grows
-with distance to the peer, which for Meta's edge and Wema's gateway is
+with distance to the peer, which for Meta's edge and the bank gateway is
 considerably further than one hop.
 """
 import sys
@@ -44,8 +44,7 @@ def pooled_session(name: str):
     """The pooled session for one rail — or, under the test runner, `requests`.
 
     Both expose the same `.post`/`.get`. The suite patches
-    `whatsapp.providers.requests.post` and `utility.wema.requests.post` in about
-    eighty places to intercept egress; there is no connection to keep warm when
+    `whatsapp.providers.requests.post` in many places to intercept egress; there is no connection to keep warm when
     nothing leaves the process, so tests get the module they already patch rather
     than trading a real production win for a mechanical rewrite of every one of
     those call sites.
@@ -71,8 +70,8 @@ def pooled_session(name: str):
                     # the bank rail it is a replayed money movement. Both are real
                     # defects, not cosmetic ones. Retry policy belongs to the
                     # callers that know what is safe to repeat — the queue's
-                    # attempt budget, and wema._raise_if_ambiguous, which already
-                    # decides which gateway responses may be retried at all.
+                    # attempt budget, and the bank client, which decides which
+                    # gateway responses may be retried at all.
                     max_retries=0,
                 )
                 session.mount("https://", adapter)

@@ -1,4 +1,5 @@
 """Old setup links and jobs expire without changing identity or allocating funds."""
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ from whatsapp.retired_setup import RETIRED_SETUP_MESSAGE
 from whatsapp.test_flows import MSISDN, _make_user
 
 
+@bank_channel_case
 @override_settings(WHATSAPP_PROCESS_INLINE=False)
 class RetiredSetupTests(TestCase):
     def setUp(self):

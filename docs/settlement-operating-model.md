@@ -96,7 +96,7 @@ Until it is set, only the shortfall direction is alarmed.
 | Role | Responsibility | Who |
 |---|---|---|
 | Settlement owner | Reads the daily statement and sets `--max-surplus` once volume is known | **unassigned — assign before go-live** |
-| Escalation for a shortfall | Owns the investigation; authority to disable the affected rail (`WEMA_SIMULATION=true`, or blank the VAS credentials) | **unassigned — assign before go-live** |
+| Escalation for a shortfall | Owns the investigation; authority to disable the affected rail (`NINEPSB_ENABLED=false` or `NINEPSB_VAS_ENABLED=false`) | **unassigned — assign before go-live** |
 | MLRO | Notified of any shortfall that could indicate fraud rather than a settlement lag | see `compliance/ZITCH_MLRO_APPOINTMENT_LETTER_v1.0.docx` |
 
 Both unassigned rows are a launch blocker in the same sense the missing Wema

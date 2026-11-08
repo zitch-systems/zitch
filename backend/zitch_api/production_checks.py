@@ -8,8 +8,6 @@ def validate_production_configuration(
     test_otp_phone: str,
     test_otp_code: str,
     allow_test_otp: bool,
-    simulate_deposit_token: str,
-    wema_simulation: bool,
     mono_simulation: bool,
     allow_simulation: bool,
     redis_url: str,
@@ -29,14 +27,9 @@ def validate_production_configuration(
             "TEST_OTP_PHONE and TEST_OTP_CODE require "
             "ALLOW_PRODUCTION_TEST_OTP=true on a pre-launch deployment"
         )
-    if simulate_deposit_token and not allow_simulation:
+    if mono_simulation and not allow_simulation:
         problems.append(
-            "SIMULATE_DEPOSIT_TOKEN requires "
-            "ALLOW_PRODUCTION_SIMULATION=true on an isolated test deployment"
-        )
-    if (wema_simulation or mono_simulation) and not allow_simulation:
-        problems.append(
-            "WEMA_SIMULATION and MONO_SIMULATION require "
+            "MONO_SIMULATION requires "
             "ALLOW_PRODUCTION_SIMULATION=true on an isolated test deployment"
         )
     if require_shared_cache and not redis_url:

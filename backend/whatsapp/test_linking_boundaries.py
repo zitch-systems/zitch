@@ -1,4 +1,5 @@
 """An app-issued invitation cannot outlive account or channel revocation."""
+from banking.test_fixtures import bank_channel_case
 import json
 from datetime import timedelta
 from unittest.mock import patch
@@ -15,6 +16,7 @@ from whatsapp.tests import make_user
 MSISDN = "2348011112222"
 
 
+@bank_channel_case
 class LinkCapabilityBoundaryTests(TestCase):
     def setUp(self):
         self.user, self.token = make_user(phone="08011112222")

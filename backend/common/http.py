@@ -402,10 +402,14 @@ def idempotent_replay(prior):
 
         if not hmac.compare_digest(expected, stored):
             return fail(
-                "That retry key belongs to a different transaction. Start a new request.",
+                "This retry key belongs to an earlier transaction. Check its status before starting another payment.",
                 status=409,
                 code="idempotency_conflict",
                 duplicate=True,
+                # existing_for_key scopes this row to the authenticated owner.
+                # Keep this distinct from reference: its outcome does not prove
+                # that the caller's changed payment details were executed.
+                previous_reference=prior.reference,
             )
     quarantine = meta.get("wema_reversal_quarantine") or {}
     under_reversal_review = (
@@ -431,7 +435,8 @@ def idempotent_replay(prior):
             duplicate=True,
         )
     if prior.transaction_status == Transaction.FAILED:
-        return fail("This request already failed — please start a new one", status=409, code="duplicate")
+        return fail("This payment failed. Review the details before starting another payment.",
+                    status=400, code="duplicate", duplicate=True, reference=prior.reference)
     if prior.transaction_status == Transaction.PENDING:
         # A duplicate key proves only that we already accepted this ATTEMPT. It
         # does not prove that the provider delivered it. Reporting every
@@ -460,6 +465,10 @@ def idempotent_replay(prior):
             token = meta.get("provider_reference")
         if token:
             extra["token"] = str(token)
+        if isinstance(meta.get("electricity_units"), str):
+            extra["electricity_units"] = meta["electricity_units"][:40]
+        if meta.get("receipt_pending") is True:
+            extra["receipt_pending"] = True
         return ok(success=True, reference=prior.reference, message="Already processed",
                   duplicate=True, **extra)
     # Transaction.status has model choices, but fail closed if legacy or corrupt
@@ -711,20 +720,25 @@ def parse_json_object(request, *, limit: int | None = None):
     return data, None
 
 
-def api(view):
-    """POST-only, size-bounded JSON parsed into ``request.data``."""
+def api(view=None, *, max_body=None):
+    """POST-only, size-bounded JSON parsed into ``request.data``.
 
-    @csrf_exempt
-    @functools.wraps(view)
-    def wrapper(request, *args, **kwargs):
-        if request.method != "POST":
-            return fail("Method not allowed", status=405)
-        request.data, error = parse_json_object(request)
-        if error is not None:
-            return error
-        return view(request, *args, **kwargs)
+    ``@api`` uses API_MAX_BODY_BYTES; ``@api(max_body=...)`` raises the bound for
+    the few endpoints that carry one document upload.
+    """
+    def decorate(view):
+        @csrf_exempt
+        @functools.wraps(view)
+        def wrapper(request, *args, **kwargs):
+            if request.method != "POST":
+                return fail("Method not allowed", status=405)
+            request.data, error = parse_json_object(request, limit=max_body() if callable(max_body) else max_body)
+            if error is not None:
+                return error
+            return view(request, *args, **kwargs)
+        return wrapper
 
-    return wrapper
+    return decorate(view) if view is not None else decorate
 
 
 def resolve_token(request) -> str:

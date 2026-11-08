@@ -1,0 +1,59 @@
+<form method="post" enctype="multipart/form-data" autocomplete="off" class="upgrade-form" id="upgrade-form">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="upgrade">
+  <input type="hidden" name="tier" value="{{ upgrade_tier }}">
+  {% for field in details|slice:":3" %}<input type="hidden" name="{{ field.key }}" value="{{ field.value }}">{% endfor %}
+  <section class="card">
+    <h2>NIN</h2>
+    {% if not bvn_on_file %}
+    <label for="up-bvn">BVN</label>
+    <input id="up-bvn" name="bvn" type="password" inputmode="numeric" pattern="[0-9]{11}" minlength="11" maxlength="11" required autocomplete="off" data-digits="11">
+    {% endif %}
+    <label for="up-nin">NIN</label>
+    <input id="up-nin" name="nin" type="password" inputmode="numeric" pattern="[0-9]{11}" minlength="11" maxlength="11" required autocomplete="off" data-digits="11">
+    <label for="up-idCardFront">NIN slip photo</label>
+    <input id="up-idCardFront" name="idCardFront" type="file" class="file" accept="image/jpeg,image/png" required>
+  </section>
+  {% if upgrade_tier == 2 %}
+  <section class="card">
+    <h2>Home address</h2>
+    <label for="up-houseNumber">House number</label>
+    <input id="up-houseNumber" name="houseNumber" inputmode="numeric" maxlength="20" required>
+    <label for="up-streetName">Street</label>
+    <input id="up-streetName" name="streetName" maxlength="150" required>
+    <label for="up-city">City or town</label>
+    <input id="up-city" name="city" maxlength="100" required>
+    <label for="up-state">State</label>
+    <input id="up-state" name="state" list="ng-states" maxlength="60" required autocomplete="off">
+    <datalist id="ng-states">{% for state in states %}<option value="{{ state }}">{% endfor %}</datalist>
+    <label for="up-localGovernment">Local government area</label>
+    <input id="up-localGovernment" name="localGovernment" list="ng-lgas" maxlength="80" required autocomplete="off">
+    <datalist id="ng-lgas"></datalist>
+    <label for="up-nearestLandmark">Nearest landmark</label>
+    <input id="up-nearestLandmark" name="nearestLandmark" maxlength="150" required>
+  </section>
+  {% endif %}
+  <section class="card">
+    <h2>Face and documents</h2>
+    <canvas id="up-face-preview" width="360" height="360" role="img" aria-label="Your photo" hidden></canvas>
+    <label class="camera" for="up-userPhoto"><span id="up-face-cta">Verify your face</span></label>
+    <input id="up-userPhoto" name="userPhoto" type="file" accept="image/jpeg,image/png" capture="user" class="visually-hidden" required>
+    <label for="up-utilityBill">Utility bill</label>
+    <input id="up-utilityBill" name="utilityBill" type="file" class="file" accept="image/jpeg,image/png,application/pdf" required>
+    <label for="up-customerSignature">Signature</label>
+    <input id="up-customerSignature" name="customerSignature" type="file" class="file" accept="image/jpeg,image/png" required>
+    <fieldset>
+      <legend>Are you a politically exposed person?</legend>
+      <div class="segmented">
+        <label><input type="radio" name="pep" value="NO" checked><span>No</span></label>
+        <label><input type="radio" name="pep" value="YES"><span>Yes</span></label>
+      </div>
+    </fieldset>
+    <button type="submit">Upgrade to Tier {{ upgrade_tier }}</button>
+  </section>
+</form>
+{{ nigeria_lgas|json_script:"ng-lga-data" }}
+<form method="post">
+  {% csrf_token %}
+  <button class="secondary" name="action" value="upgrade_status">Check upgrade status</button>
+</form>

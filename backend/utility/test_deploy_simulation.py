@@ -35,42 +35,6 @@ _STAGED = {
 }
 
 
-@override_settings(
-    DEBUG=False,
-    TESTING=False,
-    KYC_PROVIDER="wema",
-    WEMA={"SIMULATION": True},
-    **_STAGED,
-)
-class DeployWideSimulationTests(TestCase):
-    def test_all_live_selectors_are_off_despite_staged_keys(self):
-        self.assertFalse(providers._prembly_live())
-        self.assertFalse(providers._card_issuer_live())
-        self.assertFalse(providers.fincra_live())
-        self.assertTrue(mono.mono_simulation())
-        self.assertFalse(mono.mono_live())
-
-    def test_provider_operations_take_mock_paths_without_network(self):
-        with patch("utility.providers.requests.post") as provider_post, \
-             patch("utility.mono.requests.post") as mono_post, \
-             patch("wallet.services.biller_source_for_transaction", return_value="0100000001"):
-            bvn = providers.verify_bvn("12345678901", name="Ada Test")
-            face = providers.kyc_verify_face("fake-image")
-            card = providers.issue_card("ADA TEST", "test-user")
-            quote = providers.fx_quote("NGN", "USD", "1000")
-            airtime = providers.vtu_purchase(
-                "mtn-airtime",
-                # Source-account migration checks now consult the retained VAS ledger.
-                {"amount": "100", "phone": "08012345678", "source_account": "0100000001"},
-                "SIM-AIRTIME-1",
-            )
-            linked = mono.exchange_token("simulation-code")
-
-        for result in (bvn, face, card, quote, airtime, linked):
-            self.assertTrue(result["success"])
-            self.assertTrue(result.get("mock") or result.get("vas_rail") == "wema")
-        provider_post.assert_not_called()
-        mono_post.assert_not_called()
 
 
 @override_settings(DEBUG=False, TESTING=False, WEMA={"SIMULATION": False})

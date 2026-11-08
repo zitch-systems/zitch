@@ -9,6 +9,7 @@ data_exchange closes the panel as it renders, which is the vanishing-outcome bug
 RESULT exists to fix (see test_flow_e2e). So Done asks the SERVER to end the Flow
 instead, and the server answers with Meta's completion envelope.
 """
+from banking.test_fixtures import bank_channel_case
 import json
 from pathlib import Path
 
@@ -22,6 +23,7 @@ SCREENS = {s["id"]: s for s in FLOW["screens"]}
 FOOTER = next(c for c in SCREENS[RESULT_SCREEN]["layout"]["children"] if c["type"] == "Footer")
 
 
+@bank_channel_case
 class DoneEndsTheFlowTests(SimpleTestCase):
     def test_done_asks_the_server_rather_than_navigating(self):
         self.assertEqual(FOOTER["on-click-action"]["name"], "data_exchange")
@@ -46,6 +48,7 @@ class DoneEndsTheFlowTests(SimpleTestCase):
         self.assertIn(SUCCESS_SCREEN, FLOW["routing_model"][RESULT_SCREEN])
 
 
+@bank_channel_case
 class TheCloseExchangeTests(SimpleTestCase):
     def test_close_ends_the_flow_with_the_completion_envelope(self):
         res = handle_flow_request({"action": "data_exchange", "flow_token": "TOK",

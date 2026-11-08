@@ -32,6 +32,7 @@ export type SendBody = {
   bank?: string;
   name?: string;
   amount: number | string;
+  expected_fee?: string;
   transaction_pin: string;
   note?: string;
   idempotency_key: string;
@@ -41,17 +42,20 @@ export type SendLegacyBody = {
   identifier: string;
   recipient_key?: string;
   amount: number | string;
+  expected_fee?: string;
   transaction_pin: string;
   note?: string;
   idempotency_key: string;
 };
 
 export const transfersService = {
+  charge: (amount: number) => apiJson<ApiResult<{fee: string}>>('/api/transfers/charge/', {amount}),
   // Account resolution; pass a bank code to scope it, omit to auto-detect.
   resolve: (accountNumber: string, bank?: string) =>
     apiJson<ResolveResult>(
       EP.transfers.resolve,
       bank ? { account_number: accountNumber, bank } : { account_number: accountNumber },
+      20000,
     ),
   resolveLegacy: (identifier: string) => apiJson<ResolveResult>(EP.transfers.resolveLegacy, { identifier }),
   send: (body: SendBody) => apiJson<SendResult>(EP.transfers.send, body),

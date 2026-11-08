@@ -1,57 +1,23 @@
-/**
- * The combined existing-account upgrade, as seen from the app.
- *
- * This path existed on the backend (`/api/wallet/wema/upgrade-tier2/`) but
- * nothing in the app ever called it: it was absent from `EP`, absent from
- * `kycService`, and `startNin` routed to account creation instead — which, for
- * an account the bank has already opened, comes back `upgrade_required` and
- * cannot be retried into success. So the refusal told customers to "finish in
- * the Zitch app" while the app offered them the same dead end.
- *
- * These tests pin the wiring rather than the styling: the endpoint the request
- * goes to, and that all three fields the bank scores together are actually in
- * the body. Either one silently missing puts the customer back in the loop.
- */
-import { EP } from '@/lib/endpoints';
-
-// `mock`-prefixed so jest's hoisting of the factory permits the reference.
+import { banking } from '@/lib/services/banking';
 const mockApiJson = jest.fn();
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));
+beforeEach(() => { mockApiJson.mockReset(); mockApiJson.mockResolvedValue({ success: true }); });
 
-// Imported after the mock so the service binds to it.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { kycService } = require('@/lib/services/kyc');
-
-describe('kycService.upgradeTier2', () => {
-  beforeEach(() => {
-    mockApiJson.mockReset();
-    mockApiJson.mockResolvedValue({ success: true, tier: 2 });
-  });
-
-  it('is reachable at all', () => {
-    expect(typeof kycService.upgradeTier2).toBe('function');
-  });
-
-  it('posts to the combined upgrade endpoint', async () => {
-    await kycService.upgradeTier2('22222222222', '11111111111', 'BASE64IMAGE');
-    expect(mockApiJson).toHaveBeenCalledTimes(1);
-    expect(mockApiJson.mock.calls[0][0]).toBe(EP.wallet.wemaUpgradeTier2);
-    expect(EP.wallet.wemaUpgradeTier2).toBe('/api/wallet/wema/upgrade-tier2/');
-  });
-
-  it('sends BVN, NIN and the live image together', async () => {
-    await kycService.upgradeTier2('22222222222', '11111111111', 'BASE64IMAGE');
-    // The bank scores all three in one request; a body missing any of them is
-    // refused, and the customer has already handed over their identity by then.
-    expect(mockApiJson.mock.calls[0][1]).toEqual({
-      bvn: '22222222222',
-      nin: '11111111111',
-      live_image: 'BASE64IMAGE',
-    });
-  });
-
-  it('does not route through account creation', async () => {
-    await kycService.upgradeTier2('22222222222', '11111111111', 'BASE64IMAGE');
-    expect(mockApiJson.mock.calls[0][0]).not.toBe(EP.wallet.createAccount);
-  });
+it.each(['bvn', 'nin'] as const)('starts %s with the verified profile and bank method', async (kind) => {
+  const profile = { otherNames: 'Ada', lastName: 'Eze', phoneNo: '08011112222', dateOfBirth: '01/01/1990', address: '1 Test Road' };
+  await banking.identity(kind, '12345678901', profile);
+  expect(mockApiJson).toHaveBeenCalledWith('/api/banking/identity/start/', { kind, identifier: '12345678901', profile, method: 'OTP' });
+});
+it('binds confirmation to the bank reference without resending identity data', async () => {
+  await banking.confirm('bank-ref', '123456');
+  expect(mockApiJson).toHaveBeenCalledWith('/api/banking/identity/confirm/', { reference: 'bank-ref', otp: '123456' });
+});
+it('submits the full bank upgrade profile and server-owned address reference', async () => {
+  const profile = { bvn: '12345678901', nin: '23456789012', utilityBill: 'utility-image', userPhoto: 'face-image', idType: '1' };
+  await banking.upgrade(3, profile, 'address-ref');
+  expect(mockApiJson).toHaveBeenCalledWith('/api/banking/upgrade/', { tier: 3, profile, address_reference: 'address-ref' });
+});
+it('keeps Prembly address submission separate from bank identity verification', async () => {
+  await banking.address({ house_number: '1', street: 'Test Road', city: 'Lagos', address: '1 Test Road, Lagos' });
+  expect(mockApiJson).toHaveBeenCalledWith('/api/banking/address/start/', { address: expect.objectContaining({ house_number: '1' }) });
 });

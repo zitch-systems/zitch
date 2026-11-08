@@ -9,6 +9,7 @@ The guard is deliberately narrow. These states accept free text — a bank name,
 meter number — so it triggers only on a word that names a DIFFERENT thing to do.
 A half-typed bank name must still re-prompt, not cancel the transfer it belongs to.
 """
+from banking.test_fixtures import bank_channel_case
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -16,6 +17,7 @@ from django.test import TestCase
 from . import router
 
 
+@bank_channel_case
 class NamesAnotherIntentTests(TestCase):
     def test_a_different_service_is_recognised(self):
         for text in ("500 airtime for me", "buy data", "check my balance",
@@ -33,6 +35,7 @@ class NamesAnotherIntentTests(TestCase):
         self.assertFalse(router._names_another_intent("   "))
 
 
+@bank_channel_case
 class RerouteTests(TestCase):
     def test_a_new_intent_cancels_and_starts_the_new_one(self):
         with patch.object(router, "_clear_actions") as clear, \

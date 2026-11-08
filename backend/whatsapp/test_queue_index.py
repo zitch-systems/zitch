@@ -11,6 +11,7 @@ Measured on Postgres with a 300k-row table and an empty queue, before the partia
 indexes: Parallel Seq Scan, 4,921 shared buffers, 21.6ms, three backends, zero
 rows returned. After: Index Scan, 1 buffer, 0.027ms.
 """
+from banking.test_fixtures import bank_channel_case
 from django.db import connection
 from django.db.models import Q
 from django.test import TestCase
@@ -42,6 +43,7 @@ def _plan(queryset) -> str:
         return " ".join(str(cell) for row in cur.fetchall() for cell in row)
 
 
+@bank_channel_case
 class InboundQueueIndexTests(TestCase):
     def setUp(self):
         # A history the queue must not be forced to read through.

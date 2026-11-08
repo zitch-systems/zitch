@@ -1,4 +1,5 @@
 """Chat navigation cannot cancel a payment already authorised for execution."""
+from banking.test_fixtures import bank_channel_case
 from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
@@ -8,6 +9,7 @@ from .models import PendingAction
 from .test_flows import _make_user, MSISDN
 
 
+@bank_channel_case
 class AuthorisedActionLifecycleTests(TestCase):
     def setUp(self):
         self.user = _make_user()

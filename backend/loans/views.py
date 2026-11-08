@@ -240,10 +240,8 @@ def loan_repay(request):
 def bnpl_offers(request):
     """POST /api/loans/bnpl/offers/ {access_token} -> {success, offers}
 
-    The ALAT Buy-Now-Pay-Later product offers the user is eligible for (read-only). The
-    consent -> accept -> disburse commitment flow (real external credit) is built at the
-    client layer (utility.wema.bnpl_*) but intentionally NOT exposed as an end-user
-    endpoint yet — it creates real debt and needs product/compliance sign-off first."""
+    BNPL was a retired partner-bank product with no 9PSB contract, so the provider
+    always reports it unavailable. No credit is ever offered or created here."""
     res = provider_bnpl_offers()
     if not res.get("success"):
         return fail(res.get("message", "BNPL is unavailable right now"), status=502)

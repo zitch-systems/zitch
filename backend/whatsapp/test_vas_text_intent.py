@@ -9,6 +9,7 @@ own worked example printed one line above the customer's attempt.
 The reported transcript is exactly that: "Recharge me 55 naira airtime", then
 "55naira airtime for me", both answered with the menu.
 """
+from banking.test_fixtures import bank_channel_case
 from decimal import Decimal
 
 from django.test import SimpleTestCase
@@ -16,6 +17,7 @@ from django.test import SimpleTestCase
 from whatsapp.router import vas_text_intent
 
 
+@bank_channel_case
 class ParsesWhatCustomersActuallyTypeTests(SimpleTestCase):
 
     def _amount(self, text):
@@ -67,6 +69,7 @@ class ParsesWhatCustomersActuallyTypeTests(SimpleTestCase):
         self.assertEqual(amount, Decimal("500"))
 
 
+@bank_channel_case
 class RefusesWhatItShouldNotGuessAtTests(SimpleTestCase):
     """A parser that opened a money flow off half a sentence would be a worse
     failure than the menu it replaces."""

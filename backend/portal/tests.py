@@ -4,6 +4,8 @@ The portal is the money-control surface, so the tests pin the gates: non-staff
 can never log in, read_only can read but not mutate, every mutation lands in
 the audit log, and the FX corridor pause actually stops quotes.
 """
+from django.test import override_settings as _bank_test_settings
+from banking.test_client import CONFIG as _BANK_TEST_CONFIG
 import json
 from datetime import timedelta
 from decimal import Decimal
@@ -37,6 +39,7 @@ def make_staff(username, role=None, superuser=False):
     return u
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class PortalTestCase(TestCase):
     def setUp(self):
         self.client = Client()
@@ -213,6 +216,8 @@ class MutationTests(PortalTestCase):
         self.user.bvn_verified = self.user.nin_verified = True
         self.user.save(update_fields=["bvn_verified", "nin_verified"])
         credit(self.user, Decimal("100000"), "Seed")
+        from banking.test_fixtures import bind_test_bank
+        bind_test_bank(self.user, tier=1)
         self.post("fx-corridor", {"currency": "USD", "enabled": False}, token=self.admin)
         with self.assertRaises(FxError):
             create_fx_quote(self.user, "NGN", "USD", Decimal("1000"))
@@ -797,14 +802,14 @@ class DiagnosticsPageTests(TestCase):
         res = self.client.get("/admin/diagnostics/")
         self.assertEqual(res.status_code, 200)
         body = res.content.decode()
-        for expected in ("Partnership preflight", "Wema / ALAT", "SMS (Termii)",
+        for expected in ("Bank preflight", "9PSB", "SMS (Termii)",
                          "Bank bill payments"):
             self.assertIn(expected, body)
 
     def test_a_failing_probe_does_not_take_the_page_down(self):
         # The page exists precisely for when something is broken.
         self.client.force_login(self.staff)
-        with patch("utility.wema.wema_diagnostics", side_effect=RuntimeError("rail down")):
+        with patch("banking.readiness.report", side_effect=RuntimeError("rail down")):
             res = self.client.get("/admin/diagnostics/")
         self.assertEqual(res.status_code, 200)
         self.assertIn("rail down", res.content.decode())

@@ -35,7 +35,6 @@ const BANK_SCHEMES: Record<string, string> = {
   kuda: 'kuda://',
   moniepoint: 'moniepoint://',
   palmpay: 'palmpay://',
-  wema: 'alat://',
   alat: 'alat://',
   fidelity: 'fidelitybank://',
   sterling: 'onebank://',
@@ -170,7 +169,7 @@ const BankTransfer = () => {
   const { accountNumber, accountName, bankName, linked, fundingProvider, fundingMessage } = useWallet();
 
   const acctNo = String(accountNumber || '').trim();
-  const ready = fundingProvider === 'partnership' && /^\d{10}$/.test(acctNo) && !/^711/.test(acctNo);
+  const ready = fundingProvider === '9psb' && /^\d{10}$/.test(acctNo);
   const banks = useMemo(() => bankShortcuts(linked, 9), [linked]);
 
   const copyAccount = async () => {

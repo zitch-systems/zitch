@@ -3,12 +3,15 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import AccessToken, OTP, User
+from banking.test_client import CONFIG
+from banking.test_fixtures import bind_test_bank
 
 
+@override_settings(NINEPSB=CONFIG)
 class EmailChallengeBindingTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -16,6 +19,7 @@ class EmailChallengeBindingTests(TestCase):
             username="email-bound", phone="08010000541", email="first@zitch.test",
             email_verified=False, phone_verified=True, bvn_verified=True,
         )
+        bind_test_bank(self.user, tier=1)
         self.token = AccessToken.issue(self.user).key
 
     def post(self, suffix, **data):
@@ -122,6 +126,9 @@ class EmailChallengeBindingTests(TestCase):
         User.objects.filter(pk=self.user.pk).update(
             nin_verified=True, face_verified=True, address_verified=True,
         )
+        # A concurrent bank-approved upgrade supplies durable proof, not flags alone.
+        self.user.refresh_from_db()
+        bind_test_bank(self.user, tier=3)
         from accounts.views import email_verify_confirm
         from django.test import RequestFactory
         request = RequestFactory().post("/api/email/verify/confirm/")

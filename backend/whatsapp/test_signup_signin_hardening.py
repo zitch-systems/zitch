@@ -1,4 +1,5 @@
 """Regression tests for WhatsApp signup identity and channel sign-in."""
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ MSISDN = "2348099990001"
 LOCAL = "08099990001"
 
 
+@bank_channel_case
 class SignupSessionHardeningTests(TestCase):
     def test_each_valid_flow_exchange_refreshes_the_signup_deadline(self):
         ob = WaOnboarding.objects.create(
@@ -42,6 +44,7 @@ class SignupSessionHardeningTests(TestCase):
         self.assertGreater(ob.expires_at, before + timedelta(minutes=10))
 
 
+@bank_channel_case
 class WhatsAppSigninHardeningTests(TestCase):
     def test_relinking_retires_the_previous_active_phone(self):
         user = User.objects.create(

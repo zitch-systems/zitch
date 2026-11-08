@@ -5,7 +5,7 @@ from decimal import Decimal
 from io import StringIO
 from unittest.mock import patch
 
-from django.core.management import call_command, get_commands
+from django.core.management import call_command, get_commands, CommandError
 from django.db import connection, IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.urls import Resolver404, resolve
@@ -13,7 +13,7 @@ from django.urls import Resolver404, resolve
 from wallet.funding_test_fixtures import funding_hold
 from wallet.models import Transaction, UnsettledFunding, Wallet
 from wallet.partnership import legacy_funding_blockers, partnership_account_number
-from wallet.services import LimitExceeded, customer_funding_account, debit, wallet_balance_payload, wema_provisioned_wallets
+from wallet.services import LimitExceeded, customer_funding_account, debit, wallet_balance_payload
 from wallet.tests import make_user
 
 
@@ -40,31 +40,26 @@ class FundingHoldTests(TestCase):
 
     def test_outstanding_money_blocks_funding_and_both_spend_paths(self):
         funding_hold(self.user, "1250")
+        from banking.models import PreviousBankArchive
+        PreviousBankArchive.objects.create(wallet=self.wallet, balance="1250", account_number=self.wallet.account_number)
         before = list(Transaction.objects.values())
         state = customer_funding_account(self.user)
-        self.assertEqual(state["provider"], "partnership")
-        self.assertEqual(state["account_setup_state"], "legacy_funding_review")
+        self.assertEqual(state["provider"], "9psb")
+        self.assertEqual(state["account_setup_state"], "banking_unavailable")
         for flag in ("has_account", "available", "can_fund", "spending_available", "transfers_available", "bill_payments_available"):
             self.assertFalse(state[flag])
         self.assertNotIn(self.wallet.account_number, json.dumps(state))
         self.assertEqual(wallet_balance_payload(self.user), {"balance": Decimal("1250"),
             "available_balance": Decimal("0"), "historical_balance": Decimal("1250"),
-            "legacy_funding_balance": Decimal("1250")})
+            "legacy_funding_balance": Decimal("1250"), "restricted_balance": Decimal("0")})
         for service in ("Airtime — MTN", "Transfer to Ada"):
             with self.assertRaises(LimitExceeded):
                 debit(self.user, "1", service)
         self.assertEqual(list(Transaction.objects.values()), before)
 
-    def test_deleted_destination_cannot_be_reused_or_polled(self):
+    def test_deleted_destination_cannot_be_reused(self):
         funding_hold(self.user, "100", self.wallet.account_number)
         self.assertFalse(partnership_account_number(self.wallet.account_number))
-        self.assertNotIn(self.wallet.pk, wema_provisioned_wallets().values_list("pk", flat=True))
-        from wallet.reconciliation import reconcile_account_history
-        from wallet.services import apply_wema_credit
-        with patch("utility.wema.get_transactions") as history:
-            self.assertEqual(reconcile_account_history(self.wallet)["error_code"], "retired_funding_account")
-            self.assertIsNone(apply_wema_credit(self.wallet, {}))
-        history.assert_not_called()
 
     def test_invalid_or_validation_number_never_exposes_bank_details(self):
         for number in ("7111234567", "bad-number"):
@@ -78,10 +73,9 @@ class FundingHoldTests(TestCase):
     def test_historical_bank_assets_are_never_invented(self):
         from whatsapp.models import AuditLog
         funding_hold(self.user, "1000")
-        with patch("utility.wema.wema_live", return_value=True), patch("utility.wema.get_balance", return_value={
-                "success": True, "balance_naira": Decimal("0")}), patch("utility.alerts.alert"):
+        with patch("utility.alerts.alert"):
             for name, flag in (("settlement_report", "--fail-on-breach"), ("reconcile_balances", "--fail-nonzero")):
-                with self.subTest(command=name), self.assertRaises(SystemExit):
+                with self.subTest(command=name), self.assertRaises(CommandError):
                     call_command(name, flag, stdout=StringIO(), stderr=StringIO())
         evidence = AuditLog.objects.get(action="recon.settlement_report").after
         self.assertIsNone(evidence["position"])

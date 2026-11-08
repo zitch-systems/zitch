@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
+import { View, Text, Alert, Pressable, ScrollView, FlatList, useWindowDimensions } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { getToken, getSessionGeneration } from '@/lib/secureStore';
 import { apiPost, publicPost } from '@/lib/api';
@@ -22,13 +22,14 @@ const AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 // Mirrors backend User.LARGE_TXN_THRESHOLD — drives the device biometric step-up.
 const LARGE_TXN = 100000;
 type Step = null | 'confirm' | 'pin';
-type Bank = { code: string; name: string; color: string };
+type Bank = { code: string; name: string; color: string; aliases?: string[]; short?: string };
 type Beneficiary = { id: number; name: string; account_number: string; bank_name: string; bank_code?: string; initials: string; color: string };
 type BankMatch = { bank: string; bank_name: string; name: string };
 type PendingAttempt = { scope: string; fingerprint: string; key: string };
 
 const SendMoney = () => {
   const { c } = useTheme();
+  const { height } = useWindowDimensions();
   const sessionGeneration = useRef(getSessionGeneration());
   const isCurrentSession = () => sessionGeneration.current === getSessionGeneration();
   const { balance, reload, transfersAvailable } = useWallet();
@@ -55,8 +56,11 @@ const SendMoney = () => {
   const resolveGeneration = useRef(0);
 
   const [amt, setAmt] = useState('');
+  const [fee, setFee] = useState<string | null>(null);
+  const [feeFor, setFeeFor] = useState(0);
   const [note, setNote] = useState('');
   const [bankSheet, setBankSheet] = useState(false);
+  const [bankQuery, setBankQuery] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -95,14 +99,31 @@ const SendMoney = () => {
   }, []);
 
   const amount = Number(amt || 0);
-  // Bank mode: type a 10-digit account and we AUTO-DETECT the bank — the server
-  // name-enquires across banks and returns the match, so the bank + holder name
-  // fill in by themselves. The user can still tap the bank field to override
-  // (which resolves at just that one bank).
+  const filteredBanks = banks.filter((b) => [b.name, b.short || '', ...(b.aliases || [])]
+    .some((name) => name.toLowerCase().includes(bankQuery.trim().toLowerCase())));
+  useEffect(() => {
+    let active = true;
+    setFee(null);
+    if (!Number.isFinite(amount) || amount < MIN_TRANSFER) return;
+    const timer = setTimeout(async () => {
+      try {
+        const result = await transfersService.charge(amount);
+        if (!active || !isCurrentSession()) return;
+        const value = Number(result.fee);
+        if (result.success && result.fee != null && typeof result.fee !== 'boolean' && Number.isFinite(value) && value >= 0) {
+          setFee(String(result.fee)); setFeeFor(amount);
+        }
+      } catch { if (active && isCurrentSession()) setFee(null); }
+    }, 400);
+    return () => { active = false; clearTimeout(timer); };
+  }, [amount]);
+  const currentFee = feeFor === amount ? fee : null;
+  // The customer selects a bank before its account holder is confirmed.
   const [bankName, setBankName] = useState('');   // resolved account holder name
   const [bankNameFor, setBankNameFor] = useState('');
   const [resolvingBank, setResolvingBank] = useState(false);
   const [bankErr, setBankErr] = useState('');
+  const [bankLookupRetry, setBankLookupRetry] = useState(0);
   const [matches, setMatches] = useState<BankMatch[]>([]);  // shown when >1 bank matches
   const bankResolveGeneration = useRef(0);
 
@@ -141,7 +162,7 @@ const SendMoney = () => {
       }
     }, 500);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [acct, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [acct, mode, bankLookupRetry]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Manual override: resolve at the specific bank the user picks from the sheet.
   const chooseBank = async (b: Bank) => {
@@ -182,7 +203,7 @@ const SendMoney = () => {
     ? acct.length === 10 && !!bank && !!activeBankName
     : !!activeResolvedName;
   const recipientName = picked ? picked.name : mode === 'bank' ? activeBankName : activeResolvedName;
-  const valid = transfersAvailable === true && (pickedReady || acctReady) && amount >= MIN_TRANSFER && amount <= balance;
+  const valid = transfersAvailable === true && (pickedReady || acctReady) && amount >= MIN_TRANSFER && currentFee !== null && amount + Number(currentFee) <= balance;
 
   const resolveZitch = async () => {
     if (!isCurrentSession()) return;
@@ -252,21 +273,21 @@ const SendMoney = () => {
       const bankCode = picked ? pickedBankCode : bank?.code;
       return transfersService.send({
         account_number: accountNumber, bank: bankCode, name: recipientName, amount: amt,
-        transaction_pin: pin, note, idempotency_key: idempotencyKey,
+        transaction_pin: pin, note, idempotency_key: idempotencyKey, expected_fee: currentFee ?? undefined,
       });
     }
     const id = picked ? picked.account_number : identifier;
     return transfersService.sendLegacy({
       identifier: id,
       recipient_key: picked ? undefined : activeResolvedRecipient,
-      amount: amt, transaction_pin: pin, note, idempotency_key: idempotencyKey,
+      amount: amt, transaction_pin: pin, note, idempotency_key: idempotencyKey, expected_fee: currentFee ?? undefined,
     });
   };
 
   const send = async (pin: string) => {
     if (!isCurrentSession() || !valid || done || sendInFlight.current) return;
     const attempt = transferAttempt();
-    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([attempt.scope, attempt.fingerprint, note])) {
+    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([attempt.scope, attempt.fingerprint, note, currentFee])) {
       setStep('confirm');
       notify('Review transfer again', 'The transfer details changed. Check them before entering your PIN.');
       return;
@@ -465,7 +486,7 @@ const SendMoney = () => {
               label="Bank"
               value={bank?.name || ''}
               editable={false}
-              placeholder={resolvingBank ? 'Detecting…' : 'Auto-detected from account — or tap to choose'}
+              placeholder={resolvingBank ? 'Finding bank…' : 'Select bank'}
               prefix={bank ? <View style={{ width: 18, height: 18, borderRadius: 5, backgroundColor: bank.color }} /> : <ZIcon name="bank" size={18} color={c.ink3} />}
               suffix={<ZIcon name="down" size={16} color={c.ink3} />}
               pointerEvents="none"
@@ -494,7 +515,11 @@ const SendMoney = () => {
           ) : activeBankName ? (
             <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 12.5, marginTop: 8 }}>✓ {activeBankName}</Text>
           ) : bankErr ? (
-            <Text style={{ color: c.red, fontFamily: font.semibold, fontSize: 12.5, marginTop: 8 }}>{bankErr}</Text>
+            <View style={{ gap: 8, marginTop: 8 }}>
+              <Text style={{ color: c.red, fontFamily: font.semibold, fontSize: 12.5 }}>{bankErr}</Text>
+              <Btn label="Try bank lookup again" variant="outline" size="sm" full={false}
+                onPress={() => { if (bank) void chooseBank(bank); else setBankLookupRetry((value) => value + 1); }} />
+            </View>
           ) : null}
           <View style={{ height: 16 }} />
         </>
@@ -518,6 +543,7 @@ const SendMoney = () => {
       <Field label="Narration (optional)" value={note} onChangeText={setNote} placeholder="What's it for?" />
       <View style={{ height: 20 }} />
 
+      {amount >= MIN_TRANSFER && currentFee === null && <Text style={{color: c.ink3, marginBottom: 12}}>A confirmed transfer fee is required before you can continue.</Text>}
       <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
 
       {/* Saved beneficiaries — moved to the bottom; tap one to fill the form above */}
@@ -549,27 +575,31 @@ const SendMoney = () => {
       )}
 
       {/* Bank picker */}
-      <Sheet open={bankSheet} onClose={() => setBankSheet(false)} title="Select bank">
+      <Sheet open={bankSheet} onClose={() => setBankSheet(false)} title="Select bank" scrollable={false}>
+        <Field label="Search banks" placeholder="Search bank name" value={bankQuery} onChangeText={setBankQuery} autoCorrect={false} />
         {banksLoading ? <Text style={{ color: c.ink2, marginBottom: 12 }}>Loading banks…</Text> : banks.length === 0 ? <View><Text style={{ color: c.ink2, marginBottom: 12 }}>We could not load the bank list. Check your connection and try again.</Text><Btn label="Retry bank list" variant="outline" onPress={() => setBankRevision((value) => value + 1)} /></View> : null}
-        {banks.map((b, i) => (
+        <FlatList data={filteredBanks} keyExtractor={(b) => b.code} style={{ maxHeight: Math.max(120, height * 0.42), flexGrow: 0, flexShrink: 1 }}
+          keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" initialNumToRender={12}
+          ListEmptyComponent={!banksLoading && banks.length > 0 ? <Text style={{ color: c.ink2, paddingVertical: 16 }}>No banks match your search.</Text> : null}
+          renderItem={({ item: b, index: i }) => (
           <Pressable key={b.code} accessibilityRole="button" accessibilityLabel={b.name} onPress={() => chooseBank(b)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}>
-            <View style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: b.color, alignItems: 'center', justifyContent: 'center' }}>
+            <View style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: b.color || c.brand, alignItems: 'center', justifyContent: 'center' }}>
               <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: 13 }}>{(b.name || '').replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase()}</Text>
             </View>
             <Text style={{ flex: 1, fontFamily: font.semibold, color: c.ink1 }}>{b.name}</Text>
             {bank?.code === b.code && <ZIcon name="check" size={18} color={c.brand} />}
           </Pressable>
-        ))}
+        )} />
       </Sheet>
 
       <ConfirmSheet
         open={step === 'confirm'}
         onClose={() => setStep(null)}
         title="Confirm transfer"
-        total={amount}
+        total={amount + Number(currentFee || 0)}
         balance={balance}
-        rows={[['To', recipientName || '—'], ['Account', picked ? picked.account_number : mode === 'bank' ? acct : identifier], ['Bank', picked ? picked.bank_name : mode === 'bank' ? bank?.name || '—' : 'Zitch']]}
-        onPay={() => { const attempt = transferAttempt(); reviewedPayment.current = JSON.stringify([attempt.scope, attempt.fingerprint, note]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        rows={[['Amount', money(amount)], ['Fee', currentFee === null ? 'Unavailable' : money(Number(currentFee))], ['To', recipientName || '—'], ['Account', picked ? picked.account_number : mode === 'bank' ? acct : identifier], ['Bank', picked ? picked.bank_name : mode === 'bank' ? bank?.name || '—' : 'Zitch']]}
+        onPay={() => { const attempt = transferAttempt(); reviewedPayment.current = JSON.stringify([attempt.scope, attempt.fingerprint, note, currentFee]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">

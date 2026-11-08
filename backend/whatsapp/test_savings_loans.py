@@ -1,4 +1,5 @@
 """Private confirmation and ledger invariants for WhatsApp savings/repayment."""
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -21,6 +22,7 @@ from .test_flow_e2e import FlowContractMixin
 from .test_flows import MSISDN, _make_user
 
 
+@bank_channel_case
 @override_settings(
     WHATSAPP={"MODE": "sandbox", "TOKEN": "", "PHONE_NUMBER_ID": "1"},
     WHATSAPP_FLOW={"ID": "1", "CTA": "Confirm with PIN", "RESULT_SCREEN": True},

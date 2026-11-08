@@ -17,6 +17,7 @@ uncomfortable.
 Driven end-to-end through handle_flow_request rather than by seeding counters: a
 seeded-counter test passes happily against a counter production never writes.
 """
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -65,6 +66,7 @@ def _no_id_twice_in_a_row(screens):
             if a == b and a not in _ENDINGS]
 
 
+@bank_channel_case
 class MoneyPathPinAttemptsTests(TestCase):
 
     def setUp(self):
@@ -80,7 +82,7 @@ class MoneyPathPinAttemptsTests(TestCase):
     def _action(self):
         return PendingAction.objects.create(
             user=self.user, msisdn=MSISDN, action_type="transfer", state=FLOW_PIN_STATE,
-            payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
+            payload={"amount": "5000", "expected_fee": "0.00", "account": "0123456789", "bank_code": "058",
                      "bank_name": "GTBank", "name": "JOHN DOE",
                      "flow_screen": PIN_SCREEN,
                      "flow_fields": {"amount": "₦5,000.00", "recipient": "To JOHN DOE",
@@ -155,6 +157,7 @@ class MoneyPathPinAttemptsTests(TestCase):
         self.assertEqual(self.user.pin_failed_attempts, 0)   # cleared by the good PIN
 
 
+@bank_channel_case
 class ReArmResetsTheScreenAndTheBudgetTests(TestCase):
     """_send_pin_flow was the one sender that never reset flow_screen, while every
     sibling does ("opens on the root, not the twin"). A re-armed action carrying
@@ -175,7 +178,7 @@ class ReArmResetsTheScreenAndTheBudgetTests(TestCase):
     def _stale_action(self, screen):
         return PendingAction.objects.create(
             user=self.user, msisdn=MSISDN, action_type="transfer", state=FLOW_PIN_STATE,
-            payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
+            payload={"amount": "5000", "expected_fee": "0.00", "account": "0123456789", "bank_code": "058",
                      "bank_name": "GTBank", "name": "JOHN DOE",
                      "flow_screen": screen, "flow_pin_tries": 1},
             expires_at=timezone.now() + timedelta(minutes=5),
@@ -199,6 +202,7 @@ class ReArmResetsTheScreenAndTheBudgetTests(TestCase):
         self.assertEqual(pa.payload["flow_screen"], PIN_SCREEN)
 
 
+@bank_channel_case
 class CreatePinAttemptsTests(TestCase):
     """transaction_pin_rejection is a POLICY check with no counter of its own, and
     the onboarding container lives for ONBOARD_TTL (15 minutes) — so before the
@@ -269,6 +273,7 @@ class CreatePinAttemptsTests(TestCase):
         self.assertEqual(_no_id_twice_in_a_row(screens), [])
 
 
+@bank_channel_case
 class SetPinAttemptsTests(TestCase):
 
     def setUp(self):
@@ -323,6 +328,7 @@ class SetPinAttemptsTests(TestCase):
         self.assertTrue(self.user.check_transaction_pin("1234"))   # never set
 
 
+@bank_channel_case
 class EscalatedLockOffersTheResetTests(TestCase):
     """Five wrong PINs lock the account for an hour; five more without a correct
     PIN in between lock it for a day. A reset clears either lock outright and is
@@ -363,7 +369,7 @@ class EscalatedLockOffersTheResetTests(TestCase):
     def _action(self):
         return PendingAction.objects.create(
             user=self.user, msisdn=MSISDN, action_type="transfer", state=FLOW_PIN_STATE,
-            payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
+            payload={"amount": "5000", "expected_fee": "0.00", "account": "0123456789", "bank_code": "058",
                      "bank_name": "GTBank", "name": "JOHN DOE", "flow_screen": PIN_SCREEN},
             expires_at=timezone.now() + timedelta(minutes=5),
         )
@@ -490,6 +496,7 @@ class EscalatedLockOffersTheResetTests(TestCase):
         self.assertTrue(evaluate_transaction_pin(self.user, "975310")[0])
 
 
+@bank_channel_case
 class TheCapIsCoupledToTheScreensThatExistTests(TestCase):
     """The durable guard. Each cap is a SCREEN budget: it may never exceed the
     number of distinct ids that step can answer with, because the render after

@@ -12,11 +12,13 @@ a missing subtitle costs a blank line, and refusing to costs the customer the
 outcome of their payment. The ERROR line is still emitted, so the bug stays as
 findable as it was.
 """
+from banking.test_fixtures import bank_channel_case
 from django.test import TestCase
 
 from whatsapp import flows
 
 
+@bank_channel_case
 class ConformResponseTests(TestCase):
 
     def _keys(self, screen):
@@ -116,6 +118,7 @@ class ConformResponseTests(TestCase):
                                  self._keys(out["screen"]), (build.__name__, status))
 
 
+@bank_channel_case
 class ResponseIsTraceableTests(TestCase):
     """Every trace of a Flow session in production was gunicorn's access log — a
     200 and a byte count. "Every request succeeded" and "the customer saw an

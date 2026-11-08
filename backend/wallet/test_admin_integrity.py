@@ -96,12 +96,9 @@ class FinancialAdminIntegrityTests(TestCase):
         Wallet.objects.filter(pk=self.wallet.pk).update(bank_name="Wema Bank (demo)")
         before = Wallet.objects.filter(pk=self.wallet.pk).values().get()
         self.client.force_login(operator)
-        for action in ("clear_demo_account", "reconnect_bank_account"):
-            with self.subTest(action=action), patch("wallet.admin.attach_existing_bank_account") as recover:
-                response = self.action(action, self.wallet)
-                self.assertIn(response.status_code, (200, 302))
-                recover.assert_not_called()
-                self.assertEqual(Wallet.objects.filter(pk=self.wallet.pk).values().get(), before)
+        response = self.action("clear_demo_account", self.wallet)
+        self.assertIn(response.status_code, (200, 302))
+        self.assertEqual(Wallet.objects.filter(pk=self.wallet.pk).values().get(), before)
 
     def test_named_demo_recovery_keeps_money_and_real_bank_accounts_intact(self):
         operator = self.staff("wallet-recovery", "view_wallet", "change_wallet")
@@ -141,17 +138,6 @@ class FinancialAdminIntegrityTests(TestCase):
         self.assertEqual(self.wallet.account_number, "0100000003")
         self.assertEqual(self.wallet.balance, Decimal("100"))
 
-    def test_named_reconnect_keeps_callback_confirmation_guard(self):
-        operator = self.staff("wallet-reconnect", "view_wallet", "change_wallet")
-        Wallet.objects.filter(pk=self.wallet.pk).update(account_number="", bank_name="")
-        self.client.force_login(operator)
-        with patch("utility.wema.get_account_details") as bank_lookup, \
-                patch("utility.wema.lift_debit_restriction") as lift:
-            response = self.action("reconnect_bank_account", self.wallet)
-        self.assertEqual(response.status_code, 302)
-        bank_lookup.assert_not_called()
-        lift.assert_not_called()
-        self.wallet.refresh_from_db()
-        self.assertEqual(self.wallet.account_number, "")
-        self.assertFalse(self.wallet.pnd_lifted)
-        self.assertEqual(self.wallet.balance, Decimal("100"))
+    def test_retired_bank_reconnect_action_is_not_offered(self):
+        from django.contrib.admin import site
+        self.assertEqual(site._registry[Wallet].actions, ["clear_demo_account"])

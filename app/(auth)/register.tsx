@@ -5,7 +5,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { notify } from '@/components/design/Notify';
 import { publicPost } from '@/lib/api';
 import { getSessionGeneration } from '@/lib/secureStore';
-import { isCompleteRegistrationName, splitRegistrationName } from '@/lib/registration';
 import { PRIVACY_URL, TERMS_URL } from '@/components/configFiles/links';
 import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
@@ -21,22 +20,27 @@ const Register = () => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
-  const [form, setForm] = useState({ name: '', email: '', phone: '' });
+  const [form, setForm] = useState({ surname: '', firstName: '', email: '', phone: '' });
+  const [tried, setTried] = useState(false);
 
-  const nameOk = isCompleteRegistrationName(form.name);
+  const surnameOk = form.surname.trim().length >= 2;
+  const firstNameOk = form.firstName.trim().length >= 2;
+  const nameOk = surnameOk && firstNameOk;
   const phoneOk = /^0\d{10}$/.test(form.phone);
   const emailValue = form.email.trim();
   const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue);
   const valid = nameOk && phoneOk && emailOk;
 
   const handleSignup = async () => {
+    setTried(true);
     if (!valid || submitting.current) return;
     submitting.current = true;
     setIsRegistering(true);
     const generation = getSessionGeneration();
     const current = () => mounted.current && generation === getSessionGeneration();
     try {
-      const { firstName, lastName } = splitRegistrationName(form.name);
+      const firstName = form.firstName.trim().replace(/\s+/g, ' ');
+      const lastName = form.surname.trim().replace(/\s+/g, ' ');
       const email = form.email.trim().toLowerCase();
       const response = await publicPost('/api/phone_verification/', {
         email,
@@ -86,54 +90,53 @@ const Register = () => {
       </Text>
 
       <View style={{ gap: 16 }}>
-        <View>
-          <Field
-            label="Full name"
-            value={form.name}
-            onChangeText={(e) => setForm({ ...form, name: e })}
-            placeholder="William Adeyemi"
-            autoCapitalize="words"
-            autoComplete="name"
-            textContentType="name"
-            prefix={<ZIcon name="user" size={18} color={c.ink3} />}
-          />
-          {form.name.length > 0 && !nameOk && (
-            <Text style={{ fontSize: 12, color: c.red, marginTop: 6, marginLeft: 2, fontFamily: font.regular }}>Enter your first and last name</Text>
-          )}
-        </View>
-        <View>
-          <Field
-            label="Phone number"
-            value={form.phone}
-            onChangeText={(e) => setForm({ ...form, phone: e.replace(/\D/g, '').slice(0, 11) })}
-            keyboardType="number-pad"
-            autoComplete="tel"
-            textContentType="telephoneNumber"
-            maxLength={18}
-            placeholder="0801 234 5678"
-            prefix={<ZIcon name="airtime" size={18} color={c.ink3} />}
-          />
-          {form.phone.length > 0 && !phoneOk && (
-            <Text style={{ fontSize: 12, color: c.red, marginTop: 6, marginLeft: 2, fontFamily: font.regular }}>Enter a valid 11-digit number (e.g. 0801 234 5678)</Text>
-          )}
-        </View>
-        <View>
-          <Field
-            label="Email address"
-            value={form.email}
-            onChangeText={(e) => setForm({ ...form, email: e })}
-            keyboardType="email-address"
-            autoCapitalize="none"
-            autoCorrect={false}
-            autoComplete="email"
-            textContentType="emailAddress"
-            placeholder="you@email.com"
-            prefix={<ZIcon name="remita" size={18} color={c.ink3} />}
-          />
-          {form.email.length > 0 && !emailOk && (
-            <Text style={{ fontSize: 12, color: c.red, marginTop: 6, marginLeft: 2, fontFamily: font.regular }}>Enter a valid email address</Text>
-          )}
-        </View>
+        <Field
+          label="Surname"
+          value={form.surname}
+          onChangeText={(e) => setForm({ ...form, surname: e })}
+          placeholder="Adeyemi"
+          autoCapitalize="words"
+          autoComplete="name-family"
+          textContentType="familyName"
+          error={(tried || form.surname.length > 0) && !surnameOk ? (form.surname.trim() ? 'Enter your surname' : 'This field is required') : undefined}
+          prefix={<ZIcon name="user" size={18} color={c.ink3} />}
+        />
+        <Field
+          label="First name"
+          value={form.firstName}
+          onChangeText={(e) => setForm({ ...form, firstName: e })}
+          placeholder="William"
+          autoCapitalize="words"
+          autoComplete="name-given"
+          textContentType="givenName"
+          error={(tried || form.firstName.length > 0) && !firstNameOk ? (form.firstName.trim() ? 'Enter your first name' : 'This field is required') : undefined}
+          prefix={<ZIcon name="user" size={18} color={c.ink3} />}
+        />
+        <Field
+          label="Phone number"
+          value={form.phone}
+          onChangeText={(e) => setForm({ ...form, phone: e.replace(/\D/g, '').slice(0, 11) })}
+          keyboardType="number-pad"
+          autoComplete="tel"
+          textContentType="telephoneNumber"
+          maxLength={18}
+          placeholder="0801 234 5678"
+          error={(tried || form.phone.length > 0) && !phoneOk ? (form.phone ? 'Enter a valid 11-digit number (e.g. 0801 234 5678)' : 'This field is required') : undefined}
+          prefix={<ZIcon name="airtime" size={18} color={c.ink3} />}
+        />
+        <Field
+          label="Email address"
+          value={form.email}
+          onChangeText={(e) => setForm({ ...form, email: e })}
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="email"
+          textContentType="emailAddress"
+          placeholder="you@email.com"
+          error={(tried || form.email.length > 0) && !emailOk ? (form.email ? 'Enter a valid email address' : 'This field is required') : undefined}
+          prefix={<ZIcon name="remita" size={18} color={c.ink3} />}
+        />
       </View>
       <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 18, marginTop: 14, fontFamily: font.regular }}>
         By continuing you agree to Zitch&apos;s <Link href={TERMS_URL as any}><Text style={{ color: c.brand, fontFamily: font.semibold }}>Terms</Text></Link> &{' '}
@@ -141,7 +144,7 @@ const Register = () => {
       </Text>
 
       <View style={{ marginTop: 26 }}>
-        <Btn label="Continue" disabled={!valid || isRegistering} onPress={handleSignup} />
+        <Btn label="Continue" disabled={isRegistering} onPress={handleSignup} />
       </View>
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 16 }}>
         <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular }}>Already have an account?</Text>

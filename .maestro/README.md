@@ -45,9 +45,9 @@ with. Do **not** run the money flows against production: `transfer.yaml` and
 `utility-airtime.yaml` stop at the PIN sheet by design (see below), but a build
 pointed at production is one tap away from a real debit.
 
-Build against a deploy with `WEMA_SIMULATION=true`, and use the documented test-OTP
-bypass (`TEST_OTP_PHONE` / `TEST_OTP_CODE` / `ALLOW_PRODUCTION_TEST_OTP`) so
-`signup-otp.yaml` can complete. See `docs/wema-go-live-runbook.md`.
+Build against a 9PSB sandbox deploy, and use the documented test-OTP bypass
+(`TEST_OTP_PHONE` / `TEST_OTP_CODE` / `ALLOW_PRODUCTION_TEST_OTP`) so
+`signup-otp.yaml` can complete. See `docs/9psb-sandbox-onboarding-test.md`.
 
 ## What each flow covers
 
@@ -72,9 +72,9 @@ money path must challenge for the PIN, and a regression that skipped it would be
 critical. Completing the payment would move real value on any non-simulated backend,
 and a suite that spends money on every run gets disabled.
 
-To exercise settlement end-to-end, use the simulation walk in
-`docs/wema-go-live-runbook.md` (`simulate-kyc` + `simulate-deposit`), which is
-designed for exactly that and touches no real rail.
+The fake-money simulation walk (`simulate-kyc` + `simulate-deposit`) belonged to
+the retired partner bank and has been removed. Exercise onboarding against the
+9PSB sandbox with `docs/9psb-sandbox-onboarding-test.md`.
 
 ## Device coverage
 

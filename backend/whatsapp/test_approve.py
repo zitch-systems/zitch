@@ -14,6 +14,7 @@ that make the hand-off no weaker than the Flow it stands beside:
 * execution runs through run_flow_execution, so freeze re-check and idempotent
   executors are shared, not re-implemented.
 """
+from banking.test_fixtures import bank_channel_case
 import json
 from datetime import timedelta
 from decimal import Decimal
@@ -53,7 +54,7 @@ def _user(phone="08010000001", email="ada@zitch.test", msisdn=MSISDN):
 def _armed_transfer(user, state=FLOW_PIN_STATE):
     return PendingAction.objects.create(
         user=user, msisdn=MSISDN, action_type="transfer", state=state,
-        payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
+        payload={"amount": "5000", "expected_fee": "0.00", "account": "0123456789", "bank_code": "058",
                  "bank_name": "GTBank", "name": "JOHN DOE",
                  "flow_summary": "Send ₦5,000.00 to JOHN DOE · GTBank 0123456789",
                  "pin_attempts": 0},
@@ -61,6 +62,7 @@ def _armed_transfer(user, state=FLOW_PIN_STATE):
     )
 
 
+@bank_channel_case
 class ApproveTokenTests(TestCase):
     def setUp(self):
         self.user, _ = _user()
@@ -104,6 +106,7 @@ class ApproveTokenTests(TestCase):
         self.assertIsNone(resolve_onboarding_token(token))
 
 
+@bank_channel_case
 @override_settings(WHATSAPP=_WA_ON)
 class ApproveEndpointTests(TestCase):
     def setUp(self):
@@ -217,6 +220,7 @@ class ApproveEndpointTests(TestCase):
         self.assertEqual(res.status_code, 429)
 
 
+@bank_channel_case
 @override_settings(WHATSAPP=_WA_ON,
                    ZITCH_LINKS={"WEBSITE": "https://zitch.ng", "APP": "https://zitch.ng/app",
                                 "SUPPORT_WA": "", "SUPPORT_EMAIL": "",
@@ -260,6 +264,7 @@ class HandoffSurfaceTests(TestCase):
         self.assertNotIn('token=ab">', html)
 
 
+@bank_channel_case
 @override_settings(WHATSAPP=_WA_ON,
                    ZITCH_LINKS={"WEBSITE": "https://zitch.ng", "APP": "https://zitch.ng/app",
                                 "SUPPORT_WA": "", "SUPPORT_EMAIL": "",
@@ -332,6 +337,7 @@ class BiometricPrimaryTests(TestCase):
         self.assertIn("Have the Zitch app?", prompt)
 
 
+@bank_channel_case
 class HealthFlowReadinessTests(TestCase):
     """`whatsapp_live` true with `whatsapp_flow_ready` false is the difference
     between a PIN typed into a masked field and submitted encrypted, and the
@@ -384,6 +390,7 @@ class HealthFlowReadinessTests(TestCase):
         self.assertFalse(body["whatsapp_flow_ready"])   # …Flow just isn't published
 
 
+@bank_channel_case
 @override_settings(WHATSAPP=_WA_ON)
 class UnlinkRetiresArmedActionsTests(TestCase):
     """Unlinking is how a customer cuts off a phone they no longer hold. The chat

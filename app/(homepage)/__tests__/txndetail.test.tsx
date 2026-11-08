@@ -90,6 +90,7 @@ describe('transaction-detail pending refresh', () => {
     mockParams.underReview = '';
     mockParams.statusMessage = '';
     mockParams.reviewKind = '';
+    mockParams.spendScope = 'zitch-transfer';
   });
 
   afterEach(() => {
@@ -139,6 +140,22 @@ describe('transaction-detail pending refresh', () => {
     await Promise.resolve();
 
     expect(mockApiJson).toHaveBeenCalledTimes(1);
+  });
+
+  it('can refresh a delivered bill to recover its delayed token', async () => {
+    mockApiJson.mockResolvedValueOnce({ success: true, transaction: {
+      ...transaction('SUCCESSFUL').transaction, service: 'Utility bill payment', receipt_pending: true,
+    } }).mockResolvedValueOnce({ success: true, transaction: {
+      ...transaction('SUCCESSFUL').transaction, service: 'Utility bill payment', receipt_pending: false,
+      token: '11111111111111111111', electricity_units: '7.8',
+    } });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+    expect(JSON.stringify(tree.toJSON())).toContain('Your token is being retrieved');
+    await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Refresh status' }).props.onPress(); });
+    expect(JSON.stringify(tree.toJSON())).toContain('11111111111111111111');
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Refresh status' })).toHaveLength(0);
+    act(() => tree.unmount());
   });
 
   it('labels an active provider conflict under review and shows do-not-retry guidance', async () => {
@@ -263,6 +280,15 @@ describe('transaction-detail pending refresh', () => {
     await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Share receipt' }).props.onPress(); });
     expect(notify).toHaveBeenCalledWith('Could not share', 'Please try again.');
     act(() => tree.unmount()); share.mockRestore();
+  });
+
+  it.each(['9psb-airtime', '9psb-data', '9psb-bill'])('clears the settled %s attempt after confirming its reference', async (scope) => {
+    mockParams.spendScope = scope;
+    mockApiJson.mockResolvedValue(transaction('SUCCESSFUL'));
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+    expect(mockClearSpendAttempt).toHaveBeenCalledWith(scope, mockParams.spendFingerprint, mockParams.spendKey);
+    act(() => tree.unmount());
   });
 
 });

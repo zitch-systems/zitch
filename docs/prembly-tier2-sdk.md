@@ -56,7 +56,6 @@ provider result uses an unrecognized shape, inspect only redacted structure and
 adapt the parser to authenticated evidence. Do not substitute a browser callback
 or remove the identity/liveness requirements.
 
-Account issuance is separate. Use the audited `prepare_account_recovery` command
-only after its provider lookup confirms no bank account exists; preserve verified
-identity flags. Recovery exposes `recovery_ready` and continues through the bank's
-secure face step. It must never pretend that an unconfirmed account is processing.
+Account issuance is separate: 9PSB opens the account during bank identity
+verification (`/api/banking/identity/*`). The retired partner bank's face-based
+account recovery command has been removed.

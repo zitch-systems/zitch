@@ -1,3 +1,4 @@
+from banking.test_fixtures import bank_channel_case
 """A provider's empty float must never be reported as the customer's balance.
 
 From production, 2026-09-08. The confirm card said "Available balance ₦1,000.00"
@@ -91,6 +92,7 @@ class CustomerSafeFailureTests(TestCase):
         self.assertIn("airtime", joined)
 
 
+@bank_channel_case
 class TheCustomersMoneyIsUntouchedTests(TestCase):
     """The other half of the promise the message makes."""
 

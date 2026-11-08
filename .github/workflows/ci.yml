@@ -139,6 +139,8 @@ jobs:
           python manage.py makemigrations --check --dry-run
           python manage.py migrate --no-input
           python manage.py migrate --check
+      - name: Bank integration contracts (PostgreSQL)
+        run: python manage.py test banking zitch_api.test_render_blueprint
       - name: Tests (PostgreSQL)
         run: python manage.py test
 

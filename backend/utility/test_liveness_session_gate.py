@@ -18,4 +18,7 @@ class TierTwoSessionGateTests(SimpleTestCase):
                 })
                 self.assertFalse(result["success"])
                 self.assertTrue(result["unavailable"])
-                self.assertEqual(result["code"], "tier2_liveness_unavailable")
+                # Points the customer to face verification on the secure page,
+                # in Zitch's words: customer copy never names the bank partner.
+                self.assertIn("face verification on the secure verification page", result["message"])
+                self.assertNotIn("9PSB", result["message"])

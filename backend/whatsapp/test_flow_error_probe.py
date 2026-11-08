@@ -1,4 +1,5 @@
 """The last Flow rejection, parked where an operator can reach it."""
+from banking.test_fixtures import bank_channel_case
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -13,6 +14,7 @@ LIVE = dict(
 )
 
 
+@bank_channel_case
 class _Rejection:
     status_code = 400
     ok = False
@@ -23,6 +25,7 @@ class _Rejection:
                           "error_data": {"details": "screen IDENTITY_SCREEN not found"}}}
 
 
+@bank_channel_case
 class _Accepted:
     status_code = 200
     ok = True
@@ -32,6 +35,7 @@ class _Accepted:
         return {"messages": [{"id": "wamid.X"}]}
 
 
+@bank_channel_case
 @override_settings(**LIVE)
 class LastFlowErrorTests(TestCase):
 
@@ -65,6 +69,7 @@ class LastFlowErrorTests(TestCase):
             self.assertFalse(self._send(_Rejection())["success"])   # returned, not raised
 
 
+@bank_channel_case
 class SmsRouteIsVisibleTests(TestCase):
     """The Termii route on /healthz. Accepted is not delivered, and the two
     fields that decide delivery were previously unreadable without a token."""

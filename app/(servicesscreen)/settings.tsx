@@ -140,6 +140,7 @@ const Settings = () => {
   const version = Constants.expoConfig?.version ?? '1.0.0';
 
   const security = [
+    { icon: 'user', title: 'Account verification', sub: 'Tier 1: verify your BVN · upgrade to Tier 2', go: () => router.push('/kyc') },
     { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 6-digit PIN', go: () => router.push('/resetpin') },
     { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
     { icon: 'chart', title: 'Account Limits', sub: 'Account details & available services', go: () => router.push('/accountlimits') },

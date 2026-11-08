@@ -1,4 +1,5 @@
 """The published-Flow probe: does Meta's Flow still have the screens we send?"""
+from banking.test_fixtures import bank_channel_case
 import json
 from unittest.mock import patch
 
@@ -7,6 +8,7 @@ from django.test import SimpleTestCase, override_settings
 from whatsapp.providers import published_flow_report
 
 
+@bank_channel_case
 class _Resp:
     def __init__(self, payload, status=200):
         self._payload = payload
@@ -58,6 +60,7 @@ def _meta(published_screens, status="published", props=None):
     return get
 
 
+@bank_channel_case
 class PublishedFlowProbeTests(SimpleTestCase):
 
     @override_settings(**LIVE)
@@ -199,6 +202,7 @@ class PublishedFlowProbeTests(SimpleTestCase):
         get.assert_not_called()
 
 
+@bank_channel_case
 class ProbeCachingTests(SimpleTestCase):
     """/healthz is unauthenticated and this is its only outbound reading.
 

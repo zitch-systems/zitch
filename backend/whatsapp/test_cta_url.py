@@ -5,6 +5,7 @@ matter and neither is cosmetic — the URL carries the customer's own BVN in its
 string, and a bare https:// link in a bank's chat is indistinguishable from the
 phishing messages we tell people to ignore.
 """
+from banking.test_fixtures import bank_channel_case
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
@@ -15,6 +16,7 @@ LIVE = {"BASE_URL": "https://graph.example/v26.0", "PHONE_NUMBER_ID": "1",
         "TOKEN": "t", "VERIFY_TOKEN": "v", "MODE": "live", "APP_SECRET": "s"}
 
 
+@bank_channel_case
 @override_settings(WHATSAPP=LIVE)
 class CtaUrlTests(SimpleTestCase):
     def _payload(self, post):

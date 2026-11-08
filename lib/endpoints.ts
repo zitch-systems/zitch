@@ -26,28 +26,9 @@ export const EP = {
     history: '/api/user-transaction-history/',
     transactionStatus: '/api/transaction/status/',
     account: '/api/wallet/account/',
-    createAccount: '/api/wallet/account/create/',
-    wemaVerifyOtp: '/api/wallet/wema/verify-otp/',
-    wemaResendOtp: '/api/wallet/wema/resend-otp/',
-    // Combined existing-account upgrade. Once the bank has opened the NUBAN it
-    // will not take a second identity on its own, so BVN + NIN + a live selfie
-    // go up together. This is the ONLY route to Tier 2 for such an account —
-    // without it the app's NIN screen dead-ends on the same refusal WhatsApp
-    // was hitting.
-    wemaUpgradeTier2: '/api/wallet/wema/upgrade-tier2/',
   },
   kyc: {
     status: '/api/kyc/status/',
-    bvnStart: '/api/kyc/bvn/start/',
-    bvnConfirm: '/api/kyc/bvn/confirm/',
-    nin: '/api/kyc/nin/',
-    ninConfirm: '/api/kyc/nin/confirm/',
-    address: '/api/kyc/address/',
-    face: '/api/kyc/face/',
-    identityFaceStart: '/api/kyc/face/start/',
-    identityFaceStatus: '/api/kyc/face/status/',
-    livenessStart: '/api/kyc/liveness/start/',
-    livenessStatus: '/api/kyc/liveness/status/',
   },
   transfers: {
     // Canonical (plural) paths.

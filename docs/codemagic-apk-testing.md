@@ -6,7 +6,7 @@ The `android-apk` workflow builds an installable Android preview APK from the re
 
 1. Connect `zitch-systems/zitch` in Codemagic and select `codemagic.yaml`.
 2. Confirm the workflow environment points `EXPO_PUBLIC_API_URL` at the intended test backend. This value is compiled into the app and must never contain a secret.
-3. Keep `TEST_OTP_PHONE`, `TEST_OTP_CODE`, and `SIMULATE_DEPOSIT_TOKEN` unset on a live backend. A deliberately isolated simulation backend must also set `ALLOW_PRODUCTION_SIMULATION=true`.
+3. Keep `TEST_OTP_PHONE` and `TEST_OTP_CODE` unset on a live backend. A pre-launch test backend that uses them must also set `ALLOW_PRODUCTION_TEST_OTP=true`.
 4. Set `REDIS_URL` on any multi-worker backend so rate limits and idempotency state are shared.
 
 Start **Zitch Android APK (preview)** from the Codemagic dashboard. The workflow installs the locked dependencies, lints, type-checks, runs unit tests, blocks critical production dependency advisories, runs Expo Doctor, generates Android with Expo Prebuild, and assembles the release APK.

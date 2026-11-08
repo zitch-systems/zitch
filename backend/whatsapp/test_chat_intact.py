@@ -1,4 +1,5 @@
 """Proof that the chat channel is intact with the transfer form LIVE."""
+from banking.test_fixtures import bank_channel_case
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ from whatsapp.test_flows import MSISDN, _make_user   # reuse the suite's fixture
 from whatsapp.router import handle_inbound
 
 
+@bank_channel_case
 class ChatStillWorksWithFormsLiveTests(TestCase):
     def setUp(self):
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058",

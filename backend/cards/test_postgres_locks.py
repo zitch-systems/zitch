@@ -1,4 +1,6 @@
 """Compile the actual card service queries with PostgreSQL, even in SQLite CI."""
+from django.test import override_settings as _bank_test_settings
+from banking.test_client import CONFIG as _BANK_TEST_CONFIG
 from contextlib import contextmanager
 from decimal import Decimal
 from unittest.mock import patch
@@ -8,7 +10,7 @@ from django.db.models.query import QuerySet
 from django.test import TestCase
 
 from wallet.models import Transaction
-from wallet.tests import make_user
+from banking.test_fixtures import make_bank_user as make_user
 
 from cards.issuance import claim_card_issuance, finalize_card_issuance
 from cards.models import CardIssuance, VirtualCard
@@ -40,6 +42,7 @@ def postgres_lock_statements(model):
         raise AssertionError("PostgreSQL compilation opened an unexpected connection")
 
 
+@_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)
 class PostgreSQLCardLockTests(TestCase):
     def setUp(self):
         self.user, _ = make_user(

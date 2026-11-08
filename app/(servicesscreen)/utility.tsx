@@ -1,21 +1,3 @@
 import React from 'react';
-import { router } from 'expo-router';
-import { Screen, Header, ZItem, HeaderLink } from '@/components/design/ui';
-
-const Utility = () => {
-  const items = [
-    { icon: 'bills', title: 'Electricity', sub: 'Check supported providers and pay your bill', to: '/buyelectricity' },
-    { icon: 'tv', title: 'TV Subscriptions', sub: 'Renew DSTV, GOtv & StarTimes', to: '/buycable' },
-    { icon: 'bills', title: 'Water', sub: 'Water payments are coming soon', to: '/water' },
-  ];
-  return (
-    <Screen>
-      <Header title="Utility Payment" sub="Seamless utility payments with Zitch" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
-      {items.map((it, i) => (
-        <ZItem key={it.title} icon={it.icon} title={it.title} sub={it.sub} onPress={() => router.push(it.to as any)} last={i === items.length - 1} />
-      ))}
-    </Screen>
-  );
-};
-
-export default Utility;
+import PaymentScreen from '@/components/banking/PaymentScreen';
+export default function BankPayment() { return <PaymentScreen kind='bill' />; }

@@ -1,4 +1,5 @@
 """The worker reports its selected public Flow contract without calling Meta."""
+from banking.test_fixtures import bank_channel_case
 import hashlib
 import json
 from io import StringIO
@@ -13,6 +14,7 @@ from whatsapp.management.commands.publish_flow import ASSET
 TARGET = "whatsapp.management.commands.whatsapp_worker"
 
 
+@bank_channel_case
 class WorkerStartupDiagnosticTests(SimpleTestCase):
     @override_settings(WHATSAPP_FLOW={"FLOW_ID": "777", "PRIVATE_KEY": "secret-private-key"})
     def test_startup_reports_numeric_selection_and_canonical_contract_without_network(self):

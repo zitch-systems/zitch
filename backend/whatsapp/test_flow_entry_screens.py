@@ -10,6 +10,7 @@ SIGNUP_SCREEN -> PIN_SCREEN gave PIN_SCREEN an incoming route, which silently
 disqualified it as an opening screen while every unit test still passed. These
 assert the graph property directly, against the same file that gets published.
 """
+from banking.test_fixtures import bank_channel_case
 import collections
 import json
 from pathlib import Path
@@ -37,6 +38,7 @@ def _incoming():
     return edges
 
 
+@bank_channel_case
 class OpeningScreensAreRoutingRootsTests(SimpleTestCase):
 
     def test_every_screen_we_open_on_has_no_incoming_route(self):

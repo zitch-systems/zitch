@@ -12,6 +12,7 @@ and on Meta's servers — readable by anyone who picks up the unlocked phone. It
 is therefore collected only inside the encrypted Flow, hashed before it is
 written anywhere, and never echoed back to the chat or a screen.
 """
+from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 
 from django.contrib.auth.hashers import check_password
@@ -35,6 +36,7 @@ def _ob(step=flows.FLOW_PASSWORD_STATE, **payload):
         expires_at=timezone.now() + timedelta(minutes=10))
 
 
+@bank_channel_case
 class PasswordRuleTests(TestCase):
     """The rule the sign-up screen has always drawn tick-boxes for — which lived
     only in the mobile client, so it was advice rather than policy."""
@@ -69,6 +71,7 @@ class PasswordRuleTests(TestCase):
         self.assertIsNone(_weak_password(GOOD))
 
 
+@bank_channel_case
 @override_settings(WHATSAPP_FLOW={"PASSWORD_SCREEN": True})
 class SignupPasswordScreenTests(TestCase):
 
@@ -140,6 +143,7 @@ class SignupPasswordScreenTests(TestCase):
         self.assertEqual(answer["screen"], flows.SIGNUP_PASSWORD)
 
 
+@bank_channel_case
 class GateTests(TestCase):
     """The Flow JSON is published by hand, so the code can reach production
     before the screen does. Answering with a screen Meta has never heard of is
@@ -165,6 +169,7 @@ class GateTests(TestCase):
         self.assertEqual(flows._signup_to_pin(ob)["screen"], flows.PIN_CHAIN)
 
 
+@bank_channel_case
 @override_settings(WHATSAPP_FLOW={"PASSWORD_SCREEN": True})
 class TheAccountItCreatesTests(TestCase):
 

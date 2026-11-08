@@ -1,4 +1,5 @@
 """Two things a customer did in production that the channel got wrong."""
+from banking.test_fixtures import bank_channel_case
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ from whatsapp.tests import make_user
 MSISDN = "2348011116666"
 
 
+@bank_channel_case
 class AmountParsingTests(TestCase):
     """Amounts arrive inside sentences, not as bare tokens."""
 
@@ -33,6 +35,7 @@ class AmountParsingTests(TestCase):
             self.assertIsNone(router.parse_amount(t), t)
 
 
+@bank_channel_case
 class PastedTransferTests(TestCase):
     """"12300. Moniepoint 01827364728 cravings" opened the guided form instead.
 
@@ -71,6 +74,7 @@ class PastedTransferTests(TestCase):
         begin.assert_not_called()
 
 
+@bank_channel_case
 class StaleConfirmCardTests(TestCase):
     """The confirm card stays in the thread with its button live.
 

@@ -372,12 +372,9 @@ class WebhookEvent(models.Model):
         "accesstoken", "token", "authorization", "nuban", "accountnumber",
         "email", "phone", "phonenumber", "msisdn", "from", "nubanname", "accountname",
         "customerid", "billerscode", "meter", "meternumber", "smartcard", "iuc",
-        # ALAT's face callback names the identity number "id" — but so does every
-        # WhatsApp message envelope, where it is a correlation handle rather than
-        # PII, and redacting those would blind the forensic trail this table exists
-        # for. "id" is therefore scrubbed AT THE FACE HANDLER instead (see
-        # wallet.wema_callbacks.wema_face_callback), which is the only place the key
-        # carries an identity number.
+        # "id" is deliberately absent: in every WhatsApp message envelope it is a
+        # correlation handle rather than PII, and redacting it would blind the
+        # forensic trail this table exists for.
         "identityvalue", "identifiervalue", "bvnornin",
     })
 

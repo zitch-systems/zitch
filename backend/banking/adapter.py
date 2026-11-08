@@ -1,0 +1,137 @@
+"""Application-facing 9PSB reads and payment dispatch.
+
+Adapters return normalized application results, never bank credentials or identity
+documents. Unsupported former-provider operations stay unavailable.
+"""
+from decimal import Decimal
+
+from django.core.cache import cache
+
+from .accounts import update_account
+from .client import Client, ProviderError, config, configured, customer_enabled, money, bank_directory, confirmed_recipient
+from .models import BankAccount, Instruction
+from .payments import requery, submit_existing
+
+
+def unavailable(*args, **kwargs):
+    return {"success": False, "not_charged": True, "message": "This service is not available with the current bank connection."}
+
+
+def bank_live():
+    return configured()
+
+
+def bank_simulation():
+    return False
+
+
+def bank_list():
+    """Confirmed directory rows; a failure raises ProviderError with its reason."""
+    client = Client()
+    key = "9psb:banks:v2:" + client._cache_key()
+    data = cache.get(key)
+    if data is None:
+        data = bank_directory(client.banks())
+        cache.set(key, data, timeout=86400)
+    return data
+
+
+def get_banks():
+    try:
+        return {"success": True, "banks": bank_list()}
+    except ProviderError:
+        return unavailable()
+
+
+def resolve_account(account_number, bank_code, *, timeout=None):
+    try:
+        result = Client(timeout=timeout).resolve(account_number, bank_code)
+        if result.http_status in {408, 429} or result.http_status >= 500:
+            return {"success": False, "retryable": True, "code": "bank_lookup_unavailable",
+                    "message": "Bank lookup is temporarily unavailable. Please try again."}
+        recipient = confirmed_recipient(result, account_number, bank_code)
+        if recipient:
+            return {"success": True, **recipient}
+        # NIP can return HTTP 200 with no holder and a routing/system failure.
+        # This is an unavailable lookup, not evidence of a missing recipient.
+        # Keep the retry path used for transport failures without relaxing the
+        # exact account/route/name requirements for a confirmed recipient.
+        envelopes = [result.body]
+        if isinstance(result.data, dict):
+            envelopes.append(result.data)
+        if any(str(envelope.get(field, "")).strip() in {"91", "92", "96", "97", "99"}
+               for envelope in envelopes for field in ("code", "responseCode", "statusCode")):
+            return {"success": False, "retryable": True, "code": "bank_lookup_unavailable",
+                    "message": "Bank lookup is temporarily unavailable. Please try again."}
+    except ProviderError:
+        return {"success": False, "retryable": True, "code": "bank_lookup_unavailable",
+                "message": "Bank lookup is temporarily unavailable. Please try again."}
+    except (ValueError, AttributeError):
+        pass
+    return {"success": False, "message": "We could not confirm this recipient. Check the account and bank."}
+
+
+def get_balance(account_number):
+    bank = BankAccount.objects.filter(number=account_number, environment=config().get("ENVIRONMENT", "sandbox")).first()
+    if not bank:
+        return unavailable()
+    try:
+        update_account(bank)
+        if bank.available_balance is None:
+            return unavailable()
+        return {"success": True, "balance": str(bank.available_balance),
+                "available_balance": str(bank.available_balance), "ledger_balance": str(bank.ledger_balance)}
+    except ProviderError:
+        return unavailable()
+
+
+def get_kyc_status(account_number):
+    bank = BankAccount.objects.filter(number=account_number, environment=config().get("ENVIRONMENT", "sandbox")).first()
+    if not bank:
+        return unavailable()
+    try:
+        update_account(bank)
+        return {"success": True, "tier": bank.tier, "name": bank.name, "pnd": bank.pnd,
+                "maximum_deposit": bank.maximum_deposit, "maximum_balance": bank.maximum_balance}
+    except ProviderError:
+        return unavailable()
+
+
+def transfer(amount_naira, reference, narration, *, source_account, destination_account,
+             destination_bank_code, destination_bank_name="", destination_name=""):
+    return submit_existing(reference, "waas", "OTHER_BANKS", {"amount": money(amount_naira),
+        "source": source_account, "destination": destination_account, "bank_code": destination_bank_code,
+        "destination_name": destination_name, "narration": narration})
+
+
+def confirm_transfer_status(reference, **kwargs):
+    instruction = Instruction.objects.filter(transaction__reference=reference).first()
+    if not instruction:
+        return {"success": False, "pending": True, "status": "REVIEW", "message": "This historical payment requires review."}
+    return requery(instruction)
+
+
+def vas_status(reference, txn_type=""):
+    return confirm_transfer_status(reference)
+
+
+
+def classify_transfer_status(status, *, envelope_ok=True):
+    if not envelope_ok:
+        return "pending"
+    value = str(status).upper()
+    return "success" if value == "SUCCESS" else "failed" if value == "FAILED" else "pending"
+
+
+def bank_tier_limit(tier, key):
+    # Confirmed correspondence only. Deposit caps do not become spending caps.
+    values = {1: {"single_inflow": Decimal("50000"), "max_balance": Decimal("300000")},
+              2: {"max_balance": Decimal("500000")}, 3: {}}
+    return values.get(tier, {}).get(key)
+
+
+
+def bank_diagnostics():
+    return {"provider": "9psb", "environment": config().get("ENVIRONMENT", "sandbox"),
+        "configured": configured(), "enabled": customer_enabled(),
+        "vas_configured": configured("vas"), "vas_enabled": bool(config().get("VAS_ENABLED"))}

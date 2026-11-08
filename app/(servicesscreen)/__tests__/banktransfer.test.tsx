@@ -4,7 +4,7 @@ import BankTransfer from '@/app/(servicesscreen)/banktransfer';
 
 const mockPush = jest.fn();
 const mockWallet = { accountNumber: '', accountName: 'Zitch/Ada', bankName: 'Bank', linked: [],
-  fundingProvider: 'partnership', fundingMessage: 'Complete identity verification to set up your account.' };
+  fundingProvider: '9psb', fundingMessage: 'Complete identity verification to set up your account.' };
 const mockCopy = jest.fn();
 jest.mock('@/lib/wallet', () => ({ useWallet: () => mockWallet }));
 jest.mock('expo-router', () => ({ router: { back: jest.fn(), push: (...args: unknown[]) => mockPush(...args) } }));
@@ -26,7 +26,7 @@ jest.mock('@/components/design/ui', () => {
 
 beforeEach(() => { mockWallet.accountNumber = ''; mockCopy.mockReset(); mockPush.mockReset(); });
 
-it.each(['', '7111234567', '123', 'abc7121234567', '712-123-4567'])('shows setup instead of funding actions for unavailable number %s', async (number) => {
+it.each(['', '123', 'abc7121234567', '712-123-4567'])('shows setup instead of funding actions for unavailable number %s', async (number) => {
   mockWallet.accountNumber = number;
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<BankTransfer />); });
