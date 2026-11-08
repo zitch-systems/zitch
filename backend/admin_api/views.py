@@ -339,8 +339,11 @@ def _webhook_rows(limit=40) -> list:
     return rows
 
 
-_RECON_RUNS = {"recon.vas_run": "zitch-reconcile-wema", "recon.maturities_run": "zitch-maturities",
-               "recon.wema_run": "zitch-reconcile-wema"}
+#: Only the savings maturity sweep is left. recon.vas_run and recon.wema_run
+#: both pointed at zitch-reconcile-wema, whose command was deleted with the
+#: bank; an unmapped action falls back to its own name in _recon_rows, so a
+#: historical audit row still renders, just under its raw action.
+_RECON_RUNS = {"recon.maturities_run": "zitch-maturities"}
 
 
 def _recon_rows(limit=20) -> list:
@@ -563,7 +566,7 @@ def bootstrap(request):
 
     # Providers: live vs mock from the same source the /healthz probe uses.
     from django.conf import settings as dj_settings
-    from utility.providers import _prembly_live, payout_live, vtu_live
+    from utility.providers import _prembly_live, payout_live
     from whatsapp.providers import wa_live
 
     def _st(live):
@@ -798,37 +801,6 @@ def user_pin_unlock(request):
 
 
 @staff_endpoint(methods=("POST",), perm="money")
-def txn_requery(request):
-    """POST {ref} — requery a provider-timeout PENDING purchase and settle it.
-
-    Identical to the reconcile cron / ops portal path: provider truth decides
-    settle vs refund, idempotently. Anything not provider-pending is a 409."""
-    from utility.providers import vtu_requery
-    from wallet.models import Transaction
-    from wallet.services import is_bank_payout, is_vas_purchase, settle_or_refund
-
-    ref = (request.data.get("ref") or "").strip()
-    txn = Transaction.objects.filter(reference=ref).first()
-    if txn is None:
-        return fail("Transaction not found", status=404)
-    if not (txn.transaction_status == Transaction.PENDING and (txn.meta or {}).get("reconcile")):
-        return fail("Only provider-pending purchases can be requeried", status=409)
-    if is_bank_payout(txn):
-        # A bank transfer settles via the bank reconcile sweep, not a VAS requery —
-        # don't query the wrong product for a reference it never saw.
-        return fail("Bank transfers reconcile via the disbursement webhook, not partner-bank VAS requery", status=409)
-    if not is_vas_purchase(txn):
-        return fail(
-            "This transaction belongs to a different provider rail and cannot use VAS requery",
-            status=409,
-            code="wrong_reconciliation_rail",
-        )
-    status = settle_or_refund(txn, vtu_requery(txn.reference))
-    audit(request, "txn.requery", target=ref, before={"status": "pending"}, after={"status": status})
-    return ok(success=True, ref=ref, status=status)
-
-
-@staff_endpoint(methods=("POST",), perm="money")
 def fx_margin(request):
     """POST {bps} — set the FX margin (0–1000 bps) applied to every quote."""
     from whatsapp.models import SystemSetting
@@ -892,25 +864,6 @@ def run_maturities(request):
     n = run_maturities_service()
     audit(request, "recon.maturities_run", after={"paid_out": n})
     return ok(success=True, paid_out=n)
-
-
-@staff_endpoint(methods=("POST",), perm="money")
-def run_recon(request):
-    """POST {} — requery + settle every provider-pending purchase (the partner-bank VAS
-    reconcile loop's loop, on demand)."""
-    from utility.providers import vtu_requery
-    from wallet.services import pending_vas_purchases, settle_or_refund
-
-    cutoff = timezone.now() - timedelta(minutes=5)
-    # partner-bank VAS purchases only; bank-transfer payouts settle via the disbursement
-    # webhook, not a partner-bank VAS requery (see wallet.services.pending_vas_purchases).
-    pending = list(pending_vas_purchases(cutoff))
-    settled = 0
-    for txn in pending:
-        if settle_or_refund(txn, vtu_requery(txn.reference)) != "pending":
-            settled += 1
-    audit(request, "recon.vas_run", after={"checked": len(pending), "settled": settled})
-    return ok(success=True, checked=len(pending), settled=settled)
 
 
 @staff_endpoint(methods=("POST",), perm="wa")

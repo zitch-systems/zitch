@@ -21,7 +21,7 @@ PARTNERSHIP_ARCHIVED_MESSAGE = (
 
 
 def bank_account_provider() -> str:
-    return "9psb"
+    return ""
 
 
 def partnership_archived() -> bool:
@@ -51,19 +51,6 @@ def biller_enabled() -> bool:
     return customer_enabled() and config().get("VAS_ENABLED") is True and configured("vas")
 
 
-def _biller_source(reference, *, amount, source_account=""):
-    """Resolve an approved debit source; failures never reach a provider."""
-    from wallet.services import LimitExceeded, biller_source_for_transaction
-    if not biller_enabled():
-        return "", {"success": False, "pending": False, "not_charged": True,
-                    "code": "biller_unavailable",
-                    "message": "Bill payments are temporarily unavailable. You have not been charged."}
-    try:
-        return biller_source_for_transaction(reference, amount=amount,
-            source_account=source_account), None
-    except LimitExceeded as exc:
-        return "", {"success": False, "pending": False, "not_charged": True,
-                    "code": "biller_funding_unavailable", "message": str(exc)}
 
 
 def _partnership_reference_blocked(reference: str | None = None, source_account: str = "") -> bool:
@@ -109,13 +96,10 @@ def mock_disabled_in_prod() -> bool:
     return not settings.DEBUG and not getattr(settings, "TESTING", False)
 
 
-def vtu_live() -> bool:
-    from banking.client import configured
-    return configured("vas")
 
 
 def vas_provider() -> str:
-    return "9psb"
+    return ""
 
 
 
@@ -133,10 +117,6 @@ def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
 
 
 
-def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
-    return {"success": False, "not_charged": True,
-            "message": "Refresh the app to use the current bank bill catalog."}
-
 
 
 def vas_requery(reference: str, meta: dict | None = None) -> dict:
@@ -144,21 +124,10 @@ def vas_requery(reference: str, meta: dict | None = None) -> dict:
     return confirm_transfer_status(reference)
 
 
-def vtu_requery(reference: str) -> dict:
-    """Requery a VAS purchase by reference alone, loading the row's meta to do it."""
-    from wallet.models import Transaction
-
-    txn = Transaction.objects.filter(reference=reference).only("meta").first()
-    return vas_requery(reference, (txn.meta if txn else None) or {})
 
 
-def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "") -> dict:
-    return {"success": False, "message": "Use the current bank bill catalog to validate this customer."}
 
 
-# ---------------------------------------------------------------------------
-# SMS / OTP — Termii
-# ---------------------------------------------------------------------------
 def _ng_msisdn(phone: str) -> str:
     """Nigerian phone in Termii's expected international format (234XXXXXXXXXX).
 
@@ -596,7 +565,7 @@ def kyc_verify_id_document(*args, **kwargs):
 # lookup alone cannot replace bank ownership proof or interactive Tier 2 liveness.
 # ---------------------------------------------------------------------------
 def kyc_provider() -> str:
-    return "9psb"
+    return ""
 
 
 def verify_bvn(*args, **kwargs):
@@ -1054,11 +1023,11 @@ def _archived_provider_result(*args, **kwargs) -> dict:
 
 
 def payment_provider() -> str:
-    return "9psb"
+    return ""
 
 
 def payout_provider() -> str:
-    return "9psb"
+    return ""
 
 
 def payout_live() -> bool:
@@ -1173,16 +1142,6 @@ def remita_validate(rrr: str) -> dict:
     return _archived_provider_result()
 
 
-def remita_pay(amount_naira, reference: str, *, rrr: str, source_account: str = "", **kw) -> dict:
-    """Pay a Remita RRR using the debit's approved biller source."""
-    source, source_error = _biller_source(reference, amount=amount_naira, source_account=source_account)
-    if source_error:
-        return source_error
-    can_settle, _reason = vas_can_settle("remita")
-    if not can_settle:
-        return {"success": False, "pending": False, "not_charged": True,
-                "code": "remita_unavailable", "message": _VAS_UNAVAILABLE}
-    return _archived_provider_result()
 
 
 def bnpl_offers() -> dict:

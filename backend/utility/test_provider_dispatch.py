@@ -23,17 +23,20 @@ _WEMA_VAS_KEYED = {**WEMA_LIVE,
 
 
 class ProviderSelectionTests(SimpleTestCase):
-    """partner bank is the sole money-movement rail."""
+    """There is no money-movement rail, and no setting can name one."""
 
-    def test_money_rail_is_9psb(self):
-        self.assertEqual(P.payment_provider(), "9psb")
-        self.assertEqual(P.payout_provider(), "9psb")
+    def test_there_is_no_money_rail(self):
+        self.assertEqual(P.payment_provider(), "")
+        self.assertEqual(P.payout_provider(), "")
 
     @override_settings(PAYMENT_PROVIDER="kora", PAYOUT_PROVIDER="monnify")
-    def test_removed_choice_cannot_redirect_9psb(self):
-        # A legacy/unknown *_PROVIDER value falls back to the sole rail.
-        self.assertEqual(P.payment_provider(), "9psb")
-        self.assertEqual(P.payout_provider(), "9psb")
+    def test_a_legacy_selector_cannot_name_a_rail(self):
+        # This guard is the point of the suite and it still holds: these
+        # settings are read by nothing, so an unknown or stale value cannot
+        # redirect money anywhere. It used to fall back to the sole rail; with
+        # 9PSB removed the honest answer is no rail at all.
+        self.assertEqual(P.payment_provider(), "")
+        self.assertEqual(P.payout_provider(), "")
 
     def test_card_provider_defaults_to_issuer(self):
         self.assertEqual(P.card_provider(), "issuer")

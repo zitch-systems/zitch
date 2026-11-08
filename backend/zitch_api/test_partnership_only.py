@@ -23,8 +23,11 @@ class PartnershipRoutingTests(SimpleTestCase):
 
     @override_settings(BANK_ACCOUNT_PROVIDER="wema_vas", KYC_PROVIDER="prembly")
     def test_stale_environment_selectors_cannot_enable_retired_integration(self):
-        self.assertEqual(bank_account_provider(), "9psb")
-        self.assertEqual(kyc_provider(), "9psb")
+        # Neither a retired selector nor any other value can name a provider:
+        # there is none. Previously this proved the stale value could not
+        # redirect away from 9PSB; it now proves it cannot conjure a rail.
+        self.assertEqual(bank_account_provider(), "")
+        self.assertEqual(kyc_provider(), "")
 
 
 class PartnershipDiagnosticsTests(TestCase):

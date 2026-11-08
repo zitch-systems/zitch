@@ -21,7 +21,7 @@ from loans.models import Loan
 from cards.models import VirtualCard
 from savings.models import FixedSave
 from savings.services import run_maturities as run_maturities_service
-from utility.providers import fx_quote, vtu_requery
+from utility.providers import fx_quote
 from wallet.models import CurrencyWallet, Transaction, Wallet
 from wallet.services import (is_bank_payout, is_vas_purchase,
                              pending_vas_purchases, settle_or_refund)
@@ -246,13 +246,21 @@ def _success_rate() -> float:
     return round(100.0 * agg["good"] / agg["total"], 1) if agg["total"] else 100.0
 
 
+FX_CORRIDORS = ("USD", "GBP", "CAD", "CNY")
+
+
+def _corridor_enabled(ccy: str) -> bool:
+    if ccy == "CNY":
+        return False  # settlement-blocked in code (§13); the setting can't enable it
+    return SystemSetting.get(f"fx_corridor_{ccy.lower()}_enabled", "true") != "false"
+
+
 def _providers() -> list:
     from django.conf import settings as st
-    from utility.providers import _prembly_live, payout_live, sms_live, vtu_live
+    from utility.providers import _prembly_live, payout_live, sms_live
 
     rows = [
         ("9PSB", "Funding · payouts · KYC", payout_live()),
-        ("Bank bill payments", "Airtime · data · bills", vtu_live()),
         ("Fincra", "FX rates & settlement", bool(getattr(st, "FINCRA", {}).get("SECRET_KEY"))),
         ("Meta WhatsApp", "Chat channel", bool(st.WHATSAPP.get("TOKEN"))),
         ("Termii", "SMS / OTP", sms_live()),
@@ -445,45 +453,6 @@ def transactions(request):
     return ok(rows=[_txn_row(t, reviews.get(t.pk)) for t in rows])
 
 
-@api
-@require_cap("money")
-def txn_requery(request):
-    """Requery a provider-timeout PENDING purchase and settle it — the same
-    idempotent path the reconcile cron takes, for one transaction on demand."""
-    ref = (request.data.get("reference") or "").strip()
-    txn = Transaction.objects.filter(reference=ref).first()
-    if txn is None:
-        return fail("Transaction not found", status=404)
-    if not (txn.transaction_status == Transaction.PENDING and (txn.meta or {}).get("reconcile")):
-        return fail("Only provider-pending purchases can be requeried", status=409)
-    if is_bank_payout(txn):
-        # Keep transfers on bank reconciliation, using their persisted product
-        # and reference rather than treating them as VAS purchases.
-        return fail("Bank transfers reconcile via the disbursement webhook; use bank transfer reconciliation", status=409)
-    if not is_vas_purchase(txn):
-        return fail(
-            "This transaction cannot use bank bill-payment reconciliation",
-            status=409,
-            code="wrong_reconciliation_rail",
-        )
-    result = vtu_requery(txn.reference)
-    status = settle_or_refund(txn, result)
-    record_audit("txn.requery", actor=request.user_obj, target=ref,
-                 before={"status": "pending"}, after={"status": status})
-    return ok(success=True, status=status)
-
-
-# --------------------------------------------------------------------------- #
-# FX & treasury
-# --------------------------------------------------------------------------- #
-FX_CORRIDORS = ("USD", "GBP", "CAD", "CNY")
-
-
-def _corridor_enabled(ccy: str) -> bool:
-    if ccy == "CNY":
-        return False  # settlement-blocked in code (§13); the setting can't enable it
-    return SystemSetting.get(f"fx_corridor_{ccy.lower()}_enabled", "true") != "false"
-
 
 @api
 @require_cap()
@@ -642,26 +611,7 @@ def maturities_run(request):
     return ok(success=True, paid_out=n)
 
 
-@api
-@require_cap("money")
-def recon_run(request):
-    """Requery + settle every provider-pending purchase — the cron's loop, on demand."""
-    cutoff = timezone.now() - timedelta(minutes=5)
-    # partner-bank VAS purchases only; bank-transfer payouts settle via the disbursement
-    # webhook, not a partner-bank VAS requery (see wallet.services.pending_vas_purchases).
-    pending = list(pending_vas_purchases(cutoff))
-    settled = 0
-    for txn in pending:
-        if settle_or_refund(txn, vtu_requery(txn.reference)) != "pending":
-            settled += 1
-    record_audit("recon.vas_run", actor=request.user_obj,
-                 after={"checked": len(pending), "settled": settled})
-    return ok(success=True, settled=settled)
 
-
-# --------------------------------------------------------------------------- #
-# WhatsApp inbox / AI / broadcasts
-# --------------------------------------------------------------------------- #
 @api
 @require_cap()
 def inbox(request):

@@ -57,7 +57,7 @@ def diagnostics_view(request):
     from django.core.management import call_command
 
     from banking.readiness import report as bank_report
-    from utility.providers import sms_live, sms_probe, vas_can_settle, vtu_live
+    from utility.providers import sms_live, sms_probe
 
     parts = []
     sent = ""
@@ -104,18 +104,6 @@ def diagnostics_view(request):
                "base_url": settings.TERMII.get("BASE_URL", "")}),
         note="<code>sms_live: false</code> means mock mode — nothing is sent and the code is "
              "not logged anywhere, so nobody receives an OTP."))
-    parts.append(_section(
-        "Bank bill payments (airtime / data / bills)",
-        _json({"biller_live": _safe("biller", vtu_live),
-               "airtime_settleable": _safe("airtime_settleable",
-                                           lambda: vas_can_settle("airtime")),
-               "bills_settleable": _safe("bills_settleable",
-                                         lambda: vas_can_settle("bill"))}),
-        note="9PSB provides airtime, data and bill payments through its VAS API. "
-             "A <code>settleable</code> value of <code>false</code> blocks new purchases "
-             "before debit. Check the separate VAS API and identity URLs in the bank "
-             "preflight. Configuration alone does not establish bank acceptance or delivery."))
-
     # The channel most likely to be "just not responding" with nothing in any log:
     # the webhook acks 200 and queues, and a SEPARATE service does the replying.
     from whatsapp.health import whatsapp_diagnostics

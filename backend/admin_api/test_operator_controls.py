@@ -796,21 +796,12 @@ class CardFundingResolutionTests(TestCase):
         self.assertFalse(ApprovalRequest.objects.filter(
             action="wallet.card_funding_resolution").exists())
 
-    def test_vas_requery_cannot_touch_a_pending_card_load(self):
-        from unittest.mock import patch
-
-        with patch("utility.providers.vtu_requery") as requery:
-            response = self.client.post(
-                "/api/admin/txn/requery",
-                data=json.dumps({"ref": self.txn.reference}),
-                content_type="application/json",
-                HTTP_AUTHORIZATION=f"Bearer {_admin_token(self.maker)}",
-            )
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["code"], "wrong_reconciliation_rail")
-        requery.assert_not_called()
-        self.txn.refresh_from_db()
-        self.assertEqual(self.txn.transaction_status, Transaction.PENDING)
+    # A VAS requery must never settle a pending CARD load: wrong rail, and the
+    # card's own resolution flow is the only thing allowed to touch it. That was
+    # enforced by txn/requery returning 409 wrong_reconciliation_rail without
+    # calling the provider. Both the endpoint and the provider are gone, so the
+    # confusion it guarded against is no longer reachable. The card funding
+    # resolution path itself is still covered by the rest of this class.
 
     def test_legacy_projection_confirmation_never_increments_again(self):
         self.card.balance = Decimal("1000")

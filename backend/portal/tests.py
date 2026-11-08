@@ -802,9 +802,12 @@ class DiagnosticsPageTests(TestCase):
         res = self.client.get("/admin/diagnostics/")
         self.assertEqual(res.status_code, 200)
         body = res.content.decode()
-        for expected in ("Bank preflight", "9PSB", "SMS (Termii)",
-                         "Bank bill payments"):
+        # "Bank bill payments" was here until the VAS rail went; its section
+        # reported vtu_live and whether airtime/bills were settleable, and
+        # neither can be answered now.
+        for expected in ("Bank preflight", "9PSB", "SMS (Termii)"):
             self.assertIn(expected, body)
+        self.assertNotIn("Bank bill payments", body)
 
     def test_a_failing_probe_does_not_take_the_page_down(self):
         # The page exists precisely for when something is broken.

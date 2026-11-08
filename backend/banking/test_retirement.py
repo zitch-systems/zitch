@@ -14,9 +14,16 @@ from .test_client import CONFIG
                          "CHANNEL_ID": "test", "KEYS": {"wallet": "test", "airtime": "test"}})
 class RetiredProviderBoundaryTests(SimpleTestCase):
     def test_legacy_provider_settings_cannot_override_bank_selection(self):
+        """Still the point of this test, with a different expected value.
+
+        It proved a stale PAYMENT_PROVIDER/PAYOUT_PROVIDER in the environment
+        could not resurrect the retired bank. 9PSB has now been removed too, so
+        the answer is no provider at all -- and a legacy setting must not be
+        able to name one. An empty string, never "wema" and never "9psb".
+        """
         for choose in (providers.payment_provider, providers.payout_provider,
                        providers.bank_account_provider, providers.vas_provider, providers.kyc_provider):
-            self.assertEqual(choose(), "9psb")
+            self.assertEqual(choose(), "")
 
     def test_retired_bank_routes_are_not_registered(self):
         for path in ("/api/wallet/wema/create/", "/api/wallet/wema/verify-otp/",
@@ -42,8 +49,10 @@ class RetiredProviderBoundaryTests(SimpleTestCase):
                      "reconciliation_evidence"):
             with self.subTest(command=name):
                 self.assertNotIn(name, commands)
-        # The live reconcile cron still invokes this name; it runs the 9PSB sweep.
-        self.assertEqual(commands["reconcile_wema"], "utility")
+        # reconcile_wema was a one-line alias importing the 9PSB reconcile
+        # command. Both are gone, so the name must no longer resolve either --
+        # it would have died on import.
+        self.assertNotIn("reconcile_wema", commands)
 
     def test_retired_card_remita_and_bnpl_rails_never_confirm_success(self):
         with patch("requests.sessions.Session.request") as http:

@@ -36,18 +36,19 @@ def health(_request):
 
     from utility.providers import (_prembly_live, card_issuer_live, kyc_provider,
                                     payment_provider, payout_live, payout_provider,
-                                    sms_live, vas_provider, vtu_live)
+                                    sms_live)
     from banking.readiness import report as bank_report
     from whatsapp.providers import flows_live as _flows_live
     from whatsapp.providers import wa_live, wa_mode
 
     integrations = {
         "banking": bank_report(),
-        "funding_provider": "9psb",
-        "payout_provider": "9psb",
+        # Empty, not a name: no partner bank is configured. payout_live() is
+        # kept because it still answers -- false -- and a reader checking
+        # whether money can leave should get an answer, not a missing key.
+        "funding_provider": "",
+        "payout_provider": "",
         "payout_live": payout_live(),
-        "vas_provider": "9psb",
-        "biller_live": vtu_live(),
         "sms_provider": "termii",
         # Termii ACCEPTS a message (returns a message_id, so `success` is true and
         # the customer is told a code is coming) and then never delivers it when
