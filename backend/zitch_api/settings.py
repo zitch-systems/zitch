@@ -90,6 +90,10 @@ INSTALLED_APPS = [
 # Wema Partnership is the sole active account and transfer integration.
 # Historical funding records stay read-only for accounting and audit evidence.
 BANK_ACCOUNT_PROVIDER = "partnership"
+# Keep the restoration inert in production until Wema bank UAT and financial
+# reconciliation are approved. A source merge or presence of old keys cannot
+# by itself authorize new bank accounts or payment instructions.
+WEMA_CUTOVER_APPROVED = env_bool("WEMA_CUTOVER_APPROVED", False)
 WEMA_PARTNERSHIP_MODE = os.environ.get("WEMA_PARTNERSHIP_MODE", "active").strip().lower()
 WEMA_BILLER_MODE = os.environ.get("WEMA_BILLER_MODE", "active").strip().lower()
 
