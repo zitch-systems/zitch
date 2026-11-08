@@ -28,9 +28,12 @@ from whatsapp.test_flows import MSISDN, _make_user
 
 
 def _identity_action(user, action_type="kyc", **payload):
+    """An armed email step. The default was a BVN step, which cannot be armed
+    any more -- the identity Flow went with the rail, so email is the only kind
+    this state now carries."""
     return PendingAction.objects.create(
         user=user, msisdn=MSISDN, action_type=action_type, state=FLOW_ID_STATE,
-        payload={"id_kind": "bvn", "id_fallback_state": "bvn", **payload},
+        payload={"id_kind": "email", "id_step": "address", **payload},
         expires_at=timezone.now() + timedelta(minutes=10))
 
 
@@ -52,15 +55,12 @@ class TypedIdentityIsAnsweredTests(TestCase):
         self.assertIn("leaving that verification", reply.call_args[0][1])
         self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
 
-    def test_a_typed_identity_number_is_processed_not_refused(self):
-        pa = _identity_action(self.user)
-        with patch.object(router, "reply") as reply, \
-             patch.object(router, "_advance_kyc") as advance:
-            router._advance(pa, self.user, MSISDN, "81083752916")
-        advance.assert_called_once_with(pa, self.user, MSISDN, "81083752916")
-        pa.refresh_from_db()
-        self.assertEqual(pa.state, "bvn")   # handed to the chat step, not left armed
-        self.assertIn("delete your message", reply.call_args[0][1].lower())
+    #: An 11-digit number typed into an open identity Flow was processed rather
+    #: than refused, handed to the "bvn" chat step, and answered with a tip on
+    #: deleting the message -- because refusing to read it did not un-send it.
+    #: There is no identity number to type now, and no step to hand it to. The
+    #: email pair below covers what is left of this path: an address recognised
+    #: by shape before the new-instruction hatch, and no delete tip for it.
 
     def test_a_retired_account_setup_is_closed_without_reading_the_number(self):
         """In-chat account opening belonged to the retired partner bank. A
@@ -111,13 +111,15 @@ class TypedIdentityIsAnsweredTests(TestCase):
         self.assertIn("no code to re-send", reply.call_args[0][1])
         self.assertTrue(PendingAction.objects.filter(pk=pa.pk).exists())
 
-    def test_a_wrong_length_number_is_nudged_rather_than_treated_as_a_command(self):
+    def test_a_wrong_shaped_answer_is_nudged_rather_than_treated_as_a_command(self):
+        """Was asserted on "11-digit BVN". The nudge now names the email step,
+        which is the only thing this screen can be waiting for."""
         pa = _identity_action(self.user)
         with patch.object(router, "reply") as reply, \
              patch.object(router, "handle_inbound") as inbound:
             router._advance(pa, self.user, MSISDN, "8108375")
         inbound.assert_not_called()
-        self.assertIn("11-digit BVN", reply.call_args[0][1])
+        self.assertIn("email address", reply.call_args[0][1])
 
 
 @bank_channel_case

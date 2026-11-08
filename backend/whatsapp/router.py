@@ -3570,17 +3570,13 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
             _clear_actions(msisdn)
             reply(msisdn, "Okay - leaving that verification.")
             return handle_inbound(msisdn, text)
-        if kind == "email":
-            what = "email code" if pa.payload.get("id_step") == "code" else "email address"
-            return reply(msisdn, f"📧 That doesn't look like your {what}. Enter it on the secure "
-                                 "screen I sent, or type it here - either works. "
-                                 "Or reply \"cancel\".")
-        # An armed challenge means the screen is waiting for the SMS code that
-        # name-matches the number, not for the number again.
-        wanted = "the 6-digit code we sent you" if pa.payload.get("id_otp_hash") \
-            else f"your 11-digit {kind.upper()}"
-        return reply(msisdn, f"🪪 That isn't {wanted}. Enter it on the secure screen I sent, "
-                             "or type it here - either works. Or reply \"cancel\".")
+        # Not the answer, not a command: say what is actually being asked for.
+        # The 11-digit-identity arm of this went with the rail, and took the
+        # `kind` it read with it -- email is the only kind that reaches here.
+        what = "email code" if pa.payload.get("id_step") == "code" else "email address"
+        return reply(msisdn, f"📧 That doesn't look like your {what}. Enter it on the secure "
+                             "screen I sent, or type it here - either works. "
+                             "Or reply \"cancel\".")
     from banking.chat import advance as advance_bank_vas
     handler = {
         "bank_vas": advance_bank_vas,
