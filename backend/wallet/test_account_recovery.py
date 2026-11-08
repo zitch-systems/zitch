@@ -193,7 +193,8 @@ class AccountRecoveryTests(TestCase):
         self.assertEqual(WemaFaceSession.objects.count(), 2)
         self.assertEqual(active_account_recovery(self.user).pk, session.pk)
 
-    @override_settings(TESTING=False, DEBUG=False, SECURE_SSL_REDIRECT=False, ALLOWED_HOSTS=["testserver"])
+    @override_settings(TESTING=False, DEBUG=False, WEMA_CUTOVER_APPROVED=True,
+                       SECURE_SSL_REDIRECT=False, ALLOWED_HOSTS=["testserver"])
     def test_fresh_callback_submits_once_but_old_correlation_never_replays(self):
         session, _ = self.prepare(approve=True)
         with mock.patch("utility.wema.create_wallet_with_face", return_value={"success": True, "http_status": 200}) as create, \
@@ -210,7 +211,8 @@ class AccountRecoveryTests(TestCase):
         self.assertEqual(session.account_state, "awaiting_callback")
         self.assertIsNone(active_account_recovery(self.user))
 
-    @override_settings(TESTING=False, DEBUG=False, SECURE_SSL_REDIRECT=False, ALLOWED_HOSTS=["testserver"])
+    @override_settings(TESTING=False, DEBUG=False, WEMA_CUTOVER_APPROVED=True,
+                       SECURE_SSL_REDIRECT=False, ALLOWED_HOSTS=["testserver"])
     def test_callback_rechecks_bank_and_does_not_create_when_lookup_changes(self):
         session, _ = self.prepare(approve=True)
         self.lookup.return_value = {"success": True, "account_number": "0123456789", "account_lookup_state": "found"}
