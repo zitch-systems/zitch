@@ -715,7 +715,7 @@ def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
 def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_query: str) -> bool:
     """Validate then open a transfer at the bank step - shared by the paste path
     and the LLM. Returns False only when the bank can't be matched (caller decides)."""
-    if _blocked_from_spending(user, msisdn):
+    if _blocked_from_spending(user, msisdn, outbound=True):
         return True
     matches = _match_banks(bank_query)
     # The NUBAN carries its own bank code in the check digit, so a message that

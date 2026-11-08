@@ -809,10 +809,10 @@ class PublishedFlowJsonTests(unittest.TestCase):
                     f"{source} -> {target} is a backward route; Meta will reject the Flow")
 
     def test_the_screens_the_endpoint_returns_are_all_published(self):
-        from .flows import (EMAIL_SCREEN, IDENTITY_SCREEN, PIN_CONFIRM, PIN_SCREEN,
+        from .flows import (EMAIL_SCREEN, PIN_CONFIRM, PIN_SCREEN,
                             SUCCESS_SCREEN)
 
-        for screen in (EMAIL_SCREEN, IDENTITY_SCREEN, PIN_CONFIRM, PIN_SCREEN, SUCCESS_SCREEN):
+        for screen in (EMAIL_SCREEN, PIN_CONFIRM, PIN_SCREEN, SUCCESS_SCREEN):
             self.assertIn(screen, self.order)
 
     def test_every_screen_opens_with_the_zitch_mark(self):
@@ -829,7 +829,7 @@ class PublishedFlowJsonTests(unittest.TestCase):
     def test_every_field_the_endpoint_sends_is_declared_on_its_screen(self):
         """A screen renders only what it declares. An undeclared key is not a
         blank line — it fails the exchange, mid-payment."""
-        from .flows import (_email_screen, _identity_screen,  # noqa: SLF001
+        from .flows import (_email_screen, _masked_entry_screen,  # noqa: SLF001
                             _pin_screen, _success_screen)
 
         declared = {s["id"]: set(s["data"]) for s in self.doc["screens"]}
@@ -837,7 +837,7 @@ class PublishedFlowJsonTests(unittest.TestCase):
 
         for built in (_pin_screen({"amount": "a", "recipient": "b", "details": "c"}, "e"),
                       _confirm_pin_screen("e"),
-                      _identity_screen("bvn", error="e"),
+                      _masked_entry_screen("code", error="e"),
                       _email_screen(error="e"),
                       _success_screen("done")):
             self.assertEqual(set(built["data"]), declared[built["screen"]],
@@ -951,12 +951,9 @@ class SendPayloadsMatchThePublishedScreensTests(TestCase):
 
         self._assert_matches(self._sent(router._start_pin_reset, self.user, MSISDN))  # noqa: SLF001
 
-    def test_the_identity_screen(self):
-        from whatsapp import router
-
-        self.pa.action_type = "kyc"
-        self.pa.save(update_fields=["action_type"])
-        self._assert_matches(self._sent(router._send_identity_flow, self.pa, "bvn"))  # noqa: SLF001
+    #: _send_identity_flow opened the masked 11-digit BVN/NIN screen. It went
+    #: with the identity rail; test_the_email_screens below is the same check on
+    #: the one sender left, which still has to match the published JSON.
 
     def test_the_email_screens(self):
         from whatsapp import router
@@ -1460,9 +1457,9 @@ class ScreenContractTests(TestCase):
         self.assertIn("status", resp["data"])
 
     def test_every_screen_builder_matches_its_declaration(self):
-        from .flows import (CODE_SCREEN, EMAIL_SCREEN, IDENTITY_SCREEN, PIN_CONFIRM,
+        from .flows import (CODE_SCREEN, EMAIL_SCREEN, PIN_CONFIRM,
                             PIN_RETRY, PIN_SCREEN, _confirm_pin_screen, _email_screen,
-                            _identity_screen, _pin_screen, _success_screen)
+                            _masked_entry_screen, _pin_screen, _success_screen)
 
         declared = self.declared()
         built = [
@@ -1471,8 +1468,8 @@ class ScreenContractTests(TestCase):
             _pin_screen("one-line summary", error="oops", screen=PIN_RETRY),
             _confirm_pin_screen(),
             _confirm_pin_screen(error="mismatch"),
-            _identity_screen("BVN"),
-            _identity_screen("BVN", screen=CODE_SCREEN),
+            _masked_entry_screen("code"),
+            _masked_entry_screen("code", screen=CODE_SCREEN),
             _email_screen(),
             _success_screen("done"),
             _success_screen("nope", status="failed"),

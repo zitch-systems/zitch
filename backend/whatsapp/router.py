@@ -209,7 +209,12 @@ def menu_text() -> str:
         # shared spending guard must refuse before it can begin.
         body = body.replace("2️⃣  💸 Send money\n", "2️⃣  💸 Transfers unavailable\n")
         body = body.replace("1️⃣1️⃣  📷 Scan a QR code\n", "1️⃣1️⃣  📷 QR payments unavailable\n")
-        body = body.replace('"send 5k to Ada"', '"check balance"')
+        # The examples line reads 'Or just type what you want - "send 5k to Ada",
+        # "check balance".' Replacing the first example with the second left
+        # '"check balance", "check balance"' on the screen -- an instruction that
+        # offers the same thing twice and reads like a bug, which it was. Drop
+        # the dead example and its comma instead of substituting it.
+        body = body.replace('"send 5k to Ada", ', "")
     if not product_available("fx"):
         body = body.replace("5️⃣  💱 Convert currency\n", "")
     if not product_available("savings"):
@@ -3146,7 +3151,20 @@ def _kyc_rail_ready(user, step: str) -> bool:
 # --------------------------------------------------------------------------- #
 # transfer (slot-filling state machine)
 # --------------------------------------------------------------------------- #
-def _blocked_from_spending(user, msisdn: str, *, biller: bool = False) -> bool:
+#: What someone is told when money cannot leave for a bank at all.
+#:
+#: Not a limit and not about them, so it does not wear the padlock the other
+#: refusals wear: there is no step they can take to clear it.
+NO_PAYOUT_RAIL = (
+    "🏦 We can't send money to a bank account at the moment - the bank "
+    "partnership that moved it has ended and a new one isn't in place yet.\n\n"
+    "Your balance is safe and still yours. We'll say so here as soon as "
+    "transfers are back."
+)
+
+
+def _blocked_from_spending(user, msisdn: str, *, biller: bool = False,
+                           outbound: bool = False) -> bool:
     """Refuse to START a money flow for an account that cannot finish one.
 
     The authoritative gate has always been at debit time, under the wallet lock
@@ -3155,9 +3173,29 @@ def _blocked_from_spending(user, msisdn: str, *, biller: bool = False) -> bool:
     before telling them no: the refusal came at the last step instead of the
     first, which reads as "I am able to transfer" right up until it isn't.
     Same rule, asked at the door.
+
+    `outbound` is for a flow that ends by sending money TO A BANK - a transfer
+    or a QR payment. Those need a payout rail, and there is none, so they are
+    refused here whatever the account's own standing is.
+
+    This leg had to be added rather than inherited. The menu already relabels
+    option 2 "Transfers unavailable", and the comment beside that relabel says
+    the shared spending guard refuses the payment before it can begin -- which
+    was true while bank_spend_error returned the bank's own refusal. It returns
+    None now when there is no provider, deliberately, because that is what lets
+    a bankless wallet spend INTERNALLY: savings locks, conversions, the ledger.
+    So the menu said unavailable and the flow then asked "how much would you
+    like to send?", which is the exact shape of failure this whole removal is
+    meant to end. Internal spending and a bank payout are different questions
+    and now have different answers.
     """
     from common.http import unverified_error
+    from utility.providers import payout_live
 
+    if outbound and not payout_live():
+        _clear_actions(msisdn)
+        reply(msisdn, NO_PAYOUT_RAIL)
+        return True
     message = bank_spend_error(user, Decimal("0"), biller=biller) or unverified_error(user)
     if not message:
         return False
@@ -3183,7 +3221,8 @@ QR_AMOUNT_STATE = "qr_amount"   # code read, needs an amount before it can be pa
 
 
 def _start_qr_scan(user, msisdn: str) -> None:
-    if _blocked_from_spending(user, msisdn):
+    # A scanned QR is paid to a bank account, so it needs the payout rail.
+    if _blocked_from_spending(user, msisdn, outbound=True):
         return None
     _clear_actions(msisdn)
     PendingAction.objects.create(
@@ -3320,7 +3359,7 @@ def _advance_qr(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
 
 def _start_transfer(user, msisdn: str) -> None:
-    if _blocked_from_spending(user, msisdn):
+    if _blocked_from_spending(user, msisdn, outbound=True):
         return None
     _clear_actions(msisdn)
     # One private form (amount, account, searchable bank list) that chains into

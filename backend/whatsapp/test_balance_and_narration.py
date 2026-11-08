@@ -232,45 +232,54 @@ class NarrationFromTheAITests(TestCase):
 
 
 @bank_channel_case
-class ExamConfirmSaysWhatIsBeingBoughtTests(TestCase):
-    """The exam flow fell through to the bare "Confirm your payment" fallback, so
-    the one card that should say WHICH PIN and HOW MANY said nothing about either
-    — on a purchase where that is the entire content. _flow_fields itemised it
-    already; _flow_summary, which the Flow message body and the chat card are
-    built from, did not."""
+class ConfirmCardAndPinScreenAgreeTests(TestCase):
+    """The card and the PIN screen are built from one payload and must not
+    disagree about where the money is going.
+
+    Was ExamConfirmSaysWhatIsBeingBoughtTests, which pinned that an exam
+    purchase named the PIN and the count instead of falling through to the bare
+    "Confirm your payment" -- on a purchase where that was the entire content.
+    Exams went with the VAS rail, and so did _flow_summary's exam branch.
+
+    Two of its four assertions were not about exams at all, and both guard the
+    screen someone reads before money leaves, so they are kept here on the
+    transfer path. The third ("the quantity multiplies the price") was exam-only.
+    The fourth claimed a payload missing its amount still falls back safely --
+    it passes on any action type now that the fallback is all there is, so it
+    is rewritten to prove the fallback is reached rather than raised through.
+    """
 
     def setUp(self):
         self.user = _make_user()
 
-    def _exam(self, **extra):
+    def _transfer(self, **extra):
         return PendingAction.objects.create(
-            user=self.user, msisdn=MSISDN, action_type="exam",
+            user=self.user, msisdn=MSISDN, action_type="transfer",
             state=flows.FLOW_PIN_STATE,
-            payload={"amount": "6200", "quantity": 1, "exam_name": "JAMB",
-                     "description": "UTME / DE PIN", "phone": "08010000000",
-                     "pin_attempts": 0, **extra},
+            payload={"amount": "6200", "account": "0123456789",
+                     "bank_code": "058", "bank_name": "GTBank",
+                     "name": "JOHN DOE", "pin_attempts": 0, **extra},
             expires_at=timezone.now() + timedelta(minutes=5))
 
-    def test_the_summary_names_the_exam_the_count_and_the_price(self):
-        line = router._flow_summary(self._exam())
+    def test_the_summary_names_the_recipient_and_the_price(self):
+        line = router._flow_summary(self._transfer())
         self.assertNotEqual(line, "Confirm your payment")
-        self.assertIn("JAMB", line)
-        self.assertIn("UTME", line)
+        self.assertIn("JOHN DOE", line)
+        self.assertIn("GTBank", line)
         self.assertIn("6,200", line)
 
-    def test_the_quantity_is_shown_because_it_multiplies_the_price(self):
-        self.assertIn("×3", router._flow_summary(self._exam(quantity=3, amount="18600")))
-
-    def test_a_payload_missing_its_amount_still_falls_back_safely(self):
-        pa = self._exam()
+    def test_a_payload_missing_its_amount_falls_back_instead_of_raising(self):
+        """_flow_summary swallows KeyError and InvalidOperation on purpose: a
+        malformed payload must not take down the card. Asserted together with a
+        well-formed payload above, so "it fell back" cannot be the answer to
+        both."""
+        pa = self._transfer()
         pa.payload.pop("amount")
         pa.save(update_fields=["payload"])
         self.assertEqual(router._flow_summary(pa), "Confirm your payment")
 
     def test_the_pin_screen_and_the_card_agree(self):
-        """Both halves are built from the same payload; they must not disagree
-        about what is being bought."""
-        pa = self._exam()
+        pa = self._transfer()
         fields = router._flow_fields(pa)
-        self.assertIn("JAMB", fields["recipient"])
-        self.assertIn("JAMB", router._flow_summary(pa))
+        self.assertIn("JOHN DOE", fields["recipient"])
+        self.assertIn("JOHN DOE", router._flow_summary(pa))

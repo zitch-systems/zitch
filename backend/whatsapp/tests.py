@@ -3504,10 +3504,19 @@ class HealthShowsTheChannelNowTests(TestCase):
 
 
 @bank_channel_case
-class UnverifiedCannotStartMoneyFlowsTests(TestCase):
+class MoneyFlowsAreRefusedAtTheDoorTests(TestCase):
     """The authoritative gate at debit time meant money never actually left an
     unverified account — but it walked a Tier-0 customer through amount, account,
-    bank and the PIN screen before saying no. Same rule, now asked at the door."""
+    bank and the PIN screen before saying no. Same rule, now asked at the door.
+
+    What the door refuses on has changed. The identity leg cannot be the reason
+    any more: there is no provider to confirm a BVN or NIN, so demanding one
+    refused every debit on every surface permanently (see
+    wallet.tests.BanklessFirstSpendFloorTests). The reason a transfer is refused
+    now is that there is no payout rail at all, which is a stronger refusal and
+    one no customer can clear -- so the copy says so instead of asking them to
+    verify something.
+    """
 
     def setUp(self):
         self.user, _ = make_user()
@@ -3525,27 +3534,44 @@ class UnverifiedCannotStartMoneyFlowsTests(TestCase):
 
     def test_a_transfer_is_refused_at_the_first_message(self):
         out = self._say("2")
-        self.assertIn("verify", out.lower())
+        # Was assertIn("verify"): the refusal used to be the identity floor.
+        self.assertIn("can't send money to a bank account", out)
         self.assertNotIn("How much", out)
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
 
     def test_the_ai_fast_path_is_gated_too(self):
+        """It used to drive _begin_airtime, which went with the VAS rail.
+        _begin_bank_transfer is the fast path that is left, and it takes the
+        same door gate -- returning True (handled) without arming anything."""
         from whatsapp import router
 
-        self.assertTrue(router._begin_airtime(self.user, MSISDN, 2000, None, None))  # noqa: SLF001
-        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="airtime").exists())
-        self.assertIn("unavailable", self._say("menu").lower() if False else
+        self.assertTrue(router._begin_bank_transfer(  # noqa: SLF001
+            self.user, MSISDN, Decimal("2000"), "0123456789", "GTBank"))
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
+        self.assertIn("can't send money to a bank account",
                       WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
-                      .order_by("created").first().text.lower())
+                      .order_by("created").first().text)
 
     def test_funding_and_balance_stay_open(self):
         """Money ARRIVING is how a customer gets to the point of verifying."""
         self.assertNotIn("verify your", self._say("1").lower())
 
-    def test_a_verified_account_is_untouched(self):
+    def test_verifying_does_not_open_a_transfer_that_has_no_rail(self):
+        """Was test_a_verified_account_is_untouched, asserting that a verified
+        account reached "How much". Verifying cannot buy a transfer any more:
+        the refusal is the missing rail, not the account's standing, so a fully
+        verified customer gets exactly the same answer. Asserted rather than
+        dropped, because the opposite -- the gate quietly letting a verified
+        account through to a payment nothing can send -- is the regression."""
         self.user.bvn_verified = self.user.email_verified = True
         self.user.save(update_fields=["bvn_verified", "email_verified"])
-        self.assertIn("How much", self._say("2"))
+        out = self._say("2")
+        self.assertNotIn("How much", out)
+        self.assertIn("can't send money to a bank account", out)
+
+    def test_funding_and_balance_are_not_caught_by_the_outbound_gate(self):
+        """Money arriving, and reading a balance, never leave for a bank."""
+        self.assertNotIn("can't send money to a bank account", self._say("1"))
 
 
 
