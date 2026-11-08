@@ -68,6 +68,36 @@ def _log_upgrade_status(request, response, data, bank, decision):
              ",".join(keys))
 
 
+def _reported_state(value):
+    value = str(value or "").strip().upper()
+    return value if value in {"APPROVED", "DECLINED", "PENDING", "PROCESSING",
+                              "REVIEW", "SUBMITTED", "FAILED"} else "unrecognized"
+
+
+def _log_upgrade_status(request, response, data, bank, decision):
+    """Bounded evidence for what the bank reports about one upgrade.
+
+    A request can sit in `submitted` for hours while the bank neither approves
+    nor declines it. Without this the only trace is `checked_at` moving, and an
+    operator cannot tell a silent provider from an unrecognised status: the
+    reference, tier and bounded codes are the whole diagnosis. Customer data,
+    account numbers, holder names and raw messages stay out.
+    """
+    def code(value):
+        value = str(value or "")
+        return value if re.fullmatch(r"[0-9]{2,4}", value) else "absent"
+    echoed = data.get("accountNumber")
+    keys = [key for key in ("status", "responseCode", "isSuccessful", "accountNumber",
+                            "tier", "message") if key in data]
+    log.info("bank_upgrade_status suffix=%s tier=%s stored=%s decision=%s http=%s code=%s "
+             "nested_code=%s envelope=%s reported=%s account_echo=%s fields=%s",
+             request.reference[-6:], request.tier, request.state, decision, response.http_status,
+             code(response.body.get("responseCode")), code(data.get("responseCode")),
+             _reported_state(response.body.get("status")), _reported_state(data.get("status")),
+             "absent" if not echoed else ("match" if echoed == bank.number else "mismatch"),
+             ",".join(keys))
+
+
 def upgrade_payload(user):
     bank = account_for(user)
     row = (AccountUpgrade.objects.filter(account=bank).order_by("-created", "-pk").first()
