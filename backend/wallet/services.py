@@ -417,9 +417,9 @@ def _lock_bill_funding_wallet(transaction_id):
 
 #: A provider saying "insufficient balance" is ALWAYS talking about our float.
 #:
-#: run_provider_purchase debits the customer BEFORE it calls the provider, and
+#: The purchase path debited the customer BEFORE calling the provider, and
 #: debit() raises InsufficientFunds when their wallet cannot cover the amount. So
-#: by the time a provider answers at all, the customer's money has already moved.
+#: by the time a provider answered at all, the customer's money had already moved.
 #: A balance complaint coming back from that call is therefore, by construction,
 #: about the balance WE hold with them — it cannot be the customer's.
 _PROVIDER_FLOAT_RE = re.compile(
@@ -523,50 +523,13 @@ def customer_safe_failure(result: dict, *, service: str = "",
     return message or fallback
 
 
-def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
-                          idempotency_key: str = ""):
-    """Debit the wallet (PENDING) → call the provider → settle the row.
-
-    ``provider_call(reference)`` receives the ledger reference to use as the
-    provider's idempotency key and returns the provider result dict. The network
-    call runs OUTSIDE the debit transaction, so no row lock is held during I/O.
-    With an `idempotency_key`, a duplicate request raises DuplicateTransaction
-    before any debit or provider call. Returns ``(status, txn, result)`` where
-    status is the settle_or_refund code. Raises InsufficientFunds (-> 402).
-
-    The debit is flagged ``meta.reconcile`` up front — committed atomically with
-    the wallet deduction, BEFORE the provider call. The debit commits on its own
-    (this function isn't wrapped in an outer transaction, by design, so no lock is
-    held across I/O), so if the worker dies during the provider call or the
-    settle write (a window up to the provider timeout), the committed PENDING row
-    would otherwise carry no reconcile flag and the sweep — which filters on
-    ``meta__reconcile=True`` — would never find it: money debited, never settled
-    or refunded, stuck forever. Pre-flagging makes every orphan discoverable; the
-    happy path clears the flag in ``settle_or_refund`` on a definite outcome.
-    """
-    # Replay an existing request even if the bank's current entitlement is down.
-    # debit still arbitrates concurrent requests via its unique idempotency key.
-    if existing_for_key(user, idempotency_key) is not None:
-        raise DuplicateTransaction(idempotency_key)
-    if is_biller_service(service):
-        from utility.providers import _VAS_UNAVAILABLE, vas_can_settle
-
-        kind = re.match(r"[a-z]+", str(service).strip(), re.I).group().lower()
-        product = "airtime" if kind in {"airtime", "data"} else (
-            "remita" if kind == "remita" else "bills")
-        # A read-only status probe runs before any ledger mutation and outside
-        # wallet locks. The provider boundary checks again before sending money.
-        can_settle, _reason = vas_can_settle(product)
-        if not can_settle:
-            raise LimitExceeded(_VAS_UNAVAILABLE)
-    reconcile_meta = {**(meta or {}), "reconcile": True,
-                      "provider_purchase": True}
-    txn = debit(user, amount, service, meta=reconcile_meta, idempotency_key=idempotency_key)
-    result = provider_call(txn.reference)
-    status = settle_or_refund(txn, result)
-    return status, txn, result
-
-
+#: run_provider_purchase was the shared VAS purchase path: debit the customer,
+#: call the provider, then settle or refund on what it said. Its callers were
+#: the utility, exams and betting views and the WhatsApp _run_vtu, all removed
+#: with the 9PSB VAS rail, so it had no way to be reached.
+#:
+#: settle_or_refund survives it. That primitive is not VAS-specific: bank
+#: payouts in transfers.services and banking.payments settle through it too.
 # The retired partner bank's mock rail stamped the NUBANs it invented with this,
 # which is the only durable trace that an account number was never minted at the bank.
 DEMO_ACCOUNT_MARKER = "(demo)"
@@ -631,23 +594,9 @@ def is_vas_purchase(txn) -> bool:
     return service.startswith(VAS_SERVICE_PREFIXES)
 
 
-def pending_vas_purchases(cutoff):
-    """PENDING outbound partner-bank VAS purchases due for requery, EXCLUDING bank-transfer
-    payouts. The reconcile sweep (cron + on-demand) requeries each row via
-    partner-bank VAS requery, which is only correct for partner-bank VAS purchases; bank payouts are
-    settled by the reconcile_wema poller, so they must not be swept here."""
-    legacy_services = Q()
-    for prefix in VAS_SERVICE_PREFIXES:
-        legacy_services |= Q(service__istartswith=prefix)
-    queryset = Transaction.objects.filter(
-        transaction_status=Transaction.PENDING,
-        direction=Transaction.OUT,
-        meta__reconcile=True,
-        created__lte=cutoff,
-    ).filter(Q(meta__provider_purchase=True) | legacy_services)
-    return queryset.exclude(BANK_PAYOUT_META_FILTER)
-
-
+#: pending_vas_purchases swept provider-pending VAS rows for the reconcile
+#: loop -- the cron, the ops portal and the admin console all walked it. All
+#: three callers went with the VAS rail.
 def pending_card_fundings(cutoff):
     """Ambiguous card-load POSTs awaiting issuer/operator confirmation."""
     return Transaction.objects.filter(

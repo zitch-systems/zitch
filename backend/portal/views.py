@@ -23,8 +23,7 @@ from savings.models import FixedSave
 from savings.services import run_maturities as run_maturities_service
 from utility.providers import fx_quote
 from wallet.models import CurrencyWallet, Transaction, Wallet
-from wallet.services import (is_bank_payout, is_vas_purchase,
-                             pending_vas_purchases, settle_or_refund)
+from wallet.services import is_bank_payout, is_vas_purchase, settle_or_refund
 from whatsapp.models import (
     AuditLog,
     Broadcast,

@@ -308,36 +308,13 @@ class BankTransferTests(BankIOCase):
         self.assertTrue(txn.meta.get("reconcile"))
         self.assertEqual(self.balance(), Decimal("40000"))  # debited, not refunded
 
-    def test_pending_payout_excluded_from_vtu_reconcile_sweep(self):
-        """Regression: a PENDING bank payout shares the reconcile+OUT shape with a
-        VAS purchase, but must not enter a VAS sweep. The durable bank instruction
-        records the product and is requeried through the WaaS endpoint."""
-        from datetime import timedelta
-
-        from django.utils import timezone
-
-        from wallet.services import credit, debit, pending_vas_purchases
-
-        # A PENDING bank payout (what execute_payout leaves on a rail 'PENDING').
-        with patch("banking.client.Client.transfer",
-                   return_value=Reply({"status": "PENDING", "responseCode": "09"}, 200)):
-            _, body = self.post("/api/transfers/send/", {
-                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234", "expected_fee": "0.00",
-            })
-        payout = Transaction.objects.get(reference=body["reference"])
-
-        # A PENDING VAS purchase (reconcile, no bank meta) for contrast.
-        credit(self.user, Decimal("1000"), "Seed")
-        vtu = debit(self.user, Decimal("500"), "Airtime",
-                    meta={"phone": "08010000001", "reconcile": True})
-
-        cutoff = timezone.now() + timedelta(minutes=1)  # both are "old enough"
-        swept = set(pending_vas_purchases(cutoff).values_list("reference", flat=True))
-        self.assertIn(vtu.reference, swept)         # VAS purchase is reconciled
-        self.assertNotIn(payout.reference, swept)   # bank payout is not
-
-        self.assertEqual(self.balance(), Decimal("40500"))  # 50000 - 10000 payout + 1000 seed - 500 vtu
+    # test_pending_payout_excluded_from_vtu_reconcile_sweep proved a PENDING bank
+    # payout was never picked up by the VAS reconcile sweep -- the two rails
+    # settle differently, and sweeping a payout as a purchase would requery the
+    # wrong product for a reference it never saw. pending_vas_purchases is gone
+    # with the VAS rail, so there is no sweep to be excluded from. The payout
+    # side of that distinction is still covered by
+    # test_pending_payout_is_not_settled above.
 
     def test_send_refunds_when_payout_fails(self):
         """If the payout provider declines, the wallet debit must be reversed."""

@@ -46,13 +46,6 @@ def _archived_payment_result() -> dict:
             "code": "partnership_archived", "not_charged": True}
 
 
-def biller_enabled() -> bool:
-    from banking.client import customer_enabled, config, configured
-    return customer_enabled() and config().get("VAS_ENABLED") is True and configured("vas")
-
-
-
-
 def _partnership_reference_blocked(reference: str | None = None, source_account: str = "") -> bool:
     if not partnership_new_business_allowed():
         return True
@@ -103,25 +96,15 @@ def vas_provider() -> str:
 
 
 
-#: Shown to the customer when a purchase is refused because this deploy could not
-#: settle it. The shared purchase runner checks before debit; the provider boundary
-#: repeats the check and refunds a reservation if access has since disappeared.
-_VAS_UNAVAILABLE = ("This is temporarily unavailable on our side. You have not been "
-                    "charged — please try again later.")
-
-
-def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
-    if product == "remita":
-        return False, "This product requires a documented bank integration"
-    return (True, "") if biller_enabled() else (False, "Bill payments are unavailable")
-
-
-
-
-
-def vas_requery(reference: str, meta: dict | None = None) -> dict:
-    from banking.adapter import confirm_transfer_status
-    return confirm_transfer_status(reference)
+#: vas_can_settle and _VAS_UNAVAILABLE were the pre-debit entitlement probe and
+#: the message a refused purchase showed. vas_requery asked the rail what had
+#: become of a purchase it had already been sent. All three described a rail that
+#: no longer exists, and nothing called them once the purchase surface went.
+#:
+#: Removing vas_requery is what makes a historical PENDING airtime or bills row
+#: unsettleable by anyone: it was the last way to ask what happened to one.
+#: wallet.services keeps is_vas_purchase so those rows can still be read and
+#: named in the ops listings -- the evidence stays, the rail does not.
 
 
 

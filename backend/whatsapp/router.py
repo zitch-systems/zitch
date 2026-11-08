@@ -47,7 +47,6 @@ from wallet.services import (
     customer_safe_failure,
     customer_visible_transactions,
     get_or_create_wallet,
-    run_provider_purchase,
 )
 
 from . import ai
