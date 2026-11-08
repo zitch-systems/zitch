@@ -13,7 +13,6 @@ from .models import MaintenanceRun
 
 # Existing daily checks keep their UTC schedules; each failure is isolated.
 JOBS = [
-    ("reconcile_9psb", None, {}),
     ("run_maturities", (1, 5), {}),
     ("integrity_check", (2, 35), {"fail_nonzero": True}),
     ("purge_expired_sessions", (3, 45), {}),

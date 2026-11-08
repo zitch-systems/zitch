@@ -1,27 +1,20 @@
-"""9PSB v3.1 WaaS and VAS transport.
+"""The bank provider boundary, with no provider behind it.
 
-Money instructions are sent once. A timeout, invalid response, duplicate reference
-or server error is an unknown outcome, never evidence that money was not moved.
-No request/response bodies, tokens or personal identifiers are logged here.
+The 9PSB WaaS and VAS transport was removed. What remains is the shape the rest
+of the platform imports: the error type, the provider-state predicates (all of
+which now answer "no bank"), the pure amount/reference/account validators, and
+`Reply`, which parses a provider envelope and is not itself provider-specific.
+
+A future partner bank is implemented behind this same boundary: give `Client`
+real methods and make `config`/`configured`/`customer_enabled` read its
+settings. Nothing outside this module needs to change for that.
 """
-import hashlib
-import json
 import logging
 import re
-import threading
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from urllib.parse import urlsplit
 
-import requests
-from django.conf import settings
-from django.core.cache import cache
-
-TIMEOUT = (5, 20)
 log = logging.getLogger(__name__)
-
-_local = threading.local()
-_PREFIX = {"waas": "/waas/api/v1/", "vas": "/vas/api/v1/"}
 
 
 class ProviderError(Exception):
@@ -35,18 +28,12 @@ class ProviderError(Exception):
 
 
 def config():
-    return getattr(settings, "NINEPSB", {})
+    """No provider settings exist. Kept so callers reading flags still work."""
+    return {}
 
 
 def configured(product="waas"):
-    client = Client(product)
-    try:
-        client._api_base()
-        client._auth_url()
-        client._credentials()
-    except ProviderError:
-        return False
-    return True
+    return False
 
 
 def require_environment(environment):
@@ -70,12 +57,8 @@ def sandbox_auto_verify():
 
 
 def customer_enabled():
-    """Sandbox credentials are never a production customer money rail."""
-    conf = config()
-    return configured() and conf.get("ENABLED") is True and (
-        (sandbox() and conf.get("SANDBOX_CUSTOMERS_ENABLED") is True)
-        or (conf.get("ENVIRONMENT") == "production" and conf.get("UAT_APPROVED") is True)
-    )
+    """No bank rail, so no customer may be onboarded onto one."""
+    return False
 
 
 def money(value):
@@ -347,345 +330,121 @@ class Reply:
 
 
 class Client:
+    """The provider boundary with no provider behind it.
+
+    Every operation the 9PSB transport performed is still declared here, with
+    its original signature, and every one refuses. Keeping the real signatures
+    is deliberate: a caller passing the wrong arguments still fails as a
+    TypeError rather than silently reaching a refusal, and the test suite can
+    still patch a named method to stand in for a bank.
+
+    `uncertain` is False on every refusal. An uncertain outcome means a request
+    may have moved money; nothing leaves this process, so nothing can have.
+    """
+
     def __init__(self, product="waas", *, timeout=None):
-        if product not in _PREFIX:
-            raise ValueError("Unknown bank product")
         self.product = product
         self.timeout = timeout
 
     @staticmethod
-    def _validated_url(value):
-        # Validate the original string: urlsplit silently removes some control
-        # characters. Never accept credentials, query secrets or redirects here.
-        if (not isinstance(value, str) or not value
-                or any(char.isspace() or ord(char) < 32 for char in value)
-                or "\\" in value):
-            raise ProviderError("invalid_base_url")
-        value = value.rstrip("/")
-        try:
-            parsed = urlsplit(value)
-            parsed.port  # Reject malformed and out-of-range ports before I/O.
-        except ValueError:
-            raise ProviderError("invalid_base_url") from None
-        if (not parsed.hostname or parsed.username is not None or parsed.password is not None
-                or parsed.query or parsed.fragment or "?" in value or "#" in value
-                or not re.fullmatch(r"[A-Za-z0-9/_-]*", parsed.path)):
-            raise ProviderError("invalid_base_url")
-        if config().get("ENVIRONMENT", "sandbox") not in {"sandbox", "production"}:
-            raise ProviderError("invalid_environment")
-        if parsed.scheme != "https":
-            # The bank supplied this exact HTTP-only sandbox host. No arbitrary
-            # insecure-host bypass, and no real customer data may use it.
-            origin = f"{parsed.scheme}://{parsed.netloc}"
-            if not (sandbox() and origin == "http://102.216.128.75:9090"):
-                raise ProviderError("https_required")
-        return value
+    def _unavailable():
+        raise ProviderError("no_bank_provider")
 
-    def _base(self):
-        """WaaS origin only; VAS never inherits this setting."""
-        base = self._validated_url(config().get("BASE_URL", ""))
-        if urlsplit(base).path:
-            raise ProviderError("invalid_base_url")
-        return base
-
-    def _api_base(self):
-        if self.product == "waas":
-            return self._base() + _PREFIX["waas"].rstrip("/")
-        value = config().get("VAS_BASE_URL")
-        if not value:
-            raise ProviderError("vas_api_endpoint_missing")
-        value = self._validated_url(value)
-        if urlsplit(value).path != "/vas/api/v1":
-            raise ProviderError("vas_api_endpoint_invalid")
-        return value
-
-    def _auth_url(self):
-        if self.product == "waas":
-            return self._api_base() + "/authenticate"
-        # Configure the identity URL from the VAS collection independently of
-        # WaaS. Never infer its host or fall back after a failed login.
-        value = config().get("VAS_AUTH_URL")
-        if not value:
-            raise ProviderError("vas_auth_endpoint_missing")
-        value = self._validated_url(value)
-        if not re.fullmatch(r"/identity/(?:[A-Za-z0-9_-]+/)*authenticate", urlsplit(value).path):
-            raise ProviderError("vas_auth_endpoint_invalid")
-        return value
-
-    def _credentials(self):
-        prefix = self.product.upper()
-        result = {"username": config().get(prefix + "_USERNAME"),
-                  "password": config().get(prefix + "_PASSWORD")}
-        if self.product == "waas":
-            result.update(clientId=config().get("WAAS_CLIENT_ID"),
-                          clientSecret=config().get("WAAS_CLIENT_SECRET"))
-        if not all(result.values()):
-            raise ProviderError("credentials_missing")
-        return result
-
-    def _cache_key(self):
-        # Changing either endpoint, credentials or environment must also isolate
-        # the token and catalog cache. A corrected URL cannot reuse an old token.
-        material = json.dumps([config().get("ENVIRONMENT", "sandbox"), self._api_base(),
-            self._auth_url(), self._credentials()], sort_keys=True)
-        return "9psb:token:" + self.product + ":" + hashlib.sha256(material.encode()).hexdigest()
-
-    @staticmethod
-    def _send(method, url, *, payload=None, params=None, token=None, timeout=None):
-        session = getattr(_local, "session", None)
-        if session is None:
-            session = _local.session = requests.Session()
-            # requests defaults to no retries, including POST. Do not mount an
-            # adapter that replays money instructions on disconnects.
-        headers = {"Accept": "application/json", "Content-Type": "application/json"}
-        if token:
-            headers["Authorization"] = "Bearer " + token
-        try:
-            response = session.request(method, url, json=payload, params=params,
-                                       headers=headers, timeout=timeout or TIMEOUT, allow_redirects=False)
-        except requests.RequestException as exc:
-            # Without this, every transport failure reaches the operator as a
-            # bare "network_unavailable" and nothing records which one it was.
-            # Log the host and the exception class only: a requests message can
-            # quote the request, and the host is already in the bank readiness
-            # report, so neither credentials nor payloads are disclosed.
-            log.warning("bank_transport_failed method=%s host=%s error=%s",
-                        method, urlsplit(url).netloc, type(exc).__name__)
-            raise ProviderError("network_unavailable", uncertain=method != "GET") from None
-        if 300 <= response.status_code < 400:
-            raise ProviderError("redirect_refused", uncertain=method != "GET")
-        try:
-            body = response.json()
-        except ValueError:
-            raise ProviderError("invalid_response", uncertain=method != "GET") from None
-        if not isinstance(body, dict):
-            raise ProviderError("invalid_response", uncertain=method != "GET")
-        return Reply(body, response.status_code)
-
-    def token(self):
-        key = self._cache_key()
-        token = cache.get(key)
-        if token:
-            return token
-        # A concurrent request waits by returning retryable unavailable, without
-        # stamping out dozens of paid authentication requests or holding threads.
-        lock = key + ":auth"
-        if not cache.add(lock, True, timeout=30):
-            raise ProviderError("authentication_in_progress")
-        try:
-            try:
-                result = self._send("POST", self._auth_url(), payload=self._credentials(),
-                                    **({"timeout": self.timeout} if self.timeout else {}))
-            except ProviderError as exc:
-                raise ProviderError(exc.code, uncertain=False) from None
-            data = result.body if self.product == "waas" else result.data
-            token = data.get("accessToken") if isinstance(data, dict) else None
-            vas_confirmed = self.product != "vas" or (
-                result.ok and str(result.body.get("responseCode")) == "200")
-            if result.http_status != 200 or not vas_confirmed or not isinstance(token, str) or not token.strip():
-                code = str(result.body.get("responseCode", ""))
-                raise ProviderError("authentication_failed", http_status=result.http_status,
-                    response_code=code if re.fullmatch(r"[0-9]{2,4}", code) else "")
-            try:
-                expires = int(data.get("expiresIn", 300))
-            except (ValueError, TypeError):
-                expires = 300
-            cache.set(key, token, timeout=max(1, min(expires - 30, 3600)))
-            return token
-        finally:
-            cache.delete(lock)
-
-    def request(self, path, payload=None, *, method="POST", params=None):
-        if path.startswith("/") or ".." in path or ":" in path:
-            raise ValueError("Invalid provider path")
-        # Reject cross-product calls before authentication. A default WaaS
-        # client must never send a VAS operation or obtain its bearer token.
-        is_vas_path = path.startswith(("topup/", "billspayment/"))
-        if (self.product == "vas") != is_vas_path:
-            raise ValueError("The provider endpoint does not match its product")
-        token = self.token()  # Auth failures happen before the instruction.
-        result = self._send(method, self._api_base() + "/" + path,
-                            payload=payload, params=params, token=token,
-                            **({"timeout": self.timeout} if self.timeout else {}))
-        if result.http_status == 401:
-            cache.delete(self._cache_key())
-            # Never automatically resubmit a money instruction after auth failure.
-        return result
-
-    def initiate_identity(self, ref, kind, identifier, *, method="OTP", mobile="", image=""):
-        if kind not in {"bvn", "nin"} or not re.fullmatch(r"[0-9]{11}", identifier or ""):
-            raise ValueError("An eleven-digit BVN or NIN is required")
-        if method not in {"OTP", "FACIAL"}:
-            raise ValueError("Invalid identity verification method")
-        from .validation import base64_file
-        payload = {"transactionRef": reference(ref), kind: identifier, "type": method}
-        if mobile:
-            payload["phoneNo"] = phone(mobile)
-        if method == "FACIAL":
-            payload["image"] = base64_file(image, maximum_bytes=5 * 1024 * 1024, image_only=True)
-        return self.request("identity/initiate", payload)
+    def initiate_identity(self, ref, kind, identifier, *, method='OTP', mobile='', image=''):
+        return self._unavailable()
 
     def verify_identity(self, ref, otp):
-        if not re.fullmatch(r"[0-9]{6}", otp or ""):
-            raise ValueError("Enter the six-digit code")
-        return self.request("identity/verify-otp", {"transactionRef": reference(ref), "otp": otp})
+        return self._unavailable()
 
     def open_wallet(self, ref, profile, *, kind, identifier):
-        from .validation import wallet_profile
-        if kind not in {"bvn", "nin"} or not re.fullmatch(r"[0-9]{11}", identifier or ""):
-            raise ValueError("Verified identity is required")
-        payload = {"transactionTrackingRef": reference(ref), **wallet_profile(profile)}
-        payload["bvn" if kind == "bvn" else "nationalIdentityNo"] = identifier
-        return self.request("open_wallet", payload)
+        return self._unavailable()
 
     def wallet(self, number):
-        return self.request("wallet_enquiry", {"accountNo": account(number)})
+        return self._unavailable()
 
     def lookup_wallet(self, kind, identifier):
-        if kind not in {"bvn", "nin"} or not re.fullmatch(r"[0-9]{11}", identifier or ""):
-            raise ValueError("Verified identity is required")
-        # July v3.1 explicitly specifies GET with a JSON request body. Keep
-        # personal identifiers out of URL query strings and access logs.
-        reply = self.request("get_wallet", {kind: identifier}, method="GET")
-        if reply.http_status >= 500 and sandbox():
-            # Sandbox only: some gateways drop a GET body. Test identities may
-            # appear in the URL; real ones never do.
-            reply = self.request("get_wallet", method="GET", params={kind: identifier})
-        return found_wallet(reply, kind, identifier)
+        return self._unavailable()
 
     def banks(self):
-        return self.request("get_banks", method="GET")
+        return self._unavailable()
 
     def resolve(self, number, bank_code):
-        if not re.fullmatch(r"[0-9]{3,6}", str(bank_code)):
-            raise ValueError("Invalid bank code")
-        return self.request("other_banks_enquiry", {"customer": {"account": {"bank": bank_code, "number": account(number)}}})
+        return self._unavailable()
 
     def transfer(self, ref, amount, source, destination, bank_code, destination_name, sender_name, narration):
-        return self.request("wallet_other_banks", {
-            "customer": {"account": {"bank": str(bank_code), "name": destination_name,
-                "number": account(destination), "senderaccountnumber": account(source), "sendername": sender_name}},
-            "narration": str(narration)[:100],
-            "order": {"amount": money(amount), "country": "NGA", "currency": "NGN", "description": str(narration)[:100]},
-            "transaction": {"reference": reference(ref)}, "transactionType": "OTHER_BANKS",
-            "merchant": {"isFee": False},
-        })
+        return self._unavailable()
 
     def float_transfer(self, direction, ref, amount, number, narration):
-        if direction not in {"credit", "debit"}:
-            raise ValueError("Invalid movement")
-        return self.request(direction + "/transfer", {
-            "accountNo": account(number), "totalAmount": money(amount), "transactionId": reference(ref),
-            "narration": str(narration)[:100], "merchant": {"isFee": False}})
+        return self._unavailable()
 
     def transaction_status(self, ref, amount, kind, date, number):
-        # Preserve decimal naira exactly; never round kobo to fit a sample schema.
-        return self.request("wallet_requery", {"transactionId": reference(ref), "amount": money(amount),
-            "transactionType": kind, "transactionDate": date, "accountNo": account(number)})
+        return self._unavailable()
 
     def notification(self, session, number):
-        if not isinstance(session, str) or not session or len(session) > 160:
-            raise ValueError("Invalid notification reference")
-        return self.request("notification_requery", {"sessionID": session, "accountNumber": account(number)})
+        return self._unavailable()
 
     def history(self, number, start, end, limit=100):
-        from datetime import date
-        if date.fromisoformat(start) > date.fromisoformat(end):
-            raise ValueError("Invalid date range")
-        return self.request("wallet_transactions", {"accountNumber": account(number), "fromDate": start,
-            "toDate": end, "numberOfItems": str(max(1, min(int(limit), 1000)))})
+        return self._unavailable()
 
     def upgrade(self, number, tier, payload):
-        from .validation import upgrade_profile
-        return self.request("wallet_upgrade", {"accountNumber": account(number), **upgrade_profile(tier, payload)})
+        return self._unavailable()
 
     def upgrade_status(self, number):
-        return self.request("upgrade_status", {"accountNumber": account(number)})
+        return self._unavailable()
 
     def wallet_status(self, number):
-        return self.request("wallet_status", {"accountNo": account(number)})
+        return self._unavailable()
 
     def set_wallet_status(self, number, status):
-        if status not in {"ACTIVE", "SUSPENDED"}:
-            raise ValueError("Invalid wallet status")
-        return self.request("change_wallet_status", {"accountNumber": account(number), "accountStatus": status})
+        return self._unavailable()
 
     def network(self, mobile):
-        return self.request("topup/network", method="GET", params={"phone": phone(mobile)})
+        return self._unavailable()
 
     def data_plans(self, mobile):
-        return self.request("topup/dataPlans", method="GET", params={"phone": phone(mobile)})
+        return self._unavailable()
 
     def categories(self):
-        return self.request("billspayment/categories", method="GET")
+        return self._unavailable()
 
     def billers(self, category):
-        return self.request("billspayment/billers/" + self._catalog_id(category), method="GET")
+        return self._unavailable()
 
     def fields(self, biller):
-        return self.request("billspayment/fields/" + self._catalog_id(biller), method="GET")
+        return self._unavailable()
+
+    def validate_customer(self, biller, customer, *, item='', amount=None, firstname='', lastname='', customer_phone='', phone_number=''):
+        return self._unavailable()
+
+    def topup(self, kind, ref, amount, number, mobile, network, *, product_id=''):
+        return self._unavailable()
+
+    def pay_bill(self, ref, amount, number, *, biller, item, customer, mobile, name, other_field=''):
+        return self._unavailable()
+
+    def vas_status(self, ref, *, bill=False):
+        return self._unavailable()
 
     @staticmethod
     def _catalog_id(value):
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(value)):
-            raise ValueError("Invalid catalog ID")
-        return str(value)
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(value)):
+                raise ValueError("Invalid catalog ID")
+            return str(value)
 
     @staticmethod
     def _product_id(value):
-        # Live plans include "MTN-2.5GB-27" and "MTN-2GB 2-75". Product IDs
-        # are JSON body values, never URL path segments.
-        value = str(value)
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,79}", value) or ".." in value:
-            raise ValueError("Invalid catalog ID")
-        return value
+            # Live plans include "MTN-2.5GB-27" and "MTN-2GB 2-75". Product IDs
+            # are JSON body values, never URL path segments.
+            value = str(value)
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,79}", value) or ".." in value:
+                raise ValueError("Invalid catalog ID")
+            return value
 
     @staticmethod
     def _item_id(value):
-        # Bundle selections are JSON values, not URL path segments. Live cable
-        # catalogs join component IDs with '+', e.g. a package plus an add-on.
-        if (not isinstance(value, str) or len(value) > 80
-                or not re.fullmatch(r"[A-Za-z0-9_-]+(?:\+[A-Za-z0-9_-]+)*", value)):
-            raise ValueError("Invalid bill item ID")
-        return value
-
-    def validate_customer(self, biller, customer, *, item="", amount=None, firstname="", lastname="",
-                          customer_phone="", phone_number=""):
-        payload = {"billerId": self._catalog_id(biller), "customerId": str(customer)}
-        if item:
-            payload["itemId"] = self._item_id(item)
-        if amount is not None:
-            payload["amount"] = vas_amount(amount)
-        for key, value in (("firstname", firstname), ("lastname", lastname)):
-            if value:
-                from .vas import text_value
-                payload[key] = text_value(value, maximum=100)
-        if customer_phone:
-            payload["customerPhone"] = phone(customer_phone)
-        if phone_number:
-            payload["phoneNumber"] = phone(phone_number)
-        return self.request("billspayment/validate", payload)
-
-    def topup(self, kind, ref, amount, number, mobile, network, *, product_id=""):
-        if kind not in {"airtime", "data"}:
-            raise ValueError("Invalid top-up type")
-        payload = {"phoneNumber": phone(mobile), "network": str(network), "amount": vas_amount(amount),
-            "debitAccount": account(number), "transactionReference": reference(ref, length=18)}
-        if kind == "data":
-            payload["productId"] = self._product_id(product_id)
-        return self.request("topup/" + kind, payload)
-
-    def pay_bill(self, ref, amount, number, *, biller, item, customer, mobile, name, other_field=""):
-        payload = {"billerId": self._catalog_id(biller),
-            "customerId": str(customer), "customerPhone": phone(mobile),
-            "customerName": name, "otherField": other_field, "amount": vas_amount(amount),
-            "debitAccount": account(number), "transactionReference": reference(ref, length=18)}
-        # The collection's no-plan bill payment omits itemId. Never invent an
-        # item for a biller whose fields have no selection.
-        if item:
-            payload["itemId"] = self._item_id(item)
-        return self.request("billspayment/pay", payload)
-
-    def vas_status(self, ref, *, bill=False):
-        return self.request(("billspayment" if bill else "topup") + "/status", method="GET",
-                            params={"transReference": reference(ref, length=18)})
+            # Bundle selections are JSON values, not URL path segments. Live cable
+            # catalogs join component IDs with '+', e.g. a package plus an add-on.
+            if (not isinstance(value, str) or len(value) > 80
+                    or not re.fullmatch(r"[A-Za-z0-9_-]+(?:\+[A-Za-z0-9_-]+)*", value)):
+                raise ValueError("Invalid bill item ID")
+            return value

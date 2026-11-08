@@ -98,9 +98,11 @@ INSTALLED_APPS = [
     "compliance",
 ]
 
-# 9PSB is the sole active account and transfer integration. Historical records
-# from the retired partner bank stay read-only for accounting and audit evidence.
-BANK_ACCOUNT_PROVIDER = "9psb"
+# No bank provider is configured. The 9PSB integration was removed; the Wema-era
+# records before it stay read-only for accounting and audit evidence. Account
+# opening, transfers out and bill payment are unavailable until a partner bank is
+# implemented behind the boundary in banking/client.py.
+BANK_ACCOUNT_PROVIDER = ""
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -878,29 +880,4 @@ if SENTRY_DSN and not TESTING:
     except Exception:  # noqa: BLE001 — observability must never break boot
         pass
 
-# 9PSB credentials remain server-side. Sandbox is the safe default, never an
-# implicit authorization to process production customer identities or money.
-NINEPSB = {
-    "BASE_URL": env_text("NINEPSB_BASE_URL"),
-    # Explicit VAS URLs, independent of WaaS. The environment example contains
-    # the supplied sandbox collection URLs; production requires its own URLs.
-    "VAS_BASE_URL": env_text("NINEPSB_VAS_BASE_URL"),
-    "VAS_AUTH_URL": env_text("NINEPSB_VAS_AUTH_URL"),
-    "ENVIRONMENT": env_text("NINEPSB_ENVIRONMENT", "sandbox"),
-    "ENABLED": env_bool("NINEPSB_ENABLED", False),
-    "UAT_APPROVED": env_bool("NINEPSB_UAT_APPROVED", False),
-    "TRANSFER_FEE_TOTAL": os.environ.get("NINEPSB_TRANSFER_FEE_TOTAL", ""),
-    "VAS_ENABLED": env_bool("NINEPSB_VAS_ENABLED", False),
-    "SANDBOX_CUSTOMERS_ENABLED": env_bool("NINEPSB_SANDBOX_CUSTOMERS_ENABLED", False),
-    "SANDBOX_PHONES": [x.strip() for x in os.environ.get("NINEPSB_SANDBOX_PHONES", "").split(",") if x.strip()],
-    "SANDBOX_USER_IDS": [x.strip() for x in os.environ.get("NINEPSB_SANDBOX_USER_IDS", "").split(",") if x.strip()],
-    # Sandbox testing only: treat any well-formed BVN/NIN as verified and go
-    # straight to opening the sandbox wallet. Ignored unless ENVIRONMENT is sandbox.
-    "SANDBOX_AUTO_VERIFY": env_bool("NINEPSB_SANDBOX_AUTO_VERIFY", False),
-    **{key: env_text("NINEPSB_" + key) for key in (
-        "WAAS_USERNAME", "WAAS_PASSWORD", "WAAS_CLIENT_ID", "WAAS_CLIENT_SECRET",
-        "VAS_USERNAME", "VAS_PASSWORD", "WEBHOOK_USERNAME", "WEBHOOK_PASSWORD")},
-    "SINGLE_OUTBOUND_LIMITS": os.environ.get("NINEPSB_SINGLE_OUTBOUND_LIMITS", "{}"),
-    "DAILY_OUTBOUND_LIMITS": os.environ.get("NINEPSB_DAILY_OUTBOUND_LIMITS", "{}"),
-}
 BANKING_ENCRYPTION_KEYS = [x.strip() for x in os.environ.get("BANKING_ENCRYPTION_KEYS", "").split(",") if x.strip()]
