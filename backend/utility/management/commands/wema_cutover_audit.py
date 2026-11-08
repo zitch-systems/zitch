@@ -67,7 +67,7 @@ class Command(BaseCommand):
             counts["active_wema_wallets"] = count(
                 "wallet_wallet", "account_number IS NOT NULL AND account_number <> ''")
             counts["unsettled_funding"] = count(
-                "wallet_unsettledfunding", "archive_id IS NULL")
+                "wallet_unsettledfunding")
 
         blockers = evaluate_cutover(counts)
         report = {
