@@ -173,18 +173,23 @@ def _limit_reply(msisdn: str, user, msg: str) -> None:
     reply(msisdn, f"{msg}\n\n{_upgrade_block(user)}")
 
 
+#: Airtime/Data (3), Pay a bill (4) and Exam PIN (10) are gone, not merely
+#: unavailable: the VAS rail they ran on was removed, so labelling them
+#: "unavailable" would promise a return.
+#:
+#: Their NUMBERS are deliberately left as gaps rather than closed up. Customers
+#: type the number they remember; renumbering would silently point a remembered
+#: "13" at something else, and in a money channel landing somewhere unintended
+#: is worse than reading past a gap.
 MENU_BODY = (
     "💚 *Zitch* - what would you like to do?\n\n"
     "1️⃣  💰 Check balance\n"
     "2️⃣  💸 Send money\n"
-    "3️⃣  📱 Airtime / Data\n"
-    "4️⃣  💡 Pay a bill\n"
     "5️⃣  💱 Convert currency\n"
     "6️⃣  🏦 Add money\n"
     "7️⃣  🧾 My account details\n"
     "8️⃣  ✅ Verify my identity\n"
     "9️⃣  🧾 Transaction history\n"
-    "🔟  🎓 Exam PIN\n"
     "1️⃣1️⃣  📷 Scan a QR code\n"
     "1️⃣2️⃣  ⭐ My saved people\n"
     "1️⃣3️⃣  🏦 Savings\n"
@@ -192,7 +197,7 @@ MENU_BODY = (
     # "just type it" was a promise the channel could not keep: free-form routing
     # needs the customer's own AI consent, which defaults off and which nobody
     # guesses the phrase for. Name the phrase where the promise is made.
-    "Or just type what you want - \"send 5k to Ada\", \"2k airtime\".\n"
+    "Or just type what you want - \"send 5k to Ada\", \"check balance\".\n"
     "Reply \"cancel\" anytime, or *ai off* to stick to the menu."
 )
 
@@ -200,14 +205,9 @@ MENU_BODY = (
 def menu_text() -> str:
     """The menu plus the links footer. Built per call, not frozen at import, so
     the links follow settings (which deployments and tests both override)."""
-    from utility.providers import partnership_new_business_allowed, biller_enabled
+    from utility.providers import partnership_new_business_allowed
 
     body = MENU_BODY
-    if not biller_enabled():
-        body = body.replace("3️⃣  📱 Airtime / Data\n", "3️⃣  📱 Airtime / Data unavailable\n")
-        body = body.replace("4️⃣  💡 Pay a bill\n", "4️⃣  💡 Bill payments unavailable\n")
-        body = body.replace("🔟  🎓 Exam PIN\n", "🔟  🎓 Exam PIN unavailable\n")
-        body = body.replace('"2k airtime"', '"account details"')
     if not partnership_new_business_allowed():
         # The collection-account product has no outgoing transfer rail yet.
         # Keep familiar option numbers, but do not invite a payment that the
@@ -516,16 +516,6 @@ def _flow_summary(pa: PendingAction) -> str:
         if at == "transfer":
             return (f"Send {_money(Decimal(p['amount']))} to {p.get('name', 'recipient').upper()}"
                     f" · {p.get('bank_name', '')} {p.get('account', '')}".rstrip())
-        if at == "airtime":
-            return f"{_money(Decimal(p['amount']))} {NETWORK_NAMES.get(p.get('net', ''), '')} airtime -> {p.get('phone', '')}"
-        if at == "data":
-            return (f"{p.get('plan_name', 'Data')} ({NETWORK_NAMES.get(p.get('net', ''), '')})"
-                    f" -> {p.get('phone', '')} · {_money(Decimal(p['price']))}")
-        if at == "electricity":
-            return f"{_money(Decimal(p['amount']))} {DISCO_NAMES.get(p.get('disco', ''), '')} · meter {p.get('meter', '')}"
-        if at == "cable":
-            return (f"{CABLE_NAMES.get(p.get('prov', ''), '')} {p.get('plan_name', '')}"
-                    f" · card {p.get('iuc', '')} · {_money(Decimal(p['price']))}")
         if at == "convert":
             return "Confirm your currency conversion"
         if at in ("savings_create", "loan_repay"):
@@ -665,35 +655,6 @@ def _flow_fields(pa: PendingAction) -> dict:
                 "amount": f"{_money(amount)} + {_money(fee)} fee = {_money(amount + fee)}",
                 "recipient": f"To {p.get('name', 'recipient').upper()}",
                 "details": f"{p.get('bank_name', '')} · {p.get('account', '')}".strip(" ·")})
-        if at == "airtime":
-            return _with_context({
-                "amount": _money(Decimal(p["amount"])),
-                "recipient": f"{NETWORK_NAMES.get(p.get('net', ''), '')} airtime".strip(),
-                "details": f"To {p.get('phone', '')}".strip()})
-        if at == "data":
-            return _with_context({
-                "amount": _money(Decimal(p["price"])),
-                "recipient": f"{p.get('plan_name', 'Data')} · "
-                             f"{NETWORK_NAMES.get(p.get('net', ''), '')}".strip(" ·"),
-                "details": f"To {p.get('phone', '')}".strip()})
-        if at == "electricity":
-            cust = p.get("customer", "")
-            meter_line = f"Meter {p.get('meter', '')}".strip()
-            if cust:
-                meter_line += f" · {cust}"
-            address = p.get("customer_address") or p.get("address") or ""
-            if address:
-                meter_line += f" · {address}"
-            return _with_context({
-                "amount": _money(Decimal(p["amount"])),
-                "recipient": DISCO_NAMES.get(p.get("disco", ""), "Electricity"),
-                "details": meter_line})
-        if at == "cable":
-            return _with_context({
-                "amount": _money(Decimal(p["price"])),
-                "recipient": f"{CABLE_NAMES.get(p.get('prov', ''), '')} "
-                             f"{p.get('plan_name', '')}".strip(),
-                "details": f"Smartcard {p.get('iuc', '')}".strip()})
     except (KeyError, InvalidOperation):
         pass
     # Conversion (and any shape we don't itemise) falls back to the one-line
@@ -1410,18 +1371,6 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return _do_add_money(user, msisdn)
     if low in ("2", "transfer", "send", "send money"):
         return _start_transfer(user, msisdn)
-    if low == "airtime":
-        return _start_airtime(user, msisdn)
-    if low == "data":
-        return _start_data(user, msisdn)
-    if low == "3":
-        return _start_vtu(user, msisdn)
-    if low in ("electricity", "light", "nepa", "power"):
-        return _start_electricity(user, msisdn)
-    if low in ("cable", "tv", "dstv", "gotv", "startimes"):
-        return _start_cable(user, msisdn)
-    if low in ("4", "bill", "bills", "pay bill"):
-        return _start_service_menu(user, msisdn, "bill")
     if low in ("5", "convert", "conversion"):
         return _start_convert(user, msisdn)
     if low in ("7", "account", "my account", "account details", "my details", "details"):
@@ -1518,15 +1467,10 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if _REPORT_KEYWORD.fullmatch(low.strip()):
         return _do_report_problem(user, msisdn, detail=text[:500])
 
-    # "2k airtime" - the menu's own worked example - read without the model, and
-    # deliberately the LAST thing tried. Placed here it can only ever replace the
-    # dead end below, never a route that already works nor a model that is up: the
-    # AI, when active, has already had the sentence and done better with it. See
-    # vas_text_intent for why the menu was promising this and then refusing it.
-    vas_intent = vas_text_intent(text)
-    if vas_intent and dispatch_intent(user, msisdn, vas_intent, text):
-        _record_intent(msisdn, vas_intent)
-        return
+    # A model-free parser for "2k airtime" used to sit here as the last resort,
+    # because the menu advertised that phrasing. Airtime, data, cable and
+    # electricity went with the VAS rail, so there is no flow left for it to
+    # open and the menu no longer promises it.
     return reply(msisdn, "Sorry, I didn't get that.\n\n" + menu_text())
 
 
@@ -2283,8 +2227,6 @@ _STATUS_LABEL = {"success": "successful ✅", "pending": "still pending ⏳", "f
 #: carries - there is no type column to filter on.
 _KIND_PATTERNS = {
     "transfer": r"transfer|sent|withdraw",
-    "airtime": r"airtime",
-    "data": r"data",
     "bill": r"electric|cable|tv|bill|disco|water",
     "funding": r"fund|deposit|top.?up|credit",
 }
@@ -3968,12 +3910,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
     handler = {
         "bank_vas": advance_bank_vas,
         "transfer": _advance_transfer,
-        "airtime": _advance_airtime,
-        "data": _advance_data,
-        "electricity": _advance_electricity,
-        "cable": _advance_cable,
         "convert": _advance_convert,
-        "pick_service": _advance_pick_service,
         "kyc": _advance_kyc,
         "qr": _advance_qr,
         "beneficiary": _advance_beneficiary,

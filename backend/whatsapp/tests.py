@@ -844,32 +844,12 @@ class AiIntentTests(TestCase):
         self.assertIn(get_or_create_wallet(self.user).account_number, reply)
         self.assertIn("credited automatically", reply.lower())
 
-    def test_freeform_airtime_prefilled_confirm(self):
-        with self._stub({"name": "buy_airtime",
-                         "input": {"amount": 200, "phone": "08099998888", "network": "MTN"}}):
-            self.inbound("load 200 mtn airtime for 08099998888", "a1")
-        self.assertIn("Confirm payment", self.last_reply())
-
-    def test_freeform_airtime_fast_path_rejects_stale_tier_without_liveness(self):
-        # A stored Tier 3 must not bypass the completed-verification ceiling.
-        # Without liveness the user derives Tier 1 and cannot buy >=₦100k airtime.
-        self.user.tier = 3
-        self.user.face_verified = False
-        self.user.save(update_fields=["tier", "face_verified"])
-        w = get_or_create_wallet(self.user)
-        w.balance = Decimal("300000")
-        w.save(update_fields=["balance"])
-        from banking.models import BankAccount
-        BankAccount.objects.filter(wallet=w).update(available_balance="300000", ledger_balance="300000")
-        with self._stub({"name": "buy_airtime",
-                         "input": {"amount": 120000, "phone": "08099998888", "network": "MTN"}}):
-            self.inbound("load 120k mtn airtime for 08099998888", "fg1")
-        self.assertIn("Confirm payment", self.last_reply())  # fast-path jumps to confirm
-        self.inbound("1234", "fg2")                          # PIN -> reaches _run_vtu
-        self.assertIn("could not be submitted", self.last_reply())
-        self.user.refresh_from_db()
-        self.assertEqual(self.user.tier, 1)
-        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("300000"))  # not debited
+    # Two airtime fast-path tests lived here: a prefilled confirm, and a stored
+    # Tier 3 that must not bypass the completed-verification ceiling when buying
+    # six figures of airtime. Airtime went with the 9PSB VAS rail, so the
+    # buy_airtime intent and the flow behind it no longer exist. The tier rule
+    # they guarded is not lost: it is the same derive-from-evidence ceiling the
+    # transfer and savings paths enforce, covered by their own suites.
 
     def test_clarify_shows_menu(self):
         with self._stub({"name": "clarify", "input": {"reason": "unsupported"}}):
