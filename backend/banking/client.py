@@ -350,6 +350,21 @@ class Client:
     def _unavailable():
         raise ProviderError("no_bank_provider")
 
+    # Transport members that outlived their transport. They are still reached
+    # for: cache keys are derived from the credentials (transfers.services,
+    # banking.bills, banking.adapter) and the token is warmed before concurrent
+    # reads. Absent, each would raise AttributeError -- an unhandled 500 on a
+    # path whose callers are all written to handle ProviderError and degrade
+    # cleanly. Refusing in the same currency as everything else keeps that true.
+    def _cache_key(self):
+        return self._unavailable()
+
+    def token(self):
+        return self._unavailable()
+
+    def request(self, path, payload=None, *, method="POST", params=None):
+        return self._unavailable()
+
     def initiate_identity(self, ref, kind, identifier, *, method='OTP', mobile='', image=''):
         return self._unavailable()
 

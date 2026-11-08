@@ -109,27 +109,20 @@ def _is_test_otp_phone(value):
 
 
 def endpoint_report(product):
-    """Describe the resolved wire destination without I/O or secret values.
+    """There is no provider, so there is no wire destination to describe.
 
-    Invalid URLs are never reflected: a mistaken query string or userinfo may
-    itself contain credentials. Errors describe configuration, not bank access.
+    This used to resolve the client's base URL, authentication URL and the
+    names of its credential fields. The 9PSB transport is gone and so are
+    those internals, so the probe must not reach for them: /healthz calls
+    this through `report`, and an AttributeError here is a 500 on the very
+    endpoint Render health-checks.
+
+    The shape is kept so every caller still reads the same keys, and the
+    absence is stated as an error rather than reported as healthy.
     """
-    client = Client(product)
-    result = {"api_base_url": None, "authentication_url": None,
-              "credentials_present": False, "errors": []}
-    for key, resolve in (("api_base_url", client._api_base), ("authentication_url", client._auth_url)):
-        try:
-            result[key] = resolve()
-        except ProviderError as exc:
-            if exc.code not in result["errors"]:
-                result["errors"].append(exc.code)
-    try:
-        result["authentication_body_fields"] = sorted(client._credentials())
-        result["credentials_present"] = True
-    except ProviderError:
-        result["errors"].append(product + "_credentials_missing")
-    result["configured"] = not result["errors"]
-    return result
+    return {"api_base_url": None, "authentication_url": None,
+            "credentials_present": False, "authentication_body_fields": [],
+            "errors": [product + "_provider_removed"], "configured": False}
 
 
 def test_shortcut_blockers():
