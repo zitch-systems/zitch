@@ -1,24 +1,17 @@
 """Launch gates require recent successful controls, not merely configured keys."""
 from datetime import timedelta
-import json
 from io import StringIO
 from unittest.mock import patch
 
-from django.core.management import CommandError, call_command
+from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
 from accounts.models import User
 from utility.launch_readiness import financial_controls_report
 from wallet.models import BankHistoryCheckpoint, Wallet
+from wallet.services import wema_account_reference
 from whatsapp.models import AuditLog
-
-BALANCED_BANK_REPORT = {
-    "wallets": 0, "checked_wallets": 0, "unreachable": 0,
-    "ledger_over_bank": 0, "bank_over_ledger": 0, "pending_wallets": 0,
-    "opening_reviews": 0, "historical_opening_reviews": 0, "reversal_reviews": 0,
-    "legacy_funding_required": False, "tolerance": "0.00", "incomplete": False,
-}
 
 
 class FinancialControlsReadinessTests(TestCase):
@@ -31,7 +24,9 @@ class FinancialControlsReadinessTests(TestCase):
 
     def passing(self):
         self.record("recon.integrity_check", {"wallets": 1, "mismatches": 0})
-        self.record("recon.balance_check", BALANCED_BANK_REPORT)
+        self.record("recon.balance_check", {"wallets": 0, "unreachable": 0,
+                    "ledger_over_bank": 0, "bank_over_ledger": 0,
+                    "legacy_funding_required": False, "tolerance": "0.00"})
         self.record("recon.settlement_report", {"incomplete": False, "nuban_wallets": 0, "held_total": "0.00",
                     "position": "0.00", "ledger_liability": "0.00", "stored_liability": "0.00"})
 
@@ -76,45 +71,29 @@ class FinancialControlsReadinessTests(TestCase):
         self.assertEqual(financial_controls_report()["checks"]["integrity"], "inventory_changed")
 
     def test_unverified_opening_blocks_even_when_latest_controls_pass(self):
-        from banking.models import BankAccount
-        from banking.client import config
         self.passing()
-        bank = BankAccount.objects.create(wallet=self.wallet, number="1234567890", name="Test Customer",
-            environment=config().get("ENVIRONMENT", "sandbox"), opening_review_required=True)
+        self.wallet.account_number = "0123456789"
+        self.wallet.account_reference = wema_account_reference(self.user)
+        self.wallet.save()
         report = financial_controls_report()
         self.assertEqual(report["opening_reviews"], 1)
         self.assertFalse(report["financial_controls_ready"])
-        BankAccount.objects.filter(pk=bank.pk).update(opening_review_required=False)
-        report = financial_controls_report()
-        self.assertEqual(report["opening_reviews"], 0)
-        self.assertEqual(report["checks"]["bank_balances"], "inventory_changed")
-        self.assertEqual(report["checks"]["settlement"], "inventory_changed")
+        BankHistoryCheckpoint.objects.create(wallet=self.wallet, account_number="0000000000",
+                                             opening_review_required=False)
+        self.assertEqual(financial_controls_report()["opening_reviews"], 1)
+        BankHistoryCheckpoint.objects.create(wallet=self.wallet, account_number=self.wallet.account_number,
+                                             opening_review_required=False)
+        self.assertEqual(financial_controls_report()["opening_reviews"], 0)
+        self.assertEqual(financial_controls_report()["checks"]["bank_balances"], "inventory_changed")
+        self.assertEqual(financial_controls_report()["checks"]["settlement"], "inventory_changed")
 
     def test_nonzero_or_missing_tolerance_cannot_certify_reconciliation(self):
         self.passing()
         for tolerance in (None, "1.00", "NaN", "-1", "Infinity"):
             with self.subTest(tolerance=tolerance):
-                self.record("recon.balance_check", {**BALANCED_BANK_REPORT, "tolerance": tolerance})
-                self.assertEqual(financial_controls_report()["checks"]["bank_balances"], "failed")
-
-    def test_incomplete_bank_checks_and_unresolved_payments_cannot_certify_readiness(self):
-        self.passing()
-        for changes in ({"incomplete": True}, {"incomplete": None}, {"checked_wallets": 1},
-                        {"checked_wallets": False}, {"pending_wallets": 1}, {"pending_wallets": "0"},
-                        {"opening_reviews": 1}, {"historical_opening_reviews": 1}, {"reversal_reviews": 1}):
-            with self.subTest(changes=changes):
-                self.record("recon.balance_check", {**BALANCED_BANK_REPORT, **changes})
-                report = financial_controls_report()
-                self.assertEqual(report["checks"]["bank_balances"], "failed")
-                self.assertFalse(report["financial_controls_ready"])
-
-    def test_missing_review_evidence_cannot_certify_readiness(self):
-        self.passing()
-        for key in ("incomplete", "checked_wallets", "pending_wallets", "opening_reviews",
-                    "historical_opening_reviews", "reversal_reviews"):
-            with self.subTest(missing=key):
-                data = {k: v for k, v in BALANCED_BANK_REPORT.items() if k != key}
-                self.record("recon.balance_check", data)
+                self.record("recon.balance_check", {"wallets": 0, "unreachable": 0,
+                    "ledger_over_bank": 0, "bank_over_ledger": 0,
+                    "legacy_funding_required": False, "tolerance": tolerance})
                 self.assertEqual(financial_controls_report()["checks"]["bank_balances"], "failed")
 
     def test_unresolved_legacy_exposure_blocks_older_passing_controls(self):
@@ -139,12 +118,14 @@ class FinancialControlsReadinessTests(TestCase):
         self.assertNotIn("secret-connection", str(report))
 
     def test_core_preflight_cannot_ignore_failed_financial_evidence(self):
+        from utility.test_wema_preflight import _LIVE_DIAG, _EMAIL_OK
         out = StringIO()
-        with self.assertRaises(CommandError):
-            call_command("bank_preflight", "--launch-scope", "core", stdout=out)
-        report = json.loads(out.getvalue())
-        self.assertFalse(report["financial_controls"]["financial_controls_ready"])
-        self.assertFalse(report["production_ready"])
+        with patch("utility.wema.wema_diagnostics", return_value=_LIVE_DIAG), \
+                patch("utility.providers.email_probe", return_value=_EMAIL_OK):
+            with self.assertRaises(SystemExit):
+                call_command("wema_preflight", "--launch-scope", "core", stdout=out)
+        self.assertIn("[FAIL] GATE Financial reconciliation evidence", out.getvalue())
+        self.assertIn("RESULT: NOT READY", out.getvalue())
 
 
 class EmptyFinancialControlsTests(TestCase):

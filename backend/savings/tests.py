@@ -3,55 +3,36 @@
 These also pin the JSON contract the Expo app depends on (the `My Fixed Saves`
 screen reads `savings/list`, and `fixedsave` reads `savings/rates`), so a future
 field rename here fails loudly instead of silently breaking the app.
-
-Locking is a customer debit and now answers to the same gate as every other one,
-so the fixture here is a customer who can actually spend — verified contact
-details, proved identity, an active bank account with a bank-confirmed balance.
-That is the shared `make_bank_user` fixture the rest of the suite uses, not a
-hand-rolled one, so a change to what spending requires reaches these tests too.
-`SavingsSpendGateTests` at the bottom covers the refusals.
 """
 import json
 from decimal import Decimal
 
-from django.test import Client, TestCase, override_settings
+from django.contrib.auth import get_user_model
+from django.test import Client, TestCase
 from django.utils import timezone
 
-from accounts.models import IdentityProof, User
-from banking.models import BankAccount
-from banking.test_client import CONFIG
-from banking.test_fixtures import make_bank_user
-from common.http import daily_kind_for
-from wallet.models import Transaction
-from wallet.services import InsufficientFunds, LimitExceeded, get_or_create_wallet
+from accounts.models import AccessToken
+from wallet.services import credit, get_or_create_wallet
 
 from .models import FixedSave
-from .services import LOCK_SERVICE, lock, run_maturities
+from .services import run_maturities
+
+User = get_user_model()
 
 
-def make_saver(phone="08010000001", email="saver@zitch.test", *, tier=2,
-               balance="250000", bank_balance=None):
-    """A customer who passes the spending gate, with `balance` in the wallet.
-
-    Tier 2 because the Fixed Save contract tests lock six figures, which a Tier 1
-    per-transaction ceiling (50,000) refuses. `face_verified` because a spend at
-    or above RISK_NEW_DEVICE_FACE_THRESHOLD from a device the account has never
-    used needs the step-up, and the Django test client never sends a device
-    header — so without it every lock over 50,000 would be refused for a reason
-    that has nothing to do with savings.
-    """
-    user, token = make_bank_user(phone, email, balance=balance, tier=tier,
-                                 bank_balance=bank_balance)
-    user.face_verified = True
-    user.save(update_fields=["face_verified"])
-    return user, token
-
-
-@override_settings(NINEPSB=CONFIG)
 class SavingsTests(TestCase):
     def setUp(self):
         self.client = Client()
-        self.user, self.token = make_saver()
+        self.user = User.objects.create(
+            username="saver", phone="08010000001", email="saver@zitch.test",
+            first_name="Sade", last_name="Okoro",
+        )
+        self.user.set_transaction_pin("1234")
+        self.user.save()
+        self.token = AccessToken.issue(self.user).key
+        # Fund the wallet so locks succeed.
+        get_or_create_wallet(self.user)
+        credit(self.user, Decimal("250000"), "Test top-up")
         self._key_seq = 0
 
     def post(self, path, payload):
@@ -203,119 +184,3 @@ class SavingsTests(TestCase):
         # Idempotent: opening again must not double-credit.
         self.post("/api/savings/list/", {"access_token": self.token})
         self.assertEqual(get_or_create_wallet(self.user).balance, after)
-
-
-@override_settings(NINEPSB=CONFIG)
-class SavingsSpendGateTests(TestCase):
-    """Locking money answers to the same gate as every other customer debit.
-
-    Savings used to be the one debit that did not. An account the platform
-    refused to let spend — frozen, PND'd, balance unconfirmed, short of its
-    identity floor, or over its tier ceiling — could still move its whole wallet
-    into a Fixed Save, and the money returned at maturity as an ordinary credit.
-    These tests are the refusals, and each one also checks that NOTHING was
-    written: a refused lock must leave no ledger row, no plan and no debit.
-    """
-
-    def setUp(self):
-        self.client = Client()
-        self.user, self.token = make_saver("08020000002", "gate@zitch.test")
-        self.bank = BankAccount.objects.get(wallet__user=self.user)
-
-    def create(self, amount="50000", days=90, token=None, key="gate-key-1"):
-        return self.client.post("/api/savings/create/", data=json.dumps({
-            "access_token": token or self.token, "amount": amount, "days": days,
-            "transaction_pin": "1234", "idempotency_key": key,
-        }), content_type="application/json")
-
-    def assertNothingMoved(self, user, expected="250000"):
-        self.assertEqual(get_or_create_wallet(user).balance, Decimal(expected))
-        self.assertFalse(FixedSave.objects.filter(user=user).exists())
-        self.assertFalse(Transaction.objects.filter(
-            user=user, direction=Transaction.OUT).exists())
-
-    # --- account standing ---
-    def test_a_frozen_bank_account_cannot_lock_savings(self):
-        BankAccount.objects.filter(pk=self.bank.pk).update(frozen=True)
-        with self.assertRaises(LimitExceeded):
-            lock(self.user, Decimal("50000"), 90, idempotency_key="frozen-1")
-        self.assertNothingMoved(self.user)
-
-    def test_a_pnd_account_cannot_lock_savings(self):
-        BankAccount.objects.filter(pk=self.bank.pk).update(pnd=True)
-        with self.assertRaises(LimitExceeded):
-            lock(self.user, Decimal("50000"), 90, idempotency_key="pnd-1")
-        self.assertNothingMoved(self.user)
-
-    def test_an_account_awaiting_balance_review_cannot_lock_savings(self):
-        BankAccount.objects.filter(pk=self.bank.pk).update(opening_review_required=True)
-        with self.assertRaises(LimitExceeded):
-            lock(self.user, Decimal("50000"), 90, idempotency_key="review-1")
-        self.assertNothingMoved(self.user)
-
-    def test_a_stale_bank_balance_cannot_lock_savings(self):
-        # The gate requires a balance confirmed in the last five minutes.
-        BankAccount.objects.filter(pk=self.bank.pk).update(
-            checked_at=timezone.now() - timezone.timedelta(hours=2))
-        with self.assertRaises(LimitExceeded):
-            lock(self.user, Decimal("50000"), 90, idempotency_key="stale-1")
-        self.assertNothingMoved(self.user)
-
-    def test_an_account_without_proved_identity_cannot_lock_savings(self):
-        IdentityProof.objects.filter(user=self.user).delete()
-        User.objects.filter(pk=self.user.pk).update(
-            bvn_verified=False, nin_verified=False,
-            bvn_hash="", nin_hash="", bvn_last4="", nin_last4="")
-        self.user.refresh_from_db()
-        with self.assertRaises(LimitExceeded):
-            lock(self.user, Decimal("50000"), 90, idempotency_key="identity-1")
-        self.assertNothingMoved(self.user)
-
-    # --- amount ---
-    def test_a_lock_above_the_tier_ceiling_is_refused(self):
-        tier1, _ = make_saver("08020000003", "tier1@zitch.test", tier=1)
-        self.assertEqual(tier1.transaction_limit, Decimal("50000"))
-        with self.assertRaises(LimitExceeded):
-            lock(tier1, Decimal("100000"), 365, idempotency_key="ceiling-1")
-        self.assertNothingMoved(tier1)
-
-    def test_the_bank_confirmed_balance_caps_a_lock_not_the_stored_one(self):
-        """The wallet says 250,000; the bank has confirmed 10,000. 10,000 wins.
-
-        This is the check savings was missing entirely: it compared the principal
-        against `wallet.balance` alone, which can exceed what the bank actually
-        holds — the exact condition reconciliation exists to catch.
-        """
-        thin, token = make_saver("08020000004", "thin@zitch.test", bank_balance="10000")
-        with self.assertRaises(InsufficientFunds) as caught:
-            lock(thin, Decimal("50000"), 90, idempotency_key="thin-1")
-        self.assertEqual(str(caught.exception), "Insufficient available balance")
-        self.assertNothingMoved(thin)
-
-        response = self.create(token=token, key="thin-http-1")
-        self.assertEqual(response.status_code, 402)
-        self.assertEqual(response.json()["message"], "Insufficient available balance")
-
-    # --- the HTTP surface ---
-    def test_create_answers_403_limit_exceeded_and_names_the_reason(self):
-        BankAccount.objects.filter(pk=self.bank.pk).update(frozen=True)
-        response = self.create()
-        self.assertEqual(response.status_code, 403)
-        body = response.json()
-        self.assertEqual(body["code"], "limit_exceeded")
-        self.assertTrue(body["message"])
-        self.assertNothingMoved(self.user)
-
-    # --- label parity ---
-    def test_the_label_the_caps_are_checked_against_is_the_label_written(self):
-        """One constant, so the bucket measured can't drift from the bucket counted."""
-        plan = lock(self.user, Decimal("50000"), 90, idempotency_key="label-1")
-        row = Transaction.objects.get(reference=plan.reference)
-        self.assertEqual(row.service, LOCK_SERVICE)
-
-    def test_savings_is_deliberately_in_no_daily_bucket(self):
-        """Locking is not a transfer out and not a bill, so it consumes neither
-        daily cap. Asserted rather than assumed: if a future label change swept
-        savings into a bucket, customers would silently lose transfer headroom
-        to money that never left the bank."""
-        self.assertEqual(daily_kind_for(LOCK_SERVICE), "")

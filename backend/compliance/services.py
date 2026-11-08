@@ -290,10 +290,6 @@ def erase_user_data(user, *, actor=None, note=""):
     user.nin_hash = ""
     user.transaction_pin = ""
     user.save()
-    # The bank account keeps sealed copies of the opening details and the BVN, for the
-    # Tier 2 upgrade. Sealed is not erased: they would re-identify the person.
-    from banking.models import BankAccount
-    BankAccount.objects.filter(wallet__user=user).update(encrypted_profile="", encrypted_bvn="")
 
     # Credentials and channel links cannot survive an erasure: a live session or an
     # active WhatsApp link would keep the account reachable as if nothing happened.
@@ -306,7 +302,6 @@ def erase_user_data(user, *, actor=None, note=""):
         "pseudonym": pseudonym,
         "cleared_fields": sorted(cleared),
         "verification_hashes_cleared": True,
-        "bank_identity_cleared": True,
         "deleted": {"access_tokens": tokens, "whatsapp_links": links,
                     "linked_banks": banks},
         "retained": {

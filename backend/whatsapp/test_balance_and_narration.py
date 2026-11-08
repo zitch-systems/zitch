@@ -10,7 +10,6 @@ reaches the beneficiary's statement, the receipt, the settlement alert and the
 confirm screen, because those are the four places someone asks "what was this
 for" — and the customer only types it once.
 """
-from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -32,7 +31,6 @@ def _transfer(user, **payload):
         expires_at=timezone.now() + timedelta(minutes=5))
 
 
-@bank_channel_case
 class CleanNarrationTests(TestCase):
     """Bounded at the boundary, because both consumers render it: the bank puts
     it on a statement and the receipt draws it into an image."""
@@ -53,7 +51,6 @@ class CleanNarrationTests(TestCase):
         self.assertEqual(flows.clean_narration("re\x00nt\x07"), "re nt")
 
 
-@bank_channel_case
 class ConfirmScreenTests(TestCase):
 
     def setUp(self):
@@ -138,7 +135,6 @@ class ConfirmScreenTests(TestCase):
         self.assertEqual(screen["data"]["amount"], "Create a 6-digit PIN")
 
 
-@bank_channel_case
 class NarrationOnTheReceiptTests(TestCase):
 
     def setUp(self):
@@ -158,7 +154,6 @@ class NarrationOnTheReceiptTests(TestCase):
         self.assertEqual(router._with_narration(_transfer(self.user), original), original)
 
 
-@bank_channel_case
 class NarrationOnTheAlertTests(TestCase):
     """Both money paths already carried a note under different names, long
     before there was a field to fill either."""
@@ -201,7 +196,6 @@ class NarrationOnTheAlertTests(TestCase):
         self.assertNotIn("For: Rent", body)
 
 
-@bank_channel_case
 class NarrationFromTheAITests(TestCase):
 
     def setUp(self):
@@ -231,7 +225,6 @@ class NarrationFromTheAITests(TestCase):
         self.assertNotIn("narration", pa.payload)
 
 
-@bank_channel_case
 class ExamConfirmSaysWhatIsBeingBoughtTests(TestCase):
     """The exam flow fell through to the bare "Confirm your payment" fallback, so
     the one card that should say WHICH PIN and HOW MANY said nothing about either

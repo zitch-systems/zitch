@@ -1,5 +1,4 @@
 """The deployment hook performs only the explicitly reviewed Flow operation."""
-from banking.test_fixtures import bank_channel_case
 import hashlib
 import json
 import os
@@ -27,7 +26,6 @@ def _digest():
                                      separators=(",", ":")).encode()).hexdigest()
 
 
-@bank_channel_case
 @override_settings(**LIVE)
 class DeployFlowCommandTests(SimpleTestCase):
     def setUp(self):
@@ -260,7 +258,6 @@ class DeployFlowCommandTests(SimpleTestCase):
         self.assertNotIn("Flow 555 deprecated", self.out.getvalue())
 
 
-@bank_channel_case
 class FlowDeploymentLockAndInventoryTests(SimpleTestCase):
     def test_session_lock_releases_after_success_and_failure_without_a_transaction(self):
         for fails in (False, True):
@@ -316,7 +313,6 @@ class FlowDeploymentLockAndInventoryTests(SimpleTestCase):
             self.assertNotIn("deploy_whatsapp_flow", (root / filename).read_text())
 
 
-@bank_channel_case
 @override_settings(**LIVE)
 class FlowDeploymentRequestPersistenceTests(TestCase):
     def setUp(self):

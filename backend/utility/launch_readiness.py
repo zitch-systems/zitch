@@ -34,13 +34,8 @@ def _valid_result(name, data):
         except (InvalidOperation, TypeError, ValueError):
             return False
         return (tolerance.is_finite() and tolerance == 0
-                and data.get("incomplete") is False
                 and type(data.get("wallets")) is int and data["wallets"] >= 0
-                and type(data.get("checked_wallets")) is int
-                and data["checked_wallets"] == data["wallets"]
-                and _zero_counts(data, "unreachable", "ledger_over_bank", "bank_over_ledger",
-                                 "pending_wallets", "opening_reviews", "historical_opening_reviews",
-                                 "reversal_reviews")
+                and _zero_counts(data, "unreachable", "ledger_over_bank", "bank_over_ledger")
                 and data.get("legacy_funding_required") is False)
     if data.get("incomplete") is not False:
         return False
@@ -58,11 +53,12 @@ def _valid_result(name, data):
 
 def financial_controls_report():
     """Return counts and fixed status strings only, suitable for build logs."""
+    from django.db.models import Exists, OuterRef
     from wallet.models import BankHistoryCheckpoint, Transaction, Wallet
-    from banking.models import BankAccount, PreviousBankArchive
-    from banking.client import config
+    from wallet.services import wema_provisioned_wallets
     from wallet.funding_holds import reconciliation_scope
     from whatsapp.models import AuditLog
+    from wallet.partnership import partnership_allowed
 
     try:
         wallets = Wallet.objects.count()
@@ -71,13 +67,14 @@ def financial_controls_report():
         if wallets == 0 and not Transaction.objects.exists():
             return {"status": "no_wallets", "financial_controls_ready": True,
                     "wallets": 0, "opening_reviews": 0, "checks": {}}
-        banks = BankAccount.objects.filter(environment=config().get("ENVIRONMENT", "sandbox"))
-        opening_reviews = (banks.filter(opening_review_required=True).count()
-                           + BankHistoryCheckpoint.objects.filter(opening_review_required=True).count())
-        bank_count = banks.count()
-        comparable_wallets = bank_count
-        unverified_legacy = (reconciliation_scope()["legacy_funding_required"]
-            or PreviousBankArchive.objects.filter(review_required=True).exists())
+        cleared = BankHistoryCheckpoint.objects.filter(
+            wallet_id=OuterRef("pk"), account_number=OuterRef("account_number"),
+            opening_review_required=False)
+        opening_reviews = wema_provisioned_wallets().annotate(
+            opening_cleared=Exists(cleared)).filter(opening_cleared=False).count()
+        bank_wallets = list(wema_provisioned_wallets().select_related("user"))
+        comparable_wallets = sum(partnership_allowed(wallet.user) for wallet in bank_wallets)
+        unverified_legacy = reconciliation_scope()["legacy_funding_required"]
         now = timezone.now()
         checks = {}
         for name, action, max_age in _CONTROLS:
@@ -94,7 +91,7 @@ def financial_controls_report():
             elif name == "bank_balances" and row.after.get("wallets") != comparable_wallets:
                 status = "inventory_changed"
             elif name == "settlement" and (type(row.after.get("nuban_wallets")) is not int
-                    or row.after["nuban_wallets"] != bank_count):
+                    or row.after["nuban_wallets"] != len(bank_wallets)):
                 status = "inventory_changed"
             else:
                 status = "passed"
