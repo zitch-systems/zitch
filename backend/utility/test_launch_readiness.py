@@ -138,13 +138,11 @@ class FinancialControlsReadinessTests(TestCase):
         self.assertFalse(report["financial_controls_ready"])
         self.assertNotIn("secret-connection", str(report))
 
-    def test_core_preflight_cannot_ignore_failed_financial_evidence(self):
-        out = StringIO()
-        with self.assertRaises(CommandError):
-            call_command("bank_preflight", "--launch-scope", "core", stdout=out)
-        report = json.loads(out.getvalue())
-        self.assertFalse(report["financial_controls"]["financial_controls_ready"])
-        self.assertFalse(report["production_ready"])
+    # The core-scope preflight test went with `manage.py bank_preflight`. It
+    # asserted that a failed financial-evidence check could not be ignored by
+    # the go-live gate; with no bank there is no gate to ignore it. The report
+    # it read is still built and still covered -- see financial_controls_report
+    # below and in EmptyFinancialControlsTests.
 
 
 class EmptyFinancialControlsTests(TestCase):

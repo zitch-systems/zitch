@@ -8,11 +8,6 @@ const ServicesScreenLayout = () => {
   return (
     <AuthGuard>
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: c.bg } }}>
-        <Stack.Screen name="buydata" />
-        <Stack.Screen name="buyairtime" />
-        <Stack.Screen name="buycable" />
-        <Stack.Screen name="utility" />
-        <Stack.Screen name="buyelectricity" />
         <Stack.Screen name="sendmoney" />
         <Stack.Screen name="getloan" />
         <Stack.Screen name="addmoney" />
@@ -29,7 +24,6 @@ const ServicesScreenLayout = () => {
         <Stack.Screen name="bnpl" />
         <Stack.Screen name="ussd" />
         <Stack.Screen name="insurance" />
-        <Stack.Screen name="remita" />
         <Stack.Screen name="movies" />
         <Stack.Screen name="water" />
         <Stack.Screen name="scan" />

@@ -61,10 +61,10 @@ class ProviderUnblockTests(SimpleTestCase):
 
 
 
-class PreflightSimulationGateTests(TestCase):
-    @override_settings(MONO={"SIMULATION": True})
-    def test_preflight_blocks_go_live_while_simulation_on(self):
-        out = StringIO()
-        with self.assertRaises(CommandError):
-            call_command("bank_preflight", stdout=out)
-        self.assertIn("simulation_mode_enabled", json.loads(out.getvalue())["blockers"])
+# PreflightSimulationGateTests asserted that `manage.py bank_preflight` refused
+# go-live while simulation was on. That command went with the 9PSB integration,
+# and the test did not simply fail: `call_command` raised CommandError for the
+# missing command, which satisfied its own assertRaises, and it then crashed
+# parsing empty output. Passing for a reason a test never claimed is worse than
+# not existing, so it is removed rather than patched. The mock fail-closed rules
+# it depended on are still covered by MockGateTests and ProviderUnblockTests above.

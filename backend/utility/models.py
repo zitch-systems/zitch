@@ -85,3 +85,15 @@ class WemaBiller(models.Model):
 
     def __str__(self):
         return f"{self.service_id} {self.meter_type or '(unspecified)'} -> {self.package_id}"
+
+# Provider codes the app and the WhatsApp router send, mapped to the names a
+# customer reads. They lived in utility/views.py, which held the VAS purchase
+# endpoints and was deleted with them; the names are catalogue data, not view
+# logic, so they belong beside the catalogues they label. Still referenced by
+# the WhatsApp airtime/data/cable/electricity flows.
+NETWORK_NAMES = {"1": "MTN", "2": "GLO", "3": "Airtel", "4": "9mobile"}
+CABLE_NAMES = {"1": "GoTV", "2": "DSTV", "3": "StarTimes"}
+DISCO_NAMES = {
+    "1": "Ikeja", "2": "Eko", "3": "Abuja", "4": "Kano", "5": "Port Harcourt",
+    "6": "Jos", "7": "Kaduna", "8": "Enugu", "9": "Ibadan",
+}

@@ -58,13 +58,8 @@ KYC: `/api/kyc/status/` · `/api/kyc/bvn/` · `/api/kyc/nin/` · `/api/kyc/face/
 Wallet: `/api/wallet_balance/` · `/api/user-transaction-history/`
 Funding (Wema): `/api/wallet/account/create/` · `/api/wallet/wema/verify-otp/` · `/api/wallet/wema/resend-otp/`
 Transfer (Zitch→Zitch): `/api/transfer/resolve/` · `/api/transfer/send/`
-Utility: `/api/utility/{buyairtime,get_data_plans,get_data_plans_price,buydata,
-get_cable_plans,get_cable_plans_price,validate_iuc,buycable,validate_meter,
-buyelectricity}/`
-Exams: `/api/exams/list/` · `/api/exams/buy/`
 Loans: `/api/loans/status/` · `/api/loans/quote/` · `/api/loans/request/` · `/api/loans/repay/`
 Fixed Save: `/api/savings/rates/` · `/api/savings/quote/` · `/api/savings/create/` · `/api/savings/list/`
-Betting: `/api/betting/list/` · `/api/betting/fund/`
 Zitch transfer: `/api/transfer/resolve/` · `/api/transfer/send/`
 Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/api/transfers/resolve/` · `/api/transfers/send/`
 Cards: `/api/cards/list/` · `/api/cards/create/` · `/api/cards/freeze/` · `/api/cards/details/` · `/api/cards/fund/`

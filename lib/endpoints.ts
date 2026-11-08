@@ -39,14 +39,6 @@ export const EP = {
     resolveLegacy: '/api/transfer/resolve/',
     sendLegacy: '/api/transfer/send/',
   },
-  utility: {
-    buyAirtime: '/api/utility/buyairtime/',
-    buyData: '/api/utility/buydata/',
-    buyCable: '/api/utility/buycable/',
-    buyElectricity: '/api/utility/buyelectricity/',
-    validateIuc: '/api/utility/validate_iuc/',
-    validateMeter: '/api/utility/validate_meter/',
-  },
   cards: {
     list: '/api/cards/list/',
     create: '/api/cards/create/',

@@ -37,7 +37,7 @@ from utility.models import CablePlan, DataPlan
 from utility.providers import (email_live, payout_resolve_account, send_email, send_sms,
                                sms_live, verify_bvn, verify_nin, vtu_purchase,
                                vtu_verify_customer)
-from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
+from utility.models import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
 from wallet.forex import FxError, all_balances, create_fx_quote, currency_balance, execute_fx
 from wallet.services import (
     DuplicateTransaction,

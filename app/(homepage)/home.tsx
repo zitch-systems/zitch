@@ -14,22 +14,13 @@ import { notify } from '@/components/design/Notify';
 import { walletCapabilityMessage } from '@/lib/services/wallet';
 
 const GRID = [
-  { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
-  { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
-  { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
   { label: 'Save', icon: 'fixed', go: () => router.push('/savings') },
-  { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
   { label: 'More', icon: 'more', more: true },
 ];
 
 const MORE = [
-  { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
   { label: 'Send money', icon: 'send', go: () => router.push('/sendmoney') },
-  { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
-  { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
-  { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
   { label: 'Insurance', icon: 'insurance', go: () => router.push('/insurance') },
-  { label: 'Remita', icon: 'remita', go: () => router.push('/remita') },
   { label: 'Movie', icon: 'movie', go: () => router.push('/movies') },
   { label: 'Convert', icon: 'convert', go: () => router.push('/convert') },
   { label: 'Invite', icon: 'invite', go: () => router.push('/invite') },
@@ -171,8 +162,6 @@ const Home = () => {
       <Card style={{ margin: 16, marginBottom: 0, flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 16 }}>
         {[
           { icon: 'send', label: 'Transfer', go: () => router.push('/sendmoney') },
-          { icon: 'airtime', label: 'Airtime', go: () => router.push('/buyairtime') },
-          { icon: 'data', label: 'Data', go: () => router.push('/buydata') },
         ].map((q) => (
           <View key={q.label} style={{ flex: 1, minWidth: 0 }}><ServiceTile icon={q.icon} label={q.label} onPress={q.go} round /></View>
         ))}

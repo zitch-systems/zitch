@@ -589,7 +589,6 @@ urlpatterns = [
     path("api/banking/", include("banking.urls")),
     path("api/", include("accounts.urls")),
     path("api/", include("wallet.urls")),
-    path("api/utility/", include("utility.urls")),
     path("api/loans/", include("loans.urls")),
     path("api/savings/", include("savings.urls")),
     path("api/transfers/", include("transfers.urls")),
