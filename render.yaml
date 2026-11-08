@@ -2,7 +2,7 @@
 # dir = backend). Creates the web service + a managed Postgres and wires them.
 services:
   - type: web
-    name: zitch-api
+    name: zitch-api-ry6y
     region: frankfurt
     runtime: python
     rootDir: backend
@@ -120,7 +120,7 @@ services:
       - key: REDIS_URL
         fromService:
           type: keyvalue
-          name: zitch-cache
+          name: zitch-cache-ry6y
           property: connectionString
       # Enrol super-admin/finance authenticators first, then set this true in the
       # dashboard. It is dashboard-owned so a Blueprint sync cannot lock every
@@ -140,7 +140,7 @@ services:
         value: "https://zitch.ng,https://www.zitch.ng,http://localhost:8081,http://localhost:19006,http://localhost:19000"
       - key: DATABASE_URL
         fromDatabase:
-          name: zitch-db
+          name: zitch-db-ry6y
           property: connectionString
       # Fill these in the Render dashboard (kept out of source):
       # Money rail is Wema / ALAT (see the WEMA_* block below) — funding (dedicated
@@ -392,7 +392,7 @@ services:
         sync: false
 
   - type: worker
-    name: zitch-whatsapp-worker
+    name: zitch-whatsapp-worker-ry6y
     region: frankfurt
     runtime: python
     rootDir: backend
@@ -411,14 +411,14 @@ services:
     envVars:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: WHATSAPP_WORKER_RECONCILE
@@ -428,161 +428,161 @@ services:
       - key: REDIS_URL
         fromService:
           type: keyvalue
-          name: zitch-cache
+          name: zitch-cache-ry6y
           property: connectionString
       - key: DATABASE_URL
         fromDatabase:
-          name: zitch-db
+          name: zitch-db-ry6y
           property: connectionString
       # Keep deterministic identity/OTP hashes identical to the API service so
       # WhatsApp and app verification read and write the same masked identity state.
       - key: DJANGO_KYC_HASH_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_KYC_HASH_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_KYC_HASH_KEY}
       - key: DJANGO_OTP_HASH_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_OTP_HASH_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_OTP_HASH_KEY}
       - key: WEMA_CHANNEL_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CHANNEL_ID}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CHANNEL_ID}
       - key: WEMA_WALLET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_WALLET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_WALLET_KEY}
       - key: WEMA_ACCOUNT_CREATION_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCOUNT_CREATION_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_ACCOUNT_CREATION_KEY}
       - key: WEMA_CARD_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CARD_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CARD_KEY}
       - key: WEMA_AIRTIME_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_AIRTIME_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_AIRTIME_KEY}
       - key: WEMA_BILLS_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLS_KEY}
       - key: WEMA_UPGRADE_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_UPGRADE_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_UPGRADE_KEY}
       - key: WEMA_UPGRADE_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_UPGRADE_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_UPGRADE_BASE_URL}
       - key: WEMA_ACCT_MGT_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCT_MGT_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_ACCT_MGT_KEY}
       - key: WEMA_ACCT_MGT_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCT_MGT_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_ACCT_MGT_BASE_URL}
       - key: WEMA_KYC_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_KYC_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_KYC_KEY}
       - key: WEMA_REMITA_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_REMITA_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_REMITA_KEY}
       - key: WEMA_BNPL_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BNPL_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BNPL_KEY}
       - key: WEMA_CARD_PRODUCT_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CARD_PRODUCT_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CARD_PRODUCT_KEY}
       - key: WEMA_BNPL_MERCHANT_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BNPL_MERCHANT_ID}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BNPL_MERCHANT_ID}
       - key: WEMA_BNPL_AUTH_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BNPL_AUTH_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BNPL_AUTH_KEY}
       - key: WEMA_SOURCE_ACCOUNT
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SOURCE_ACCOUNT}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SOURCE_ACCOUNT}
       - key: WEMA_SECURITY_INFO
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SECURITY_INFO}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SECURITY_INFO}
       - key: WEMA_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BASE_URL}
       - key: WEMA_SIMULATION
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SIMULATION}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SIMULATION}
       # Partnership airtime/data status decoding; this is not virtual-account configuration.
       - key: WEMA_VAS_STATUS_LEGEND
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_STATUS_LEGEND}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_STATUS_LEGEND}
       - key: WEMA_BILLS_STATUS_LEGEND
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_STATUS_LEGEND}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLS_STATUS_LEGEND}
       - key: WEMA_REMITA_STATUS_LEGEND
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_REMITA_STATUS_LEGEND}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_REMITA_STATUS_LEGEND}
       - key: WEMA_FACE_VERIFY_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_FACE_VERIFY_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_FACE_VERIFY_URL}
       - key: WEMA_FACE_CALLBACK_IPS
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_FACE_CALLBACK_IPS}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_FACE_CALLBACK_IPS}
       # Must match zitch-api: this worker builds the same face URLs for WhatsApp
       # onboarding, and a split setting would send chat and app customers to two
       # different shapes.
       - key: WEMA_FACE_CB_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_FACE_CB_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_FACE_CB_MODE}
       - key: ALLOW_PRODUCTION_SIMULATION
-        fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: TERMII_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_BASE_URL}
       - key: TERMII_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_API_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_API_KEY}
       - key: TERMII_SENDER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_SENDER_ID}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_SENDER_ID}
       - key: TERMII_CHANNEL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_CHANNEL}
       - key: RESEND_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_API_KEY}
       - key: RESEND_FROM_EMAIL
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_FROM_EMAIL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_FROM_EMAIL}
       # This worker owns durable chat execution and terminal WhatsApp-alert
       # retries. Production money reconciliation remains cron-only; do not set
       # WHATSAPP_WORKER_RECONCILE merely to compensate for a missing cron.
       - key: TXN_ALERTS_EMAIL
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_EMAIL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_EMAIL}
       - key: TXN_ALERTS_SMS
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_SMS}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_SMS}
       - key: TXN_ALERTS_PUSH
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_PUSH}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_PUSH}
       - key: TXN_ALERTS_WHATSAPP
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_WHATSAPP}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_WHATSAPP}
       - key: PREMBLY_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: PREMBLY_BASE_URL}
       - key: PREMBLY_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_API_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: PREMBLY_API_KEY}
       - key: PREMBLY_APP_ID
-        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_APP_ID}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: PREMBLY_APP_ID}
       - key: PREMBLY_FACE_WIDGET_ID
-        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_FACE_WIDGET_ID}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: PREMBLY_FACE_WIDGET_ID}
       - key: PREMBLY_FACE_WIDGET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_FACE_WIDGET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: PREMBLY_FACE_WIDGET_KEY}
       - key: PREMBLY_FACE_SDK_ENABLED
-        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_FACE_SDK_ENABLED}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: PREMBLY_FACE_SDK_ENABLED}
       - key: CARD_ISSUER_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: CARD_ISSUER_API_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: CARD_ISSUER_API_KEY}
       - key: CARD_ISSUER_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: CARD_ISSUER_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: CARD_ISSUER_BASE_URL}
       - key: CARD_ISSUER_BRAND
-        fromService: {type: web, name: zitch-api, envVarKey: CARD_ISSUER_BRAND}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: CARD_ISSUER_BRAND}
       - key: FINCRA_SECRET_KEY
         sync: false
       - key: FINCRA_BUSINESS_ID
         sync: false
       - key: WHATSAPP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_MODE}
       - key: WHATSAPP_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_BASE_URL}
       - key: WHATSAPP_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TOKEN}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_TOKEN}
       - key: WHATSAPP_PHONE_NUMBER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
       - key: WHATSAPP_VERIFY_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_VERIFY_TOKEN}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_VERIFY_TOKEN}
       - key: WHATSAPP_APP_SECRET
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_APP_SECRET}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_APP_SECRET}
       - key: WHATSAPP_BUSINESS_NUMBER
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BUSINESS_NUMBER}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_BUSINESS_NUMBER}
       - key: WHATSAPP_TXN_ALERT_TEMPLATE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE}
       - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE_LANG}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE_LANG}
       - key: WHATSAPP_QUEUE_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_QUEUE_KEY}
       - key: WHATSAPP_QUEUE_KEY_PREV
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY_PREV}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_QUEUE_KEY_PREV}
       - key: WHATSAPP_ALLOW_CHAT_SIGNUP
         sync: false
       - key: WHATSAPP_FLOW_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_ID}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_FLOW_ID}
       - key: WHATSAPP_FLOW_PRIVATE_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_PRIVATE_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_FLOW_PRIVATE_KEY}
       - key: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE}
       - key: WHATSAPP_FLOW_CTA
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_CTA}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_FLOW_CTA}
       - key: WHATSAPP_FLOW_PASSWORD_SCREEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_PASSWORD_SCREEN}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WHATSAPP_FLOW_PASSWORD_SCREEN}
       - key: LLM_API_KEY
         sync: false
       - key: LLM_MODEL
         sync: false
       - key: SENTRY_DSN
-        fromService: {type: web, name: zitch-api, envVarKey: SENTRY_DSN}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
 
   # Daily Fixed Save maturity sweep — pays out matured plans, including for
   # users who never open the app. REQUIRES A PAID RENDER PLAN: the cron service
@@ -590,7 +590,7 @@ services:
   # (Maturities also settle on access via /api/savings/list/, so the app stays
   # correct even without this cron.)
   - type: cron
-    name: zitch-maturities
+    name: zitch-maturities-ry6y
     region: frankfurt
     runtime: python
     rootDir: backend
@@ -608,46 +608,46 @@ services:
     envVars:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "false"   # single-process management command; no rate-limit state
       - key: DATABASE_URL
         fromDatabase:
-          name: zitch-db
+          name: zitch-db-ry6y
           property: connectionString
       - key: SENTRY_DSN
-        fromService: {type: web, name: zitch-api, envVarKey: SENTRY_DSN}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
       # Email/SMS/push remain best-effort at the ledger writer. Terminal
       # WhatsApp alerts are deliberately deferred to zitch-whatsapp-worker,
       # which owns the Meta credentials and durable retry sweep. Do not copy
       # Meta secrets into this scheduled money process.
       - key: RESEND_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_API_KEY}
       - key: RESEND_FROM_EMAIL
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_FROM_EMAIL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_FROM_EMAIL}
       - key: TERMII_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_API_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_API_KEY}
       - key: TERMII_SENDER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_SENDER_ID}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_SENDER_ID}
       - key: TERMII_CHANNEL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_CHANNEL}
       - key: TERMII_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_BASE_URL}
       - key: TXN_ALERTS_EMAIL
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_EMAIL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_EMAIL}
       - key: TXN_ALERTS_SMS
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_SMS}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_SMS}
       - key: TXN_ALERTS_PUSH
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_PUSH}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_PUSH}
       - key: TXN_ALERTS_WHATSAPP
         value: "false"
 
@@ -663,7 +663,7 @@ services:
   # No notification credentials here: this command touches no ledger row, so the
   # post_save alert signal never fires.
   - type: cron
-    name: zitch-purge-sessions
+    name: zitch-purge-sessions-ry6y
     region: frankfurt
     runtime: python
     rootDir: backend
@@ -681,33 +681,33 @@ services:
     envVars:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "false"   # single-process management command; no rate-limit state
       - key: DATABASE_URL
         fromDatabase:
-          name: zitch-db
+          name: zitch-db-ry6y
           property: connectionString
       - key: SENTRY_DSN
-        fromService: {type: web, name: zitch-api, envVarKey: SENTRY_DSN}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
       # The cutoffs are derived from these, so the cron must read the SAME values
       # the web service issues tokens under — otherwise it deletes live sessions
       # or keeps dead ones.
       - key: TOKEN_TTL_HOURS
-        fromService: {type: web, name: zitch-api, envVarKey: TOKEN_TTL_HOURS}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TOKEN_TTL_HOURS}
       - key: ADMIN_TOKEN_TTL_HOURS
-        fromService: {type: web, name: zitch-api, envVarKey: ADMIN_TOKEN_TTL_HOURS}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: ADMIN_TOKEN_TTL_HOURS}
       - key: REFRESH_ABSOLUTE_DAYS
-        fromService: {type: web, name: zitch-api, envVarKey: REFRESH_ABSOLUTE_DAYS}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: REFRESH_ABSOLUTE_DAYS}
 
   # Partner-bank biller reconciliation — settle purchases left PENDING by a provider timeout:
   # requery the aggregator by reference, then mark Successful (delivered) or
@@ -715,7 +715,7 @@ services:
   # tier). Runs every 10 minutes, preserving the pre-migration cadence so
   # Frankfurt does not increase bank/API pressure.
   - type: cron
-    name: zitch-reconcile-wema
+    name: zitch-reconcile-wema-ry6y
     region: frankfurt
     runtime: python
     rootDir: backend
@@ -735,14 +735,14 @@ services:
         value: "true"
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       # reconcile_wema uses cache-backed recovery throttles across cron runs;
@@ -752,84 +752,84 @@ services:
       - key: REDIS_URL
         fromService:
           type: keyvalue
-          name: zitch-cache
+          name: zitch-cache-ry6y
           property: connectionString
       - key: DATABASE_URL
         fromDatabase:
-          name: zitch-db
+          name: zitch-db-ry6y
           property: connectionString
       - key: DJANGO_KYC_HASH_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_KYC_HASH_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_KYC_HASH_KEY}
       - key: DJANGO_OTP_HASH_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_OTP_HASH_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_OTP_HASH_KEY}
       - key: WEMA_CHANNEL_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CHANNEL_ID}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CHANNEL_ID}
       - key: WEMA_WALLET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_WALLET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_WALLET_KEY}
       # Deferred OTP completion uses the API KYC credentials.
       - key: WEMA_UPGRADE_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_UPGRADE_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_UPGRADE_KEY}
       - key: WEMA_UPGRADE_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_UPGRADE_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_UPGRADE_BASE_URL}
       - key: WEMA_ACCOUNT_CREATION_KEY
         # Optional override; utility.wema falls back to the Wallet Services key.
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCOUNT_CREATION_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_ACCOUNT_CREATION_KEY}
       - key: WEMA_ACCT_MGT_KEY
         # Optional override; utility.wema falls back to WEMA_WALLET_KEY when blank.
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCT_MGT_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_ACCT_MGT_KEY}
       - key: WEMA_ACCT_MGT_BASE_URL
         # Optional override; utility.wema falls back to WEMA_BASE_URL when blank.
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCT_MGT_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_ACCT_MGT_BASE_URL}
       - key: WEMA_SOURCE_ACCOUNT
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SOURCE_ACCOUNT}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SOURCE_ACCOUNT}
       - key: WEMA_SECURITY_INFO
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SECURITY_INFO}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SECURITY_INFO}
       - key: WEMA_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BASE_URL}
       - key: WEMA_AIRTIME_KEY
         # Optional override; airtime/data are covered by Wallet Services here.
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_AIRTIME_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_AIRTIME_KEY}
       - key: WEMA_BILLS_KEY
         # Optional override; Wallet Services covers bills here.
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLS_KEY}
       # Partnership airtime/data status decoding; this is not virtual-account configuration.
       - key: WEMA_VAS_STATUS_LEGEND
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_STATUS_LEGEND}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_VAS_STATUS_LEGEND}
       - key: WEMA_BILLS_STATUS_LEGEND
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_STATUS_LEGEND}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLS_STATUS_LEGEND}
       # Rail safety mode is sourced from the web service so a cron cannot call
       # ALAT while customer-facing requests are deliberately simulated.
       - key: WEMA_SIMULATION
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SIMULATION}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SIMULATION}
       - key: ALLOW_PRODUCTION_SIMULATION
-        fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       # Paging: reconcile_wema calls utility.alerts.alert on a crashed run or a
       # systemic gateway outage. That reaches Sentry only when SENTRY_DSN is set
       # in THIS cron's env (crons are separate processes from the web service).
       - key: SENTRY_DSN
-        fromService: {type: web, name: zitch-api, envVarKey: SENTRY_DSN}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
       # Email/SMS/push remain best-effort at the ledger writer. Terminal
       # WhatsApp alerts are deliberately deferred to zitch-whatsapp-worker,
       # which owns the Meta credentials and durable retry sweep. Do not copy
       # Meta secrets into this scheduled money process.
       - key: RESEND_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_API_KEY}
       - key: RESEND_FROM_EMAIL
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_FROM_EMAIL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_FROM_EMAIL}
       - key: TERMII_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_API_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_API_KEY}
       - key: TERMII_SENDER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_SENDER_ID}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_SENDER_ID}
       - key: TERMII_CHANNEL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_CHANNEL}
       - key: TERMII_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TERMII_BASE_URL}
       - key: TXN_ALERTS_EMAIL
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_EMAIL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_EMAIL}
       - key: TXN_ALERTS_SMS
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_SMS}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_SMS}
       - key: TXN_ALERTS_PUSH
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_PUSH}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_PUSH}
       - key: TXN_ALERTS_WHATSAPP
         value: "false"
 
@@ -838,7 +838,7 @@ services:
   # on any drift. Read-only apart from one AuditLog row per run. Also requires a
   # paid plan (cron has no free tier).
   - type: cron
-    name: zitch-integrity-check
+    name: zitch-integrity-check-ry6y
     region: frankfurt
     runtime: python
     rootDir: backend
@@ -856,26 +856,26 @@ services:
     envVars:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "false"
       - key: DATABASE_URL
         fromDatabase:
-          name: zitch-db
+          name: zitch-db-ry6y
           property: connectionString
       # Paging: integrity_check calls utility.alerts.alert on a mismatch, which
       # reaches Sentry only when SENTRY_DSN is set in this cron's env.
       - key: SENTRY_DSN
-        fromService: {type: web, name: zitch-api, envVarKey: SENTRY_DSN}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
 
   # Ledger <-> BANK (Wema NUBAN) reconciliation — the EXTERNAL integrity check.
   # integrity_check compares the ledger to our own stored balance; this compares
@@ -887,7 +887,7 @@ services:
   # Needs the WEMA_* balance-read keys + SENTRY_DSN. Only acts when Wema is live
   # (no-ops in sandbox/sim). Every 6 hours; tune as needed.
   - type: cron
-    name: zitch-reconcile-balances
+    name: zitch-reconcile-balances-ry6y
     region: frankfurt
     runtime: python
     rootDir: backend
@@ -908,14 +908,14 @@ services:
     envVars:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
@@ -926,20 +926,20 @@ services:
       - key: REDIS_URL
         fromService:
           type: keyvalue
-          name: zitch-cache
+          name: zitch-cache-ry6y
           property: connectionString
       - key: DATABASE_URL
         fromDatabase:
-          name: zitch-db
+          name: zitch-db-ry6y
           property: connectionString
       - key: DJANGO_KYC_HASH_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_KYC_HASH_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_KYC_HASH_KEY}
       - key: DJANGO_OTP_HASH_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_OTP_HASH_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_OTP_HASH_KEY}
       - key: WEMA_CHANNEL_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CHANNEL_ID}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CHANNEL_ID}
       - key: WEMA_WALLET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_WALLET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_WALLET_KEY}
       - key: WEMA_ACCOUNT_CREATION_KEY
         sync: false
       - key: WEMA_ACCT_MGT_KEY
@@ -949,15 +949,15 @@ services:
         # Optional override; utility.wema falls back to WEMA_BASE_URL when blank.
         sync: false
       - key: WEMA_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BASE_URL}
       # Rail safety mode is sourced from the web service so a cron cannot call
       # ALAT while customer-facing requests are deliberately simulated.
       - key: WEMA_SIMULATION
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SIMULATION}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SIMULATION}
       - key: ALLOW_PRODUCTION_SIMULATION
-        fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: SENTRY_DSN
-        fromService: {type: web, name: zitch-api, envVarKey: SENTRY_DSN}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
 
   # DAILY SETTLEMENT STATEMENT — the whole float position, not per-wallet drift.
   # integrity_check and reconcile_balances both compare ONE wallet against ONE
@@ -971,7 +971,7 @@ services:
   # never a silent zero). Read-only. See docs/settlement-operating-model.md for
   # the thresholds and who owns the response.
   - type: cron
-    name: zitch-settlement-report
+    name: zitch-settlement-report-ry6y
     region: frankfurt
     runtime: python
     rootDir: backend
@@ -989,30 +989,30 @@ services:
     envVars:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "false"
       - key: DATABASE_URL
         fromDatabase:
-          name: zitch-db
+          name: zitch-db-ry6y
           property: connectionString
       - key: DJANGO_KYC_HASH_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_KYC_HASH_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_KYC_HASH_KEY}
       - key: DJANGO_OTP_HASH_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_OTP_HASH_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_OTP_HASH_KEY}
       - key: WEMA_CHANNEL_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CHANNEL_ID}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CHANNEL_ID}
       - key: WEMA_WALLET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_WALLET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_WALLET_KEY}
       - key: WEMA_ACCOUNT_CREATION_KEY
         sync: false
       - key: WEMA_ACCT_MGT_KEY
@@ -1022,19 +1022,19 @@ services:
         # Optional override; utility.wema falls back to WEMA_BASE_URL when blank.
         sync: false
       - key: WEMA_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BASE_URL}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BASE_URL}
       # Rail safety mode is sourced from the web service so a cron cannot call
       # ALAT while customer-facing requests are deliberately simulated.
       - key: WEMA_SIMULATION
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SIMULATION}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SIMULATION}
       - key: ALLOW_PRODUCTION_SIMULATION
-        fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: WEMA_SOURCE_ACCOUNT
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SOURCE_ACCOUNT}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_SOURCE_ACCOUNT}
       # The VAS asset rail. Without these the provider wallet reads as UNREADABLE
       # and the position is reported advisory rather than authoritative.
       - key: SENTRY_DSN
-        fromService: {type: web, name: zitch-api, envVarKey: SENTRY_DSN}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
 
   # AML TRANSACTION MONITORING. The compliance QA response tells a regulator we monitor
   # for "threshold breaches (₦5M+), rapid velocity, structuring" and file SARs with NFIU
@@ -1045,7 +1045,7 @@ services:
   # docs/compliance-operations.md for why, and for where the code and the policy wording
   # differ). Needs only the database and SENTRY_DSN.
   - type: cron
-    name: zitch-aml-scan
+    name: zitch-aml-scan-ry6y
     region: frankfurt
     runtime: python
     rootDir: backend
@@ -1063,27 +1063,27 @@ services:
     envVars:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_PARTNERSHIP_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
       - key: WEMA_BILLER_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLER_MODE}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
       - key: PYTHON_VERSION
         value: "3.11.16"
       - key: DJANGO_SECRET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: DJANGO_SECRET_KEY}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SECRET_KEY}
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "false"
       - key: DATABASE_URL
         fromDatabase:
-          name: zitch-db
+          name: zitch-db-ry6y
           property: connectionString
       - key: SENTRY_DSN
-        fromService: {type: web, name: zitch-api, envVarKey: SENTRY_DSN}
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
 
   - type: keyvalue
-    name: zitch-cache
+    name: zitch-cache-ry6y
     region: frankfurt
     plan: starter
     # allkeys_lru, NOT noeviction. This cache holds rate limits, the idempotency
@@ -1109,7 +1109,7 @@ databases:
   #
   # Legacy Blueprint auto-sync remains paused. Reconcile all names and resource
   # IDs in a separately reviewed adoption plan before syncing this file.
-  - name: zitch-db
+  - name: zitch-db-ry6y
     region: frankfurt
     plan: basic-256mb
     postgresMajorVersion: 18
