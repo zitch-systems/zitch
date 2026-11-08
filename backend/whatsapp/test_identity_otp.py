@@ -1,6 +1,12 @@
-"""BVN/NIN verify LIVE: lookup, then a code to the line the identity is
-registered to, entered in the Flow. A name match proves someone knows a name;
-a code delivered to the registered line proves they control it."""
+"""The code and PIN pages of the Flow: empty retry screens, PIN reset by SMS
+code, and how long a code challenge outlives the code itself.
+
+Named for the BVN/NIN challenge it was written for. That challenge needed a
+provider to confirm the identity and went with the rail, taking
+IdentityOtpScreenNeverGuessesBvnTests with it -- the class that pinned the
+screen's label against defaulting to "BVN". Everything left here is about the
+PIN pages, which are untouched by that removal and are why the file stays.
+"""
 from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from unittest.mock import patch
@@ -9,8 +15,8 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import IdentityProof, hash_identifier
-from whatsapp.flows import (FLOW_ID_STATE, IDENTITY_CHAIN, IDENTITY_RETRY, IDENTITY_SCREEN,
-                            RESULT_SCREEN, SUCCESS_SCREEN, handle_flow_request, sign_identity_token)
+from whatsapp.flows import (FLOW_ID_STATE, IDENTITY_CHAIN, RESULT_SCREEN,
+                            SUCCESS_SCREEN, handle_flow_request, sign_identity_token)
 from whatsapp.models import PendingAction, SystemSetting
 from whatsapp.test_flows import MSISDN, _make_user
 
@@ -188,59 +194,3 @@ class CodeChallengeDeadlineTests(TestCase):
         # No code in the payload -> the ordinary armed-PIN window applies again.
         deadline = _flow_deadline("flow_pin", {})
         self.assertLessEqual(deadline, timezone.now() + PIN_TTL + timedelta(seconds=5))
-
-
-
-@bank_channel_case
-@override_settings(TESTING=False, DEBUG=False)
-class IdentityOtpScreenNeverGuessesBvnTests(TestCase):
-    """The KYC identity challenge must not label itself BVN by default.
-
-    `_identity_otp_screen` derived its label from
-    `(payload.get("id_otp_kind") or "bvn").upper()`, so any session reaching this
-    screen without that key rendered "BVN code" and told the customer a BVN code
-    had been sent. On a NIN verification that names the wrong document and points
-    at the wrong phone. It is the same defect that was fixed on the account-
-    creation screen, still live on this second code path.
-    """
-
-    def setUp(self):
-        self.user = _make_user()
-
-    def _screen(self, payload, error=""):
-        from whatsapp.flows import _identity_otp_screen
-        from whatsapp.router import _flow_deadline
-        pa = PendingAction.objects.create(
-            user=self.user, msisdn=MSISDN, action_type="kyc",
-            state=FLOW_ID_STATE, payload=payload,
-            expires_at=_flow_deadline("otp"))
-        return _identity_otp_screen(pa, error=error)["data"]
-
-    def test_a_nin_challenge_is_labelled_nin(self):
-        data = self._screen({"id_otp_kind": "nin", "id_otp_to": "•••••6789"})
-        self.assertEqual(data["label"], "NIN code")
-        self.assertNotIn("BVN", data["summary"])
-
-    def test_a_bvn_challenge_is_still_labelled_bvn(self):
-        data = self._screen({"id_otp_kind": "bvn", "id_otp_to": "•••••6789"})
-        self.assertEqual(data["label"], "BVN code")
-
-    def test_an_unknown_identity_is_never_called_bvn(self):
-        """The whole bug in one assertion: with nothing in the payload saying
-        which document this is, the old code asserted BVN."""
-        data = self._screen({})
-        self.assertNotIn("BVN", data["label"])
-        self.assertNotIn("BVN", data["summary"])
-        self.assertEqual(data["label"], "Verification code")
-
-    def test_it_falls_back_to_the_menu_choice_before_giving_up(self):
-        """id_type is written when the customer picks the rail, so it is a
-        truthful answer when the challenge key is missing."""
-        data = self._screen({"id_type": "nin"})
-        self.assertEqual(data["label"], "NIN code")
-        self.assertIn("NIN", data["summary"])
-
-    def test_a_junk_identity_value_is_not_echoed_into_the_screen(self):
-        data = self._screen({"id_otp_kind": "passport"})
-        self.assertEqual(data["label"], "Verification code")
-        self.assertNotIn("PASSPORT", data["summary"])

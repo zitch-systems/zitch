@@ -21,22 +21,34 @@ class RetiredSetupTests(TestCase):
     def action(self, *, action_type="kyc", state=flows.FLOW_ID_STATE, payload=None):
         return PendingAction.objects.create(
             user=self.user, msisdn=MSISDN, action_type=action_type, state=state,
-            payload=payload or {"vas_identity": True, "id_kind": "bvn"},
+            payload=payload or {"vas_identity": True, "id_kind": "email"},
             expires_at=timezone.now() + timedelta(minutes=5),
         )
 
-    def test_retired_identity_session_cannot_submit_identity_or_ownership_code(self):
+    def test_retired_identity_session_cannot_submit_through_the_live_handler(self):
+        """A retired session's token must not reach the one handler left here.
+
+        It used to assert against _submit_identity and _submit_identity_otp.
+        Both went with the identity rail, which would make this pass whatever
+        the retirement check did -- so it asserts against _submit_email, the
+        handler the identity token prefix still routes to.
+
+        id_kind is "email" for the same reason. A payload saying "bvn" is now
+        turned away by the dispatch itself for not being email, so the test
+        would pass without the retirement check ever running. "email" is the one
+        value that WOULD reach a live handler, which is what makes the assertion
+        mean something.
+        """
         for marker in ("vas_identity", "vas_contacts"):
             with self.subTest(marker=marker):
-                pa = self.action(payload={marker: True, "id_kind": "bvn", "id_otp_hash": "old-proof"})
+                pa = self.action(payload={marker: True, "id_kind": "email",
+                                          "id_step": "code"})
                 token = flows.sign_identity_token(pa)
-                with patch.object(flows, "_submit_identity") as identity, \
-                        patch.object(flows, "_submit_identity_otp") as code:
+                with patch.object(flows, "_submit_email") as submit:
                     self.assertIsNone(flows.resolve_identity_token(token))
                     response = flows.handle_flow_request({"action": "data_exchange", "flow_token": token,
                                                           "data": {"number": "123456"}})
-                identity.assert_not_called()
-                code.assert_not_called()
+                submit.assert_not_called()
                 self.assertIn("expired", str(response))
                 pa.delete()
 
@@ -46,12 +58,12 @@ class RetiredSetupTests(TestCase):
         self.assertIsNone(flows.resolve_flow_token(flows.sign_flow_token(pa)))
         self.assertIsNone(flows.resolve_approve_token(flows.sign_approve_token(pa)))
 
-    def test_old_provider_token_never_falls_through_to_identity_or_pin(self):
-        with patch.object(flows, "_submit_identity") as identity, \
+    def test_old_provider_token_never_falls_through_to_email_or_pin(self):
+        with patch.object(flows, "_submit_email") as submit, \
                 patch("whatsapp.router.authorise_flow_execution") as execute:
             response = flows.handle_flow_request({"action": "data_exchange", "flow_token": "va1.obsolete",
                                                   "data": {"number": "12345678901"}})
-        identity.assert_not_called()
+        submit.assert_not_called()
         execute.assert_not_called()
         self.assertIn("expired", str(response))
 

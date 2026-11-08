@@ -19,14 +19,16 @@ from django.test import SimpleTestCase
 
 import whatsapp
 from whatsapp.flows import (CODE_RETRY, CODE_SCREEN, EMAIL_SCREEN, IDENTITY_CHAIN,
-                            IDENTITY_RETRY, IDENTITY_SCREEN,
                             PIN_CHAIN, PIN_CONFIRM, PIN_CONFIRM_RETRY, PIN_RETRY, PIN_SCREEN,
                             SIGNUP_SCREEN, TRANSFER_FORM)
 
 FLOW = json.loads((Path(whatsapp.__file__).parent / "flow_assets" / "pin_flow.json").read_text())
 
 #: Every screen the router opens a Flow message on (send_flow(screen=...)).
-OPENING_SCREENS = {PIN_SCREEN, IDENTITY_SCREEN, EMAIL_SCREEN, SIGNUP_SCREEN, TRANSFER_FORM,
+#: IDENTITY_SCREEN was one of them -- the masked 11-digit BVN/NIN box. It and
+#: its empty-box twin IDENTITY_RETRY went with the identity rail, and out of
+#: pin_flow.json with it, so the error quoted above can no longer name it.
+OPENING_SCREENS = {PIN_SCREEN, EMAIL_SCREEN, SIGNUP_SCREEN, TRANSFER_FORM,
                    CODE_SCREEN}
 
 
@@ -56,8 +58,11 @@ class OpeningScreensAreRoutingRootsTests(SimpleTestCase):
         roots. A twin with no incoming route would mean the chain is dead."""
         incoming = _incoming()
         self.assertTrue(incoming[PIN_CHAIN], "PIN_CHAIN is unreachable")
+        # IDENTITY_CHAIN survives the identity rail because EMAIL_SCREEN routes
+        # into it: it carries the email confirmation code. If that one edge ever
+        # goes, this assertion is what catches it -- the chain would be dead and
+        # the email code would have nowhere to render.
         self.assertTrue(incoming[IDENTITY_CHAIN], "IDENTITY_CHAIN is unreachable")
-        self.assertTrue(incoming[IDENTITY_RETRY], "IDENTITY_RETRY is unreachable")
         self.assertTrue(incoming[PIN_RETRY], "PIN_RETRY is unreachable")
         self.assertTrue(incoming[PIN_CONFIRM_RETRY], "PIN_CONFIRM_RETRY is unreachable")
         self.assertTrue(incoming[CODE_RETRY], "CODE_RETRY is unreachable")
@@ -69,7 +74,7 @@ class OpeningScreensAreRoutingRootsTests(SimpleTestCase):
         # IDENTITY_CHAIN is no longer IDENTITY_SCREEN's twin: identity fields
         # are 11/11 and code fields 6/6, so the chained CODE pages twin with
         # CODE_SCREEN instead.
-        for root, twin in ((PIN_SCREEN, PIN_CHAIN), (IDENTITY_SCREEN, IDENTITY_RETRY),
+        for root, twin in ((PIN_SCREEN, PIN_CHAIN),
                            (PIN_SCREEN, PIN_RETRY), (PIN_CONFIRM, PIN_CONFIRM_RETRY),
                            (CODE_SCREEN, CODE_RETRY), (CODE_SCREEN, IDENTITY_CHAIN)):
             self.assertEqual(by_id[root]["layout"], by_id[twin]["layout"], f"{twin} drifted")

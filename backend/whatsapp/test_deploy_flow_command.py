@@ -103,7 +103,12 @@ class DeployFlowCommandTests(SimpleTestCase):
         self.post.assert_not_called()
         self.assertNotIn("publish", self.delegate.call_args.kwargs)
         self.assertIn(_digest(), self.out.getvalue())
-        self.assertIn("24 screens", self.out.getvalue())
+        # Counted from pin_flow.json: 24 before the VAS removal took the four
+        # VTU screens, then 20 before the identity rail took IDENTITY_SCREEN
+        # and IDENTITY_RETRY. Hard-coded on purpose -- the command reports what
+        # it is about to publish, so a silent change in that number is the bug
+        # this asserts against.
+        self.assertIn("18 screens", self.out.getvalue())
         self.assertNotIn("test-token-never-print", self.out.getvalue() + self.err.getvalue())
 
     def test_retry_reuses_exact_named_draft_and_never_creates_again(self):

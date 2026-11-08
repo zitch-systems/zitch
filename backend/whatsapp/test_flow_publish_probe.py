@@ -83,7 +83,10 @@ class PublishedFlowProbeTests(SimpleTestCase):
                    side_effect=_meta(["PIN_SCREEN", "SUCCESS"])):
             r = published_flow_report()
         self.assertTrue(r["stale"])
-        self.assertIn("IDENTITY_SCREEN", r["missing_screens"])
+        # Was IDENTITY_SCREEN, which the identity rail took out of the Flow.
+        # EMAIL_SCREEN serves the same purpose here: a screen newer than
+        # PIN_SCREEN, so a Flow stuck one publish behind is missing it.
+        self.assertIn("EMAIL_SCREEN", r["missing_screens"])
         self.assertIn("TRANSFER_FORM", r["missing_screens"])
         self.assertNotIn("PIN_SCREEN", r["missing_screens"])   # why it half-works
 

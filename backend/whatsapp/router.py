@@ -54,7 +54,7 @@ from .flows import (CODE_SCREEN, EMAIL_SCREEN,
                     FLOW_FORM_STATE, IDENTITY_CHAIN,
                     FLOW_ID_STATE, FLOW_PHONE_CODE_STATE, FLOW_PHONE_STATE, FLOW_PIN_STATE,
                     FLOW_PRIVACY_STATE,
-                    FLOW_SIGNUP_STATE, IDENTITY_SCREEN, PRIVACY_NOTICE,
+                    FLOW_SIGNUP_STATE, PRIVACY_NOTICE,
                     SIGNUP_SCREEN,
                     TRANSFER_FORM,
                     PIN_SCREEN,
@@ -81,7 +81,6 @@ EXECUTION_TTL = timedelta(minutes=30)
 #: asked of the customer.
 EXECUTING_STATE = "executing"
 PIN_FLOW_ATTEMPTS = 2                   # 1 retry then cancel (spec §7)
-KYC_UPGRADE_STATE = "kyc_upgrade"
 
 def _links() -> dict:
     return getattr(settings, "ZITCH_LINKS", {}) or {}
@@ -729,47 +728,6 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     return _has_live_funds(pa, user, notify=True)
 
 
-def _send_identity_flow(pa: PendingAction, kind: str, fallback_state: str = "") -> bool:
-    """Collect a BVN/NIN in the encrypted Flow rather than the chat. True if the
-    Flow was dispatched; False to fall back to asking in the thread.
-
-    Same reasoning as the PIN: WhatsApp has no view-once for text and lets only
-    the SENDER delete a message, so anything typed into the thread stays in the
-    customer's own history indefinitely. An identity number is exactly what
-    should not sit there.
-
-    Unlike the PIN this does NOT fail closed. A PIN in a chat is catastrophic and
-    worth refusing service over; a BVN in the customer's own thread is bad but is
-    what happens today, and failing closed would block every signup on any deploy
-    where Flows are not configured. The fallback says how to remove it instead.
-    """
-    if not flows_live():
-        return False
-    pa.payload["id_kind"] = kind
-    pa.payload["flow_screen"] = IDENTITY_SCREEN          # opens on the root, not the twin
-    # Where this step goes if its answer arrives in the CHAT instead. Recorded at
-    # arm time rather than re-derived: the same value already picks the chat
-    # state on a send failure below, and _accept_identity_in_chat needs it for a
-    # customer who simply typed the number rather than tapping the screen.
-    pa.payload["id_fallback_state"] = fallback_state or kind
-    _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)   # persist so the token resolves
-    which = kind.upper()
-    res = send_flow(
-        pa.msisdn, sign_identity_token(pa),
-        header="Verify your identity", body=f"Enter your {which} privately - it never appears in this chat.",
-        screen=IDENTITY_SCREEN,
-        screen_data={"summary": f"Enter your 11-digit {which}", "label": which, "error": ""},
-        cta="Enter securely",
-    )
-    if res.get("success"):
-        return True
-    # Dispatch failed: put the action back where the chat fallback expects it,
-    # otherwise it would sit in a Flow state with no Flow open. Account setup
-    # parks both ID types in one "bvn" entry state, so it names its own.
-    _touch(pa, state=fallback_state or kind, payload=pa.payload)
-    log.warning("wa_identity_flow_send_failed kind=%s pa=%s detail=%r", kind, pa.id,
-                res.get("error_detail", ""))
-    return False
 
 
 def _send_email_flow(pa: PendingAction, step: str) -> bool:
@@ -1122,8 +1080,7 @@ def _current_action(msisdn: str) -> PendingAction | None:
     `_announce_timeout` clears it, after saying so.
     """
     return PendingAction.objects.filter(
-        msisdn=msisdn, expires_at__gte=timezone.now()).exclude(
-            action_type="verification_web").order_by("-created").first()
+        msisdn=msisdn, expires_at__gte=timezone.now()).order_by("-created").first()
 
 
 def _announce_timeout(msisdn: str) -> bool:
@@ -1140,7 +1097,7 @@ def _announce_timeout(msisdn: str) -> bool:
     # payment that has to be reconciled rather than forgotten.
     expired = PendingAction.objects.filter(
         msisdn=msisdn, expires_at__lt=timezone.now()).exclude(
-            state=EXECUTING_STATE).exclude(action_type="verification_web")
+            state=EXECUTING_STATE)
     stale = expired.order_by("-created").first()
     if stale is None:
         return False
@@ -1163,18 +1120,20 @@ def _announce_timeout(msisdn: str) -> bool:
     return True
 
 
-def _clear_actions(msisdn: str, *, include_web: bool = False) -> None:
+def _clear_actions(msisdn: str) -> None:
     # Authorised money actions remain until the worker has recorded their result.
-    # Ordinary chat navigation must not erase an independent browser verification.
-    # Submitted verification may already be at the bank, including an uncertain
-    # result awaiting review. Cancelling chat cannot revoke that provider request.
+    #
+    # The `include_web` parameter and the three verification_web exclusions that
+    # went with it are gone. They spared a browser verification that chat could
+    # not speak for: it ran on its own, and a submitted one might already be at
+    # the bank awaiting a result, so cancelling in chat could not revoke it.
+    # Neither is true of a row left over from that flow. No new one can be
+    # created, nothing will ever return a result for an old one, and the page
+    # that would read it is deleted -- so it is an ordinary stale row and is
+    # cleared like any other. Sparing it would only keep it undeletable forever.
     from django.db.models import Q
-    rows = PendingAction.objects.filter(msisdn=msisdn).exclude(
-        Q(state=EXECUTING_STATE) & ~Q(action_type="unlock")).exclude(
-            action_type="verification_web", state__in=("web_processing", "web_review"))
-    if not include_web:
-        rows = rows.exclude(action_type="verification_web")
-    rows.delete()
+    PendingAction.objects.filter(msisdn=msisdn).exclude(
+        Q(state=EXECUTING_STATE) & ~Q(action_type="unlock")).delete()
 
 
 def retire_unsubmitted_actions(user, msisdns) -> int:
@@ -1182,14 +1141,16 @@ def retire_unsubmitted_actions(user, msisdns) -> int:
 
     The chat refuses an unlinked number, but a confirm it armed while linked
     stays reachable through the secure Flow and the app hand-off until its own
-    deadline. An authorised (executing) payment keeps running, as does browser
-    verification, which checks its own link binding.
+    deadline. An authorised (executing) payment keeps running. Browser
+    verification used to be spared here too, because it checked its own link
+    binding; that flow is gone, so a leftover row of its kind is retired with
+    the rest.
     """
     numbers = [m for m in set(msisdns) if m]
     if not numbers:
         return 0
     return (PendingAction.objects.filter(user=user, msisdn__in=numbers)
-            .exclude(state=EXECUTING_STATE).exclude(action_type="verification_web")
+            .exclude(state=EXECUTING_STATE)
             .update(expires_at=timezone.now()))
 
 
@@ -1284,18 +1245,14 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return
 
     if low in ("cancel", "quit"):
-        _clear_actions(msisdn, include_web=True)
+        _clear_actions(msisdn)
         if PendingAction.objects.filter(msisdn=msisdn, state=EXECUTING_STATE).exclude(action_type="unlock").exists():
             return reply(msisdn, "Your confirmed payment is already processing and cannot be cancelled here. "
                          "We will send its final result in this chat.")
-        submitted = PendingAction.objects.filter(
-            msisdn=msisdn, action_type="verification_web",
-            state__in=("web_processing", "web_review")).order_by("-created").first()
-        if submitted is not None:
-            status = ("is already processing" if submitted.state == "web_processing"
-                      else "has already been submitted and its final result is still unconfirmed")
-            return reply(msisdn, f"Your address verification {status} and cannot be cancelled here. "
-                         "Check your verification status before starting another request.")
+        # An address verification parked at the bank used to be reported here as
+        # "already processing ... cannot be cancelled". Saying that now would be
+        # untrue twice over: there is no bank to be processing it, and the row
+        # has just been cleared by _clear_actions above like any other.
         return reply(msisdn, 'Okay, cancelled. Reply "menu" for options.')
 
     # An in-progress flow consumes the message before any fresh command -
@@ -2590,7 +2547,11 @@ def _do_support(msisdn: str) -> None:
 # --------------------------------------------------------------------------- #
 # The identity slot defaults to BVN, but either proven BVN or NIN completes it.
 # Both identifiers are required only for the bank's Tier 2 upgrade.
-_KYC_STEPS = ("phone", "email", "bvn")
+#: Verification Zitch can actually complete on its own: a phone number over
+#: Termii, an email address over email. "bvn" was the third step and needed a
+#: provider to confirm the number; there is none, so asking for it collected an
+#: identity document with nowhere to send it.
+_KYC_STEPS = ("phone", "email")
 
 
 
@@ -2631,11 +2592,7 @@ def _kyc_outstanding(user) -> list:
     done = {
         "phone": user.phone_verified,
         "email": user.email_verified,
-        "bvn": user.bvn_verified or user.nin_verified,
-        "nin": user.nin_verified,
     }
-    # Tier-2 liveness is handled by the combined bank upgrade, so it does not
-    # belong in the initial identity checklist.
     return [step for step in _KYC_STEPS if not done[step]]
 
 
@@ -2644,12 +2601,14 @@ def _kyc_status_lines(user) -> str:
 
     rehydrate_verified_identity_flags(user)
     mark = lambda ok: "✅" if ok else "⬜"  # noqa: E731
-    identity_complete = user.bvn_verified or user.nin_verified
-    identity = "BVN" if user.bvn_verified else "NIN" if user.nin_verified else "BVN or NIN"
+    # The BVN/NIN line is gone rather than shown permanently unticked. A
+    # checklist row nobody can complete reads as the customer's omission, and
+    # it is ours: there is no provider to confirm an identity number. An
+    # account that HAS one from the 9PSB era keeps the flags and the proof
+    # rows -- they are simply no longer something the checklist asks for.
     return "\n".join([
         f"{mark(user.phone_verified)} Phone number",
         f"{mark(user.email_verified)} Email address",
-        f"{mark(identity_complete)} {identity}",
     ])
 
 
@@ -2701,15 +2660,15 @@ def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
         return reply(msisdn, funding["migration_message"])
 
     if not outstanding:
-        return _offer_tier_upgrade(user, msisdn)
-    # "Let's do the rest now" is a promise, so it must not be made when every
-    # outstanding step is one the bank will no longer accept over chat. Send the
-    # checklist with the real next step instead of an invitation to a form that
-    # cannot be submitted.
-    if all(_bank_upgrade_blocks(user, step) for step in outstanding):
+        # Previously this offered a tier upgrade. Tiers are granted by a bank
+        # (User.recompute_tier) and there is no bank, so there is no upgrade to
+        # offer and saying otherwise would be an invitation to a form that
+        # cannot be submitted.
         _clear_actions(msisdn)
-        reply(msisdn, "🪪 *Verify your identity*\n\n" + _kyc_status_lines(user))
-        return _kyc_bank_upgrade_notice(user, msisdn)
+        return reply(msisdn, "🪪 *Your details*\n\n" + _kyc_status_lines(user)
+                     + "\n\nThat is everything we can confirm for you right now. "
+                     "Higher limits need a partner bank, and we do not have one "
+                     "yet - we will let you know in this chat when that changes.")
     _clear_actions(msisdn)
     pa = PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="kyc", state="idle",
@@ -2722,61 +2681,14 @@ def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
     return _kyc_next(pa, user, msisdn)
 
 
-_UPGRADE_STEPS = {"bvn", "nin"}
 
 
-def _bank_upgrade_blocks(user, step: str) -> bool:
-    """True when this identity cannot be submitted on its own any more.
-
-    Once the bank has created the NUBAN it will not take a second identity by
-    itself - only the combined upgrade (BVN + NIN + live selfie in one request)
-    gets it in. Asking anyway is what produced the "enter your NIN securely"
-    message followed, in the same burst, by "we can't take your NIN": the number
-    was collected before anything checked whether it could be used.
-    """
-    if step not in _UPGRADE_STEPS:
-        return False
-    wallet = get_or_create_wallet(user)
-    # The existing-account product does not accept a second identity OTP. Treat
-    # the account itself as authoritative, not only a flag written after one
-    # failed submission, so a restored/adopted account can never prompt for NIN
-    # and then refuse it.
-    return bool(wallet.account_number and not (user.bvn_verified and user.nin_verified))
 
 
-def _offer_tier_upgrade(user, msisdn: str) -> None:
-    return _send_web_verification(user, msisdn, 2 if user.tier < 2 else 3)
 
 
-def _kyc_bank_upgrade_notice(user, msisdn: str) -> None:
-    """Keep verified checks and show the account upgrade requirements."""
-    if get_or_create_wallet(user).account_number and not (user.bvn_verified or user.nin_verified):
-        _clear_actions(msisdn)
-        return reply(msisdn, "Your funding account is open, but identity verification "
-                     "is not confirmed. The secure bank face check is temporarily "
-                     "unavailable. Your funds are safe; contact Zitch support to "
-                     "complete Tier 1. Please do not submit another account request.")
-    return _offer_tier_upgrade(user, msisdn)
 
 
-def _send_web_verification(user, msisdn: str, tier: int) -> None:
-    from .verification_web import start_verification
-    from django.core.exceptions import ImproperlyConfigured
-    try:
-        url = start_verification(user, msisdn, tier)
-    except (ValueError, ImproperlyConfigured):
-        return reply(msisdn, "Secure verification is currently unavailable. Please try again later.")
-    # One step per link, in Zitch's own words: customers never see partner names.
-    body = {
-        1: "Open your Zitch account. Confirm your details, then verify your NIN or BVN "
-           "with a code or a quick selfie.",
-        2: "Upgrade to Tier 2. Have your BVN, NIN, a utility bill and photos of your ID ready.",
-        3: "Upgrade to Tier 3 by verifying your home address.",
-    }.get(tier, "Verify your Zitch account.") + (
-        " Enter your Zitch PIN on the secure page. This link expires in 15 minutes.")
-    sent = send_cta_url(msisdn, body, url, cta="Verify account", footer="Return to WhatsApp when finished")
-    if not sent.get("success"):
-        reply(msisdn, body + "\n\n" + url)
 
 
 def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
@@ -2788,11 +2700,11 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
     if is_retired_setup(pa):
         PendingAction.objects.filter(pk=pa.pk).delete()
         return reply(msisdn, RETIRED_SETUP_MESSAGE)
-    if user.email_verified and user.phone_verified:
-        _clear_actions(msisdn)
-        return _send_web_verification(user, msisdn, 1 if user.tier < 1 else 2)
     attempted = set(pa.payload.get("attempted") or []) & set(_KYC_STEPS)
-    # Drop obsolete step names from older sessions. NIN is a Tier-2 step.
+    # Drop obsolete step names from older sessions -- which now includes "bvn",
+    # "nin" and "face" for anyone mid-ladder when the rail was removed. The
+    # intersection with _KYC_STEPS is what quietly retires them: a session that
+    # had attempted {phone, bvn} resumes as {phone} and finishes on email.
     if set(pa.payload.get("attempted") or []) != attempted:
         pa.payload["attempted"] = sorted(attempted)
         _touch(pa, payload=pa.payload)
@@ -2801,36 +2713,15 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
         return _kyc_finish(pa, user, msisdn)
     step = outstanding[0]
     pa.payload["attempted"] = sorted(attempted | {step})
-    # Check BEFORE the prompt goes out, not after the number comes back.
-    if _bank_upgrade_blocks(user, step):
-        return _kyc_bank_upgrade_notice(user, msisdn)
+    # Phone and email are the whole ladder: both are Zitch's own to verify, over
+    # Termii and email. The BVN, NIN and face steps that used to follow needed a
+    # provider to say yes, and the identity Flow, its chat fallback and the
+    # "Flow-or-nothing" guard around them all went with the rail -- there is no
+    # longer an identity number for the customer to type into the thread, which
+    # is the one thing that guard existed to prevent.
     if step == "phone":
         return _kyc_send_phone_code(pa, user, msisdn)
-    if step == "email":
-        return _kyc_send_email_code(pa, user, msisdn)
-    if step == "face":
-        return _kyc_start_face_step(pa, user, msisdn)
-    if _send_identity_flow(pa, step):
-        return None
-    if flows_live():
-        # The secure screen EXISTS on this deploy and the dispatch failed -
-        # tonight's production run proved what the chat fallback costs here: a
-        # BVN and a NIN sitting in the thread in clear, exactly what the Flow
-        # was built to prevent. When the deploy has Flows, identity is
-        # Flow-or-nothing; the send failure is in the logs
-        # (wa_identity_flow_send_failed and the provider rejection beside it).
-        _clear_actions(msisdn)
-        return reply(msisdn, "⚠️ The secure entry screen didn't go through, so I won't ask for "
-                             "your ID number here in the chat. Reply *8* to try again in a "
-                             "moment. You can complete verification here on WhatsApp.")
-    which = step.upper()
-    _touch(pa, state=step, payload=pa.payload)
-    # Fallback only for deploys with NO Flows configured (dev/preview). We store
-    # a hash, but the customer's own copy of what they typed stays in their
-    # history, so the one thing that can still remove it is named explicitly.
-    return reply(msisdn, f"Enter your 11-digit *{which}*. We store it only as a secure hash.\n\n"
-                         "_Delete your message afterwards (press and hold -> Delete -> "
-                         "Delete for everyone) - WhatsApp only lets the sender do this._")
+    return _kyc_send_email_code(pa, user, msisdn)
 
 
 def _kyc_finish(pa: PendingAction, user, msisdn: str) -> None:
@@ -3137,23 +3028,6 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
     low = val.lower()
     state = pa.state
 
-    if state == KYC_UPGRADE_STATE:
-        if low in ("later", "cancel", "no"):
-            _clear_actions(msisdn)
-            return reply(msisdn, "No problem. Reply *8* whenever you want to continue upgrading.")
-        if low in ("tier2", "2", "upgrade", "upgrade to tier 2", "tier2_app", "nin_face"):
-            if not user.tier1_identity_verified:
-                return _start_kyc(user, msisdn)
-            _clear_actions(msisdn)
-            return _send_web_verification(user, msisdn, 2)
-        if low in ("tier3", "3", "upgrade to tier 3"):
-            if user.tier < 2:
-                return reply(msisdn, "Tier 3 starts after Tier 2. Reply *tier2* to review your identity and live face checks.")
-            _clear_actions(msisdn)
-            return _send_web_verification(user, msisdn, 3)
-        choice = ("tier3", "Upgrade to Tier 3") if user.tier >= 2 else ("tier2", "Upgrade to Tier 2")
-        return reply_buttons(msisdn, "Choose the upgrade you want:", [choice, ("later", "Later")])
-
     if state == "phone":
         if low == "resend":
             return _kyc_send_phone_code(pa, user, msisdn)
@@ -3190,213 +3064,26 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return reply(msisdn, message + " Reply *resend* for a new code.")
         return None
 
-    if state in ("bvn", "nin"):
-        if user.bvn_verified or user.nin_verified:
-            return _kyc_bank_upgrade_notice(user, msisdn)
-        if _bank_upgrade_blocks(user, state):
-            return _kyc_bank_upgrade_notice(user, msisdn)
-        digits = "".join(ch for ch in val if ch.isdigit())
-        if len(digits) != 11:
-            return reply(msisdn, f"That should be exactly 11 digits. Enter your {state.upper()} again, "
-                                 'or reply "cancel".')
-        return _kyc_submit_identity(pa, user, msisdn, state, digits)
+    # The "bvn" / "nin" states are gone with the identity rail. A session parked
+    # in one when the rail was removed, or a stale Flow reply arriving in one,
+    # falls through to the menu below rather than matching a branch that would
+    # ask for eleven digits nothing can check. _kyc_next no longer issues them.
 
     _clear_actions(msisdn)
     return send_menu(msisdn)
 
 
-def _kyc_submit_identity(pa, user, msisdn, kind, digits):
-    _clear_actions(msisdn)
-    return _send_web_verification(user, msisdn, 1)
-
-
-#: Wrong-number attempts before the identity step gives up. Bounded because an
-#: unlimited retry screen is a lookup oracle: it answers "is this BVN real, and
-#: whose is it" for anyone willing to sit and type.
-#:
-#: TWO, not three, and that is a Flow constraint rather than a policy view: each
-#: attempt needs its own screen to arrive with an empty box (WhatsApp keeps form
-#: state across a same-screen re-render), routing is a DAG so screens cannot
-#: alternate, and a third would mean a third screen carrying a third copy of the
-#: layout. Two covers the typo; anything beyond it is a wrong number, and
-#: replying 8 mints a fresh attempt anyway.
-_MAX_ID_ATTEMPTS = 2
-
-#: Where the last identity-review reason is parked for /healthz. Same reasoning
-#: as wa_last_flow_error: the reason exists, but only in a log stream nobody
-#: debugging from a phone can reach.
-IDENTITY_REVIEW_KEY = "wa_last_identity_review"
-
-
-def _record_identity_review(kind: str, reason: str) -> None:
-    """Why the last identity went to review. Carries no identity number and no
-    resolved name - the reason concerns OUR lookup, not the person."""
-    from .models import SystemSetting
-
-    try:
-        SystemSetting.set(IDENTITY_REVIEW_KEY,
-                          "|".join((timezone.now().isoformat(timespec="seconds"),
-                                    kind, str(reason)[:150]))[:255])
-    except Exception:  # noqa: BLE001 - diagnostics never break the ladder
-        log.debug("could not record identity review reason", exc_info=True)
-
-
-def _kyc_start_face_step(pa, user, msisdn):
-    _clear_actions(msisdn)
-    return _send_web_verification(user, msisdn, 2)
 
 
 
-def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str):
-    """Send one ownership code only to provider-returned identity contacts.
 
-    The code goes to the phone returned by the identity lookup. Email
-    confirmation is a separate contact challenge and is never inferred here.
 
-    Returns None when the code is away (the caller chains to the code screen),
-    a string when the challenge cannot be run (the caller leaves verification
-    retryable), or "" when this deploy has no channel for it at all.
-    """
-    if is_retired_setup(pa):
-        PendingAction.objects.filter(pk=pa.pk).delete()
-        return RETIRED_SETUP_MESSAGE
 
-    def failed(category, message):
-        return message
 
-    if getattr(settings, "TESTING", False) or settings.DEBUG:
-        return ""
-    if not flows_live():
-        # The code is a bearer credential. Collecting it in the thread would undo
-        # the reason the number was collected in a Flow in the first place.
-        return failed("screen_unavailable", "no secure screen to collect the code on")
-    if not phone:
-        return failed("phone_missing", "the identity record carried no phone number")
-    if not sms_live():
-        return failed("sms_unconfigured", "SMS delivery is not configured")
-    expected_state = pa.state
-    # A number typed while its secure form is open follows the legacy BVN
-    # handler, which parks the same action at 'bvn' before starting its SMS.
-    allowed_states = (FLOW_ID_STATE, "bvn") if kind == "bvn" else (FLOW_ID_STATE,)
-    if expected_state not in allowed_states:
-        return failed("session_changed", "the identity verification step changed")
-    identity_hash = getattr(user, f"{kind}_hash", "")
-    if not identity_hash:
-        return failed("session_changed", "the identity submission changed")
-    code = f"{secrets.randbelow(10**6):06d}"
-    message = (f"Zitch: {code} is your {kind.upper()} verification code. "
-               "It expires in 10 minutes. Never share it.")
-    sent = send_sms(phone, message)
-    if not sent.get("success"):
-        return failed("sms_not_accepted", "the verification code could not be delivered")
-    masked_phone = f"•••••{phone[-4:]}"
-    # The SMS call runs outside locks. Its code proves only the exact identity
-    # looked up before delivery, even if another submission changes the user.
-    with db_transaction.atomic():
-        current = User.objects.select_for_update().get(pk=user.pk)
-        locked = PendingAction.objects.select_for_update().filter(
-            pk=pa.pk, user_id=current.pk, msisdn=pa.msisdn,
-            action_type="kyc", state=expected_state,
-        ).first()
-        if (locked is None or locked.expired or is_retired_setup(locked)
-                or not current.is_active or locked.payload.get("id_kind", kind) != kind
-                or getattr(current, f"{kind}_verified")
-                or not secrets.compare_digest(getattr(current, f"{kind}_hash", ""), identity_hash)):
-            return failed("session_changed", "the identity submission changed during SMS delivery")
-        locked.payload.update({
-            "id_otp_hash": make_password(code),
-            "id_otp_exp": (timezone.now() + timedelta(minutes=10)).isoformat(),
-            "id_otp_attempts": 0,
-            "id_otp_to": masked_phone,
-            "id_otp_kind": kind,
-            "id_otp_subject": current.pk,
-            "id_otp_identity_hash": identity_hash,
-        })
-        _touch(locked, state=FLOW_ID_STATE, payload=locked.payload)
-        pa.payload, pa.state, pa.expires_at = locked.payload, locked.state, locked.expires_at
-    return None
 
-def kyc_flow_identity_otp(pa: PendingAction, code: str):
-    """Check the identity challenge code. ("retry", msg) | ("stop", msg) | ("ok", msg)."""
-    if is_retired_setup(pa):
-        PendingAction.objects.filter(pk=pa.pk).delete()
-        return "stop", RETIRED_SETUP_MESSAGE
-    from accounts.models import IdentityProof, record_identity_proof
 
-    digits = "".join(ch for ch in str(code) if ch.isdigit())
-    if len(digits) != 6:
-        # A five-digit entry is a typo, not a guess - it must not spend one of
-        # the three attempts the real challenge gets.
-        return "retry", "The code is exactly 6 digits - check your verification message and try again."
-    challenge_keys = ("id_otp_hash", "id_otp_exp", "id_otp_attempts", "id_otp_to",
-                      "id_otp_kind", "id_otp_subject", "id_otp_identity_hash", "id_otp_verified_name",
-                      "id_otp_delivery")
-    with db_transaction.atomic():
-        user = User.objects.select_for_update().get(pk=pa.user_id)
-        locked = PendingAction.objects.select_for_update().filter(
-            pk=pa.pk, user_id=user.pk, msisdn=pa.msisdn,
-            action_type="kyc", state=FLOW_ID_STATE,
-        ).first()
-        if locked is None or locked.expired or not user.is_active or is_retired_setup(locked):
-            return "stop", "This verification has ended. Reply 8 in the chat to start again."
-        kind = locked.payload.get("id_otp_kind")
-        challenge_hash = locked.payload.get("id_otp_hash")
-        # A stale in-flight confirmation cannot consume a newly issued code.
-        if not challenge_hash or challenge_hash != pa.payload.get("id_otp_hash"):
-            return "stop", "That code has already been used or replaced. Return to the chat for your current status."
-        identity_hash = locked.payload.get("id_otp_identity_hash")
-        expires = parse_datetime(str(locked.payload.get("id_otp_exp") or ""))
-        matching = (kind in ("bvn", "nin")
-                    and locked.payload.get("id_otp_subject") == user.pk
-                    and isinstance(identity_hash, str) and bool(identity_hash)
-                    and secrets.compare_digest(identity_hash, getattr(user, f"{kind}_hash", "")))
-        if (not matching or not expires or timezone.is_naive(expires)
-                or timezone.now() >= expires):
-            for key in challenge_keys:
-                locked.payload.pop(key, None)
-            locked.save(update_fields=["payload"])
-            pa.payload = locked.payload
-            return "stop", "That code expired or the identity changed. Reply 8 in the chat to try again."
-        if getattr(user, f"{kind}_verified"):
-            for key in challenge_keys:
-                locked.payload.pop(key, None)
-            locked.save(update_fields=["payload"])
-            pa.payload, pa.user = locked.payload, user
-            return "stop", f"Your {kind.upper()} is already verified. Return to the chat for your current status."
-        attempts = int(locked.payload.get("id_otp_attempts") or 0)
-        if attempts >= 3 or not check_password(digits, challenge_hash):
-            attempts = min(3, attempts + 1)
-            locked.payload["id_otp_attempts"] = attempts
-            if attempts >= 3:
-                for key in challenge_keys:
-                    locked.payload.pop(key, None)
-                locked.save(update_fields=["payload"])
-                pa.payload = locked.payload
-                _record_identity_review(kind, "three wrong verification codes")
-                return "stop", "That's 3 incorrect codes. Reply 8 to start verification again or contact Support."
-            locked.save(update_fields=["payload"])
-            pa.payload = locked.payload
-            return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
-        fields = [f"{kind}_verified", "tier"]
-        setattr(user, f"{kind}_verified", True)
-        user.recompute_tier()
-        from django.db import IntegrityError
-        try:
-            with db_transaction.atomic():
-                user.save(update_fields=fields)
-                record_identity_proof(
-                    user, kind, identity_hash,
-                    source=IdentityProof.IDENTITY_PROVIDER_OTP,
-                    provider_reference=f"wa:{locked.id}:{kind}", prehashed=True,
-                )
-        except IntegrityError:
-            return "stop", "Those identity details need review. Contact Zitch Support."
-        # Consume this challenge in the same transaction as its proof and flag.
-        for key in challenge_keys:
-            locked.payload.pop(key, None)
-        locked.save(update_fields=["payload"])
-        pa.payload, pa.user = locked.payload, user
-    return "ok", f"✅ Your {kind.upper()} has been verified."
+
+
 
 
 def _do_account_details(user, msisdn: str) -> None:
@@ -3420,10 +3107,26 @@ def _do_account_details(user, msisdn: str) -> None:
 
 
 def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
+    """No funding account can be opened: opening one needed the partner bank.
+
+    This used to send the secure verification page, which is what minted the
+    NUBAN. Saying so plainly is the whole job here -- the alternative is the
+    shape of failure this removal is meant to end, where a customer is walked
+    through a verification form that cannot produce an account at the end of it.
+
+    The contact-channel check stays in front: phone and email are still worth
+    confirming on their own, and someone who replied 6 before finishing signup
+    should finish signup rather than be told the thing they did not ask about
+    is unavailable.
+    """
     if not user.email_verified or not user.phone_verified:
         return _start_kyc(user, msisdn)
     _clear_actions(msisdn)
-    return _send_web_verification(user, msisdn, 1)
+    return reply(msisdn, "🏦 *Funding account*\n\nWe can't open a Zitch funding "
+                 "account for you at the moment - the bank partnership behind it "
+                 "has ended and a new one isn't in place yet.\n\nYour wallet and "
+                 "your balance are unaffected. We'll message you here as soon as "
+                 "you can add money again.")
 
 
 
@@ -3748,64 +3451,51 @@ _DELETE_TIP = ("\n\n_Please delete your message (press and hold -> Delete -> Del
                "everyone) - WhatsApp only lets the sender do this._")
 
 
+#: The email step is the only one that still arms a Flow of its own. The BVN and
+#: NIN steps that shared this machinery needed a provider to confirm the number
+#: and went with the rail, so `id_kind` is now always "email" -- router.py's
+#: email Flow is its only remaining writer. The branches below are narrowed to
+#: that rather than kept "general", because a default of "bvn" on a payload that
+#: can no longer say "bvn" is a trap for whoever reads this next.
+
+
 def _identity_fallback_state(pa: PendingAction) -> str:
-    """The chat state an armed identity step answers in when its value arrives
-    in the thread rather than the Flow - the same state `_send_identity_flow`
-    falls back to when the dispatch itself fails."""
-    kind = str(pa.payload.get("id_kind", "bvn")).lower()
-    if kind == "email":
-        return "email" if pa.payload.get("id_step") == "code" else "email_address"
-    return str(pa.payload.get("id_fallback_state") or kind)
+    """The chat state the armed email step answers in when its value arrives in
+    the thread rather than the Flow."""
+    return "email" if pa.payload.get("id_step") == "code" else "email_address"
 
 
 def _identity_answer_typed(pa: PendingAction, text: str) -> bool:
-    """Whether this message IS the value the open identity step is waiting for.
+    """Whether this message IS the value the open email step is waiting for.
 
-    Shape-checked per step rather than "anything that isn't a command": an
-    11-digit BVN and a 6-digit code are unmistakable, and an email address is
-    the one step whose answer contains letters - so it has to be recognised
+    Shape-checked rather than "anything that isn't a command": an email address
+    is the one step whose answer contains letters, so it has to be recognised
     before the new-instruction escape hatch, which would otherwise read it as a
-    change of subject.
+    change of subject. A 6-digit code is unmistakable.
     """
-    kind = str(pa.payload.get("id_kind", "bvn")).lower()
     val = (text or "").strip()
-    if kind == "email" and pa.payload.get("id_step") != "code":
+    if pa.payload.get("id_step") != "code":
         return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", val))
     if any(ch.isalpha() for ch in val):
         return False
     digits = re.sub(r"\D", "", val)
-    if not digits:
-        return False
-    # 11 for the identity number itself; 6 for every code that follows one.
-    wanted = 11 if (kind in ("bvn", "nin") and not pa.payload.get("id_otp_hash")) else 6
-    return len(digits) == wanted
+    return len(digits) == 6 if digits else False
 
 
 def _accept_identity_in_chat(pa: PendingAction, user, msisdn: str, text: str) -> None:
-    """Process an identity answer that was typed into the chat with its Flow open.
+    """Process an email answer that was typed into the chat with its Flow open.
 
-    Every branch here routes into the SAME function the chat fallback uses, so
-    the two entry points cannot drift on validation, on attempt budgets, or on
-    what a failure does to the pending action.
+    It routes into the SAME function the chat path uses, so the two entry points
+    cannot drift on validation or on what a failure does to the pending action.
+
+    The identity-challenge branch that used to sit here -- the SMS code that
+    name-matched a BVN or NIN -- went with the rail, along with the secrecy
+    handling around it. An email address and a 6-digit code are not secrets
+    anyone needs to delete from their own chat history, which is why no delete
+    tip is sent for them and was not sent for them before.
     """
-    kind = str(pa.payload.get("id_kind", "bvn")).lower()
-    val = text.strip()
-    secret = not (kind == "email" and pa.payload.get("id_step") != "code")
-
-    # The identity challenge code (the SMS that name-matches a BVN/NIN). It has
-    # no chat state at all - it is only ever armed on a deploy with Flows live -
-    # so it is checked here, mirroring flows._submit_identity_otp exactly.
-    if kind != "email" and pa.payload.get("id_otp_hash"):
-        status, message = kyc_flow_identity_otp(pa, val)
-        if status == "retry":
-            return reply(msisdn, "⚠️ " + message)
-        reply(msisdn, message + (_DELETE_TIP if secret else ""))
-        return None if status == "stop" else _kyc_next(pa, pa.user, msisdn)
-
     _touch(pa, state=_identity_fallback_state(pa), payload=pa.payload)
-    if secret:
-        reply(msisdn, "🔐 Got it - I'll use what you typed." + _DELETE_TIP)
-    return _advance_kyc(pa, user, msisdn, val)
+    return _advance_kyc(pa, user, msisdn, text.strip())
 
 
 def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
@@ -3850,12 +3540,11 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         return reply(msisdn, f"🔐 Tap *{cta}* on the secure screen I sent to enter your PIN - "
                              "it stays private and never appears in this chat. Or reply \"cancel\".")
     if pa.state == FLOW_ID_STATE:
-        # Identity Flow open. Three different things arrive here and only one of
-        # them used to get an answer.
-        kind = str(pa.payload.get("id_kind", "bvn")).lower()
+        # The email Flow is open -- the only identity Flow left. Three different
+        # things arrive here and only one of them used to get an answer.
         low = text.strip().lower()
         if low == "resend":
-            if kind == "email" and pa.payload.get("id_step") == "code":
+            if pa.payload.get("id_step") == "code":
                 # An expired code with no way to ask for another would strand the
                 # customer inside a dead Flow.
                 return _kyc_send_email_code(pa, user, msisdn)

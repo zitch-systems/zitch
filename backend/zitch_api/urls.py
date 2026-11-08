@@ -1,7 +1,6 @@
 import ipaddress
 import json
 
-from banking import liveness as bank_liveness
 from django.conf import settings
 from django.contrib import admin
 from django.http import HttpResponse, JsonResponse
@@ -18,7 +17,6 @@ from portal.pages import admin_portal, landing, prototype
 from whatsapp.views import approve_handoff as whatsapp_approve_handoff
 from whatsapp.views import flow_endpoint as whatsapp_flow_endpoint
 from whatsapp.views import webhook as whatsapp_webhook
-from whatsapp.verification_web import verification_page as whatsapp_verification_page
 
 
 def health(_request):
@@ -129,7 +127,6 @@ def health(_request):
         # the number was not found, the name did not match, the provider was
         # unreachable, or the record carried no phone to challenge — and those
         # need different actions. This is the last one, with its reason.
-        "whatsapp_last_identity_review": _whatsapp_last_identity_review(),
         # The other direction of the Flow channel. `last_flow_error` is a send WE
         # made that Meta refused; this is a call META made to US — the leg behind
         # the blank panel reading "Something went wrong. Try again later.", which
@@ -177,19 +174,6 @@ def _whatsapp_last_flow_endpoint():
         return {}
 
 
-def _whatsapp_last_identity_review():
-    """Why the last BVN/NIN went to review instead of verifying."""
-    try:
-        from whatsapp.models import SystemSetting
-        from whatsapp.router import IDENTITY_REVIEW_KEY
-
-        raw = SystemSetting.get(IDENTITY_REVIEW_KEY, "")
-        if not raw:
-            return {}
-        parts = (raw.split("|", 2) + ["", "", ""])[:3]
-        return {"at": parts[0], "kind": parts[1], "reason": parts[2]}
-    except Exception:  # noqa: BLE001 — a health probe never raises
-        return {}
 
 
 def _whatsapp_last_flow_error():
@@ -575,7 +559,6 @@ urlpatterns = [
     # links as tappable, so the chat carries this URL and it forwards into the
     # app scheme (store links as the no-app fallback).
     path("wa/approve/<str:token>", whatsapp_approve_handoff),
-    path("wa/verify/<str:token>", whatsapp_verification_page, name="whatsapp_verification"),
     # The hosted QR scanner, opened from a WhatsApp button. Outside /api/ because it
     # is a PAGE for a customer's browser, not an authenticated JSON endpoint — the
     # single-use token in the path is what ties a scan to the chat that started it.
@@ -585,8 +568,6 @@ urlpatterns = [
     path("api/whatsapp/", include("whatsapp.urls")),
     path("api/ops/", include("portal.urls")),
     path("9psb/webhook", bank_webhook),
-    path("verify/face/<str:token>", bank_liveness.liveness_page, name="bank_liveness"),
-    path("verify/face/<str:token>/submit", bank_liveness.liveness_submit, name="bank_liveness_submit"),
     path("api/banking/", include("banking.urls")),
     path("api/", include("accounts.urls")),
     path("api/", include("wallet.urls")),

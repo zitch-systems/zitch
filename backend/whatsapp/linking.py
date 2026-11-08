@@ -41,9 +41,13 @@ def issue_link(user, credential_proof):
 
 def _lock_actions(user_id):
     # Same action -> user -> link order as login_flow and payment dispatch.
-    # Browser grants revoke themselves against their deleted/replaced link.
+    #
+    # Browser grants used to be excluded here because they revoked themselves
+    # against their deleted or replaced link. That flow is gone, so nothing of
+    # that kind can be created and a leftover row is locked and retired with
+    # the rest -- which is the safe direction: it is retired rather than spared.
     return list(PendingAction.objects.select_for_update().filter(user_id=user_id)
-                .exclude(state="executing").exclude(action_type="verification_web"))
+                .exclude(state="executing"))
 
 
 def redeem_link(code, msisdn):

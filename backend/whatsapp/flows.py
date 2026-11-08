@@ -53,13 +53,6 @@ SIGNUP_PHONE_CODE = "SIGNUP_PHONE_CODE"
 #: so error re-renders stay put instead of navigating.
 PIN_CHAIN = "PIN_CHAIN"
 IDENTITY_CHAIN = "IDENTITY_CHAIN"
-#: The second identity attempt. A DIFFERENT screen for the same reason
-#: PIN_CONFIRM is one: WhatsApp keeps a form's client-side state when the
-#: endpoint answers with the same screen id, so "that number isn't valid, try
-#: again" re-rendered onto IDENTITY_SCREEN arrived with the rejected digits
-#: still in the box - one tap resubmitted the number that had just been
-#: refused, and burned the next attempt on it. A separate screen starts empty.
-IDENTITY_RETRY = "IDENTITY_RETRY"
 #: The 6-digit code pages. IDENTITY_CHAIN carries a code reached IN-SESSION
 #: (BVN/NIN accepted -> the bank's phone OTP; email address -> its own
 #: Zitch email code); CODE_SCREEN is the ROOT for a code asked in a fresh
@@ -91,7 +84,6 @@ _PIN_CONFIRM_ATTEMPTS = 2   # confirm mismatches per create session
 #: this screen re-renders it (same id).
 PIN_CONFIRM_RETRY = "PIN_CONFIRM_RETRY"
 TRANSFER_FORM = "TRANSFER_FORM"
-IDENTITY_SCREEN = "IDENTITY_SCREEN"
 EMAIL_SCREEN = "EMAIL_SCREEN"
 SUCCESS_SCREEN = "SUCCESS"
 #: The outcome, on a screen that does NOT end the Flow.
@@ -588,14 +580,21 @@ def _pa_screen_fields(pa) -> dict:
     return pa.payload.get("flow_fields") or pa.payload.get("flow_summary", "")
 
 
-def _identity_screen(kind: str, error: str = "", summary: str = "", label: str = "",
-                     screen: str = IDENTITY_SCREEN) -> dict:
-    """The masked-entry screen. Defaults to the 11-digit BVN/NIN wording, but the
-    email confirmation code rides the same screen - one published masked input,
-    so every secret the ladder collects is entered the same way."""
-    which = (kind or "BVN").upper()
+def _masked_entry_screen(kind: str, error: str = "", summary: str = "", label: str = "",
+                         screen: str = CODE_SCREEN) -> dict:
+    """The masked-entry screen - one published masked input, so every secret the
+    ladder collects is entered the same way.
+
+    Was _identity_screen, and defaulted to IDENTITY_SCREEN with 11-digit BVN/NIN
+    wording. Both the screen and that wording went with the identity rail; every
+    caller left is a 6-digit code page (the email confirmation code, the PIN
+    reset code), so the default is the code root and the summary no longer
+    claims a length. Each caller passes its own summary and label anyway -- the
+    defaults only matter if one stops.
+    """
+    which = (kind or "code").upper()
     return {"screen": screen,
-            "data": {"summary": summary or f"Enter your 11-digit {which}",
+            "data": {"summary": summary or f"Enter your {which}",
                      "label": label or which,
                      "error": error or ""}}
 
@@ -910,28 +909,23 @@ def _handle_flow_request(payload: dict) -> dict:
         return (_confirm_pin_screen() if ob.payload.get("flow_pin_hash")
                 else _pin_screen(_ob_summary(ob), screen=_flow_screen(ob, PIN_SCREEN)))
 
-    # A KYC identity step. Same reasoning as the PIN: a BVN or NIN typed into the
-    # chat stays in the customer's own history forever - WhatsApp has no
-    # view-once for text and lets only the sender delete - so it is collected in
-    # the encrypted Flow instead.
+    # The email step. This prefix used to carry the BVN/NIN screens as well --
+    # same reasoning as the PIN, that an identity number typed into the chat
+    # stays in the customer's own history forever, so it was collected in the
+    # encrypted Flow instead. Those screens needed a provider to confirm the
+    # number and went with the rail; email is what is left, and the token
+    # prefix, its resolver and the screen builder are shared, so they stay.
+    #
+    # A session armed before the removal can still present a token whose payload
+    # says "bvn". It gets the expiry screen rather than a BVN box, which is the
+    # truthful answer: there is nothing behind that box any more.
     if str(token).startswith(_ID_PREFIX):
         pa = resolve_identity_token(token)
-        if pa is None:
+        if pa is None or pa.payload.get("id_kind") != "email":
             return _success_screen("This verification expired. Reply 8 in the chat to start again.")
-        kind = pa.payload.get("id_kind", "BVN")
         if action == "data_exchange":
-            if kind == "email":
-                return _submit_email(pa, data)
-            # An armed challenge means this submit is the CODE, not the number:
-            # the identity was accepted on the previous exchange of this session.
-            if pa.payload.get("id_otp_hash"):
-                return _submit_identity_otp(pa, data)
-            return _submit_identity(pa, data)
-        if kind == "email":
-            return _email_step_screen(pa)
-        if pa.payload.get("id_otp_hash"):
-            return _identity_otp_screen(pa)
-        return _identity_screen(kind)
+            return _submit_email(pa, data)
+        return _email_step_screen(pa)
 
     if action == "INIT":
         # The money confirm opens through here (flow_action=data_exchange), so
@@ -1356,127 +1350,10 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
     return _success_screen(message)
 
 
-def _submit_identity(pa, data: dict) -> dict:
-    """Take a BVN/NIN from the encrypted Flow and hand it to the same verification
-    the chat path uses - one implementation, so the two entry points cannot drift
-    on what counts as valid, what gets hashed, or what is queued for review.
-
-    The number is never echoed back into a screen, and never reaches the chat.
-    """
-    import re
-
-    from .router import _MAX_ID_ATTEMPTS, _kyc_submit_identity
-
-    kind = pa.payload.get("id_kind") or pa.payload.get("id_type") or "bvn"
-    number = "".join(ch for ch in str(data.get("number", "")) if ch.isdigit())
-    if not re.fullmatch(r"\d{11}", number):
-        # The retry twin, so the masked box comes back empty - same reasoning as
-        # a rejected number, minus the attempt: a typo is not a verdict.
-        pa.payload["flow_screen"] = IDENTITY_RETRY
-        pa.save(update_fields=["payload"])
-        return _identity_screen(kind, error="That should be exactly 11 digits.",
-                                screen=IDENTITY_RETRY)
-
-    try:
-        outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
-        if outcome == "invalid":
-            # A wrong number is corrected by the customer, not queued - but
-            # on a FRESH screen, so the refused digits are gone and the retry
-            # is a real retry rather than a resubmit of the same number.
-            pa.refresh_from_db()
-            left = _MAX_ID_ATTEMPTS - int(pa.payload.get("id_bad_attempts") or 0)
-            pa.payload["flow_screen"] = IDENTITY_RETRY
-            pa.save(update_fields=["payload"])
-            return _identity_screen(
-                kind, screen=IDENTITY_RETRY,
-                error=f"That {kind.upper()} isn't valid for this account. "
-                      f"Check the digits and try again ({left} attempt(s) left).")
-        if outcome == "stop":
-            return _success_screen(
-                f"Too many incorrect {kind.upper()} attempts. Reply 8 in the chat to "
-                "start again.")
-        if outcome == "otp":
-            # The lookup passed and a code is on its way to the line
-            # REGISTERED AGAINST THE IDENTITY - not the account's own
-            # number. Collected on the same open session, so the code never
-            # becomes a chat message either.
-            pa.refresh_from_db()
-            return _identity_otp_screen(pa)
-        if outcome == "fail":
-            return _success_screen(
-                f"{kind.upper()} verification did not complete. See the chat for details.")
-        if outcome == "processing":
-            return _success_screen("Your identity check is processing. Return to the chat shortly to continue.")
-    except Exception:  # noqa: BLE001 - never leak a stack into the Flow
-        log.exception("identity flow submission failed for pa=%s", pa.id)
-        return _success_screen(
-            "Our partner bank could not complete that verification request. "
-            "No identity was marked verified. Reply 8 to retry the partner-bank SMS step.")
-    # The chat carries the detailed outcome (verified, or queued for review), so
-    # this screen only has to close cleanly.
-    return _success_screen(f"{kind.upper()} received ✅ — see the chat for what's next.")
 
 
-def _identity_otp_screen(pa, error: str = "") -> dict:
-    """The identity challenge code. Always the chained twin: this is only ever
-    reached from IDENTITY_SCREEN inside one session, never opened on.
-
-    NEVER DEFAULT THE IDENTITY TO BVN, AND NEVER TAKE A NON-IDENTITY AS ONE.
-    This screen labelled itself from `(id_otp_kind or "bvn")`, so any session
-    arriving without that key said "BVN code" - on a NIN verification that names
-    the wrong document and sends the customer looking on the wrong handset.
-
-    Adding id_kind as a fallback narrows it but does not close it: id_kind is
-    overloaded. It carries an identity in some places, but also "email" (and,
-    in historical sessions, "account_otp"), and neither is "nin", so a
-    `"nin" if kind == "nin" else "BVN"` test relabels exactly the sessions the
-    fallback was added to rescue. Each candidate is therefore checked for BEING
-    an identity, and when none is, the screen says something true and
-    unqualified rather than guessing. A generic label costs nothing; the wrong
-    one costs the customer the attempt.
-
-    The code on THIS screen is Zitch's own (secrets.randbelow, sent through
-    send_sms), not the bank's - so it says "we sent", and names the masked line
-    it actually went to when we have it. Attributing it to the bank here would
-    be inaccurate.
-    """
-    kind = ""
-    for key in ("id_otp_kind", "id_kind", "id_type"):
-        candidate = str(pa.payload.get(key) or "").lower()
-        if candidate in ("bvn", "nin"):
-            kind = candidate.upper()
-            break
-    label = f"{kind} code" if kind else "Verification code"
-    delivery = pa.payload.get("id_otp_delivery") or {}
-    sent_to = delivery.get("delivery") or pa.payload.get("id_otp_to")
-    where = sent_to or (f"the phone registered on your {kind}" if kind else "your phone")
-    summary = f"Enter the 6-digit code we sent to {where}"
-    if delivery.get("delivery_notice"):
-        summary += ". " + delivery["delivery_notice"]
-    return _identity_screen(kind or "identity", error=error, label=label,
-                            summary=summary,
-                            screen=CODE_RETRY if error else IDENTITY_CHAIN)
 
 
-def _submit_identity_otp(pa, data: dict) -> dict:
-    """The code that proves control of the line the identity is registered to."""
-    from .router import kyc_flow_identity_otp
-
-    try:
-        status, message = kyc_flow_identity_otp(pa, str(data.get("number", "")))
-    except Exception:  # noqa: BLE001 - never leak a stack into the Flow
-        log.exception("identity otp submission failed for pa=%s", pa.id)
-        return _success_screen("Something went wrong. Reply 8 in the chat to try again.")
-    if status == "retry":
-        return _identity_otp_screen(pa, error=message)
-    if status == "ok":
-        from .router import _kyc_next
-
-        try:
-            _kyc_next(pa, pa.user, pa.msisdn)   # the chat says what remains
-        except Exception:  # noqa: BLE001
-            log.exception("kyc advance failed after identity otp for pa=%s", pa.id)
-    return _success_screen(message)
 
 
 
@@ -1494,7 +1371,7 @@ def _email_code_screen(pa, error: str = "") -> dict:
     # Legacy in-flight actions predate the masked destination field; keep their
     # screen useful while all newly minted challenges use the bound hint.
     destination = pa.payload.get("code_target_label") or pa.user.email or "your email address"
-    return _identity_screen("email", error=error, label="Email code",
+    return _masked_entry_screen("email", error=error, label="Email code",
                             summary=f"Enter the 6-digit code we sent to {destination}",
                             screen=screen)
 
@@ -1952,7 +1829,7 @@ def _pin_reset_code_screen(pa, error: str = "") -> dict:
     """The live proof-of-possession before a PIN reset: the SMS code page. Error
     renders land on CODE_RETRY so the masked box comes back empty."""
     masked = f"•••••{(pa.user.phone or '')[-4:]}"
-    return _identity_screen("pin_reset", error=error, label="PIN reset code",
+    return _masked_entry_screen("pin_reset", error=error, label="PIN reset code",
                             summary=f"Enter the code we sent by SMS to {masked}",
                             screen=CODE_RETRY if error else _flow_screen(pa, CODE_SCREEN))
 
