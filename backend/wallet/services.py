@@ -159,13 +159,33 @@ def wallet_expected_balance(user_id) -> Decimal:
 
 
 def wallet_balance_payload(user, wallet=None) -> dict:
+    """Balance, and how much of it may actually be spent.
+
+    With a partner bank, available funds are the LOWER of our book and the
+    balance the bank confirms, because the bank is the custodian and its figure
+    is the one that settles.
+
+    With no bank -- the state after 9PSB was removed -- there is no custodian
+    and no second figure to reconcile against, so available funds are simply
+    the local ledger's spendable balance. Returning 0.00 instead, as this did
+    while it assumed a bank, made the whole wallet unspendable: every debit
+    failed the available-balance check even against money it held.
+
+    The historical archive still restricts in both worlds. Wema-era funds whose
+    settlement was never evidenced are not spendable merely because the bank
+    that held them is gone.
+    """
     from banking.accounts import account_for, account_payload, spendable, historical_balance
+    from banking.client import configured
     from wallet.models import RetiredFundingArchive
     wallet = wallet or get_or_create_wallet(user)
     bank = account_for(user)
-    book_available = spendable(wallet) if bank else Decimal("0.00")
+    bankless = not configured()
+    book_available = spendable(wallet) if (bank or bankless) else Decimal("0.00")
     available = Decimal("0.00")
-    if bank and account_payload(user)["spending_available"]:
+    if bankless:
+        available = book_available
+    elif bank and account_payload(user)["spending_available"]:
         available = max(Decimal("0.00"), min(book_available, bank.available_balance))
     held_archive = RetiredFundingArchive.objects.filter(funding__user=user).aggregate(
         total=Sum("funding__amount"))["total"] or Decimal("0.00")
@@ -204,7 +224,10 @@ def debit(user, amount, service: str, meta: dict | None = None, reference: str |
     if enforce_limits:
         if is_biller_service(service):
             bill_source = _biller_funding_context(user, amount, wallet=wallet)
-        else:
+        elif not bankless_provider():
+            # Account standing is the BANK's judgement -- frozen, PND, balance
+            # unconfirmed. With no bank there is nobody to ask, and asking
+            # anyway refused every customer debit on the platform.
             assert_customer_spending_available(user)
     if wallet.balance < amount:
         raise InsufficientFunds("Insufficient wallet balance")
@@ -2636,6 +2659,24 @@ def biller_source_for_transaction(reference, *, amount, source_account="") -> st
     return binding.source_account
 
 
+def bankless_provider() -> bool:
+    """True when no partner bank is configured, so no bank can be consulted."""
+    from banking.client import configured
+    return not configured()
+
+
 def bank_spend_error(user, amount, *, biller=False) -> str | None:
+    """The partner bank's own ceiling on this spend, or None.
+
+    The bank enforces its own per-tier caps on the NUBAN, on a different ladder
+    from ours, so an amount our tier allows can still be refused at the gateway.
+    With no bank there is no second ladder and no gateway: returning its refusal
+    here blocked every spend, every conversion and every transfer, because the
+    underlying check reports "banking setup is temporarily unavailable" rather
+    than a limit. Zitch's own controls -- the identity floor, the tier ceiling,
+    the velocity brake and the face step-up -- are unaffected and still apply.
+    """
+    if bankless_provider():
+        return None
     from banking.payments import bank_limit_error
     return bank_limit_error(user, amount)

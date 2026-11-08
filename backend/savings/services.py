@@ -14,7 +14,8 @@ from common.products import require_product
 from wallet.models import Transaction, Wallet
 from wallet.services import (DuplicateTransaction, InsufficientFunds,
                              LimitExceeded, assert_customer_spending_available,
-                             credit, customer_spendable_balance, make_reference,
+                             bankless_provider, credit,
+                             customer_spendable_balance, make_reference,
                              with_idempotency_fingerprint)
 
 from .models import FixedSave
@@ -40,6 +41,12 @@ def lock(user, principal, days: int, idempotency_key: str = "") -> FixedSave:
     `wallet.services.debit` runs, in the same order, under the same row lock.
     Raises LimitExceeded when a cap or standing check refuses the spend.
 
+    Account standing is the one check that depends on a partner bank, so with no
+    bank configured it is skipped rather than failed: there is no custodian to
+    report a freeze, a PND or an unconfirmed balance. Everything else still
+    applies, and the available-balance check still does its job, because without
+    a bank the available figure is the local ledger's own spendable balance.
+
     This is not belt-and-braces. Before it, savings was a hole in the gate: an
     account frozen, PND'd, under balance review, or short of its identity floor
     could still move its whole wallet into a 365-day plan, and the money came back
@@ -55,7 +62,10 @@ def lock(user, principal, days: int, idempotency_key: str = "") -> FixedSave:
     # brake are advisory, because two concurrent requests both read the same
     # "spent today" and both pass.
     wallet = Wallet.objects.select_for_update().get(user=user)
-    assert_customer_spending_available(user)
+    if not bankless_provider():
+        # Account standing is the bank's judgement. With no bank there is nobody
+        # to ask, and asking anyway made locking savings impossible.
+        assert_customer_spending_available(user)
     if wallet.balance < principal:
         raise InsufficientFunds("Insufficient wallet balance")
     if customer_spendable_balance(user, wallet=wallet) < principal:
