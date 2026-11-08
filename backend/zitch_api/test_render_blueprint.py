@@ -108,7 +108,7 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
             "PREMBLY_API_KEY", "PREMBLY_APP_ID", "WHATSAPP_QUEUE_KEY",
             "WHATSAPP_QUEUE_KEY_PREV", "SENTRY_DSN",
         )
-        for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
+        for filename, suffix in (("render.yaml", "-ry6y"), ("render.frankfurt.yaml", "-ry6y")):
             text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
             api_name = f"zitch-api{suffix}"
             worker = re.search(
@@ -128,7 +128,7 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
                 )
 
     def test_queue_rotation_secret_is_dashboard_owned_on_both_blueprints(self):
-        for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
+        for filename, suffix in (("render.yaml", "-ry6y"), ("render.frankfurt.yaml", "-ry6y")):
             text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
             api = re.search(
                 rf"^    name: zitch-api{suffix}$.*?(?=^  - type:|\Z)",
@@ -160,7 +160,7 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
         """A worker must use the same active Partnership contract as the API."""
         keys = ("WEMA_PARTNERSHIP_MODE", "WEMA_BILLER_MODE", "WEMA_CUTOVER_APPROVED")
         flow_keys = ("WHATSAPP_FLOW_ID", "WHATSAPP_FLOW_PRIVATE_KEY", "WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE")
-        for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
+        for filename, suffix in (("render.yaml", "-ry6y"), ("render.frankfurt.yaml", "-ry6y")):
             text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
             self.assertNotIn("WEMA_VAS_", text.replace("WEMA_VAS_STATUS_LEGEND", "PARTNERSHIP_BILLER_LEGEND"))
             self.assertEqual(text.count("- key: WEMA_VAS_STATUS_LEGEND"), 3)
