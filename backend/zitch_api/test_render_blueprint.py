@@ -54,7 +54,7 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
             "WHATSAPP_TXN_ALERT_TEMPLATE_LANG",
         )
         worker = re.search(
-            r"^    name: zitch-whatsapp-worker$.*?(?=^  - type:|\Z)",
+            r"^    name: zitch-whatsapp-worker-ry6y$.*?(?=^  - type:|\Z)",
             self.text,
             re.MULTILINE | re.DOTALL,
         )
@@ -63,11 +63,11 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
             self.assertRegex(
                 worker.group(0),
                 rf"- key: {re.escape(key)}\n\s+fromService: "
-                rf"\{{type: web, name: zitch-api, envVarKey: {re.escape(key)}\}}",
-                f"zitch-whatsapp-worker must source {key} from zitch-api",
+                rf"\{{type: web, name: zitch-api-ry6y, envVarKey: {re.escape(key)}\}}",
+                f"zitch-whatsapp-worker must source {key} from zitch-api-ry6y",
             )
 
-        for service in ("zitch-maturities", "zitch-reconcile-wema"):
+        for service in ("zitch-maturities-ry6y", "zitch-reconcile-wema-ry6y"):
             match = re.search(
                 rf"^    name: {re.escape(service)}$.*?(?=^  - type:|\Z)",
                 self.text,
@@ -81,7 +81,7 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
                                  f"{service} must not carry WhatsApp credentials")
 
     def test_notification_writers_inherit_delivery_credentials_on_both_blueprints(self):
-        for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
+        for filename, suffix in (("render.yaml", "-ry6y"), ("render.frankfurt.yaml", "-ry6y")):
             text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
             for name in ("zitch-whatsapp-worker", "zitch-maturities", "zitch-reconcile-wema"):
                 block = re.search(rf"^    name: {name}{suffix}$.*?(?=^  - type:|\Z)",
@@ -103,7 +103,7 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
         """
         keys = (
             "WEMA_CHANNEL_ID", "WEMA_WALLET_KEY", "WEMA_ACCOUNT_CREATION_KEY",
-            "WEMA_BASE_URL", "WEMA_SIMULATION", "WEMA_FACE_VERIFY_URL",
+            "WEMA_BASE_URL", "WEMA_SIMULATION", "WEMA_CUTOVER_APPROVED", "WEMA_FACE_VERIFY_URL",
             "WEMA_FACE_CALLBACK_IPS", "WEMA_FACE_CB_MODE", "PREMBLY_BASE_URL",
             "PREMBLY_API_KEY", "PREMBLY_APP_ID", "WHATSAPP_QUEUE_KEY",
             "WHATSAPP_QUEUE_KEY_PREV", "SENTRY_DSN",
@@ -158,7 +158,7 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
 
     def test_partnership_and_identity_configuration_cannot_diverge_between_consumers(self):
         """A worker must use the same active Partnership contract as the API."""
-        keys = ("WEMA_PARTNERSHIP_MODE", "WEMA_BILLER_MODE")
+        keys = ("WEMA_PARTNERSHIP_MODE", "WEMA_BILLER_MODE", "WEMA_CUTOVER_APPROVED")
         flow_keys = ("WHATSAPP_FLOW_ID", "WHATSAPP_FLOW_PRIVATE_KEY", "WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE")
         for filename, suffix in (("render.yaml", ""), ("render.frankfurt.yaml", "-ry6y")):
             text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
