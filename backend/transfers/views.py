@@ -1,7 +1,10 @@
-"""Bank transfers and saved beneficiaries through the 9PSB integration.
+"""Bank transfer (payout) endpoints + saved beneficiaries.
 
-Payment instructions reserve funds before dispatch and reconcile uncertain
-outcomes through the bank-specific outbox. No mock payment fallback is used.
+Payout to external banks runs on Wema/ALAT; until keys are set this runs in MOCK
+mode in dev/tests and resolves/settles automatically so the flow is testable (in
+production it fails closed). Money still moves correctly out of the wallet ledger.
+Wema exposes NO payout webhook — a PENDING transfer is settled/reversed by the
+reconcile_wema poller (utility/management/commands/reconcile_wema.py).
 """
 import re
 
@@ -218,8 +221,10 @@ def resolve_account(request):
     """POST /api/transfers/resolve/ {access_token, account_number, bank?}
     -> {success, name, bank, bank_name, matches}
 
-    The customer selects a bank before name enquiry. Account numbers are not
-    unique across banks, so the server never performs a paid directory sweep.
+    With ``bank`` (our slug) it resolves at that one bank. WITHOUT it, the bank is
+    auto-detected: a name-enquiry runs across the active banks and the match(es)
+    are returned, so the app fills the bank in automatically once a 10-digit
+    account number is typed (``matches`` lists every hit; usually exactly one).
     """
     raw_account = request.data.get("account_number")
     acct = raw_account.strip() if isinstance(raw_account, str) else ""
@@ -233,20 +238,12 @@ def resolve_account(request):
             return fail("Select a bank", status=404)
         res = payout_resolve_account(acct, bank.bank_code)
         if not res.get("success"):
-            if res.get("retryable") is True:
-                return fail(res.get("message", "Bank lookup is temporarily unavailable. Please try again."),
-                            status=503, code="bank_lookup_unavailable", retryable=True)
             return fail(res.get("message", "Could not verify this account number"), status=400)
         return ok(success=True, name=res.get("name", ""), bank=bank.code, bank_name=bank.name,
                   mock=bool(res.get("mock")),
                   matches=[{"bank": bank.code, "bank_name": bank.name, "name": res.get("name", "")}])
 
-    from banking.client import ProviderError
-    try:
-        matches = detect_account_banks(acct, user=request.user_obj)
-    except ProviderError:
-        return fail("Bank lookup is temporarily unavailable. Please try again.",
-                    status=503, code="bank_lookup_unavailable", retryable=True)
+    matches = detect_account_banks(acct)  # auto-detect across banks
     if not matches:
         return fail("Couldn't detect the bank for this account number — pick the bank manually.", status=404)
     top = matches[0]
@@ -261,9 +258,9 @@ def resolve_account(request):
 def transfer_charge(request):
     """POST /api/transfers/charge/ {access_token, amount} -> {fee}
 
-    The confirmed total fee for an inter-bank transfer of ``amount``. The send
-    flow requires the customer to confirm this exact fee before reserving funds.
-    An unavailable quote is not a free transfer.
+    The NIP fee the bank levies on an inter-bank transfer of ``amount`` (from Wema's
+    GetNIPCharges schedule). Informational — for display before the user confirms;
+    the send flow itself is unchanged. An unavailable quote is not a free transfer.
     """
     amount = parse_amount(request.data.get("amount"))
     if amount is None:
@@ -350,7 +347,7 @@ def bank_transfer(request):
 
     try:
         txn = execute_payout(user, amount, acct, bank, name, note=note,
-                             idempotency_key=key, channel="app", expected_fee=data.get("expected_fee"))
+                             idempotency_key=key, channel="app")
     except PayoutError as exc:
         if exc.kind == "duplicate":
             # Try to replay the original outcome (idempotent_replay returns ok(success=True, duplicate=True)).

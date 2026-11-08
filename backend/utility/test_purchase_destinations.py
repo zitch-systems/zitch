@@ -1,4 +1,3 @@
-from banking.test_fixtures import bank_channel_case
 """Malformed bill destinations must never reach PIN, money or provider calls."""
 import json
 from decimal import Decimal
@@ -11,7 +10,6 @@ from wallet.models import Transaction, Wallet
 from wallet.tests import make_user
 
 
-@bank_channel_case
 class PurchaseDestinationTests(TestCase):
     def setUp(self):
         self.user, self.token = make_user("08010000672", "destination@zitch.test", balance="20000")

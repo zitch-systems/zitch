@@ -5,7 +5,6 @@ import { router, useFocusEffect } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, Btn, Sheet, TxnRow, money, NText } from '@/components/design/ui';
-import EmailVerifyPrompt from '@/components/EmailVerifyPrompt';
 import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
 import { useTheme, font } from '@/lib/theme';
@@ -229,7 +228,6 @@ const Home = () => {
       </View>
 
       {/* more services sheet */}
-      <EmailVerifyPrompt />
       <Sheet open={more} onClose={() => setMore(false)} title="All services">
         <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
           {MORE.map((s) => (

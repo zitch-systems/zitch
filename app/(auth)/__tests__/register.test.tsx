@@ -30,9 +30,8 @@ jest.mock('@/components/design/ui', () => {
   return {
     Screen: ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children),
     Header: () => null,
-    Field: ({ label, value, onChangeText, error }: { label: string; value: string; onChangeText: (value: string) => void; error?: string }) =>
-      ReactActual.createElement(View, null, ReactActual.createElement(TextInput, { accessibilityLabel: label, value, onChangeText }),
-        error ? ReactActual.createElement(Text, null, error) : null),
+    Field: ({ label, value, onChangeText }: { label: string; value: string; onChangeText: (value: string) => void }) =>
+      ReactActual.createElement(TextInput, { accessibilityLabel: label, value, onChangeText }),
     Btn: ({ label, onPress, disabled }: { label: string; onPress: () => void; disabled?: boolean }) =>
       ReactActual.createElement(
         Pressable,
@@ -59,10 +58,10 @@ describe('registration identity handoff', () => {
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<Register />); });
 
-    await act(async () => { control(tree, 'Surname').props.onChangeText('  Okafor '); });
-    await act(async () => { control(tree, 'First name').props.onChangeText(' Ada  Nneka '); });
+    await act(async () => { control(tree, 'Full name').props.onChangeText('  Ada   Nneka Okafor '); });
     await act(async () => { control(tree, 'Phone number').props.onChangeText('08012345678'); });
     await act(async () => { control(tree, 'Email address').props.onChangeText('ADA@EXAMPLE.COM '); });
+    expect(control(tree, 'Continue').props.disabled).toBe(false);
 
     await act(async () => { await control(tree, 'Continue').props.onPress(); });
 
@@ -71,8 +70,8 @@ describe('registration identity handoff', () => {
       phone: '08012345678',
     });
     expect(mockMultiSet).toHaveBeenCalledWith(expect.arrayContaining([
-      ['UserFirstName', 'Ada Nneka'],
-      ['UserLastName', 'Okafor'],
+      ['UserFirstName', 'Ada'],
+      ['UserLastName', 'Nneka Okafor'],
       ['UserPhone', '08012345678'],
       ['UserEmail', 'ada@example.com'],
     ]));
@@ -84,8 +83,7 @@ describe('registration identity handoff', () => {
     mockPublicPost.mockReturnValue(new Promise((resolve) => { resolveRequest = resolve; }));
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<Register />); });
-    await act(async () => { control(tree, 'Surname').props.onChangeText('Okafor'); });
-    await act(async () => { control(tree, 'First name').props.onChangeText('Ada'); });
+    await act(async () => { control(tree, 'Full name').props.onChangeText('Ada Okafor'); });
     await act(async () => { control(tree, 'Phone number').props.onChangeText('08012345678'); });
     await act(async () => { control(tree, 'Email address').props.onChangeText('ada@example.com'); });
 
@@ -104,26 +102,21 @@ describe('registration identity handoff', () => {
     });
   });
 
-  it('marks a missing surname as required instead of continuing', async () => {
+  it('does not accept a single name as a full name', async () => {
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<Register />); });
-    await act(async () => { control(tree, 'First name').props.onChangeText('Ada'); });
+    await act(async () => { control(tree, 'Full name').props.onChangeText('Ada'); });
     await act(async () => { control(tree, 'Phone number').props.onChangeText('08012345678'); });
     await act(async () => { control(tree, 'Email address').props.onChangeText('ada@example.com'); });
-    await act(async () => { await control(tree, 'Continue').props.onPress(); });
-    expect(JSON.stringify(tree.toJSON())).toContain('This field is required');
-    expect(mockPublicPost).not.toHaveBeenCalled();
+    expect(control(tree, 'Continue').props.disabled).toBe(true);
   });
 
   it('requires an email because verified phone and email are Tier 1 prerequisites', async () => {
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<Register />); });
-    await act(async () => { control(tree, 'Surname').props.onChangeText('Okafor'); });
-    await act(async () => { control(tree, 'First name').props.onChangeText('Ada'); });
+    await act(async () => { control(tree, 'Full name').props.onChangeText('Ada Okafor'); });
     await act(async () => { control(tree, 'Phone number').props.onChangeText('08012345678'); });
-    await act(async () => { await control(tree, 'Continue').props.onPress(); });
-    expect(JSON.stringify(tree.toJSON())).toContain('This field is required');
-    expect(mockPublicPost).not.toHaveBeenCalled();
+    expect(control(tree, 'Continue').props.disabled).toBe(true);
   });
 });
 
@@ -136,8 +129,7 @@ it.each(['session change', 'screen close'])('discards a late registration respon
   mockPublicPost.mockReturnValue(new Promise(resolve => { finish = resolve; }));
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Register />); });
-  await act(async () => { control(tree, 'Surname').props.onChangeText('Okafor'); });
-  await act(async () => { control(tree, 'First name').props.onChangeText('Ada'); });
+  await act(async () => { control(tree, 'Full name').props.onChangeText('Ada Okafor'); });
   await act(async () => { control(tree, 'Phone number').props.onChangeText('08012345678'); });
   await act(async () => { control(tree, 'Email address').props.onChangeText('ada@example.com'); });
   let registering!: Promise<void>;

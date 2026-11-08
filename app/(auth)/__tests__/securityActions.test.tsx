@@ -464,5 +464,5 @@ it('cancels a scheduled PIN submission when choosing a different PIN', async () 
   expect(mockPost).toHaveBeenCalledTimes(1);
   expect(mockPost).toHaveBeenCalledWith('/api/set-transaction-pin/', { pin: '246801' });
   expect(mockClearPin).toHaveBeenCalledTimes(1);
-  expect(mockReplace).toHaveBeenCalledWith('/home');
+  expect(mockReplace).toHaveBeenCalledWith('/completed');
 });

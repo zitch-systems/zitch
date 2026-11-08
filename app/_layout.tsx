@@ -33,12 +33,6 @@ InputAny.defaultProps.style = [textBase, InputAny.defaultProps.style];
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
-// Signed-out screens. A locked or expired session left on the device by an
-// earlier account must not bounce someone off these while they create an
-// account or reset a password: none of them shows account data, and each
-// ends in a sign-in that replaces the old session.
-const OPEN_WITHOUT_SESSION = new Set(['/signin', '/register', '/otp', '/forgotpassword', '/resetpassword']);
-
 const RootStack = () => {
   const { theme, c } = useTheme();
   return (
@@ -155,7 +149,7 @@ const RootLayout = () => {
           // cleared session remains empty; a newer login owns its navigation.
           const expiredGeneration = getSessionGeneration();
           const token = await getToken();
-          if (active && expiredGeneration === getSessionGeneration() && !token && !OPEN_WITHOUT_SESSION.has(pathname)) router.replace('/signin');
+          if (active && expiredGeneration === getSessionGeneration() && !token && pathname !== '/signin') router.replace('/signin');
           return;
         }
         if (!current()) return;
@@ -164,9 +158,9 @@ const RootLayout = () => {
         await enforceIdleTimeout();
         if (!current()) return;
         const locked = await isSessionLocked();
-        if (current() && locked && !OPEN_WITHOUT_SESSION.has(pathname)) router.replace('/signin');
+        if (current() && locked && pathname !== '/signin') router.replace('/signin');
       } catch {
-        if (current() && !OPEN_WITHOUT_SESSION.has(pathname)) router.replace('/signin');
+        if (current() && pathname !== '/signin') router.replace('/signin');
       } finally { checking = false; }
     };
     // The stack may become ready after this effect. Observe readiness without
