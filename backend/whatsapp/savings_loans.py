@@ -21,7 +21,8 @@ from loans.services import repay
 from savings.models import FixedSave
 from savings.services import lock, settle_user_maturities
 from wallet.models import Transaction
-from wallet.services import InsufficientFunds, existing_for_key, get_or_create_wallet
+from wallet.services import (InsufficientFunds, LimitExceeded, existing_for_key,
+                             get_or_create_wallet)
 
 from .models import ConversationState, PendingAction, WhatsAppLink
 
@@ -376,6 +377,12 @@ def execute_product(pa, user, msisdn):
         message, status = _execute(pa, user)
     except InsufficientFunds:
         message, status = "Insufficient wallet balance. No savings lock or loan repayment was taken.", r.OUTCOME_FAILED
+    except LimitExceeded as exc:
+        # A refused cap or account standing is TERMINAL, so it must be answered
+        # here. Left to propagate it would reach the durable queue below, which
+        # retries the same authorised action — re-refusing it on every attempt
+        # and never telling the customer why.
+        message, status = f"{exc} No savings lock or loan repayment was taken.", r.OUTCOME_FAILED
     # Failures such as an unavailable database propagate to the existing durable
     # queue. It retains the authorised action and retries the SAME ledger key.
     r.reply(msisdn, message)
