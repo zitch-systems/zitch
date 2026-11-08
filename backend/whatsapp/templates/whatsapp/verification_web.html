@@ -44,10 +44,10 @@
   {% elif screen == 'tier2' %}
     <h1>Tier 2 · Live face verification</h1>
     <p>Your verified identity is saved. No additional NIN verification is needed.</p>
-    <p>We’ll guide you through a live camera check. Complete it in good lighting, then return here to check your result.</p>
+    <p>Prembly will guide you through a live camera check. Complete it in good lighting, then return here to check your result.</p>
     {% if message %}<p class="message" role="status">{{ message }}</p>{% endif %}
     {% if face_url %}
-      <p><a href="{{ face_url }}" target="_blank" rel="noopener noreferrer">Open face verification</a></p>
+      <p><a href="{{ face_url }}" target="_blank" rel="noopener noreferrer">Open Prembly face verification</a></p>
       <form method="post">
         {% csrf_token %}
         <input type="hidden" name="action" value="face_status">
@@ -58,7 +58,7 @@
       <form method="post">
         {% csrf_token %}
         <input type="hidden" name="action" value="tier2">
-        <button type="submit">Start face verification</button>
+        <button type="submit">Start Prembly face verification</button>
         <p class="note" id="progress" role="status" aria-live="polite"></p>
       </form>
     {% endif %}

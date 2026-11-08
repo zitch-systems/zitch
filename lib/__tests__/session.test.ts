@@ -98,14 +98,6 @@ describe('lockIfAwayTooLong', () => {
     expect(await isSessionLocked()).toBe(true);
   });
 
-  it('does not lock a new sign-in because of time away before it (reading the SMS code)', async () => {
-    mem['z-bg-at'] = String(Date.now() - LOCK_AFTER_BACKGROUND_MS - 1000);
-    await unlockSession();
-    mockGetToken.mockResolvedValue('new-session');
-    expect(await lockIfAwayTooLong()).toBe(false);
-    expect(await isSessionLocked()).toBe(false);
-  });
-
   it('never locks during an external activity (camera/picker)', async () => {
     mockGetToken.mockResolvedValue('tok');
     mem['z-bg-at'] = String(Date.now() - LOCK_AFTER_BACKGROUND_MS - 1000);

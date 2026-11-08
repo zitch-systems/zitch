@@ -45,12 +45,12 @@ const SetPin = () => {
       if (response.ok) {
         await clearTransactionPin(); // biometric payments require a separate explicit opt-in
         if (!current()) return;
-        router.replace('/home');
+        router.replace('/completed');
       } else if (result.code === 'password_required') {
         // This account already has a PIN (e.g. re-onboarding the same number);
         // changing it needs the password, which isn't part of first-time setup.
         // The account is already secured, so move on instead of getting stuck.
-        router.replace('/home');
+        router.replace('/completed');
       } else {
         notify('Error', result.message || 'Could not set your PIN');
         setConfirm('');

@@ -5,8 +5,7 @@ from common.http import (
     api, fail, idempotent_replay, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
 )
 from common.products import product_available, product_state, unavailable_response
-from wallet.services import (DuplicateTransaction, InsufficientFunds, LimitExceeded,
-                             existing_for_key, get_or_create_wallet)
+from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, get_or_create_wallet
 
 from .models import FixedSave
 from .services import lock, settle_user_maturities
@@ -105,11 +104,8 @@ def savings_create(request):
         plan = lock(user, principal, days, idempotency_key=key)
     except DuplicateTransaction:
         return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
-    except InsufficientFunds as exc:
-        # `lock` distinguishes the stored balance from the spendable one; say which.
-        return fail(str(exc), status=402)
-    except LimitExceeded as exc:
-        return fail(str(exc), status=403, code="limit_exceeded")
+    except InsufficientFunds:
+        return fail("Insufficient wallet balance", status=402)
 
     wallet = get_or_create_wallet(user)
     return ok(success=True, reference=plan.reference, wallet=str(wallet.balance),

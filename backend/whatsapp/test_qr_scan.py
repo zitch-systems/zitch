@@ -6,7 +6,6 @@ These cover the part that matters: what the chat DOES with what it read, and in
 particular that a scanned code is a faster way to type an account number rather
 than a way around name enquiry, the confirm card or the PIN.
 """
-from banking.test_fixtures import bank_channel_case
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -29,7 +28,6 @@ def _linked():
     return user
 
 
-@bank_channel_case
 class ScanEntryTests(TestCase):
     def setUp(self):
         self.user = _linked()
@@ -66,7 +64,6 @@ class ScanEntryTests(TestCase):
         inbound.assert_called_once()
 
 
-@bank_channel_case
 class ScannedCodeTests(TestCase):
     def setUp(self):
         self.user = _linked()
@@ -141,7 +138,6 @@ class ScannedCodeTests(TestCase):
         self.assertIn("Link your Zitch account", str(rep.call_args.args[1]))
 
 
-@bank_channel_case
 class MediaPipelineTests(TestCase):
     """A photo of a code must reach the scanner, not the image describer."""
 

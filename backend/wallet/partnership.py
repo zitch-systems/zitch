@@ -3,6 +3,47 @@ import re
 import hashlib
 
 from wallet.models import Wallet, UnsettledFunding
+from django.core.cache import cache
+from django.db import connection, DatabaseError
+import logging
+
+log = logging.getLogger('wallet')
+
+
+def previous_provider_cutover_blockers(user):
+    """Prevent 9PSB-era accounts/liabilities from being used as Wema funds.
+
+    The former provider's tables remain read-only in the production database
+    although its Django app has been retired. Bank records cannot be relabelled
+    or treated as Wema balances merely because an account was reissued.
+    """
+    wallet_id = Wallet.objects.filter(user_id=user.pk).values_list('id', flat=True).first()
+    if not wallet_id:
+        return []
+    key = f'wema-restore:source-tables:{connection.alias}'
+    names = cache.get(key)
+    try:
+        if names is None:
+            names = list(connection.introspection.table_names())
+            cache.set(key, names, timeout=300)
+        blockers = []
+        with connection.cursor() as cursor:
+            if 'banking_bankaccount' in names:
+                cursor.execute('SELECT EXISTS(SELECT 1 FROM banking_bankaccount WHERE wallet_id = %s)', [wallet_id])
+                if cursor.fetchone()[0]:
+                    blockers.append('previous_provider_account_review')
+            if 'banking_previousbankarchive' in names:
+                cursor.execute('''SELECT EXISTS(SELECT 1 FROM banking_previousbankarchive
+                    WHERE wallet_id = %s AND (review_required = TRUE OR balance <> 0
+                      OR pending_transactions > 0))''', [wallet_id])
+                if cursor.fetchone()[0]:
+                    blockers.append('archived_wema_balance_review')
+        return blockers
+    except DatabaseError:
+        log.exception('wema_cutover_previous_provider_evidence_unavailable')
+        return ['previous_provider_state_unavailable']
+
+
 
 REVIEW_MESSAGE = (
     "Your account needs a balance review. Your money and transaction history are "
@@ -14,7 +55,7 @@ def legacy_funding_blockers(user):
     """Read-only; spend callers hold the wallet lock before evaluating exposure."""
     if UnsettledFunding.objects.filter(user_id=user.pk, archive__isnull=True).exists():
         return ["legacy_balance"]
-    return []
+    return previous_provider_cutover_blockers(user)
 
 
 def retired_funding_destination(number):

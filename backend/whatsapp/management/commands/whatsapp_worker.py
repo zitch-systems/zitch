@@ -39,6 +39,12 @@ class Command(BaseCommand):
             help="Run money reconciliation in the background at this interval.",
         )
         parser.add_argument(
+            "--account-repair-interval-seconds",
+            type=float,
+            default=30.0,
+            help="Read back missing partner-bank funding accounts at this interval.",
+        )
+        parser.add_argument(
             "--alert-retry-interval-seconds",
             type=float,
             default=float(getattr(settings, "WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS", 60.0)),
@@ -76,6 +82,7 @@ class Command(BaseCommand):
 
         stopped = False
         reconcile_lock = threading.Lock()
+        account_repair_lock = threading.Lock()
         alert_retry_lock = threading.Lock()
 
         def stop(*_args):
@@ -91,17 +98,39 @@ class Command(BaseCommand):
                 return
             try:
                 close_old_connections()
-                from banking.reconciliation import sweep
+                from utility.management.commands.reconcile_wema import Command as WemaCommand
 
-                sweep(limit=10, budget_seconds=40)
+                WemaCommand()._run(
+                    lookback_days=2,
+                    payout_older_than_minutes=2,
+                    account_recovery_limit=0,
+                )
             except Exception:  # noqa: BLE001 - reconciliation retries on next tick
                 self.stderr.write("background money reconciliation failed; retrying")
             finally:
                 connections.close_all()
                 reconcile_lock.release()
 
+        def repair_accounts():
+            # A verified BVN with no returned NUBAN is a provider-side partial
+            # completion, not a reason to ask the customer for their BVN again.
+            # This only performs the safe read-back/attach operation and is
+            # serialized so a slow provider cannot make overlapping requests.
+            if not account_repair_lock.acquire(blocking=False):
+                return
+            try:
+                close_old_connections()
+                from wallet.services import repair_missing_funding_accounts
+
+                repair_missing_funding_accounts(limit=20)
+            except Exception:  # noqa: BLE001 - retry on the next scheduled pass
+                self.stderr.write("background partner-bank account repair failed; retrying")
+            finally:
+                connections.close_all()
+                account_repair_lock.release()
+
         def retry_transaction_alerts():
-            # Money recovery uses the bank outbox. This
+            # Money reconciliation belongs exclusively to the Wema cron. This
             # worker-owned pass only resumes delivery of alerts that were already
             # claimed safely on terminal ledger rows. It uses the worker's Meta
             # credentials, so the bank cron never needs to hold or duplicate them.
@@ -129,6 +158,10 @@ class Command(BaseCommand):
             5.0,
             min(float(options["settlement_interval_seconds"]), 60.0),
         )
+        account_repair_interval = max(
+            30.0,
+            min(float(options["account_repair_interval_seconds"]), 3600.0),
+        )
         alert_retry_interval = max(
             10.0,
             min(float(options["alert_retry_interval_seconds"]), 3600.0),
@@ -141,9 +174,9 @@ class Command(BaseCommand):
         # notifying the same settled transaction.
         run_reconcile = bool(getattr(settings, "WHATSAPP_WORKER_RECONCILE", False))
         next_reconcile = time.monotonic()
+        next_account_repair = time.monotonic()
         next_alert_retry = time.monotonic()
 
-        idle_poll = poll
         while not stopped:
             now = time.monotonic()
             if run_reconcile and not options["once"] and now >= next_reconcile:
@@ -153,6 +186,14 @@ class Command(BaseCommand):
                     daemon=True,
                 ).start()
                 next_reconcile = now + interval
+
+            if not options["once"] and now >= next_account_repair:
+                threading.Thread(
+                    target=repair_accounts,
+                    name="partner-bank-account-repair",
+                    daemon=True,
+                ).start()
+                next_account_repair = now + account_repair_interval
 
             if not options["once"] and now >= next_alert_retry:
                 threading.Thread(
@@ -167,7 +208,4 @@ class Command(BaseCommand):
                 self.stdout.write(f"inbound={inbound} outbound={outbound}")
                 return
             if inbound == 0 and outbound == 0:
-                time.sleep(idle_poll)
-                idle_poll = min(3.0, max(poll, idle_poll * 1.5))
-            else:
-                idle_poll = poll
+                time.sleep(poll)

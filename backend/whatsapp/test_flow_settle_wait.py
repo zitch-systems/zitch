@@ -9,7 +9,6 @@ The wait changes nothing about the payment: it is queued and executing either
 way, and the worker sends the chat receipt regardless. All it decides is which
 heading the closing screen can honestly show.
 """
-from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -37,7 +36,6 @@ def _ledger(user, action_id, status):
         idempotency_key=f"wa-{action_id}", transaction_status=status)
 
 
-@bank_channel_case
 class SettleWaitTests(TestCase):
 
     def setUp(self):

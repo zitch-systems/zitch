@@ -13,7 +13,6 @@ const mockWallet = {
   hydrated: true, balanceLoaded: true, balanceError: '', historyError: '', loading: false,
 };
 
-jest.mock('@/components/EmailVerifyPrompt', () => () => null);
 jest.mock('@/lib/wallet', () => ({ useWallet: () => mockWallet, transactionParams: jest.fn() }));
 jest.mock('@/lib/api', () => ({ apiJson: jest.fn() }));
 jest.mock('expo-router', () => ({

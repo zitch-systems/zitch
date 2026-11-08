@@ -1,4 +1,3 @@
-from banking.test_fixtures import bank_channel_case
 import json
 from datetime import timedelta
 from unittest.mock import patch
@@ -14,7 +13,6 @@ from .login_flow import _resolve, _token, start_login
 from .models import PendingAction, WaOnboarding, WhatsAppLink
 
 
-@bank_channel_case
 @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
 class WhatsAppLoginTests(TestCase):
     def setUp(self):

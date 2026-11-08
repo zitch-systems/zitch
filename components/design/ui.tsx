@@ -532,10 +532,7 @@ export const Field = ({
           autoCapitalize={capitalize}
           autoCorrect={correct}
           autoComplete={autoComplete}
-          textContentType={autoComplete === 'off' ? 'none' : textContentType}
-          // Identity numbers are masked like passwords; without this, password
-          // managers treat every BVN/NIN field as a login and offer to fill it.
-          importantForAutofill={autoComplete === 'off' ? 'no' : undefined}
+          textContentType={textContentType}
           returnKeyType={returnKeyType}
           onSubmitEditing={onSubmitEditing}
           style={{ flex: 1, minWidth: 0, paddingVertical: 0, fontSize: 16, color: c.ink1, fontFamily: font.medium }}
@@ -565,7 +562,6 @@ export const Sheet = ({
   children,
   title,
   protectScreen = false,
-  scrollable = true,
 }: {
   open: boolean;
   onClose: () => void;
@@ -573,8 +569,6 @@ export const Sheet = ({
   title?: string;
   /** Block screenshots only while a PIN-entry sheet is actually visible. */
   protectScreen?: boolean;
-  /** Virtualized lists supply their own scroll container. */
-  scrollable?: boolean;
 }) => {
   const { c } = useTheme();
   const { width } = useWindowDimensions();
@@ -633,7 +627,7 @@ export const Sheet = ({
           </View>
           {/* "handled": first tap on a row/button inside the sheet activates it
               instead of only dismissing the keyboard. */}
-          {scrollable ? <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">{children}</ScrollView> : children}
+          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">{children}</ScrollView>
         </View>
       </KeyboardAvoidingView>
     </Modal>

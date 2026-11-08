@@ -1,7 +1,6 @@
 """Uncorrelated bank account status cannot verify a customer's address request."""
 
 import json
-from datetime import timedelta
 from io import StringIO
 from unittest.mock import patch
 
@@ -11,16 +10,12 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import AccessToken
-from banking.client import Reply
-from banking.test_client import CONFIG
-from banking.test_fixtures import bind_test_bank
 from accounts.views import verify_kyc_address
 from wallet.models import Wallet
 from wallet.services import get_or_create_wallet, sync_bank_tier
 
 
 @override_settings(
-    NINEPSB=CONFIG,
     BANK_ACCOUNT_PROVIDER="partnership",
     WEMA_PARTNERSHIP_MODE="active",
     KYC_PROVIDER="wema",
@@ -45,17 +40,17 @@ class AddressVerificationPendingTests(TestCase):
         self.wallet.account_number = "0123456789"
         self.wallet.bank_tier = 2
         self.wallet.save(update_fields=["account_number", "bank_tier"])
-        self.bank = bind_test_bank(self.user, tier=2)
-        self.wallet.refresh_from_db()
         self.address = {"address": "12 Allen Avenue", "city": "Ikeja", "state": "Lagos"}
         self.state = patch("accounts.views._kyc_state", return_value={})
         self.state.start()
         self.addCleanup(self.state.stop)
-        # Any bank read or Tier 3 submission would go through the 9PSB client.
-        status = patch("banking.client.Client.wallet")
+        live = patch("utility.wema.address_verify_live", return_value=True)
+        live.start()
+        self.addCleanup(live.stop)
+        status = patch("utility.wema.get_kyc_status", return_value=self._completed_result())
         self.status = status.start()
         self.addCleanup(status.stop)
-        submit = patch("banking.client.Client.request")
+        submit = patch("utility.wema.upgrade_tier3", return_value={"success": True})
         self.submit = submit.start()
         self.addCleanup(submit.stop)
 
@@ -118,7 +113,8 @@ class AddressVerificationPendingTests(TestCase):
 
     def test_missing_bank_endpoint_cannot_fall_back_to_document_ocr(self):
         before = self._snapshot()
-        with patch("utility.providers.kyc_verify_address", return_value={"success": True}) as ocr:
+        with patch("utility.wema.address_verify_live", return_value=False), \
+                patch("accounts.views.kyc_verify_address", return_value={"success": True}) as ocr:
             response = verify_kyc_address(self.user, {**self.address, "document": "ZmFrZQ=="})
         self.assertEqual(response.status_code, 503)
         ocr.assert_not_called()
@@ -131,7 +127,7 @@ class AddressVerificationPendingTests(TestCase):
             with self.subTest(provider=provider, new_business_allowed=new_business_allowed), \
                     override_settings(KYC_PROVIDER=provider), \
                     patch("utility.providers.partnership_new_business_allowed", return_value=new_business_allowed), \
-                    patch("utility.providers.kyc_verify_address", return_value={"success": True}) as ocr:
+                    patch("accounts.views.kyc_verify_address", return_value={"success": True}) as ocr:
                 response = verify_kyc_address(self.user, {**self.address, "document": "ZmFrZQ=="})
                 self.assertEqual(response.status_code, 503, response.content)
                 self.assertEqual(json.loads(response.content)["code"], "address_verification_unavailable")
@@ -238,26 +234,21 @@ class AddressVerificationPendingTests(TestCase):
 
     def test_bank_tier_sync_updates_bank_tier_without_granting_local_address_proof(self):
         before = self._mark_pending()
-        reply = Reply({"status": "SUCCESS", "data": {"nuban": self.bank.number,
-            "number": "INTERNAL-WALLET", "name": self.bank.name, "tier": "3",
-            "status": "Active", "pndstatus": "InActive", "freezeStatus": "InActive",
-            "availableBalance": "0", "ledgerBalance": "0"}}, 200)
-        with patch("banking.client.Client.wallet", return_value=reply) as read:
-            self.assertEqual(sync_bank_tier(self.wallet), 3)
-        read.assert_called_once_with(self.bank.number)
+        self.assertEqual(sync_bank_tier(self.wallet), 3)
+        self.status.assert_called_once_with(self.wallet.account_number)
+        self.submit.assert_not_called()
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.bank_tier, 3)
         self.assertEqual(self._snapshot(), before)
-        self._assert_no_address_provider_call()
 
     def test_authenticated_status_exposes_unavailable_capability_and_preserves_pending(self):
         before = self._mark_pending()
         body = self._authenticated_status()
-        self.assertFalse(body["address_verification_available"])
+        self.assertFalse(body["tier3_address_available"])
+        self.assertTrue(body["tier3_address_unavailable_reason"])
         self.assertFalse(body["address_verified"])
-        self.assertFalse(body["address_verification_pending"])
-        self.assertTrue(body["historical_address_verification_pending"])
-        self.assertEqual(body["address_verification_state"], "historical_pending")
+        self.assertTrue(body["address_verification_pending"])
+        self.assertEqual(body["address_verification_state"], "pending")
         self.assertNotIn("pending", body)
         self.assertFalse(body["identity_processing"])
         self.assertEqual(body["tier"], 2)
@@ -267,12 +258,11 @@ class AddressVerificationPendingTests(TestCase):
     def test_authenticated_status_preserves_historical_verification(self):
         before = self._mark_verified()
         body = self._authenticated_status()
-        self.assertFalse(body["address_verification_available"])
-        self.assertFalse(body["address_verified"])
-        self.assertTrue(body["historical_address_verified"])
+        self.assertFalse(body["tier3_address_available"])
+        self.assertTrue(body["address_verified"])
         self.assertFalse(body["address_verification_pending"])
-        self.assertEqual(body["address_verification_state"], "historical_verified")
-        self.assertEqual(body["tier"], 2)
+        self.assertEqual(body["address_verification_state"], "verified")
+        self.assertEqual(body["tier"], 3)
         self.assertEqual(self._snapshot(), before)
         self._assert_no_address_provider_call()
 
@@ -280,15 +270,12 @@ class AddressVerificationPendingTests(TestCase):
         before = self._mark_pending()
         self.wallet.pnd_lifted = True
         self.wallet.save(update_fields=["pnd_lifted"])
-        self.bank.checked_at = timezone.now() - timedelta(minutes=10)
-        self.bank.save(update_fields=["checked_at"])
-        reply = Reply({"status": "SUCCESS", "data": {"nuban": self.bank.number,
-            "number": "INTERNAL-WALLET", "name": self.bank.name, "tier": "3",
-            "status": "Active", "pndstatus": "InActive", "freezeStatus": "InActive",
-            "availableBalance": "0", "ledgerBalance": "0"}}, 200)
-        with patch("banking.client.Client.wallet", return_value=reply), \
-                patch("banking.address._request") as address_provider:
-            call_command("reconcile_9psb", stdout=StringIO(), stderr=StringIO())
-        address_provider.assert_not_called()
+        history = {"credited": 0, "windows": 1, "backlog": False,
+                   "fetch_failed": False, "error_code": ""}
+        command = "utility.management.commands.reconcile_wema"
+        with patch(f"{command}.wema_provisioned_wallets", return_value=[self.wallet]), \
+                patch(f"{command}.reconcile_account_history", return_value=history):
+            call_command("reconcile_wema", account_recovery_limit=0,
+                         stdout=StringIO(), stderr=StringIO())
         self.assertEqual(self._snapshot(), before)
         self._assert_no_address_provider_call()
