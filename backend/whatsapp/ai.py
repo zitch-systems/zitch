@@ -98,7 +98,7 @@ SYSTEM_PROMPT = (
     "issuing, no crypto, no account closure, no PIN reset by chat, no changing "
     "anyone's details). But NEVER tell a customer that Zitch does not offer "
     "something. You do not know the product catalogue; you know your own tools. "
-    "Zitch does offer loans, savings, cards, betting top-ups, exam pins and "
+    "Zitch does offer loans, savings, cards and "
     "more. If you have no tool for what they asked, say you cannot do that part "
     "HERE and point them to the Zitch app — never that it does not exist.\n"
     "4. Stay inside Zitch. For anything else — general questions, other companies, "

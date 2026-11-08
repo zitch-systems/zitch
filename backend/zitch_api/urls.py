@@ -441,18 +441,22 @@ def _diag_denied(request, *env_names):
 def preflight_diagnose(request):
     """GET /preflight with an Authorization bearer token.
 
-    The go-live readiness check over HTTP. It is the same `manage.py bank_preflight`
-    run verbatim — same checks, same wording, same exit status — because a second
-    implementation would drift from the one the runbook cites, and a readiness gate
-    that disagrees with itself is worse than one place to look.
+    The go-live readiness check over HTTP.
 
-    It exists because the command was reachable ONLY from a shell, and the deploys
-    that most need a go-live gate are precisely the ones without one (Render's free
-    tier has no shell at all). Read-only: every check the command runs is a read.
+    It used to run `manage.py bank_preflight` verbatim, so the gate and the
+    runbook could not drift apart. That command went with the 9PSB integration,
+    and there is no partner bank to be ready for: no account opening, no
+    transfers out, no bill payment. Reporting the missing command's
+    CommandError here would read as a broken deploy rather than as the
+    deliberate absence of a rail.
 
-    `ready` is the machine-readable answer (exit 0); `report` is the operator-readable
-    one. `?strict=1` also gates on the soft checks, exactly as `--strict` does.
-    `?launch_scope=core|full` selects the decision scope; it defaults to `full`.
+    So this answers honestly and NOT ready, because a platform with no payout
+    rail is not launch-ready however healthy its own services are. The response
+    shape is unchanged so anything already reading `ready` keeps working.
+
+    `?strict=1` and `?launch_scope=core|full` are still accepted and echoed,
+    so existing runbook URLs and monitors do not 400, but neither changes the
+    answer while there is no provider to check.
     """
     denied = _diag_denied(request, "DIAG_TOKEN")
     if denied:
@@ -463,27 +467,15 @@ def preflight_diagnose(request):
             {"detail": "launch_scope must be 'core' or 'full'"}, status=400)
         response["Cache-Control"] = "no-store"
         return response
-    import io
-
-    from django.core.management import call_command
-
-    buf = io.StringIO()
-    ready, error = True, ""
-    try:
-        call_command("bank_preflight", stdout=buf, stderr=buf,
-                     launch_scope=launch_scope,
-                     **({"strict": True} if request.GET.get("strict") else {}))
-    except SystemExit:
-        # How the command reports "not ready" — a failing gate, not a crash.
-        ready = False
-    except Exception as exc:                                  # noqa: BLE001
-        # A preflight that cannot run is not a passing preflight.
-        ready, error = False, f"{type(exc).__name__}: {exc}"
-    body = {"ready": ready, "strict": bool(request.GET.get("strict")),
+    body = {"ready": False, "strict": bool(request.GET.get("strict")),
             "launch_scope": launch_scope,
-            "report": buf.getvalue().splitlines()}
-    if error:
-        body["error"] = error
+            "report": [
+                "No bank provider is configured.",
+                "The 9PSB integration was removed and no partner bank replaced it.",
+                "Account opening, transfers out and bill payment are unavailable.",
+                "A partner bank is implemented behind banking/client.py; this gate",
+                "reports ready only once one is configured and its checks pass.",
+            ]}
     response = JsonResponse({"preflight": body}, status=200 if ready else 503)
     response["Cache-Control"] = "no-store"
     return response
@@ -598,10 +590,8 @@ urlpatterns = [
     path("api/", include("accounts.urls")),
     path("api/", include("wallet.urls")),
     path("api/utility/", include("utility.urls")),
-    path("api/exams/", include("exams.urls")),
     path("api/loans/", include("loans.urls")),
     path("api/savings/", include("savings.urls")),
-    path("api/betting/", include("betting.urls")),
     path("api/transfers/", include("transfers.urls")),
     path("api/cards/", include("cards.urls")),
     path("api/banklink/", include("banklink.urls")),

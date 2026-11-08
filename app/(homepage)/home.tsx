@@ -16,11 +16,9 @@ import { walletCapabilityMessage } from '@/lib/services/wallet';
 const GRID = [
   { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
   { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
-  { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
   { label: 'Save', icon: 'fixed', go: () => router.push('/savings') },
   { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
-  { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
   { label: 'More', icon: 'more', more: true },
 ];
 
@@ -30,8 +28,6 @@ const MORE = [
   { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
   { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
-  { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
-  { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
   { label: 'Insurance', icon: 'insurance', go: () => router.push('/insurance') },
   { label: 'Remita', icon: 'remita', go: () => router.push('/remita') },
   { label: 'Movie', icon: 'movie', go: () => router.push('/movies') },

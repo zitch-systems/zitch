@@ -64,8 +64,6 @@ export const EP = {
     request: '/api/loans/request/',
     repay: '/api/loans/repay/',
   },
-  betting: { fund: '/api/betting/fund/' },
-  exams: { buy: '/api/exams/buy/' },
   convert: { fx: '/api/convert/fx/' },
 } as const;
 

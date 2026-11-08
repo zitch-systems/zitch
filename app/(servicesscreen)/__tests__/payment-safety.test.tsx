@@ -4,9 +4,7 @@ import BuyAirtime from '../buyairtime';
 import BuyData from '../buydata';
 import BuyCable from '../buycable';
 import BuyElectricity from '../buyelectricity';
-import BuyExam from '../exams';
 import Utility from '../utility';
-import Betting from '../betting';
 import Remita from '../remita';
 
 // All route-specific payment safety is exercised in the shared checkout suite.
@@ -17,7 +15,7 @@ jest.mock('@/components/banking/PaymentScreen', () => ({ kind }: { kind: string 
   return ReactActual.createElement(Text, null, kind);
 });
 it.each([[BuyAirtime, 'airtime'], [BuyData, 'data'], [BuyCable, 'bill'], [BuyElectricity, 'bill'],
-  [BuyExam, 'bill'], [Remita, 'bill'], [Utility, 'bill'], [Betting, 'bill']] as const)('routes each service to the shared 9PSB checkout', (Component, kind) => {
+  [Remita, 'bill'], [Utility, 'bill']] as const)('routes each service to the shared checkout', (Component, kind) => {
   let tree!: renderer.ReactTestRenderer;
   act(() => { tree = renderer.create(<Component />); });
   expect(JSON.stringify(tree.toJSON())).toContain(kind);

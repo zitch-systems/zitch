@@ -16,7 +16,6 @@ const CATEGORY_LABEL: Record<string, string> = {
   data: 'Data',
   bills: 'Electricity',
   tv: 'Cable TV',
-  dice: 'Betting',
   loan: 'Loan',
   fixed: 'Savings',
   deposit: 'Wallet funding',

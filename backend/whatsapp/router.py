@@ -33,7 +33,6 @@ from transfers.bank_aliases import aliases_for, slug_for_alias
 from transfers.models import Bank
 from transfers.views import _names_match, clean_nickname
 from transfers.services import PayoutError, execute_payout
-from exams.models import ExamProduct
 from utility.models import CablePlan, DataPlan
 from utility.providers import (email_live, payout_resolve_account, send_email, send_sms,
                                sms_live, verify_bvn, verify_nin, vtu_purchase,
@@ -527,17 +526,6 @@ def _flow_summary(pa: PendingAction) -> str:
         if at == "cable":
             return (f"{CABLE_NAMES.get(p.get('prov', ''), '')} {p.get('plan_name', '')}"
                     f" · card {p.get('iuc', '')} · {_money(Decimal(p['price']))}")
-        if at == "exam":
-            # Without this the exam flow fell through to the bare "Confirm your
-            # payment" fallback below, so the one card that says what is being
-            # bought said nothing about it - on a purchase whose whole point is
-            # WHICH exam PIN and how many. _flow_fields already itemised it; this
-            # is the other half, and it is what the Flow message body and the chat
-            # card are built from.
-            quantity = int(p.get("quantity", 1))
-            return (f"{p.get('exam_name', 'Exam')} {p.get('description', 'PIN')}"
-                    f" ×{quantity} -> {p.get('phone', '')}"
-                    f" · {_money(Decimal(p['amount']))}")
         if at == "convert":
             return "Confirm your currency conversion"
         if at in ("savings_create", "loan_repay"):
@@ -706,13 +694,6 @@ def _flow_fields(pa: PendingAction) -> dict:
                 "recipient": f"{CABLE_NAMES.get(p.get('prov', ''), '')} "
                              f"{p.get('plan_name', '')}".strip(),
                 "details": f"Smartcard {p.get('iuc', '')}".strip()})
-        if at == "exam":
-            quantity = int(p.get("quantity", 1))
-            return _with_context({
-                "amount": _money(Decimal(p["amount"])),
-                "recipient": f"{p.get('exam_name', 'Exam')} {p.get('description', 'PIN')} "
-                             f"×{quantity}",
-                "details": f"Delivery phone {p.get('phone', '')}".strip()})
     except (KeyError, InvalidOperation):
         pass
     # Conversion (and any shape we don't itemise) falls back to the one-line
@@ -1461,9 +1442,6 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if receipt_request:
         from banking.chat import payment_receipt
         return payment_receipt(user, msisdn, receipt_request.group(1))
-    if low in ("10", "exam", "exam pin", "exam pins", "waec pin", "neco pin",
-               "jamb pin", "nabteb pin"):
-        return _start_exam(user, msisdn)
     # A statement is the one history request that explicitly wants the FILE.
     if low in ("statement", "download statement", "bank statement", "account statement", "pdf"):
         return _do_history(user, msisdn, as_document=True)
@@ -3766,10 +3744,10 @@ def _start_transfer(user, msisdn: str) -> None:
 #: "500 airtime for me" must not.
 _INTENT_WORDS = (
     "balance", "send", "transfer", "airtime", "data", "bill", "electricity",
-    "light", "cable", "dstv", "gotv", "startimes", "tv", "convert", "exam",
-    "waec", "neco", "jamb", "nabteb", "statement", "history", "transactions",
+    "light", "cable", "dstv", "gotv", "startimes", "tv", "convert",
+    "statement", "history", "transactions",
     "loan", "savings", "card", "scan", "qr", "verify", "kyc", "menu", "help",
-    "account details", "add money", "fund", "top up", "topup", "betting", "bet",
+    "account details", "add money", "fund", "top up", "topup",
 )
 
 
@@ -3994,7 +3972,6 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "data": _advance_data,
         "electricity": _advance_electricity,
         "cable": _advance_cable,
-        "exam": _advance_exam,
         "convert": _advance_convert,
         "pick_service": _advance_pick_service,
         "kyc": _advance_kyc,

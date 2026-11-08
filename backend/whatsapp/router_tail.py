@@ -851,7 +851,7 @@ _ai_bank: contextvars.ContextVar[str] = contextvars.ContextVar("ai_bank", defaul
 
 #: Action types with money and a receipt behind them - the only ones a narration
 #: means anything for. An unlock or a PIN reset has nothing to narrate.
-_NARRATABLE = ("transfer", "airtime", "data", "electricity", "cable", "exam")
+_NARRATABLE = ("transfer", "airtime", "data", "electricity", "cable")
 
 
 def _new_flow(user, msisdn: str, action_type: str, state: str, payload: dict | None = None) -> PendingAction:
@@ -1502,115 +1502,6 @@ def _exec_cable(pa: PendingAction, user, msisdn: str) -> str:
     )
 
 
-# ---- exam PINs ----
-def _start_exam(user, msisdn: str):
-    from banking.chat import start
-    return start(user, msisdn, "bill")
-
-
-def _exam_product(text: str, choices: list[str]):
-    product = _pick(text, choices, lambda code: ExamProduct.objects.filter(
-        code=code, active=True).first())
-    if product is not None:
-        return product
-    wanted = re.sub(r"\s", "", text.lower())
-    if not wanted:
-        return None
-    return next((item for item in ExamProduct.objects.filter(code__in=choices, active=True)
-                 if wanted in (re.sub(r"\s", "", item.code.lower()),
-                               re.sub(r"\s", "", item.name.lower()))), None)
-
-
-def _advance_exam(pa: PendingAction, user, msisdn: str, text: str) -> None:
-    state = pa.state
-    if state == "product":
-        product = _exam_product(text, pa.payload.get("product_choices", []))
-        if product is None:
-            return _reroute_or_reprompt(pa, msisdn, text,
-                                       "Reply with an exam product number from the list, or \"cancel\".")
-        pa.payload.update({
-            "exam_code": product.code,
-            "exam_name": product.name,
-            "description": product.description,
-            "unit_price": str(product.price),
-            "service_id": product.service_id,
-        })
-        _touch(pa, state="quantity", payload=pa.payload)
-        return reply(msisdn, "How many PINs? Reply with a number from 1 to 10.")
-    if state == "quantity":
-        try:
-            quantity = int(text.strip())
-        except (TypeError, ValueError):
-            quantity = 0
-        if not 1 <= quantity <= 10:
-            return reply(msisdn, "Enter a quantity from 1 to 10.")
-        pa.payload["quantity"] = quantity
-        own = _own_phone(user)
-        if own:
-            pa.payload["phone"] = own
-        _touch(pa, state="phone", payload=pa.payload)
-        return reply(msisdn, "What phone number should receive the PIN details? Reply \"me\" to use your own.")
-    if state == "phone":
-        phone = _phone_from(text, user)
-        if not phone:
-            return reply(msisdn, "Enter a valid phone number, or reply \"me\".")
-        quantity = int(pa.payload["quantity"])
-        amount = Decimal(pa.payload["unit_price"]) * quantity
-        if _insufficient(user, amount):
-            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
-        limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
-        if limit_msg:
-            _clear_actions(msisdn)
-            return _limit_reply(msisdn, user, limit_msg)
-        pa.payload.update({
-            "phone": phone,
-            "amount": str(amount),
-            "meta": {"exam": pa.payload["exam_code"], "phone": phone,
-                     "quantity": quantity},
-        })
-        if not _arm_confirm(pa, user):
-            return None
-        return _send_confirm(
-            pa, msisdn,
-            f"🎓 *Confirm Exam PIN*\n{pa.payload['exam_name']} · "
-            f"{pa.payload['description']} ×{quantity}\nTo {phone}\n{_money(amount)}")
-    if state == "pin":
-        if not _flow_pin_ok(pa, user, msisdn, text):
-            return None
-        return _exec_exam(pa, user, msisdn)
-    _clear_actions(msisdn)
-    return send_menu(msisdn)
-
-
-def _exec_exam(pa: PendingAction, user, msisdn: str) -> str:
-    amount = Decimal(pa.payload["amount"])
-    quantity = int(pa.payload["quantity"])
-    phone = pa.payload["phone"]
-    name = pa.payload["exam_name"]
-    service_id = pa.payload.get("service_id") or f"{pa.payload['exam_code']}-pin"
-
-    def receipt(txn, result):
-        pins = result.get("pins") or result.get("Pin") or []
-        if isinstance(pins, (str, int)):
-            pins = [pins]
-        pin_text = ", ".join(str(value) for value in pins) or "Delivered"
-        return ("Exam PIN receipt", [
-            ("Exam", name), ("Product", pa.payload["description"]),
-            ("Quantity", str(quantity)), ("Phone", phone),
-            ("PIN", pin_text), ("Amount", _money(amount)),
-            ("Reference", txn.reference),
-            ("Date", timezone.now().strftime("%d %b %Y, %H:%M")),
-        ])
-
-    return _run_vtu(
-        pa, user, msisdn, amount, f"Exam PIN - {name} x{quantity}",
-        lambda ref: vtu_purchase(service_id, {
-            "billersCode": phone, "quantity": quantity, "phone": phone,
-        }, reference=ref),
-        receipt,
-    )
-
-
 def _pick(text: str, choices: list, fetch):
     """Map a '1'-based reply to an item via `fetch(code)`; None if out of range."""
     try:
@@ -2165,7 +2056,6 @@ _SETTLED_VERB = {
     "data": "Data bundle purchased",
     "electricity": "Electricity paid",
     "cable": "Subscription paid",
-    "exam": "Exam PIN purchased",
     "convert": "Converted",
     "savings_create": "Fixed Save created",
     "loan_repay": "Loan repayment completed",
@@ -2285,7 +2175,6 @@ def run_flow_execution(pa: PendingAction, user) -> str:
         "bank_vas": execute_bank_vas,
         "transfer": _exec_transfer, "airtime": _exec_airtime, "data": _exec_data,
         "electricity": _exec_electricity, "cable": _exec_cable, "convert": _exec_convert,
-        "exam": _exec_exam,
         "unlock": _exec_unlock,
         "savings_create": savings_loans.execute_product,
         "loan_repay": savings_loans.execute_product,

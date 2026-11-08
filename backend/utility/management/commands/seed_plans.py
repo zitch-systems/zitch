@@ -58,40 +58,6 @@ class Command(BaseCommand):
                 )
                 c += 1
 
-        # Exam PIN products (WAEC / NECO / JAMB / NABTEB).
-        from exams.models import ExamProduct
-        EXAMS = [
-            ("waec", "WAEC", "Result Checker PIN", 3500, "waec-registration"),
-            ("neco", "NECO", "Result Token", 1300, "neco-result"),
-            ("jamb", "JAMB", "UTME / DE PIN", 6200, "jamb"),
-            ("nabteb", "NABTEB", "Result Checker", 1000, "nabteb"),
-        ]
-        e = 0
-        for code, name, desc, price, service_id in EXAMS:
-            ExamProduct.objects.update_or_create(
-                code=code,
-                defaults={"name": name, "description": desc, "price": price,
-                          "service_id": service_id, "active": True},
-            )
-            e += 1
-
-        # Betting platforms.
-        from betting.models import BettingPlatform
-        BETTING = [
-            ("bet9ja", "Bet9ja", "#0B7A3B"),
-            ("sporty", "SportyBet", "#E1241B"),
-            ("onexbet", "1xBet", "#1A6BB5"),
-            ("betking", "BetKing", "#1B1B1B"),
-            ("nairabet", "NairaBet", "#1E8B45"),
-            ("msport", "MSport", "#E8530E"),
-        ]
-        b = 0
-        for code, name, color in BETTING:
-            BettingPlatform.objects.update_or_create(
-                code=code,
-                defaults={"name": name, "color": color, "service_id": code, "active": True},
-            )
-            b += 1
 
         # Payout banks — the full NIP list users expect in the picker (commercial
         # banks + the fintechs/PSBs Nigerians actually send to). `bank_code` is
@@ -182,10 +148,12 @@ class Command(BaseCommand):
                 restored += 1
             bk += 1
         if restored:
+            # sync_bank_directory went with the 9PSB integration, so there is no
+            # rail left to reconcile a bank_code against. Say that plainly rather
+            # than naming a command that no longer exists.
             self.stdout.write(self.style.WARNING(
-                f"Set a starting bank_code on {restored} bank(s) with none. Reconcile "
-                f"against the payout rail before going live: manage.py sync_bank_directory"))
+                f"Set a starting bank_code on {restored} bank(s) with none. No payout "
+                f"rail is configured, so these cannot be reconciled until one is."))
 
         self.stdout.write(self.style.SUCCESS(
-            f"Seeded {d} data plans, {c} cable plans, {e} exam products, "
-            f"{b} betting platforms, {bk} banks."))
+            f"Seeded {d} data plans, {c} cable plans, {bk} banks."))
