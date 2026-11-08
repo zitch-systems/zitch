@@ -96,11 +96,13 @@ INSTALLED_APPS = [
     "compliance",
 ]
 
-# No bank provider is configured. The 9PSB integration was removed; the Wema-era
-# records before it stay read-only for accounting and audit evidence. Account
-# opening, transfers out and bill payment are unavailable until a partner bank is
-# implemented behind the boundary in banking/client.py.
-BANK_ACCOUNT_PROVIDER = ""
+# Wema Partnership is the account integration. The 9PSB integration that briefly
+# replaced it is removed. WEMA_PARTNERSHIP_MODE=active enables new Partnership
+# business; any other mode blocks new instructions while letting accepted work be
+# resolved. The runtime lives in utility/wema.py and wallet/wema_callbacks.py.
+BANK_ACCOUNT_PROVIDER = "wema"
+WEMA_PARTNERSHIP_MODE = os.environ.get("WEMA_PARTNERSHIP_MODE", "active").strip().lower()
+WEMA_BILLER_MODE = os.environ.get("WEMA_BILLER_MODE", "active").strip().lower()
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -115,11 +117,37 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-# CORS: Expo web calls the API cross-origin. No wildcard is used in production.
+# CORS: Expo web and Wema's hosted face verifier call the API cross-origin.
+# The face verifier performs its callback from the customer's browser, so its exact
+# origin must be present or the browser stops after OPTIONS and never sends POST.
+# Derive it from WEMA_FACE_VERIFY_URL so pilot/production cannot drift. Operators
+# may add an explicit comma-separated WEMA_FACE_CALLBACK_ORIGINS during a host
+# migration; no wildcard is ever used on this KYC boundary.
+def _url_origin(value: str) -> str:
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit((value or "").strip())
+    return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
+
+
+_face_callback_origins = {
+    o.rstrip("/")
+    for o in os.environ.get("WEMA_FACE_CALLBACK_ORIGINS", "").split(",")
+    if o.strip()
+}
+# Use the SAME effective URL for CORS and the customer-facing link. Otherwise
+# an unset env var sends customers to Pilot while rejecting its browser callback.
+_face_verify_url = os.environ.get(
+    "WEMA_FACE_VERIFY_URL", "https://face-verification-pilot.azurewebsites.net")
+_derived_face_origin = _url_origin(_face_verify_url)
+if _derived_face_origin:
+    _face_callback_origins.add(_derived_face_origin)
+
 CORS_ALLOW_ALL_ORIGINS = DEBUG
 CORS_ALLOWED_ORIGINS = sorted({
-    o.strip().rstrip("/") for o in
-    os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()
+    *[o.strip().rstrip("/") for o in
+      os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()],
+    *_face_callback_origins,
 })
 CORS_ALLOW_CREDENTIALS = False
 
@@ -330,12 +358,13 @@ RATELIMIT_TRUSTED_PROXY_HOPS = max(
 # the full flow is testable without external accounts.
 # Card, funding, payout and VAS providers are fixed in utility.providers; legacy
 # CARD_PROVIDER, PAYMENT_PROVIDER, PAYOUT_PROVIDER and VAS_PROVIDER values are ignored.
-VAS_PROVIDER = "9psb"
-# Tier 1 is 9PSB: BVN or NIN with the bank's OTP proof.
-# Tier 2 requires authenticated Prembly interactive liveness and a bank upgrade;
-# Tier 3 requires bank completion tied to the submitted address and request.
-# Unimplemented evidence adapters remain unavailable, regardless of credentials.
-KYC_PROVIDER = "9psb"
+VAS_PROVIDER = "wema"
+# Tier 1 is Wema: BVN or NIN with the bank's OTP proof, or the bank-hosted face
+# route. Tier 2 requires authenticated Prembly interactive liveness and a bank
+# upgrade; Tier 3 requires bank completion tied to the submitted address and
+# request. Unimplemented evidence adapters remain unavailable regardless of
+# credentials.
+KYC_PROVIDER = "wema"
 # Fraud velocity guard: max outbound money movements per user per 10 minutes
 # (common.http.check_velocity, applied on every send path). 0 disables. Off in
 # tests (suites legitimately hammer one user far faster than any human).
@@ -410,6 +439,154 @@ MONO = {
 # reason OTPs stop arriving is SENDER-ID APPROVAL, a carrier decision we don't control,
 # so a keyed deploy still needs the sender ID approved and DND-whitelisted below. The
 # stopgap while approval is pending is the TEST_OTP pair further down, not another rail.
+# (Observability: the Sentry init lives at the bottom of this file — already wired.)
+# Wema / ALAT (Banking-as-a-Service) — the SOLE money-movement rail: fund-in
+# (dedicated NUBANs via a BVN/NIN + OTP flow, which also verifies identity — ALAT has
+# no standalone KYC lookup) AND bank payouts + recipient name enquiry + balance, VAS
+# (airtime/data/bills) and a NUBAN-keyed virtual card. Azure APIM: a per-PRODUCT
+# subscription key (Ocp-Apim-Subscription-Key) + a channel id (x-api-key / access).
+# Sandbox host https://apiplayground.alat.ng (LIVE differs — set WEMA_BASE_URL).
+# We do NOT credit from a webhook. Wallet Services does publish a Transaction
+# Notification API (the bank POSTs debit/credit events to a URL profiled against our
+# channelId), and wallet.wema_callbacks does receive it — but ALAT signs nothing, so
+# a handler that credited on that payload would be a money-printing primitive for
+# anyone who learns the URL. Deposits AND payout settlement are therefore decided by
+# the reconcile_wema poller, which re-reads balances over the authenticated APIM
+# channel; the notification is only ever a trigger. Blank keys => MOCK; WEMA_SIMULATION=true serves the mock
+# flow even in prod (no real money or debt). securityInfo is a per-reference
+# HMAC derived from WEMA_SECURITY_INFO, a private seed chosen by Zitch. See utility.wema.
+WEMA = {
+    "BASE_URL": os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng"),
+    # Optional per-product host override for cases where Wema profiles one live
+    # product on a different APIM host. Values should be the host only; product
+    # paths such as /account-upgrade are appended by utility.wema._url.
+    "BASE_URLS": {
+        "acct_mgt": os.environ.get("WEMA_ACCT_MGT_BASE_URL", ""),
+        "upgrade": os.environ.get("WEMA_UPGRADE_BASE_URL", ""),
+        "face_account": os.environ.get("WEMA_FACE_ACCOUNT_BASE_URL", ""),
+    },
+    "CHANNEL_ID": os.environ.get("WEMA_CHANNEL_ID", ""),   # x-api-key / access value
+    "KEYS": {
+        # Wallet Services covers wallet creation, credit/debit wallet, account
+        # management, notifications and bills. Every product sold separately in
+        # the portal requires its own key; never borrow this key across products.
+        "wallet": os.environ.get("WEMA_WALLET_KEY", ""),
+        # The BVN onboarding path calls /account-creation, which the portal sells as
+        # its own product ("Account Creation - Address Verification") separately from
+        # Wallet Services. It falls back to the wallet key, which is right when one
+        # subscription covers both and an APIM 401 on every signup when it does not —
+        # so make it settable without a code change. Leave blank unless Wema issued a
+        # distinct key for Account Creation.
+        "wallet_bvn": os.environ.get("WEMA_ACCOUNT_CREATION_KEY", ""),
+        # Partnership Account - Face Biometric Authentication. Most Wema tenants
+        # profile this under the account-creation subscription, so retain that as
+        # the explicit fallback while allowing a separately-issued key.
+        "face_account": (os.environ.get("WEMA_FACE_ACCOUNT_KEY", "")
+                         or os.environ.get("WEMA_ACCOUNT_CREATION_KEY", "")),
+        "acct_mgt": os.environ.get("WEMA_ACCT_MGT_KEY", ""),
+        "card": os.environ.get("WEMA_CARD_KEY", ""),       # Virtual Naira Card
+        "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # Airtime and Data API
+        "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # optional override; Wallet Services covers bills
+        "upgrade": os.environ.get("WEMA_UPGRADE_KEY", ""), # Account Upgrade API
+        "kyc": os.environ.get("WEMA_KYC_KEY", ""),         # Partnership Account KYC
+        "remita": os.environ.get("WEMA_REMITA_KEY", ""),   # Remita Payment
+        "bnpl": os.environ.get("WEMA_BNPL_KEY", ""),       # Buy-Now-Pay-Later
+    },
+    # The card product id ("cardKey") ALAT's virtualCard request expects — distinct
+    # from the subscription key above. Supplied by Wema; blank until then.
+    "CARD_PRODUCT_KEY": os.environ.get("WEMA_CARD_PRODUCT_KEY", ""),
+    # BNPL uses a DIFFERENT auth scheme from the rest of the rail: merchant headers
+    # (x-merchant-id + x-merchant-authorization-key) alongside the APIM subscription
+    # key above. Supplied by Wema when the BNPL product is enabled.
+    "BNPL_MERCHANT_ID": os.environ.get("WEMA_BNPL_MERCHANT_ID", ""),
+    "BNPL_AUTH_KEY": os.environ.get("WEMA_BNPL_AUTH_KEY", ""),
+    # Our own Wema pool/settlement NUBAN that funds outbound transfers (the
+    # sourceAccountNumber on ProcessClientTransfer). Required for Wema payouts.
+    "SOURCE_ACCOUNT": os.environ.get("WEMA_SOURCE_ACCOUNT", ""),
+    "SECURITY_INFO": os.environ.get("WEMA_SECURITY_INFO", ""),
+    "SIMULATION": env_bool("WEMA_SIMULATION", False),
+    # Bank-called callbacks (see wallet/wema_callbacks.py). ALAT signs nothing, so the
+    # secret lives in the URL path the bank profiles; _PREV keeps a rotation overlap.
+    "CALLBACK_TOKEN": os.environ.get("WEMA_CALLBACK_TOKEN", ""),
+    "CALLBACK_TOKEN_PREV": os.environ.get("WEMA_CALLBACK_TOKEN_PREV", ""),
+    # Source-IP allowlist of the bank's gateway egress addresses. Production is
+    # fail-closed by default; use the profiling environment to validate the trusted
+    # proxy hop and observed Wema source before enabling live money.
+    "CALLBACK_ENFORCE_IPS": env_bool(
+        "WEMA_CALLBACK_ENFORCE_IPS", not DEBUG and not TESTING),
+    "CALLBACK_IPS": [ip for ip in os.environ.get(
+        "WEMA_CALLBACK_IPS", "135.236.18.76,74.178.162.156").split(",") if ip.strip()],
+    # Payout authorisation: only authorise a PENDING bank payout younger than this
+    # (seconds). In production a missing/mismatched value denies the payout: Wema
+    # confirmed this is a private value chosen by Zitch and echoed to the callback.
+    "AUTH_MAX_AGE": int(os.environ.get("WEMA_AUTH_MAX_AGE", "900") or 900),
+    "AUTH_REQUIRE_SECURITY_INFO": env_bool(
+        "WEMA_AUTH_REQUIRE_SECURITY_INFO", not DEBUG and not TESTING),
+    # VAS status legends. The live payment legend confirmed for this integration is
+    # 200=success, 400=failed, 401=unauthorized/authentication-failed/invalid-API.
+    # Keep the maps product-scoped and environment-backed so a future bank contract
+    # change cannot silently reinterpret historical or in-flight payments. Without
+    # the legend a timed-out VAS purchase
+    # can never be auto-settled or auto-refunded: it stays PENDING forever, because
+    # guessing either way loses money (settle a failure and the customer is debited
+    # for nothing; refund a delivered top-up and we pay twice).
+    #
+    # These exist so that the moment Wema supplies the legend it is a Render env var,
+    # not a code change and a deploy. Format is `code=outcome` pairs, comma or space
+    # separated, where outcome is exactly one of success | pending | failed, plus
+    # explicit Wema aliases like success_or_pending where the bank's code is
+    # ambiguous:
+    #
+    #   WEMA_VAS_STATUS_LEGEND="200=success,400=failed,401=unauthorized_authentication_failed_or_invalid_api"
+    #
+    # Codes absent from the legend keep today's behaviour (PENDING, logged), and an
+    # unparseable entry is dropped with an error rather than defaulting — so a typo
+    # can never turn an unknown code into a settlement. See utility.wema._vas_legend.
+    "VAS_STATUS_LEGEND": os.environ.get("WEMA_VAS_STATUS_LEGEND", ""),
+    "BILLS_STATUS_LEGEND": os.environ.get("WEMA_BILLS_STATUS_LEGEND", ""),
+    # Remita is its own ALAT product with its own status enum, so it gets its own
+    # legend rather than borrowing the airtime one.
+    "REMITA_STATUS_LEGEND": os.environ.get("WEMA_REMITA_STATUS_LEGEND", ""),
+    # ALAT's face-biometric web app (Account Creation product). Liveness is a hosted
+    # WEB flow, not an API call: the customer is sent here with their BVN/NIN and the
+    # bank returns a correlationId proving the check passed.
+    #
+    # Pilot is the approved Wema environment for this rollout. Keep this non-secret
+    # fallback so a worker/API env-var drift cannot resurrect the old DEV host.
+    "FACE_VERIFY_URL": _face_verify_url,
+    # Pilot diagnostic only: Wema's pilot page currently fails when cb_uri is
+    # supplied. Keep enabled for the real flow; disable only to isolate the
+    # hosted verifier before Wema confirms its callback contract.
+    # "registered" sends the exact URL Wema whitelisted; "session" appends
+    # per-verification state for verifier deployments that support prefix matching;
+    # "none" is diagnostic only because no result can reach us.
+    "FACE_CB_MODE": (
+        os.environ.get("WEMA_FACE_CB_MODE", "").strip().lower()
+        or ("registered" if env_bool("WEMA_FACE_INCLUDE_CALLBACK", True) else "none")
+    ),
+    # Legacy compatibility for older environments; face_cb_mode() prefers the
+    # explicit mode above.
+    "FACE_INCLUDE_CALLBACK": env_bool("WEMA_FACE_INCLUDE_CALLBACK", True),
+    # Source IPs the face verifier calls us back from. SEPARATE from CALLBACK_IPS:
+    # that list is ALAT's transaction gateway, and the face app is a different Azure
+    # host. The face callback carries no shared token (its URL is shown to the
+    # customer), so this allowlist IS its authentication — without it, anyone who
+    # reads the URL out of their own browser could assert their own face check.
+    "FACE_CALLBACK_IPS": [ip.strip() for ip in
+                          os.environ.get("WEMA_FACE_CALLBACK_IPS", "").split(",") if ip.strip()],
+    # Exact browser origins allowed to transport the hosted verifier result. Origin
+    # is not authentication; browser callbacks are independently validated against
+    # Wema's authenticated without-OTP account endpoint before KYC state changes.
+    "FACE_CALLBACK_ORIGINS": sorted(_face_callback_origins),
+}
+
+# A short-lived bearer that lets a QA build credit itself through the mock wallet
+# deposit, so the app can be walked fund -> transfer -> airtime end to end with
+# fake money. The endpoint 404s whenever WEMA_SIMULATION is off, so it can never
+# fabricate real money on a live deploy. `manage.py wema_preflight` HARD-FAILS
+# while this is set. Remove it before launch.
+SIMULATE_DEPOSIT_TOKEN = os.environ.get("SIMULATE_DEPOSIT_TOKEN", "").strip()
+
 TERMII = {
     # Termii serves several regional hosts and the dashboard shows the one for YOUR
     # account, so this is configurable rather than assumed.
