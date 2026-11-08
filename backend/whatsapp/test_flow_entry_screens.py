@@ -21,13 +21,13 @@ import whatsapp
 from whatsapp.flows import (CODE_RETRY, CODE_SCREEN, EMAIL_SCREEN, IDENTITY_CHAIN,
                             IDENTITY_RETRY, IDENTITY_SCREEN,
                             PIN_CHAIN, PIN_CONFIRM, PIN_CONFIRM_RETRY, PIN_RETRY, PIN_SCREEN,
-                            SIGNUP_SCREEN, TRANSFER_FORM, VTU_SCREEN)
+                            SIGNUP_SCREEN, TRANSFER_FORM)
 
 FLOW = json.loads((Path(whatsapp.__file__).parent / "flow_assets" / "pin_flow.json").read_text())
 
 #: Every screen the router opens a Flow message on (send_flow(screen=...)).
 OPENING_SCREENS = {PIN_SCREEN, IDENTITY_SCREEN, EMAIL_SCREEN, SIGNUP_SCREEN, TRANSFER_FORM,
-                   CODE_SCREEN, VTU_SCREEN}
+                   CODE_SCREEN}
 
 
 def _incoming():

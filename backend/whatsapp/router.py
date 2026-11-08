@@ -33,11 +33,8 @@ from transfers.bank_aliases import aliases_for, slug_for_alias
 from transfers.models import Bank
 from transfers.views import _names_match, clean_nickname
 from transfers.services import PayoutError, execute_payout
-from utility.models import CablePlan, DataPlan
 from utility.providers import (email_live, payout_resolve_account, send_email, send_sms,
-                               sms_live, verify_bvn, verify_nin, vtu_purchase,
-                               vtu_verify_customer)
-from utility.models import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
+                               sms_live, verify_bvn, verify_nin)
 from wallet.forex import FxError, all_balances, create_fx_quote, currency_balance, execute_fx
 from wallet.services import (
     DuplicateTransaction,
@@ -58,9 +55,9 @@ from .flows import (CODE_SCREEN, EMAIL_SCREEN,
                     FLOW_FORM_STATE, IDENTITY_CHAIN,
                     FLOW_ID_STATE, FLOW_PHONE_CODE_STATE, FLOW_PHONE_STATE, FLOW_PIN_STATE,
                     FLOW_PRIVACY_STATE,
-                    FLOW_SIGNUP_STATE, FLOW_VTU_STATE, IDENTITY_SCREEN, PRIVACY_NOTICE,
+                    FLOW_SIGNUP_STATE, IDENTITY_SCREEN, PRIVACY_NOTICE,
                     SIGNUP_SCREEN,
-                    TRANSFER_FORM, VTU_SCREEN,
+                    TRANSFER_FORM,
                     PIN_SCREEN,
                     privacy_screen_live,
                     sign_approve_token, sign_flow_token, sign_identity_token,
@@ -3836,16 +3833,6 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
             reply(msisdn, "Okay - leaving that transfer.")
             return handle_inbound(msisdn, text)
         return reply(msisdn, "💸 Please fill the secure *Send money* form above - "
-                             "or reply \"cancel\".")
-    if pa.state == FLOW_VTU_STATE:
-        # The airtime/data form. Same escape hatch as the transfer form: nothing
-        # has been bought, so a clear new instruction replaces it rather than
-        # trapping the customer in "fill the form".
-        if _is_new_command(text):
-            _clear_actions(msisdn)
-            reply(msisdn, "Okay - leaving that purchase.")
-            return handle_inbound(msisdn, text)
-        return reply(msisdn, "📱 Please use the secure *Airtime & data* form above - "
                              "or reply \"cancel\".")
     if pa.state == FLOW_PIN_STATE:
         # A secure PIN Flow is open: the PIN is entered there, never in chat.
