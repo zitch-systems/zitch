@@ -11,7 +11,7 @@ from wallet.services import apply_wema_credit, settle_payout
 from wallet.tests import make_user
 
 
-@override_settings(DEBUG=False, TESTING=False, WEMA={
+@override_settings(DEBUG=False, TESTING=False, WEMA_CUTOVER_APPROVED=True, WEMA={
     "CHANNEL_ID": "test-channel", "KEYS": {"wallet": "test-key"},
     "SIMULATION": False,
 })
