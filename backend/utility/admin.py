@@ -1,24 +1,11 @@
 from django.contrib import admin
 
-from .models import CablePlan, DataPlan, WemaBiller
+from .models import WemaBiller
 
 
-# 9PSB VAS catalogues are read live from the bank. These local plan tables and
-# the retired provider's biller codes are historical evidence only.
-@admin.register(DataPlan)
-class DataPlanAdmin(admin.ModelAdmin):
-    list_display = ("network", "plan_type", "name", "validity", "price", "plan_code", "active")
-    list_filter = ("network", "plan_type", "active")
-    search_fields = ("name", "plan_code")
-
-
-@admin.register(CablePlan)
-class CablePlanAdmin(admin.ModelAdmin):
-    list_display = ("provider", "name", "validity", "price", "cable_plan_code", "active")
-    list_filter = ("provider", "active")
-    search_fields = ("name", "cable_plan_code")
-
-
+# The DataPlan and CablePlan admins were here until the VAS rail went: those
+# catalogues described airtime, data and cable products nobody can buy now. The
+# retired provider's biller codes stay, read-only, as historical evidence.
 @admin.register(WemaBiller)
 class RetiredBillerAdmin(admin.ModelAdmin):
     """Retired provider biller codes, retained read-only as historical evidence."""

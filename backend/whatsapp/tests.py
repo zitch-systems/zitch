@@ -22,9 +22,7 @@ from django.utils import timezone
 
 from accounts.models import AccessToken
 from transfers.models import Bank, Beneficiary
-from utility.catalogue_fixtures import (map_billers, map_cable,
-                                        map_existing_plans)
-from utility.models import CablePlan, DataPlan
+from utility.catalogue_fixtures import map_billers
 from wallet.models import Transaction
 from wallet.services import credit, get_or_create_wallet
 
@@ -801,12 +799,10 @@ class AiIntentTests(TestCase):
                                     status=WhatsAppLink.ACTIVE, ai_enabled=True)
         SystemSetting.set("ai_enabled_global", "true")
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#000", active=True)
-        # An intent that names a meter or a smartcard still has to VALIDATE it, and
-        # validation routes through the partner bank's own biller codes — so without
-        # these rows the flows under test answer "couldn't validate" instead of
-        # reaching the confirm card. See utility.catalogue_fixtures.
+        # map_cable() stood beside this: a smartcard intent had to validate
+        # against a mapped bouquet before it could reach the confirm card. Cable
+        # went with the VAS rail, and so did CablePlan.
         map_billers()
-        map_cable()
 
     def inbound(self, text, mid):
         event = {"entry": [{"changes": [{"value": {"messages": [
