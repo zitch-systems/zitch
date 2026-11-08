@@ -20,7 +20,7 @@ from django.test import Client, TestCase
 from django.utils import timezone
 
 from accounts.models import AccessToken
-from common.http import unverified_error
+from common.http import spend_limit_error, unverified_error
 
 from .forex import FxError, create_fx_quote
 from .models import CurrencyWallet, FundingIntent, Transaction, Wallet
@@ -1282,21 +1282,6 @@ class FirstSpendVerificationTests(TestCase):
             setattr(self.user, f, False)
         self.user.save(update_fields=list(fields))
 
-    def test_a_debit_is_refused_until_every_check_passes(self):
-        self._unverify("bvn_verified", "nin_verified")
-        with self.assertRaises(LimitExceeded) as ctx:
-            debit(self.user, Decimal("1000"), "transfer")
-        self.assertIn("BVN", str(ctx.exception))
-        # And the refusal is actionable on both surfaces.
-        self.assertIn("8", str(ctx.exception))
-        self.assertIn("app", str(ctx.exception).lower())
-
-    def test_the_refusal_names_every_missing_check_not_just_the_first(self):
-        self._unverify("bvn_verified", "nin_verified", "email_verified")
-        msg = unverified_error(self.user) or ""
-        self.assertIn("BVN", msg)
-        self.assertIn("email", msg)
-
     def test_an_unverified_nin_does_not_block_spending(self):
         """NIN has no unattended verification path until the Prembly lookup is
         confirmed live, so gating every first spend on it would strand every new
@@ -1325,6 +1310,67 @@ class FirstSpendVerificationTests(TestCase):
         credit(self.user, Decimal("5000"), "Deposit")           # does not raise
         self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("55000"))
 
+
+
+class RestoredProviderFloorTests(TestCase):
+    """The identity leg of the floor, as it behaves once a provider exists again.
+
+    These three assertions used to live in FirstSpendVerificationTests and ran
+    under @_bank_test_settings. That decorator is inert now: banking.client
+    .configured() returns False whatever the settings say, because the client has
+    no credentials left to read. So the tests were passing or failing on the
+    bankless path while claiming to describe the provider one.
+
+    They patch wallet.services.bankless_provider instead, which is the actual
+    switch common.http.unverified_error consults. That makes this a real test of
+    the conditional rather than of a setting that no longer reaches anything, and
+    it is what keeps "the floor comes back on its own when a provider is wired
+    in" an assertion instead of a hope. When a new partner bank lands, these
+    should pass by configuring it for real and the patch should come out.
+    """
+
+    def setUp(self):
+        self.user, self.token = bank_user("08044440002", "restored@zitch.test",
+                                          balance="50000")
+        patcher = patch("wallet.services.bankless_provider", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _unverify(self, *fields):
+        from accounts.models import IdentityProof
+        for kind in ("bvn", "nin"):
+            if f"{kind}_verified" in fields:
+                IdentityProof.objects.filter(user=self.user, identity_type=kind).delete()
+        for f in fields:
+            setattr(self.user, f, False)
+        self.user.save(update_fields=list(fields))
+
+    def test_the_identity_leg_refuses_before_any_amount_is_discussed(self):
+        """Asserted through spend_limit_error, the authoritative gate, not debit().
+
+        It used to go through debit(). It cannot now: patching the provider
+        switch on turns every bank leg on at once, and debit's standing
+        availability check needs a provisioned bank account, so the refusal that
+        came back was "Banking setup is temporarily unavailable" -- the right
+        answer to a different question, and one that would have let this test
+        pass while saying nothing about identity.
+
+        spend_limit_error is what debit re-runs under the wallet row lock, so
+        this is the same gate on the same path, just named directly.
+        """
+        self._unverify("bvn_verified", "nin_verified")
+        message = spend_limit_error(self.user, Decimal("1000"), "transfer") or ""
+        self.assertIn("BVN", message)
+        # And the refusal is actionable on both surfaces.
+        self.assertIn("8", message)
+        self.assertIn("app", message.lower())
+
+    def test_the_refusal_names_every_missing_check_not_just_the_first(self):
+        self._unverify("bvn_verified", "nin_verified", "email_verified")
+        msg = unverified_error(self.user) or ""
+        self.assertIn("BVN", msg)
+        self.assertIn("email", msg)
+
     def test_conversion_is_gated_too(self):
         """FX reaches the ledger through _move, not debit(), so it does not
         inherit spend_limit_error's gate and has to state it — otherwise an
@@ -1333,6 +1379,67 @@ class FirstSpendVerificationTests(TestCase):
         with self.assertRaises(FxError) as ctx:
             create_fx_quote(self.user, "NGN", "USD", Decimal("1000"))
         self.assertIn("BVN", str(ctx.exception.message))
+
+
+class BanklessFirstSpendFloorTests(TestCase):
+    """With no provider, the identity leg of the floor is skipped -- the rest holds.
+
+    bvn_verified and nin_verified are written only by a provider confirming the
+    number, never by the customer asserting it. With none configured neither can
+    ever be earned, and demanding them refused every outbound debit on every
+    surface while telling the customer to "reply *8*" -- a flow that also cannot
+    finish.
+
+    Every user here is built with identity_verified=False AND tier=0, because
+    make_user defaults both the other way: it writes the flags and the tier
+    straight onto the model, which models a customer who cannot exist now that
+    tiers and identity are both provider-granted. Most tests want that default
+    so they can get to their own subject; these are about the floor itself, so
+    they have to start where a real account starts.
+
+    The companion to this is RestoredProviderFloorTests, which pins the other
+    half -- that the leg comes back the moment a provider exists.
+    """
+
+    def test_a_real_bankless_customer_can_spend(self):
+        user, _ = make_user("08044441001", "bankless-spend@zitch.test",
+                            balance="5000", tier=0, identity_verified=False)
+        self.assertIsNone(unverified_error(user))
+        debit(user, Decimal("1000"), "transfer")
+        self.assertEqual(get_or_create_wallet(user).balance, Decimal("4000"))
+
+    def test_the_contact_legs_of_the_floor_still_refuse(self):
+        """Phone and email are Zitch's own to verify, so they are still owed."""
+        for field, expected in (("email_verified", "email"), ("phone_verified", "phone")):
+            with self.subTest(field=field):
+                user, _ = make_user(f"0804444{field[:4]}", f"{field}@zitch.test",
+                                    balance="5000", tier=0, identity_verified=False)
+                setattr(user, field, False)
+                user.save(update_fields=[field])
+                message = unverified_error(user) or ""
+                self.assertIn(expected, message.lower())
+                # And it is the identity leg, not the whole floor, that went.
+                self.assertNotIn("bvn", message.lower())
+                with self.assertRaises(LimitExceeded):
+                    debit(user, Decimal("1000"), "transfer")
+
+    def test_the_tier_ceiling_is_the_only_ladder_left(self):
+        """Dropping the floor's identity leg does not uncap the account.
+
+        Tiers are bank-granted, so a bankless account is Tier 0 and capped at
+        20,000 however much it holds. That ceiling is now the only thing between
+        a funded wallet and an unlimited one.
+        """
+        user, _ = make_user("08044441002", "bankless-cap@zitch.test",
+                            balance="100000", tier=0, identity_verified=False)
+        # Not just the fixture's word for it: this is what recompute_tier says
+        # a bankless account is, which is where the 20,000 ceiling comes from.
+        user.recompute_tier()
+        self.assertEqual(user.tier, 0)
+        with self.assertRaises(LimitExceeded) as ctx:
+            debit(user, Decimal("20001"), "transfer")
+        self.assertIn("Tier 0", str(ctx.exception))
+        debit(user, Decimal("20000"), "transfer")   # at the ceiling, allowed
 
 
 @_bank_test_settings(NINEPSB=_BANK_TEST_CONFIG)

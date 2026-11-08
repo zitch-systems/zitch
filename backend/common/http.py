@@ -225,6 +225,26 @@ _FIRST_SPEND_CHECKS = (
     ("tier1_identity_verified", "BVN or NIN"),
 )
 
+#: The identity leg of the floor, skipped while no provider can grant it.
+#:
+#: bvn_verified and nin_verified are written ONLY by a bank or identity provider
+#: confirming the number -- never by the customer asserting it. With no provider
+#: configured there is no way to earn either, so leaving this leg in refused
+#: every outbound debit on every surface, permanently, and sent the customer to
+#: "reply *8*", a verification flow that also cannot complete. The ledger and
+#: savings gates already skip their bank legs the same way, for the same reason:
+#: a control nobody can satisfy is not a control, it is an outage.
+#:
+#: What the floor still proves when bankless is a phone and an email, both
+#: Zitch's own. It does NOT prove who owns the account. The only ladder left
+#: beneath that is the Tier 0 ceiling, which every bankless account sits on,
+#: because tiers are bank-granted (User.recompute_tier).
+#:
+#: Conditional rather than deleted so the floor comes back on its own the moment
+#: a provider is configured, instead of resting on someone remembering to
+#: restore it.
+_PROVIDER_GRANTED_CHECKS = {"tier1_identity_verified"}
+
 
 def stale_pin_error(user) -> "str | None":
     """Refusal for an account still holding a pre-6-digit PIN, or None.
@@ -267,8 +287,12 @@ def unverified_error(user) -> "str | None":
     stale = stale_pin_error(user)
     if stale:
         return stale
+    from wallet.services import bankless_provider
+
+    bankless = bankless_provider()
     missing = [label for field, label in _FIRST_SPEND_CHECKS
-               if not getattr(user, field, False)]
+               if not getattr(user, field, False)
+               and not (bankless and field in _PROVIDER_GRANTED_CHECKS)]
     if not missing:
         return None
     if len(missing) > 1:
