@@ -131,9 +131,11 @@ export const dark: ThemeTokens = {
 export const ICON_COLORS: Record<string, string> = {
   airtime: '#0FA295',
   data: '#2D7FF9',
+  dice: '#F5A623',     // betting
   tv: '#7A5CFF',       // cable
   fixed: '#1EA05E',    // save
   loan: '#E8590C',
+  jamb: '#F5760A',     // exams
   bills: '#F59E0B',    // electricity
   send: '#0FA295',     // transfer
   withdraw: '#16A34A',

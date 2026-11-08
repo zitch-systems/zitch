@@ -6,7 +6,6 @@ import SendMoney from '@/app/(servicesscreen)/sendmoney';
 let mockGeneration = 0;
 const mockResolveLegacy = jest.fn();
 const mockResolveBank = jest.fn();
-const mockCharge = jest.fn();
 const mockNotify = jest.fn();
 const mockAcquireSpendAttempt = jest.fn();
 const mockClearSpendAttempt = jest.fn();
@@ -33,14 +32,6 @@ jest.mock('react-native/Libraries/Components/ScrollView/ScrollView', () => {
     return ReactActual.createElement(View, props, children);
   };
 });
-jest.mock('react-native/Libraries/Lists/FlatList', () => {
-  const ReactActual = jest.requireActual<typeof import('react')>('react');
-  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
-  return function MockFlatList({ data, renderItem, keyExtractor, ListEmptyComponent, ...props }: any) {
-    return ReactActual.createElement(View, props, data.length ? data.map((item: any, index: number) =>
-      ReactActual.createElement(ReactActual.Fragment, { key: keyExtractor(item) }, renderItem({ item, index }))) : ListEmptyComponent);
-  };
-});
 
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: (...args: unknown[]) => mockRouterPush(...args), replace: jest.fn() },
@@ -58,7 +49,6 @@ jest.mock('@/lib/spendOutcome', () => ({
 }));
 jest.mock('@/lib/services/transfers', () => ({
   transfersService: {
-    charge: (...args: unknown[]) => mockCharge(...args),
     resolve: (...args: unknown[]) => mockResolveBank(...args),
     resolveLegacy: (...args: unknown[]) => mockResolveLegacy(...args),
     send: jest.fn(),
@@ -110,7 +100,6 @@ jest.mock('@/components/design/ui', () => {
       label?: string; placeholder?: string; value: string; onChangeText?: (value: string) => void;
     }) => ReactActual.createElement(TextInput, {
       accessibilityLabel: label || placeholder,
-      placeholder,
       value,
       onChangeText,
     }),
@@ -190,8 +179,6 @@ const loadBankCatalogue = () => {
 
 describe('SendMoney recipient response binding', () => {
   beforeEach(() => {
-    jest.useFakeTimers();
-    mockCharge.mockReset().mockResolvedValue({ success: true, fee: "0.00" });
     mockGeneration = 0;
     mockSearchParams = {};
     mockResolveLegacy.mockReset();
@@ -208,39 +195,6 @@ describe('SendMoney recipient response binding', () => {
     mockRouterPush.mockReset();
     mockReloadWallet.mockReset();
     global.fetch = originalFetch;
-  });
-
-  it('filters the bank picker by name and shows a clear empty result', async () => {
-    loadBankCatalogue();
-    let tree!: renderer.ReactTestRenderer;
-    await act(async () => { tree = renderer.create(<SendMoney />); });
-    await act(async () => { control(tree, 'Select bank').props.onPress(); });
-    expect(control(tree, 'Bank A')).toBeTruthy();
-    expect(control(tree, 'Bank B')).toBeTruthy();
-    await act(async () => { control(tree, 'Search banks').props.onChangeText('bank b'); });
-    expect(tree.root.findAllByProps({ accessibilityLabel: 'Bank A' })).toHaveLength(0);
-    expect(control(tree, 'Bank B')).toBeTruthy();
-    await act(async () => { control(tree, 'Search banks').props.onChangeText('unlisted bank'); });
-    expect(JSON.stringify(tree.toJSON())).toContain('No banks match your search.');
-    act(() => tree.unmount());
-  });
-
-  it('retries a failed lookup for the current account without editing the number', async () => {
-    loadBankCatalogue();
-    mockResolveBank.mockResolvedValueOnce({ success: false, retryable: true,
-      message: 'Bank lookup is temporarily unavailable. Please try again.' })
-      .mockResolvedValueOnce({ success: true, matches: [{ bank: 'bank-a', bank_name: 'Bank A', name: 'Confirmed Holder' }] });
-    let tree!: renderer.ReactTestRenderer;
-    await act(async () => { tree = renderer.create(<SendMoney />); });
-    expect(control(tree, 'Bank').props.placeholder).toBe('Select bank');
-    await act(async () => { control(tree, 'Account number').props.onChangeText('0123456789'); });
-    await act(async () => { jest.advanceTimersByTime(500); });
-    await act(async () => { control(tree, 'Try bank lookup again').props.onPress(); });
-    await act(async () => { jest.advanceTimersByTime(500); });
-    expect(mockResolveBank).toHaveBeenCalledTimes(2);
-    expect(mockResolveBank).toHaveBeenLastCalledWith('0123456789');
-    expect(JSON.stringify(tree.toJSON())).toContain('Confirmed Holder');
-    act(() => tree.unmount());
   });
 
   afterEach(() => {
@@ -265,10 +219,8 @@ describe('SendMoney recipient response binding', () => {
     await act(async () => { tree = renderer.create(<SendMoney />); });
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
     await act(async () => { control(tree, 'Enter amount').props.onChangeText('49'); });
-    await act(async () => { jest.advanceTimersByTime(450); });
     expect(control(tree, 'Continue').props.disabled).toBe(true);
     await act(async () => { control(tree, 'Enter amount').props.onChangeText('50'); });
-    await act(async () => { jest.advanceTimersByTime(450); });
     expect(control(tree, 'Continue').props.disabled).toBe(false);
     act(() => tree.unmount());
   });
@@ -280,7 +232,6 @@ describe('SendMoney recipient response binding', () => {
     await act(async () => { tree = renderer.create(<SendMoney />); });
     await act(async () => { pressText(tree, 'Saved'); });
     await act(async () => { control(tree, 'Enter amount').props.onChangeText('1000'); });
-    await act(async () => { jest.advanceTimersByTime(450); });
     expect(control(tree, 'Zitch tag or phone').props.value).toBe('08012345678');
     expect(control(tree, 'Continue').props.disabled).toBe(true);
     expect(control(tree, 'Confirm recipient')).toBeTruthy();
@@ -331,7 +282,6 @@ describe('SendMoney recipient response binding', () => {
 
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
     await act(async () => { control(tree, 'Enter amount').props.onChangeText('1000'); });
-    await act(async () => { jest.advanceTimersByTime(450); });
 
     expect(control(tree, 'Continue').props.disabled).toBe(false);
     expect(tree.root.findAllByType(Text).some((node) =>
@@ -356,7 +306,6 @@ describe('SendMoney recipient response binding', () => {
       control(tree, 'Zitch tag or phone').props.onChangeText('08020000002');
       control(tree, 'Enter amount').props.onChangeText('1000');
     });
-    await act(async () => { jest.advanceTimersByTime(450); });
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
 
     expect(control(tree, 'Continue').props.disabled).toBe(true);
@@ -385,7 +334,6 @@ describe('SendMoney recipient response binding', () => {
       control(tree, 'Account number').props.onChangeText('0123456789');
       control(tree, 'Enter amount').props.onChangeText('1000');
     });
-    await act(async () => { jest.advanceTimersByTime(450); });
 
     let firstRequest!: Promise<void>;
     await act(async () => { pressAncestor(control(tree, 'Bank')); });
@@ -430,7 +378,6 @@ describe('SendMoney recipient response binding', () => {
       control(tree, 'Account number').props.onChangeText('0123456789');
       control(tree, 'Enter amount').props.onChangeText('1000');
     });
-    await act(async () => { jest.advanceTimersByTime(450); });
     await act(async () => { pressAncestor(control(tree, 'Bank')); });
     await act(async () => { await pressText(tree, 'Bank A'); });
 
@@ -457,7 +404,6 @@ describe('SendMoney recipient response binding', () => {
       control(tree, 'Zitch tag or phone').props.onChangeText('08020000002');
       control(tree, 'Enter amount').props.onChangeText('100000');
     });
-    await act(async () => { jest.advanceTimersByTime(450); });
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
     await act(async () => { control(tree, 'Continue').props.onPress(); });
     await act(async () => {
@@ -501,7 +447,6 @@ describe('SendMoney recipient response binding', () => {
       control(tree, 'Zitch tag or phone').props.onChangeText('08020000002');
       control(tree, 'Enter amount').props.onChangeText('1000');
     });
-    await act(async () => { jest.advanceTimersByTime(450); });
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
     await act(async () => { control(tree, 'Continue').props.onPress(); });
     await act(async () => {
@@ -557,7 +502,6 @@ describe('SendMoney recipient response binding', () => {
       control(tree, 'Zitch tag or phone').props.onChangeText('08020000002');
       control(tree, 'Enter amount').props.onChangeText('1000');
     });
-    await act(async () => { jest.advanceTimersByTime(450); });
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
     await act(async () => { control(tree, 'Continue').props.onPress(); });
     await act(async () => {
@@ -596,7 +540,6 @@ describe('SendMoney recipient response binding', () => {
     await act(async () => { tree = renderer.create(<SendMoney />); });
     await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
     await act(async () => { control(tree, 'Enter amount').props.onChangeText('1,000.50'); });
-    await act(async () => { jest.advanceTimersByTime(450); });
     expect(control(tree, 'Enter amount').props.value).toBe('1000.50');
     await act(async () => { control(tree, 'Continue').props.onPress(); });
     await act(async () => { control(tree, 'Confirm transfer').props.onPress(); jest.advanceTimersByTime(320); });

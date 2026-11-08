@@ -9,23 +9,12 @@ from decimal import Decimal
 from django.db import IntegrityError, transaction as db_transaction
 from django.utils import timezone
 
-from common.http import spend_limit_error
 from common.products import require_product
 from wallet.models import Transaction, Wallet
-from wallet.services import (DuplicateTransaction, InsufficientFunds,
-                             LimitExceeded, assert_customer_spending_available,
-                             bankless_provider, credit,
-                             customer_spendable_balance, make_reference,
-                             with_idempotency_fingerprint)
+from wallet.services import (DuplicateTransaction, InsufficientFunds, credit,
+                             make_reference, with_idempotency_fingerprint)
 
 from .models import FixedSave
-
-
-#: The ledger label for a lock. One constant because it is used twice: to pick the
-#: caps that are CHECKED, and on the row that is WRITTEN. Two literals could drift
-#: apart, and then the bucket a spend counts toward would stop being the bucket it
-#: was measured against — the same reasoning as `common.http.daily_kind_for`.
-LOCK_SERVICE = "Fixed Save locked"
 
 
 @db_transaction.atomic
@@ -34,23 +23,6 @@ def lock(user, principal, days: int, idempotency_key: str = "") -> FixedSave:
 
     With an `idempotency_key`, a duplicate request raises DuplicateTransaction
     (nothing locked), so a retry/race can't lock twice or create two plans.
-
-    Locking is a customer-initiated debit, so it answers to the same gate as every
-    other one — identity floor, account standing, available (not merely stored)
-    balance, tier ceiling, velocity brake — by running the same checks
-    `wallet.services.debit` runs, in the same order, under the same row lock.
-    Raises LimitExceeded when a cap or standing check refuses the spend.
-
-    Account standing is the one check that depends on a partner bank, so with no
-    bank configured it is skipped rather than failed: there is no custodian to
-    report a freeze, a PND or an unconfirmed balance. Everything else still
-    applies, and the available-balance check still does its job, because without
-    a bank the available figure is the local ledger's own spendable balance.
-
-    This is not belt-and-braces. Before it, savings was a hole in the gate: an
-    account frozen, PND'd, under balance review, or short of its identity floor
-    could still move its whole wallet into a 365-day plan, and the money came back
-    out at maturity as a clean credit. Every other debit path refused that account.
     """
     require_product("savings")
     principal = Decimal(str(principal))
@@ -58,28 +30,16 @@ def lock(user, principal, days: int, idempotency_key: str = "") -> FixedSave:
     rate = FixedSave.RATES.get(days, Decimal("0"))
     ref = make_reference("ZSAV")
 
-    # Inside the lock, like `debit`: read outside it, the caps and the velocity
-    # brake are advisory, because two concurrent requests both read the same
-    # "spent today" and both pass.
     wallet = Wallet.objects.select_for_update().get(user=user)
-    if not bankless_provider():
-        # Account standing is the bank's judgement. With no bank there is nobody
-        # to ask, and asking anyway made locking savings impossible.
-        assert_customer_spending_available(user)
     if wallet.balance < principal:
         raise InsufficientFunds("Insufficient wallet balance")
-    if customer_spendable_balance(user, wallet=wallet) < principal:
-        raise InsufficientFunds("Insufficient available balance")
-    breach = spend_limit_error(user, principal, LOCK_SERVICE)
-    if breach:
-        raise LimitExceeded(breach)
     wallet.balance -= principal
     wallet.save(update_fields=["balance", "updated"])
 
     try:
         with db_transaction.atomic():  # savepoint: contain the unique violation
             Transaction.objects.create(
-                user=user, service=LOCK_SERVICE, amount=principal,
+                user=user, service="Fixed Save locked", amount=principal,
                 direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
                 reference=ref, meta=with_idempotency_fingerprint(
                     {"days": days, "rate": str(rate)}, idempotency_key),

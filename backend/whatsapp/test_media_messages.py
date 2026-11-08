@@ -10,7 +10,6 @@ the text re-enters handle_inbound exactly as if it had been typed, so it is
 parsed, redacted before the intent call, shown on a confirm card and authorised
 with a PIN like everything else.
 """
-from banking.test_fixtures import bank_channel_case
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -18,7 +17,6 @@ from django.test import TestCase, override_settings
 from whatsapp import media
 
 
-@bank_channel_case
 class InterpretTests(TestCase):
 
     def test_a_voice_note_becomes_its_words(self):
@@ -82,7 +80,6 @@ class InterpretTests(TestCase):
             self.assertFalse(media.can_interpret(kind))
 
 
-@bank_channel_case
 class DownloadMediaTests(TestCase):
     """Meta hands out a short-lived URL from the id, and the URL itself still
     needs the bearer token — an unauthenticated GET returns 401."""
@@ -155,7 +152,6 @@ class DownloadMediaTests(TestCase):
         get.assert_not_called()
 
 
-@bank_channel_case
 class TranscribeCapabilityTests(TestCase):
     """A Claude-only deployment answers voice notes by asking for text rather
     than by pretending to have understood one."""

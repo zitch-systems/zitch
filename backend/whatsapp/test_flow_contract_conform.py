@@ -12,13 +12,11 @@ a missing subtitle costs a blank line, and refusing to costs the customer the
 outcome of their payment. The ERROR line is still emitted, so the bug stays as
 findable as it was.
 """
-from banking.test_fixtures import bank_channel_case
 from django.test import TestCase
 
 from whatsapp import flows
 
 
-@bank_channel_case
 class ConformResponseTests(TestCase):
 
     def _keys(self, screen):
@@ -75,37 +73,31 @@ class ConformResponseTests(TestCase):
                                         OUTCOME_SUCCESS)}})
         self.assertEqual(out["data"]["message"], "Sent — the receipt is in your chat.")
 
-    # These three were written against VTU_DATA.plans. That screen went with the
-    # VAS rail, so _check_contract found no contract for it and passed every
-    # value through untouched -- which made the first of the three pass for the
-    # wrong reason (the value came back because nothing coerced it, not because
-    # the coercion was type-aware) and the other two fail. TRANSFER_FORM.banks is
-    # the array-typed property that remains, and the only one now standing
-    # between a bank list and being stringified onto the device.
-
     def test_a_dropdown_source_is_never_stringified(self):
-        """`banks` is an array of objects, not a string. A guard that knew only
-        the key names turned a bank list into "[{'id': 'gtb'...}]" and broke
-        every screen it existed to protect."""
-        banks = [{"id": "058", "title": "GTBank"}]
+        """`banks` and `plans` are arrays of objects, not strings. A guard that
+        knew only the key names turned a bank list into "[{'id': 'gtb'...}]" and
+        broke every screen it existed to protect — caught by the VTU suite, and
+        pinned here so the coercion stays type-aware."""
+        plans = [{"id": "mtn-1gb", "title": "1GB • 30 days • ₦500.00"}]
         out = flows._check_contract({
-            "screen": "TRANSFER_FORM",
-            "data": {"banks": banks, "error": "", "hint": "Enter the account"}})
-        self.assertEqual(out["data"]["banks"], banks)
+            "screen": "VTU_DATA",
+            "data": {"plans": plans, "summary": "MTN data",
+                     "phone": "08031234567", "error": ""}})
+        self.assertEqual(out["data"]["plans"], plans)
 
     def test_a_missing_array_becomes_an_empty_list_not_an_empty_string(self):
         """A blank of the wrong SHAPE takes the screen down exactly as a missing
         key does."""
         with self.assertLogs("whatsapp", level="ERROR"):
-            out = flows._check_contract({"screen": "TRANSFER_FORM", "data": {}})
-        self.assertEqual(out["data"]["banks"], [])
-        self.assertEqual(out["data"]["hint"], "")
+            out = flows._check_contract({"screen": "VTU_DATA", "data": {}})
+        self.assertEqual(out["data"]["plans"], [])
+        self.assertEqual(out["data"]["summary"], "")
 
     def test_a_string_where_an_array_belongs_is_replaced_not_forwarded(self):
         out = flows._check_contract({
-            "screen": "TRANSFER_FORM",
-            "data": {"banks": "GTBank", "error": "", "hint": ""}})
-        self.assertEqual(out["data"]["banks"], [])
+            "screen": "VTU_DATA",
+            "data": {"plans": "1GB", "summary": "", "phone": "", "error": ""}})
+        self.assertEqual(out["data"]["plans"], [])
 
     def test_a_screen_the_contract_does_not_know_is_passed_through_untouched(self):
         """The ping and error-acknowledgement replies carry no screen at all, and
@@ -124,7 +116,6 @@ class ConformResponseTests(TestCase):
                                  self._keys(out["screen"]), (build.__name__, status))
 
 
-@bank_channel_case
 class ResponseIsTraceableTests(TestCase):
     """Every trace of a Flow session in production was gunicorn's access log — a
     200 and a byte count. "Every request succeeded" and "the customer saw an

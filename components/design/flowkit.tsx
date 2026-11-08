@@ -100,7 +100,7 @@ export const QuickAmounts = ({ amounts, value, onPick }: { amounts: number[]; va
 };
 
 // The one money-amount input used by every transaction flow (transfer, airtime,
-// data, electricity, card funding, savings, Remita, bank link…).
+// data, electricity, betting, card funding, savings, Remita, bank link…).
 // Thousands are grouped when the field is not being edited. Editing uses the
 // raw value so inserted grouping commas cannot block typing or deletion. Kobo
 // and correctly grouped pasted amounts retain their exact monetary value.

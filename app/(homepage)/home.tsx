@@ -5,7 +5,6 @@ import { router, useFocusEffect } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, Btn, Sheet, TxnRow, money, NText } from '@/components/design/ui';
-import EmailVerifyPrompt from '@/components/EmailVerifyPrompt';
 import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
 import { useTheme, font } from '@/lib/theme';
@@ -14,13 +13,26 @@ import { notify } from '@/components/design/Notify';
 import { walletCapabilityMessage } from '@/lib/services/wallet';
 
 const GRID = [
+  { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
+  { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
+  { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
+  { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
   { label: 'Save', icon: 'fixed', go: () => router.push('/savings') },
+  { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
+  { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
   { label: 'More', icon: 'more', more: true },
 ];
 
 const MORE = [
+  { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
   { label: 'Send money', icon: 'send', go: () => router.push('/sendmoney') },
+  { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
+  { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
+  { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
+  { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
+  { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
   { label: 'Insurance', icon: 'insurance', go: () => router.push('/insurance') },
+  { label: 'Remita', icon: 'remita', go: () => router.push('/remita') },
   { label: 'Movie', icon: 'movie', go: () => router.push('/movies') },
   { label: 'Convert', icon: 'convert', go: () => router.push('/convert') },
   { label: 'Invite', icon: 'invite', go: () => router.push('/invite') },
@@ -162,6 +174,8 @@ const Home = () => {
       <Card style={{ margin: 16, marginBottom: 0, flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 16 }}>
         {[
           { icon: 'send', label: 'Transfer', go: () => router.push('/sendmoney') },
+          { icon: 'airtime', label: 'Airtime', go: () => router.push('/buyairtime') },
+          { icon: 'data', label: 'Data', go: () => router.push('/buydata') },
         ].map((q) => (
           <View key={q.label} style={{ flex: 1, minWidth: 0 }}><ServiceTile icon={q.icon} label={q.label} onPress={q.go} round /></View>
         ))}
@@ -214,7 +228,6 @@ const Home = () => {
       </View>
 
       {/* more services sheet */}
-      <EmailVerifyPrompt />
       <Sheet open={more} onClose={() => setMore(false)} title="All services">
         <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
           {MORE.map((s) => (

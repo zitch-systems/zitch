@@ -130,7 +130,7 @@ class AdminApiTests(TestCase):
         # support can't touch money/users/settings
         for path, body in (("txn/flag", {"ref": "x"}), ("users/status", {"uid": 1}),
                            ("settings/update", {"key": "ai_enabled_global", "value": "false"}),
-                           ("fx/margin", {"bps": 50})):
+                           ("fx/margin", {"bps": 50}), ("ops/recon", {})):
             res, _ = self.post(path, self.support_token, body)
             self.assertEqual(res.status_code, 403, path)
         # finance can't touch wa/broadcast/settings
@@ -229,9 +229,14 @@ class AdminApiTests(TestCase):
         t.refresh_from_db()
         self.assertFalse(t.meta.get("flagged"))
 
-    # txn/requery is gone with the VAS rail it requeried. It guarded that only a
-    # provider-pending row could be requeried, refusing settled rows with 409 and
-    # unknown ones with 404; there is no provider left to ask.
+    def test_txn_requery_only_provider_pending(self):
+        t = Transaction.objects.create(user=self.customer, amount=Decimal("100"),
+                                       direction=Transaction.OUT, service="Airtime",
+                                       transaction_status=Transaction.SUCCESS, reference="ZTC-T2")
+        res, _ = self.post("txn/requery", self.finance_token, {"ref": "ZTC-T2"})
+        self.assertEqual(res.status_code, 409)  # settled rows can't be requeried
+        res, _ = self.post("txn/requery", self.finance_token, {"ref": "nope"})
+        self.assertEqual(res.status_code, 404)
 
     def test_fx_margin_and_corridor(self):
         res, body = self.post("fx/margin", self.finance_token, {"bps": 85})
@@ -324,12 +329,17 @@ class AdminApiTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(AuditLog.objects.filter(action="loan.reminder").exists())
 
-    def test_run_maturities(self):
-        # ops/recon was tested here too, until the VAS rail it swept went.
+    def test_run_maturities_and_recon(self):
         res, body = self.post("ops/maturities", self.finance_token)
         self.assertEqual(res.status_code, 200)
         self.assertIn("paid_out", body)
-        self.assertTrue(AuditLog.objects.filter(action="recon.maturities_run").exists())
+        res, body = self.post("ops/recon", self.finance_token)
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("settled", body)
+        # recon.vas_run, not recon.vtu_run: run_recon was renamed with the rail when
+        # the retired provider came out, and this assertion was left behind naming an
+        # audit action nothing writes any more — so it could only ever be false.
+        self.assertTrue(AuditLog.objects.filter(action="recon.vas_run").exists())
 
     def test_wa_conversation_actions(self):
         msisdn = "2348011112222"
@@ -486,13 +496,13 @@ class AdminApiFeatureTests(TestCase):
 
         record_audit("webhook.mono", actor_type="system", target="MONO|X1",
                      after={"event": "mono.events"})
-        self.post("ops/maturities", self.finance_token, {})
+        self.post("ops/recon", self.finance_token, {})
         res, body = self.get("bootstrap", self.readonly_token)
         self.assertTrue(any(w["ref"] == "MONO|X1" and w["src"] == "Mono" for w in body["webhooks"]))
-        # The console labels a recon row by its cron. The VAS sweep used to drive
-        # this; the savings maturity sweep is the only one left, so it is what the
-        # mapping is now proved against.
-        self.assertTrue(any(r["run"] == "zitch-maturities" for r in body["recons"]))
+        # The console labels a recon row by its cron, and _RECON_RUNS points every
+        # surviving VAS action at zitch-reconcile-wema. zitch-reconcile-vtu ran a
+        # command that no longer exists.
+        self.assertTrue(any(r["run"] == "zitch-reconcile-wema" for r in body["recons"]))
 
     def test_wallet_credit_happy_path_and_audit(self):
         res, body = self.post("wallet/credit", self.finance_token,

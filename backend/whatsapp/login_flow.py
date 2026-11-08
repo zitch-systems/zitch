@@ -91,12 +91,12 @@ def _resolve(token, *, lock=False):
 
 
 def _screen(ob, error=""):
-    from .flows import CODE_SCREEN, PIN_CHAIN, _masked_entry_screen, _pin_screen
+    from .flows import CODE_SCREEN, PIN_CHAIN, _identity_screen, _pin_screen
     screen = ob.payload.get("screen") or CODE_SCREEN
     if ob.step == PIN_STATE:
         return _pin_screen("Confirm your identity to connect WhatsApp. No payment will be made.",
                            error=error, screen=screen or PIN_CHAIN)
-    return _masked_entry_screen("email", label="Email code", error=error, screen=screen,
+    return _identity_screen("email", label="Email code", error=error, screen=screen,
                             summary="Enter the code sent to your verified Zitch email.")
 
 
@@ -165,15 +165,12 @@ def handle_login(token, action, data):
         # successful re-link will retire old chat challenges. Browser grants are
         # excluded: they lock user -> link -> action and their link binding already
         # revokes them when we replace the old link below.
-        # The exclusion of the bank verification web action went with that flow:
-        # its action_type cannot be created any more, so there is nothing of that
-        # kind left to spare. Mid-execution payments are still excluded, which is
-        # the exclusion that protects money.
+        from .verification_web import ACTION_TYPE as WEB_ACTION_TYPE
         old_actions = []
         if ob.step == PIN_STATE and action == "data_exchange":
             old_actions = list(PendingAction.objects.select_for_update().filter(
                 user_id=ob.payload.get("user_id"),
-            ).exclude(state=EXECUTING_STATE))
+            ).exclude(action_type=WEB_ACTION_TYPE).exclude(state=EXECUTING_STATE))
         user = User.objects.select_for_update().filter(pk=ob.payload.get("user_id"), is_active=True).first()
         registered = _canonical_phone(user.phone) if user else ""
         if (not user or not registered or registered != ob.msisdn

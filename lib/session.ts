@@ -17,7 +17,6 @@ import { getToken, clearSession, getSessionGeneration } from '@/lib/secureStore'
 export const IDLE_LIMIT_MS = 5 * 60 * 1000; // 5 minutes
 const LAST_ACTIVE_KEY = 'lastActiveAt';
 export const LOCK_KEY = 'z-locked';
-const BACKGROUND_AT_KEY = 'z-bg-at';
 
 /** Record that the user is active now. */
 export async function touchActivity(): Promise<void> {
@@ -29,11 +28,8 @@ export async function lockSession(): Promise<void> {
   await AsyncStorage.setItem(LOCK_KEY, '1');
 }
 
-/** Clear the lock after a successful re-authentication, and mark activity.
- *  A background stamp from before this sign-in (for example while reading the
- *  SMS code) belongs to the old state and must not lock the new session. */
+/** Clear the lock after a successful re-authentication, and mark activity. */
 export async function unlockSession(): Promise<void> {
-  await AsyncStorage.removeItem(BACKGROUND_AT_KEY);
   await AsyncStorage.removeItem(LOCK_KEY);
   await touchActivity();
 }
@@ -138,6 +134,7 @@ export async function enforceHardExpiry(): Promise<boolean> {
  * return if the app was actually away at least this long.
  */
 export const LOCK_AFTER_BACKGROUND_MS = 60 * 1000; // 1 minute
+const BACKGROUND_AT_KEY = 'z-bg-at';
 
 // In-app excursions that legitimately background the app (image picker, camera)
 // must never trigger the lock, however long they take. Call begin() before

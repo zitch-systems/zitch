@@ -1,5 +1,4 @@
 """The deployment hook performs only the explicitly reviewed Flow operation."""
-from banking.test_fixtures import bank_channel_case
 import hashlib
 import json
 import os
@@ -27,7 +26,6 @@ def _digest():
                                      separators=(",", ":")).encode()).hexdigest()
 
 
-@bank_channel_case
 @override_settings(**LIVE)
 class DeployFlowCommandTests(SimpleTestCase):
     def setUp(self):
@@ -103,12 +101,7 @@ class DeployFlowCommandTests(SimpleTestCase):
         self.post.assert_not_called()
         self.assertNotIn("publish", self.delegate.call_args.kwargs)
         self.assertIn(_digest(), self.out.getvalue())
-        # Counted from pin_flow.json: 24 before the VAS removal took the four
-        # VTU screens, then 20 before the identity rail took IDENTITY_SCREEN
-        # and IDENTITY_RETRY. Hard-coded on purpose -- the command reports what
-        # it is about to publish, so a silent change in that number is the bug
-        # this asserts against.
-        self.assertIn("18 screens", self.out.getvalue())
+        self.assertIn("24 screens", self.out.getvalue())
         self.assertNotIn("test-token-never-print", self.out.getvalue() + self.err.getvalue())
 
     def test_retry_reuses_exact_named_draft_and_never_creates_again(self):
@@ -265,7 +258,6 @@ class DeployFlowCommandTests(SimpleTestCase):
         self.assertNotIn("Flow 555 deprecated", self.out.getvalue())
 
 
-@bank_channel_case
 class FlowDeploymentLockAndInventoryTests(SimpleTestCase):
     def test_session_lock_releases_after_success_and_failure_without_a_transaction(self):
         for fails in (False, True):
@@ -321,7 +313,6 @@ class FlowDeploymentLockAndInventoryTests(SimpleTestCase):
             self.assertNotIn("deploy_whatsapp_flow", (root / filename).read_text())
 
 
-@bank_channel_case
 @override_settings(**LIVE)
 class FlowDeploymentRequestPersistenceTests(TestCase):
     def setUp(self):

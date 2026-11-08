@@ -1,0 +1,134 @@
+"""Tests for betting wallet funding."""
+import json
+from decimal import Decimal
+
+from django.test import Client, TestCase
+
+from wallet.models import BankHistoryCheckpoint
+from wallet.services import get_or_create_wallet
+from wallet.tests import make_user
+
+from utility.catalogue_fixtures import map_billers
+
+from .models import BettingPlatform
+
+
+class BettingTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08030000001", "uche@zitch.test", balance="10000")
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = "0453000001"
+        wallet.save(update_fields=["account_number"])
+        BankHistoryCheckpoint.objects.create(wallet=wallet, account_number=wallet.account_number,
+                                             opening_review_required=False)
+        map_billers("bet9ja-betting")
+        BettingPlatform.objects.create(code="bet9ja", name="Bet9ja", color="#0B7A3B",
+                                       service_id="bet9ja-betting")
+        self._key_seq = 0
+
+    def post(self, path, payload):
+        payload = dict(payload)
+        if path == "/api/betting/fund/" and "idempotency_key" not in payload:
+            self._key_seq += 1
+            payload["idempotency_key"] = f"betting-test-{self._key_seq}"
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def balance(self):
+        return get_or_create_wallet(self.user).balance
+
+    def test_platforms_listed(self):
+        res, body = self.post("/api/betting/list/", {})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["platforms"][0]["code"], "bet9ja")
+
+    def test_fund_debits_wallet(self):
+        res, body = self.post("/api/betting/fund/", {
+            "access_token": self.token, "platform": "bet9ja", "user_id": "ZB12345",
+            "amount": "2000", "transaction_pin": "1234",
+        })
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["success"])
+        self.assertEqual(self.balance(), Decimal("8000"))
+
+    def test_fund_rejects_wrong_pin(self):
+        res, _ = self.post("/api/betting/fund/", {
+            "access_token": self.token, "platform": "bet9ja", "user_id": "ZB12345",
+            "amount": "2000", "transaction_pin": "0000",
+        })
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(self.balance(), Decimal("10000"))
+
+    def test_fund_rejects_insufficient(self):
+        # Within the tier-1 cap (₦50k) but above the ₦10k balance -> insufficient.
+        res, _ = self.post("/api/betting/fund/", {
+            "access_token": self.token, "platform": "bet9ja", "user_id": "ZB12345",
+            "amount": "20000", "transaction_pin": "1234",
+        })
+        self.assertEqual(res.status_code, 402)
+        self.assertEqual(self.balance(), Decimal("10000"))
+
+    def test_fund_rejects_over_tier_limit(self):
+        # Funding above the KYC tier cap (₦50k for tier 1) is refused by the
+        # tier/AML gate before any debit — the same control as the transfer flow.
+        res, body = self.post("/api/betting/fund/", {
+            "access_token": self.token, "platform": "bet9ja", "user_id": "ZB12345",
+            "amount": "60000", "transaction_pin": "1234",
+        })
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(body.get("code"), "limit_exceeded")
+        self.assertEqual(self.balance(), Decimal("10000"))
+
+    def test_fund_rejects_short_user_id(self):
+        res, _ = self.post("/api/betting/fund/", {
+            "access_token": self.token, "platform": "bet9ja", "user_id": "ab",
+            "amount": "2000", "transaction_pin": "1234",
+        })
+        self.assertEqual(res.status_code, 400)
+
+    def test_fund_unknown_platform(self):
+        res, _ = self.post("/api/betting/fund/", {
+            "access_token": self.token, "platform": "nope", "user_id": "ZB12345",
+            "amount": "2000", "transaction_pin": "1234",
+        })
+        self.assertEqual(res.status_code, 404)
+
+    def test_fund_idempotent(self):
+        payload = {
+            "access_token": self.token, "platform": "bet9ja", "user_id": "ZB12345",
+            "amount": "2000", "transaction_pin": "1234", "idempotency_key": "bet-key-1",
+        }
+        res1, _ = self.post("/api/betting/fund/", payload)
+        res2, body2 = self.post("/api/betting/fund/", payload)
+        self.assertEqual(res1.status_code, 200)
+        self.assertEqual(res2.status_code, 200)
+        self.assertTrue(body2.get("duplicate"))
+        # Debited exactly once despite the retry.
+        self.assertEqual(self.balance(), Decimal("8000"))
+
+    def test_fund_requires_a_client_idempotency_key(self):
+        res, body = self.post("/api/betting/fund/", {
+            "access_token": self.token, "platform": "bet9ja", "user_id": "ZB12345",
+            "amount": "2000", "transaction_pin": "1234", "idempotency_key": None,
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(body.get("code"), "idempotency_key_required")
+        self.assertEqual(self.balance(), Decimal("10000"))
+
+    def test_retry_replays_after_platform_is_deactivated(self):
+        payload = {
+            "access_token": self.token, "platform": "bet9ja", "user_id": "ZB12345",
+            "amount": "2000", "transaction_pin": "1234",
+            "idempotency_key": "betting-retired-platform-1",
+        }
+        first, first_body = self.post("/api/betting/fund/", payload)
+        BettingPlatform.objects.filter(code="bet9ja").update(active=False)
+        retry, retry_body = self.post("/api/betting/fund/", {
+            **payload, "transaction_pin": "0000",
+        })
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(retry.status_code, 200)
+        self.assertTrue(retry_body["duplicate"])
+        self.assertEqual(retry_body["reference"], first_body["reference"])
+        self.assertEqual(self.balance(), Decimal("8000"))

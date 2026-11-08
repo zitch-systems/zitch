@@ -189,7 +189,7 @@ export const ConnectedAccounts = () => {
       if (r.mock) {
         await clearSpendAttempt(scope, fingerprint, requestKey);
         closeFunding();
-        notify('Bank funding unavailable', 'No debit was made. Please try again later.');
+        notify('Test mode', 'Bank funding is in test mode — no real debit was made.');
         return;
       }
       let authorizationUrl: URL | null = null;

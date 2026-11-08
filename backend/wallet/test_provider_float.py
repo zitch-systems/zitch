@@ -1,4 +1,3 @@
-from banking.test_fixtures import bank_channel_case
 """A provider's empty float must never be reported as the customer's balance.
 
 From production, 2026-09-08. The confirm card said "Available balance ₦1,000.00"
@@ -13,9 +12,9 @@ OUR OWN float at the VAS provider, in a sentence the provider writes in the seco
 person. The customer was told by their bank that their money had gone.
 
 It cannot be their balance, and that is structural rather than a judgement call:
-the purchase path debited the customer BEFORE calling the provider, and debit()
-raises InsufficientFunds when the wallet cannot cover the amount. A provider only
-ever got to answer after the customer's money had already moved.
+run_provider_purchase debits the customer BEFORE calling the provider, and
+debit() raises InsufficientFunds when the wallet cannot cover the amount. A
+provider only ever gets to answer after the customer's money has already moved.
 
 The VAS rail has since moved to the partner bank, and the rule is unchanged — the
 argument above is about the ORDER of the debit and the provider call, not about which
@@ -27,7 +26,9 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from wallet.services import PROVIDER_FLOAT_MESSAGE, customer_safe_failure
+from wallet.services import (PROVIDER_FLOAT_MESSAGE, credit,
+                             customer_safe_failure, get_or_create_wallet,
+                             run_provider_purchase)
 
 User = get_user_model()
 
@@ -90,10 +91,37 @@ class CustomerSafeFailureTests(TestCase):
         self.assertIn("airtime", joined)
 
 
-# TheCustomersMoneyIsUntouchedTests drove the whole purchase path -- debit,
-# provider failure, then settle_or_refund -- to prove a failed purchase left the
-# balance where it was and kept the provider's own words on the row for the
-# console. run_provider_purchase went with the VAS rail, so there is no purchase
-# to drive. CustomerSafeFailureTests above is the part that still matters and
-# still runs: the masking rule it covers is live, used by common.http for every
-# provider failure a customer sees.
+class TheCustomersMoneyIsUntouchedTests(TestCase):
+    """The other half of the promise the message makes."""
+
+    def setUp(self):
+        # Verified, like any customer who can actually reach a purchase: the
+        # spend gate refuses an unverified account long before the provider.
+        self.user = User.objects.create(
+            username="c1", phone="08011112222", email="c1@zitch.test",
+            first_name="Ada", last_name="Eze", tier=1, email_verified=True,
+            phone_verified=True, bvn_verified=True, nin_verified=True)
+        get_or_create_wallet(self.user)
+        credit(self.user, Decimal("1000.00"), "test-topup")
+
+    def test_a_failed_purchase_leaves_the_balance_where_it_was(self):
+        wallet = get_or_create_wallet(self.user)
+        self.assertEqual(wallet.balance, Decimal("1000.00"))
+
+        status, txn, result = run_provider_purchase(
+            self.user, Decimal("100.00"), "Airtime - MTN", {},
+            lambda ref: {"success": False, "message": PROVIDER_FLOAT_EMPTY},
+        )
+        self.assertEqual(status, "failed")
+        wallet.refresh_from_db()
+        self.assertEqual(wallet.balance, Decimal("1000.00"),
+                         "the customer was charged for our empty float")
+
+    def test_the_provider_text_is_kept_on_the_row_for_the_console(self):
+        _status, txn, _result = run_provider_purchase(
+            self.user, Decimal("100.00"), "Airtime - MTN", {},
+            lambda ref: {"success": False, "message": PROVIDER_FLOAT_EMPTY},
+        )
+        txn.refresh_from_db()
+        self.assertIn("12.25", txn.meta.get("failure", ""),
+                      "operators lost the real reason")

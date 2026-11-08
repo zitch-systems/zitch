@@ -1,5 +1,4 @@
 """WhatsApp payment validation must match the live bank/account guardrails."""
-from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -14,7 +13,6 @@ from whatsapp.models import PendingAction
 from whatsapp.test_flows import MSISDN, _make_user, _transfer_action
 
 
-@bank_channel_case
 class TransferBoundaryTests(TestCase):
     def setUp(self):
         self.user = _make_user()

@@ -23,11 +23,8 @@ class PartnershipRoutingTests(SimpleTestCase):
 
     @override_settings(BANK_ACCOUNT_PROVIDER="wema_vas", KYC_PROVIDER="prembly")
     def test_stale_environment_selectors_cannot_enable_retired_integration(self):
-        # Neither a retired selector nor any other value can name a provider:
-        # there is none. Previously this proved the stale value could not
-        # redirect away from 9PSB; it now proves it cannot conjure a rail.
-        self.assertEqual(bank_account_provider(), "")
-        self.assertEqual(kyc_provider(), "")
+        self.assertEqual(bank_account_provider(), "partnership")
+        self.assertEqual(kyc_provider(), "wema")
 
 
 class PartnershipDiagnosticsTests(TestCase):
@@ -41,3 +38,20 @@ class PartnershipDiagnosticsTests(TestCase):
         # operator page must still be unavailable to an authenticated operator.
         response = self.client.get("/admin/vas-transaction-query/")
         self.assertEqual(response.status_code, 404)
+
+    def test_report_is_read_only_and_does_not_claim_provider_acceptance(self):
+        from django.db import connection
+
+        def only_reads(execute, sql, params, many, context):
+            self.assertTrue(sql.lstrip().upper().startswith("SELECT"), sql)
+            return execute(sql, params, many, context)
+
+        output = StringIO()
+        with connection.execute_wrapper(only_reads), patch("requests.sessions.Session.request") as network:
+            call_command("partnership_diagnostics", stdout=output)
+        network.assert_not_called()
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["account_provider"], "partnership")
+        self.assertTrue(report["read_only"])
+        self.assertFalse(report["release_authorization"])
+        self.assertIn("financial_controls", report)

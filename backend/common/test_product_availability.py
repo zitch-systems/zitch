@@ -9,8 +9,6 @@ from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from banking.test_client import CONFIG
-from banking.test_fixtures import make_bank_user
 from cards.models import VirtualCard
 from cards.services import claim_card_funding
 from common.http import spend_key
@@ -21,19 +19,15 @@ from savings.services import lock, pay_out
 from utility.providers import card_capabilities, fund_card
 from wallet.forex import FxError, create_fx_quote, execute_fx
 from wallet.models import CurrencyWallet, FxQuote, Transaction, Wallet
+from wallet.tests import make_user
 
 
 PRODUCTION = {"DEBUG": False, "TESTING": False, "WEMA": {"SIMULATION": False}}
 
 
-# Savings locking is a customer debit and runs the spending gate, so the fixture
-# needs a bank-backed customer. NINEPSB only has to be configured for that gate:
-# every assertion below about a product being unavailable is reached through
-# `mock_disabled_in_prod`, which short-circuits before the bank rail is consulted.
-@override_settings(NINEPSB=CONFIG)
 class ProductAvailabilityTests(TestCase):
     def setUp(self):
-        self.user, self.token = make_bank_user("08010000671", "scope@zitch.test", balance="200000")
+        self.user, self.token = make_user("08010000671", "scope@zitch.test", balance="200000")
 
     def post(self, path, **data):
         return self.client.post(path, json.dumps({"access_token": self.token, **data}),
@@ -169,6 +163,6 @@ class ProductAvailabilityTests(TestCase):
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("200000"))
 
     @override_settings(DEBUG=False, TESTING=False, WEMA={"SIMULATION": True})
-    def test_retired_simulation_cannot_enable_products(self):
+    def test_deliberate_simulation_remains_available(self):
         for product in MESSAGES:
-            self.assertFalse(product_available(product))
+            self.assertTrue(product_available(product))

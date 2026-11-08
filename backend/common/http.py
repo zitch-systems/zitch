@@ -225,26 +225,6 @@ _FIRST_SPEND_CHECKS = (
     ("tier1_identity_verified", "BVN or NIN"),
 )
 
-#: The identity leg of the floor, skipped while no provider can grant it.
-#:
-#: bvn_verified and nin_verified are written ONLY by a bank or identity provider
-#: confirming the number -- never by the customer asserting it. With no provider
-#: configured there is no way to earn either, so leaving this leg in refused
-#: every outbound debit on every surface, permanently, and sent the customer to
-#: "reply *8*", a verification flow that also cannot complete. The ledger and
-#: savings gates already skip their bank legs the same way, for the same reason:
-#: a control nobody can satisfy is not a control, it is an outage.
-#:
-#: What the floor still proves when bankless is a phone and an email, both
-#: Zitch's own. It does NOT prove who owns the account. The only ladder left
-#: beneath that is the Tier 0 ceiling, which every bankless account sits on,
-#: because tiers are bank-granted (User.recompute_tier).
-#:
-#: Conditional rather than deleted so the floor comes back on its own the moment
-#: a provider is configured, instead of resting on someone remembering to
-#: restore it.
-_PROVIDER_GRANTED_CHECKS = {"tier1_identity_verified"}
-
 
 def stale_pin_error(user) -> "str | None":
     """Refusal for an account still holding a pre-6-digit PIN, or None.
@@ -287,12 +267,8 @@ def unverified_error(user) -> "str | None":
     stale = stale_pin_error(user)
     if stale:
         return stale
-    from wallet.services import bankless_provider
-
-    bankless = bankless_provider()
     missing = [label for field, label in _FIRST_SPEND_CHECKS
-               if not getattr(user, field, False)
-               and not (bankless and field in _PROVIDER_GRANTED_CHECKS)]
+               if not getattr(user, field, False)]
     if not missing:
         return None
     if len(missing) > 1:
@@ -426,14 +402,10 @@ def idempotent_replay(prior):
 
         if not hmac.compare_digest(expected, stored):
             return fail(
-                "This retry key belongs to an earlier transaction. Check its status before starting another payment.",
+                "That retry key belongs to a different transaction. Start a new request.",
                 status=409,
                 code="idempotency_conflict",
                 duplicate=True,
-                # existing_for_key scopes this row to the authenticated owner.
-                # Keep this distinct from reference: its outcome does not prove
-                # that the caller's changed payment details were executed.
-                previous_reference=prior.reference,
             )
     quarantine = meta.get("wema_reversal_quarantine") or {}
     under_reversal_review = (
@@ -459,8 +431,7 @@ def idempotent_replay(prior):
             duplicate=True,
         )
     if prior.transaction_status == Transaction.FAILED:
-        return fail("This payment failed. Review the details before starting another payment.",
-                    status=400, code="duplicate", duplicate=True, reference=prior.reference)
+        return fail("This request already failed — please start a new one", status=409, code="duplicate")
     if prior.transaction_status == Transaction.PENDING:
         # A duplicate key proves only that we already accepted this ATTEMPT. It
         # does not prove that the provider delivered it. Reporting every
@@ -489,10 +460,6 @@ def idempotent_replay(prior):
             token = meta.get("provider_reference")
         if token:
             extra["token"] = str(token)
-        if isinstance(meta.get("electricity_units"), str):
-            extra["electricity_units"] = meta["electricity_units"][:40]
-        if meta.get("receipt_pending") is True:
-            extra["receipt_pending"] = True
         return ok(success=True, reference=prior.reference, message="Already processed",
                   duplicate=True, **extra)
     # Transaction.status has model choices, but fail closed if legacy or corrupt
@@ -744,25 +711,20 @@ def parse_json_object(request, *, limit: int | None = None):
     return data, None
 
 
-def api(view=None, *, max_body=None):
-    """POST-only, size-bounded JSON parsed into ``request.data``.
+def api(view):
+    """POST-only, size-bounded JSON parsed into ``request.data``."""
 
-    ``@api`` uses API_MAX_BODY_BYTES; ``@api(max_body=...)`` raises the bound for
-    the few endpoints that carry one document upload.
-    """
-    def decorate(view):
-        @csrf_exempt
-        @functools.wraps(view)
-        def wrapper(request, *args, **kwargs):
-            if request.method != "POST":
-                return fail("Method not allowed", status=405)
-            request.data, error = parse_json_object(request, limit=max_body() if callable(max_body) else max_body)
-            if error is not None:
-                return error
-            return view(request, *args, **kwargs)
-        return wrapper
+    @csrf_exempt
+    @functools.wraps(view)
+    def wrapper(request, *args, **kwargs):
+        if request.method != "POST":
+            return fail("Method not allowed", status=405)
+        request.data, error = parse_json_object(request)
+        if error is not None:
+            return error
+        return view(request, *args, **kwargs)
 
-    return decorate(view) if view is not None else decorate
+    return wrapper
 
 
 def resolve_token(request) -> str:

@@ -12,7 +12,6 @@ Three defects from one production thread, and the invariant each one leaves:
 * The Flow's closing screen rendered one sentence for every ending, so a settled
   transfer, a queued one and a refused one looked alike at a glance.
 """
-from banking.test_fixtures import bank_channel_case
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -22,22 +21,18 @@ from django.utils import timezone
 
 from transfers.models import Bank
 from whatsapp import router
-from whatsapp.flows import FLOW_ID_STATE, _success_screen
+from whatsapp.flows import ACCOUNT_OTP, FLOW_ID_STATE, _success_screen
 from whatsapp.models import PendingAction
 from whatsapp.test_flows import MSISDN, _make_user
 
 
 def _identity_action(user, action_type="kyc", **payload):
-    """An armed email step. The default was a BVN step, which cannot be armed
-    any more -- the identity Flow went with the rail, so email is the only kind
-    this state now carries."""
     return PendingAction.objects.create(
         user=user, msisdn=MSISDN, action_type=action_type, state=FLOW_ID_STATE,
-        payload={"id_kind": "email", "id_step": "address", **payload},
+        payload={"id_kind": "bvn", "id_fallback_state": "bvn", **payload},
         expires_at=timezone.now() + timedelta(minutes=10))
 
 
-@bank_channel_case
 class TypedIdentityIsAnsweredTests(TestCase):
     """The escape hatch and the typed-answer path on an open identity Flow."""
 
@@ -55,27 +50,35 @@ class TypedIdentityIsAnsweredTests(TestCase):
         self.assertIn("leaving that verification", reply.call_args[0][1])
         self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
 
-    #: An 11-digit number typed into an open identity Flow was processed rather
-    #: than refused, handed to the "bvn" chat step, and answered with a tip on
-    #: deleting the message -- because refusing to read it did not un-send it.
-    #: There is no identity number to type now, and no step to hand it to. The
-    #: email pair below covers what is left of this path: an address recognised
-    #: by shape before the new-instruction hatch, and no delete tip for it.
+    def test_a_typed_identity_number_is_processed_not_refused(self):
+        pa = _identity_action(self.user)
+        with patch.object(router, "reply") as reply, \
+             patch.object(router, "_advance_kyc") as advance:
+            router._advance(pa, self.user, MSISDN, "81083752916")
+        advance.assert_called_once_with(pa, self.user, MSISDN, "81083752916")
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, "bvn")   # handed to the chat step, not left armed
+        self.assertIn("delete your message", reply.call_args[0][1].lower())
 
-    def test_a_retired_account_setup_is_closed_without_reading_the_number(self):
-        """In-chat account opening belonged to the retired partner bank. A
-        session left open from it is closed, and the typed number is not used."""
-        from whatsapp.models import PendingAction
-        from whatsapp.retired_setup import RETIRED_SETUP_MESSAGE
-        for text in ("81083752916", "123456"):
-            with self.subTest(text=text):
-                pa = _identity_action(self.user, action_type="add_account", id_kind="account_otp")
-                with patch.object(router, "reply") as reply, \
-                     patch.object(router, "_advance_kyc") as kyc:
-                    router._advance(pa, self.user, MSISDN, text)
-                kyc.assert_not_called()
-                reply.assert_called_once_with(MSISDN, RETIRED_SETUP_MESSAGE)
-                self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
+    def test_add_account_routes_to_its_own_handler(self):
+        """Signup parks both ID types in one 'bvn' entry state and has a
+        different advance function; sending it to the KYC one would ask the
+        wrong questions about a number that is already right."""
+        pa = _identity_action(self.user, action_type="add_account")
+        with patch.object(router, "reply"), \
+             patch.object(router, "_advance_add_account") as advance:
+            router._advance(pa, self.user, MSISDN, "81083752916")
+        advance.assert_called_once()
+
+    def test_a_typed_account_code_is_processed(self):
+        pa = _identity_action(self.user, action_type="add_account",
+                              id_kind=ACCOUNT_OTP, tracking_id="t1")
+        with patch.object(router, "reply"), \
+             patch.object(router, "_advance_add_account") as advance:
+            router._advance(pa, self.user, MSISDN, "123456")
+        advance.assert_called_once()
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, "otp")
 
     def test_a_typed_email_address_is_processed_and_not_read_as_a_new_command(self):
         """The one identity answer that contains letters. Recognised by shape
@@ -111,18 +114,15 @@ class TypedIdentityIsAnsweredTests(TestCase):
         self.assertIn("no code to re-send", reply.call_args[0][1])
         self.assertTrue(PendingAction.objects.filter(pk=pa.pk).exists())
 
-    def test_a_wrong_shaped_answer_is_nudged_rather_than_treated_as_a_command(self):
-        """Was asserted on "11-digit BVN". The nudge now names the email step,
-        which is the only thing this screen can be waiting for."""
+    def test_a_wrong_length_number_is_nudged_rather_than_treated_as_a_command(self):
         pa = _identity_action(self.user)
         with patch.object(router, "reply") as reply, \
              patch.object(router, "handle_inbound") as inbound:
             router._advance(pa, self.user, MSISDN, "8108375")
         inbound.assert_not_called()
-        self.assertIn("email address", reply.call_args[0][1])
+        self.assertIn("11-digit BVN", reply.call_args[0][1])
 
 
-@bank_channel_case
 class BankDetectedFromTheAccountNumberTests(TestCase):
     """"Send 1000 to Mutumin 2217940528" — a complete instruction that used to
     open the guided form because it named no bank."""
@@ -196,7 +196,6 @@ class BankDetectedFromTheAccountNumberTests(TestCase):
         form.assert_not_called()
 
 
-@bank_channel_case
 class TerminalScreenReportsTheOutcomeTests(TestCase):
     """The closing screen says WHICH ending this was, in its heading."""
 

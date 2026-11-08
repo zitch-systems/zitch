@@ -53,6 +53,13 @@ SIGNUP_PHONE_CODE = "SIGNUP_PHONE_CODE"
 #: so error re-renders stay put instead of navigating.
 PIN_CHAIN = "PIN_CHAIN"
 IDENTITY_CHAIN = "IDENTITY_CHAIN"
+#: The second identity attempt. A DIFFERENT screen for the same reason
+#: PIN_CONFIRM is one: WhatsApp keeps a form's client-side state when the
+#: endpoint answers with the same screen id, so "that number isn't valid, try
+#: again" re-rendered onto IDENTITY_SCREEN arrived with the rejected digits
+#: still in the box - one tap resubmitted the number that had just been
+#: refused, and burned the next attempt on it. A separate screen starts empty.
+IDENTITY_RETRY = "IDENTITY_RETRY"
 #: The 6-digit code pages. IDENTITY_CHAIN carries a code reached IN-SESSION
 #: (BVN/NIN accepted -> the bank's phone OTP; email address -> its own
 #: Zitch email code); CODE_SCREEN is the ROOT for a code asked in a fresh
@@ -84,6 +91,17 @@ _PIN_CONFIRM_ATTEMPTS = 2   # confirm mismatches per create session
 #: this screen re-renders it (same id).
 PIN_CONFIRM_RETRY = "PIN_CONFIRM_RETRY"
 TRANSFER_FORM = "TRANSFER_FORM"
+#: The airtime/data ladder, one Flow instead of four chat round-trips: what to
+#: buy, then the network, then the details, then the PIN - each a page of the
+#: SAME open session. VTU_SCREEN is the root; the other three are only ever
+#: routed into, which is what keeps the root openable (see PIN_CHAIN).
+#: Airtime and data split at the third page because their inputs genuinely
+#: differ - an amount you type versus a plan you pick from that network's list.
+VTU_SCREEN = "VTU_SCREEN"
+VTU_NETWORK = "VTU_NETWORK"
+VTU_AIRTIME = "VTU_AIRTIME"
+VTU_DATA = "VTU_DATA"
+IDENTITY_SCREEN = "IDENTITY_SCREEN"
 EMAIL_SCREEN = "EMAIL_SCREEN"
 SUCCESS_SCREEN = "SUCCESS"
 #: The outcome, on a screen that does NOT end the Flow.
@@ -117,9 +135,14 @@ FLOW_PASSWORD_STATE = "flow_password"       # ...while the app-password page is 
 #: reason the PIN and the BVN are collected here.
 SIGNUP_PASSWORD = "SIGNUP_PASSWORD"
 FLOW_FORM_STATE = "flow_transfer_form"   # PendingAction.state while the transfer form is open
+FLOW_VTU_STATE = "flow_vtu"   # ...while the airtime/data form is open (payload["vtu_step"] says which page)
 FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
 _OB_PREFIX = "ob"             # marks a flow_token that addresses an onboarding, not a money action
 _ID_PREFIX = "id"             # marks a flow_token that addresses a KYC identity step
+#: id_kind for the bank's SMS code that completes account creation. It rides the
+#: identity token because it is the second half of one step: the BVN goes in on
+#: the masked screen and the code that name-matches it comes back on the same.
+ACCOUNT_OTP = "account_otp"
 _AP_PREFIX = "ap"             # marks an app hand-off token (deep-link biometric approval)
 
 #: Confirm states an app hand-off may resolve in. Both mean "armed, awaiting the
@@ -527,7 +550,7 @@ def resolve_flow_token(token: str):
         return None
     pid, sig = parsed
     pa = PendingAction.objects.filter(id=pid).first()
-    if pa is None or pa.state not in (FLOW_PIN_STATE, FLOW_FORM_STATE) or pa.expired:
+    if pa is None or pa.state not in (FLOW_PIN_STATE, FLOW_FORM_STATE, FLOW_VTU_STATE) or pa.expired:
         return None
     if not hmac.compare_digest(sig, _sig(f"{pa.id}:{pa.msisdn}")):
         return None
@@ -580,21 +603,14 @@ def _pa_screen_fields(pa) -> dict:
     return pa.payload.get("flow_fields") or pa.payload.get("flow_summary", "")
 
 
-def _masked_entry_screen(kind: str, error: str = "", summary: str = "", label: str = "",
-                         screen: str = CODE_SCREEN) -> dict:
-    """The masked-entry screen - one published masked input, so every secret the
-    ladder collects is entered the same way.
-
-    Was _identity_screen, and defaulted to IDENTITY_SCREEN with 11-digit BVN/NIN
-    wording. Both the screen and that wording went with the identity rail; every
-    caller left is a 6-digit code page (the email confirmation code, the PIN
-    reset code), so the default is the code root and the summary no longer
-    claims a length. Each caller passes its own summary and label anyway -- the
-    defaults only matter if one stops.
-    """
-    which = (kind or "code").upper()
+def _identity_screen(kind: str, error: str = "", summary: str = "", label: str = "",
+                     screen: str = IDENTITY_SCREEN) -> dict:
+    """The masked-entry screen. Defaults to the 11-digit BVN/NIN wording, but the
+    email confirmation code rides the same screen - one published masked input,
+    so every secret the ladder collects is entered the same way."""
+    which = (kind or "BVN").upper()
     return {"screen": screen,
-            "data": {"summary": summary or f"Enter your {which}",
+            "data": {"summary": summary or f"Enter your 11-digit {which}",
                      "label": label or which,
                      "error": error or ""}}
 
@@ -909,23 +925,32 @@ def _handle_flow_request(payload: dict) -> dict:
         return (_confirm_pin_screen() if ob.payload.get("flow_pin_hash")
                 else _pin_screen(_ob_summary(ob), screen=_flow_screen(ob, PIN_SCREEN)))
 
-    # The email step. This prefix used to carry the BVN/NIN screens as well --
-    # same reasoning as the PIN, that an identity number typed into the chat
-    # stays in the customer's own history forever, so it was collected in the
-    # encrypted Flow instead. Those screens needed a provider to confirm the
-    # number and went with the rail; email is what is left, and the token
-    # prefix, its resolver and the screen builder are shared, so they stay.
-    #
-    # A session armed before the removal can still present a token whose payload
-    # says "bvn". It gets the expiry screen rather than a BVN box, which is the
-    # truthful answer: there is nothing behind that box any more.
+    # A KYC identity step. Same reasoning as the PIN: a BVN or NIN typed into the
+    # chat stays in the customer's own history forever - WhatsApp has no
+    # view-once for text and lets only the sender delete - so it is collected in
+    # the encrypted Flow instead.
     if str(token).startswith(_ID_PREFIX):
         pa = resolve_identity_token(token)
-        if pa is None or pa.payload.get("id_kind") != "email":
+        if pa is None:
             return _success_screen("This verification expired. Reply 8 in the chat to start again.")
+        kind = pa.payload.get("id_kind", "BVN")
         if action == "data_exchange":
-            return _submit_email(pa, data)
-        return _email_step_screen(pa)
+            if kind == "email":
+                return _submit_email(pa, data)
+            if kind == ACCOUNT_OTP:
+                return _submit_account_otp(pa, data)
+            # An armed challenge means this submit is the CODE, not the number:
+            # the identity was accepted on the previous exchange of this session.
+            if pa.payload.get("id_otp_hash"):
+                return _submit_identity_otp(pa, data)
+            return _submit_identity(pa, data)
+        if kind == "email":
+            return _email_step_screen(pa)
+        if kind == ACCOUNT_OTP:
+            return _account_otp_screen(pa)
+        if pa.payload.get("id_otp_hash"):
+            return _identity_otp_screen(pa)
+        return _identity_screen(kind)
 
     if action == "INIT":
         # The money confirm opens through here (flow_action=data_exchange), so
@@ -946,6 +971,8 @@ def _handle_flow_request(payload: dict) -> dict:
                 "This request has ended. Check the chat for its outcome, or start again there.")
         if pa.state == FLOW_FORM_STATE:
             return _transfer_form_screen()
+        if pa.state == FLOW_VTU_STATE:
+            return _vtu_screen_for(pa)
         if pa.action_type == "setpin":
             return _set_pin_screen(pa)
         return _open_pin_screen(pa)
@@ -958,6 +985,8 @@ def _handle_flow_request(payload: dict) -> dict:
         pa = resolve_flow_token(token)
         if pa is not None and pa.state == FLOW_FORM_STATE:
             return _submit_transfer_form(token, data)
+        if pa is not None and pa.state == FLOW_VTU_STATE:
+            return _submit_vtu(pa, data)
         return _submit_pin(token, data)
 
     # BACK / unknown actions: re-render the PIN screen if we can, else a terminal.
@@ -1350,11 +1379,300 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
     return _success_screen(message)
 
 
+def _submit_identity(pa, data: dict) -> dict:
+    """Take a BVN/NIN from the encrypted Flow and hand it to the same verification
+    the chat path uses - one implementation, so the two entry points cannot drift
+    on what counts as valid, what gets hashed, or what is queued for review.
+
+    The number is never echoed back into a screen, and never reaches the chat.
+    """
+    import re
+
+    from .router import _MAX_ID_ATTEMPTS, _account_submit_identity, _kyc_submit_identity
+
+    # For account setup, the WhatsApp menu stores the selected rail as id_type;
+    # do not let a default/old id_kind turn a NIN submission into BVN.
+    kind = pa.payload.get("id_kind") or pa.payload.get("id_type") or "bvn"
+    if pa.action_type == "add_account" and pa.payload.get("id_type") in ("bvn", "nin"):
+        kind = pa.payload["id_type"]
+    number = "".join(ch for ch in str(data.get("number", "")) if ch.isdigit())
+    if not re.fullmatch(r"\d{11}", number):
+        # The retry twin, so the masked box comes back empty - same reasoning as
+        # a rejected number, minus the attempt: a typo is not a verdict.
+        pa.payload["flow_screen"] = IDENTITY_RETRY
+        pa.save(update_fields=["payload"])
+        return _identity_screen(kind, error="That should be exactly 11 digits.",
+                                screen=IDENTITY_RETRY)
+
+    try:
+        # A verified BVN whose account callback was missed cannot be recreated by
+        # SMS: the provider sees a duplicate customer. Its documented face route
+        # completes the original account creation. The raw BVN remains inside the
+        # encrypted Flow and is passed only to the bank-hosted one-time session.
+        if pa.payload.get("id_purpose") in ("account_face", "face"):
+            from .router import _clear_actions, _face_account_setup_held, _send_identity_face_option
+
+            if _face_account_setup_held(pa.user):
+                _clear_actions(pa.msisdn)
+                return _success_screen(
+                    "Your identity check is already complete or processing. "
+                    "Return to the chat and reply 6 to check your funding account; "
+                    "you do not need to repeat face verification.")
+
+            if _send_identity_face_option(pa, pa.user, pa.msisdn, kind, number,
+                                          account_setup=pa.payload.get("id_purpose") == "account_face"):
+                return _success_screen("Face verification is ready. Open the secure face link in the chat. Your result will be confirmed after the bank completes its check.")
+            return _success_screen("Face verification is temporarily unavailable. Return to the chat and try verification again shortly.")
+        # Both entry points collect the same number on the same screen; what
+        # happens next is the action's business, not this module's.
+        if pa.action_type == "add_account":
+            # Persist the selected BVN/NIN rail before provisioning and OTP.
+            if kind in ("bvn", "nin"):
+                pa.payload["id_type"] = kind
+                pa.save(update_fields=["payload"])
+            outcome = _account_submit_identity(pa, pa.user, pa.msisdn, number,
+                                               in_flow=True)
+            if outcome == "otp":
+                # The bank accepted the ID and sent its SMS code - collected on
+                # the NEXT PAGE of this same session, not a second flow message.
+                pa.refresh_from_db()
+                return _account_otp_screen(pa)
+            if outcome == "face":
+                return _success_screen(
+                    "Open the secure face-verification link in the chat. "
+                    "Your verification changes only after the bank confirms it.")
+            if outcome == "processing":
+                return _success_screen(
+                    "Your bank accepted the verification code. Account setup is processing. "
+                    "You do not need to submit your identity or code again.")
+            if outcome == "adopted":
+                return _success_screen("Account found ✅ — see the chat for the bank-upgrade step.")
+            if outcome == "upgrade":
+                # The account is open; only the identity is blocked. Closing on
+                # the failure screen below would say setup failed, which the
+                # chat is at that moment denying.
+                return _success_screen(
+                    "Your account is ready. Further identity checks are needed for an upgrade. "
+                    "See the next steps in the chat.")
+            if outcome == "fail":
+                # A hard failure: the ID was refused, name-matched to a different
+                # person, or the provider was unreachable. _account_submit_identity
+                # has already cleared the pending action and sent a "⚠️ ..." line
+                # to the chat. Falling through to the shared "received ✅" screen
+                # would close the secure Flow on a green success the chat is
+                # simultaneously contradicting. Unlike the KYC branch, there is no
+                # review queue here that would make "received" true.
+                return _success_screen(
+                    "We couldn't finish setting up your account - see the chat for what happened.")
+        else:
+            # In production the Wallet Creation product is Wema's identity
+            # verification rail: it accepts BVN or NIN, sends its own OTP and
+            # name-matches the holder before the identity can lift KYC.  Start
+            # that flow directly instead of treating a standalone lookup error
+            # as a bad identity number.  Keep the existing fallback for local
+            # and test deployments where Wema account creation is unavailable.
+            from wallet import views as wallet_views
+
+            if (wallet_views._wema_funding_enabled()
+                    and not bool((getattr(settings, "WEMA", {}) or {}).get("SIMULATION"))):
+                pa.action_type = "add_account"
+                pa.payload["id_type"] = kind
+                pa.save(update_fields=["action_type", "payload"])
+                outcome = _account_submit_identity(pa, pa.user, pa.msisdn, number,
+                                                   in_flow=True)
+            else:
+                outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
+            if outcome == "invalid":
+                # A wrong number is corrected by the customer, not queued - but
+                # on a FRESH screen, so the refused digits are gone and the retry
+                # is a real retry rather than a resubmit of the same number.
+                pa.refresh_from_db()
+                left = _MAX_ID_ATTEMPTS - int(pa.payload.get("id_bad_attempts") or 0)
+                pa.payload["flow_screen"] = IDENTITY_RETRY
+                pa.save(update_fields=["payload"])
+                return _identity_screen(
+                    kind, screen=IDENTITY_RETRY,
+                    error=f"That {kind.upper()} isn't valid for this account. "
+                          f"Check the digits and try again ({left} attempt(s) left).")
+            if outcome == "stop":
+                return _success_screen(
+                    f"Too many incorrect {kind.upper()} attempts. Reply 8 in the chat to "
+                    "start again.")
+            if outcome == "otp":
+                # The lookup passed and a code is on its way to the line
+                # REGISTERED AGAINST THE IDENTITY - not the account's own
+                # number. Collected on the same open session, so the code never
+                # becomes a chat message either.
+                pa.refresh_from_db()
+                # The KYC branch can switch to Wema account provisioning above.
+                # Its tracking ID and OTP belong to the bank, not the local KYC
+                # challenge cache. Render the matching confirmation screen.
+                if pa.action_type == "add_account":
+                    return _account_otp_screen(pa)
+                return _identity_otp_screen(pa)
+            if outcome == "adopted":
+                return _success_screen(
+                    f"Account found. This does not confirm {kind.upper()} verification. "
+                    "See the chat for the current identity status and next step.")
+            if outcome == "fail":
+                return _success_screen(
+                    f"{kind.upper()} verification did not complete. See the chat for details.")
+            if outcome == "processing":
+                return _success_screen("Your identity check is processing. Return to the chat shortly to continue.")
+            if outcome == "face":
+                return _success_screen(
+                    "Open the secure face-verification link in the chat. "
+                    "Your verification changes only after the bank confirms it.")
+    except Exception:  # noqa: BLE001 - never leak a stack into the Flow
+        log.exception("identity flow submission failed for pa=%s", pa.id)
+        return _success_screen(
+            "Our partner bank could not complete that verification request. "
+            "No identity was marked verified. Reply 8 to retry the partner-bank SMS step.")
+    # The chat carries the detailed outcome (verified, or queued for review), so
+    # this screen only has to close cleanly.
+    return _success_screen(f"{kind.upper()} received ✅ — see the chat for what's next.")
 
 
+def _identity_otp_screen(pa, error: str = "") -> dict:
+    """The identity challenge code. Always the chained twin: this is only ever
+    reached from IDENTITY_SCREEN inside one session, never opened on.
+
+    NEVER DEFAULT THE IDENTITY TO BVN, AND NEVER TAKE A NON-IDENTITY AS ONE.
+    This screen labelled itself from `(id_otp_kind or "bvn")`, so any session
+    arriving without that key said "BVN code" - on a NIN verification that names
+    the wrong document and sends the customer looking on the wrong handset.
+
+    Adding id_kind as a fallback narrows it but does not close it: id_kind is
+    overloaded. It carries an identity in some places, but also "email" and
+    ACCOUNT_OTP ("account_otp") elsewhere, and neither of those is "nin", so a
+    `"nin" if kind == "nin" else "BVN"` test relabels exactly the sessions the
+    fallback was added to rescue. Each candidate is therefore checked for BEING
+    an identity, and when none is, the screen says something true and
+    unqualified rather than guessing. A generic label costs nothing; the wrong
+    one costs the customer the attempt.
+
+    The code on THIS screen is Zitch's own (secrets.randbelow, sent through
+    send_sms), not the bank's - so it says "we sent", and names the masked line
+    it actually went to when we have it. Attributing it to Wema here would be
+    inaccurate; that wording belongs on _account_otp_screen, which really does
+    render the bank's code.
+    """
+    kind = ""
+    for key in ("id_otp_kind", "id_kind", "id_type"):
+        candidate = str(pa.payload.get(key) or "").lower()
+        if candidate in ("bvn", "nin"):
+            kind = candidate.upper()
+            break
+    label = f"{kind} code" if kind else "Verification code"
+    delivery = pa.payload.get("id_otp_delivery") or {}
+    sent_to = delivery.get("delivery") or pa.payload.get("id_otp_to")
+    where = sent_to or (f"the phone registered on your {kind}" if kind else "your phone")
+    summary = f"Enter the 6-digit code we sent to {where}"
+    if delivery.get("delivery_notice"):
+        summary += ". " + delivery["delivery_notice"]
+    return _identity_screen(kind or "identity", error=error, label=label,
+                            summary=summary,
+                            screen=CODE_RETRY if error else IDENTITY_CHAIN)
 
 
+def _submit_identity_otp(pa, data: dict) -> dict:
+    """The code that proves control of the line the identity is registered to."""
+    from .router import kyc_flow_identity_otp
 
+    try:
+        status, message = kyc_flow_identity_otp(pa, str(data.get("number", "")))
+    except Exception:  # noqa: BLE001 - never leak a stack into the Flow
+        log.exception("identity otp submission failed for pa=%s", pa.id)
+        return _success_screen("Something went wrong. Reply 8 in the chat to try again.")
+    if status == "retry":
+        return _identity_otp_screen(pa, error=message)
+    if status == "ok":
+        from .router import _kyc_next
+
+        try:
+            _kyc_next(pa, pa.user, pa.msisdn)   # the chat says what remains
+        except Exception:  # noqa: BLE001
+            log.exception("kyc advance failed after identity otp for pa=%s", pa.id)
+    return _success_screen(message)
+
+
+def _account_otp_screen(pa, error: str = "") -> dict:
+    """Clean render: whichever code page this session is on (IDENTITY_CHAIN when
+    chained from the BVN entry, CODE_SCREEN when opened fresh). Error render:
+    always CODE_RETRY - legal from both and from itself, and the masked box
+    arrives empty instead of holding the code that just failed."""
+    screen = CODE_RETRY if error else _flow_screen(pa, CODE_SCREEN)
+    # This screen used to mask and show the customer's ZITCH number, on the belief
+    # that ALAT texts the number supplied in the creation request. It does not.
+    # ALAT validates the identity against its register and sends the consent code to
+    # the phone held on THAT record - the NIMC line for a NIN, the BVN line for a
+    # BVN. Naming the Zitch number pointed the customer at a handset that never
+    # receives the code, and left the NIN step looking like it wanted a BVN code.
+    #
+    # There is no number to show instead: ALAT does not return one. Naming the
+    # RECORD is both true and more useful than any masked digits would have been.
+    # `using_bvn` is written when the attempt is opened and is the authoritative
+    # record of which rail this tracking id belongs to; `id_type` is the earlier
+    # menu choice and covers a payload written before that point.
+    # Resolve the label from the server-bound tracking record. Cached Flow
+    # payloads can outlive a previous screen; the tracking record is the authority
+    # used by OTP validation and prevents a NIN challenge being labelled as BVN.
+    from wallet.models import WemaProvisioningAttempt
+
+    # The server-side attempt is the exact rail Wema opened and the same record
+    # OTP validation uses. It must override every client/cached Flow field. Only
+    # fall back to this session's menu choice before a tracking record exists.
+    #
+    # A BLANK tracking id is not a lookup key. Wema does not always return one,
+    # and `filter(tracking_id="")` then matches whatever other attempt row for
+    # this user carries an empty tracking id - for a customer with a verified
+    # BVN that is very likely the BVN row, so the "authoritative" record would
+    # be one with nothing to do with this challenge. No id, no lookup.
+    tracking_id = str(pa.payload.get("tracking_id") or "").strip()
+    attempt = (
+        WemaProvisioningAttempt.objects.filter(user=pa.user, tracking_id=tracking_id)
+        .only("identity_type").first()
+        if tracking_id else None
+    )
+    if attempt is not None:
+        using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
+    else:
+        selected = str(pa.payload.get("id_type") or pa.payload.get("id_kind") or "").lower()
+        using_bvn = (selected == "bvn" if selected in ("bvn", "nin")
+                     else bool(pa.payload.get("using_bvn")))
+    kind = "BVN" if using_bvn else "NIN"
+    return _identity_screen(
+        ACCOUNT_OTP,
+        # Keep delivery guidance in the smaller body text. The summary is a
+        # TextHeading in the published Flow, so paragraphs do not fit there.
+        error=error or ("Not arriving? Our partner bank sends this code to the phone on your "
+                        f"{kind} record. The code must be entered here; "
+                        "face verification is not available for this partner-bank step."),
+        label="SMS code",
+        summary=f"Enter the 6-digit code our partner bank sent to the phone registered on your {kind}.",
+        screen=screen,
+    )
+
+
+def _submit_account_otp(pa, data: dict) -> dict:
+    """The bank's SMS code, entered here rather than in the chat.
+
+    It completes account creation and is what name-matches the BVN, so it is a
+    bearer credential for as long as it lives - the same reason the email code
+    moved off the thread. Collecting the BVN privately and then asking for the
+    code that unlocks it in clear would have been half a fix.
+    """
+    from .router import account_flow_otp
+
+    code = str(data.get("number", "")).strip()
+    try:
+        status, message = account_flow_otp(pa, code)
+    except Exception:  # noqa: BLE001 - never leak a stack into the Flow
+        log.exception("account otp flow submission failed for pa=%s", pa.id)
+        return _success_screen("Something went wrong. Reply 6 in the chat to try again.")
+    if status == "retry":
+        return _account_otp_screen(pa, error=message)
+    return _success_screen(message)
 
 
 def _email_code_screen(pa, error: str = "") -> dict:
@@ -1371,7 +1689,7 @@ def _email_code_screen(pa, error: str = "") -> dict:
     # Legacy in-flight actions predate the masked destination field; keep their
     # screen useful while all newly minted challenges use the bound hint.
     destination = pa.payload.get("code_target_label") or pa.user.email or "your email address"
-    return _masked_entry_screen("email", error=error, label="Email code",
+    return _identity_screen("email", error=error, label="Email code",
                             summary=f"Enter the 6-digit code we sent to {destination}",
                             screen=screen)
 
@@ -1645,6 +1963,208 @@ def _submit_pin(token: str, data: dict) -> dict:
     return _hold_open(pa, summary, str(outcome), status=status or "done")
 
 
+# --------------------------------------------------------------------------- #
+# airtime / data - one Flow, four pages
+# --------------------------------------------------------------------------- #
+#: The page a VTU session is on. Kept on the payload rather than inferred from
+#: the posted field names, for the same reason the transfer form is: sniffing
+#: for a key misroutes the moment a screen gains or loses one.
+VTU_KIND_STEP = "kind"
+VTU_NETWORK_STEP = "network"
+VTU_DETAILS_STEP = "details"
+
+
+def _vtu_kind_screen(error: str = "") -> dict:
+    return {"screen": VTU_SCREEN, "data": {"error": error or ""}}
+
+
+def _vtu_network_screen(kind: str, error: str = "") -> dict:
+    from .router import NETWORK_NAMES
+
+    return {"screen": VTU_NETWORK,
+            "data": {"networks": [{"id": k, "title": v} for k, v in NETWORK_NAMES.items()],
+                     "summary": "Airtime top-up" if kind == "airtime" else "Data bundle",
+                     "error": error or ""}}
+
+
+def _vtu_airtime_screen(net_name: str, error: str = "", phone: str = "") -> dict:
+    return {"screen": VTU_AIRTIME,
+            "data": {"summary": f"{net_name} airtime", "phone": phone or "",
+                     "error": error or ""}}
+
+
+def _vtu_data_screen(net: str, net_name: str, error: str = "", phone: str = "") -> dict:
+    """The plan list is the NETWORK's, fetched at render time - a plan picked
+    from another network's list is not a typo the provider can recover from.
+
+    Returns the TERMINAL screen when the network has no plans. A Flow Dropdown
+    bound to an empty array does not render: the customer gets a blank panel
+    with a spinner and no way forward but the X, which is indistinguishable from
+    the product being broken. Refusing here rather than at the one call site
+    that remembered to check means the INIT/BACK re-render and the error
+    re-render cannot reintroduce it.
+    """
+    from utility.models import DataPlan
+
+    from .router import _money
+
+    plans = list(DataPlan.objects.filter(network=net, active=True)[:20])
+    if not plans:
+        log.warning("wa_vtu_data_no_plans net=%s", net)
+        return _success_screen(
+            f"No {net_name} data plans are available right now. Please try again shortly.",
+            status="failed")
+    return {"screen": VTU_DATA,
+            "data": {"plans": [{"id": p.plan_code,
+                                "title": f"{p.name} • {p.validity} • {_money(p.price)}"}
+                               for p in plans],
+                     "summary": f"{net_name} data", "phone": phone or "",
+                     "error": error or ""}}
+
+
+def _vtu_screen_for(pa) -> dict:
+    """Re-render whichever page this session is standing on (INIT / BACK)."""
+    from .router import NETWORK_NAMES, _own_phone
+
+    step = pa.payload.get("vtu_step", VTU_KIND_STEP)
+    kind = pa.payload.get("vtu_kind", "airtime")
+    if step == VTU_KIND_STEP:
+        return _vtu_kind_screen()
+    if step == VTU_NETWORK_STEP:
+        return _vtu_network_screen(kind)
+    net = pa.payload.get("net", "1")
+    net_name = NETWORK_NAMES.get(net, "")
+    phone = pa.payload.get("phone") or _own_phone(pa.user) or ""
+    return (_vtu_airtime_screen(net_name, phone=phone) if kind == "airtime"
+            else _vtu_data_screen(net, net_name, phone=phone))
+
+
+def _submit_vtu(pa, data: dict) -> dict:
+    """One page of the airtime/data ladder. Dispatches on the session's STEP."""
+    step = pa.payload.get("vtu_step", VTU_KIND_STEP)
+    if step == VTU_KIND_STEP:
+        return _submit_vtu_kind(pa, data)
+    if step == VTU_NETWORK_STEP:
+        return _submit_vtu_network(pa, data)
+    return _submit_vtu_details(pa, data)
+
+
+def _submit_vtu_kind(pa, data: dict) -> dict:
+    from .router import _touch
+
+    kind = str(data.get("kind", "")).strip().lower()
+    if kind not in ("airtime", "data"):
+        return _vtu_kind_screen(error="⚠️ Pick airtime or data.")
+    pa.payload["vtu_kind"] = kind
+    pa.payload["vtu_step"] = VTU_NETWORK_STEP
+    pa.action_type = kind
+    _touch(pa, payload=pa.payload)
+    pa.save(update_fields=["action_type"])
+    return _vtu_network_screen(kind)
+
+
+def _submit_vtu_network(pa, data: dict) -> dict:
+    from .router import NETWORK_NAMES, _clear_actions, _own_phone, _touch
+
+    net = str(data.get("network", "")).strip()
+    if net not in NETWORK_NAMES:
+        return _vtu_network_screen(pa.payload.get("vtu_kind", "airtime"),
+                                   error="⚠️ Pick a network from the list.")
+    kind = pa.payload.get("vtu_kind", "airtime")
+    net_name = NETWORK_NAMES[net]
+    phone = pa.payload.get("phone") or _own_phone(pa.user) or ""
+    if phone:
+        pa.payload["phone"] = phone
+    if kind == "data":
+        # _vtu_data_screen answers the terminal screen itself when the network
+        # has no plans (an empty Dropdown does not render), so the only thing
+        # left to do here is drop the action behind it.
+        screen = _vtu_data_screen(net, net_name, phone=phone)
+        if screen["screen"] == SUCCESS_SCREEN:
+            _clear_actions(pa.msisdn)
+            return screen
+    pa.payload["net"] = net
+    pa.payload["vtu_step"] = VTU_DETAILS_STEP
+    _touch(pa, payload=pa.payload)
+    return screen if kind == "data" else _vtu_airtime_screen(net_name, phone=phone)
+
+
+def _submit_vtu_details(pa, data: dict) -> dict:
+    """Amount + phone (airtime) or plan + phone (data), then straight into the
+    PIN page of the SAME session. Every check the chat ladder makes is made
+    here - minimum, limits, balance - because two entry points must not
+    disagree about what a valid purchase is.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    from common.http import daily_limit_error, send_limit_error
+    from utility.models import DataPlan
+
+    from .router import (MIN_AIRTIME, NETWORK_NAMES, _clear_actions, _flow_fields,
+                         _fresh_wallet_balance, _insufficient, _money, _own_phone, _phone_from, _touch)
+
+    user = pa.user
+    kind = pa.payload.get("vtu_kind", "airtime")
+    net = pa.payload.get("net", "1")
+    net_name = NETWORK_NAMES.get(net, "")
+
+    def refuse(message):
+        phone_value = pa.payload.get("phone") or _own_phone(user) or ""
+        return (_vtu_airtime_screen(net_name, error=f"⚠️ {message}", phone=phone_value)
+                if kind == "airtime" else
+                _vtu_data_screen(net, net_name, error=f"⚠️ {message}", phone=phone_value))
+
+    phone = _phone_from(str(data.get("phone") or pa.payload.get("phone") or ""), user)
+    if not phone:
+        return refuse("Enter a valid phone number.")
+
+    if kind == "airtime":
+        try:
+            amount = Decimal(str(data.get("amount", "")).strip())
+        except InvalidOperation:
+            return refuse("Enter the amount as a number, e.g. 500.")
+        if amount < MIN_AIRTIME:
+            return refuse(f"Minimum airtime is NGN {MIN_AIRTIME:,.0f}.")
+        meta = {"phone": phone, "network": net}
+        extra = {}
+    else:
+        plan = DataPlan.objects.filter(plan_code=str(data.get("plan", "")).strip(),
+                                       network=net, active=True).first()
+        if plan is None:
+            return refuse("Pick a plan from the list.")
+        amount = plan.price
+        meta = {"phone": phone, "network": net, "plan_code": plan.plan_code}
+        extra = {"plan_code": plan.plan_code, "price": str(plan.price), "plan_name": plan.name}
+
+    # Airtime and data accrue against the BILL cap, not the transfer one.
+    limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
+    if limit_msg:
+        _clear_actions(pa.msisdn)
+        return _success_screen(limit_msg, status="failed")
+    if _insufficient(user, amount):
+        return refuse(f"Insufficient balance - you have {_money(_fresh_wallet_balance(user))}.")
+    if not user.transaction_pin:
+        # Same refusal the transfer form makes: a PIN pad the customer can never
+        # satisfy is worse than a clear "set one first".
+        _clear_actions(pa.msisdn)
+        return _success_screen(
+            "You haven't set a transaction PIN yet - it's what authorises payments here "
+            "and in the Zitch app. Close this and reply \"set pin\" in the chat, then try "
+            "again.", status="failed")
+
+    pa.payload.update({"phone": phone, "amount": str(amount), "meta": meta,
+                       "pin_attempts": 0,
+                       "narration": clean_narration(data.get("narration")), **extra})
+    # Built from the payload rather than assembled here, so the confirm screen
+    # gains the balance and the narration on this path too - an inline dict would
+    # ship a response missing properties the published screen declares.
+    fields = _flow_fields(pa)
+    pa.payload["flow_fields"] = fields
+    pa.payload["flow_screen"] = PIN_CHAIN   # routed into, so never the root
+    _touch(pa, state=FLOW_PIN_STATE, payload=pa.payload)
+    return _pin_screen(fields, screen=PIN_CHAIN)
+
+
 def _transfer_form_screen(error: str = "", candidates=None, query: str = "",
                           hint: str = "") -> dict:
     """`hint` is the server talking back about a narrowing, which is not an error
@@ -1806,13 +2326,6 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
             "and in the Zitch app. Close this and reply \"set pin\" in the chat, then try "
             "the transfer again.")
 
-    from banking.fees import transfer_fee
-    fee = transfer_fee(amount)
-    if fee is None:
-        return _transfer_form_screen(error="Transfer fees could not be confirmed. Please try again later.")
-    if _fresh_wallet_balance(user) < amount + fee:
-        return _transfer_form_screen(error="Insufficient balance for the amount and transfer fee.")
-    pa.payload["expected_fee"] = str(fee)
     pa.payload.update({"amount": str(amount), "account": account,
                        "bank_code": bank.bank_code, "bank_name": bank.name,
                        "name": name, "pin_attempts": 0,
@@ -1829,7 +2342,7 @@ def _pin_reset_code_screen(pa, error: str = "") -> dict:
     """The live proof-of-possession before a PIN reset: the SMS code page. Error
     renders land on CODE_RETRY so the masked box comes back empty."""
     masked = f"•••••{(pa.user.phone or '')[-4:]}"
-    return _masked_entry_screen("pin_reset", error=error, label="PIN reset code",
+    return _identity_screen("pin_reset", error=error, label="PIN reset code",
                             summary=f"Enter the code we sent by SMS to {masked}",
                             screen=CODE_RETRY if error else _flow_screen(pa, CODE_SCREEN))
 

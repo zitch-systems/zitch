@@ -164,7 +164,7 @@ def _resolve_and_confirm(pa: PendingAction, user, msisdn: str, bank) -> None:
     _send_confirm(pa, msisdn,
                   "Confirm transfer\n"
                   f"{_money(amount)} -> {name.upper()}\n"
-                  f"{bank.name} • {acct}\nFee: {_money(Decimal(pa.payload['expected_fee']))}\nTotal: {_money(amount + Decimal(pa.payload['expected_fee']))}")
+                  f"{bank.name} • {acct}")
 
 
 def _flow_pin_ok(pa: PendingAction, user, msisdn: str, text: str) -> bool:
@@ -345,8 +345,6 @@ def _transfer_outcome(pa: PendingAction, user, msisdn: str, txn, *, replay: bool
         ("Bank", pa.payload["bank_name"]),
         ("Account", pa.payload["account"]),
         ("Amount", _money(amount)),
-        ("Fee", _money(Decimal(txn.meta.get("fee", "0")))),
-        ("Total", _money(txn.amount)),
         ("Reference", txn.reference),
         ("Date", txn.created.strftime("%d %b %Y, %H:%M")),
     ]), ref=txn.reference, user=user, balance_after=wallet.balance)
@@ -416,7 +414,7 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
             # inside execute_payout to "Transfer to <name>" when it is blank,
             # which is what every transfer sent before narration existed.
             note=_narration(pa),
-            idempotency_key=f"wa-{pa.id}", channel="whatsapp", expected_fee=pa.payload.get("expected_fee"),
+            idempotency_key=f"wa-{pa.id}", channel="whatsapp",
         )
     except PayoutError as exc:
         who = pa.payload["name"].upper()
@@ -715,7 +713,7 @@ def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
 def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_query: str) -> bool:
     """Validate then open a transfer at the bank step - shared by the paste path
     and the LLM. Returns False only when the bank can't be matched (caller decides)."""
-    if _blocked_from_spending(user, msisdn, outbound=True):
+    if _blocked_from_spending(user, msisdn):
         return True
     matches = _match_banks(bank_query)
     # The NUBAN carries its own bank code in the check digit, so a message that
@@ -754,29 +752,104 @@ def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_que
     return True
 
 
+# --------------------------------------------------------------------------- #
+# VTU + bills (airtime / data / electricity / cable) - reuse run_provider_purchase
+# --------------------------------------------------------------------------- #
+NETWORK_PROMPT = "Which network?\n" + "\n".join(f"{k}  {v}" for k, v in NETWORK_NAMES.items())
+DISCO_PROMPT = "Which disco?\n" + "\n".join(f"{k}  {v}" for k, v in DISCO_NAMES.items())
+CABLE_PROMPT = "Which provider?\n" + "\n".join(f"{k}  {v}" for k, v in CABLE_NAMES.items())
+
+# What customers actually call their disco. DISCO_NAMES holds the short label the
+# menu shows ("Ikeja"), but nobody says that: they say IKEDC, or "Ikeja Electric",
+# and a bill arrives with the abbreviation on it. Without these, naming your disco
+# in the message got you the same "Which disco?" list as saying nothing at all.
+#
+# Note what is deliberately ABSENT: "nepa" (and "phcn"). Both mean electricity in
+# general, not a company - "load my nepa bill" says nothing about which disco, and
+# guessing one from it would put the wrong meter in front of a payment.
+DISCO_ALIASES = {
+    "ikedc": "1", "ikejaelectric": "1", "ikejaelectricity": "1", "ikejadisco": "1",
+    "ikejadistribution": "1", "ikejaelectriccompany": "1",
+    "ekedc": "2", "ekoelectric": "2", "ekoelectricity": "2", "ekodisco": "2",
+    "ekodistribution": "2", "ekoelectricitydistributioncompany": "2",
+    "aedc": "3", "abujaelectric": "3", "abujaelectricity": "3", "abujadisco": "3",
+    "abujadistribution": "3",
+    "kedco": "4", "kanoelectric": "4", "kanoelectricity": "4", "kanodisco": "4",
+    "kanodistribution": "4",
+    "phed": "5", "phedc": "5", "portharcourtelectric": "5", "portharcourtdisco": "5",
+    "portharcourtelectricity": "5", "phdisco": "5", "phelectric": "5",
+    "jed": "6", "jedc": "6", "jedplc": "6", "joselectric": "6", "josdisco": "6",
+    "joselectricity": "6",
+    "kaedco": "7", "kadunaelectric": "7", "kadunadisco": "7", "kadunaelectricity": "7",
+    "eedc": "8", "enuguelectric": "8", "enugudisco": "8", "enuguelectricity": "8",
+    "ibedc": "9", "ibadanelectric": "9", "ibadandisco": "9", "ibadanelectricity": "9",
+}
+# The cable equivalents. "gotv"/"dstv" already match CABLE_NAMES exactly; these are
+# the spellings and parent-brand names that do not.
+CABLE_ALIASES = {
+    "go": "1", "gotvnigeria": "1", "multichoicegotv": "1",
+    "dstvnigeria": "2", "multichoice": "2", "dstvng": "2",
+    "startime": "3", "startimesnigeria": "3", "startimestv": "3",
+}
+
+
+def _alias_id(text, names: dict, aliases: dict) -> str | None:
+    """Resolve a biller the customer NAMED to its menu id - the number, the menu
+    label, or any of the names the thing is actually known by."""
+    direct = _choice_id(str(text or ""), names)
+    if direct is not None:
+        return direct
+    key = re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+    return aliases.get(key) if key else None
+
+
+def _disco_id(text) -> str | None:
+    return _alias_id(text, DISCO_NAMES, DISCO_ALIASES)
+
+
+def _cable_id(text) -> str | None:
+    return _alias_id(text, CABLE_NAMES, CABLE_ALIASES)
+
+
+def _meter_type(text) -> str | None:
+    """Prepaid or postpaid, however it arrives: the menu digit, the word typed
+    out, or the LLM's `variation` field ("prepaid meter", "POSTPAID")."""
+    raw = str(text or "").strip().lower()
+    if raw in ("1", "2"):
+        return "prepaid" if raw == "1" else "postpaid"
+    t = re.sub(r"[^a-z]", "", raw)
+    if "postpaid" in t:
+        return "postpaid"
+    if "prepaid" in t:
+        return "prepaid"
+    return None
+
+
 #: The narration the CURRENT message asked for, for the duration of dispatching
 #: it. Set once by dispatch_intent and read once by _new_flow.
 #:
 #: A context variable rather than a parameter because the alternative is
 #: threading an optional string through every _begin_*/_start_* entry point and
-#: every _new_flow call inside them, to carry one word that only the AI path can
-#: supply. Scoped to one dispatch and cleared in a finally, so it cannot leak
-#: into the next message; a ContextVar (not a global) so concurrent requests on
-#: the same worker cannot read each other's.
+#: every _new_flow call inside them - eight signatures to carry one word that
+#: only the AI path can supply, where each new money flow added later is another
+#: chance to forget it. Scoped to one dispatch and cleared in a finally, so it
+#: cannot leak into the next message; a ContextVar (not a global) so concurrent
+#: requests on the same worker cannot read each other's.
 _ai_narration: contextvars.ContextVar[str] = contextvars.ContextVar("ai_narration", default="")
 
 #: The bank the CURRENT message named, for the length of dispatching it.
 #:
 #: Same mechanism and same reason as the narration above. A customer who says
-#: "send 5k to my Kuda account" has already told us the bank; opening the
-#: transfer form on the full list of every Nigerian bank asks them again, which
-#: is the channel telling them it did not read their message.
+#: "send 5k to my Kuda account" has already told us the bank; opening the transfer
+#: form on the full list of every Nigerian bank asks them again, which is the
+#: channel telling them it did not read their message. The AI extracts bank_name
+#: whenever it is stated, and _start_transfer used to throw it away - the same
+#: discard that lost the narration on this exact path.
 _ai_bank: contextvars.ContextVar[str] = contextvars.ContextVar("ai_bank", default="")
 
 #: Action types with money and a receipt behind them - the only ones a narration
-#: means anything for. Airtime, data, electricity and cable were here until the
-#: VAS rail went; a transfer is now the only money flow left to narrate.
-_NARRATABLE = ("transfer",)
+#: means anything for. An unlock or a PIN reset has nothing to narrate.
+_NARRATABLE = ("transfer", "airtime", "data", "electricity", "cable", "exam")
 
 
 def _new_flow(user, msisdn: str, action_type: str, state: str, payload: dict | None = None) -> PendingAction:
@@ -810,9 +883,852 @@ def _insufficient(user, amount: Decimal) -> bool:
     return _fresh_wallet_balance(user) < amount
 
 
+def _vtu_detail(pa: PendingAction, amount: Decimal) -> str:
+    """The amount + who/what this VTU purchase was for, as one parenthetical -
+    the same recipient/details the confirm screen showed. Every outcome line
+    (pending, failed, or an early refusal) quotes this so a customer reading
+    only the LAST message in the thread still knows what was being paid for,
+    not just that something was."""
+    fields = _flow_fields(pa)
+    recip = " · ".join(x for x in (fields.get("recipient", ""), fields.get("details", "")) if x)
+    return f"{_money(amount)}{' - ' + recip if recip else ''}"
+
+
+def _vtu_outcome(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
+                 txn, result: dict, receipt, *, replay: bool = False) -> Outcome:
+    """Render a VAS purchase from the ledger's durable state.
+
+    Provider calls can time out after accepting a purchase, so a duplicate key
+    cannot be treated as either success or failure by itself.  This function
+    refreshes the row and is used for both the original response and a replay.
+    """
+    from wallet.models import Transaction
+
+    txn.refresh_from_db(fields=["transaction_status", "meta", "reference"])
+    result = {**(result or {}), **_stored_provider_result(txn)}
+    _clear_actions(msisdn)
+    detail = _vtu_detail(pa, amount)
+
+    if txn.transaction_status == Transaction.SUCCESS:
+        title, rows = receipt(txn, result)
+        reply_receipt(msisdn, title, _with_narration(pa, rows), ref=txn.reference,
+                      user=user, balance_after=_fresh_wallet_balance(user))
+        lead = f"{label} was already completed" if replay else f"{label} successful"
+        return Outcome(f"{lead} - the receipt is in your chat.", OUTCOME_SUCCESS)
+
+    if txn.transaction_status == Transaction.PENDING:
+        # The chat has only announced an intermediate state, so allow the later
+        # settlement alert through when the reconciler learns the real outcome.
+        from wallet.alerts import mark_awaiting_settlement
+
+        mark_awaiting_settlement(txn)
+        line = (f"⏳ Your {label} ({detail}) is still processing - we'll confirm shortly. "
+                f"Ref {txn.reference}.")
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_PENDING)
+
+    if txn.transaction_status == Transaction.FAILED:
+        # Failed is terminal and settle_or_refund has restored the held amount.
+        # Use the persisted failure on a replay, not an invented provider result.
+        line = (f"❌ {label} ({detail}) failed: "
+                f"{customer_safe_failure(result, service=pa.action_type)}. "
+                f"You were not charged. Ref {txn.reference}.")
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_FAILED)
+
+    line = (f"Your {label} ({detail}) has an unrecognised ledger status. Do not pay "
+            f"again; contact support with ref {txn.reference}.")
+    reply(msisdn, line)
+    return Outcome(line, OUTCOME_PENDING)
+
+
+def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
+             provider_call, receipt) -> str:
+    """Debit -> provider -> settle via the shared run_provider_purchase, then send
+    the outcome. On success `receipt(txn, result)` returns ``(title, rows)`` and we
+    send a branded, downloadable receipt JPEG. Returns the outcome text (also used
+    verbatim on the secure Flow's success screen)."""
+    detail = _vtu_detail(pa, amount)
+    # Enforce the per-txn tier ceiling + large-transfer face step-up here, so EVERY
+    # VTU path is gated regardless of entry point (the AI-prefilled fast-paths reach
+    # this without the guided flow's own send_limit_error check, which would
+    # otherwise let a Tier-3-without-face user skip the >=₦100k face requirement).
+    send_msg = send_limit_error(user, amount, biller=True)
+    if send_msg:
+        _clear_actions(msisdn)
+        _limit_reply(msisdn, user, send_msg)
+        return Outcome(send_msg, OUTCOME_FAILED)
+    bill_limit_msg = daily_limit_error(user, amount, "bill")
+    if bill_limit_msg:
+        _clear_actions(msisdn)
+        _limit_reply(msisdn, user, bill_limit_msg)
+        return Outcome(bill_limit_msg, OUTCOME_FAILED)
+    if velocity_exceeded(user):  # same fraud brake the app enforces (parity)
+        _clear_actions(msisdn)
+        msg = "Too many transactions in a short time. Please wait a few minutes and try again."
+        reply(msisdn, msg)
+        return Outcome(msg, OUTCOME_FAILED)
+    try:
+        # The note rides the ledger row so the settlement alert can quote it
+        # later - by then the pending action is long gone, and the alert is
+        # often the only thing the customer reads about a bill they paid.
+        purchase_meta = {**pa.payload.get("meta", {}), "channel": "whatsapp"}
+        if _narration(pa):
+            purchase_meta["narration"] = _narration(pa)
+        _, txn, result = run_provider_purchase(
+            user, amount, label, purchase_meta, provider_call,
+            idempotency_key=f"wa-{pa.id}",
+        )
+    except InsufficientFunds:
+        _clear_actions(msisdn)
+        line = f"Insufficient balance for {label} ({detail}) - cancelled."
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_FAILED)
+    except LimitExceeded as exc:
+        _clear_actions(msisdn)
+        line = f"{exc} ({label}, {detail})"
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_FAILED)
+    except DuplicateTransaction:
+        from wallet.models import Transaction
+
+        prior = Transaction.objects.filter(
+            user=user, idempotency_key=f"wa-{pa.id}").first()
+        if prior is not None:
+            return _vtu_outcome(
+                pa, user, msisdn, amount, label, prior,
+                _stored_provider_result(prior), receipt, replay=True)
+        _clear_actions(msisdn)
+        line = (f"That {label} ({detail}) was submitted before, but its status is not "
+                "available yet. Do not pay again; contact support so we can confirm it.")
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_PENDING)
+    # `status` is useful to callers of the lower-level service, but the ledger is
+    # authoritative here.  A callback may have changed it between provider return
+    # and this line, and `_vtu_outcome` refreshes before saying what happened.
+    return _vtu_outcome(pa, user, msisdn, amount, label, txn, result, receipt)
+
+
+# ---- service sub-menus (tap 1 or 2 - no need to type "airtime"/"data" etc.) ----
+# Each entry: (prompt, [(id, label, desc), ...]). The row ids ("1"/"2") are what
+# the router receives back from a tap or a typed number, mirroring the network menu.
+SERVICE_MENUS = {
+    "airtime_data": ("What would you like to buy?",
+                     [("1", "Airtime", ""), ("2", "Data", "")]),
+    "bill": ("Which bill would you like to pay?",
+             [("1", "Electricity", ""), ("2", "Cable TV", "")]),
+}
+
+
+def _start_vtu(user, msisdn: str) -> None:
+    """Menu 3 - airtime and data as ONE Flow instead of four chat round-trips.
+
+    The chat ladder asked what to buy, then the network, then the number, then
+    the amount, each its own message and each a place to get stuck; the customer
+    in the screenshot was four taps in and still had two to go. The Flow asks the
+    same four things as four pages of one session and chains into the PIN, so the
+    whole purchase is one interaction.
+
+    Same fallback as the transfer form: if the Flow cannot be sent, the guided
+    chat sub-menu still works. Failing closed would take airtime away from every
+    deploy without Flows configured, and nothing here is secret - the PIN is
+    still collected on its own encrypted page either way.
+    """
+    if _blocked_from_spending(user, msisdn, biller=True):
+        return None
+    _clear_actions(msisdn)
+    if flows_live():
+        # action_type is provisional: the FIRST page decides airtime vs data and
+        # rewrites it, because the executor is chosen by action_type later.
+        pa = _new_flow(user, msisdn, "airtime", FLOW_VTU_STATE,
+                       {"vtu_step": "kind", "pin_attempts": 0})
+        res = send_flow(
+            msisdn, sign_flow_token(pa),
+            header="Airtime & data",
+            body="Pick what you need and we'll take it from there - your PIN stays private.",
+            screen=VTU_SCREEN, screen_data={"error": ""},
+            cta="Buy",
+        )
+        if res.get("success"):
+            return reply(msisdn, "📱 Tap *Buy* on the secure form above.")
+        log.warning("wa_vtu_flow_send_failed pa=%s detail=%r", pa.id, res.get("error_detail", ""))
+        _clear_actions(msisdn)
+    return _start_service_menu(user, msisdn, "airtime_data")
+
+
+def _start_service_menu(user, msisdn: str, kind: str) -> None:
+    """Open a category sub-menu so the user picks 1 or 2 (or taps the row) instead
+    of having to type the word. Stored as a `pick_service` flow so a bare "1"/"2"
+    is read as the sub-menu choice, not the main-menu balance/transfer number."""
+    body, rows = SERVICE_MENUS[kind]
+    _new_flow(user, msisdn, "pick_service", kind)
+    reply_list(msisdn, body, rows, button_label="Choose")
+
+
+def _advance_pick_service(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    """Route a sub-menu pick to the matching guided flow. Accepts the number
+    (1/2) or the word, so a tap, a typed number and typed text all work. Each
+    _start_* clears this pending action (via _new_flow) as it opens its own flow."""
+    choice = text.strip().lower()
+    if pa.state == "airtime_data":
+        if choice in ("1", "airtime"):
+            return _start_airtime(user, msisdn)
+        if choice in ("2", "data"):
+            return _start_data(user, msisdn)
+        _, rows = SERVICE_MENUS["airtime_data"]
+        return reply_list(msisdn, "Reply 1 for Airtime or 2 for Data.", rows, button_label="Choose")
+    if choice in ("1", "electricity", "light", "nepa", "power"):
+        return _start_electricity(user, msisdn)
+    if choice in ("2", "cable", "tv", "dstv", "gotv", "startimes"):
+        return _start_cable(user, msisdn)
+    _, rows = SERVICE_MENUS["bill"]
+    return reply_list(msisdn, "Reply 1 for Electricity or 2 for Cable TV.", rows, button_label="Choose")
+
+
+def _choice_id(text: str, names: dict) -> str | None:
+    """Resolve a menu reply to its id: the number itself ("1") or the option's
+    name typed out ("MTN", "gotv", "Port Harcourt"). A tapped list row sends the
+    id, but over the text fallback users type the name they can see - both must
+    work (case/space-insensitive)."""
+    t = text.strip()
+    if t in names:
+        return t
+    tl = re.sub(r"\s", "", t.lower())
+    for k, v in names.items():
+        if tl and re.sub(r"\s", "", v.lower()) == tl:
+            return k
+    return None
+
+
+# ---- airtime ----
+def _start_airtime(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn, biller=True):
+        return None
+    phone = _own_phone(user)
+    payload = {"pin_attempts": 0, **({"phone": phone} if phone else {})}
+    _new_flow(user, msisdn, "airtime", "network", payload)
+    _ask_network(msisdn)
+
+
+def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    st = pa.state
+    if st == "network":
+        net = _choice_id(text, NETWORK_NAMES)
+        if net is None:
+            return _ask_network(msisdn)
+        pa.payload["net"] = net
+        # The number may already be known (the AI path collects it first when the
+        # message named a person). Asking for it again reads as not listening.
+        if pa.payload.get("phone"):
+            _touch(pa, state="amount", payload=pa.payload)
+            known = pa.payload.get("amount")
+            if known:
+                return _advance_airtime(pa, user, msisdn, known)
+            return reply(msisdn, "How much airtime? Type the amount (e.g. 200). Minimum ₦50.")
+        _touch(pa, state="phone", payload=pa.payload)
+        return reply(msisdn, "What phone number? Reply \"me\" to use your own.")
+    if st == "phone":
+        phone = _phone_from(text, user)
+        if not phone:
+            return reply(msisdn, "Enter a valid phone number (or \"me\").")
+        pa.payload["phone"] = phone
+        # A number reached this rung from "recharge tobi 2k" - the amount was in
+        # the message and the prefix names the network, so asking for either
+        # again is asking twice for something already said.
+        pa.payload.setdefault("net", _network_from_prefix(phone) or "")
+        _touch(pa, state="amount", payload=pa.payload)
+        known = pa.payload.get("amount")
+        if known and pa.payload.get("net"):
+            return _advance_airtime(pa, user, msisdn, known)
+        if not pa.payload.get("net"):
+            _touch(pa, state="network", payload=pa.payload)
+            return _ask_network(msisdn)
+        return reply(msisdn, "How much airtime? Type the amount (e.g. 200). Minimum ₦50.")
+    if st == "amount":
+        amount = parse_amount(text)
+        if amount is None or amount < MIN_AIRTIME:
+            return reply(msisdn, f"Enter a valid amount, at least ₦{MIN_AIRTIME:,.0f}.")
+        if _insufficient(user, amount):
+            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
+        # "bill", not "transfer" - airtime accrues against the bill cap, and
+        # checking the wrong bucket both refused purchases the app allows and
+        # let through ones it blocks (caught only later, after the OTP).
+        limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
+        if limit_msg:
+            _clear_actions(msisdn)
+            return _limit_reply(msisdn, user, limit_msg)
+        net = NETWORK_NAMES[pa.payload["net"]]
+        pa.payload["amount"] = str(amount)
+        pa.payload["meta"] = {"phone": pa.payload["phone"], "network": pa.payload["net"]}
+        if not _arm_confirm(pa, user):
+            return
+        return _send_confirm(
+            pa, msisdn,
+            f"📱 *Confirm airtime*\n{_money(amount)} {net} -> {pa.payload['phone']}",
+            logo=provider_logo(net))
+    if st == "pin":
+        if not _flow_pin_ok(pa, user, msisdn, text):
+            return
+        return _exec_airtime(pa, user, msisdn)
+    _clear_actions(msisdn)
+    return send_menu(msisdn)
+
+
+def _exec_airtime(pa: PendingAction, user, msisdn: str) -> str:
+    amount = Decimal(pa.payload["amount"])
+    net = NETWORK_NAMES[pa.payload["net"]]
+    phone = normalize_nigerian_mobile(pa.payload.get("phone"))
+    if not phone:
+        _clear_actions(msisdn)
+        line = "That airtime destination is invalid, so the purchase was cancelled. No money was taken."
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_FAILED)
+    pa.payload["phone"] = phone
+    pa.payload.setdefault("meta", {})["phone"] = phone
+    return _run_vtu(
+        pa, user, msisdn, amount, f"Airtime - {net}",
+        lambda ref: vtu_purchase(f"{net.lower()}-airtime",
+                                 {"amount": str(amount), "phone": phone}, reference=ref),
+        lambda txn, res: ("Airtime receipt", [
+            ("Network", net), ("Phone", phone), ("Amount", _money(amount)),
+            ("Reference", txn.reference), ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]),
+    )
+
+
+# ---- data ----
+def _start_data(user, msisdn: str, phone=None, network=None) -> None:
+    """Start data purchase with every safe detail already available.
+
+    "Data for me" means the linked Zitch line, so asking for that number again is
+    redundant. The number's Nigerian prefix can also preselect a network; number
+    portability makes that a hint, not an authority, so an explicitly stated
+    network always wins and the final confirmation still shows both values.
+    Unknown prefixes continue to the network picker.
+    """
+    if _blocked_from_spending(user, msisdn, biller=True):
+        return None
+    own_or_given = _phone_from(str(phone), user) if phone else _own_phone(user)
+    payload = {"pin_attempts": 0, **({"phone": own_or_given} if own_or_given else {})}
+    pa = _new_flow(user, msisdn, "data", "network", payload)
+    net = _network_id(network) or _network_from_prefix(own_or_given)
+    if net:
+        # Reuse the normal network step so catalogue lookup, plan choices and all
+        # later balance/limit/PIN checks stay on the exact same path.
+        return _advance_data(pa, user, msisdn, net)
+    return _ask_network(msisdn)
+
+
+def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    st = pa.state
+    if st == "network":
+        net = _choice_id(text, NETWORK_NAMES)
+        if net is None:
+            return _ask_network(msisdn)
+        plans = list(DataPlan.objects.filter(network=net, active=True)[:8])
+        if not plans:
+            _clear_actions(msisdn)
+            return reply(msisdn, "No data plans available for that network right now.")
+        pa.payload["net"] = net
+        pa.payload["plan_choices"] = [p.plan_code for p in plans]
+        _touch(pa, state="plan", payload=pa.payload)
+        lines = "\n".join(f"{i+1}  {p.name} • {p.validity} • {_money(p.price)}" for i, p in enumerate(plans))
+        return reply(msisdn, "Choose a plan:\n" + lines)
+    if st == "plan":
+        plan = _pick(text, pa.payload.get("plan_choices", []), lambda c: DataPlan.objects.filter(plan_code=c).first())
+        if plan is None:
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                       "Reply with a plan number from the list, or \"cancel\".")
+        pa.payload.update({"plan_code": plan.plan_code, "price": str(plan.price), "plan_name": plan.name})
+        _touch(pa, state="phone", payload=pa.payload)
+        if pa.payload.get("phone"):
+            return _advance_data(pa, user, msisdn, pa.payload["phone"])
+        return reply(msisdn, "What phone number? Reply \"me\" to use your own.")
+    if st == "phone":
+        phone = _phone_from(text, user)
+        if not phone:
+            return reply(msisdn, "Enter a valid phone number (or \"me\").")
+        price = Decimal(pa.payload["price"])
+        if _insufficient(user, price):
+            _clear_actions(msisdn)
+            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
+        limit_msg = send_limit_error(user, price, biller=True) or daily_limit_error(user, price, "bill")
+        if limit_msg:
+            _clear_actions(msisdn)
+            return _limit_reply(msisdn, user, limit_msg)
+        net = NETWORK_NAMES[pa.payload["net"]]
+        pa.payload["phone"] = phone
+        pa.payload["meta"] = {"phone": phone, "network": pa.payload["net"], "plan_code": pa.payload["plan_code"]}
+        if not _arm_confirm(pa, user):
+            return
+        return _send_confirm(
+            pa, msisdn,
+            f"🌐 *Confirm data*\n{pa.payload['plan_name']} ({net}) -> {phone}\n{_money(price)}",
+            logo=provider_logo(net))
+    if st == "pin":
+        if not _flow_pin_ok(pa, user, msisdn, text):
+            return
+        return _exec_data(pa, user, msisdn)
+    _clear_actions(msisdn)
+    return send_menu(msisdn)
+
+
+def _exec_data(pa: PendingAction, user, msisdn: str) -> str:
+    net = NETWORK_NAMES[pa.payload["net"]]
+    phone = normalize_nigerian_mobile(pa.payload.get("phone"))
+    if not phone:
+        _clear_actions(msisdn)
+        line = "That data destination is invalid, so the purchase was cancelled. No money was taken."
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_FAILED)
+    pa.payload["phone"] = phone
+    pa.payload.setdefault("meta", {})["phone"] = phone
+    plan_code, price = pa.payload["plan_code"], Decimal(pa.payload["price"])
+    return _run_vtu(
+        pa, user, msisdn, price, f"Data - {net} {pa.payload['plan_name']}",
+        lambda ref: vtu_purchase(f"{net.lower()}-data",
+                                 {"billersCode": phone, "variation_code": plan_code, "phone": phone}, reference=ref),
+        lambda txn, res: ("Data receipt", [
+            ("Network", net), ("Plan", pa.payload["plan_name"]), ("Phone", phone),
+            ("Amount", _money(price)), ("Reference", txn.reference),
+            ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]),
+    )
+
+
+# ---- electricity ----
+def _start_electricity(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn, biller=True):
+        return None
+    pa = _new_flow(user, msisdn, "electricity", "disco")
+    _electricity_next(pa, user, msisdn)
+
+
+def _begin_electricity(user, msisdn: str, biller, customer_id, variation, amount) -> None:
+    """Start an electricity payment from details the customer already gave.
+
+    "Load my nepa bill. 2000010657 5,000 to IKEDC" names the disco, the meter and
+    the amount in one line. Discarding all three and opening with "Which disco?"
+    is the channel telling someone it did not read their message - so whatever
+    arrives is put in the flow's payload up front and the flow asks only for what
+    is genuinely still missing.
+
+    Nothing is trusted for being pre-filled: the meter is verified with the
+    provider exactly as a typed one is, the amount goes through the same minimum,
+    balance and limit checks, and the payment still ends at the same confirm +
+    PIN. Pre-filling changes which QUESTIONS get asked, never which CHECKS run.
+    """
+    if _blocked_from_spending(user, msisdn, biller=True):
+        return None
+    payload = {"pin_attempts": 0}
+    disco = _disco_id(biller)
+    if disco:
+        payload["disco"] = disco
+    mt = _meter_type(variation)
+    if mt:
+        payload["meter_type"] = mt
+    meter = re.sub(r"\D", "", str(customer_id or ""))
+    if len(meter) >= 6:
+        payload["meter"] = meter
+    amt = parse_amount(str(amount)) if amount is not None else None
+    if amt is not None and amt >= MIN_ELECTRICITY:
+        payload["amount"] = str(amt)
+    pa = _new_flow(user, msisdn, "electricity", "disco", payload)
+    _electricity_next(pa, user, msisdn)
+
+
+def _electricity_next(pa: PendingAction, user, msisdn: str) -> None:
+    """Ask for the first detail still missing - or, when nothing is, confirm.
+
+    The order of the questions is unchanged; what changed is that each one is now
+    conditional on not already knowing the answer. A customer who types every
+    answer walks the same path they always did.
+    """
+    p = pa.payload
+    if not p.get("disco"):
+        _touch(pa, state="disco", payload=p)
+        return reply(msisdn, DISCO_PROMPT)
+    if not p.get("meter_type"):
+        _touch(pa, state="meter_type", payload=p)
+        return reply(msisdn, "Prepaid or postpaid? Reply 1 Prepaid or 2 Postpaid.")
+    if not p.get("meter"):
+        _touch(pa, state="meter", payload=p)
+        return reply(msisdn, "Enter the meter number.")
+
+    note = ""
+    if not p.get("meter_verified"):
+        disco = DISCO_NAMES[p["disco"]].lower()
+        res = vtu_verify_customer(f"{disco}-electric", p["meter"], p["meter_type"])
+        if not res.get("success"):
+            # Drop the number that failed. Keeping it would re-verify the same bad
+            # meter on the next message and never let the customer past it.
+            p.pop("meter", None)
+            _touch(pa, state="meter", payload=p)
+            # Plain re-prompt: this branch runs from _electricity_next, which has no
+            # customer message in scope - the meter came from an earlier turn, so
+            # there is nothing here that could be a new instruction.
+            return reply(msisdn, "Couldn't validate that meter. Check the number and try "
+                                 "again, or \"cancel\".")
+        cust = res.get("customer_name", "")
+        address = res.get("customer_address", "")
+        p.update({"customer": cust, "customer_address": address,
+                  "meter_verified": True})
+        note = f"Meter verified{f' ({cust})' if cust else ''}. "
+
+    if not p.get("amount"):
+        _touch(pa, state="amount", payload=p)
+        return reply(msisdn, note + "How much do you want to buy? (e.g. 5000)")
+    return _electricity_confirm(pa, user, msisdn, note)
+
+
+def _electricity_confirm(pa: PendingAction, user, msisdn: str, note: str = "") -> None:
+    """The amount is known: run every money check, then arm the confirm."""
+    p = pa.payload
+    amount = parse_amount(p.get("amount", ""))
+    if amount is None or amount < MIN_ELECTRICITY:
+        p.pop("amount", None)
+        _touch(pa, state="amount", payload=p)
+        return reply(msisdn, f"Enter a valid amount, at least ₦{MIN_ELECTRICITY:,.0f}.")
+    if _insufficient(user, amount):
+        # Asked-for amounts stay recoverable: drop it and let them name another
+        # rather than end the flow they are halfway through.
+        p.pop("amount", None)
+        _touch(pa, state="amount", payload=p)
+        return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
+    limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
+    if limit_msg:
+        _clear_actions(msisdn)
+        return _limit_reply(msisdn, user, limit_msg)
+    disco_name = DISCO_NAMES[p["disco"]]
+    p["amount"] = str(amount)
+    p["meta"] = {"meter": p["meter"], "disco": p["disco"], "meter_type": p["meter_type"],
+                 "customer_name": p.get("customer", ""),
+                 "customer": p.get("customer", ""),
+                 "customer_address": p.get("customer_address", ""),
+                 "address": p.get("customer_address", "")}
+    if not _arm_confirm(pa, user):
+        return
+    cust = p.get("customer") or "-"
+    address = p.get("customer_address") or "Not provided by electricity provider"
+    return _send_confirm(
+        pa, msisdn,
+        note +
+        f"💡 *Confirm electricity*\n{disco_name} ({p['meter_type']}) • "
+        f"Meter {p['meter']}\nCustomer: {cust}\nAddress: {address}\n{_money(amount)}")
+
+
+def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    st = pa.state
+    if st == "disco":
+        # Named, not just numbered: "IKEDC" at this prompt now works too.
+        d = _disco_id(text)
+        if d is None:
+            return reply(msisdn, "Reply with the disco number.\n" + DISCO_PROMPT)
+        pa.payload["disco"] = d
+        return _electricity_next(pa, user, msisdn)
+    if st == "meter_type":
+        mt = _meter_type(text)
+        if not mt:
+            return reply(msisdn, "Reply 1 Prepaid or 2 Postpaid.")
+        pa.payload["meter_type"] = mt
+        return _electricity_next(pa, user, msisdn)
+    if st == "meter":
+        meter = re.sub(r"\s", "", text)
+        if len(meter) < 6:
+            return reply(msisdn, "Enter a valid meter number.")
+        pa.payload.update({"meter": meter, "meter_verified": False})
+        return _electricity_next(pa, user, msisdn)
+    if st == "amount":
+        amount = parse_amount(text)
+        if amount is None or amount < MIN_ELECTRICITY:
+            return reply(msisdn, f"Enter a valid amount, at least ₦{MIN_ELECTRICITY:,.0f}.")
+        pa.payload["amount"] = str(amount)
+        return _electricity_confirm(pa, user, msisdn)
+    if st == "pin":
+        if not _flow_pin_ok(pa, user, msisdn, text):
+            return
+        return _exec_electricity(pa, user, msisdn)
+    _clear_actions(msisdn)
+    return send_menu(msisdn)
+
+
+def _exec_electricity(pa: PendingAction, user, msisdn: str) -> str:
+    amount = Decimal(pa.payload["amount"])
+    disco = DISCO_NAMES[pa.payload["disco"]].lower()
+    disco_name = DISCO_NAMES[pa.payload["disco"]]
+    meter, mt = pa.payload["meter"], pa.payload["meter_type"]
+
+    def _receipt_rows(txn, res):
+        token = res.get("token") or res.get("provider_reference", "")
+        rows = [("Disco", disco_name), ("Meter", f"{meter} ({mt})"),
+                ("Customer", pa.payload.get("customer") or "Verified customer"),
+                ("Address", pa.payload.get("customer_address")
+                            or "Not provided by electricity provider"),
+                ("Amount", _money(amount))]
+        if token:
+            rows.append(("Token", token))
+        rows += [("Reference", txn.reference), ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]
+        return ("Electricity receipt", rows)
+
+    return _run_vtu(
+        pa, user, msisdn, amount, f"Electricity - {disco_name}",
+        lambda ref: vtu_purchase(f"{disco}-electric",
+                                 {"billersCode": meter, "variation_code": mt, "amount": str(amount)}, reference=ref),
+        _receipt_rows,
+    )
+
+
+# ---- cable ----
+def _start_cable(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn, biller=True):
+        return None
+    _new_flow(user, msisdn, "cable", "provider")
+    reply(msisdn, CABLE_PROMPT)
+
+
+def _begin_cable(user, msisdn: str, biller, customer_id) -> None:
+    """Cable's half of the same courtesy: a named provider skips the provider
+    list, and a smartcard number given up front is not asked for again. The
+    package still has to be chosen - it carries the price - and the card is still
+    verified with the provider before anything is confirmed."""
+    if _blocked_from_spending(user, msisdn, biller=True):
+        return None
+    payload = {"pin_attempts": 0}
+    card = re.sub(r"\D", "", str(customer_id or ""))
+    if len(card) >= 6:
+        payload["iuc_given"] = card
+    prov = _cable_id(biller)
+    pa = _new_flow(user, msisdn, "cable", "provider", payload)
+    if not prov:
+        return reply(msisdn, CABLE_PROMPT)
+    return _cable_packages(pa, user, msisdn, prov)
+
+
+def _cable_packages(pa: PendingAction, user, msisdn: str, prov: str) -> None:
+    """Show the chosen provider's packages (the step every cable payment reaches,
+    whether the provider was tapped from the list or named in the message)."""
+    plans = list(CablePlan.objects.filter(provider=prov, active=True)[:8])
+    if not plans:
+        _clear_actions(msisdn)
+        return reply(msisdn, "No packages available for that provider right now.")
+    pa.payload["prov"] = prov
+    pa.payload["plan_choices"] = [pl.cable_plan_code for pl in plans]
+    _touch(pa, state="plan", payload=pa.payload)
+    lines = "\n".join(f"{i+1}  {pl.name} • {_money(pl.price)}" for i, pl in enumerate(plans))
+    return reply(msisdn, "Choose a package:\n" + lines)
+
+
+def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    st = pa.state
+    if st == "provider":
+        p = _cable_id(text)
+        if p is None:
+            return reply(msisdn, "Reply with the provider number.\n" + CABLE_PROMPT)
+        return _cable_packages(pa, user, msisdn, p)
+    if st == "plan":
+        plan = _pick(text, pa.payload.get("plan_choices", []),
+                     lambda c: CablePlan.objects.filter(cable_plan_code=c).first())
+        if plan is None:
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                       "Reply with a package number from the list, or \"cancel\".")
+        pa.payload.update({"plan_code": plan.cable_plan_code, "price": str(plan.price), "plan_name": plan.name})
+        _touch(pa, state="iuc", payload=pa.payload)
+        given = pa.payload.get("iuc_given")
+        if given:
+            # Already told us the card - verify it now instead of asking again.
+            return _advance_cable(pa, user, msisdn, given)
+        return reply(msisdn, "Enter your smartcard / IUC number.")
+    if st == "iuc":
+        iuc = re.sub(r"\s", "", text)
+        if len(iuc) < 6:
+            return reply(msisdn, "Enter a valid smartcard / IUC number.")
+        # A card that fails verification must not be re-tried from the payload on
+        # the customer's next message.
+        pa.payload.pop("iuc_given", None)
+        prov = CABLE_NAMES[pa.payload["prov"]].lower()
+        res = vtu_verify_customer(prov, iuc)
+        if not res.get("success"):
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                       "Couldn't validate that smartcard. Check the number and try again, or \"cancel\".")
+        price = Decimal(pa.payload["price"])
+        if _insufficient(user, price):
+            _clear_actions(msisdn)
+            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
+        limit_msg = send_limit_error(user, price, biller=True) or daily_limit_error(user, price, "bill")
+        if limit_msg:
+            _clear_actions(msisdn)
+            return _limit_reply(msisdn, user, limit_msg)
+        prov_name = CABLE_NAMES[pa.payload["prov"]]
+        cust = res.get("customer_name", "")
+        pa.payload.update({"iuc": iuc, "customer": cust})
+        pa.payload["meta"] = {"iuc": iuc, "provider": pa.payload["prov"], "plan_code": pa.payload["plan_code"]}
+        if not _arm_confirm(pa, user):
+            return
+        cust = cust or "-"
+        return _send_confirm(
+            pa, msisdn,
+            f"📺 *Confirm cable*\n{prov_name} • {pa.payload['plan_name']}\n"
+            f"Card {iuc} • {cust} • {_money(price)}",
+            logo=provider_logo(prov_name))
+    if st == "pin":
+        if not _flow_pin_ok(pa, user, msisdn, text):
+            return
+        return _exec_cable(pa, user, msisdn)
+    _clear_actions(msisdn)
+    return send_menu(msisdn)
+
+
+def _exec_cable(pa: PendingAction, user, msisdn: str) -> str:
+    prov = CABLE_NAMES[pa.payload["prov"]].lower()
+    prov_name = CABLE_NAMES[pa.payload["prov"]]
+    iuc, plan_code, price = pa.payload["iuc"], pa.payload["plan_code"], Decimal(pa.payload["price"])
+    return _run_vtu(
+        pa, user, msisdn, price, f"Cable - {prov_name} {pa.payload['plan_name']}",
+        lambda ref: vtu_purchase(prov, {"billersCode": iuc, "variation_code": plan_code}, reference=ref),
+        lambda txn, res: ("Cable receipt", [
+            ("Provider", prov_name), ("Package", pa.payload["plan_name"]), ("Smartcard", iuc),
+            ("Amount", _money(price)), ("Reference", txn.reference),
+            ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]),
+    )
+
+
+# ---- exam PINs ----
+def _start_exam(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn, biller=True):
+        return None
+    products = list(ExamProduct.objects.filter(active=True).order_by("name")[:8])
+    if not products:
+        return reply(msisdn, "Exam PINs are unavailable right now. Please try again later.")
+    pa = _new_flow(user, msisdn, "exam", "product", {
+        "pin_attempts": 0,
+        "product_choices": [product.code for product in products],
+    })
+    lines = "\n".join(
+        f"{index + 1}  {product.name} · {product.description} · {_money(product.price)}"
+        for index, product in enumerate(products)
+    )
+    _touch(pa, state="product", payload=pa.payload)
+    return reply(msisdn, "🎓 *Buy an Exam PIN*\nChoose a product:\n" + lines)
+
+
+def _exam_product(text: str, choices: list[str]):
+    product = _pick(text, choices, lambda code: ExamProduct.objects.filter(
+        code=code, active=True).first())
+    if product is not None:
+        return product
+    wanted = re.sub(r"\s", "", text.lower())
+    if not wanted:
+        return None
+    return next((item for item in ExamProduct.objects.filter(code__in=choices, active=True)
+                 if wanted in (re.sub(r"\s", "", item.code.lower()),
+                               re.sub(r"\s", "", item.name.lower()))), None)
+
+
+def _advance_exam(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    state = pa.state
+    if state == "product":
+        product = _exam_product(text, pa.payload.get("product_choices", []))
+        if product is None:
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                       "Reply with an exam product number from the list, or \"cancel\".")
+        pa.payload.update({
+            "exam_code": product.code,
+            "exam_name": product.name,
+            "description": product.description,
+            "unit_price": str(product.price),
+            "service_id": product.service_id,
+        })
+        _touch(pa, state="quantity", payload=pa.payload)
+        return reply(msisdn, "How many PINs? Reply with a number from 1 to 10.")
+    if state == "quantity":
+        try:
+            quantity = int(text.strip())
+        except (TypeError, ValueError):
+            quantity = 0
+        if not 1 <= quantity <= 10:
+            return reply(msisdn, "Enter a quantity from 1 to 10.")
+        pa.payload["quantity"] = quantity
+        own = _own_phone(user)
+        if own:
+            pa.payload["phone"] = own
+        _touch(pa, state="phone", payload=pa.payload)
+        return reply(msisdn, "What phone number should receive the PIN details? Reply \"me\" to use your own.")
+    if state == "phone":
+        phone = _phone_from(text, user)
+        if not phone:
+            return reply(msisdn, "Enter a valid phone number, or reply \"me\".")
+        quantity = int(pa.payload["quantity"])
+        amount = Decimal(pa.payload["unit_price"]) * quantity
+        if _insufficient(user, amount):
+            return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
+        limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
+        if limit_msg:
+            _clear_actions(msisdn)
+            return _limit_reply(msisdn, user, limit_msg)
+        pa.payload.update({
+            "phone": phone,
+            "amount": str(amount),
+            "meta": {"exam": pa.payload["exam_code"], "phone": phone,
+                     "quantity": quantity},
+        })
+        if not _arm_confirm(pa, user):
+            return None
+        return _send_confirm(
+            pa, msisdn,
+            f"🎓 *Confirm Exam PIN*\n{pa.payload['exam_name']} · "
+            f"{pa.payload['description']} ×{quantity}\nTo {phone}\n{_money(amount)}")
+    if state == "pin":
+        if not _flow_pin_ok(pa, user, msisdn, text):
+            return None
+        return _exec_exam(pa, user, msisdn)
+    _clear_actions(msisdn)
+    return send_menu(msisdn)
+
+
+def _exec_exam(pa: PendingAction, user, msisdn: str) -> str:
+    amount = Decimal(pa.payload["amount"])
+    quantity = int(pa.payload["quantity"])
+    phone = pa.payload["phone"]
+    name = pa.payload["exam_name"]
+    service_id = pa.payload.get("service_id") or f"{pa.payload['exam_code']}-pin"
+
+    def receipt(txn, result):
+        pins = result.get("pins") or result.get("Pin") or []
+        if isinstance(pins, (str, int)):
+            pins = [pins]
+        pin_text = ", ".join(str(value) for value in pins) or "Delivered"
+        return ("Exam PIN receipt", [
+            ("Exam", name), ("Product", pa.payload["description"]),
+            ("Quantity", str(quantity)), ("Phone", phone),
+            ("PIN", pin_text), ("Amount", _money(amount)),
+            ("Reference", txn.reference),
+            ("Date", timezone.now().strftime("%d %b %Y, %H:%M")),
+        ])
+
+    return _run_vtu(
+        pa, user, msisdn, amount, f"Exam PIN - {name} x{quantity}",
+        lambda ref: vtu_purchase(service_id, {
+            "billersCode": phone, "quantity": quantity, "phone": phone,
+        }, reference=ref),
+        receipt,
+    )
+
+
+def _pick(text: str, choices: list, fetch):
+    """Map a '1'-based reply to an item via `fetch(code)`; None if out of range."""
+    try:
+        idx = int(text.strip()) - 1
+    except ValueError:
+        return None
+    if not (0 <= idx < len(choices)):
+        return None
+    return fetch(choices[idx])
+
+
 # --------------------------------------------------------------------------- #
 # AI intent layer - the LLM proposes; these map its intent to the SAME flows
 # --------------------------------------------------------------------------- #
+NET_BY_NAME = {v.lower(): k for k, v in NETWORK_NAMES.items()}  # "mtn" -> "1"
+
+
 def ai_active(link: WhatsAppLink, convo: ConversationState) -> bool:
     """AI runs only if all scopes are on: an LLM key is set, the global kill
     switch is on, this user's AI is enabled, and this conversation's AI is on
@@ -836,6 +1752,10 @@ def _record_intent(msisdn: str, intent: dict) -> None:
                   "input": intent.get("masked_input", intent.get("input", {}))}
         row.intent_json = WebhookEvent.redact(logged)
         row.save(update_fields=["intent_json"])
+
+
+def _network_id(network) -> str | None:
+    return NET_BY_NAME.get(str(network).strip().lower()) if network else None
 
 
 #: "5k", "5,000", "₦5000", "2 million" - the amount as customers actually write
@@ -924,9 +1844,59 @@ _VAS_QUESTION_RE = re.compile(
 _VAS_MAX_AMOUNT = Decimal("100000")
 
 
+def vas_text_intent(text: str):
+    """A "2k airtime" / "recharge me 55 naira airtime" message, read without the LLM.
+
+    Every menu promises 'just type what you want - "send 5k to Ada", "2k airtime"',
+    and that promise was only ever kept while the AI layer was up. ai_active() also
+    requires the ``ai_enabled_global`` SystemSetting, which reads with a default of
+    False, so on a deploy where nobody had flipped it EVERY natural-language top-up
+    answered "Sorry, I didn't get that" — including the menu's own worked example,
+    printed one line above the customer's attempt. The screenshots that prompted this
+    are exactly that: "Recharge me 55 naira airtime", twice, both times the menu back.
+
+    Returns an intent in the same shape the model produces, so it leaves through
+    dispatch_intent and there is still only one route into the money flows.
+
+    Both a product word AND an amount are required. Anything less falls through to
+    the menu on purpose: a parser that opened a money flow off half a sentence would
+    be a worse failure than the one it replaces. Inferring the amount is safe here
+    for the same reason it is safe in _begin_airtime — it lands on the confirm
+    screen, which shows what was inferred and still needs biometrics or the PIN
+    before a naira moves.
+    """
+    raw = str(text or "").strip()
+    # A long message is prose, not a command, and is the model's to read.
+    if not raw or len(raw) > 160 or _VAS_QUESTION_RE.search(raw):
+        return None
+    is_data = bool(_VAS_DATA_RE.search(raw))
+    if not is_data and not _VAS_AIRTIME_RE.search(raw):
+        return None
+
+    phone_match = _VAS_PHONE_RE.search(raw)
+    hunting = _VAS_SIZE_RE.sub(" ", _VAS_PHONE_RE.sub(" ", raw))
+
+    amount = None
+    for digits, suffix in _VAS_AMOUNT_RE.findall(hunting):
+        try:
+            value = Decimal(digits.replace(",", ""))
+        except InvalidOperation:
+            continue
+        if suffix:
+            value *= 1000 if suffix.lower() == "k" else 1_000_000
+        if MIN_AIRTIME <= value <= _VAS_MAX_AMOUNT:
+            amount = value
+            break
+    if amount is None:
+        return None
+
+    return {"name": "buy_data" if is_data else "buy_airtime",
+            "input": {"amount": str(amount),
+                      "phone": phone_match.group(0) if phone_match else None}}
+
+
 #: Model intents that read what _SENSITIVE_READS protects, with the keyword each
-#: one would have been typed as. It sat beside the VAS text-intent parser and
-#: went out with it; none of its entries are VAS.
+#: one would have been typed as.
 _GATED_INTENTS = {
     "check_balance": "balance",
     "transaction_history": "history",
@@ -993,6 +1963,29 @@ def _dispatch_intent(user, msisdn: str, name, p: dict) -> bool:
                 pass
         _start_transfer(user, msisdn)  # partial details -> guided flow
         return True
+    if name == "buy_airtime":
+        return _begin_airtime(user, msisdn, p.get("amount"), p.get("phone"),
+                              p.get("network"), p.get("recipient_ref"))
+    if name == "buy_data":
+        # Keep the target/network the customer stated. When they said "me", the
+        # model intentionally leaves phone null and _start_data uses the linked
+        # Zitch line, then infers its network when the prefix is recognised.
+        _start_data(user, msisdn, p.get("phone"), p.get("network"))
+        return True
+    if name == "pay_bill":
+        cat = (p.get("category") or "").lower()
+        # The model extracts biller/customer_id/variation/amount; this branch used
+        # to throw all four away and open the flow at question one, which is how a
+        # message naming the disco, the meter AND the amount still got "Which
+        # disco?". Pass them on - the flows validate everything they are given.
+        if "electric" in cat:
+            _begin_electricity(user, msisdn, p.get("biller"), p.get("customer_id"),
+                               p.get("variation"), p.get("amount"))
+        elif "cable" in cat or "tv" in cat:
+            _begin_cable(user, msisdn, p.get("biller"), p.get("customer_id"))
+        else:
+            _start_service_menu(user, msisdn, "bill")
+        return True
     if name == "convert_currency":
         _start_convert(user, msisdn)
         return True
@@ -1053,6 +2046,73 @@ def _network_from_prefix(phone) -> str | None:
     if digits.startswith("234"):
         digits = "0" + digits[3:]
     return _PREFIX_TO_NETWORK.get(digits[:4]) if len(digits) >= 10 else None
+
+
+def _begin_airtime(user, msisdn: str, amount, phone, network, recipient_ref=None) -> bool:
+    """LLM airtime: if amount + network + phone are all known, jump to confirm;
+    otherwise start the guided flow."""
+    if _blocked_from_spending(user, msisdn, biller=True):
+        return True
+    # "recharge tobi 2k" names WHO, not what number. Falling through to the
+    # default below would have read the missing number as "me" and topped up the
+    # sender's own line - the wrong number, already paid for, and nothing on the
+    # confirm card to reveal it was wrong because the card shows the number it
+    # guessed. Zitch cannot read the phone's contacts, so the only honest move is
+    # to ask.
+    if recipient_ref and not phone:
+        who = str(recipient_ref)[:40]
+        payload = {"pin_attempts": 0, "recipient_ref": who}
+        try:
+            if amount is not None:
+                payload["amount"] = str(Decimal(str(amount)))
+        except (InvalidOperation, TypeError):
+            pass
+        netid = _network_id(network)
+        if netid:
+            payload["net"] = netid
+        _new_flow(user, msisdn, "airtime", "phone", payload)
+        reply(msisdn, f"I can't look up {who}'s number - Zitch can't read your contacts. "
+                      "What number should I recharge?")
+        return True
+    # "2k airtime for me" carries neither a number nor a network. Falling back to
+    # the guided flow for that made the AI look useless on the single most common
+    # sentence customers actually send - so both are inferred rather than asked
+    # for: no target means the customer's own line, and a Nigerian number's
+    # prefix names its network. Neither guess moves money; the confirm screen
+    # still shows what was inferred and still needs biometrics or the PIN.
+    ph = _phone_from(str(phone), user) if phone else _own_phone(user)
+    if phone and not ph:
+        payload = {"pin_attempts": 0}
+        try:
+            if amount is not None:
+                payload["amount"] = str(Decimal(str(amount)))
+        except (InvalidOperation, TypeError):
+            pass
+        netid = _network_id(network)
+        if netid:
+            payload["net"] = netid
+        _new_flow(user, msisdn, "airtime", "phone", payload)
+        reply(msisdn, "That isn't a valid Nigerian mobile number. What number should I recharge?")
+        return True
+    netid = _network_id(network) or _network_from_prefix(ph)
+    try:
+        amt = Decimal(str(amount)) if amount is not None else None
+    except (InvalidOperation, TypeError):
+        amt = None
+    if amt and amt >= 50 and netid and ph:
+        if _insufficient(user, amt):
+            reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
+            return True
+        net = NETWORK_NAMES[netid]
+        pa = _new_flow(user, msisdn, "airtime", "pin",
+                       {"pin_attempts": 0, "net": netid, "phone": ph, "amount": str(amt.quantize(Decimal("0.01"))),
+                        "meta": {"phone": ph, "network": netid}})
+        if not _arm_confirm(pa, user):   # failure is already explained in-chat
+            return True
+        _send_confirm(pa, msisdn, f"Confirm airtime\n{_money(amt)} {net} -> {ph}")
+        return True
+    _start_airtime(user, msisdn)
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -1267,6 +2327,7 @@ _SETTLED_VERB = {
     "data": "Data bundle purchased",
     "electricity": "Electricity paid",
     "cable": "Subscription paid",
+    "exam": "Exam PIN purchased",
     "convert": "Converted",
     "savings_create": "Fixed Save created",
     "loan_repay": "Loan repayment completed",
@@ -1329,11 +2390,13 @@ def run_flow_execution(pa: PendingAction, user) -> str:
     # lock both records briefly so a concurrent cancel, replay, expiry or account
     # freeze cannot race past the final execution boundary.
     #
-    # Do NOT wrap the provider call below in this transaction. The PENDING ledger
-    # row must be committed before the bank call, so a callback, requery or
-    # reconciliation that looks the reference up while the call is in flight can
-    # see it. Keep only the claim/eligibility check atomic; the executor's own
-    # debit() transaction then commits the row before the bank network call.
+    # Do NOT wrap the provider call below in this transaction. Wema's debit-wallet
+    # rail calls our Authentication Callback while ProcessClientTransfer is still
+    # in flight. If the PENDING ledger row is created inside an outer transaction
+    # that has not committed yet, the callback cannot see it and correctly denies
+    # the payout as "unknown_reference", which Wema surfaces as "Authentication
+    # Failed". Keep only the claim/eligibility check atomic; the executor's own
+    # debit() transaction then commits the row before the Wema network call.
     with db_transaction.atomic():
         live = PendingAction.objects.select_for_update().filter(
             pk=pa.pk,
@@ -1381,10 +2444,10 @@ def run_flow_execution(pa: PendingAction, user) -> str:
     if (pa.action_type != "unlock" and pa.state != EXECUTING_STATE
             and _channel_linked(user, pa.msisdn)):
         _mark_verified(pa.msisdn)
-    from banking.chat import execute as execute_bank_vas
     executors = {
-        "bank_vas": execute_bank_vas,
-        "transfer": _exec_transfer, "convert": _exec_convert,
+        "transfer": _exec_transfer, "airtime": _exec_airtime, "data": _exec_data,
+        "electricity": _exec_electricity, "cable": _exec_cable, "convert": _exec_convert,
+        "exam": _exec_exam,
         "unlock": _exec_unlock,
         "savings_create": savings_loans.execute_product,
         "loan_repay": savings_loans.execute_product,

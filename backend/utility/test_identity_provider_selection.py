@@ -15,12 +15,11 @@ class PartnershipIdentitySelectionTests(SimpleTestCase):
         with patch("utility.providers.requests.post") as lookup, \
                 patch("utility.providers.prembly_verify_bvn") as prembly_bvn, \
                 patch("utility.providers.prembly_verify_nin") as prembly_nin:
-            # No KYC provider either, and a stale KYC_PROVIDER cannot name one.
-            self.assertEqual(providers.kyc_provider(), "")
+            self.assertEqual(providers.kyc_provider(), "wema")
             for verify in (providers.verify_bvn, providers.verify_nin):
                 result = verify("12345678901", name="Ada Eze")
                 self.assertFalse(result["success"])
-                self.assertTrue(result["unavailable"])
+                self.assertTrue(result["otp_required"])
                 self.assertFalse(result.get("mock", False))
         lookup.assert_not_called()
         prembly_bvn.assert_not_called()

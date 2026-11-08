@@ -17,7 +17,6 @@ Every test here walks a real session through `handle_flow_request` and asserts
 all four on every response, so a new branch that answers a malformed or
 unreachable screen fails here rather than on a customer's phone.
 """
-from banking.test_fixtures import bank_channel_case
 import json
 import os
 from decimal import Decimal
@@ -28,6 +27,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from transfers.models import Bank
+from utility.models import DataPlan
 from wallet.services import credit, get_or_create_wallet
 
 from . import flows
@@ -92,7 +92,6 @@ def _make_user(balance="50000"):
     return user
 
 
-@bank_channel_case
 class FlowContractMixin:
     """assertScreen — the four invariants, on every response."""
 
@@ -126,7 +125,6 @@ class FlowContractMixin:
         return response
 
 
-@bank_channel_case
 @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "v", "TOKEN": "",
                              "APP_SECRET": "", "PHONE_NUMBER_ID": "1",
                              "BASE_URL": "https://graph.test"},
@@ -146,7 +144,7 @@ class PaymentFlowE2ETests(FlowContractMixin, TestCase):
             state=FLOW_PIN_STATE,
             payload=payload or {"amount": "1000", "account": "0123456789",
                                 "bank_code": "058", "bank_name": "GTBank",
-                                "name": "JOHN DOE", "pin_attempts": 0, "expected_fee": "0.00",
+                                "name": "ADA EZE", "pin_attempts": 0,
                                 "flow_screen": flows.PIN_SCREEN},
             expires_at=timezone.now() + timezone.timedelta(minutes=10))
 
@@ -189,7 +187,6 @@ class PaymentFlowE2ETests(FlowContractMixin, TestCase):
         with patch("whatsapp.router.execute_payout") as payout:
             payout.return_value = self._pending_txn()
             resp = self._exchange(pa, {"pin": "1234"})
-            payout.assert_called_once()
         self.assertScreen(resp, standing_on=flows.PIN_SCREEN, note="pending")
         self.assertEqual(resp["screen"], flows.RESULT_SCREEN)
         self.assertNotIn(resp["screen"], self.terminals)
@@ -281,18 +278,62 @@ class PaymentFlowE2ETests(FlowContractMixin, TestCase):
 
 
 
-@bank_channel_case
 @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "v", "TOKEN": "",
                              "APP_SECRET": "", "PHONE_NUMBER_ID": "1",
                              "BASE_URL": "https://graph.test"},
                    WHATSAPP_FLOW={"ID": "1", "CTA": "Confirm with PIN", "RESULT_SCREEN": True})
-# VtuFlowE2ETests covered the airtime/data ladder -- kind, network, details,
-# PIN -- as one open Flow session. The VAS rail it bought through is gone, and
-# so are its four screens in pin_flow.json, so there is no ladder to walk.
-# The Flow contract it leaned on is still covered by the payment, transfer and
-# result-screen suites in this file.
+class VtuFlowE2ETests(FlowContractMixin, TestCase):
+    """Airtime/data: kind -> network -> details -> PIN, all one open session."""
+
+    def setUp(self):
+        self.user = _make_user()
+        DataPlan.objects.create(network="1", plan_type="1", name="1.5GB", validity="30 days",
+                                plan_code="mtn-1500", price=Decimal("1000"), active=True)
+
+    def _session(self, step=flows.VTU_KIND_STEP, payload=None):
+        base = {"vtu_step": step, "vtu_kind": "data", "net": "1"}
+        base.update(payload or {})
+        return PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="vtu",
+            state=flows.FLOW_VTU_STATE, payload=base,
+            expires_at=timezone.now() + timezone.timedelta(minutes=10))
+
+    def _exchange(self, pa, data):
+        return handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_flow_token(pa), "data": data})
+
+    def test_each_page_of_the_ladder_renders(self):
+        pa = self._session()
+        kind = self._exchange(pa, {"kind": "data"})
+        self.assertScreen(kind, standing_on=flows.VTU_SCREEN, note="kind -> network")
+        pa.refresh_from_db()
+        plans = self._exchange(pa, {"network": "1"})
+        self.assertScreen(plans, standing_on=kind["screen"], note="network -> data")
+
+    def test_a_network_with_no_plans_says_so_instead_of_a_blank_panel(self):
+        """The regression: a Dropdown bound to an empty array renders nothing at
+        all, so the customer sees a spinner on a blank sheet."""
+        DataPlan.objects.all().delete()
+        pa = self._session(flows.VTU_NETWORK_STEP)
+        resp = self._exchange(pa, {"network": "1"})
+        self.assertScreen(resp, standing_on=flows.VTU_NETWORK, note="no plans")
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
+        self.assertIn("no mtn data plans", resp["data"]["message"].lower())
+
+    def test_the_re_render_path_also_refuses_an_empty_dropdown(self):
+        """INIT/BACK re-renders whichever page the session is on. It used to
+        build the data page without the emptiness check the submit path had."""
+        DataPlan.objects.all().delete()
+        pa = self._session(flows.VTU_DETAILS_STEP)
+        resp = handle_flow_request({"action": "INIT", "flow_token": sign_flow_token(pa)})
+        self.assertScreen(resp, note="re-render with no plans")
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
 
 
+@override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "v", "TOKEN": "",
+                             "APP_SECRET": "", "PHONE_NUMBER_ID": "1",
+                             "BASE_URL": "https://graph.test"},
+                   WHATSAPP_FLOW={"ID": "1", "CTA": "Confirm with PIN", "RESULT_SCREEN": True})
 class TransferFormE2ETests(FlowContractMixin, TestCase):
     def setUp(self):
         self.user = _make_user()
@@ -320,7 +361,6 @@ class TransferFormE2ETests(FlowContractMixin, TestCase):
             PendingAction.objects.get(msisdn=MSISDN).state, "amount")
 
 
-@bank_channel_case
 class ResultScreenRolloutTests(FlowContractMixin, TestCase):
     """The Flow JSON and the endpoint are a contract, and the publish is a
     manual step that does not run from a deploy.

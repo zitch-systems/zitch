@@ -14,9 +14,6 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
-from banking.test_client import CONFIG
-from banking.test_fixtures import bind_test_bank
-
 from .models import Transaction, TransactionAlertDelivery
 from .services import credit, debit, get_or_create_wallet
 
@@ -31,12 +28,10 @@ def _user():
                             email_verified=True, phone_verified=True,
                             bvn_verified=True, nin_verified=True)
     get_or_create_wallet(u)
-    bind_test_bank(u, available_balance="10000000")
     return u
 
 
 @override_settings(TXN_ALERTS=_ON)
-@override_settings(NINEPSB=CONFIG)
 class TransactionAlertTests(TestCase):
     def setUp(self):
         self.user = _user()
@@ -172,7 +167,6 @@ class TransactionAlertTests(TestCase):
         email.assert_not_called()
 
 
-@override_settings(NINEPSB=CONFIG)
 class FinancialAlertTimestampTests(TestCase):
     def setUp(self):
         self.user = _user()
@@ -198,7 +192,6 @@ class FinancialAlertTimestampTests(TestCase):
 
 
 @override_settings(TXN_ALERTS={"EMAIL": True, "SMS": False, "WHATSAPP": True})
-@override_settings(NINEPSB=CONFIG)
 class WhatsAppChannelAlertTests(TestCase):
     """A WhatsApp-originated transfer/purchase already gets a receipt and a
     "balance is now" line inside the same chat (whatsapp/router.py
@@ -516,7 +509,6 @@ class WhatsAppChannelAlertTests(TestCase):
 
 
 @override_settings(TXN_ALERTS={"EMAIL": False, "SMS": False, "WHATSAPP": True})
-@override_settings(NINEPSB=CONFIG)
 class WhatsAppAlertClaimConcurrencyTests(TransactionTestCase):
     """The database claim, rather than a process-local flag, owns delivery."""
 
@@ -580,7 +572,6 @@ _WA_TMPL = {"TXN_ALERT_TEMPLATE": "txn_alert", "TXN_ALERT_TEMPLATE_LANG": "en_US
 
 
 @override_settings(TXN_ALERTS={"EMAIL": True, "SMS": False, "WHATSAPP": True}, WHATSAPP=_WA_TMPL)
-@override_settings(NINEPSB=CONFIG)
 class WhatsAppAlertTemplateFallbackTests(TestCase):
     """Free-form text is delivered only inside WhatsApp's 24-hour service window.
     An alert about an app transaction — or a payout that settles hours after the

@@ -7,7 +7,6 @@ pair here), and every screen the server can answer with must be a legal move
 from the screen the customer is standing on — the class Meta only reveals on
 a live device.
 """
-from banking.test_fixtures import bank_channel_case
 import collections
 import json
 from pathlib import Path
@@ -29,15 +28,16 @@ SERVER_TRANSITIONS = [
     ("SIGNUP_PHONE", "SIGNUP_PHONE"), ("SIGNUP_PHONE", "PIN_CHAIN"), ("SIGNUP_PHONE", "SUCCESS"),
     ("EMAIL_SCREEN", "EMAIL_SCREEN"), ("EMAIL_SCREEN", "IDENTITY_CHAIN"), ("EMAIL_SCREEN", "SUCCESS"),
     ("TRANSFER_FORM", "TRANSFER_FORM"), ("TRANSFER_FORM", "PIN_CHAIN"), ("TRANSFER_FORM", "SUCCESS"),
-    # The airtime/data ladder went with the VAS rail, and the BVN/NIN entry and
-    # its phone-OTP chain went with the identity rail -- VTU_SCREEN,
-    # VTU_NETWORK, VTU_AIRTIME, VTU_DATA and the IDENTITY_SCREEN ->
-    # IDENTITY_RETRY -> IDENTITY_CHAIN moves with them. This table is checked
-    # against the screens in pin_flow.json, so leaving a deleted screen here
-    # fails rather than rots, which is how these were found.
-    #
-    # IDENTITY_CHAIN stays below, reached from EMAIL_SCREEN: it carries the
-    # email confirmation code, which is still a step Zitch can complete.
+    # The airtime/data ladder. Same-screen re-renders are the right answer here
+    # and NOT the defect the PIN pages have: these fields are visible, so a
+    # refused value staying in the box is help rather than a trap.
+    ("VTU_SCREEN", "VTU_SCREEN"), ("VTU_SCREEN", "VTU_NETWORK"), ("VTU_SCREEN", "SUCCESS"),
+    ("VTU_NETWORK", "VTU_NETWORK"), ("VTU_NETWORK", "VTU_AIRTIME"),
+    ("VTU_NETWORK", "VTU_DATA"), ("VTU_NETWORK", "SUCCESS"),
+    ("VTU_AIRTIME", "VTU_AIRTIME"), ("VTU_AIRTIME", "PIN_CHAIN"), ("VTU_AIRTIME", "SUCCESS"),
+    ("VTU_DATA", "VTU_DATA"), ("VTU_DATA", "PIN_CHAIN"), ("VTU_DATA", "SUCCESS"),
+    ("IDENTITY_SCREEN", "IDENTITY_RETRY"), ("IDENTITY_SCREEN", "IDENTITY_CHAIN"), ("IDENTITY_SCREEN", "SUCCESS"),
+    ("IDENTITY_RETRY", "IDENTITY_CHAIN"), ("IDENTITY_RETRY", "SUCCESS"),
     ("IDENTITY_CHAIN", "CODE_RETRY"), ("IDENTITY_CHAIN", "SUCCESS"),
     ("CODE_SCREEN", "CODE_RETRY"), ("CODE_SCREEN", "PIN_CHAIN"), ("CODE_SCREEN", "SUCCESS"),
     ("CODE_RETRY", "PIN_CHAIN"), ("CODE_RETRY", "SUCCESS"),
@@ -63,13 +63,11 @@ SERVER_TRANSITIONS = [
 #: list is the open-work list: it shrinks as each is capped, and
 #: test_no_pin_screen_re_renders_onto_itself stops anything PIN-shaped rejoining.
 KNOWN_SELF_RENDERS = [
-    # IDENTITY_RETRY -> IDENTITY_RETRY was bounded by _MAX_ID_ATTEMPTS. Both are
-    # gone with the identity rail: no screen answers onto IDENTITY_RETRY now.
+    ("IDENTITY_RETRY", "IDENTITY_RETRY"),    # bounded by _MAX_ID_ATTEMPTS
     ("CODE_RETRY", "CODE_RETRY"),            # account_flow_otp is still uncapped
 ]
 
 
-@bank_channel_case
 class FlowFileContractTests(SimpleTestCase):
 
     def test_only_active_partnership_screens_are_publishable(self):
@@ -152,28 +150,18 @@ class FlowFileContractTests(SimpleTestCase):
                     yield from secret_inputs(v)
 
         found = [inp for s in FLOW["screens"] for inp in secret_inputs(s["layout"])]
-        # 11 before IDENTITY_SCREEN and IDENTITY_RETRY went with the identity
-        # rail; each carried exactly one masked box, so the census is 9 and the
-        # passcode count 8. Counted rather than computed on purpose: the point
-        # of this test is that a new masked field cannot appear unnoticed.
-        self.assertEqual(len(found), 9)
+        self.assertEqual(len(found), 11)
         for inp in found:
             # The email ADDRESS rides the same field name but is not digits —
             # it keeps the email keyboard. Everything else is a passcode pad.
             expected = "email" if inp.get("input-type") == "email" else "passcode"
             self.assertEqual(inp.get("input-type"), expected)
-        self.assertEqual(sum(1 for i in found if i.get("input-type") == "passcode"), 8)
+        self.assertEqual(sum(1 for i in found if i.get("input-type") == "passcode"), 10)
 
-    def test_code_fields_are_exactly_six(self):
-        """A code field cannot accept eleven digits -- which is why codes have
-        their own screens instead of riding the 11-digit identity box.
-
-        The 11/11 half of this went with the identity rail: IDENTITY_SCREEN and
-        IDENTITY_RETRY were the only screens that carried an 11-digit field, and
-        the reason codes were moved off them in the first place. The 6/6 half is
-        what still has to hold, and is why the test is kept rather than deleted
-        with the screens it also covered.
-        """
+    def test_identity_fields_are_eleven_and_code_fields_six(self):
+        """An incomplete BVN is refused AT THE FIELD (red outline), and a code
+        field cannot accept eleven digits — which is why codes have their own
+        screens instead of riding IDENTITY_SCREEN."""
         def number_input(sid):
             def walk(node):
                 if isinstance(node, dict):
@@ -188,6 +176,9 @@ class FlowFileContractTests(SimpleTestCase):
                         if r: return r
             return walk(BY_ID[sid]["layout"])
 
+        for sid in ("IDENTITY_SCREEN", "IDENTITY_RETRY"):
+            inp = number_input(sid)
+            self.assertEqual((inp["min-chars"], inp["max-chars"]), (11, 11), sid)
         for sid in ("IDENTITY_CHAIN", "CODE_SCREEN", "CODE_RETRY"):
             inp = number_input(sid)
             self.assertEqual((inp["min-chars"], inp["max-chars"]), (6, 6), sid)
@@ -226,7 +217,6 @@ class FlowFileContractTests(SimpleTestCase):
         self.assertEqual(len(all_srcs), 1)
 
 
-@bank_channel_case
 class BuildersMatchDeclaredKeysTests(TestCase):
     """Each screen builder must supply exactly the keys its screen declares —
     an extra key fails the exchange at Meta; a missing one renders a hole."""
@@ -246,8 +236,9 @@ class BuildersMatchDeclaredKeysTests(TestCase):
             F._signup_phone_screen(error="taken"),
             F._email_screen(),
             F._transfer_form_screen(),
-            F._masked_entry_screen("code"),
-            F._masked_entry_screen("code", screen=F.IDENTITY_CHAIN),
+            F._identity_screen("bvn"),
+            F._identity_screen("bvn", screen=F.IDENTITY_RETRY),
+            F._identity_screen("bvn", screen=F.IDENTITY_CHAIN),
             F._pin_screen("s"),
             F._pin_screen("s", screen=F.PIN_CHAIN),
             F._pin_screen("s", screen=F.PIN_RETRY),

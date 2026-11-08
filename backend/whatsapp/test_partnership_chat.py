@@ -1,6 +1,4 @@
 """Partnership chat preserves biller safety and refuses retired setup sessions."""
-from banking.test_fixtures import bank_channel_case
-from banking.test_client import CONFIG
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -15,7 +13,6 @@ from whatsapp.retired_setup import RETIRED_SETUP_MESSAGE
 from whatsapp.test_flows import MSISDN, _make_user
 
 
-@bank_channel_case
 class PartnershipCustomerChatTests(TestCase):
     def setUp(self):
         self.user = _make_user()
@@ -34,77 +31,36 @@ class PartnershipCustomerChatTests(TestCase):
     def retired_action(self, marker="vas_enroll", state="flow_identity"):
         return PendingAction.objects.create(
             user=self.user, msisdn=MSISDN,
-            action_type=marker if marker in ("vas_enroll", "add_account") else "kyc",
+            action_type="vas_enroll" if marker == "vas_enroll" else "kyc",
             state=state,
-            payload={} if marker in ("vas_enroll", "add_account") else {marker: True},
+            payload={} if marker == "vas_enroll" else {marker: True},
             expires_at=timezone.now() + timedelta(minutes=5),
         )
 
-    def test_the_menu_offers_nothing_the_rails_cannot_do(self):
-        """It used to flip every option on the NINEPSB ENABLED setting. That
-        setting reaches nothing now -- banking.client.configured() is False
-        whatever it says -- so the two halves of that test were the same half.
+    def test_partnership_menu_follows_lifecycle_policy_on_each_call(self):
+        for lifecycle, enabled in (("active", True), ("archive", False)):
+            with self.subTest(lifecycle=lifecycle), override_settings(
+                    BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE=lifecycle):
+                menu = router.menu_text()
+                self.assertEqual("2️⃣  💸 Send money" in menu, enabled)
+                self.assertEqual("1️⃣1️⃣  📷 Scan a QR code" in menu, enabled)
+                self.assertEqual("send 5k to Ada" in menu, enabled)
+                self.assertIn("3️⃣  📱 Airtime / Data", menu)
+                self.assertIn("4️⃣  💡 Pay a bill", menu)
 
-        What the menu has to get right is narrower and more useful: it must not
-        name a product whose rail is gone, and the options it does relabel must
-        be relabelled rather than silently still working. The companion test
-        below checks the other end, that the relabelled ones actually refuse.
-        """
-        menu = router.menu_text()
-        # Relabelled, numbers kept so a remembered digit still lands somewhere
-        # truthful rather than on whatever moved up into its place.
-        self.assertIn("2️⃣  💸 Transfers unavailable", menu)
-        self.assertIn("1️⃣1️⃣  📷 QR payments unavailable", menu)
-        self.assertNotIn("Send money", menu)
-        # Removed outright with the VAS rail, numbers left as gaps.
-        for gone in ("📱 Airtime / Data", "💡 Pay a bill", "Exam PIN"):
-            self.assertNotIn(gone, menu)
-        # And the examples line reads as an instruction, not as the same
-        # suggestion twice -- which is what replacing "send 5k to Ada" with
-        # "check balance" produced when the line already offered it.
-        hint = [l for l in menu.splitlines() if "type what you want" in l]
-        self.assertEqual(len(hint), 1)
-        self.assertEqual(hint[0].count("check balance"), 1)
-        self.assertNotIn("send 5k to Ada", hint[0])
-
-    def test_every_outbound_flow_refuses_at_the_door_not_at_the_pin(self):
-        """The menu saying "Transfers unavailable" and the flow then asking "how
-        much would you like to send?" is the failure this removal exists to end.
-
-        It happened: the relabel is driven by partnership_new_business_allowed(),
-        and the comment beside it says the shared spending guard refuses the
-        payment before it begins. That stopped being true when bank_spend_error
-        started returning None with no provider -- deliberately, because that is
-        what lets a bankless wallet spend internally. So the guard grew a
-        separate outbound leg, and this is what holds it in place.
-        """
-        for label, text in (("transfer", "2"), ("qr", "11")):
-            with self.subTest(flow=label):
-                with patch.object(router, "reply") as reply, \
-                        patch.object(router, "send_flow") as secure, \
-                        patch.object(router, "_bank_items") as banks:
-                    router.handle_inbound(MSISDN, text)
-                secure.assert_not_called()
-                banks.assert_not_called()
-                self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
-                said = reply.call_args.args[1]
-                self.assertIn("can't send money to a bank account", said)
-                # Not a limit and not about them: no padlock, no "upgrade".
-                self.assertNotIn("🔒", said)
-                self.assertIn("balance is safe", said)
-
-    def test_a_ledger_only_flow_is_not_caught_by_the_outbound_gate(self):
-        """The other side of that line. A conversion never leaves the ledger, so
-        it must still start -- otherwise the outbound leg has quietly become the
-        blanket refusal the spending gate used to be."""
-        with patch.object(router, "reply") as reply:
-            router.handle_inbound(MSISDN, "5")
-        said = " ".join(str(c.args[1]) for c in reply.call_args_list)
-        self.assertNotIn("can't send money to a bank account", said)
-        self.assertIn("currency", said.lower())
+    @override_settings(BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE="archive")
+    def test_archived_transfer_option_is_refused_before_recipient_or_pin(self):
+        with patch.object(router, "reply") as reply, \
+                patch.object(router, "_bank_items") as banks, \
+                patch.object(router, "send_flow") as secure:
+            router.handle_inbound(MSISDN, "2")
+        banks.assert_not_called()
+        secure.assert_not_called()
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+        self.assertIn("unavailable", reply.call_args.args[1])
 
     def test_retired_chat_sessions_cannot_reinterpret_identity_or_otp_input(self):
-        for marker in ("vas_enroll", "add_account", "vas_identity", "vas_contacts", "vas_reregister"):
+        for marker in ("vas_enroll", "vas_identity", "vas_contacts", "vas_reregister"):
             with self.subTest(marker=marker):
                 pa = self.retired_action(marker)
                 with patch.object(router, "reply") as reply, \
@@ -118,12 +74,12 @@ class PartnershipCustomerChatTests(TestCase):
 
     def test_retired_direct_identity_and_contact_helpers_never_contact_providers(self):
         calls = (
-            # kyc_flow_identity_otp and _kyc_send_identity_otp were the BVN/NIN
-            # challenge pair. Both went with the identity rail; the email and
-            # mail-code helpers below are what a retired session can still reach,
-            # and are what must still refuse without touching a provider.
+            (router._account_submit_identity, (self.user, MSISDN, "22222222222"), "fail"),
+            (router.account_flow_otp, ("123456",), ("done", RETIRED_SETUP_MESSAGE)),
+            (router.kyc_flow_identity_otp, ("123456",), ("stop", RETIRED_SETUP_MESSAGE)),
             (router.kyc_flow_email_address, ("new@example.com",), ("stop", RETIRED_SETUP_MESSAGE)),
             (router.kyc_flow_email_code, ("123456",), ("stop", RETIRED_SETUP_MESSAGE)),
+            (router._kyc_send_identity_otp, (self.user, "bvn", self.user.phone), RETIRED_SETUP_MESSAGE),
             (router._kyc_mail_code, (self.user,), False),
         )
         for fn, args, expected in calls:
@@ -131,10 +87,14 @@ class PartnershipCustomerChatTests(TestCase):
                 pa = self.retired_action("vas_identity")
                 with patch.object(router, "reply"), \
                         patch.object(router, "send_sms") as sms, \
-                        patch.object(router, "send_email") as email:
+                        patch.object(router, "send_email") as email, \
+                        patch.object(router.wallet_views, "_start_wema_attempt") as create, \
+                        patch.object(router.wallet_views, "complete_wema_provisioning") as complete:
                     self.assertEqual(fn(pa, *args), expected)
                 sms.assert_not_called()
                 email.assert_not_called()
+                create.assert_not_called()
+                complete.assert_not_called()
                 self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
 
     @override_settings(WHATSAPP_PROCESS_INLINE=False)
@@ -173,48 +133,32 @@ class PartnershipCustomerChatTests(TestCase):
         reply.assert_called_once_with(MSISDN, RETIRED_SETUP_MESSAGE)
         onboarding.assert_not_called()
 
+    def test_historical_funding_review_does_not_open_a_new_account_or_identity_flow(self):
+        held = {**self.funding, "account_setup_state": "legacy_funding_review",
+                "available": False, "has_account": False,
+                "migration_message": "Your historical funds need review. Contact support."}
+        for fn in (router._do_add_money, router._do_account_details,
+                   router._start_add_account, router._start_kyc):
+            with self.subTest(fn=fn.__name__), \
+                    patch.object(router, "customer_funding_account", return_value=held), \
+                    patch.object(router, "reply") as reply, \
+                    patch.object(router, "send_flow") as flow, \
+                    patch.object(router.wallet_views, "_start_wema_attempt") as create:
+                fn(self.user, MSISDN)
+                reply.assert_called_once_with(MSISDN, held["migration_message"])
+                flow.assert_not_called()
+                create.assert_not_called()
+                self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
 
-    def test_the_confirmation_and_the_affordability_check_use_available_not_raw(self):
-        """What the chat offers to spend must be the canonical available balance.
-
-        A wallet holding 600 of which only 100 is available must be told 100,
-        and 200 must be refused as unaffordable. Offering the raw balance is how
-        a customer is invited to spend money that is not theirs to spend yet --
-        historical funds, a held amount, an archived balance.
-
-        This was asserted on an airtime ladder and removed with it, which left
-        _fresh_wallet_balance and _insufficient with no test at all. The three
-        assertions never depended on the action type; only the _advance_airtime
-        call at the end did.
-        """
-        self.wallet.balance = Decimal("600")
-        self.wallet.save(update_fields=["balance"])
+    def test_partnership_kyc_dispatch_and_generic_biller_text_remain_available(self):
         pa = PendingAction.objects.create(
-            user=self.user, msisdn=MSISDN, action_type="transfer", state="amount",
-            payload={"amount": "200", "account": "0123456789", "bank_code": "058",
-                     "bank_name": "GTBank", "name": "JOHN DOE", "pin_attempts": 0},
-            expires_at=timezone.now() + timedelta(minutes=5))
-        with patch.object(router, "customer_spendable_balance", return_value=Decimal("100")):
-            self.assertEqual(router._fresh_wallet_balance(self.user), Decimal("100"))
-            self.assertEqual(router._flow_balance_line(pa), "Available balance ₦100.00")
-            self.assertTrue(router._insufficient(self.user, Decimal("200")))
-            # And the raw balance is not what 200 is compared against.
-            self.assertFalse(router._insufficient(self.user, Decimal("50")))
-
-    def test_a_kyc_session_still_dispatches_to_the_kyc_handler(self):
-        """The dispatch, not the step. It was asserted on state "bvn", which
-        _kyc_next no longer issues, and paired with a check that
-        vas_text_intent still read "2k airtime" -- a reader for a rail that is
-        gone, along with the function. The email state is what the ladder
-        actually parks on now.
-        """
-        pa = PendingAction.objects.create(
-            user=self.user, msisdn=MSISDN, action_type="kyc", state="email",
+            user=self.user, msisdn=MSISDN, action_type="kyc", state="bvn",
             expires_at=timezone.now() + timedelta(minutes=5),
         )
         with patch.object(router, "_advance_kyc") as kyc:
-            router._advance(pa, self.user, MSISDN, "123456")
-        kyc.assert_called_once_with(pa, self.user, MSISDN, "123456")
+            router._advance(pa, self.user, MSISDN, "22222222222")
+        kyc.assert_called_once_with(pa, self.user, MSISDN, "22222222222")
+        self.assertIsNotNone(router.vas_text_intent("2k airtime"))
 
     def test_expired_nonpayment_actions_have_contextual_restart_without_charge_claim(self):
         restarts = {"vas_enroll": "Reply *6*", "kyc": "Reply *8*", "add_account": "Reply *6*",
@@ -274,4 +218,103 @@ class PartnershipCustomerChatTests(TestCase):
                 patch.object(router, "reply") as reply:
             self.assertTrue(router._blocked_from_spending(self.user, MSISDN))
         self.assertIn("Transfers are not available", reply.call_args.args[1])
+
+
+    def test_bill_eligible_funding_and_balance_do_not_say_bills_are_disabled(self):
+        funding = {**self.funding, "has_account": True, "available": True,
+                   "account_setup_state": "ready", "account_number": "7121234567",
+                   "bill_payments_available": True, "transfers_available": False}
+        with patch.object(router, "customer_funding_account", return_value=funding), \
+                patch.object(router, "reply") as reply:
+            router._send_account_details(MSISDN, self.wallet)
+            account_message = reply.call_args.args[1]
+            router._do_balance(self.user, MSISDN)
+            balance_message = reply.call_args.args[1]
+        for message in (account_message, balance_message):
+            self.assertIn("Bill payments are available. Transfers are currently unavailable.", message)
+            self.assertNotIn("Transfers and bill payments are currently unavailable", message)
+
+
+    def test_bill_starters_select_biller_gate_and_transfers_keep_transfer_gate(self):
+        starters = [
+            (router._start_vtu, ()), (router._start_airtime, ()), (router._start_data, ()),
+            (router._start_electricity, ()), (router._begin_electricity, (None, None, None, None)),
+            (router._start_cable, ()), (router._begin_cable, (None, None)),
+            (router._start_exam, ()), (router._begin_airtime, (None, None, None)),
+        ]
+        for start, args in starters:
+            with self.subTest(start=start.__name__), \
+                    patch.object(router, "_blocked_from_spending", return_value=True) as guard:
+                start(self.user, MSISDN, *args)
+                guard.assert_called_once_with(self.user, MSISDN, biller=True)
+        with patch.object(router, "_blocked_from_spending", return_value=True) as guard:
+            router._start_transfer(self.user, MSISDN)
+        guard.assert_called_once_with(self.user, MSISDN)
+
+
+    def test_bill_gate_uses_retained_biller_capability(self):
+        def reason(user, amount, *, biller=False):
+            return None if biller else "Transfers unavailable"
+        with patch.object(router, "bank_spend_error", side_effect=reason) as guard, \
+                patch.object(router, "reply"):
+            self.assertFalse(router._blocked_from_spending(self.user, MSISDN, biller=True))
+            self.assertTrue(router._blocked_from_spending(self.user, MSISDN))
+        self.assertEqual(guard.call_args_list[0].kwargs, {"biller": True})
+        self.assertEqual(guard.call_args_list[1].kwargs, {"biller": False})
+
+
+    def test_bill_executor_checks_biller_limits_before_provider(self):
+        pa = PendingAction.objects.create(user=self.user, msisdn=MSISDN,
+            action_type="airtime", state="executing", payload={"amount": "100", "net": "1", "phone": "08012345678"},
+            expires_at=timezone.now() + timedelta(minutes=5))
+        with patch.object(router, "send_limit_error", return_value="Bill unavailable") as guard, \
+                patch.object(router, "_limit_reply"), patch.object(router, "run_provider_purchase") as purchase:
+            router._run_vtu(pa, self.user, MSISDN, Decimal("100"), "Airtime - MTN", None, None)
+        guard.assert_called_once_with(self.user, Decimal("100"), biller=True)
+        purchase.assert_not_called()
+
+
+    def test_private_confirmation_and_affordability_use_canonical_available_balance(self):
+        self.wallet.balance = Decimal("600")
+        self.wallet.save(update_fields=["balance"])
+        pa = PendingAction.objects.create(user=self.user, msisdn=MSISDN,
+            action_type="airtime", state="amount", payload={"amount": "200", "net": "1", "phone": "08012345678"},
+            expires_at=timezone.now() + timedelta(minutes=5))
+        with patch.object(router, "customer_spendable_balance", return_value=Decimal("100")), \
+                patch.object(router, "reply") as reply, patch.object(router, "_arm_confirm") as confirm:
+            self.assertEqual(router._fresh_wallet_balance(self.user), Decimal("100"))
+            self.assertEqual(router._flow_balance_line(pa), "Available balance ₦100.00")
+            self.assertTrue(router._insufficient(self.user, Decimal("200")))
+            router._advance_airtime(pa, self.user, MSISDN, "200")
+        self.assertIn("₦100.00", reply.call_args.args[1])
+        self.assertNotIn("₦600.00", reply.call_args.args[1])
+        confirm.assert_not_called()
+
+
+    def test_balance_separates_historical_total_from_available_bill_funds(self):
+        balances = {"balance": Decimal("600"), "available_balance": Decimal("100"),
+                    "historical_balance": Decimal("500")}
+        funding = {**self.funding, "bill_payments_available": True, "transfers_available": False}
+        with patch.object(router, "wallet_balance_payload", return_value=balances), \
+                patch.object(router, "customer_funding_account", return_value=funding), \
+                patch.object(router, "reply") as reply:
+            router._do_balance(self.user, MSISDN)
+        message = reply.call_args.args[1]
+        self.assertIn("Total NGN wallet balance: ₦600.00", message)
+        self.assertIn("Available for bills: ₦100.00", message)
+        self.assertIn("Historical funds unavailable for bills: ₦500.00", message)
+
+
+    def test_encrypted_airtime_details_do_not_offer_historical_funds_for_spending(self):
+        from whatsapp.test_vtu_flow import _submit, _vtu_action
+        from whatsapp.flows import VTU_AIRTIME
+        self.wallet.balance = Decimal("600")
+        self.wallet.save(update_fields=["balance"])
+        pa = _vtu_action(self.user, vtu_kind="airtime", vtu_step="details", net="1")
+        with patch.object(router, "customer_spendable_balance", return_value=Decimal("100")), \
+                patch("common.http.send_limit_error", return_value=None):
+            response = _submit(pa, {"amount": "200", "phone": "08012345678"})
+        self.assertEqual(response["screen"], VTU_AIRTIME)
+        self.assertIn("₦100.00", response["data"]["error"])
+        self.assertNotIn("₦600.00", response["data"]["error"])
 

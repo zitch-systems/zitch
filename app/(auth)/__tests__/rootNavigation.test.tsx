@@ -65,7 +65,7 @@ const freshNestedState = () => ({
   stale: false as const, type: 'stack', key: 'root-stack', index: 0,
   routeNames: ['index', '(auth)'], routes: [{ key: 'auth-route', name: '(auth)', state: {
     stale: false as const, type: 'stack', key: 'auth-stack', index: 0,
-    routeNames: ['signin', 'home', 'register', 'otp'], routes: [{ key: `${mockRouteName}-route`, name: mockRouteName }],
+    routeNames: ['signin', 'home'], routes: [{ key: `${mockRouteName}-route`, name: mockRouteName }],
   } }],
 });
 
@@ -86,7 +86,7 @@ beforeEach(() => {
   store.storeSubscribers.clear();
   store.rootState = undefined;
   store.nextState = undefined;
-  store.linking = { config: { screens: { index: '', '(auth)': { path: '(auth)', screens: { signin: 'signin', home: 'home', register: 'register', otp: 'otp' } } } } } as any;
+  store.linking = { config: { screens: { index: '', '(auth)': { path: '(auth)', screens: { signin: 'signin', home: 'home' } } } } } as any;
   store.routeInfo = store.getRouteInfo(freshNestedState() as any);
   store.navigationRef = {
     isReady: () => navigationReady,
@@ -198,15 +198,6 @@ it('still redirects a currently locked account to authentication', async () => {
   (isSessionLocked as jest.Mock).mockResolvedValue(true);
   await act(async () => { tree = renderer.create(<RootLayout />); });
   expect(router.replace).toHaveBeenCalledWith('/signin');
-});
-
-it.each(['register', 'otp'])('lets someone create an account on %s while an older session is locked', async (route) => {
-  mockRouteName = route;
-  store.routeInfo = store.getRouteInfo(freshNestedState() as any);
-  (isSessionLocked as jest.Mock).mockResolvedValue(true);
-  await act(async () => { tree = renderer.create(<RootLayout />); });
-  await act(async () => { jest.advanceTimersByTime(30_000); });
-  expect(router.replace).not.toHaveBeenCalled();
 });
 
 it('still redirects after hard expiry clears and advances the current session', async () => {

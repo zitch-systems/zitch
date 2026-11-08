@@ -58,8 +58,13 @@ KYC: `/api/kyc/status/` · `/api/kyc/bvn/` · `/api/kyc/nin/` · `/api/kyc/face/
 Wallet: `/api/wallet_balance/` · `/api/user-transaction-history/`
 Funding (Wema): `/api/wallet/account/create/` · `/api/wallet/wema/verify-otp/` · `/api/wallet/wema/resend-otp/`
 Transfer (Zitch→Zitch): `/api/transfer/resolve/` · `/api/transfer/send/`
+Utility: `/api/utility/{buyairtime,get_data_plans,get_data_plans_price,buydata,
+get_cable_plans,get_cable_plans_price,validate_iuc,buycable,validate_meter,
+buyelectricity}/`
+Exams: `/api/exams/list/` · `/api/exams/buy/`
 Loans: `/api/loans/status/` · `/api/loans/quote/` · `/api/loans/request/` · `/api/loans/repay/`
 Fixed Save: `/api/savings/rates/` · `/api/savings/quote/` · `/api/savings/create/` · `/api/savings/list/`
+Betting: `/api/betting/list/` · `/api/betting/fund/`
 Zitch transfer: `/api/transfer/resolve/` · `/api/transfer/send/`
 Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/api/transfers/resolve/` · `/api/transfers/send/`
 Cards: `/api/cards/list/` · `/api/cards/create/` · `/api/cards/freeze/` · `/api/cards/details/` · `/api/cards/fund/`
@@ -199,11 +204,14 @@ following `../docs/whatsapp-production-operations.md`.
   always-on web service, WhatsApp worker, shared cache and paid Postgres. Review cost
   and confirm it adopts the existing Render resources rather than creating duplicates;
   then remove the live database's current public `0.0.0.0/0` allow-list entry.
-- **VAS is 9PSB only.** Airtime, data and bills go through the 9PSB VAS client
-  (`banking/`), reached via the `utility/providers.py` wrappers. There is no
-  fallback provider; an unavailable product is refused before any debit, and
-  `NINEPSB_VAS_ENABLED` stays false until VAS authentication succeeds. See
-  `docs/9psb-vas-contract.md`.
+- **VAS is partner-bank only.** There is one VAS rail — Wema/ALAT, via the
+  `utility/providers.py` `vtu_*` wrappers (the name is historical). There is no
+  fallback provider, so an unmapped service is NOT quietly fulfilled elsewhere: it is
+  refused before any debit. **Airtime** works as soon as `WEMA_AIRTIME_KEY` is set.
+  **Data/cable** need `python manage.py seed_wema_plans` to map each plan's
+  `wema_code` from Wema's live catalogue (run with live keys; review with
+  `--dry-run` first). **Electricity/betting** need `--only billers` to map a
+  `WemaBiller` row each. Until a service is mapped it is off sale.
 - **`WEMA_VAS_STATUS_LEGEND` / `WEMA_BILLS_STATUS_LEGEND` gate VAS sales.** ALAT's
   status endpoints answer with a bare integer `transactionStatus`; the confirmed
   payment legend is 200 success, 400 failure and 401 authentication/API failure.

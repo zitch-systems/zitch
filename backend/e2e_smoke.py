@@ -145,11 +145,46 @@ def main():
     r = post("/api/wallet_balance/", token=tok)
     check("wallet_balance surfaces the dedicated account", j(r).get("account_number") == acct, str(j(r)))
 
-    # Airtime, data, cable and electricity were bought through the 9PSB VAS rail.
-    # The rail, the endpoints and the catalogues are gone, so there is nothing
-    # here to smoke-test. Idempotency on a customer debit -- what the airtime
-    # replay check covered -- is still exercised by the internal transfer below
-    # and by the savings lock.
+    idem = f"e2e-{uuid.uuid4().hex[:12]}"
+    r = post("/api/utility/buyairtime/", {"network": "1", "phone": phone_a, "amount": "200",
+                                          "transaction_pin": "1234", "idempotency_key": idem}, token=tok)
+    check("buy airtime", j(r).get("success") is True, f"{r.status_code} {j(r)}")
+    ref1 = j(r).get("reference")
+    r = post("/api/utility/buyairtime/", {"network": "1", "phone": phone_a, "amount": "200",
+                                          "transaction_pin": "1234", "idempotency_key": idem}, token=tok)
+    check("idempotency replay (no double debit)", j(r).get("duplicate") is True and j(r).get("reference") == ref1, str(j(r)))
+
+    # The app sends numeric codes: network "1".."4", plan type "1" (SME) / "3" (gifting).
+    r = post("/api/utility/get_data_plans/", {"datanetwork": "1", "selectedPlanType": "1"})
+    plans = j(r).get("data_plans") or []
+    if check("data plans list", bool(plans), str(j(r))[:120]):
+        r = post("/api/utility/buydata/", {"datanetwork": "1", "selectedDataPlan": plans[0]["plan_code"],
+                                           "phone": phone_a, "transaction_pin": "1234",
+                                           "idempotency_key": f"e2e-{uuid.uuid4().hex[:12]}"}, token=tok)
+        check("buy data", j(r).get("success") is True, f"{r.status_code} {j(r)}")
+
+    # The app sends a numeric disco id ("1" = Ikeja); the view maps it to the
+    # provider slug. Authenticated — the app routes it through apiPost. The app
+    # branches on HTTP status and reads customer_name/name (no success field).
+    r = post("/api/utility/validate_meter/", {"meter": "04123456789", "disco": "1", "meter_type": "prepaid"}, token=tok)
+    check("validate meter (mock)", r.status_code == 200 and (j(r).get("customer_name") or j(r).get("name")), f"{r.status_code} {j(r)}")
+    r = post("/api/utility/buyelectricity/", {"disco": "1", "meter_type": "prepaid", "meter": "04123456789",
+                                              "amount": "1000", "transaction_pin": "1234",
+                                              "idempotency_key": f"e2e-{uuid.uuid4().hex[:12]}"}, token=tok)
+    check("buy electricity", j(r).get("success") is True, f"{r.status_code} {j(r)}")
+
+    r = post("/api/utility/get_cable_plans/", {"cablenetwork": "1"})
+    cplans = j(r).get("cable_plans") or []
+    if check("cable plans list", bool(cplans), str(j(r))[:120]):
+        code = cplans[0]["cable_plan_code"]
+        r = post("/api/utility/get_cable_plans_price/", {"cable_plan_code": code})
+        check("cable plan price", j(r).get("cable_plans_price") is not None, str(j(r)))
+        r = post("/api/utility/validate_iuc/", {"iuc": "70231234567", "cablenetwork": "1"}, token=tok)
+        check("validate IUC (mock)", r.status_code == 200 and (j(r).get("customer_name") or j(r).get("name")), f"{r.status_code} {j(r)}")
+        r = post("/api/utility/buycable/", {"iuc": "70231234567", "cablenetwork": "1", "selectedcablePlan": code,
+                                            "transaction_pin": "1234",
+                                            "idempotency_key": f"e2e-{uuid.uuid4().hex[:12]}"}, token=tok)
+        check("buy cable", j(r).get("success") is True, f"{r.status_code} {j(r)}")
 
     # second user for an internal transfer
     tok_b, err = signup(phone_b, f"bola{suffix}@e2e.test", first="Bola", last="Peer")

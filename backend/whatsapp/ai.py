@@ -41,6 +41,11 @@ LANGUAGE_GUIDE = (
     "Hausa 'nawa ne kudina'; Yoruba 'elo ni mo ni'.\n"
     "  * transfer: Pidgin 'send 5k give Ada'; Igbo 'zigara Ada puku ise'; "
     "Hausa 'aika wa Ada dubu biyar'; Yoruba 'fi egberun marun ranse si Ada'.\n"
+    "  * airtime/data: Pidgin 'buy recharge'/'buy data'; Igbo 'zutara m airtime'/"
+    "'zutara m data'; Hausa 'saya min kati'/'saya min data'; Yoruba 'ra airtime "
+    "fun mi'/'ra data fun mi'.\n"
+    "  * electricity bill: Pidgin 'pay my light bill'; Igbo 'kwuo ugwo oku'; "
+    "Hausa 'biya kudin wuta'; Yoruba 'san owo ina'.\n"
     "  * history: Pidgin 'show me wetin I don spend'; Igbo 'gosi m azumahia m'; "
     "Hausa 'nuna min tarihin ciniki'; Yoruba 'fi itan idunadura mi han'.\n"
     "  * failed payment/report: Pidgin 'money no enter'; Igbo 'ego eruteghi'; "
@@ -57,15 +62,17 @@ SYSTEM_PROMPT = (
     "numbers appear as opaque tokens like num_ref_1 — copy a token verbatim into "
     "the matching field. Never invent or guess an account number, "
     "meter number, or smartcard number. If a transfer names a person without an "
-    "account number, set beneficiary_ref and leave account fields null. If the "
-    "message isn't a supported action, call clarify — and put the reason in plain words the "
+    "account number, set beneficiary_ref and leave account fields null. If "
+    "airtime/data has no target phone, leave phone null. If the message isn't a "
+    "supported action, call clarify — and put the reason in plain words the "
     "customer will read, saying what you need from them. Zitch cannot read the "
     "phone's contacts, so a name only works if it is a saved Zitch beneficiary; "
     "otherwise ask for the number. "
     "Accept any natural text format: upper/lower/mixed case, punctuation, emojis, "
     "line breaks, extra spaces, joined words, Nigerian shorthand (70 naira, 2k, "
     "₦2,000, two thousand), phonetic spelling, and code-switching. Treat words "
-    "Do not ask the customer "
+    "like recharge/top-up/load/kati as airtime and light/wuta/ina as electricity "
+    "when the surrounding message makes the intent clear. Do not ask the customer "
     "to retype a request that already contains a usable amount or identifier. "
     "Set `narration` ONLY from words the message gives as the PURPOSE of the "
     "payment — the part after \"for\" in \"send 5k to Ada for rent\". It is "
@@ -91,7 +98,7 @@ SYSTEM_PROMPT = (
     "issuing, no crypto, no account closure, no PIN reset by chat, no changing "
     "anyone's details). But NEVER tell a customer that Zitch does not offer "
     "something. You do not know the product catalogue; you know your own tools. "
-    "Zitch does offer loans, savings, cards and "
+    "Zitch does offer loans, savings, cards, betting top-ups, exam pins and "
     "more. If you have no tool for what they asked, say you cannot do that part "
     "HERE and point them to the Zitch app — never that it does not exist.\n"
     "4. Stay inside Zitch. For anything else — general questions, other companies, "
@@ -125,7 +132,8 @@ SYSTEM_PROMPT = (
     "- \"token\" / \"pin\" / \"units\" after an electricity purchase = the prepaid "
     "meter token. \"I didn't get the token\" is a failed/undelivered ELECTRICITY "
     "purchase: report_problem, kind \"bill\".\n"
-    "- \"credit\" as a verb = to add money.\n"
+    "- \"recharge\", \"top up\", \"load\" = airtime. \"credit\" as a verb = to "
+    "add money.\n"
     "- \"data didn't enter\", \"airtime didn't land\", \"value not given\", "
     "\"debited but not credited\", \"debited twice\" = report_problem.\n"
     "- \"k\" = thousand, \"m\" = million. \"5k\" is 5000.\n"
@@ -262,6 +270,39 @@ TOOLS = [
                           "bank_name": {"type": ["string", "null"]},
                           "narration": {"type": ["string", "null"]}},
                       "required": ["amount"]}},
+    {"name": "buy_airtime",
+     "description": "Buy airtime.",
+     "input_schema": {"type": "object",
+                      "properties": {
+                          "amount": {"type": "integer"},
+                          "phone": {"type": ["string", "null"]},
+                          # Set when the message names WHO to top up but gives no
+                          # number ("recharge tobi 2k"). Without it "tobi" was
+                          # dropped and the top-up silently went to the sender's
+                          # own line — the wrong number, already paid for.
+                          "recipient_ref": {"type": ["string", "null"]},
+                          "network": {"type": ["string", "null"]},
+                          "narration": {"type": ["string", "null"]}},
+                      "required": ["amount"]}},
+    {"name": "buy_data",
+     "description": "Buy a data bundle.",
+     "input_schema": {"type": "object",
+                      "properties": {
+                          "plan": {"type": ["string", "null"]},
+                          "phone": {"type": ["string", "null"]},
+                          "network": {"type": ["string", "null"]},
+                          "narration": {"type": ["string", "null"]}}}},
+    {"name": "pay_bill",
+     "description": "Pay an electricity, cable TV, or internet bill.",
+     "input_schema": {"type": "object",
+                      "properties": {
+                          "category": {"type": "string", "description": "electricity|cabletv|internet"},
+                          "biller": {"type": ["string", "null"]},
+                          "customer_id": {"type": ["string", "null"], "description": "meter or smartcard"},
+                          "variation": {"type": ["string", "null"]},
+                          "amount": {"type": ["integer", "null"]},
+                          "narration": {"type": ["string", "null"]}},
+                      "required": ["category"]}},
     {"name": "add_money",
      "description": "Show the user's dedicated Zitch account number so they can fund "
                     "(top up / add money to) their wallet by bank transfer.",

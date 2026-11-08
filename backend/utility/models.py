@@ -2,15 +2,55 @@ from django.db import models
 
 # Network / provider ids match the values the Expo app sends.
 NETWORKS = [("1", "MTN"), ("2", "GLO"), ("3", "Airtel"), ("4", "9mobile")]
+PLAN_TYPES = [("1", "SME"), ("2", "SME2"), ("3", "Gifting"), ("4", "Corporate")]
+CABLE_PROVIDERS = [("1", "GoTV"), ("2", "DSTV"), ("3", "StarTimes")]
+
+
+class DataPlan(models.Model):
+    network = models.CharField(max_length=2, choices=NETWORKS)
+    plan_type = models.CharField(max_length=2, choices=PLAN_TYPES)
+    name = models.CharField(max_length=60)          # e.g. "1.5GB"
+    validity = models.CharField(max_length=40)       # e.g. "30 days"
+    plan_code = models.CharField(max_length=40, unique=True)
+    # Wema's own packageCode for this plan (it differs from our own plan_code).
+    # Blank until synced by `manage.py seed_wema_plans`. Wema is now the ONLY VAS
+    # rail, so a blank code no longer routes the plan elsewhere — it makes the plan
+    # unbuyable, and providers.vtu_purchase refuses it as a configuration error
+    # rather than debiting a customer for something it cannot fulfil. Run the sync
+    # before offering data.
+    wema_code = models.CharField(max_length=60, blank=True, default="")
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"{self.get_network_display()} {self.name} ({self.validity})"
+
+
+class CablePlan(models.Model):
+    provider = models.CharField(max_length=2, choices=CABLE_PROVIDERS)
+    name = models.CharField(max_length=80)
+    validity = models.CharField(max_length=40, blank=True, default="30 days")
+    cable_plan_code = models.CharField(max_length=40, unique=True)
+    # Wema's own packageId/packageCode for this bouquet (it differs from our own
+    # cable_plan_code). Blank until synced by `manage.py seed_wema_plans`; as with
+    # DataPlan.wema_code, a blank code now makes the bouquet unbuyable rather than
+    # routing it to a second rail — there is no second rail.
+    wema_code = models.CharField(max_length=60, blank=True, default="")
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"{self.get_provider_display()} {self.name}"
+
+
 class WemaBiller(models.Model):
     """A Wema/ALAT bills-catalogue code for a service that has no plan catalogue.
 
-    Retained read-only as historical evidence. Nothing routes through it now: the
-    services it mapped -- electricity, betting, cable, data -- were bought through
-    the 9PSB VAS rail, which has been removed, and the DataPlan and CablePlan
-    tables that carried the same code for bundle-based products went with it.
-    It is kept because it is Wema-era evidence, like the balance archives, not
-    because anything reads it.
+    Data and cable carry their Wema code on the plan row itself (DataPlan.wema_code /
+    CablePlan.wema_code) because the customer picks a bundle. Electricity and betting
+    have no bundle to pick — the customer types a meter number or a betting ID and an
+    amount — so their Wema `packageId` has nowhere to live. This table is where it
+    lives, and without a row the service cannot route at all.
 
     Keyed by the same `service_id` the app and the WhatsApp router already send
     ("ikeja-electric", "bet9ja-betting"), so routing is a lookup rather than another
