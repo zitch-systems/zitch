@@ -49,8 +49,6 @@ BANK_ALIASES = {
     "union": ("Union", ["union bank of nigeria", "ubn", "unionbank"]),
     "stanbic": ("Stanbic", ["stanbic ibtc bank", "ibtc", "stanbic bank", "stanbicibtc"]),
     "ecobank": ("Ecobank", ["ecobank nigeria", "eco bank", "ecobank plc"]),
-    "9psb": ("9PSB", ["9 psb", "9mobile psb", "9payment", "9 payment service bank",
-                      "9payment service bank"]),
     "carbon": ("Carbon", ["carbon mfb", "one finance", "paylater"]),
     "citi": ("Citi", ["citibank", "citi bank", "citibank nigeria limited"]),
     "fairmoney": ("FairMoney", ["fair money", "fairmoney microfinance",
