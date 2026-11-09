@@ -51,10 +51,27 @@ REVIEW_MESSAGE = (
 )
 
 
+def _retired_bank_label(name):
+    """Do not mistake an orphaned old-provider NUBAN for a Wema NUBAN.
+
+    Provider-linked tables normally block it, but a partial archive restore or
+    later schema cleanup could leave only Wallet.bank_name behind. That label
+    is still enough to fail closed; customer funding must be bank-confirmed.
+    """
+    if not isinstance(name, str):
+        return False
+    key = re.sub(r"[^a-z0-9]", "", name.casefold())
+    return key in {"9psb", "9paymentservicebank", "9paymentservicebankltd"}
+
+
 def legacy_funding_blockers(user):
     """Read-only; spend callers hold the wallet lock before evaluating exposure."""
     if UnsettledFunding.objects.filter(user_id=user.pk, archive__isnull=True).exists():
         return ["legacy_balance"]
+    bank = Wallet.objects.filter(user_id=user.pk).values_list(
+        "bank_name", "account_number").first()
+    if bank and bank[1] and _retired_bank_label(bank[0]):
+        return ["retired_provider_wallet_review"]
     return previous_provider_cutover_blockers(user)
 
 
