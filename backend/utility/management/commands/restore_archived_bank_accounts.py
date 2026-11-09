@@ -55,13 +55,26 @@ SQL = f'''
 '''
 
 
-def _flagged(balance, pending, review):
-    """Rows whose money is not accounted for are not routine restores."""
+def _hold_reasons(balance, pending, review):
+    """Why this row is not a routine restore, or an empty list.
+
+    The same three conditions are what `previous_provider_cutover_blockers`
+    tests. That matters: while any of them holds, the customer's funding account
+    is blocked there too, so writing the number onto the wallet would not
+    surface it. Naming the reasons lets an operator see what reconciling
+    actually involves rather than reaching for --include-flagged.
+    """
+    reasons = []
+    if review:
+        reasons.append("review flag")
     try:
-        has_balance = Decimal(str(balance or "0")) != Decimal("0")
+        if Decimal(str(balance or "0")) != Decimal("0"):
+            reasons.append("archived balance")
     except (InvalidOperation, ValueError):
-        has_balance = True  # unreadable balance is treated as unresolved
-    return bool(review) or has_balance or int(pending or 0) > 0
+        reasons.append("unreadable balance")  # treated as unresolved
+    if int(pending or 0) > 0:
+        reasons.append("pending transactions")
+    return reasons
 
 
 class Command(BaseCommand):
@@ -102,6 +115,7 @@ class Command(BaseCommand):
             raise CommandError(f"Could not read {ARCHIVE_TABLE}: {exc}") from exc
 
         restored, already, flagged, invalid, taken, missing = [], [], [], [], [], []
+        held_by_reason, held_total = {}, Decimal("0")
 
         for (wallet_id, number, name, bank, balance, pending, review) in rows:
             number = (number or "").strip()
@@ -122,8 +136,15 @@ class Command(BaseCommand):
                 # customers' incoming money.
                 taken.append(wallet_id)
                 continue
-            if _flagged(balance, pending, review) and not include_flagged:
+            reasons = _hold_reasons(balance, pending, review)
+            if reasons and not include_flagged:
                 flagged.append(wallet_id)
+                for reason in reasons:
+                    held_by_reason[reason] = held_by_reason.get(reason, 0) + 1
+                try:
+                    held_total += Decimal(str(balance or "0"))
+                except (InvalidOperation, ValueError):
+                    pass
                 continue
 
             if apply_changes:
@@ -162,9 +183,21 @@ class Command(BaseCommand):
         self.stdout.write(f"  skipped, number invalid or retired: {len(invalid)}")
         self.stdout.write(f"  skipped, number already on another wallet: {len(taken)}")
         self.stdout.write(f"  skipped, archive row has no wallet: {len(missing)}")
-        self.stdout.write(
-            f"  skipped, money needs review first: {len(flagged)}"
-            + ("" if include_flagged else "  (pass --include-flagged to restore these too)"))
+        self.stdout.write(f"  skipped, money needs review first: {len(flagged)}")
+        if flagged:
+            for reason, count in sorted(held_by_reason.items()):
+                self.stdout.write(f"      {reason}: {count}")
+            if held_total:
+                self.stdout.write(f"      archived balance held: {held_total:.2f}")
+            # --include-flagged is offered, but it is not a shortcut, and saying
+            # so here is the difference between a real fix and a number nobody
+            # can see.
+            self.stdout.write(self.style.WARNING(
+                "      These rows also block the customer's funding account through\n"
+                "      previous_provider_cutover_blockers, which tests the SAME three\n"
+                "      conditions. --include-flagged would write the number, but the\n"
+                "      customer still would not see it until the row is reconciled.\n"
+                "      Reconcile the archived rows; then they restore with no flag."))
 
         if taken:
             self.stdout.write(self.style.ERROR(

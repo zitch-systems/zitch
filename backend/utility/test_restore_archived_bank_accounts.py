@@ -151,6 +151,28 @@ class RestoreArchivedBankAccountsTests(TestCase):
                 self.assertEqual(self.wallet.account_number, "")
                 self.assertIn("money needs review first: 1", out)
 
+    def test_a_held_row_names_its_reasons_and_warns_the_flag_is_not_a_fix(self):
+        """--include-flagged writes a number the customer still cannot see.
+
+        previous_provider_cutover_blockers tests the same three conditions, so
+        while the row is held the funding account stays blocked there too.
+        Offering the flag without saying that invites a fix that fixes nothing.
+        """
+        self._archive(self.wallet.pk, balance="250.00", pending=2, review=True)
+        out = self._run()
+        self.assertIn("money needs review first: 1", out)
+        for reason in ("review flag", "archived balance", "pending transactions"):
+            self.assertIn(reason, out)
+        self.assertIn("250.00", out)
+        self.assertIn("previous_provider_cutover_blockers", out)
+        self.assertIn("would not see it", out)
+
+    def test_a_clean_row_is_not_reported_as_held(self):
+        self._archive(self.wallet.pk, balance="0.00", pending=0, review=False)
+        out = self._run()
+        self.assertIn("Would restore 1", out)
+        self.assertNotIn("previous_provider_cutover_blockers", out)
+
     def test_flagged_rows_restore_when_explicitly_asked(self):
         self._archive(self.wallet.pk, balance="1500.00", review=True)
         self._run(apply=True, include_flagged=True)
