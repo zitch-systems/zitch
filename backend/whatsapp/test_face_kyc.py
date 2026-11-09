@@ -267,6 +267,41 @@ class FaceCallbackNotifiesChatTests(TestCase):
         self.assertIn("needs review", reply.call_args.args[1])
         self.assertFalse(PendingAction.objects.filter(user=user).exists())
 
+    def test_verified_face_without_account_pages_someone_to_review_it(self):
+        """The chat promises a review; the page is what actually requests one.
+
+        This branch returned before the paging block below it, so "account setup
+        needs review ... we will confirm when your account is ready" was sent to
+        a customer while no alert fired and no human was asked to look. The
+        paging block's own comment names that failure: an incomplete provider
+        record must not "sit silently behind a reassuring chat message".
+        """
+        from datetime import timedelta
+
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        user = _user()
+        WemaFaceSession.objects.create(
+            user=user, state="p" * 40, identity_type="bvn",
+            identity_hash=user.bvn_hash, status=WemaFaceSession.VERIFIED,
+            expires_at=timezone.now() + timedelta(minutes=20))
+        # The page is throttled per user/hour, so a leaked key would mask it.
+        cache.delete(f"wema-missing-nuban:{user.pk}")
+        with patch.object(router.wallet_views, "_wema_funding_enabled", return_value=True), \
+                patch.object(router, "attach_existing_bank_account",
+                             return_value=(None, "not found")), \
+                patch.object(router, "reply") as reply, \
+                patch("utility.alerts.alert") as alert:
+            router._start_add_account(user, MSISDN)
+
+        self.assertIn("needs review", reply.call_args.args[1])
+        alert.assert_called_once()
+        self.assertEqual(alert.call_args.kwargs["user_id"], user.pk)
+        self.assertEqual(alert.call_args.kwargs["level"], "error")
+        # The page carries no identity number, only a recovery detail.
+        self.assertNotIn(VERIFIED_BVN, str(alert.call_args))
+
     def test_the_customer_is_told_when_the_bank_confirms(self):
         from datetime import timedelta
 
