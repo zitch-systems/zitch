@@ -174,7 +174,7 @@ class Command(BaseCommand):
             bank, created = Bank.objects.update_or_create(
                 code=code,
                 defaults={"name": name, "color": color,
-                          "logo": logo, "popular": popular, "active": True},
+                          "logo": logo, "popular": popular, "active": code != "9psb"},
             )
             if (created or not bank.bank_code) and bank.bank_code != bank_code:
                 bank.bank_code = bank_code
