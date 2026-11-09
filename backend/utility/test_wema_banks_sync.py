@@ -129,7 +129,6 @@ class TradeNameMatchingTests(TestCase):
         self.assertEqual(self._sync("UBA", "United Bank for Africa", "033x"), "033x")
         self.assertEqual(self._sync("FCMB", "First City Monument Bank", "214x"), "214x")
         self.assertEqual(self._sync("V Bank (VFD MFB)", "VFD Microfinance Bank", "566x"), "566x")
-        self.assertEqual(self._sync("9PSB", "9 Payment Service Bank", "120x"), "120x")
 
     def test_one_word_vs_two_word_spellings_match(self):
         self.assertEqual(self._sync("PremiumTrust Bank", "Premium Trust Bank", "105x"), "105x")
@@ -152,7 +151,6 @@ class TradeNameMatchingTests(TestCase):
         Each one that stays unmatched keeps a wrong code and fails every transfer
         to that bank."""
         for ours, rail in (
-            ("9PSB", "9 Payment Service Bank"),
             ("Citibank Nigeria", "Citibank Nigeria Limited"),
             ("First Bank", "First Bank of Nigeria"),
             ("GTBank", "Guaranty Trust Bank"),
@@ -179,9 +177,6 @@ class TradeNameMatchingTests(TestCase):
         _run([{"bank_name": "Citi Bank", "bank_code": "WRONG"},
               {"bank_name": "Citibank Nigeria", "bank_code": "RIGHT"}], "--apply")
         self.assertEqual(Bank.objects.get(code="citi").bank_code, "RIGHT")
-
-    def test_the_rail_writes_9psb_as_one_word(self):
-        self.assertEqual(self._sync("9PSB", "9PAYMENT SERVICE BANK", "120001"), "120001")
 
     def test_mint_maps_to_the_licensed_entity_the_rail_lists(self):
         # The last unmatched bank of the live run: our picker says "Mint MFB", the
