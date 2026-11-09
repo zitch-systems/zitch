@@ -3130,8 +3130,18 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
             return reply(msisdn, capability["tier3_address_unavailable_reason"])
     try:
         url = start_verification(user, msisdn, tier)
-    except (ValueError, ImproperlyConfigured):
-        log.warning("WhatsApp verification link unavailable", extra={"tier": tier})
+    except (ValueError, ImproperlyConfigured) as exc:
+        # Two unrelated causes land here and the customer sees one message for
+        # both: an account the Partnership will not serve (start_verification's
+        # partnership_new_business_allowed check) and a misconfigured public
+        # origin (_public_origin). One is per-customer and expected; the other is
+        # a deployment fault affecting everyone, and "try again shortly" is wrong
+        # for both. Without the cause, telling them apart needs log forensics
+        # against provider state. Every reason raised below this call is a fixed
+        # developer string: no identity, account number, phone or credential
+        # reaches the log through it.
+        log.warning("WhatsApp verification link unavailable tier=%s cause=%s reason=%s",
+                    tier, type(exc).__name__, str(exc)[:120])
         return reply(msisdn, "The secure verification page could not open. Please try again shortly.")
     body = (("Complete your Prembly live face check for Tier 2. Confirm your Zitch PIN "
              "on the secure page, then follow the camera instructions. Your verified "

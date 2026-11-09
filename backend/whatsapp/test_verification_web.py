@@ -428,6 +428,40 @@ class VerificationWebTests(TestCase):
         self.provider.assert_not_called()
         self.bank_address.assert_not_called()
 
+    def test_an_unopenable_verification_link_records_which_cause_fired(self):
+        """One message covers two unrelated causes, so the log must separate them.
+
+        An ineligible account and a misconfigured ZITCH_LINKS.API_BASE both reach
+        the same `except` and send the customer the same "try again shortly".
+        The first is per-customer and expected; the second is a deployment fault
+        affecting every customer, and retrying fixes neither. Without the cause in
+        the log, telling them apart needs forensics against provider state.
+        """
+        from .router import _send_web_verification
+
+        for exc, expected in ((ValueError("This verification is unavailable for your account"),
+                               "ValueError"),
+                              (ImproperlyConfigured("ZITCH_LINKS.API_BASE must be an HTTPS origin"),
+                               "ImproperlyConfigured")):
+            with self.subTest(cause=expected):
+                with patch("whatsapp.verification_web.start_verification", side_effect=exc), \
+                        patch("whatsapp.router.reply") as reply, \
+                        self.assertLogs("whatsapp", level="WARNING") as logs:
+                    # Tier 3, as the sibling test above uses: tier 2 returns
+                    # earlier on the liveness check and never reaches the call.
+                    _send_web_verification(self.user, MSISDN, 3)
+
+                line = " ".join(logs.output)
+                self.assertIn("verification link unavailable", line)
+                self.assertIn(f"cause={expected}", line)
+                self.assertIn(str(exc)[:40], line)
+                # The customer still sees one neutral message.
+                self.assertIn("could not open", reply.call_args.args[1])
+                # The reasons are fixed developer strings; nothing identifying
+                # may ride along into the log.
+                self.assertNotIn(self.user.phone, line)
+                self.assertNotIn(MSISDN, line)
+
     def test_router_tier3_button_requires_tier2_before_creating_url(self):
         from .router import KYC_UPGRADE_STATE, handle_inbound
 
