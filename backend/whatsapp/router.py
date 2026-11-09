@@ -4141,6 +4141,33 @@ def _resume_account_otp(user, msisdn: str, attempt) -> None:
            else "Enter it to finish issuing your account number."))
 
 
+def _page_missing_nuban(user, detail) -> None:
+    """Page once per user/hour: identity is verified but no NUBAN exists.
+
+    Both exits from that state end in a calm chat message, so the page is the
+    only thing that turns "account setup needs review" into a review somebody
+    actually performs. Without it the customer is told to wait for a confirmation
+    that nothing is scheduled to send.
+    """
+    alert_key = f"wema-missing-nuban:{user.pk}"
+    if cache.add(alert_key, True, timeout=60 * 60):
+        try:
+            from utility.alerts import alert
+            alert(
+                "Partner-bank identity verified but no funding account can be recovered",
+                level="error",
+                user_id=user.pk,
+                channel="whatsapp",
+                recovery_detail=str(detail or "")[:160],
+            )
+        except Exception:
+            log.exception("wema_missing_nuban_alert_failed user=%s", user.pk)
+    log.error(
+        "wema_missing_nuban user=%s channel=whatsapp detail=%s",
+        user.pk, str(detail or "")[:160],
+    )
+
+
 def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
     from wallet.partnership import first_partnership_setup
     funding = customer_funding_account(user)
@@ -4174,6 +4201,11 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
         from wallet.account_recovery import active_account_recovery
         if active_account_recovery(user) is None and WemaFaceSession.objects.filter(
                 user=user, status=WemaFaceSession.VERIFIED).exists():
+            # Returning here skipped the page below, so this promise of a review
+            # had nothing behind it: no alert, no human, and a customer waiting
+            # on a confirmation nobody was asked to send. Verified identity with
+            # no NUBAN is the exact state that page exists to surface.
+            _page_missing_nuban(user, _detail)
             return reply(
                 msisdn,
                 f"Your {kind.upper()} is already verified. Your funding account number is not "
@@ -4188,23 +4220,7 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
         # This is not an in-progress state: there is no NUBAN and no resumable
         # OTP request. Page it once per user/hour so the provider-side incomplete
         # customer record cannot sit silently behind a reassuring chat message.
-        alert_key = f"wema-missing-nuban:{user.pk}"
-        if cache.add(alert_key, True, timeout=60 * 60):
-            try:
-                from utility.alerts import alert
-                alert(
-                    "Partner-bank identity verified but no funding account can be recovered",
-                    level="error",
-                    user_id=user.pk,
-                    channel="whatsapp",
-                    recovery_detail=str(_detail or "")[:160],
-                )
-            except Exception:
-                log.exception("wema_missing_nuban_alert_failed user=%s", user.pk)
-        log.error(
-            "wema_missing_nuban user=%s channel=whatsapp detail=%s",
-            user.pk, str(_detail or "")[:160],
-        )
+        _page_missing_nuban(user, _detail)
         # The bank has no account to attach. A second OTP attempt is rejected as
         # a duplicate customer, while its authenticated face route can finish the
         # original account creation. It needs the raw BVN only inside Meta's
