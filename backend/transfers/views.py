@@ -47,7 +47,7 @@ def list_banks(request):
     Popular (high-volume) banks lead the list so the picker shows the banks
     almost everyone sends to before the long alphabetical tail.
     """
-    banks = Bank.objects.filter(active=True).order_by("-popular", "name")
+    banks = Bank.objects.filter(active=True).exclude(code="9psb").order_by("-popular", "name")
     return ok(banks=[{"code": b.code, "name": b.name,
                       # What people call it, from the shared table rather than a
                       # short list inline here. The inline one carried only short
@@ -233,7 +233,7 @@ def resolve_account(request):
 
     bank_slug = str(request.data.get("bank", "") or "").strip()
     if bank_slug:  # explicit bank (manual pick / override) — resolve at just that one
-        bank = Bank.objects.filter(code=bank_slug, active=True).first()
+        bank = Bank.objects.filter(code=bank_slug, active=True).exclude(code="9psb").first()
         if bank is None:
             return fail("Select a bank", status=404)
         res = payout_resolve_account(acct, bank.bank_code)
@@ -310,7 +310,7 @@ def bank_transfer(request):
     pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
     if pin_err:
         return pin_err
-    bank = Bank.objects.filter(code=bank_code, active=True).first()
+    bank = Bank.objects.filter(code=bank_code, active=True).exclude(code="9psb").first()
     if bank is None:
         return fail("Select a bank", status=404)
 
