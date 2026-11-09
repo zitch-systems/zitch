@@ -7,7 +7,10 @@ operator edit. Wema remains available.
 from django.test import TestCase
 
 from transfers.models import Bank
-from whatsapp.router_tail import _bank_items, _match_banks
+# router_tail.py is exec'd into router.py's globals (see router.py's exec at
+# the end of the module), so it is not importable on its own: its first line
+# annotates PendingAction, which only exists in the router's namespace.
+from whatsapp.router import _bank_items, _match_banks
 
 
 class RetiredBankWhatsAppPickerTests(TestCase):

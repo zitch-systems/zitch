@@ -136,7 +136,11 @@ class PartnershipJourneyTests(TestCase):
 
     def test_bank_history_review_shows_funding_and_stops_spend_without_kyc_loop(self):
         wallet = get_or_create_wallet(self.user)
+        # history_review = has_account and ..., so this state implies has_account,
+        # and customer_funding_account returns can_fund = has_account. Without it
+        # the mock describes a state the real function never produces.
         funding = {"provider": "partnership", "account_setup_state": "bank_history_review",
+                   "has_account": True, "can_fund": True,
                    "account_number": "0100000456", "bank_name": "Partner bank", "account_name": "Ada",
                    "spending_available": False, "transfers_available": False, "bill_payments_available": False,
                    "migration_message": "Your account balance needs review before you can spend."}

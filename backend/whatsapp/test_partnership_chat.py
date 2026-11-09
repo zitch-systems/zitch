@@ -23,6 +23,10 @@ class PartnershipCustomerChatTests(TestCase):
         self.wallet.save(update_fields=["account_number", "account_name", "bank_name"])
         self.funding = {
             "provider": "partnership", "has_account": True, "available": True,
+            # services.customer_funding_account returns can_fund = has_account.
+            # _send_account_details gates on it, so a fixture that omits it
+            # reads as "no funding account" and hides details this state has.
+            "can_fund": True,
             "spending_available": False, "account_setup_state": "ready",
             "account_number": self.wallet.account_number,
             "account_name": self.wallet.account_name, "bank_name": self.wallet.bank_name,
