@@ -52,8 +52,6 @@ _ALIAS_GROUPS = (
     ("fcmb", ("fcmb", "city first monument")),
     ("scb", ("scb", "chartered standard")),
     ("vfd", ("v vfd", "vfd", "v")),
-    # The rail writes this one as a single token, "9PAYMENT SERVICE BANK".
-    ("9psb", ("9psb", "9", "9payment")),
     ("momo", ("momo mtn", "momo")),
     ("smartcash", ("airtel smartcash", "smartcash")),
     ("citi", ("citi", "citibank")),
