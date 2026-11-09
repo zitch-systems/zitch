@@ -2276,7 +2276,20 @@ def _do_balance(user, msisdn: str) -> None:
 def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to your wallet*") -> None:
     funding = customer_funding_account(wallet.user)
     if funding.get("account_setup_state") in {"partnership_review", "legacy_funding_review"}:
-        return reply(msisdn, funding["migration_message"])
+        return reply(msisdn, funding.get("migration_message") or
+                     "Your previous funding account needs review. Please contact Zitch Support.")
+    # A retained former-provider NUBAN can still exist on Wallet while the
+    # Partnership cutover is held. Never show empty or stale transfer details,
+    # and never suggest that a deposit will be credited to an unavailable rail.
+    if funding.get("account_setup_state") == "partnership_unavailable":
+        return reply(msisdn,
+                     "Bank transfer funding is temporarily unavailable. Do not send "
+                     "money to a previously issued Zitch account until your active "
+                     "partner-bank account is confirmed in the app.")
+    if not funding.get("can_fund") or not funding.get("account_number"):
+        return reply(msisdn,
+                     "Your partner-bank funding account is not ready yet. "
+                     "Complete account setup before sending money to Zitch.")
     accts = funding.get("bank_accounts") or []
     if len(accts) > 1:
         body = "\n".join(f"🔢 *{a.get('account_number')}* - {a.get('bank_name')}" for a in accts)
