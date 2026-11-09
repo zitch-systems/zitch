@@ -2271,7 +2271,7 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
     # therefore asking for a separate finder and picker only duplicated the same
     # question on screen.
     bank_value = " ".join(str(data.get("bank", "") or "").split())[:80]
-    bank = (Bank.objects.filter(code=bank_value, active=True).first()
+    bank = (Bank.objects.filter(code=bank_value, active=True).exclude(code="9psb").first()
             if bank_value else None)
     if bank is None and bank_value:
         from .router import _match_banks
