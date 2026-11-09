@@ -27,8 +27,8 @@ PROVIDER_FILES = (
     "backend/accounts/views.py",
 )
 RETIRED_RAIL = re.compile(
-    r"(?i)(?:\\b9psb\\b|\\b9paymentservicebank\\b|"
-    r"102\\.216\\.128\\.75|/identity/api/v1/authenticate|/waas/api/)"
+    r"(?i)(?:\b9psb\b|\b9paymentservicebank\b|"
+    r"102\.216\.128\.75|/identity/api/v1/authenticate|/waas/api/)"
 )
 
 
