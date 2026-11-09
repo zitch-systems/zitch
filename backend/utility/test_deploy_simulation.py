@@ -38,6 +38,7 @@ _STAGED = {
 @override_settings(
     DEBUG=False,
     TESTING=False,
+    WEMA_CUTOVER_APPROVED=True,
     KYC_PROVIDER="wema",
     WEMA={"SIMULATION": True},
     **_STAGED,

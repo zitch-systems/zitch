@@ -23,7 +23,7 @@ from wallet.services import get_or_create_wallet
 CB = "/webhooks/wema/face/{}"
 
 
-@override_settings(DEBUG=False, TESTING=False, SECURE_SSL_REDIRECT=False,
+@override_settings(DEBUG=False, TESTING=False, WEMA_CUTOVER_APPROVED=True, SECURE_SSL_REDIRECT=False,
     ALLOWED_HOSTS=["testserver"], WEMA={
         "BASE_URL": "https://lagos-alat-blueapi.azure-api.net",
         "CHANNEL_ID": "test-channel", "KEYS": {"wallet": "test-wallet", "face_account": "test-face"},

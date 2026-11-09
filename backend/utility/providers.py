@@ -27,7 +27,15 @@ def bank_account_provider() -> str:
 
 
 def partnership_archived() -> bool:
-    """Archive disables new business while leaving historical settlement callable."""
+    """Hold new Partnership banking until explicit post-UAT production approval.
+
+    An accidental deploy cannot start opening accounts or moving money simply
+    because old Wema credentials still exist in the host environment. Leave
+    historical callbacks and bank-side readback available for reconciliation.
+    """
+    if not (getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False)):
+        if not getattr(settings, "WEMA_CUTOVER_APPROVED", False):
+            return True
     return str(getattr(settings, "WEMA_PARTNERSHIP_MODE", "active") or "").strip().lower() != "active"
 
 
@@ -46,7 +54,10 @@ def _archived_payment_result() -> dict:
 
 
 def biller_enabled() -> bool:
-    """The retained biller product has its own lifecycle, separate from accounts."""
+    """Enable Wema billers only after their independent product approval."""
+    if not (getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False)):
+        if not getattr(settings, "WEMA_CUTOVER_APPROVED", False):
+            return False
     return str(getattr(settings, "WEMA_BILLER_MODE", "active") or "").strip().lower() == "active"
 
 

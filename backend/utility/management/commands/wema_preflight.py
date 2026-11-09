@@ -120,6 +120,22 @@ class Command(BaseCommand):
                 "Tier 3 requires bank completion tied to the submitted address and request",
             ))
 
+        # The presence of historical ALAT keys does not authorize the provider
+        # cutover. Source deploys cannot silently reopen financial products.
+        is_test_context = bool(getattr(settings, "DEBUG", False) or
+                               getattr(settings, "TESTING", False))
+        cutover_allowed = (is_test_context or (
+            bool(getattr(settings, "WEMA_CUTOVER_APPROVED", False))
+            and getattr(settings, "WEMA_PARTNERSHIP_MODE", "active") == "active"))
+        checks.append((
+            True, "Wema Partnership cutover approval",
+            PASS if cutover_allowed else FAIL,
+            ("test environment; no production authorization implied" if is_test_context
+             else "explicit approval and active Partnership mode confirmed" if cutover_allowed
+             else "WEMA_CUTOVER_APPROVED must remain false until bank UAT, "
+                  "forward migration and ledger reconciliation are signed off"),
+        ))
+
         d = wema.wema_diagnostics()
         checks.append((
             True, "partner bank live keys",

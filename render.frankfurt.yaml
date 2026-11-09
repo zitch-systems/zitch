@@ -45,6 +45,8 @@ services:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         sync: false
+      - key: WEMA_CUTOVER_APPROVED
+        sync: false
       - key: WEMA_BILLER_MODE
         sync: false
       - key: WHATSAPP_FLOW_ID
@@ -400,6 +402,8 @@ services:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_CUTOVER_APPROVED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CUTOVER_APPROVED}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
@@ -586,6 +590,8 @@ services:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_CUTOVER_APPROVED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CUTOVER_APPROVED}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
@@ -654,6 +660,8 @@ services:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_CUTOVER_APPROVED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CUTOVER_APPROVED}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
@@ -703,6 +711,8 @@ services:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_CUTOVER_APPROVED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CUTOVER_APPROVED}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
@@ -819,6 +829,8 @@ services:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_CUTOVER_APPROVED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CUTOVER_APPROVED}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
@@ -866,6 +878,8 @@ services:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_CUTOVER_APPROVED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CUTOVER_APPROVED}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
@@ -942,6 +956,8 @@ services:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_CUTOVER_APPROVED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CUTOVER_APPROVED}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.
@@ -1011,6 +1027,8 @@ services:
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}
+      - key: WEMA_CUTOVER_APPROVED
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_CUTOVER_APPROVED}
       - key: WEMA_BILLER_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_BILLER_MODE}
       # Match GitHub CI exactly; never let Render's moving default change prod.

@@ -513,3 +513,28 @@ class NonProductionFaceVerifierIsRefusedTests(TestCase):
         with override_settings(
                 WEMA={"FACE_VERIFY_URL": "https://face-verification-pilot.azurewebsites.net/"}):
             self.assertEqual(_face_host(), "face-verification-pilot.azurewebsites.net")
+
+
+@override_settings(DEBUG=False, TESTING=False, WEMA_PARTNERSHIP_MODE="active")
+class WemaCutoverPreflightGateTests(TestCase):
+    """No historical key or healthy diagnostics can authorize live banking."""
+
+    def test_production_without_cutover_approval_is_not_ready(self):
+        with override_settings(WEMA_CUTOVER_APPROVED=False), \
+             mock.patch(_DIAG, return_value=_LIVE_DIAG):
+            report, exit_code = _run("--launch-scope", "core")
+        self.assertEqual(exit_code, 1)
+        self.assertIn("[FAIL] GATE Wema Partnership cutover approval", report)
+
+    def test_explicit_approval_unblocks_only_its_own_gate(self):
+        with override_settings(WEMA_CUTOVER_APPROVED=True), \
+             mock.patch(_DIAG, return_value=_LIVE_DIAG):
+            report, _exit_code = _run("--launch-scope", "core")
+        self.assertIn("[PASS] GATE Wema Partnership cutover approval", report)
+
+    def test_archived_mode_remains_blocked_even_after_approval(self):
+        with override_settings(WEMA_CUTOVER_APPROVED=True, WEMA_PARTNERSHIP_MODE="archived"), \
+             mock.patch(_DIAG, return_value=_LIVE_DIAG):
+            report, exit_code = _run("--launch-scope", "core")
+        self.assertEqual(exit_code, 1)
+        self.assertIn("[FAIL] GATE Wema Partnership cutover approval", report)

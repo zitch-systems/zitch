@@ -142,6 +142,94 @@ jobs:
       - name: Tests (PostgreSQL)
         run: python manage.py test
 
+  wema-cutover-schema:
+    name: Wema migration from 9PSB database (PostgreSQL)
+    needs: changes
+    # Run only on the isolated Wema restoration PR. The live API stays untouched.
+    if: github.event_name == 'pull_request' && github.head_ref == 'migration/restore-wema-partnership-20261108'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: docker.io/library/postgres:18@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336
+        env:
+          POSTGRES_USER: zitch_ci
+          POSTGRES_PASSWORD: zitch-ci-local-password
+          POSTGRES_DB: zitch_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zitch_ci -d zitch_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DJANGO_SECRET_KEY: "ci-only-schema-compatibility-secret-000"
+      DJANGO_DEBUG: "false"
+      DJANGO_ALLOWED_HOSTS: "testserver,localhost"
+      DJANGO_REQUIRE_SHARED_CACHE: "false"
+      DJANGO_DB_SSL: "false"
+      DATABASE_URL: "postgresql://zitch_ci:zitch-ci-local-password@127.0.0.1:5432/zitch_ci"
+    steps:
+      - name: Checkout Wema restoration source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Checkout recorded pre-cutover 9PSB release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: 9c5127696bc78fe454164df05870720017bafa90
+          path: legacy-9psb
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install migration dependencies
+        run: pip install -r legacy-9psb/backend/requirements.txt -r backend/requirements.txt
+      - name: Build historical 9PSB-era database with synthetic accounts
+        working-directory: legacy-9psb/backend
+        run: |
+          python manage.py migrate --no-input
+          python manage.py shell -c '
+          from decimal import Decimal
+          from accounts.models import User
+          from wallet.models import Wallet
+          from banking.models import BankAccount, PreviousBankArchive
+          u = User.objects.create_user(username="cutover-synthetic", phone="08000000001", email="cutover@example.invalid")
+          w = Wallet.objects.create(user=u, balance=Decimal("500"), account_number="")
+          BankAccount.objects.create(wallet=w, number="9012345678", name="Synthetic Customer", environment="sandbox", tier=1, status="pending")
+          PreviousBankArchive.objects.create(wallet=w, account_number="0123456789", account_name="Synthetic Customer",
+              bank_name="Wema Bank", balance=Decimal("500"), pending_transactions=1, review_required=True)
+          '
+      - name: Forward migrate restored Wema without deleting bank evidence
+        working-directory: backend
+        run: |
+          python manage.py makemigrations --check --dry-run
+          python manage.py migrate --plan
+          python manage.py migrate --no-input
+          python manage.py migrate --check
+          python manage.py shell -c '
+          from django.db import connection
+          from accounts.models import User
+          from wallet.partnership import previous_provider_cutover_blockers
+          tables = set(connection.introspection.table_names())
+          assert {"banking_bankaccount", "banking_previousbankarchive"} <= tables
+          u = User.objects.get(username="cutover-synthetic")
+          assert set(previous_provider_cutover_blockers(u)) == {
+              "previous_provider_account_review", "archived_wema_balance_review"
+          }, "Previous bank assets cannot be mistaken for spendable Wema funds"
+          with connection.cursor() as cursor:
+              cursor.execute("SELECT balance FROM banking_previousbankarchive WHERE wallet_id=(SELECT id FROM wallet_wallet WHERE user_id=%s)", [u.pk])
+              assert str(cursor.fetchone()[0]) == "500.00"
+          '
+      - name: Read-only cutover inventory must explicitly block promotion
+        working-directory: backend
+        run: |
+          if python manage.py wema_cutover_audit --json > /tmp/wema-cutover-audit.json; then
+            echo "UNSAFE: historical bank evidence was not blocked"
+            exit 1
+          fi
+          python -c 'import json; d=json.load(open("/tmp/wema-cutover-audit.json")); assert not d["ready_for_cutover"]; assert d["aggregate_counts"]["bank_accounts"] == 1; assert d["aggregate_counts"]["archived_bank_reviews"] == 1; assert "9psb_accounts_require_bank_side_closeout_and_reconciliation" in d["blockers"]'
+
   app:
     name: App (Expo)
     needs: changes
