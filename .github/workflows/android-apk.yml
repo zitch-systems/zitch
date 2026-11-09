@@ -101,13 +101,13 @@ jobs:
       - name: Verify and stage the exact installable APK
         run: |
           mkdir -p release-apk
-          cp android/app/build/outputs/apk/release/app-release.apk release-apk/Zitch-Android-Test.apk
+          cp android/app/build/outputs/apk/release/app-release.apk release-apk/Zitch.apk
           python3 scripts/verify-android-apk.py \
-            --apk release-apk/Zitch-Android-Test.apk \
+            --apk release-apk/Zitch.apk \
             --keystore android/app/debug.keystore --signing preview \
             --revision "$GITHUB_SHA" --metadata release-apk/build-info.json
           cd release-apk
-          sha256sum Zitch-Android-Test.apk > SHA256SUMS.txt
+          sha256sum Zitch.apk > SHA256SUMS.txt
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -148,7 +148,7 @@ jobs:
           disable-animations: true
           script: |
             cd release-apk && sha256sum -c SHA256SUMS.txt && cd ..
-            adb install release-apk/Zitch-Android-Test.apk
+            adb install release-apk/Zitch.apk
             python3 scripts/android-release-smoke.py --package com.zitch.app --output-dir android-smoke-results
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
@@ -197,7 +197,7 @@ jobs:
           cd release-apk
           sha256sum -c SHA256SUMS.txt
           cat > release-notes.md <<'NOTES'
-          Download **Zitch-Android-Test.apk** under Assets on your Android phone and open it to install. The Source code ZIP files are not needed.
+          Download **Zitch.apk** under Assets on your Android phone and open it to install. The Source code ZIP files are not needed.
 
           This is an internal Android test build, signed with the existing debug/test key. It connects to https://api.zitch.ng and is not a Play Store production release. If Android reports a signing conflict with an existing installation, keep that installation and report the conflict before removing it.
 
@@ -211,6 +211,6 @@ jobs:
 
           SHA256SUMS.txt verifies the downloaded APK. build-info.json records its source commit, version, and signing certificate.
           NOTES
-          gh release create "$release_tag" Zitch-Android-Test.apk SHA256SUMS.txt build-info.json \
+          gh release create "$release_tag" Zitch.apk SHA256SUMS.txt build-info.json \
             --repo "$GITHUB_REPOSITORY" "${tag_args[@]}" --prerelease --latest=false \
             --title "Zitch Android test APK — $release_tag" --notes-file release-notes.md
