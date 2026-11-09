@@ -76,3 +76,49 @@ class BackendPostgreSQLWorkflowTests(SimpleTestCase):
         self.assertIn('DJANGO_DB_SSL: "false"', self.job)
         outside_job = self.workflow.replace(self.job, "")
         self.assertNotIn('DJANGO_DB_SSL: "false"', outside_job)
+class WemaCutoverSchemaWorkflowTests(SimpleTestCase):
+    """The forward-migration guard has to be reachable to be a guard.
+
+    This job builds a throwaway 9PSB-era database from the pinned legacy
+    release, migrates it forward with the restored Wema code and asserts the
+    bank evidence survives and the cutover audit still refuses to promote. It
+    was originally gated on `github.head_ref == 'migration/restore-wema-
+    partnership-20261108'`. That branch merged in #597, so the job became
+    unreachable and silently stopped guarding anything -- a green CI run with
+    the guard skipped looks exactly like a green CI run with the guard passing.
+    Production has not been migrated yet, so what is pinned here is that the
+    job stays runnable until it has.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.workflow = (ROOT / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8"
+        )
+        cls.job = cls.workflow.split("  wema-cutover-schema:", 1)[1].split(
+            "\n  app:", 1
+        )[0]
+
+    def test_no_job_is_pinned_to_a_single_branch_name(self):
+        """A head_ref pin dies the moment that branch merges, and takes the
+        check's signal with it without ever reporting a failure."""
+        self.assertNotIn("github.head_ref ==", self.workflow)
+
+    def test_the_cutover_guard_runs_on_every_backend_change(self):
+        self.assertIn("if: needs.changes.outputs.backend == 'true'", self.job)
+        # Not restricted to pull_request either: the migration it guards has
+        # not run on production, so a push to main must exercise it too.
+        self.assertNotIn("github.event_name ==", self.job)
+
+    def test_the_guard_still_asserts_what_it_was_built_to_assert(self):
+        """Gate aside, these are the assertions that make the job worth running."""
+        self.assertIn("ref: 9c5127696bc78fe454164df05870720017bafa90", self.job)
+        self.assertIn("from banking.models import BankAccount, PreviousBankArchive",
+                      self.job)
+        self.assertIn('{"banking_bankaccount", "banking_previousbankarchive"} <= tables',
+                      self.job)
+        self.assertIn("previous_provider_account_review", self.job)
+        self.assertIn("archived_wema_balance_review", self.job)
+        self.assertIn("UNSAFE: historical bank evidence was not blocked", self.job)
+        self.assertIn("python manage.py makemigrations --check --dry-run", self.job)
