@@ -128,7 +128,6 @@ class Command(BaseCommand):
             ("union", "Union Bank", "#009FDF", "032", LOGO("union-bank-of-nigeria"), True),
             ("stanbic", "Stanbic IBTC", "#0033A1", "221", LOGO("stanbic-ibtc-bank"), True),
             ("ecobank", "Ecobank", "#0066B3", "050", LOGO("ecobank-nigeria"), True),
-            ("9psb", "9PSB", "#00A5B5", "120001", "", False),
             ("carbon", "Carbon", "#5E5CE6", "565", "", False),
             ("citi", "Citibank Nigeria", "#004685", "023", LOGO("citibank-nigeria"), False),
             ("fairmoney", "FairMoney MFB", "#5A31F4", "51318", "", False),
@@ -169,12 +168,15 @@ class Command(BaseCommand):
         # worst possible moment. So the seed value is a STARTING point, applied when
         # the row is new or its code is blank, and presentation fields (name, colour,
         # logo, popularity) stay authoritative here.
+        # Retire the former account partner from new payouts without deleting
+        # any historical beneficiary, account or transaction references.
+        Bank.objects.filter(code="9psb").update(active=False)
         bk = restored = 0
         for code, name, color, bank_code, logo, popular in BANKS:
             bank, created = Bank.objects.update_or_create(
                 code=code,
                 defaults={"name": name, "color": color,
-                          "logo": logo, "popular": popular, "active": code != "9psb"},
+                          "logo": logo, "popular": popular, "active": True},
             )
             if (created or not bank.bank_code) and bank.bank_code != bank_code:
                 bank.bank_code = bank_code
