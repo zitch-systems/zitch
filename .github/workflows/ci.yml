@@ -145,8 +145,14 @@ jobs:
   wema-cutover-schema:
     name: Wema migration from 9PSB database (PostgreSQL)
     needs: changes
-    # Run only on the isolated Wema restoration PR. The live API stays untouched.
-    if: github.event_name == 'pull_request' && github.head_ref == 'migration/restore-wema-partnership-20261108'
+    # Guards the forward migration out of the recorded 9PSB-era schema: that it
+    # keeps the bank evidence and that the cutover audit still refuses to promote.
+    # Production has NOT been migrated yet, so this has to run on every backend
+    # change, not just on the merged branch that introduced it. It was pinned to
+    # 'migration/restore-wema-partnership-20261108' (merged in #597), which made it
+    # unreachable. Builds a throwaway container from the pinned legacy release; the
+    # live API and the production database stay untouched.
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
