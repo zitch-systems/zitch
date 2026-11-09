@@ -53,8 +53,7 @@ class Command(BaseCommand):
                             help="Perform the writes (default is a dry run).")
         parser.add_argument("--include-flagged", action="store_true",
                             dest="include_flagged",
-                            help="Also restore rows with an archived balance, "
-                                 "pending transactions or a review flag.")
+                            help="Retired unsafe flag; always rejected for financial safety.")
         parser.add_argument("--user-id", type=int,
                             help="Only the specified customer; mandatory when applying writes.")
         parser.add_argument("--bank-confirmation-ref", default="",
@@ -65,7 +64,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from wallet.models import Wallet
-        from wallet.partnership import partnership_account_number
+        from wallet.partnership import partnership_account_number, previous_provider_cutover_blockers
         from whatsapp.models import AuditLog
 
         apply_changes = options["apply"]
@@ -135,7 +134,12 @@ class Command(BaseCommand):
                 # customers' incoming money.
                 taken.append(wallet_id)
                 continue
-            if _flagged(balance, pending, review):
+            # The archived balance may be zero but a *different* 9PSB-era
+            # bank account may still be assigned to this wallet. The current
+            # user-facing funding API already blocks that legacy state, so
+            # do not silently attach an account that will remain invisible.
+            if (_flagged(balance, pending, review)
+                    or previous_provider_cutover_blockers(wallet.user)):
                 flagged.append(wallet_id)
                 continue
 
