@@ -91,6 +91,10 @@ maintenance run or bank-authorized read-only path is required.
 - Tests exercise app transfer/picker rejection, WhatsApp picker rejection,
   customer funding messaging and absence of active 9PSB adapter/URLs/client
   references.
+- The active wallet read path now refuses a retained 9PSB account even if
+  its former-provider tables have been removed or become unavailable: an old
+  `Wallet.bank_name` label is independently sufficient to hold spending and
+  prevent the NUBAN being shown as Wema. Regression tests confirm this state.
 - No production customer data, bank account, balance, transaction, secret,
   Wema activation flag or external bank mapping has been changed.
 
