@@ -206,6 +206,37 @@ class VerificationWebTests(TestCase):
         self.provider.assert_not_called()
         self.bank_address.assert_not_called()
 
+    def test_archived_bank_review_cannot_block_independent_tier2_liveness(self):
+        """The screenshot regression: BVN verified, NUBAN on financial review.
+
+        Prembly Tier 2 is an identity check. Bank reconciliation still blocks
+        account visibility and transfers, but must not suppress the signed and
+        PIN-bound Tier 2 browser link.
+        """
+        from wallet.services import customer_funding_account
+        with patch("wallet.partnership.previous_provider_cutover_blockers",
+                   return_value=["archived_wema_balance_review"]):
+            self.assertFalse(customer_funding_account(self.user)["can_fund"])
+            with self.assertRaises(ValueError):
+                start_verification(self.user, MSISDN, 3)
+            self.path = self.start(tier=2)
+            self.assertEqual(self.get().status_code, 200)
+            self.unlock()
+            self.assertEqual(self.get().status_code, 200)
+            self.assertFalse(customer_funding_account(self.user)["can_fund"])
+        self.provider.assert_not_called()
+        self.bank_address.assert_not_called()
+
+    def test_tier2_link_remains_pin_bound_during_archived_bank_review(self):
+        """An eligible liveness link does not become a funding permission."""
+        with patch("wallet.partnership.previous_provider_cutover_blockers",
+                   return_value=["previous_provider_account_review"]):
+            self.path = self.start(tier=2)
+            self.get()
+            self.assertEqual(self.post({"action": "tier2"}).status_code, 403)
+            self.assertEqual(self.post({"action": "pin", "pin": "invalid"}).status_code, 403)
+            self.assertEqual(self.get().status_code, 200)
+
     def test_archive_does_not_rewrite_submitted_verification_records(self):
         self.get()  # Establish CSRF before attempting already-consumed links.
         original_payload = dict(self.pa.payload)
