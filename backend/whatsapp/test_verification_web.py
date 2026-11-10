@@ -158,17 +158,58 @@ class VerificationWebTests(TestCase):
         with self.assertRaises(ValueError):
             start_verification(self.user, MSISDN, 3)
 
-    def test_disabled_partnership_and_archive_refuse_new_verification_capabilities(self):
+    def test_disabled_partnership_and_archive_refuse_bank_address_capabilities(self):
         count = PendingAction.objects.count()
         for settings_change in ({"WEMA_PARTNERSHIP_MODE": "disabled"},
                                 {"WEMA_PARTNERSHIP_MODE": "archive"}):
             with self.subTest(settings=settings_change), override_settings(**settings_change):
-                for tier in (2, 3):
+                for tier in (3,):
                     with self.subTest(tier=tier), self.assertRaises(ValueError):
                         start_verification(self.user, MSISDN, tier)
         self.assertEqual(PendingAction.objects.count(), count)
         self.pa.refresh_from_db()
         self.assertEqual(self.pa.state, PIN)
+
+    def test_prembly_tier2_works_with_production_bank_switch_off_without_unlocking_funds(self):
+        """Render reports Prembly ready while Wema is disabled/unconfigured."""
+        from wallet.services import customer_funding_account
+
+        User.objects.filter(pk=self.user.pk).update(face_verified=False, tier=1)
+        self.user.refresh_from_db()
+        with override_settings(TESTING=False, WEMA_CUTOVER_APPROVED=False,
+                               WEMA_PARTNERSHIP_MODE="archive"), \
+                patch("utility.liveness.tier2_face_available", return_value=True), \
+                patch("utility.liveness.start_tier2_liveness", return_value={
+                    "success": True, "session": "bound-session",
+                    "url": "https://sdk-live.prembly.com/?session=bound-session"}) as start:
+            self.path = self.start(tier=2)
+            self.assertEqual(self.get().status_code, 200)
+            self.assertEqual(self.post({"action": "tier2"}).status_code, 403)
+            start.assert_not_called()
+            self.unlock()
+            self.assertEqual(self.post({"action": "tier2"}).status_code, 200)
+            start.assert_called_once()
+            funding = customer_funding_account(self.user)
+            self.assertFalse(funding["can_fund"])
+            self.assertFalse(funding["transfers_available"])
+            with self.assertRaises(ValueError):
+                start_verification(self.user, MSISDN, 3)
+        self.tier2.assert_not_called()
+        self.bank_address.assert_not_called()
+
+    def test_bank_shutdown_does_not_revoke_a_pin_bound_independent_tier2_link(self):
+        self.path = self.start(tier=2)
+        self.unlock()
+        with override_settings(WEMA_PARTNERSHIP_MODE="disabled"):
+            self.assertEqual(self.get().status_code, 200)
+        self.user.set_transaction_pin("987654")
+        self.user.save()
+        self.assertEqual(self.get().status_code, 410)
+
+    def test_disabled_banking_does_not_allow_tier2_without_verified_identity(self):
+        User.objects.filter(pk=self.user.pk).update(bvn_verified=False, nin_verified=False, tier=0)
+        with override_settings(WEMA_PARTNERSHIP_MODE="disabled"), self.assertRaises(ValueError):
+            start_verification(self.user, MSISDN, 2)
 
     def test_lifecycle_change_blocks_unsubmitted_pin_and_address_forms(self):
         for settings_change in ({"WEMA_PARTNERSHIP_MODE": "disabled"},

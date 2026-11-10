@@ -98,11 +98,10 @@ def _verification_allowed(user, tier):
     Wema payout or account instruction. An archived account under review must
     not strand a BVN-verified customer unable to finish liveness. This only
     opens the verification page; it NEVER lifts the separate bank funding and
-    spend holds. Tier 3 still follows the bank's eligibility/upgrade policy.
-    Global Partnership lifecycle shutdown still revokes unsubmitted links.
+    spend holds. Tier 3 still follows the bank's eligibility/upgrade policy,
+    including its global lifecycle switch. Independent Prembly identity checks
+    follow the same eligibility as the app and do not authorize bank business.
     """
-    if not partnership_new_business_allowed():
-        return False
     if tier == 2:
         return bool(user.is_active and user.tier1_identity_verified)
     return partnership_new_business_allowed(user)
