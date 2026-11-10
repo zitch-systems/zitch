@@ -16,8 +16,8 @@ This command answers the one question that decides what to do about each row:
 
   ``liability_on_book``  A hold is matched to the archived NUBAN's digest
                          AND balance amount, with no pending transactions.
-                         The internal books carry that liability. The bank's
-                         closing statement is still needed for settlement.
+                         There is a strong internal hold association, not
+                         proof of external settlement. Bank evidence is still required.
 
   ``wallet_overlap_unverified`` The archived balance equals the stored wallet
                          balance, without an attributable funding hold. It may
