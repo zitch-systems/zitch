@@ -23,7 +23,9 @@ ARCHIVE_DDL = """
 CREATE TABLE banking_previousbankarchive (
     id integer PRIMARY KEY,
     wallet_id integer NOT NULL,
-    account_number varchar(20) NOT NULL,
+    -- Nullable on purpose: restore_archived_bank_accounts guards
+    -- `account_number IS NOT NULL`, so this report must agree with it.
+    account_number varchar(20),
     account_name varchar(160) NOT NULL,
     bank_name varchar(80) NOT NULL,
     account_reference varchar(64) NOT NULL,
@@ -66,7 +68,8 @@ class PartnershipRecoveryWorksheetTests(TestCase):
         call_command("partnership_recovery_worksheet", stdout=buf, **opts)
         return buf.getvalue()
 
-    def _create_archive(self, wallet_id, *, balance="500.00", review=False, pending=0):
+    def _create_archive(self, wallet_id, *, balance="500.00", review=False, pending=0,
+                        number=OLD_ACCOUNT):
         with connection.cursor() as cur:
             cur.execute(ARCHIVE_DDL)
             cur.execute(
@@ -74,7 +77,7 @@ class PartnershipRecoveryWorksheetTests(TestCase):
                 "account_number, account_name, bank_name, account_reference, "
                 "balance, account_metadata, pending_transactions, "
                 "review_required, created) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                [1, wallet_id, OLD_ACCOUNT, HOLDER, "Wema Bank", "REF", balance,
+                [1, wallet_id, number, HOLDER, "Wema Bank", "REF", balance,
                  "{}", pending, review, timezone.now()])
         self.addCleanup(self._drop_archive)
 
@@ -109,7 +112,7 @@ class PartnershipRecoveryWorksheetTests(TestCase):
         # A write is scoped and bank-confirmed since #604; the advice must
         # not imply a bare --apply will do it.
         self.assertIn("--bank-confirmation-ref", out)
-        self.assertIn("have an archived account and nothing held", out)
+        self.assertIn("have an archived account number and nothing held", out)
         # The bank is not the answer for this customer.
         self.assertNotIn("blocked on bank reconciliation", out)
         self.assertNotIn("Confirm the customer actually reached account setup", out)
@@ -123,6 +126,76 @@ class PartnershipRecoveryWorksheetTests(TestCase):
         self.assertIn("previous_provider_cutover_blockers", out)
         self.assertIn("Reconcile", out)
         self.assertNotIn("nothing held against it", out)
+
+    def test_an_archive_row_with_no_number_is_not_an_archived_account(self):
+        """Production has three of these: a row with no number, balance or flag.
+
+        Reading the row's existence as "this customer had an account" told
+        operators to run a bank-confirmed restore for an account nobody can
+        name. restore_archived_bank_accounts filters such rows out entirely
+        (account_number <> ''), so the advice could not be carried out, and
+        there is no account for the bank to open a case about either.
+        """
+        self._create_archive(self.wallet.pk, number="", balance="0.00", review=False)
+        self._session(account_state="review_required",
+                      account_failure_category="existing_customer")
+        out = self._run()
+        self.assertIn("former_provider_evidence=row_no_number", out)
+        self.assertIn("NO account number", out)
+        self.assertIn("repair_partner_bank_accounts", out)
+        # On the customer's own row, not only in the closing summary: an
+        # operator reading one customer's entry must see it there.
+        self.assertIn("NOTE: an archive row exists for this wallet", out)
+        # It must not claim the customer had an account, nor offer a restore.
+        self.assertNotIn("This customer HAD an account", out)
+        self.assertNotIn("--bank-confirmation-ref", out)
+        self.assertNotIn("have an archived account number and nothing held", out)
+
+    def test_a_row_with_no_number_still_gets_its_session_diagnosis(self):
+        """The empty row is a caveat, not the diagnosis: the bank still refused."""
+        self._create_archive(self.wallet.pk, number="", balance="0.00")
+        self._session(account_state="review_required",
+                      account_failure_category="existing_customer")
+        out = self._run()
+        self.assertIn("Reconcile with the bank", out)
+        # And such a customer IS genuinely blocked on the bank, so they count.
+        self.assertIn("blocked on bank reconciliation", out)
+
+    def test_a_null_number_is_treated_like_an_empty_one(self):
+        self._create_archive(self.wallet.pk, number=None, balance="0.00")
+        out = self._run()
+        self.assertIn("former_provider_evidence=row_no_number", out)
+
+    def test_whitespace_is_not_a_restorable_number(self):
+        self._create_archive(self.wallet.pk, number="   ", balance="0.00")
+        self.assertIn("former_provider_evidence=row_no_number", self._run())
+
+    def test_numberless_archive_still_reports_financial_holds(self):
+        self._create_archive(self.wallet.pk, number="", balance="500.00", review=True)
+        out = self._run()
+        self.assertIn("HELD: reconcile archived balances", out)
+        self.assertIn("missing number does not remove the financial hold", out)
+        self.assertNotIn("no balance and no pending transactions", out)
+        self.assertNotIn("issuance was never started", out)
+
+    def test_repair_command_is_never_presented_as_account_issuance(self):
+        self._create_archive(self.wallet.pk, number="", balance="0.00")
+        out = self._run()
+        self.assertIn("does NOT issue an account", out)
+        self.assertNotIn("then issue one with repair_partner_bank_accounts", out)
+
+    def test_no_attempt_needs_authorized_setup_instead_of_callback_repair(self):
+        out = self._run()
+        self.assertIn("authorized setup flow", out)
+        self.assertNotIn("then issue one with repair_partner_bank_accounts", out)
+
+    def test_a_numbered_row_is_still_restorable(self):
+        """The fix must not stop a real archived account reading as one."""
+        self._create_archive(self.wallet.pk, balance="0.00", review=False)
+        out = self._run()
+        self.assertIn("former_provider_evidence=yes", out)
+        self.assertNotIn("row_no_number", out)
+        self.assertIn("--bank-confirmation-ref", out)
 
     def test_it_reports_no_identifying_detail(self):
         """This output belongs in tickets and deploy logs, so it carries ids only."""

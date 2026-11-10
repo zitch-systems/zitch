@@ -4136,7 +4136,9 @@ def _do_account_details(user, msisdn: str) -> None:
     reply(msisdn, "\n".join(lines))
     if wallet.account_number:
         return _send_account_details(msisdn, wallet, intro="🏦 *Your funding account*")
-    return reply(msisdn, "You don't have a funding account number yet - reply *6* (Add money) to set one up in a minute.")
+    return reply(msisdn, "Your funding account number is not available yet. Reply *6* "
+                 "(Add money) to check its setup status. If your BVN or NIN is "
+                 "already verified, you do not need to submit it again.")
 
 
 # --------------------------------------------------------------------------- #
