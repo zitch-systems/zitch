@@ -11,6 +11,7 @@ from io import StringIO
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
@@ -82,6 +83,9 @@ class RestoreArchivedBankAccountsTests(TestCase):
 
     def _run(self, **opts):
         buf = StringIO()
+        if opts.get("apply"):
+            opts.setdefault("user_id", self.user.pk)
+            opts.setdefault("bank_confirmation_ref", "WEMA-TEST-CASE-001")
         call_command("restore_archived_bank_accounts", stdout=buf, **opts)
         return buf.getvalue()
 
@@ -151,21 +155,23 @@ class RestoreArchivedBankAccountsTests(TestCase):
                 self.assertEqual(self.wallet.account_number, "")
                 self.assertIn("money needs review first: 1", out)
 
-    def test_flagged_rows_restore_when_explicitly_asked(self):
+    def test_flagged_rows_cannot_be_restored_even_with_unsafe_override(self):
         self._archive(self.wallet.pk, balance="1500.00", review=True)
-        self._run(apply=True, include_flagged=True)
+        with self.assertRaisesMessage(CommandError, "disabled"):
+            self._run(apply=True, include_flagged=True)
         self.wallet.refresh_from_db()
-        self.assertEqual(self.wallet.account_number, THEIR_ACCOUNT)
+        self.assertEqual(self.wallet.account_number, "")
 
-    def test_every_restore_is_audited_with_what_the_money_looked_like(self):
-        self._archive(self.wallet.pk, balance="250.00", pending=1, review=True)
-        self._run(apply=True, include_flagged=True)
+    def test_every_restore_is_audited_with_bank_confirmation(self):
+        self._archive(self.wallet.pk)
+        self._run(apply=True)
         entry = AuditLog.objects.get(action="archived_bank_account_restored")
         self.assertEqual(entry.target, f"wallet:{self.wallet.pk}")
         self.assertEqual(entry.before["account_number"], "")
-        self.assertEqual(Decimal(entry.after["archived_balance"]), Decimal("250.00"))
-        self.assertEqual(entry.after["pending_transactions"], 1)
-        self.assertTrue(entry.after["review_required"])
+        self.assertEqual(Decimal(entry.after["archived_balance"]), Decimal("0.00"))
+        self.assertEqual(entry.after["pending_transactions"], 0)
+        self.assertFalse(entry.after["review_required"])
+        self.assertEqual(entry.after["bank_confirmation_ref"], "WEMA-TEST-CASE-001")
 
     def test_running_it_twice_restores_once(self):
         self._archive(self.wallet.pk)
@@ -186,7 +192,7 @@ class RestoreArchivedBankAccountsTests(TestCase):
 
     def test_an_archive_row_with_no_wallet_is_reported_not_crashed(self):
         self._archive(999_999)
-        out = self._run(apply=True)
+        out = self._run()
         self.assertIn("archive row has no wallet: 1", out)
 
     def test_a_database_without_the_archive_is_said_plainly(self):
@@ -194,3 +200,51 @@ class RestoreArchivedBankAccountsTests(TestCase):
         out = self._run(apply=True)
         self.assertIn("does not exist on this database", out)
         self.assertIn("wrong database", out)
+
+
+    def test_unscoped_apply_is_refused_without_any_writes(self):
+        self._archive(self.wallet.pk)
+        with self.assertRaisesMessage(CommandError, "requires --user-id"):
+            call_command("restore_archived_bank_accounts", apply=True, stdout=StringIO())
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.account_number, "")
+        self.assertFalse(AuditLog.objects.exists())
+
+    def test_missing_bank_reference_is_refused_even_for_one_customer(self):
+        self._archive(self.wallet.pk)
+        with self.assertRaisesMessage(CommandError, "--bank-confirmation-ref"):
+            call_command("restore_archived_bank_accounts", apply=True,
+                         user_id=self.user.pk, stdout=StringIO())
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.account_number, "")
+
+    def test_pending_previous_provider_account_blocks_recovery(self):
+        self._archive(self.wallet.pk)
+        from unittest.mock import patch
+        with patch("wallet.partnership.previous_provider_cutover_blockers",
+                   return_value=["previous_provider_account_review"]):
+            out = self._run(apply=True)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.account_number, "")
+        self.assertIn("money needs review first: 1", out)
+        self.assertFalse(AuditLog.objects.exists())
+
+    def test_only_selected_customer_can_be_restored(self):
+        second = self._other_wallet()
+        self._archive(self.wallet.pk)
+        self._archive(second.pk, number="0222222222")
+        self._run(apply=True)
+        self.wallet.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(self.wallet.account_number, THEIR_ACCOUNT)
+        self.assertEqual(second.account_number, "")
+
+    def test_archive_from_another_bank_is_not_mislabelled_as_wema(self):
+        self._archive(self.wallet.pk)
+        with connection.cursor() as cur:
+            cur.execute("UPDATE banking_previousbankarchive SET bank_name = %s",
+                        ["Another Bank"])
+        out = self._run(apply=True)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.account_number, "")
+        self.assertIn("invalid or retired: 1", out)

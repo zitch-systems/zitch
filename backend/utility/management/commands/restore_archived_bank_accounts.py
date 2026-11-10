@@ -1,45 +1,25 @@
-"""Give customers back the account number the migration took off their wallet.
+"""Restore a previously archived Wema NUBAN only after a bank-confirmed review.
 
-The 9PSB migration moved each customer's existing account into
-`banking_previousbankarchive` and blanked `wallet.account_number`. The account
-did not stop being theirs; we simply stopped showing it to them. That archive
-row is our own record, written by us at migration time, of which account each
-wallet held -- `PreviousBankArchive.wallet` is a PROTECTed one-to-one, so it
-names exactly one wallet. Restoring from it needs no provider confirmation,
-because it is not a guess about ownership: it is the ownership record.
+The migration archive is historical evidence of wallet association, NOT proof
+that Wema still accepts the number as active or that all funds were settled.
+Dry-run inventories remain read-only. Production writes require an exact,
+single customer id and a bank-issued case/confirmation reference. A separate
+bank confirmation must match the customer's archived NUBAN and holder details;
+this command does not itself call a Wema ownership-verification endpoint.
 
-That is the difference from a phone lookup against the bank, which this command
-deliberately does not do. A lookup returning "an account exists for this phone"
-does not say WHICH account, and attaching on it could bind one customer's
-account to another's wallet. The archive says which. No bank call is made here.
+Rows with an archived balance, pending transactions or a review flag can never
+be restored by this command until separately reconciled. Existing wallet
+numbers are never overwritten, and every accepted write is audited.
 
-Safety, in order of how much damage each prevents:
-
-- A wallet that already has an account number is never touched. This only
-  fills a blank, so it cannot overwrite a newly issued account.
-- An account number already attached to a DIFFERENT wallet is never attached
-  again. Two wallets sharing a NUBAN would mix up two customers' money.
-- Numbers that are not a valid, non-retired 10-digit NUBAN are skipped, using
-  the same `partnership_account_number` guard the rest of the system uses.
-- Rows carrying unreconciled money -- a non-zero archived balance, pending
-  transactions, or an explicit review flag -- are skipped unless you pass
-  `--include-flagged`. Those are the cases where someone should look at the
-  money before the customer can transact on the account again.
-
-Dry run by default: it reports what it would do and changes nothing. `--apply`
-performs the writes, each one inside a transaction with an AuditLog entry.
-
-Usage
------
-    python manage.py restore_archived_bank_accounts
-    python manage.py restore_archived_bank_accounts --apply
-    python manage.py restore_archived_bank_accounts --apply --include-flagged
-
-Prints counts and wallet ids only -- never an account number or holder name --
-so its output is safe in a deploy log. Run `export_previous_bank_accounts`
-first if you want the numbers themselves on file before anything changes.
+Usage:
+    python manage.py restore_archived_bank_accounts                  # read-only
+    python manage.py restore_archived_bank_accounts --user-id 25      # scoped dry-run
+    python manage.py restore_archived_bank_accounts --apply \
+      --user-id 25 --bank-confirmation-ref WEMA-CASE-REFERENCE
+Never provide a generic or invented confirmation reference.
 """
 from decimal import Decimal, InvalidOperation
+import re
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import DatabaseError, connection, transaction
@@ -73,19 +53,44 @@ class Command(BaseCommand):
                             help="Perform the writes (default is a dry run).")
         parser.add_argument("--include-flagged", action="store_true",
                             dest="include_flagged",
-                            help="Also restore rows with an archived balance, "
-                                 "pending transactions or a review flag.")
+                            help="Retired unsafe flag; always rejected for financial safety.")
+        parser.add_argument("--user-id", type=int,
+                            help="Only the specified customer; mandatory when applying writes.")
+        parser.add_argument("--bank-confirmation-ref", default="",
+                            help="Wema-issued confirmation that this customer's archived "
+                                 "NUBAN and holder are current; mandatory for writes.")
         parser.add_argument("--limit", type=int, default=500,
                             help="Maximum wallets to process (default 500).")
 
     def handle(self, *args, **options):
         from wallet.models import Wallet
-        from wallet.partnership import partnership_account_number
+        from wallet.partnership import partnership_account_number, previous_provider_cutover_blockers
         from whatsapp.models import AuditLog
 
         apply_changes = options["apply"]
         include_flagged = options["include_flagged"]
+        target_user_id = options.get("user_id")
+        confirmation_ref = str(options.get("bank_confirmation_ref") or "").strip()
         limit = max(1, min(int(options["limit"] or 500), 5000))
+        if target_user_id is not None and target_user_id < 1:
+            raise CommandError("A positive --user-id is required.")
+        if include_flagged:
+            raise CommandError(
+                "--include-flagged is disabled: reconcile balances, pending "
+                "transactions and review flags separately before restoring a NUBAN.")
+        if apply_changes and (target_user_id is None or
+                              not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{7,127}",
+                                               confirmation_ref)):
+            raise CommandError(
+                "Production restore requires --user-id and an actual Wema "
+                "--bank-confirmation-ref for that specific archived account. "
+                "Run a scoped dry-run first.")
+        target_wallet_id = None
+        if target_user_id is not None:
+            target_wallet_id = Wallet.objects.filter(user_id=target_user_id).values_list(
+                "pk", flat=True).first()
+            if target_wallet_id is None:
+                raise CommandError("This customer has no wallet to restore.")
 
         if ARCHIVE_TABLE not in set(connection.introspection.table_names()):
             self.stdout.write(self.style.WARNING(
@@ -96,7 +101,12 @@ class Command(BaseCommand):
 
         try:
             with connection.cursor() as cur:
-                cur.execute(SQL)
+                if target_wallet_id is not None:
+                    cur.execute(SQL.replace("ORDER BY a.wallet_id",
+                                            "AND a.wallet_id = %s ORDER BY a.wallet_id"),
+                                [target_wallet_id])
+                else:
+                    cur.execute(SQL)
                 rows = cur.fetchall()[:limit]
         except DatabaseError as exc:
             raise CommandError(f"Could not read {ARCHIVE_TABLE}: {exc}") from exc
@@ -114,7 +124,9 @@ class Command(BaseCommand):
                 # new one was issued. Never overwrite either.
                 already.append(wallet_id)
                 continue
-            if not partnership_account_number(number):
+            if (not partnership_account_number(number) or
+                    (bank or "").strip().casefold() not in
+                    {"wema", "wema bank", "alat by wema"}):
                 invalid.append(wallet_id)
                 continue
             if Wallet.objects.filter(account_number=number).exclude(pk=wallet.pk).exists():
@@ -122,7 +134,12 @@ class Command(BaseCommand):
                 # customers' incoming money.
                 taken.append(wallet_id)
                 continue
-            if _flagged(balance, pending, review) and not include_flagged:
+            # The archived balance may be zero but a *different* 9PSB-era
+            # bank account may still be assigned to this wallet. The current
+            # user-facing funding API already blocks that legacy state, so
+            # do not silently attach an account that will remain invisible.
+            if (_flagged(balance, pending, review)
+                    or previous_provider_cutover_blockers(wallet.user)):
                 flagged.append(wallet_id)
                 continue
 
@@ -150,7 +167,8 @@ class Command(BaseCommand):
                         after={"restored_from": ARCHIVE_TABLE,
                                "archived_balance": str(balance or "0"),
                                "pending_transactions": int(pending or 0),
-                               "review_required": bool(review)})
+                               "review_required": bool(review),
+                               "bank_confirmation_ref": confirmation_ref})
             restored.append(wallet_id)
 
         verb = "Restored" if apply_changes else "Would restore"
@@ -164,7 +182,7 @@ class Command(BaseCommand):
         self.stdout.write(f"  skipped, archive row has no wallet: {len(missing)}")
         self.stdout.write(
             f"  skipped, money needs review first: {len(flagged)}"
-            + ("" if include_flagged else "  (pass --include-flagged to restore these too)"))
+            + "  (bank/ledger reconciliation is required first)")
 
         if taken:
             self.stdout.write(self.style.ERROR(
