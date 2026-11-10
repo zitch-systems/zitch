@@ -113,6 +113,40 @@ class ReconcileArchivedBalancesTests(TestCase):
         self.assertNotIn("state=off_book", out)
         self.assertIn("evidenced settlement path", out)
 
+    def test_matching_stored_wallet_amount_is_not_claimed_off_book(self):
+        """The production ₦2,826 scenario: wallet balances mirror archives."""
+        import json
+        self._archive(balance="2826.00", review=True)
+        from wallet.models import Wallet
+        Wallet.objects.filter(pk=self.wallet.pk).update(balance=Decimal("2826.00"))
+        report = json.loads(self._run(as_json=True))
+        self.assertEqual(report["off_book_amount"], "0.00")
+        self.assertEqual(report["wallet_overlap_unverified_amount"], "2826.00")
+        self.assertEqual(report["wallet_overlap_unverified_rows"], 1)
+        row = report["customers"][0]
+        self.assertEqual(row["state"], "wallet_overlap_unverified")
+        self.assertTrue(row["wallet_balance_matches_archive"])
+        self.assertFalse(row["transaction_ledger_matches_archive"])
+        self.assertEqual(row["transaction_ledger_expected"], "0")
+        self.assertIn("NOT proven off-book", self._run())
+
+    def test_matching_stored_wallet_and_transaction_ledger_still_need_bank_evidence(self):
+        import json
+        self._archive(balance="1000.00", review=True)
+        from wallet.models import Wallet
+        Wallet.objects.filter(pk=self.wallet.pk).update(balance=Decimal("1000.00"))
+        Transaction.objects.create(
+            user=self.user, service="historical_funding",
+            amount=Decimal("1000.00"), direction=Transaction.IN,
+            transaction_status=Transaction.SUCCESS, reference="ledger-overlap-test")
+        payload = json.loads(self._run(as_json=True))
+        row = payload["customers"][0]
+        self.assertTrue(row["wallet_balance_matches_archive"])
+        self.assertTrue(row["transaction_ledger_matches_archive"])
+        self.assertEqual(row["transaction_ledger_expected"], "1000.00")
+        self.assertEqual(row["state"], "wallet_overlap_unverified")
+        self.assertEqual(payload["liability_on_book_rows"], 0)
+
     def test_a_settled_hold_still_counts_as_on_book(self):
         """Archiving a hold reclassifies it; the docstring says it stays owed."""
         self._archive(balance="500.00")
