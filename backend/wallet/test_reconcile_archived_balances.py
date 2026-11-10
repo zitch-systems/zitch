@@ -9,6 +9,7 @@ that make the output usable: it changes nothing, and it carries no identifying
 detail, because it runs against production while customers are waiting.
 """
 from decimal import Decimal
+import hashlib
 from io import StringIO
 
 from django.contrib.auth import get_user_model
@@ -72,10 +73,10 @@ class ReconcileArchivedBalancesTests(TestCase):
                  OLD_ACCOUNT, HOLDER, "Wema Bank", f"REF-{self._rows}", balance,
                  "{}", pending, review, timezone.now()])
 
-    def _hold(self, amount="500.00", *, settled=False):
+    def _hold(self, amount="500.00", *, settled=False, destination=OLD_ACCOUNT):
         hold = UnsettledFunding.objects.create(
             user=self.user, amount=Decimal(amount),
-            destination_digest=f"d{self._rows}" + "0" * 50,
+            destination_digest=hashlib.sha256(destination.encode()).hexdigest(),
             operator_reference="migration-audit")
         if settled:
             from wallet.models import RetiredFundingArchive
@@ -112,12 +113,89 @@ class ReconcileArchivedBalancesTests(TestCase):
         self.assertNotIn("state=off_book", out)
         self.assertIn("evidenced settlement path", out)
 
+    def test_matching_stored_wallet_amount_is_not_claimed_off_book(self):
+        """The production ₦2,826 scenario: wallet balances mirror archives."""
+        import json
+        self._archive(balance="2826.00", review=True)
+        from wallet.models import Wallet
+        Wallet.objects.filter(pk=self.wallet.pk).update(balance=Decimal("2826.00"))
+        report = json.loads(self._run(as_json=True))
+        self.assertEqual(report["off_book_amount"], "0.00")
+        self.assertEqual(report["wallet_overlap_unverified_amount"], "2826.00")
+        self.assertEqual(report["wallet_overlap_unverified_rows"], 1)
+        row = report["customers"][0]
+        self.assertEqual(row["state"], "wallet_overlap_unverified")
+        self.assertTrue(row["wallet_balance_matches_archive"])
+        self.assertFalse(row["transaction_ledger_matches_archive"])
+        self.assertEqual(row["transaction_ledger_expected"], "0")
+        self.assertIn("NOT proven off-book", self._run())
+
+    def test_matching_stored_wallet_and_transaction_ledger_still_need_bank_evidence(self):
+        import json
+        self._archive(balance="1000.00", review=True)
+        from wallet.models import Wallet
+        Wallet.objects.filter(pk=self.wallet.pk).update(balance=Decimal("1000.00"))
+        Transaction.objects.create(
+            user=self.user, service="historical_funding",
+            amount=Decimal("1000.00"), direction=Transaction.IN,
+            transaction_status=Transaction.SUCCESS, reference="ledger-overlap-test")
+        payload = json.loads(self._run(as_json=True))
+        row = payload["customers"][0]
+        self.assertTrue(row["wallet_balance_matches_archive"])
+        self.assertTrue(row["transaction_ledger_matches_archive"])
+        # SQLite aggregates may return Decimal('1000') while PostgreSQL returns
+        # Decimal('1000.00'); compare the money, not backend display scale.
+        self.assertEqual(Decimal(row["transaction_ledger_expected"]), Decimal("1000.00"))
+        self.assertEqual(row["state"], "wallet_overlap_unverified")
+        self.assertEqual(payload["liability_on_book_rows"], 0)
+
     def test_a_settled_hold_still_counts_as_on_book(self):
         """Archiving a hold reclassifies it; the docstring says it stays owed."""
         self._archive(balance="500.00")
         self._hold("500.00", settled=True)
         out = self._run()
         self.assertIn("state=liability_on_book", out)
+
+    def test_unrelated_account_hold_never_suppresses_off_book_exposure(self):
+        """Same customer is insufficient: the hold can be for another rail."""
+        self._archive(balance="2826.00", review=True)
+        self._hold("2826.00", destination="0666666666")
+        import json
+        result = json.loads(self._run(as_json=True))
+        self.assertEqual(result["hold_unattributed_rows"], 1)
+        self.assertEqual(result["hold_unattributed_amount"], "2826.00")
+        self.assertEqual(result["liability_on_book_rows"], 0)
+        self.assertEqual(result["customers"][0]["state"], "hold_unattributed")
+        self.assertEqual(result["customers"][0]["attribution"], "unverified_customer_hold")
+
+    def test_same_account_different_amount_is_not_fully_accounted_for(self):
+        """A ₦10 hold cannot establish a ₦2,826 liability."""
+        self._archive(balance="2826.00")
+        self._hold("10.00")
+        import json
+        result = json.loads(self._run(as_json=True))
+        self.assertEqual(result["hold_unattributed_rows"], 1)
+        self.assertEqual(result["liability_on_book_rows"], 0)
+        self.assertEqual(result["customers"][0]["linked_hold_amount"], "10.00")
+
+    def test_pending_legacy_transactions_require_separate_proof(self):
+        self._archive(balance="500.00", pending=1)
+        self._hold("500.00")
+        import json
+        result = json.loads(self._run(as_json=True))
+        self.assertEqual(result["hold_unattributed_rows"], 1)
+        self.assertEqual(result["liability_on_book_rows"], 0)
+
+    def test_exact_account_and_amount_matches_are_attributed_internally(self):
+        self._archive(balance="500.00")
+        self._hold("500.00")
+        import json
+        result = json.loads(self._run(as_json=True))
+        self.assertEqual(result["liability_on_book_rows"], 1)
+        self.assertEqual(result["hold_unattributed_rows"], 0)
+        self.assertEqual(result["customers"][0]["attribution"],
+                         "matching_destination_and_amount")
+        self.assertNotIn(OLD_ACCOUNT, self._run(as_json=True))
 
     def test_a_flag_with_no_money_is_not_a_liability(self):
         self._archive(balance="0.00", review=True)

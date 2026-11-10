@@ -14,11 +14,21 @@ reads, and it is only in the ledger liability if something credited it there.
 This command answers the one question that decides what to do about each row:
 **is this money on our books anywhere?** There are three answers.
 
-  ``liability_on_book``  An UnsettledFunding hold exists for this customer. The
-                         money is recorded as owed, ``settlement_report``
-                         already counts it, and resolution goes through the
-                         evidenced settlement path -- not through this archive
-                         row and not by clearing a flag.
+  ``liability_on_book``  A hold is matched to the archived NUBAN's digest
+                         AND balance amount, with no pending transactions.
+                         There is a strong internal hold association, not
+                         proof of external settlement. Bank evidence is still required.
+
+  ``wallet_overlap_unverified`` The archived balance equals the stored wallet
+                         balance, without an attributable funding hold. It may
+                         already be carried as a customer liability, but its
+                         provenance and bank settlement are unproven.
+
+  ``hold_unattributed`` A hold exists for this customer but cannot be
+                         linked to the archived bank number AND amount. Its
+                         presence alone is NOT proof this row is on-book.
+                         Investigate both internal funding evidence and the
+                         former bank's closing statement.
 
   ``off_book``           The archive row carries money and there is NO hold.
                          Our books do not record owing it. If the customer is
@@ -46,16 +56,19 @@ Usage
     python manage.py reconcile_archived_balances --json
 """
 import json
+import hashlib
 from decimal import Decimal, InvalidOperation
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import DatabaseError, connection
 from django.db.models import Sum
+from wallet.services import wallet_expected_balance
 
 ARCHIVE_TABLE = "banking_previousbankarchive"
 
 SQL = f'''
-    SELECT wallet_id, balance, pending_transactions, review_required, created
+    SELECT wallet_id, balance, pending_transactions, review_required, created,
+           account_number
       FROM "{ARCHIVE_TABLE}"
      ORDER BY balance DESC, wallet_id
 '''
@@ -97,15 +110,22 @@ class Command(BaseCommand):
             pk__in=[r[0] for r in archive_rows])}
 
         rows = []
-        for (wallet_id, balance, pending, review, created) in archive_rows:
+        for (wallet_id, balance, pending, review, created, archived_number) in archive_rows:
             wallet = wallets.get(wallet_id)
             archived = _money(balance)
             pending = int(pending or 0)
             has_money = archived is None or archived != Decimal("0") or pending > 0
 
             holds = {"count": 0, "amount": "0.00", "unsettled_count": 0}
+            # A hold for this USER may relate to a different old bank account,
+            # VAS destination, or a different amount. Its mere presence cannot
+            # account for this archive row. Match the archived NUBAN's digest
+            # and the precise amount; never print the number or digest.
+            linked_hold_amount = None
             credit_hint = None
+            expected_ledger = None
             if wallet is not None:
+                expected_ledger = wallet_expected_balance(wallet.user_id)
                 agg = UnsettledFunding.objects.filter(user_id=wallet.user_id).aggregate(
                     total=Sum("amount"))
                 holds = {
@@ -115,6 +135,11 @@ class Command(BaseCommand):
                     "unsettled_count": UnsettledFunding.objects.filter(
                         user_id=wallet.user_id, archive__isnull=True).count(),
                 }
+                if archived_number and isinstance(archived_number, str):
+                    digest = hashlib.sha256(archived_number.strip().encode()).hexdigest()
+                    linked_hold_amount = UnsettledFunding.objects.filter(
+                        user_id=wallet.user_id, destination_digest=digest
+                    ).values_list("amount", flat=True).first()
                 if archived is not None and archived != Decimal("0"):
                     # A hint only. See the module docstring.
                     credit_hint = Transaction.objects.filter(
@@ -126,8 +151,18 @@ class Command(BaseCommand):
                 state = "no_wallet"
             elif not has_money:
                 state = "flag_only"
-            elif holds["count"]:
+            elif (linked_hold_amount is not None and archived is not None
+                  and archived > 0 and linked_hold_amount == archived and pending == 0):
+                # Strong INTERNAL association: same account digest and amount.
+                # Still NOT evidence that the bank paid or closed the account.
                 state = "liability_on_book"
+            elif holds["count"]:
+                state = "hold_unattributed"
+            elif (archived is not None and archived > 0 and pending == 0
+                  and wallet.balance == archived):
+                # Matching stored balance is *possible* liability overlap, not
+                # proof of archived bank-account provenance or settlement.
+                state = "wallet_overlap_unverified"
             else:
                 state = "off_book"
 
@@ -139,13 +174,29 @@ class Command(BaseCommand):
                 "review_required": bool(review),
                 "archived_on": created.date().isoformat() if hasattr(created, "date") else None,
                 "ledger_balance": str(wallet.balance) if wallet else None,
+                "transaction_ledger_expected": (str(expected_ledger)
+                                                 if expected_ledger is not None else None),
+                "wallet_balance_matches_archive": bool(
+                    wallet is not None and archived is not None
+                    and archived > 0 and wallet.balance == archived),
+                "transaction_ledger_matches_archive": bool(
+                    expected_ledger is not None and archived is not None
+                    and archived > 0 and expected_ledger == archived),
                 "unsettled_funding_holds": holds,
+                "linked_hold_amount": (str(linked_hold_amount)
+                                       if linked_hold_amount is not None else None),
+                "attribution": ("matching_destination_and_amount"
+                                if state == "liability_on_book"
+                                else "unverified_customer_hold" if state == "hold_unattributed"
+                                else "none"),
                 "same_amount_credits_in_ledger": credit_hint,
                 "state": state,
             })
 
         off_book = [r for r in rows if r["state"] == "off_book"]
         on_book = [r for r in rows if r["state"] == "liability_on_book"]
+        hold_unattributed = [r for r in rows if r["state"] == "hold_unattributed"]
+        wallet_overlap = [r for r in rows if r["state"] == "wallet_overlap_unverified"]
         flag_only = [r for r in rows if r["state"] == "flag_only"]
         orphans = [r for r in rows if r["state"] == "no_wallet"]
 
@@ -171,6 +222,10 @@ class Command(BaseCommand):
             "off_book_amount": str(_total(off_book)),
             "liability_on_book_rows": len(on_book),
             "liability_on_book_amount": str(_total(on_book)),
+            "hold_unattributed_rows": len(hold_unattributed),
+            "hold_unattributed_amount": str(_total(hold_unattributed)),
+            "wallet_overlap_unverified_rows": len(wallet_overlap),
+            "wallet_overlap_unverified_amount": str(_total(wallet_overlap)),
             "flag_only_rows": len(flag_only),
             "orphan_rows": len(orphans),
             "review_required_rows": len(flagged),
@@ -215,7 +270,15 @@ class Command(BaseCommand):
             "— not recorded as owed anywhere on our books")
         self.stdout.write(
             f"liability on book:   {len(on_book)} row(s), {_total(on_book):.2f} "
-            "— already counted by settlement_report")
+            "— linked by account digest and exact amount; bank settlement not proven")
+        self.stdout.write(
+            f"wallet overlap:      {len(wallet_overlap)} row(s), "
+            f"{_total(wallet_overlap):.2f} — stored wallet balance matches "
+            "archive; verify transaction ledger and bank statement")
+        self.stdout.write(
+            f"hold not attributable: {len(hold_unattributed)} row(s), "
+            f"{_total(hold_unattributed):.2f} — customer has hold(s), but account "
+            "and amount do not prove this specific archive liability")
         self.stdout.write(f"flag only, no money: {len(flag_only)} row(s)")
         if orphans:
             self.stdout.write(self.style.ERROR(
@@ -242,13 +305,27 @@ class Command(BaseCommand):
                 "statement for those accounts. Until it arrives, do not clear the review "
                 "flag and do not restore the number — the flag is the only thing currently "
                 "stopping the balance being treated as settled."))
+        if wallet_overlap:
+            self.stdout.write(self.style.WARNING(
+                f"{len(wallet_overlap)} row(s) totalling "
+                f"{_total(wallet_overlap):.2f} have matching stored wallet "
+                "balances but no attributable funding hold. NOT proven off-book: "
+                "compare the append-only ledger and former bank's closing "
+                "statement before adding new liabilities or credits."))
+        if hold_unattributed:
+            self.stdout.write(self.style.ERROR(
+                f"{len(hold_unattributed)} row(s) totalling "
+                f"{_total(hold_unattributed):.2f} have a customer hold but NO "
+                "proven link to the archived account and amount. Do not call these "
+                "settled or on-book: correlate the original funding reference and "
+                "obtain the old bank's closing statement."))
         if on_book:
             self.stdout.write(self.style.WARNING(
                 f"{len(on_book)} row(s) totalling {_total(on_book):.2f} are already held as "
                 "UnsettledFunding. Those resolve through the evidenced settlement path "
                 "(see settlement_report and the UnsettledFunding docstring); deletion is "
                 "not settlement and this command cannot resolve them."))
-        if not off_book and not on_book:
+        if not off_book and not on_book and not hold_unattributed and not wallet_overlap:
             self.stdout.write(self.style.SUCCESS(
                 "\nNo archive row carries money. There is no former-provider liability to "
                 "reconcile, and the review flags are not protecting any balance."))
