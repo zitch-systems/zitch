@@ -143,7 +143,9 @@ class ReconcileArchivedBalancesTests(TestCase):
         row = payload["customers"][0]
         self.assertTrue(row["wallet_balance_matches_archive"])
         self.assertTrue(row["transaction_ledger_matches_archive"])
-        self.assertEqual(row["transaction_ledger_expected"], "1000.00")
+        # SQLite aggregates may return Decimal('1000') while PostgreSQL returns
+        # Decimal('1000.00'); compare the money, not backend display scale.
+        self.assertEqual(Decimal(row["transaction_ledger_expected"]), Decimal("1000.00"))
         self.assertEqual(row["state"], "wallet_overlap_unverified")
         self.assertEqual(payload["liability_on_book_rows"], 0)
 
