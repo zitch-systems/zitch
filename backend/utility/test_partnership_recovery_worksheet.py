@@ -66,7 +66,7 @@ class PartnershipRecoveryWorksheetTests(TestCase):
         call_command("partnership_recovery_worksheet", stdout=buf, **opts)
         return buf.getvalue()
 
-    def _create_archive(self, wallet_id):
+    def _create_archive(self, wallet_id, *, balance="500.00", review=False, pending=0):
         with connection.cursor() as cur:
             cur.execute(ARCHIVE_DDL)
             cur.execute(
@@ -74,8 +74,8 @@ class PartnershipRecoveryWorksheetTests(TestCase):
                 "account_number, account_name, bank_name, account_reference, "
                 "balance, account_metadata, pending_transactions, "
                 "review_required, created) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                [1, wallet_id, OLD_ACCOUNT, HOLDER, "Wema Bank", "REF", "500.00",
-                 "{}", 0, False, timezone.now()])
+                [1, wallet_id, OLD_ACCOUNT, HOLDER, "Wema Bank", "REF", balance,
+                 "{}", pending, review, timezone.now()])
         self.addCleanup(self._drop_archive)
 
     def _drop_archive(self):
@@ -91,7 +91,38 @@ class PartnershipRecoveryWorksheetTests(TestCase):
         self.assertIn("existing_customer", out)
         self.assertIn("Reconcile with the bank", out)
         self.assertIn("blocked on bank reconciliation", out)
-        self.assertIn("will not resolve on their own", out)
+        self.assertIn("no archived account", out)
+
+    def test_an_archived_account_outranks_the_session_diagnosis(self):
+        """A customer with an archived account is not a failed setup.
+
+        They had an account and the migration archived it, so issuance never
+        needed to run. Reporting "confirm the customer reached account setup",
+        or sending an operator to the bank, points at the wrong thing entirely.
+        """
+        self._create_archive(self.wallet.pk, review=False, balance="0.00")
+        self._session(account_state="review_required",
+                      account_failure_category="existing_customer")
+        out = self._run()
+        self.assertIn("former_provider_evidence=yes", out)
+        self.assertIn("restore_archived_bank_accounts --apply", out)
+        # A write is scoped and bank-confirmed since #604; the advice must
+        # not imply a bare --apply will do it.
+        self.assertIn("--bank-confirmation-ref", out)
+        self.assertIn("have an archived account and nothing held", out)
+        # The bank is not the answer for this customer.
+        self.assertNotIn("blocked on bank reconciliation", out)
+        self.assertNotIn("Confirm the customer actually reached account setup", out)
+
+    def test_a_held_archive_row_says_restoring_would_not_surface_it(self):
+        """The same row blocks the funding account, so the number alone is not enough."""
+        self._create_archive(self.wallet.pk, review=True, balance="250.00")
+        out = self._run()
+        self.assertIn("former_provider_evidence=yes_held", out)
+        self.assertIn("HELD", out)
+        self.assertIn("previous_provider_cutover_blockers", out)
+        self.assertIn("Reconcile", out)
+        self.assertNotIn("nothing held against it", out)
 
     def test_it_reports_no_identifying_detail(self):
         """This output belongs in tickets and deploy logs, so it carries ids only."""

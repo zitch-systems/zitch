@@ -70,30 +70,57 @@ DEFAULT_ACTION = (
 
 
 def _archived_wallet_ids(wallet_ids):
-    """Wallet ids that still have former-provider archive evidence.
+    """Wallet ids with former-provider archive evidence -> is that row held?
 
-    Existence only: this never reads an account number. Returns an empty set on
-    a database without the table, which is the normal case for a deployment that
-    never carried the previous provider.
+    Maps wallet id to True when the archived row still carries unreconciled
+    money. That same condition is what `previous_provider_cutover_blockers`
+    tests, so a held row blocks the customer's funding account independently of
+    anything this report or the restore command does: writing the number onto
+    the wallet would not surface it while the row is held.
+
+    Never reads an account number. Returns an empty mapping on a database
+    without the table, which is normal for a deployment that never carried the
+    previous provider.
     """
     if not wallet_ids:
-        return set()
+        return {}
     try:
         if ARCHIVE_TABLE not in set(connection.introspection.table_names()):
-            return set()
+            return {}
         ids = sorted(wallet_ids)
         # Explicit placeholders rather than `IN %s`: psycopg expands a tuple
         # parameter, SQLite does not, and this runs under both.
         placeholders = ",".join(["%s"] * len(ids))
         with connection.cursor() as cur:
+            # The held test is copied from previous_provider_cutover_blockers so
+            # the two cannot drift into disagreeing about the same row.
             cur.execute(
-                f'SELECT wallet_id FROM "{ARCHIVE_TABLE}" WHERE wallet_id IN ({placeholders})',
-                ids)
-            return {row[0] for row in cur.fetchall()}
+                f'SELECT wallet_id, (review_required = TRUE OR balance <> 0 '
+                f'OR pending_transactions > 0) FROM "{ARCHIVE_TABLE}" '
+                f'WHERE wallet_id IN ({placeholders})', ids)
+            return {row[0]: bool(row[1]) for row in cur.fetchall()}
     except DatabaseError:
         # Evidence we cannot read is reported as unknown rather than as absent:
         # "no archive" and "could not check" lead to different operator actions.
         return None
+
+
+#: Said once, wherever an archived account is the answer.
+RESTORE_ACTION = (
+    "This customer HAD an account; the migration archived it, so this is a "
+    "restore and not a failed setup. The archive row identifies WHICH account "
+    "was theirs, but it does not show the number is still active at the bank "
+    "or that funds were settled, so a write is scoped and bank-confirmed: "
+    "`restore_archived_bank_accounts --apply --user-id <id> "
+    "--bank-confirmation-ref <wema case ref>`. Run it without --apply first.")
+
+HELD_ACTION = (
+    "Their archived account is on file but HELD: the row still carries "
+    "unreconciled money (a balance, pending transactions, or a review flag). "
+    "That same condition blocks their funding account through "
+    "previous_provider_cutover_blockers, so restoring the number now would "
+    "write something they still could not see. Reconcile the archived row "
+    "first, then restore.")
 
 
 class Command(BaseCommand):
@@ -135,15 +162,27 @@ class Command(BaseCommand):
             state = (session.account_state or "") if session else ""
 
             if archived is None:
-                evidence = "unknown"
+                evidence, held = "unknown", False
             elif wallet is None:
-                evidence = "no_wallet"
+                evidence, held = "no_wallet", False
+            elif wallet.pk in archived:
+                held = archived[wallet.pk]
+                evidence = "yes_held" if held else "yes"
             else:
-                evidence = "yes" if wallet.pk in archived else "no"
+                evidence, held = "no", False
 
             if pending_otp:
                 waiting_on = "an OTP setup that is still live"
                 action = "Let the active OTP attempt finish or expire before anything else."
+            elif evidence in ("yes", "yes_held"):
+                # Checked before any session diagnosis. A customer with an
+                # archived account is not a failed setup: they had an account,
+                # and issuance never needed to run. Telling an operator to
+                # "confirm they reached account setup", or to reconcile with the
+                # bank, sends them after the wrong thing entirely.
+                waiting_on = ("their archived account, held on unreconciled money"
+                              if held else "their archived account to be restored")
+                action = HELD_ACTION if held else RESTORE_ACTION
             elif session is None:
                 waiting_on = "nothing; issuance was never started"
                 action = ("Identity is verified but no issuance attempt exists. "
@@ -199,9 +238,29 @@ class Command(BaseCommand):
             self.stdout.write(f"    waiting on: {row['waiting_on']}")
             self.stdout.write(f"    next:       {row['next_action']}\n")
 
-        blocked = sum(1 for r in rows if r["failure_category"] == "existing_customer")
-        if blocked:
+        restorable = sum(1 for r in rows if r["former_provider_evidence"] == "yes")
+        held = sum(1 for r in rows if r["former_provider_evidence"] == "yes_held")
+        # Only a customer with NO archived account is genuinely waiting on the
+        # bank. Counting the archived ones as "blocked on bank reconciliation"
+        # sent operators to the provider for an account we already hold a record
+        # of, which is the opposite of what they should do.
+        bank = sum(1 for r in rows
+                   if r["failure_category"] == "existing_customer"
+                   and r["former_provider_evidence"] not in ("yes", "yes_held"))
+
+        if restorable:
+            self.stdout.write(self.style.SUCCESS(
+                f"{restorable} customer(s) have an archived account and nothing held "
+                "against it. Restoring is per-customer and bank-confirmed: see "
+                "restore_archived_bank_accounts --help."))
+        if held:
             self.stdout.write(self.style.WARNING(
-                f"{blocked} customer(s) are blocked on bank reconciliation and will "
-                "not resolve on their own. Nothing in this system can issue them an "
-                "account until the bank confirms which account is theirs."))
+                f"{held} customer(s) have an archived account that is HELD on "
+                "unreconciled money. Restoring the number would not surface it: the "
+                "same archived row blocks their funding account through "
+                "previous_provider_cutover_blockers. Reconcile those rows first."))
+        if bank:
+            self.stdout.write(self.style.WARNING(
+                f"{bank} customer(s) have no archived account and are blocked on bank "
+                "reconciliation. Nothing here can issue them an account until the bank "
+                "confirms which account is theirs."))

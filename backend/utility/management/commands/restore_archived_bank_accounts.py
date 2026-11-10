@@ -44,6 +44,29 @@ def _flagged(balance, pending, review):
     return bool(review) or has_balance or int(pending or 0) > 0
 
 
+def _hold_reasons(balance, pending, review, blockers):
+    """Which conditions hold this row, for the operator who must clear them.
+
+    Purely descriptive: the decision to skip is `_flagged` plus
+    `previous_provider_cutover_blockers`, unchanged. Reporting only a count
+    told an operator that reconciliation was required without saying what
+    there was to reconcile.
+    """
+    reasons = []
+    if review:
+        reasons.append("review flag")
+    try:
+        if Decimal(str(balance or "0")) != Decimal("0"):
+            reasons.append("archived balance")
+    except (InvalidOperation, ValueError):
+        reasons.append("unreadable balance")
+    if int(pending or 0) > 0:
+        reasons.append("pending transactions")
+    for blocker in blockers or []:
+        reasons.append(f"funding blocker: {blocker}")
+    return reasons
+
+
 class Command(BaseCommand):
     help = ("Restore each wallet's archived bank account number from the "
             "migration archive. Dry run unless --apply.")
@@ -112,6 +135,7 @@ class Command(BaseCommand):
             raise CommandError(f"Could not read {ARCHIVE_TABLE}: {exc}") from exc
 
         restored, already, flagged, invalid, taken, missing = [], [], [], [], [], []
+        held_by_reason, held_total = {}, Decimal("0")
 
         for (wallet_id, number, name, bank, balance, pending, review) in rows:
             number = (number or "").strip()
@@ -138,9 +162,15 @@ class Command(BaseCommand):
             # bank account may still be assigned to this wallet. The current
             # user-facing funding API already blocks that legacy state, so
             # do not silently attach an account that will remain invisible.
-            if (_flagged(balance, pending, review)
-                    or previous_provider_cutover_blockers(wallet.user)):
+            blockers = previous_provider_cutover_blockers(wallet.user)
+            if _flagged(balance, pending, review) or blockers:
                 flagged.append(wallet_id)
+                for reason in _hold_reasons(balance, pending, review, blockers):
+                    held_by_reason[reason] = held_by_reason.get(reason, 0) + 1
+                try:
+                    held_total += Decimal(str(balance or "0"))
+                except (InvalidOperation, ValueError):
+                    pass
                 continue
 
             if apply_changes:
@@ -183,6 +213,10 @@ class Command(BaseCommand):
         self.stdout.write(
             f"  skipped, money needs review first: {len(flagged)}"
             + "  (bank/ledger reconciliation is required first)")
+        for reason, count in sorted(held_by_reason.items()):
+            self.stdout.write(f"      {reason}: {count}")
+        if held_total:
+            self.stdout.write(f"      archived balance held: {held_total:.2f}")
 
         if taken:
             self.stdout.write(self.style.ERROR(

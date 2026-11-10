@@ -10,23 +10,34 @@ import logging
 log = logging.getLogger('wallet')
 
 
-def previous_provider_cutover_blockers(user):
-    """Prevent 9PSB-era accounts/liabilities from being used as Wema funds.
+#: How long the retired provider's table list is trusted. The list is cached
+#: because introspection is not free and the schema almost never moves; the
+#: cost of that cache is that it can outlive a schema change, which is why
+#: a query failure against a cached list is re-checked rather than believed.
+SOURCE_TABLE_TTL = 300
 
-    The former provider's tables remain read-only in the production database
-    although its Django app has been retired. Bank records cannot be relabelled
-    or treated as Wema balances merely because an account was reissued.
+
+def _source_table_names(key):
+    """Introspect the retired provider's tables and remember them."""
+    names = list(connection.introspection.table_names())
+    cache.set(key, names, timeout=SOURCE_TABLE_TTL)
+    return names
+
+
+def _previous_provider_evidence(wallet_id, names):
+    """Read the retired provider's tables for one wallet.
+
+    Reads behind a savepoint on purpose. A stale table list makes the first
+    statement fail, and the caller must still be able to query afterwards:
+    inside a transaction (an ATOMIC_REQUESTS view, a wallet debit) a failed
+    statement otherwise leaves the whole transaction unusable, so recovering
+    from a stale list would be impossible -- and the caller's own later writes
+    would fail too. In autocommit there is nothing to protect and Django makes
+    all three calls no-ops, which is why they are used rather than atomic().
     """
-    wallet_id = Wallet.objects.filter(user_id=user.pk).values_list('id', flat=True).first()
-    if not wallet_id:
-        return []
-    key = f'wema-restore:source-tables:{connection.alias}'
-    names = cache.get(key)
+    blockers = []
+    sid = connection.savepoint()
     try:
-        if names is None:
-            names = list(connection.introspection.table_names())
-            cache.set(key, names, timeout=300)
-        blockers = []
         with connection.cursor() as cursor:
             if 'banking_bankaccount' in names:
                 cursor.execute('SELECT EXISTS(SELECT 1 FROM banking_bankaccount WHERE wallet_id = %s)', [wallet_id])
@@ -38,7 +49,46 @@ def previous_provider_cutover_blockers(user):
                       OR pending_transactions > 0))''', [wallet_id])
                 if cursor.fetchone()[0]:
                     blockers.append('archived_wema_balance_review')
-        return blockers
+    except Exception:
+        connection.savepoint_rollback(sid)
+        raise
+    connection.savepoint_commit(sid)
+    return blockers
+
+
+def previous_provider_cutover_blockers(user):
+    """Prevent 9PSB-era accounts/liabilities from being used as Wema funds.
+
+    The former provider's tables remain read-only in the production database
+    although its Django app has been retired. Bank records cannot be relabelled
+    or treated as Wema balances merely because an account was reissued.
+
+    Fails closed: if the evidence cannot be read, the caller is blocked. But
+    "the cached table list names a table that is no longer there" is not that
+    case, and must not be reported as it. The retired-schema cleanup drops
+    those tables, so believing a stale list would block every customer's
+    funding for the whole TTL, for tables that are simply gone.
+    """
+    wallet_id = Wallet.objects.filter(user_id=user.pk).values_list('id', flat=True).first()
+    if not wallet_id:
+        return []
+    key = f'wema-restore:source-tables:{connection.alias}'
+    names = cache.get(key)
+    from_cache = names is not None
+    try:
+        return _previous_provider_evidence(
+            wallet_id, names if from_cache else _source_table_names(key))
+    except DatabaseError:
+        if not from_cache:
+            # Freshly introspected and still unreadable: genuinely unavailable.
+            log.exception('wema_cutover_previous_provider_evidence_unavailable')
+            return ['previous_provider_state_unavailable']
+    # Decide on what the database actually has now, not on what it had up to
+    # five minutes ago. Only a failure against tables it really carries is
+    # "unavailable" -- and that still fails closed, below.
+    cache.delete(key)
+    try:
+        return _previous_provider_evidence(wallet_id, _source_table_names(key))
     except DatabaseError:
         log.exception('wema_cutover_previous_provider_evidence_unavailable')
         return ['previous_provider_state_unavailable']
