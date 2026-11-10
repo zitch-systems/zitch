@@ -91,6 +91,23 @@ def _binding(pa):
     return salted_hmac(SALT + ".binding", value, algorithm="sha256").hexdigest()
 
 
+def _verification_allowed(user, tier):
+    """Keep KYC identity proof independent of unresolved banking balances.
+
+    Tier 2 uses the Prembly session and a PIN-bound WhatsApp capability, not a
+    Wema payout or account instruction. An archived account under review must
+    not strand a BVN-verified customer unable to finish liveness. This only
+    opens the verification page; it NEVER lifts the separate bank funding and
+    spend holds. Tier 3 still follows the bank's eligibility/upgrade policy.
+    Global Partnership lifecycle shutdown still revokes unsubmitted links.
+    """
+    if not partnership_new_business_allowed():
+        return False
+    if tier == 2:
+        return bool(user.is_active and user.tier1_identity_verified)
+    return partnership_new_business_allowed(user)
+
+
 def start_verification(user, msisdn, tier):
     """Create one 15-minute, PIN-gated capability for an already linked phone."""
     origin = _public_origin()
@@ -107,7 +124,7 @@ def start_verification(user, msisdn, tier):
             user_id=user.pk, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE).first()
         if current is None or link is None:
             raise ValueError("An active WhatsApp link is required")
-        if not partnership_new_business_allowed(current):
+        if not _verification_allowed(current, tier):
             raise ValueError("This verification is unavailable for your account")
         PendingAction.objects.filter(
             user=current, msisdn=msisdn, action_type=ACTION_TYPE,
@@ -169,7 +186,7 @@ def _resolve(claims, *, lock=False, status_only=False):
     # individual migration. Retained credentials must not keep the old address
     # form open. Submitted operations resolve outside this capability reader;
     # their processing/review/completion records remain untouched.
-    if not partnership_new_business_allowed(user):
+    if not _verification_allowed(user, pa.payload.get("tier")):
         return None, None
     return pa, user
 
