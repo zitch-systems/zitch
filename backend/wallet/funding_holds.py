@@ -16,16 +16,24 @@ class DestinationDigest(SHA256):
 
 def reconciliation_scope():
     """An archived liability still requires independently verified settlement."""
-    count = UnsettledFunding.objects.count()
+    count = outstanding_funding().count()
     return {"legacy_funding_accounts": count, "legacy_funding_required": bool(count),
             "legacy_funding_balance": None, "legacy_funding_verified": False if count else None}
 
 
+def outstanding_funding():
+    """Written-off liabilities retain their source evidence and destination ban."""
+    return UnsettledFunding.objects.filter(resolution__isnull=True)
+
+
 def funding_inventory():
-    holds = UnsettledFunding.objects.all()
+    holds = outstanding_funding()
+    resolved = UnsettledFunding.objects.filter(resolution__isnull=False)
     return {"outstanding_holds": holds.count(),
             "unarchived_holds": holds.filter(archive__isnull=True).count(),
-            "outstanding_amount": str(holds.aggregate(value=Sum("amount"))["value"] or 0)}
+            "outstanding_amount": str(holds.aggregate(value=Sum("amount"))["value"] or 0),
+            "operator_write_offs": resolved.count(),
+            "operator_written_off_amount": str(resolved.aggregate(value=Sum("amount"))["value"] or 0)}
 
 
 def transaction_has_funding_hold(txn):

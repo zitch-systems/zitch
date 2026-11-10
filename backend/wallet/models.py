@@ -119,6 +119,27 @@ class RetiredFundingArchive(models.Model):
         raise ValueError("Retired funding archive is immutable")
 
 
+class FundingHoldResolution(models.Model):
+    """One audited operator write-off, never evidence of a bank payment."""
+    funding = models.OneToOneField(UnsettledFunding, on_delete=models.PROTECT,
+                                   related_name="resolution")
+    kind = models.CharField(max_length=32, default="operator_write_off")
+    operator_reference = models.CharField(max_length=160)
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(
+            condition=models.Q(kind="operator_write_off"), name="funding_resolution_writeoff_only")]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValueError("Funding resolution is immutable")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("Funding resolution is immutable")
+
+
 class BankHistoryCheckpoint(models.Model):
     """Successful statement coverage for one attached partner-bank account.
 

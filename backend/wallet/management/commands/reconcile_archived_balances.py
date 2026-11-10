@@ -63,6 +63,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import DatabaseError, connection
 from django.db.models import Sum
 from wallet.services import wallet_expected_balance
+from wallet.funding_holds import outstanding_funding
 
 ARCHIVE_TABLE = "banking_previousbankarchive"
 
@@ -90,7 +91,7 @@ class Command(BaseCommand):
                             help="Machine-readable output (ids, states and amounts only).")
 
     def handle(self, *args, **options):
-        from wallet.models import Transaction, UnsettledFunding, Wallet
+        from wallet.models import Transaction, Wallet
 
         if ARCHIVE_TABLE not in set(connection.introspection.table_names()):
             self.stdout.write(self.style.WARNING(
@@ -126,18 +127,18 @@ class Command(BaseCommand):
             expected_ledger = None
             if wallet is not None:
                 expected_ledger = wallet_expected_balance(wallet.user_id)
-                agg = UnsettledFunding.objects.filter(user_id=wallet.user_id).aggregate(
+                agg = outstanding_funding().filter(user_id=wallet.user_id).aggregate(
                     total=Sum("amount"))
                 holds = {
-                    "count": UnsettledFunding.objects.filter(
+                    "count": outstanding_funding().filter(
                         user_id=wallet.user_id).count(),
                     "amount": str(agg["total"] or Decimal("0.00")),
-                    "unsettled_count": UnsettledFunding.objects.filter(
+                    "unsettled_count": outstanding_funding().filter(
                         user_id=wallet.user_id, archive__isnull=True).count(),
                 }
                 if archived_number and isinstance(archived_number, str):
                     digest = hashlib.sha256(archived_number.strip().encode()).hexdigest()
-                    linked_hold_amount = UnsettledFunding.objects.filter(
+                    linked_hold_amount = outstanding_funding().filter(
                         user_id=wallet.user_id, destination_digest=digest
                     ).values_list("amount", flat=True).first()
                 if archived is not None and archived != Decimal("0"):
