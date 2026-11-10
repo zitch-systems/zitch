@@ -24,6 +24,14 @@ python manage.py partnership_diagnostics
 # never changes balances, checkpoints, KYC state or payment outcomes. Clear the
 # selector after collecting evidence so routine deploys do not repeat bank reads.
 if [ -n "${ZITCH_RECONCILIATION_EVIDENCE_USERS:-}" ]; then
+  # Empty archive rows and overlapping wallet liabilities require separate
+  # local evidence. Both commands are read-only and omit account/contact data.
+  echo "==> Funding account recovery worksheet (read-only)"
+  python manage.py partnership_recovery_worksheet --json --limit 200 \
+    || echo "==> Funding account recovery worksheet unavailable; review remains open."
+  echo "==> Archived balance attribution (read-only)"
+  python manage.py reconcile_archived_balances --json \
+    || echo "==> Archived balance attribution unavailable; review remains open."
   python manage.py reconciliation_evidence \
     --user-ids "$ZITCH_RECONCILIATION_EVIDENCE_USERS" --days 90 --max-rows 50 \
     || echo "==> Reconciliation evidence unavailable; launch review remains open."
