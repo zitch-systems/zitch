@@ -107,9 +107,12 @@ def _archived_wallet_ids(wallet_ids):
 
 #: Said once, wherever an archived account is the answer.
 RESTORE_ACTION = (
-    "This customer HAD an account; the migration archived it. Restore it with "
-    "`restore_archived_bank_accounts --apply`. No bank confirmation is needed: "
-    "the archive row is our own record of which account was theirs.")
+    "This customer HAD an account; the migration archived it, so this is a "
+    "restore and not a failed setup. The archive row identifies WHICH account "
+    "was theirs, but it does not show the number is still active at the bank "
+    "or that funds were settled, so a write is scoped and bank-confirmed: "
+    "`restore_archived_bank_accounts --apply --user-id <id> "
+    "--bank-confirmation-ref <wema case ref>`. Run it without --apply first.")
 
 HELD_ACTION = (
     "Their archived account is on file but HELD: the row still carries "
@@ -247,8 +250,9 @@ class Command(BaseCommand):
 
         if restorable:
             self.stdout.write(self.style.SUCCESS(
-                f"{restorable} customer(s) can have their archived account restored "
-                "now: run restore_archived_bank_accounts --apply."))
+                f"{restorable} customer(s) have an archived account and nothing held "
+                "against it. Restoring is per-customer and bank-confirmed: see "
+                "restore_archived_bank_accounts --help."))
         if held:
             self.stdout.write(self.style.WARNING(
                 f"{held} customer(s) have an archived account that is HELD on "

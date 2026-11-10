@@ -106,7 +106,10 @@ class PartnershipRecoveryWorksheetTests(TestCase):
         out = self._run()
         self.assertIn("former_provider_evidence=yes", out)
         self.assertIn("restore_archived_bank_accounts --apply", out)
-        self.assertIn("can have their archived account restored", out)
+        # A write is scoped and bank-confirmed since #604; the advice must
+        # not imply a bare --apply will do it.
+        self.assertIn("--bank-confirmation-ref", out)
+        self.assertIn("have an archived account and nothing held", out)
         # The bank is not the answer for this customer.
         self.assertNotIn("blocked on bank reconciliation", out)
         self.assertNotIn("Confirm the customer actually reached account setup", out)
@@ -119,7 +122,7 @@ class PartnershipRecoveryWorksheetTests(TestCase):
         self.assertIn("HELD", out)
         self.assertIn("previous_provider_cutover_blockers", out)
         self.assertIn("Reconcile", out)
-        self.assertNotIn("can have their archived account restored", out)
+        self.assertNotIn("nothing held against it", out)
 
     def test_it_reports_no_identifying_detail(self):
         """This output belongs in tickets and deploy logs, so it carries ids only."""
