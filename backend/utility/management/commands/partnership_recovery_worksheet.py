@@ -103,7 +103,7 @@ def _archived_wallet_ids(wallet_ids):
             # length() rather than octet_length(): both backends have it, and
             # COALESCE covers a NULL number, which is not the same as ''.
             cur.execute(
-                f'SELECT wallet_id, COALESCE(length(account_number), 0) > 0, '
+                f'SELECT wallet_id, length(trim(COALESCE(account_number, \'\'))) > 0, '
                 f'(review_required = TRUE OR balance <> 0 '
                 f'OR pending_transactions > 0) FROM "{ARCHIVE_TABLE}" '
                 f'WHERE wallet_id IN ({placeholders})', ids)
@@ -138,8 +138,9 @@ EMPTY_ROW_NOTE = (
     "NOTE: an archive row exists for this wallet but carries NO account number, "
     "so it is not evidence that the customer ever had a former-provider account "
     "and there is nothing to restore -- restore_archived_bank_accounts skips "
-    "such rows, and there is no account for the bank to open a case about. The "
-    "path here is ISSUANCE (repair_partner_bank_accounts), not restoration.")
+    "such rows. Reconcile any existing_customer or uncertain issuance with the "
+    "bank before authorizing account setup. repair_partner_bank_accounts only "
+    "checks callback state and raises alerts; it does NOT issue an account.")
 
 
 class Command(BaseCommand):
@@ -190,7 +191,7 @@ class Command(BaseCommand):
                     # A row with no number is not an archived account. It must
                     # never read as one, because the restore path cannot act on
                     # it and the bank has nothing to confirm.
-                    evidence, held = "row_no_number", False
+                    evidence = "row_no_number"
                 else:
                     evidence = "yes_held" if held else "yes"
             else:
@@ -199,6 +200,11 @@ class Command(BaseCommand):
             if pending_otp:
                 waiting_on = "an OTP setup that is still live"
                 action = "Let the active OTP attempt finish or expire before anything else."
+            elif evidence == "row_no_number" and held:
+                waiting_on = "archived financial review without an archived account number"
+                action = ("HELD: reconcile archived balances, pending transactions and "
+                          "review flags before authorizing account setup. A missing "
+                          "number does not remove the financial hold.")
             elif evidence in ("yes", "yes_held"):
                 # Checked before any session diagnosis, and only for a row that
                 # actually carries a number. Such a customer is not a failed
@@ -212,7 +218,8 @@ class Command(BaseCommand):
                 waiting_on = "nothing; issuance was never started"
                 action = ("Identity is verified but no issuance attempt exists. "
                           "Confirm the customer actually reached account setup, "
-                          "then issue one with repair_partner_bank_accounts.")
+                          "then use the authorized setup flow only after confirming "
+                          "there is no existing or uncertain bank account.")
             elif state == "awaiting_callback":
                 age = now - session.updated
                 waiting_on = f"the bank's account callback ({int(age.total_seconds() // 60)}m)"
@@ -290,10 +297,11 @@ class Command(BaseCommand):
         if no_number:
             self.stdout.write(self.style.WARNING(
                 f"{no_number} customer(s) have an archive row that carries NO account "
-                "number, no balance and no pending transactions. That is not an "
+                "number. That is not a restorable "
                 "archived account and there is nothing to restore: the row's existence "
                 "alone is not evidence the customer ever had a former-provider account. "
-                "They need an account ISSUED (repair_partner_bank_accounts). Where the "
+                "Any financial holds still require reconciliation. "
+                "repair_partner_bank_accounts does NOT issue accounts. Where the "
                 "bank refused issuance with existing_customer, that refusal is what to "
                 "reconcile — it is counted below, not here."))
         if held:

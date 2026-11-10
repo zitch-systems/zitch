@@ -166,6 +166,29 @@ class PartnershipRecoveryWorksheetTests(TestCase):
         out = self._run()
         self.assertIn("former_provider_evidence=row_no_number", out)
 
+    def test_whitespace_is_not_a_restorable_number(self):
+        self._create_archive(self.wallet.pk, number="   ", balance="0.00")
+        self.assertIn("former_provider_evidence=row_no_number", self._run())
+
+    def test_numberless_archive_still_reports_financial_holds(self):
+        self._create_archive(self.wallet.pk, number="", balance="500.00", review=True)
+        out = self._run()
+        self.assertIn("HELD: reconcile archived balances", out)
+        self.assertIn("missing number does not remove the financial hold", out)
+        self.assertNotIn("no balance and no pending transactions", out)
+        self.assertNotIn("issuance was never started", out)
+
+    def test_repair_command_is_never_presented_as_account_issuance(self):
+        self._create_archive(self.wallet.pk, number="", balance="0.00")
+        out = self._run()
+        self.assertIn("does NOT issue an account", out)
+        self.assertNotIn("then issue one with repair_partner_bank_accounts", out)
+
+    def test_no_attempt_needs_authorized_setup_instead_of_callback_repair(self):
+        out = self._run()
+        self.assertIn("authorized setup flow", out)
+        self.assertNotIn("then issue one with repair_partner_bank_accounts", out)
+
     def test_a_numbered_row_is_still_restorable(self):
         """The fix must not stop a real archived account reading as one."""
         self._create_archive(self.wallet.pk, balance="0.00", review=False)
