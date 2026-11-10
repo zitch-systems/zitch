@@ -10,6 +10,22 @@ python manage.py collectstatic --no-input
 # check to close the race between this preflight and schema application.
 python manage.py audit_card_uniqueness
 python manage.py migrate
+# Explicit operator write-off of one already isolated archived liability.
+# Original evidence is retained. Repeats are idempotent; clear after use.
+case "${ZITCH_RETIRED_FUNDING_WRITE_OFF_MODE:-off}" in
+  off|"") ;;
+  preview|apply)
+    WRITE_OFF_FLAGS=()
+    if [ "$ZITCH_RETIRED_FUNDING_WRITE_OFF_MODE" = "apply" ]; then
+      WRITE_OFF_FLAGS=(--apply)
+    fi
+    python manage.py write_off_retired_funding "${WRITE_OFF_FLAGS[@]}" \
+      --user-id "${ZITCH_RETIRED_FUNDING_WRITE_OFF_USER:?}" \
+      --expected-amount "${ZITCH_RETIRED_FUNDING_WRITE_OFF_AMOUNT:?}" \
+      --operator-reference "${ZITCH_RETIRED_FUNDING_WRITE_OFF_REFERENCE:?}"
+    ;;
+  *) echo "==> Invalid retired funding write-off mode" >&2; exit 1 ;;
+esac
 # Explicit, one-shot Flow administration for plans without a shell. Draft
 # preparation and publication are separate operations; neither selects the
 # customer Flow ID. Missing/incorrect review inputs stop the candidate build.

@@ -16,6 +16,15 @@ bank balance. Settlement reports include it once as a separate liability. The
 old destination remains blocked, while it no longer contaminates the customer's
 new Partnership wallet balance. Bank settlement still needs independent evidence.
 
+An explicitly authorized cancellation of an isolated archived liability uses
+`write_off_retired_funding --user-id <id> --expected-amount <amount>
+--operator-reference <review-reference>`. The default is a read-only preview;
+`--apply` records one immutable operator write-off and an audit entry. This removes
+the specified amount from outstanding-liability reports, with no bank payment,
+wallet debit or deletion of original evidence. It refuses active accounts, mixed
+funds, pending payments, missing archive provenance and changed amounts. Repeated
+applications have no additional effect. Other customers' liabilities remain owed.
+
 Reconciliation isolates errors for individual histories, debit-restriction
 retries, address checks, bill lookups and payout lookups. Other accounts and later
 phases continue. The final report still records incomplete work and fails the

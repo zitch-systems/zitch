@@ -106,7 +106,7 @@ class Command(BaseCommand):
             direction=Transaction.OUT, currency="NGN",
             transaction_status__in=(Transaction.PENDING, Transaction.SUCCESS)))
         stored = (Wallet.objects.aggregate(s=Sum("balance"))["s"] or Decimal("0"))
-        archived = RetiredFundingArchive.objects.aggregate(
+        archived = RetiredFundingArchive.objects.filter(funding__resolution__isnull=True).aggregate(
             s=Sum("funding__amount"))["s"] or Decimal("0")
         return {"ledger_liability": credits - debits + archived,
                 "stored_liability": stored + archived,

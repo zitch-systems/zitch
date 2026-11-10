@@ -1,6 +1,7 @@
 """Read-only deployment evidence for the sole active banking integration."""
 import json
 import re
+from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -31,6 +32,14 @@ class Command(BaseCommand):
             "identity_provider": providers.kyc_provider(),
             "partnership_active": providers.partnership_new_business_allowed(),
             "bank_configured": wema.wema_live(),
+            "wema_connection": {
+                "channel_id_configured": bool(bank.get("CHANNEL_ID")),
+                "wallet_key_configured": bool((bank.get("KEYS") or {}).get("wallet")),
+                "pool_account_configured": bool(bank.get("SOURCE_ACCOUNT")),
+                "base_host": urlsplit(str(bank.get("BASE_URL") or "")).hostname,
+                "product_keys_configured": {name: bool(value)
+                                            for name, value in (bank.get("KEYS") or {}).items()},
+            },
             "simulation": bool(bank.get("SIMULATION")),
             "bank_biller_enabled": providers.biller_enabled(),
             "tier2_session_adapter_available": tier2_face_available(),
