@@ -9,6 +9,7 @@ that make the output usable: it changes nothing, and it carries no identifying
 detail, because it runs against production while customers are waiting.
 """
 from decimal import Decimal
+import hashlib
 from io import StringIO
 
 from django.contrib.auth import get_user_model
@@ -72,10 +73,10 @@ class ReconcileArchivedBalancesTests(TestCase):
                  OLD_ACCOUNT, HOLDER, "Wema Bank", f"REF-{self._rows}", balance,
                  "{}", pending, review, timezone.now()])
 
-    def _hold(self, amount="500.00", *, settled=False):
+    def _hold(self, amount="500.00", *, settled=False, destination=OLD_ACCOUNT):
         hold = UnsettledFunding.objects.create(
             user=self.user, amount=Decimal(amount),
-            destination_digest=f"d{self._rows}" + "0" * 50,
+            destination_digest=hashlib.sha256(destination.encode()).hexdigest(),
             operator_reference="migration-audit")
         if settled:
             from wallet.models import RetiredFundingArchive
@@ -118,6 +119,47 @@ class ReconcileArchivedBalancesTests(TestCase):
         self._hold("500.00", settled=True)
         out = self._run()
         self.assertIn("state=liability_on_book", out)
+
+    def test_unrelated_account_hold_never_suppresses_off_book_exposure(self):
+        """Same customer is insufficient: the hold can be for another rail."""
+        self._archive(balance="2826.00", review=True)
+        self._hold("2826.00", destination="0666666666")
+        import json
+        result = json.loads(self._run(as_json=True))
+        self.assertEqual(result["hold_unattributed_rows"], 1)
+        self.assertEqual(result["hold_unattributed_amount"], "2826.00")
+        self.assertEqual(result["liability_on_book_rows"], 0)
+        self.assertEqual(result["customers"][0]["state"], "hold_unattributed")
+        self.assertEqual(result["customers"][0]["attribution"], "unverified_customer_hold")
+
+    def test_same_account_different_amount_is_not_fully_accounted_for(self):
+        """A ₦10 hold cannot establish a ₦2,826 liability."""
+        self._archive(balance="2826.00")
+        self._hold("10.00")
+        import json
+        result = json.loads(self._run(as_json=True))
+        self.assertEqual(result["hold_unattributed_rows"], 1)
+        self.assertEqual(result["liability_on_book_rows"], 0)
+        self.assertEqual(result["customers"][0]["linked_hold_amount"], "10.00")
+
+    def test_pending_legacy_transactions_require_separate_proof(self):
+        self._archive(balance="500.00", pending=1)
+        self._hold("500.00")
+        import json
+        result = json.loads(self._run(as_json=True))
+        self.assertEqual(result["hold_unattributed_rows"], 1)
+        self.assertEqual(result["liability_on_book_rows"], 0)
+
+    def test_exact_account_and_amount_matches_are_attributed_internally(self):
+        self._archive(balance="500.00")
+        self._hold("500.00")
+        import json
+        result = json.loads(self._run(as_json=True))
+        self.assertEqual(result["liability_on_book_rows"], 1)
+        self.assertEqual(result["hold_unattributed_rows"], 0)
+        self.assertEqual(result["customers"][0]["attribution"],
+                         "matching_destination_and_amount")
+        self.assertNotIn(OLD_ACCOUNT, self._run(as_json=True))
 
     def test_a_flag_with_no_money_is_not_a_liability(self):
         self._archive(balance="0.00", review=True)
