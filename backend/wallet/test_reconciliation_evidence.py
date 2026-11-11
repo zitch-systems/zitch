@@ -212,3 +212,22 @@ class ReconciliationEvidenceTests(TestCase):
             report = pool_evidence()
         self.assertEqual(report["status"], "invalid_source_format")
         balance.assert_not_called()
+
+    @override_settings(WEMA={"SOURCE_ACCOUNT": "0450000123"})
+    def test_pool_probe_distinguishes_wallet_details_and_statement_profiles(self):
+        from wallet.management.commands.reconciliation_evidence import pool_evidence
+
+        with patch("utility.wema.wema_live", return_value=True), \
+                patch("utility.wema.get_balance", return_value={"success": False,
+                      "raw": {"message": "Account PRIVATE 0450000123 is not linked to channel"},
+                      "diagnostic": {"http_status": 400,
+                                     "gateway_request_id": "e78a9282-516a-43f1-ab9d-1889ae38fd98"}}), \
+                patch("utility.wema.get_transactions", return_value={
+                    "success": True, "complete": True, "diagnostic": {"http_status": 200}}) as history:
+            report = pool_evidence()
+        self.assertEqual(report["failure_hint"], "account_not_linked_to_channel")
+        self.assertEqual(report["gateway_request_id"], "e78a9282-516a-43f1-ab9d-1889ae38fd98")
+        self.assertTrue(report["transaction_history_check"]["history_readable"])
+        yesterday = (timezone.localdate() - timedelta(days=1)).isoformat()
+        history.assert_called_once_with("0450000123", yesterday, timezone.localdate().isoformat())
+        self.assertNotIn("0450000123", json.dumps(report))

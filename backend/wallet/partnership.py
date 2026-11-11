@@ -5,6 +5,7 @@ import hashlib
 from wallet.models import Wallet, UnsettledFunding
 from django.core.cache import cache
 from django.db import connection, DatabaseError
+from django.db.models import Q
 import logging
 
 log = logging.getLogger('wallet')
@@ -101,17 +102,20 @@ REVIEW_MESSAGE = (
 )
 
 
-def _retired_bank_label(name):
-    """Do not mistake an orphaned old-provider NUBAN for a Wema NUBAN.
+_RETIRED_BANK_LABEL = (r"^\s*(9[ -]*psb|9[ -]*payment[ -]*service[ -]*bank"
+                      r"([ -]*(ltd|limited|plc))?|(wema([ -]*bank)?|alat)[ -]+"
+                      r"(vas|virtual[ -]*accounts?))\s*$")
+_RETIRED_ACCOUNT_REFERENCE = r"^\s*(9psb|wema[-_ ]vas)([-_ ]|$)"
 
-    Provider-linked tables normally block it, but a partial archive restore or
-    later schema cleanup could leave only Wallet.bank_name behind. That label
-    is still enough to fail closed; customer funding must be bank-confirmed.
-    """
-    if not isinstance(name, str):
-        return False
-    key = re.sub(r"[^a-z0-9]", "", name.casefold())
-    return key in {"9psb", "9paymentservicebank", "9paymentservicebankltd"}
+
+def retired_wallet_marker(bank_name, account_reference):
+    """A retained legacy label or reference is sufficient to block reuse."""
+    return bool(re.search(_RETIRED_BANK_LABEL, bank_name or "", re.I)
+                or re.search(_RETIRED_ACCOUNT_REFERENCE, account_reference or "", re.I))
+
+
+def retired_wallet_markers():
+    return Q(bank_name__iregex=_RETIRED_BANK_LABEL) | Q(account_reference__iregex=_RETIRED_ACCOUNT_REFERENCE)
 
 
 def legacy_funding_blockers(user):
@@ -119,8 +123,8 @@ def legacy_funding_blockers(user):
     if UnsettledFunding.objects.filter(user_id=user.pk, archive__isnull=True).exists():
         return ["legacy_balance"]
     bank = Wallet.objects.filter(user_id=user.pk).values_list(
-        "bank_name", "account_number").first()
-    if bank and bank[1] and _retired_bank_label(bank[0]):
+        "bank_name", "account_number", "account_reference").first()
+    if bank and bank[1] and retired_wallet_marker(bank[0], bank[2]):
         return ["retired_provider_wallet_review"]
     return previous_provider_cutover_blockers(user)
 
