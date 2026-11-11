@@ -122,6 +122,13 @@ def pool_evidence():
         with override_settings(WEMA={**bank, "KEYS": {**keys, "acct_mgt": ""}}):
             report["wallet_services_key_comparison"] = _pool_lookup_result(wema.get_balance(account))
     if result["failure_hint"] == "account_not_linked_to_channel":
+        pool = wema.check_pool_account_balance(account)
+        report["dedicated_pool_balance_check"] = {
+            **_pool_lookup_result(pool),
+            "account_number_returned": bool(pool.get("account_number_returned")),
+            "account_matches": bool(pool.get("account_matches")),
+            "available_balance_returned": bool(pool.get("available_balance_returned")),
+        }
         # GetAccountV2 is a wallet-details read. A source account can have a
         # separate history profile. Compare the two routes without moving money.
         today = timezone.localdate()

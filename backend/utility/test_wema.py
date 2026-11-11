@@ -198,6 +198,34 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(r["balance_naira"], Decimal("8420.10"))
         self.assertEqual(mock_get.call_args[1]["headers"]["x-api-key"], "chan-1")  # acct-mgt uses x-api-key
 
+    @override_settings(WEMA=WEMA_VAS)
+    @patch("utility.wema.requests.get")
+    def test_dedicated_pool_balance_uses_bills_credentials_and_matches_the_source(self, mock_get):
+        mock_get.side_effect = [
+            _resp({"successful": False, "message": "Account is not linked"}, status=400),
+            _resp({"successful": True, "result": {
+                "poolAccountNumber": "0100000001", "availableBalance": "420.10"}}),
+        ]
+        result = wema.get_source_account_balance("0100000001")
+        self.assertEqual(result["balance_naira"], Decimal("420.10"))
+        url = mock_get.call_args.args[0]
+        self.assertTrue(url.endswith("/bills-payment/api/PartnerPayment/CheckPoolAccountBalance"))
+        self.assertEqual(mock_get.call_args.kwargs["params"], {})
+        self.assertEqual(mock_get.call_args.kwargs["headers"]["access"], "chan-1")
+        self.assertEqual(mock_get.call_args.kwargs["headers"]["Ocp-Apim-Subscription-Key"], "billkey")
+
+    @override_settings(WEMA=WEMA_VAS)
+    @patch("utility.wema.requests.get")
+    def test_dedicated_pool_does_not_count_unattributed_or_different_balance(self, mock_get):
+        for account in (None, "0100000002"):
+            with self.subTest(account=account):
+                mock_get.return_value = _resp({"successful": True, "result": {
+                    "poolAccountNumber": account, "availableBalance": "420.10"}})
+                result = wema.check_pool_account_balance("0100000001")
+                self.assertFalse(result["success"])
+                self.assertIsNone(result["balance_naira"])
+                self.assertFalse(result["account_matches"])
+
     @patch("utility.wema.requests.get")
     def test_balance_rejects_malformed_or_missing_balance_without_raising(self, mock_get):
         for body in ([], None, "upstream error", {"successful": True, "result": []},
