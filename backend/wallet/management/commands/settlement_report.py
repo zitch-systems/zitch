@@ -139,7 +139,7 @@ class Command(BaseCommand):
         if pool_account and not partnership_account_number(pool_account):
             pool_failure = "invalid_partnership_source"
         elif pool_account:
-            res = wema.get_balance(pool_account)
+            res = wema.get_source_account_balance(pool_account)
             pool = res.get("balance_naira") if res.get("success") else None
             if pool is None:
                 diagnostic = res.get("diagnostic") or {}

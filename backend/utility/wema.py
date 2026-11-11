@@ -1391,6 +1391,47 @@ def get_balance(account_number: str) -> dict:
         return _unreachable(exc)
 
 
+def check_pool_account_balance(account_number: str) -> dict:
+    """Read the channel's bill-payment pool and require an exact account match."""
+    configured = str(settings.WEMA.get("SOURCE_ACCOUNT") or "").strip()
+    if (not re.fullmatch(r"[0-9]{10}", configured) or account_number != configured
+            or not _product_live("bills")):
+        return {"success": False, "balance_naira": None, "message": "Pool balance is not configured"}
+    try:
+        # Wema's Bills Payment spec accepts no account parameter. Because no
+        # account goes in the request, an unlabelled amount is not proof of funds
+        # in the specific settlement account configured by the operator.
+        resp = _get("bills", "/api/PartnerPayment/CheckPoolAccountBalance")
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        envelope = data if isinstance(data, dict) else {}
+        details = envelope.get("result", envelope.get("data", envelope))
+        details = details if isinstance(details, dict) else {}
+        reported = [str(details[field]).strip() for field in ("poolAccountNumber", "accountNumber", "walletNumber")
+                    if details.get(field) is not None]
+        matches = bool(reported and all(number == configured for number in reported))
+        balance = _naira(details.get("availableBalance"))
+        ok = bool(200 <= resp.status_code < 300 and _ok(envelope) and matches and balance is not None)
+        return {"success": ok, "balance_naira": balance if ok else None,
+                "account_number_returned": bool(reported), "account_matches": matches,
+                "available_balance_returned": balance is not None,
+                "message": _msg(envelope), "diagnostic": _response_meta(resp, data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def get_source_account_balance(account_number: str) -> dict:
+    """Keep the existing balance read, falling back to the matched pool only."""
+    result = get_balance(account_number)
+    if not result.get("success") and (result.get("diagnostic") or {}).get("http_status") == 400:
+        pool = check_pool_account_balance(account_number)
+        if pool.get("success"):
+            return pool
+    return result
+
+
 def _history_is_incomplete(containers: list[dict], row_count: int) -> bool:
     """Reject pagination/truncation that the duration-only contract cannot drain.
 
