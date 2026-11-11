@@ -525,13 +525,20 @@ def _post(product: str, path: str, body: dict, params: dict | None = None) -> re
 
 def _response_meta(resp: requests.Response, data) -> dict:
     """Small, secret-free diagnostics for gateway envelopes."""
-    return {
+    details = {
         "http_status": resp.status_code,
         "gateway_successful": data.get("successful") if isinstance(data, dict) else None,
         "gateway_status_code": data.get("statusCode") if isinstance(data, dict) else None,
         "gateway_code": data.get("code") if isinstance(data, dict) else None,
         "message": _msg(data),
     }
+    headers = getattr(resp, "headers", {}) or {}
+    for name in ("apim-request-id", "x-ms-request-id"):
+        value = headers.get(name)
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value, re.I):
+            details["gateway_request_id"] = value
+            break
+    return details
 
 
 def _is_empty_history_response(resp: requests.Response, data: dict) -> bool:

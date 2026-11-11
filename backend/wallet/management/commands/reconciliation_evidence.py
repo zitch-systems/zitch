@@ -47,9 +47,10 @@ def _http_status(result):
     return value if type(value) is int and 100 <= value <= 599 else None
 
 
-def _pool_lookup_result(result):
+def _pool_lookup_result(result, *, history=False):
     status = _http_status(result)
-    readable = bool(result.get("success") and not result.get("mock") and result.get("balance_naira") is not None)
+    accepted = result.get("complete") is True if history else result.get("balance_naira") is not None
+    readable = bool(result.get("success") and not result.get("mock") and accepted)
     raw = result.get("raw")
     message = str(result.get("message") or "").casefold()
     if isinstance(raw, dict):
@@ -76,8 +77,13 @@ def _pool_lookup_result(result):
             hint = "invalid_account"
         else:
             hint = "bank_rejected" if status is not None and status >= 400 else "unreadable"
-    return {"status": "readable" if readable else "unreadable",
-            "balance_readable": readable, "http_status": status, "failure_hint": hint}
+    summary = {"status": "readable" if readable else "unreadable",
+               "history_readable" if history else "balance_readable": readable,
+               "http_status": status, "failure_hint": hint}
+    trace = (result.get("diagnostic") or {}).get("gateway_request_id")
+    if isinstance(trace, str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", trace, re.I):
+        summary["gateway_request_id"] = trace
+    return summary
 
 
 def pool_evidence():
@@ -103,6 +109,9 @@ def pool_evidence():
     result = _pool_lookup_result(wema.get_balance(account))
     report.update(result, account_management_host=base.hostname,
                   account_management_base_override=bool(product_base),
+                  account_management_base_matches_default=(base.geturl().rstrip("/")
+                      == str(bank.get("BASE_URL") or "").rstrip("/")),
+                  account_management_base_has_path=bool(base.path.strip("/")),
                   base_includes_product_path=base.path.rstrip("/").casefold().endswith("/ws-acct-mgt"),
                   account_management_key_source="account_management" if account_key else "wallet_services",
                   account_management_key_matches_wallet=bool(account_key and account_key == wallet_key))
@@ -112,6 +121,13 @@ def pool_evidence():
         # the key only inside this read-only command; keep the host and account fixed.
         with override_settings(WEMA={**bank, "KEYS": {**keys, "acct_mgt": ""}}):
             report["wallet_services_key_comparison"] = _pool_lookup_result(wema.get_balance(account))
+    if result["failure_hint"] == "account_not_linked_to_channel":
+        # GetAccountV2 is a wallet-details read. A source account can have a
+        # separate history profile. Compare the two routes without moving money.
+        today = timezone.localdate()
+        yesterday = (today - timedelta(days=1)).isoformat()
+        report["transaction_history_check"] = _pool_lookup_result(
+            wema.get_transactions(account, yesterday, today.isoformat()), history=True)
     return report
 
 

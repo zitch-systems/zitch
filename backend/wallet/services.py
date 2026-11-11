@@ -1239,6 +1239,7 @@ def wema_provisioned_wallets():
     """
     from wallet.funding_holds import DestinationDigest
     from wallet.models import UnsettledFunding
+    from wallet.partnership import retired_wallet_markers
 
     return (Wallet.objects
             .filter(Q(account_reference__startswith=WEMA_ACCOUNT_REF_PREFIX)
@@ -1247,6 +1248,7 @@ def wema_provisioned_wallets():
                     | Q(account_number__regex=r"^045[0-9]{7}$"))
             .exclude(account_number="")
             .exclude(account_number__startswith="711")
+            .exclude(retired_wallet_markers())
             .alias(destination_digest=DestinationDigest("account_number"))
             .exclude(destination_digest__in=UnsettledFunding.objects.values("destination_digest"))
             .exclude(bank_name__icontains=DEMO_ACCOUNT_MARKER))
@@ -2328,8 +2330,9 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
     from utility import wema
 
     # Retired account receipts cannot enter through the Partnership statement rail.
-    from wallet.partnership import retired_funding_destination
-    if retired_funding_destination(wallet.account_number):
+    from wallet.partnership import retired_funding_destination, retired_wallet_marker
+    if (retired_funding_destination(wallet.account_number)
+            or retired_wallet_marker(wallet.bank_name, wallet.account_reference)):
         return None
     norm = wema.normalize_transaction(tx)
     if not norm["is_credit"] or not norm["reference"]:

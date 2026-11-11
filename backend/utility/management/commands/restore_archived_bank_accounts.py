@@ -28,7 +28,7 @@ ARCHIVE_TABLE = "banking_previousbankarchive"
 
 SQL = f'''
     SELECT a.wallet_id, a.account_number, a.account_name, a.bank_name,
-           a.balance, a.pending_transactions, a.review_required
+           a.balance, a.pending_transactions, a.review_required, a.account_reference
       FROM "{ARCHIVE_TABLE}" a
      WHERE a.account_number IS NOT NULL AND a.account_number <> ''
      ORDER BY a.wallet_id
@@ -87,7 +87,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from wallet.models import Wallet
-        from wallet.partnership import partnership_account_number, previous_provider_cutover_blockers
+        from wallet.partnership import (partnership_account_number, previous_provider_cutover_blockers,
+                                        retired_wallet_marker)
         from whatsapp.models import AuditLog
 
         apply_changes = options["apply"]
@@ -137,7 +138,7 @@ class Command(BaseCommand):
         restored, already, flagged, invalid, taken, missing = [], [], [], [], [], []
         held_by_reason, held_total = {}, Decimal("0")
 
-        for (wallet_id, number, name, bank, balance, pending, review) in rows:
+        for (wallet_id, number, name, bank, balance, pending, review, account_reference) in rows:
             number = (number or "").strip()
             wallet = Wallet.objects.filter(pk=wallet_id).first()
             if wallet is None:
@@ -148,7 +149,7 @@ class Command(BaseCommand):
                 # new one was issued. Never overwrite either.
                 already.append(wallet_id)
                 continue
-            if (not partnership_account_number(number) or
+            if (not partnership_account_number(number) or retired_wallet_marker(bank, account_reference) or
                     (bank or "").strip().casefold() not in
                     {"wema", "wema bank", "alat by wema"}):
                 invalid.append(wallet_id)

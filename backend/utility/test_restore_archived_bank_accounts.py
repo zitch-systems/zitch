@@ -61,7 +61,7 @@ class RestoreArchivedBankAccountsTests(TestCase):
             cur.execute("DROP TABLE IF EXISTS banking_previousbankarchive")
 
     def _archive(self, wallet_id, *, number=THEIR_ACCOUNT, name=HOLDER,
-                 balance="0.00", pending=0, review=False):
+                 balance="0.00", pending=0, review=False, reference=None):
         self._rows += 1
         with connection.cursor() as cur:
             cur.execute(
@@ -70,7 +70,7 @@ class RestoreArchivedBankAccountsTests(TestCase):
                 "balance, account_metadata, pending_transactions, "
                 "review_required, created) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [self._rows, wallet_id, number, name, "Wema Bank",
-                 f"REF-{wallet_id}", balance, "{}", pending, review, timezone.now()])
+                 reference or f"REF-{wallet_id}", balance, "{}", pending, review, timezone.now()])
 
     def _other_wallet(self, suffix="2"):
         user = User.objects.create(
@@ -107,6 +107,13 @@ class RestoreArchivedBankAccountsTests(TestCase):
         self.assertFalse(AuditLog.objects.exists())
         self.assertIn("Would restore 1", out)
         self.assertIn("nothing was written", out)
+
+    def test_old_provider_reference_cannot_be_restored_under_wema_label(self):
+        self._archive(self.wallet.pk, reference=f"9PSB-{self.user.pk}")
+        self._run(apply=True)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.account_number, "")
+        self.assertFalse(AuditLog.objects.exists())
 
     def test_it_never_overwrites_an_account_the_wallet_already_has(self):
         """A newly issued account must survive this command untouched."""
