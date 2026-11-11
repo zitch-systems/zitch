@@ -173,6 +173,37 @@ class ReconciliationEvidenceTests(TestCase):
         self.assertNotIn("PRIVATE", json.dumps(report))
         self.assertNotIn("0450000123", json.dumps(report))
 
+    @override_settings(WEMA={
+        "SOURCE_ACCOUNT": "0450000123",
+        "BASE_URL": "https://base.example.test",
+        "BASE_URLS": {"acct_mgt": "https://profile.example.test"},
+        "CHANNEL_ID": "PRIVATE-CHANNEL",
+        "KEYS": {"acct_mgt": "PRIVATE-ACCOUNT-KEY", "wallet": "PRIVATE-WALLET-KEY"},
+    })
+    def test_pool_probe_separates_product_profiling_from_wallet_key_access(self):
+        from utility import wema
+        from wallet.management.commands.reconciliation_evidence import pool_evidence
+
+        def read_balance(account_number):
+            self.assertEqual(account_number, "0450000123")
+            self.assertEqual(wema._base_url("acct_mgt"), "https://profile.example.test")
+            if wema._sub_key("acct_mgt") == "PRIVATE-WALLET-KEY":
+                return {"success": True, "balance_naira": Decimal("10.00"),
+                        "diagnostic": {"http_status": 200}}
+            return {"success": False, "raw": {"message": "You've not been profiled for PRIVATE NAME"},
+                    "diagnostic": {"http_status": 400}}
+
+        with patch("utility.wema.get_balance", side_effect=read_balance) as balance:
+            report = pool_evidence()
+        self.assertEqual(balance.call_count, 2)
+        self.assertEqual(wema._sub_key("acct_mgt"), "PRIVATE-ACCOUNT-KEY")
+        self.assertEqual(report["failure_hint"], "product_not_profiled")
+        self.assertEqual(report["account_management_host"], "profile.example.test")
+        self.assertTrue(report["account_management_base_override"])
+        self.assertTrue(report["wallet_services_key_comparison"]["balance_readable"])
+        self.assertNotIn("PRIVATE", json.dumps(report))
+        self.assertNotIn("0450000123", json.dumps(report))
+
     @override_settings(WEMA={"SOURCE_ACCOUNT": "not-a-nuban"})
     def test_invalid_pool_config_never_reaches_provider(self):
         from wallet.management.commands.reconciliation_evidence import pool_evidence

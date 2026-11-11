@@ -8,10 +8,12 @@ import re
 from collections import Counter, defaultdict
 from datetime import timedelta
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Count
+from django.test.utils import override_settings
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
 
@@ -45,9 +47,43 @@ def _http_status(result):
     return value if type(value) is int and 100 <= value <= 599 else None
 
 
+def _pool_lookup_result(result):
+    status = _http_status(result)
+    readable = bool(result.get("success") and not result.get("mock") and result.get("balance_naira") is not None)
+    raw = result.get("raw")
+    message = str(result.get("message") or "").casefold()
+    if isinstance(raw, dict):
+        message += " " + " ".join(wema._first_text(raw.get(key)).casefold()
+                                  for key in ("message", "errors", "errorMessage", "errorMessages"))
+    hint = None
+    if not readable:
+        if re.search(r"\bnot\s+(?:been\s+)?(?:profiled|subscribed)\b", message):
+            hint = "product_not_profiled"
+        elif re.search(r"\b(?:invalid|missing)\s+(?:api\s+)?subscription\b|"
+                       r"\bsubscription\s+key\b.{0,35}\b(?:invalid|missing|not found|expired)\b", message):
+            hint = "subscription_key_rejected"
+        elif re.search(r"\b(?:invalid|unknown|unrecognized)\s+channel\b|"
+                       r"\bchannel(?:\s+id)?\b.{0,35}\b(?:invalid|not found)\b", message):
+            hint = "channel_rejected"
+        elif re.search(r"\baccount\b.{0,70}\b(?:not\s+linked|not\s+mapped|does\s+not\s+belong|"
+                       r"not\s+associated)\b", message):
+            hint = "account_not_linked_to_channel"
+        elif status in (401, 403) or any(word in message for word in ("unauthor", "forbidden", "access denied")):
+            hint = "authorization"
+        elif any(word in message for word in ("not found", "does not exist", "no account", "no record")):
+            hint = "not_found"
+        elif "account" in message and any(word in message for word in ("invalid", "not valid")):
+            hint = "invalid_account"
+        else:
+            hint = "bank_rejected" if status is not None and status >= 400 else "unreadable"
+    return {"status": "readable" if readable else "unreadable",
+            "balance_readable": readable, "http_status": status, "failure_hint": hint}
+
+
 def pool_evidence():
-    """One redacted pool/account-contract probe; message classification is a hint."""
-    account = str(settings.WEMA.get("SOURCE_ACCOUNT") or "").strip()
+    """Report the effective Account Management route and compare a distinct key if needed."""
+    bank = settings.WEMA
+    account = str(bank.get("SOURCE_ACCOUNT") or "").strip()
     valid = re.fullmatch(r"[0-9]{10}", account) is not None
     report = {"scope": "pool", "read_only": True, "configured": bool(account),
               "ten_digit_format": valid,
@@ -59,26 +95,24 @@ def pool_evidence():
     from wallet.partnership import partnership_account_number
     if not partnership_account_number(account):
         return {**report, "status": "invalid_partnership_source"}
-    result = wema.get_balance(account)
-    status = _http_status(result)
-    readable = bool(result.get("success") and not result.get("mock") and result.get("balance_naira") is not None)
-    raw = result.get("raw")
-    message = str(result.get("message") or "").casefold()
-    if isinstance(raw, dict):
-        message += " " + " ".join(wema._first_text(raw.get(key)).casefold()
-                                  for key in ("message", "errors", "errorMessage", "errorMessages"))
-    hint = None
-    if not readable:
-        if status in (401, 403) or any(word in message for word in ("unauthor", "forbidden", "access denied")):
-            hint = "authorization"
-        elif any(word in message for word in ("not found", "does not exist", "no account", "no record")):
-            hint = "not_found"
-        elif "account" in message and any(word in message for word in ("invalid", "not valid")):
-            hint = "invalid_account"
-        else:
-            hint = "bank_rejected" if status is not None and status >= 400 else "unreadable"
-    return {**report, "status": "readable" if readable else "unreadable",
-            "balance_readable": readable, "http_status": status, "failure_hint": hint}
+
+    product_base = (bank.get("BASE_URLS") or {}).get("acct_mgt")
+    base = urlsplit(product_base or bank.get("BASE_URL") or "")
+    keys = bank.get("KEYS") or {}
+    account_key, wallet_key = keys.get("acct_mgt"), keys.get("wallet")
+    result = _pool_lookup_result(wema.get_balance(account))
+    report.update(result, account_management_host=base.hostname,
+                  account_management_base_override=bool(product_base),
+                  base_includes_product_path=base.path.rstrip("/").casefold().endswith("/ws-acct-mgt"),
+                  account_management_key_source="account_management" if account_key else "wallet_services",
+                  account_management_key_matches_wallet=bool(account_key and account_key == wallet_key))
+    if (not result["balance_readable"] and result["http_status"] in (400, 401, 403)
+            and account_key and wallet_key and account_key != wallet_key):
+        # Wallet Services is the documented fallback for the same product. Change
+        # the key only inside this read-only command; keep the host and account fixed.
+        with override_settings(WEMA={**bank, "KEYS": {**keys, "acct_mgt": ""}}):
+            report["wallet_services_key_comparison"] = _pool_lookup_result(wema.get_balance(account))
+    return report
 
 
 def build_evidence(wallet, *, days=90, max_rows=50):
