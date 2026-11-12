@@ -1162,12 +1162,37 @@ def _find_account_payload(value):
 
 
 def get_account_details(phone: str, *, bvn: bool = False) -> dict:
-    """Step 3 — fetch the created account (poll until accountNumber is populated)."""
+    """Step 3 — fetch the created account (poll until accountNumber is populated).
+
+    The same Partnership account can be opened through three products: BVN OTP
+    (account-creation), NIN OTP (wallet-creation) and the hosted face check
+    (create-account-face). Each product's lookup only sees what that product
+    opened, so asking one product missed accounts the others created: the face
+    route reported "customer already exists" while the BVN lookup said "not
+    found". Ask each live product, the customer's own route first, and return
+    the first that holds an account; otherwise the primary product's answer.
+    """
     if not wema_live():
         if _mock_blocked():
             return {"success": False, "message": "Bank account creation is not configured"}
         return _mock_account(f"phone:{phone}", "")
-    product = "wallet_bvn" if bvn else "wallet_nin"
+    order = (("wallet_bvn", "face_account", "wallet_nin") if bvn
+             else ("wallet_nin", "face_account", "wallet_bvn"))
+    first = None
+    for product in order:
+        if product != order[0] and not _product_live(product):
+            continue
+        result = _get_account_details_from(product, phone)
+        if first is None:
+            first = result
+        if result.get("success") and result.get("account_number"):
+            if product != order[0]:
+                log.info("wema_account_details_found_via product=%s", product)
+            return result
+    return first
+
+
+def _get_account_details_from(product: str, phone: str) -> dict:
     try:
         resp = _get(product, "/api/CustomerAccount/GetPartnershipAccountDetails",
                     {"phoneNumber": phone})
@@ -1218,8 +1243,12 @@ def lift_debit_restriction(account_number: str, *, bvn: bool | None = None,
 
     products = (("wallet_bvn", "wallet_nin") if bvn is None else
                 (("wallet_bvn",) if bvn else ("wallet_nin",)))
+    # An account opened by the hosted face check belongs to that product.
+    products = products + ("face_account",)
     last = {"success": False, "message": "Request failed"}
     for product in products:
+        if product == "face_account" and not _product_live(product):
+            continue
         try:
             response = _post(product, "/api/CustomerAccount/PartnerDebitRestrictionManagement",
                              {"pndType": "PlacePnd" if place else "LiftPnd",
