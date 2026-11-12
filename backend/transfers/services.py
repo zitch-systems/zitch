@@ -315,18 +315,14 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
             "Your Zitch account number was issued in test mode and can't send money. "
             "Contact support to have it reissued — your balance is safe.")
 
-    # No NUBAN of their own AND no shared pool to fall back on: there is no account
-    # to debit, so payout_send would refuse — but only AFTER the debit, and with
-    # "Payouts are temporarily unavailable, please try again shortly". That reads as
-    # a passing outage and invites exactly the one thing that cannot work: waiting.
+    # No NUBAN of their own: there is no account to debit (Partnership never falls
+    # back to a pool), so payout_send would refuse — but only AFTER the debit, and
+    # with "Payouts are temporarily unavailable, please try again shortly". That reads
+    # as a passing outage and invites exactly the one thing that cannot work: waiting.
     # The account is missing until someone finishes setting it up. Say so, and say it
     # before taking the money.
-    from django.conf import settings
-
-    if (payout_live() and not getattr(wallet, "account_number", "")
-            and not (settings.WEMA.get("SOURCE_ACCOUNT") or "").strip()):
-        log.warning("payout_no_source user=%s (no wallet NUBAN, WEMA_SOURCE_ACCOUNT unset)",
-                    getattr(user, "id", "?"))
+    if payout_live() and not getattr(wallet, "account_number", ""):
+        log.warning("payout_no_source user=%s (no wallet NUBAN)", getattr(user, "id", "?"))
         raise PayoutError(
             "source_missing",
             "Your Zitch account number isn't set up yet, so there's nothing to send from. "

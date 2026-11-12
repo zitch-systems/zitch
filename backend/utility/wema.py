@@ -2097,7 +2097,14 @@ def _vas_live(product: str) -> bool:
 
 
 def _vas_source() -> str:
-    return settings.WEMA.get("SOURCE_ACCOUNT", "")
+    """No pool fallback: Partnership debits only the customer's own account.
+
+    Wema's pool (PartnerPayment) endpoints are a separately profiled product
+    Zitch does not use. Falling back to WEMA_SOURCE_ACCOUNT would have spent
+    Zitch's corporate account on behalf of a customer with no account of their
+    own, so a purchase with no customer source now fails closed instead.
+    """
+    return ""
 
 
 @_new_biller_instruction

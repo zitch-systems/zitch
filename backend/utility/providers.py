@@ -1628,13 +1628,13 @@ def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
 
     MONEY-FLOW: partner bank uses a per-user-balance model, so this debits the SENDER's own
     NUBAN — `source_account`, which execute_payout passes as the sender's
-    wallet.account_number — falling back to the shared WEMA_SOURCE_ACCOUNT pool only
-    for a sender who has no partner bank NUBAN yet, and failing closed (refundable) on a live
-    call with neither."""
+    wallet.account_number. There is no pool fallback: a sender with no Partnership
+    account fails closed (refundable) rather than being paid out of Zitch's own
+    corporate account."""
     from . import wema
     if _partnership_reference_blocked(reference, source_account):
         return _archived_payment_result()
-    src = source_account or settings.WEMA.get("SOURCE_ACCOUNT", "")
+    src = source_account
     if wema.wema_live() and not src:
         return {"success": False,
                 "message": "Payouts are temporarily unavailable — please try again shortly."}
