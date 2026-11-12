@@ -66,6 +66,11 @@ def _pool_lookup_result(result, *, history=False):
         elif re.search(r"\b(?:invalid|unknown|unrecognized)\s+channel\b|"
                        r"\bchannel(?:\s+id)?\b.{0,35}\b(?:invalid|not found)\b", message):
             hint = "channel_rejected"
+        elif re.search(r"\bdoes\s+not\s+belong\s+to\s+any\s+account\b", message):
+            # Wema's GetAccountV2 wording for a number it has no account for at
+            # all. Reading "does not belong" as a channel-linking problem sent an
+            # operator to ask Wema to link an account the API cannot even find.
+            hint = "not_found"
         elif re.search(r"\baccount\b.{0,70}\b(?:not\s+linked|not\s+mapped|does\s+not\s+belong|"
                        r"not\s+associated)\b", message):
             hint = "account_not_linked_to_channel"
