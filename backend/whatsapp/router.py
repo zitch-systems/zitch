@@ -43,7 +43,7 @@ from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
 from utility import wema as wema_provider
 from wallet import views as wallet_views
 from wallet.forex import FxError, all_balances, create_fx_quote, currency_balance, execute_fx
-from wallet.models import WemaProvisioningAttempt
+from wallet.models import Wallet, WemaProvisioningAttempt
 from wallet.services import (
     DuplicateTransaction,
     InsufficientFunds,
@@ -3117,6 +3117,9 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
         from utility.liveness import TIER2_LIVENESS_UNAVAILABLE
 
         return reply(msisdn, TIER2_LIVENESS_UNAVAILABLE)
+    if tier == 2 and not Wallet.objects.filter(user_id=user.pk).exclude(account_number="").exists():
+        return reply(msisdn, "Tier 2 upgrades your Zitch account, and your account number "
+                     "isn't ready yet. Reply 6 (Add money) to finish your account first.")
     # The WhatsApp worker issues the PIN-gated link. The API that serves it
     # checks the Prembly credentials before creating or verifying a session.
     if tier == 3:
@@ -3147,7 +3150,9 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
     body = (("Complete your Prembly live face check for Tier 2. Confirm your Zitch PIN "
              "on the secure page, then follow the camera instructions. Your verified "
              "identity stays saved; no additional NIN verification is needed. "
-             "Return to this page to check the result. The link expires in 15 minutes.")
+             "Return to this page to check the result. The link expires in 15 minutes. "
+             "If the camera does not open, tap the 3 dots at the top, choose "
+             "\"Open in Chrome\", and allow camera access.")
             if tier == 2 else
             ("Verify your address securely. Confirm your Zitch PIN on the page, then "
              "enter your residential address and provide proof if requested. "

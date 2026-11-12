@@ -103,7 +103,11 @@ def _verification_allowed(user, tier):
     follow the same eligibility as the app and do not authorize bank business.
     """
     if tier == 2:
-        return bool(user.is_active and user.tier1_identity_verified)
+        # Tier 2 upgrades a bank account; with no account there is nothing to
+        # upgrade, and the customer would finish liveness for no result.
+        from wallet.models import Wallet
+        has_account = Wallet.objects.filter(user_id=user.pk).exclude(account_number="").exists()
+        return bool(user.is_active and user.tier1_identity_verified and has_account)
     return partnership_new_business_allowed(user)
 
 

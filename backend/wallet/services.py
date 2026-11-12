@@ -664,6 +664,10 @@ def attach_existing_bank_account(user, *, using_bvn: bool | None = None) -> tupl
     if using_bvn is not None:
         sessions = sessions.filter(identity_type="bvn" if using_bvn else "nin")
     session = sessions.order_by("-created", "-pk").first()
+    if session and session.account_failure_category == "existing_customer":
+        recovered, detail = _attach_existing_customer_account(user, session)
+        if recovered is not None:
+            return recovered, detail
     if (session and session.account_state == "awaiting_callback"
             and session.updated >= timezone.now() - timedelta(hours=1)):
         return None, "Account creation was accepted; awaiting the bank's account callback."
@@ -678,6 +682,52 @@ def attach_existing_bank_account(user, *, using_bvn: bool | None = None) -> tupl
                   failure_category=session.account_failure_category or "legacy_unknown")
         return None, "Account setup requires review; bank account creation is not confirmed."
     return None, "No funding account is available; waiting for a confirmed bank account callback."
+
+
+def _name_tokens(value) -> set:
+    return {t for t in re.split(r"[^a-z]+", str(value or "").lower()) if len(t) >= 2}
+
+
+def _attach_existing_customer_account(user, session) -> tuple:
+    """Wema refused a new account because this customer already has one.
+
+    Read that account back from Wema's Partnership account-details lookup (the
+    same Step 3 read the OTP path uses; it only returns accounts opened under
+    Zitch's own channel for this phone) and attach it, but only when:
+      - the customer's identity is verified for the session's identity type,
+      - the bank's holder name shares the customer's first AND last name,
+      - the number is not retired and not on another wallet.
+    The attachment carries an opening review, because an account that existed
+    before this wallet may already hold money or history.
+    """
+    from utility import wema as wema_provider
+    from whatsapp.models import AuditLog
+
+    kind = session.identity_type
+    if kind not in ("bvn", "nin") or not getattr(user, f"{kind}_verified", False):
+        return None, "Identity is not verified for this account lookup."
+    lookup = wema_provider.get_account_details(user.phone or "", bvn=kind == "bvn")
+    number = str(lookup.get("account_number") or "").strip()
+    if lookup.get("mock") or not lookup.get("success") or not re.fullmatch(r"[0-9]{10}", number):
+        log.info("wema_existing_customer_lookup_unresolved user=%s state=%s",
+                 user.pk, lookup.get("account_lookup_state", "unknown"))
+        return None, "The bank did not return the existing account."
+    holder = _name_tokens(lookup.get("account_name"))
+    first, last = _name_tokens(user.first_name), _name_tokens(user.last_name)
+    if not (first and last and holder & first and holder & last):
+        log.warning("wema_existing_customer_name_mismatch user=%s", user.pk)
+        return None, "The bank's account holder name does not match this customer."
+    wallet, outcome = provision_wema_account(
+        user, account_number=number, account_name=lookup.get("account_name", ""),
+        bank_name=lookup.get("bank_name", ""), source="existing_customer_lookup")
+    if outcome != "provisioned" and outcome != "already":
+        log.warning("wema_existing_customer_attach_refused user=%s outcome=%s", user.pk, outcome)
+        return None, "The existing bank account could not be attached."
+    AuditLog.objects.create(
+        actor_type="system", actor_id="existing_customer_lookup",
+        action="wema_existing_account_attached", target=f"user:{user.pk}",
+        after={"account_suffix": number[-4:], "identity_type": kind, "session_id": session.pk})
+    return wallet, "Your existing Wema account was found and attached."
 
 
 def repair_missing_funding_accounts(*, email: str = "", limit: int = 20) -> dict:
