@@ -157,6 +157,18 @@ class ReconciliationEvidenceTests(TestCase):
         self.assertNotIn("PRIVATE", out.getvalue())
         self.assertNotIn("0450000123", out.getvalue())
 
+    def test_wemas_no_such_account_wording_is_not_reported_as_channel_linking(self):
+        """Production's exact GetAccountV2 text was mislabeled and sent to Wema."""
+        from wallet.management.commands.reconciliation_evidence import _pool_lookup_result
+
+        exact = "Opps! the AccountNumber provided does not belong to any account."
+        result = _pool_lookup_result({"success": False, "message": exact,
+                                      "diagnostic": {"http_status": 400}})
+        self.assertEqual(result["failure_hint"], "not_found")
+        linked = _pool_lookup_result({"success": False, "diagnostic": {"http_status": 400},
+                                      "message": "Account is not linked to this channel"})
+        self.assertEqual(linked["failure_hint"], "account_not_linked_to_channel")
+
     @override_settings(WEMA={"SOURCE_ACCOUNT": "0450000123"})
     def test_pool_probe_outputs_only_safe_classification_and_account_relationships(self):
         from wallet.management.commands.reconciliation_evidence import pool_evidence
