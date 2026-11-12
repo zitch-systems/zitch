@@ -23,6 +23,13 @@ def _credit_accounted_for(wallet, row, norm):
             and ledger.amount == norm["amount_naira"]
             and ledger.transaction_status == Transaction.SUCCESS):
         return True
+    # Zitch's own settlement transfers back an existing balance; they are
+    # matched, never credited, and must not hold history coverage open.
+    from .models import SettlementFunding
+    if SettlementFunding.objects.filter(
+            wallet=wallet, provider_reference=norm["reference"],
+            status=SettlementFunding.MATCHED).exists():
+        return True
     # Returned payments can be refunded or quarantined rather than credited.
     # Their independent evidence queue remains live after history coverage moves.
     return ReversalEvidence.objects.filter(

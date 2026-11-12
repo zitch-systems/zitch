@@ -214,6 +214,7 @@ class Command(BaseCommand):
 
         owed = self._owed()
         movement = self._day_movement()
+        self._report_unbacked()
         legacy_scope = reconciliation_scope()
 
         if not wema.wema_live():
@@ -316,6 +317,23 @@ class Command(BaseCommand):
 
         if breached and options["fail_on_breach"]:
             raise SystemExit(1)
+
+    def _report_unbacked(self):
+        """A balance with no Wema account behind it is money no bank holds.
+
+        Every such wallet is a settlement shortfall that no amount of
+        reconciliation can close: it needs a Partnership account and a
+        settlement transfer (prepare_settlement_funding). Name the count and
+        total every run, and page while any remain, so it is never silent.
+        """
+        from django.db.models import Count, Sum
+        from utility.alerts import alert
+        row = Wallet.objects.filter(balance__gt=0, account_number="").aggregate(
+            n=Count("pk"), total=Sum("balance"))
+        if row["n"]:
+            self.stdout.write(f"UNBACKED {row['n']} wallet(s) hold ₦{row['total']:,.2f} with no Wema account")
+            alert("settlement_report: customer balances with no Wema account behind them",
+                  level="error", wallets=row["n"], amount=str(row["total"]))
 
     def _print_owed(self, owed, movement):
         self.stdout.write(f"OWED    ledger liability ₦{owed['ledger_liability']:,.2f} "
