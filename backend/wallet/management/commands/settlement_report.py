@@ -221,8 +221,8 @@ class Command(BaseCommand):
             # here would report the entire liability as a shortfall and page. The
             # liability and movement halves are still real and worth printing.
             self.stdout.write(
-                "settlement_report: Wema not live (simulation/mock) — no real balances to "
-                "hold against the ledger, so no position is computed.")
+                "settlement_report: Wema not live (" + ", ".join(wema.not_live_reasons())
+                + ") — no real balances to hold against the ledger, so no position is computed.")
             self._print_owed(owed, movement)
             if legacy_scope["legacy_funding_required"]:
                 snapshot = {**legacy_scope,
