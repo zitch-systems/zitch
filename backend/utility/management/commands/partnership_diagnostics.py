@@ -23,24 +23,14 @@ def account_inventory(source):
     retired = (numbered.alias(destination_digest=DestinationDigest("account_number"))
                .filter(retired_wallet_markers() | Q(account_number__startswith="711")
                        | Q(destination_digest__in=UnsettledFunding.objects.values("destination_digest"))))
-    tables = set(connection.introspection.table_names())
-    retired_tables = {}
-    with connection.cursor() as cursor:
-        for table in ("banking_bankaccount", "wema_vas_virtualaccount"):
-            if table not in tables:
-                retired_tables[table] = {"records": 0, "active_wallet_matches": 0, "source_match": False}
-                continue
-            cursor.execute(f'SELECT COUNT(*), COUNT(DISTINCT w.id) FROM "{table}" a '
-                           'LEFT JOIN wallet_wallet w ON w.account_number = a.number '
-                           "AND w.account_number <> ''")
-            records, matches = cursor.fetchone()
-            cursor.execute(f'SELECT EXISTS(SELECT 1 FROM "{table}" WHERE number = %s)', [source])
-            retired_tables[table] = {"records": records, "active_wallet_matches": matches,
-                                     "source_match": bool(source and cursor.fetchone()[0])}
+    # Every 9PSB and Wema VAS table was dropped by wallet.0034; any listed here
+    # means retired schema came back and must be removed again.
+    leftover = sorted(t for t in connection.introspection.table_names()
+                      if t.startswith(("banking_", "wema_vas_")))
     return {"wallets_with_primary_numbers": numbered.count(),
             "wallets_with_retired_markers": retired.count(),
             "wallets_with_secondary_account_data": Wallet.objects.exclude(bank_accounts=[]).count(),
-            "retired_provider_tables": retired_tables}
+            "retired_provider_tables_remaining": leftover}
 
 
 class Command(BaseCommand):

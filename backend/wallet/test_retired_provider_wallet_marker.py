@@ -26,16 +26,13 @@ class RetiredProviderWalletMarkerTests(TestCase):
                     account_number="9012345678", bank_name=label)
                 # A provider archive can be deleted or temporarily unavailable;
                 # the wallet's old bank label must independently hold the NUBAN.
-                with patch("wallet.partnership.previous_provider_cutover_blockers",
-                           return_value=[]) as older:
-                    self.assertIn("retired_provider_wallet_review",
-                                  legacy_funding_blockers(self.user))
-                    self.assertFalse(partnership_allowed(self.user))
-                    funding = customer_funding_account(self.user)
+                self.assertIn("retired_provider_wallet_review",
+                              legacy_funding_blockers(self.user))
+                self.assertFalse(partnership_allowed(self.user))
+                funding = customer_funding_account(self.user)
                 self.assertEqual(funding["account_number"], "")
                 self.assertFalse(funding["can_fund"])
                 self.assertEqual(funding["account_setup_state"], "legacy_funding_review")
-                older.assert_not_called()
 
     def test_old_reference_blocks_relabelled_account_on_both_funding_paths(self):
         Wallet.objects.filter(pk=self.wallet.pk).update(
@@ -52,9 +49,7 @@ class RetiredProviderWalletMarkerTests(TestCase):
     def test_wema_bank_label_is_not_incorrectly_marked_as_retired(self):
         Wallet.objects.filter(pk=self.wallet.pk).update(
             account_number="0123456789", bank_name="Wema Bank")
-        with patch("wallet.partnership.previous_provider_cutover_blockers",
-                   return_value=[]):
-            self.assertEqual(legacy_funding_blockers(self.user), [])
+        self.assertEqual(legacy_funding_blockers(self.user), [])
 
     def test_inventory_separates_primary_mappings_from_retired_evidence(self):
         from utility.management.commands.partnership_diagnostics import account_inventory
