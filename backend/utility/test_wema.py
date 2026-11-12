@@ -293,9 +293,11 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(headers["x-api-key"], "chan-1")
         self.assertEqual(headers["Ocp-Apim-Subscription-Key"], "subkey")
 
+    @patch("utility.wema.requests.get")
     @patch("utility.wema.requests.post")
-    def test_transaction_history_no_record_found_is_empty_history(self, mock_post):
+    def test_transaction_history_no_record_found_is_empty_history(self, mock_post, mock_get):
         mock_post.return_value = _resp({"message": "No record found."}, status=400)
+        mock_get.return_value = _resp({"successful": True, "result": {"availableBalance": "100.00"}})
 
         result = wema.get_transactions("0410530975", "2026-07-01", "2026-08-20")
 

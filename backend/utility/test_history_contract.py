@@ -63,10 +63,31 @@ class HistoryResponseContractTests(SimpleTestCase):
         self.assertTrue(result["success"])
 
     def test_documented_no_record_found_remains_empty_success(self):
-        result = self.history({"successful": False, "message": "No record found"}, status=400)
+        with patch("utility.wema.requests.get", return_value=_resp({
+            "successful": True, "result": {"availableBalance": "0.00"},
+        })) as account:
+            result = self.history({"successful": False, "message": "No record found"}, status=400)
+        self.assertTrue(account.call_args.args[0].endswith("/GetAccountV2/accountNumber/0452491368"))
         self.assertTrue(result["success"])
         self.assertTrue(result["complete"])
         self.assertEqual(result["transactions"], [])
+
+    def test_no_record_found_with_unreadable_account_cannot_advance_history(self):
+        for status in (400, 403, 503):
+            with self.subTest(status=status), patch("utility.wema.requests.get", return_value=_resp({
+                "successful": False, "message": "No record found",
+            }, status)):
+                result = self.history({"successful": False, "message": "No record found"}, status=400)
+            self.assertFalse(result["success"])
+            self.assertFalse(result["complete"])
+            self.assertEqual(result["error_code"], "history_account_visibility_unconfirmed")
+
+    def test_no_record_found_as_part_of_another_error_is_not_an_empty_statement(self):
+        with patch("utility.wema.requests.get") as account:
+            result = self.history({"successful": False, "message": "No record found for channel"}, status=400)
+        account.assert_not_called()
+        self.assertFalse(result["success"])
+        self.assertFalse(result["complete"])
 
     def test_invalid_json_is_failure(self):
         response = _resp({})

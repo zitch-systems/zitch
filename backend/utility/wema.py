@@ -561,11 +561,10 @@ def _response_meta(resp: requests.Response, data) -> dict:
 
 
 def _is_empty_history_response(resp: requests.Response, data: dict) -> bool:
-    """ALAT returns HTTP 400 + "No record found" for an empty statement window."""
+    """Recognize ALAT's ambiguous response to a statement request."""
     if resp.status_code != 400 or not isinstance(data, dict):
         return False
-    message = str(_msg(data) or "").strip().casefold()
-    return "no record found" in message
+    return str(_msg(data) or "").strip().rstrip(".").casefold() == "no record found"
 
 
 def _fingerprint(value: str) -> str:
@@ -1498,6 +1497,15 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
             return {"success": False, "transactions": [], "message": "Request failed",
                     "diagnostic": _response_meta(resp, data), "raw": data}
         if _is_empty_history_response(resp, data):
+            # ALAT can use this response for an account the channel cannot see.
+            # Prove visibility on the same Account Management product before
+            # treating the window as complete or advancing the credit checkpoint.
+            account = get_balance(account_number)
+            if not account.get("success") or account.get("mock"):
+                return {"success": False, "transactions": [], "complete": False,
+                        "message": "Bank transaction history is temporarily unavailable",
+                        "error_code": "history_account_visibility_unconfirmed",
+                        "diagnostic": _response_meta(resp, data), "raw": data}
             return {"success": True, "transactions": [], "empty": True, "complete": True,
                     "message": "No transactions found",
                     "diagnostic": _response_meta(resp, data), "raw": data}
