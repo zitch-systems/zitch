@@ -2448,7 +2448,16 @@ def vas_status_entitlement(product: str = "airtime") -> tuple[bool, str]:
 def _vas_status_access_response(data, http_status, reference) -> tuple[bool, str]:
     """Accept only documented status evidence or the exact no-record envelope."""
     unavailable = (False, "Status-query service returned an unconfirmed response.")
-    if http_status != 200 or not isinstance(data, dict):
+    if not isinstance(data, dict):
+        return unavailable
+    # Wema answers an unprofiled channel with HTTP 400 and a plain refusal.
+    # Name it, so operators ask the bank instead of debugging our parser.
+    refusal = data.get("errorMessage")
+    if (isinstance(refusal, str) and data.get("hasError") is True
+            and (_VAS_NOT_ENTITLED_RE.search(refusal.strip().casefold())
+                 or "not been profiled" in refusal.casefold())):
+        return False, "Status-query product is not profiled or authentication was refused."
+    if http_status != 200:
         return unavailable
     result = data.get("result")
     if result is not None and not isinstance(result, dict):
