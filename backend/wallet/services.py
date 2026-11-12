@@ -2358,6 +2358,46 @@ def _record_unmatched_reversal(wallet: Wallet, *, inbound_reference: str,
     )
 
 
+SETTLEMENT_TOKEN_RE = re.compile(r"\bZSET[0-9A-Z]{8}\b")
+
+
+def _match_settlement_funding(wallet, norm) -> bool:
+    """True when this credit is Zitch backing a balance the ledger already holds.
+
+    Matches only a PENDING SettlementFunding for this wallet and account whose
+    token appears in the narration. The exact amount must match: a token with a
+    different amount is held (not credited, not matched) and paged, because
+    crediting it would double-pay and ignoring it would lose the difference.
+    A replayed row whose reference is already matched is accounted for.
+    """
+    from utility.alerts import alert
+    from .models import SettlementFunding
+
+    if SettlementFunding.objects.filter(provider_reference=norm["reference"],
+                                        status=SettlementFunding.MATCHED).exists():
+        return True
+    tokens = SETTLEMENT_TOKEN_RE.findall(str(norm.get("narration") or "").upper())
+    if not tokens:
+        return False
+    with db_transaction.atomic():
+        row = (SettlementFunding.objects.select_for_update()
+               .filter(wallet=wallet, account_number=wallet.account_number,
+                       token__in=tokens, status=SettlementFunding.PENDING).first())
+        if row is None:
+            return False
+        if row.amount != norm["amount_naira"]:
+            alert("Settlement transfer amount does not match its token; held for review",
+                  level="error", wallet_id=wallet.pk, token=row.token,
+                  expected=str(row.amount), received=str(norm["amount_naira"]))
+            return True
+        row.status = SettlementFunding.MATCHED
+        row.provider_reference = norm["reference"]
+        row.matched_at = timezone.now()
+        row.save(update_fields=["status", "provider_reference", "matched_at"])
+    log.info("wema_settlement_funding_matched wallet=%s token=%s", wallet.pk, row.token)
+    return True
+
+
 def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> Transaction | None:
     """Credit `wallet` for one inbound Wema transaction-history row, exactly once.
 
@@ -2411,6 +2451,8 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
                     _masked_account(wallet.account_number))
         return None
     if norm["amount_naira"] <= Decimal("0"):
+        return None
+    if _match_settlement_funding(wallet, norm):
         return None
 
     refs = self_payout_references(wallet.user) if self_refs is None else self_refs

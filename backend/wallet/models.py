@@ -689,3 +689,40 @@ class WemaFaceSession(models.Model):
 
     def __str__(self):
         return f"face:{self.user_id}:{self.status}"
+
+
+class SettlementFunding(models.Model):
+    """Zitch moving money INTO a customer's own Partnership account to back a
+    balance the ledger already owes them (e.g. a balance carried over from a
+    retired provider).
+
+    Such a transfer must not be credited as a new deposit, or the customer is
+    paid twice. The operator quotes ``token`` in the transfer narration; the
+    deposit sweep matches token + exact amount, marks this row matched and
+    leaves the ledger untouched.
+    """
+
+    PENDING = "pending"
+    MATCHED = "matched"
+    CANCELLED = "cancelled"
+    STATUSES = [(PENDING, PENDING), (MATCHED, MATCHED), (CANCELLED, CANCELLED)]
+
+    wallet = models.ForeignKey("wallet.Wallet", on_delete=models.PROTECT,
+                               related_name="settlement_fundings")
+    account_number = models.CharField(max_length=10)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    token = models.CharField(max_length=16, unique=True)
+    status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
+    provider_reference = models.CharField(max_length=128, blank=True, default="")
+    operator_reference = models.CharField(max_length=160)
+    created = models.DateTimeField(auto_now_add=True)
+    matched_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=0),
+                                   name="settlement_funding_positive"),
+            models.UniqueConstraint(fields=["provider_reference"],
+                                    condition=~models.Q(provider_reference=""),
+                                    name="uniq_settlement_provider_ref"),
+        ]
