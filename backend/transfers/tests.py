@@ -582,12 +582,16 @@ class NoSourceAccountTests(TestCase):
 
     @override_settings(WEMA={"SOURCE_ACCOUNT": "0100000001", "KEYS": {}, "CHANNEL_ID": ""})
     @patch("utility.providers.payout_live", return_value=True)
-    def test_a_configured_pool_still_lets_the_transfer_through(self, _live):
-        # The pool is the documented fallback for a sender with no NUBAN yet.
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "success"}):
+    def test_a_configured_pool_never_funds_a_sender_without_an_account(self, _live):
+        # Partnership debits the customer's own account only. A pool left in the
+        # environment must not pay out of Zitch's corporate account for them.
+        before = get_or_create_wallet(self.user).balance
+        with patch("transfers.services.payout_send") as send:
             _, body = self.send()
-        self.assertTrue(body.get("success"))
+        self.assertFalse(body.get("success"))
+        self.assertIn("isn't set up yet", body["message"])
+        send.assert_not_called()
+        self.assertEqual(get_or_create_wallet(self.user).balance, before)
 
 
 class PayoutSourceActivationTests(TestCase):

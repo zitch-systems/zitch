@@ -79,10 +79,12 @@ class PayoutDispatchTests(TestCase):
     def test_payout_send_routes_to_wema_with_source_and_bank_name(self):
         with patch("utility.wema.transfer",
                    return_value={"success": True, "status": "SUCCESS"}) as m:
-            P.payout_send(1000, "ZTRF1", "note", "035", "0123456789", "ADA EZE", bank_name="partner bank Bank")
+            P.payout_send(1000, "ZTRF1", "note", "035", "0123456789", "ADA EZE",
+                          bank_name="partner bank Bank", source_account="0459876543")
         m.assert_called_once()
         kw = m.call_args.kwargs
-        self.assertEqual(kw["source_account"], "0100000001")       # from WEMA_SOURCE_ACCOUNT
+        # The sender's own Partnership account; there is no pool fallback.
+        self.assertEqual(kw["source_account"], "0459876543")
         self.assertEqual(kw["destination_account"], "0123456789")
         self.assertEqual(kw["destination_bank_code"], "035")
         self.assertEqual(kw["destination_bank_name"], "partner bank Bank")
