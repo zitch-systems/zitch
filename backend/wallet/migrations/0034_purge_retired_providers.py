@@ -14,7 +14,7 @@ Roll-forward only: the old schema is never restored.
 import datetime
 import decimal
 
-from django.db import migrations
+from django.db import migrations, transaction
 
 RETIRED_PREFIXES = ("banking_", "wema_vas_")
 
@@ -26,6 +26,13 @@ def _plain(value):
 
 
 def purge(apps, schema_editor):
+    # One transaction: LOCK TABLE needs it, and a failure must leave every
+    # table in place rather than half the set dropped.
+    with transaction.atomic(using=schema_editor.connection.alias):
+        _purge(apps, schema_editor)
+
+
+def _purge(apps, schema_editor):
     connection = schema_editor.connection
     AuditLog = apps.get_model("whatsapp", "AuditLog")
     Bank = apps.get_model("transfers", "Bank")
