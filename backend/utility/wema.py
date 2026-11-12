@@ -130,6 +130,25 @@ def wema_live() -> bool:
     return bool(m.get("CHANNEL_ID") and (m.get("KEYS") or {}).get("wallet"))
 
 
+def not_live_reasons() -> list[str]:
+    """Why wema_live() is False, as fixed codes that carry no value (empty when live).
+
+    Simulation, a missing channel id and a missing wallet key all made the
+    scheduled controls print the same "not live (simulation/mock)" line, so a
+    cron whose environment had drifted from the API's looked identical to a
+    deliberate simulation deploy. Name the cause; never print a value.
+    """
+    m = settings.WEMA
+    reasons = []
+    if wema_simulation():
+        reasons.append("simulation_on")
+    if not m.get("CHANNEL_ID"):
+        reasons.append("channel_id_missing")
+    if not (m.get("KEYS") or {}).get("wallet"):
+        reasons.append("wallet_key_missing")
+    return reasons
+
+
 def wema_keys_configured() -> bool:
     """Whether the credentials exist, regardless of simulation.
 

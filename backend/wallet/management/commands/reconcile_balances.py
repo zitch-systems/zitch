@@ -73,8 +73,8 @@ class Command(BaseCommand):
         # returns 0.00 for everyone, which would mark every funded wallet as
         # diverging — so no-op with a clear message instead of paging noise.
         if not wema.wema_live():
-            self.stdout.write("reconcile_balances: Wema not live (simulation/mock) — no real "
-                              "NUBAN balances to compare. Skipping.")
+            self.stdout.write("reconcile_balances: Wema not live (" + ", ".join(wema.not_live_reasons())
+                              + ") — no real NUBAN balances to compare. Skipping.")
             if legacy_scope["legacy_funding_required"] and (options["fail_over"] or options["fail_nonzero"]):
                 raise SystemExit(1)
             return
