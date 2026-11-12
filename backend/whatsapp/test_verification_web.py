@@ -197,6 +197,27 @@ class VerificationWebTests(TestCase):
         self.tier2.assert_not_called()
         self.bank_address.assert_not_called()
 
+    @override_settings(PREMBLY={"FACE_SDK_ENABLED": True})
+    def test_worker_sends_tier2_link_without_prembly_credentials(self):
+        from .router import _send_web_verification
+
+        with patch("whatsapp.router.send_cta_url", return_value={"success": True}) as send:
+            _send_web_verification(self.user, MSISDN, 2)
+        send.assert_called_once()
+        path = urlsplit(send.call_args.args[2]).path
+        self.assertEqual(send.call_args.kwargs["cta"], "Verify face")
+        self.assertContains(self.get(path), "transaction PIN")
+
+    @override_settings(PREMBLY={"FACE_SDK_ENABLED": False})
+    def test_worker_respects_disabled_tier2_switch(self):
+        from .router import _send_web_verification
+
+        with patch("whatsapp.router.send_cta_url") as send, patch("whatsapp.router.reply") as reply:
+            _send_web_verification(self.user, MSISDN, 2)
+        send.assert_not_called()
+        reply.assert_called_once()
+        self.assertIn("temporarily unavailable", reply.call_args.args[1])
+
     def test_bank_shutdown_does_not_revoke_a_pin_bound_independent_tier2_link(self):
         self.path = self.start(tier=2)
         self.unlock()

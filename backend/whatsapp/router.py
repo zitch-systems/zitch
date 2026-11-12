@@ -3113,11 +3113,12 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
     from .verification_web import start_verification
     from django.core.exceptions import ImproperlyConfigured
 
-    if tier == 2:
-        from utility.liveness import tier2_face_available, TIER2_LIVENESS_UNAVAILABLE
+    if tier == 2 and settings.PREMBLY.get("FACE_SDK_ENABLED") is not True:
+        from utility.liveness import TIER2_LIVENESS_UNAVAILABLE
 
-        if not tier2_face_available():
-            return reply(msisdn, TIER2_LIVENESS_UNAVAILABLE)
+        return reply(msisdn, TIER2_LIVENESS_UNAVAILABLE)
+    # The WhatsApp worker issues the PIN-gated link. The API that serves it
+    # checks the Prembly credentials before creating or verifying a session.
     if tier == 3:
         from wallet.address_verification import tier3_address_capability
 
