@@ -63,6 +63,11 @@ def partnership_allowed(user):
     return not number or partnership_account_number(number)
 
 
+#: Identity proofs recorded by the retired 9PSB rail. Historical rows only:
+#: no code creates them, and they are proof of identity, not of a Wema account.
+PRE_WEMA_IDENTITY_SOURCES = ("9psb_otp", "9psb_face")
+
+
 def first_partnership_setup(user):
     """Preserve independent identity proof without replaying uncertain issuance."""
     from accounts.models import IdentityProof
@@ -76,8 +81,12 @@ def first_partnership_setup(user):
             or IdentityProof.objects.filter(user=user, source__in=[IdentityProof.WEMA_WALLET_OTP,
                 IdentityProof.WEMA_FACE, IdentityProof.WEMA_TIER2]).exists()):
         return False
+    # A BVN/NIN verified by OTP before Wema (our identity provider, or the
+    # retired 9PSB rail) never opened a Wema account. Wema has nothing to
+    # reconnect, so these customers take the standard OTP opening.
+    sources = [IdentityProof.IDENTITY_PROVIDER_OTP, *PRE_WEMA_IDENTITY_SOURCES]
     return any(getattr(user, f"{kind}_verified", False) and getattr(user, f"{kind}_hash", "")
                and IdentityProof.objects.filter(user=user, identity_type=kind,
                    identity_hash=getattr(user, f"{kind}_hash"),
-                   source=IdentityProof.IDENTITY_PROVIDER_OTP).exists()
+                   source__in=sources).exists()
                for kind in ("bvn", "nin"))

@@ -74,3 +74,18 @@ class Tier2NeedsAnAccountTests(TestCase):
         self.assertFalse(_verification_allowed(user, 2))
         Wallet.objects.filter(user=user).update(account_number="0123456780")
         self.assertTrue(_verification_allowed(user, 2))
+
+
+class PreWemaVerifiedCustomerTests(TestCase):
+    """Customer 34: BVN verified by 9PSB's OTP, never a Wema account."""
+
+    def test_9psb_verified_bvn_takes_the_standard_wema_opening(self):
+        from accounts.models import IdentityProof
+        from wallet.partnership import first_partnership_setup
+        user, _ = make_user("08011117004", "pre-wema@example.test")
+        type(user).objects.filter(pk=user.pk).update(bvn_hash="b" * 64, nin_verified=False)
+        user.refresh_from_db()
+        self.assertFalse(first_partnership_setup(user))
+        IdentityProof.objects.create(user=user, identity_type="bvn", identity_hash="b" * 64,
+                                     source="9psb_otp")
+        self.assertTrue(first_partnership_setup(user))
