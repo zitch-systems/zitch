@@ -276,8 +276,8 @@ class VerificationWebTests(TestCase):
         PIN-bound Tier 2 browser link.
         """
         from wallet.services import customer_funding_account
-        with patch("wallet.partnership.previous_provider_cutover_blockers",
-                   return_value=["archived_wema_balance_review"]):
+        with patch("wallet.partnership.legacy_funding_blockers",
+                   return_value=["legacy_balance"]):
             self.assertFalse(customer_funding_account(self.user)["can_fund"])
             with self.assertRaises(ValueError):
                 start_verification(self.user, MSISDN, 3)
@@ -291,8 +291,8 @@ class VerificationWebTests(TestCase):
 
     def test_tier2_link_remains_pin_bound_during_archived_bank_review(self):
         """An eligible liveness link does not become a funding permission."""
-        with patch("wallet.partnership.previous_provider_cutover_blockers",
-                   return_value=["previous_provider_account_review"]):
+        with patch("wallet.partnership.legacy_funding_blockers",
+                   return_value=["legacy_balance"]):
             self.path = self.start(tier=2)
             self.get()
             self.assertEqual(self.post({"action": "tier2"}).status_code, 403)
