@@ -67,18 +67,23 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
                 f"zitch-whatsapp-worker must source {key} from zitch-api-ry6y",
             )
 
-        for service in ("zitch-maturities-ry6y", "zitch-reconcile-wema-ry6y"):
-            match = re.search(
-                rf"^    name: {re.escape(service)}$.*?(?=^  - type:|\Z)",
-                self.text,
-                re.MULTILINE | re.DOTALL,
-            )
-            self.assertIsNotNone(match, service)
-            block = match.group(0)
-            self.assertRegex(block, r'- key: TXN_ALERTS_WHATSAPP\n\s+value: "false"')
-            for key in keys[1:] + ("WHATSAPP_QUEUE_KEY", "WHATSAPP_QUEUE_KEY_PREV"):
-                self.assertNotIn(f"- key: {key}", block,
-                                 f"{service} must not carry WhatsApp credentials")
+        for filename in ("render.yaml", "render.frankfurt.yaml"):
+            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
+            for service in ("zitch-maturities-ry6y", "zitch-reconcile-wema-ry6y"):
+                match = re.search(
+                    rf"^    name: {re.escape(service)}$.*?(?=^  - type:|\Z)",
+                    text,
+                    re.MULTILINE | re.DOTALL,
+                )
+                self.assertIsNotNone(match, service)
+                block = match.group(0)
+                self.assertRegex(
+                    block, r"- key: TXN_ALERTS_WHATSAPP\n\s+fromService: "
+                    r"\{type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_WHATSAPP\}",
+                )
+                for key in keys[1:] + ("WHATSAPP_QUEUE_KEY", "WHATSAPP_QUEUE_KEY_PREV"):
+                    self.assertNotIn(f"- key: {key}", block,
+                                     f"{service} must not carry WhatsApp credentials")
 
     def test_notification_writers_inherit_delivery_credentials_on_both_blueprints(self):
         for filename, suffix in (("render.yaml", "-ry6y"), ("render.frankfurt.yaml", "-ry6y")):

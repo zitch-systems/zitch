@@ -4770,6 +4770,36 @@ class FailedAccountSetupDoesNotCloseTheFlowGreenTests(TestCase):
         text = " ".join(str(c.args[1]) for c in said.call_args_list)
         self.assertIn("support team has been alerted", text)
 
+    @patch("whatsapp.router._send_identity_face_option", return_value=False)
+    @patch("whatsapp.router.reply")
+    @patch("whatsapp.router.wallet_views._adopt_existing_wema_account", return_value=None)
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    def test_existing_customer_keeps_setup_status_across_whatsapp_menus(self, start, _adopt, said, _face):
+        from wallet.models import WemaFaceSession
+        from whatsapp.router import _do_account_details, _start_add_account, _start_kyc
+
+        self.user.nin_verified = False
+        self.user.save(update_fields=["nin_verified"])
+        start.return_value = ({"success": False, "message": "Customer records already exist"}, None)
+        self._assert_failure_screen(self._submit())
+        session = WemaFaceSession.objects.create(
+            user=self.user, state="existing-customer-face", identity_type="bvn",
+            identity_hash="test-hash", expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+        for entry in (_start_add_account, _do_account_details, _start_kyc):
+            said.reset_mock()
+            entry(self.user, MSISDN)
+            self.assertIn("secure face verification link", said.call_args.args[1])
+            self.assertFalse(PendingAction.objects.filter(user=self.user).exists())
+
+        session.expires_at = timezone.now()
+        session.save(update_fields=["expires_at"])
+        _start_add_account(self.user, MSISDN)
+        self.assertIn("Support needs to review", said.call_args.args[1])
+        self.assertFalse(PendingAction.objects.filter(user=self.user).exists())
+        start.assert_called_once()
+
 
 class TemplateErrorAbandonsTheWholeBroadcastTests(TestCase):
     """A template-level refusal is the same for every recipient.

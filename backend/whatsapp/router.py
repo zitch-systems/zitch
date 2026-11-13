@@ -71,7 +71,7 @@ from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN,
                     privacy_screen_live,
                     sign_approve_token, sign_flow_token, sign_identity_token,
                     sign_onboarding_token)
-from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
+from .models import AuditLog, ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
 from .providers import (flows_live, send_buttons, send_cta_url, send_flow, send_image,
                         send_list, send_template, send_text)
 from . import savings_loans
@@ -2987,6 +2987,11 @@ def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
         return reply(msisdn, "Your bank accepted the verification code. Your identity "
                      "check is still processing. You do not need to submit your BVN "
                      "or the code again. Reply *8* to check your status shortly.")
+    if not funding.get("account_number"):
+        setup = _existing_customer_setup_status(user)
+        if setup:
+            _clear_actions(msisdn)
+            return reply(msisdn, setup[1])
     if not outstanding:
         return _offer_tier_upgrade(user, msisdn)
     # "Let's do the rest now" is a promise, so it must not be made when every
@@ -4142,6 +4147,13 @@ def _do_account_details(user, msisdn: str) -> None:
     reply(msisdn, "\n".join(lines))
     if wallet.account_number:
         return _send_account_details(msisdn, wallet, intro="🏦 *Your funding account*")
+    from wallet.identity import accepted_identity_pending
+    if accepted_identity_pending(user):
+        return reply(msisdn, "Your bank accepted the verification code. Your account setup "
+                     "is still processing. Reply *6* to check shortly.")
+    setup = _existing_customer_setup_status(user)
+    if setup:
+        return reply(msisdn, setup[1])
     return reply(msisdn, "Your funding account number is not available yet. Reply *6* "
                  "(Add money) to check its setup status. If your BVN or NIN is "
                  "already verified, you do not need to submit it again.")
@@ -4215,6 +4227,33 @@ def _page_existing_customer(user, kind: str) -> None:
     log.error("wema_existing_customer_unlinked user=%s kind=%s channel=whatsapp", user.pk, kind)
 
 
+_EXISTING_CUSTOMER_REVIEW = "wema.existing_customer_review"
+
+
+def _existing_customer_setup_status(user) -> tuple[str, str] | None:
+    """Keep a refused SMS setup visible after its temporary chat action ends."""
+    if user.bvn_verified or user.nin_verified:
+        return None
+    review = AuditLog.objects.filter(
+        action=_EXISTING_CUSTOMER_REVIEW, target=f"user:{user.pk}").first()
+    if review is None:
+        return None
+
+    from wallet.models import WemaFaceSession
+
+    kind = review.after["identity_type"]
+    if WemaFaceSession.objects.filter(
+            user=user, identity_type=kind, created__gte=review.created,
+            status=WemaFaceSession.PENDING, expires_at__gt=timezone.now()).exists():
+        return "face", ("Our partner bank already has an account for these details. "
+                        "Continue with the secure face verification link in this chat. "
+                        "No SMS code is needed.")
+    _page_existing_customer(user, kind)
+    return "fail", ("Our partner bank already has an account for these details. "
+                    "Zitch Support needs to review the link to your funding account. "
+                    "Your case is saved for review.")
+
+
 def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
     from wallet.partnership import first_partnership_setup
     funding = customer_funding_account(user)
@@ -4231,6 +4270,9 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
     if accepted_identity_pending(user):
         return reply(msisdn, "Your bank accepted the verification code. Your account setup is still processing. "
                      "You do not need to submit your BVN or the code again. Reply *6* to check shortly.")
+    setup = _existing_customer_setup_status(user)
+    if setup:
+        return reply(msisdn, setup[1])
     kind = "bvn" if user.bvn_verified else "nin" if user.nin_verified else ""
     attempt = (wallet_views._active_wema_attempt(user, identity_type="bvn")
                or wallet_views._active_wema_attempt(user, identity_type="nin"))
@@ -4424,6 +4466,13 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
               (f"{kind.upper()} verification could not start right now. Please try again later."))
         return "fail" if status >= 400 else "adopted"
 
+    setup = _existing_customer_setup_status(user)
+    if setup:
+        _clear_actions(msisdn)
+        outcome, message = setup
+        reply(msisdn, message)
+        return outcome
+
     # Respect the chosen ownership proof. Only the authenticated bank callback
     # can turn hosted face completion into a verified identity/account.
     if pa.payload.get("verification_method") == "face":
@@ -4469,6 +4518,10 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
             return "adopted"
         if wallet_views._ALREADY_ONBOARDED.search(res.get("message", "") or ""):
             _record_identity_review(pa.payload.get("id_type", "id"), "Wema Wallet Service returned customer already exists")
+            AuditLog.objects.create(
+                actor_type="system", action=_EXISTING_CUSTOMER_REVIEW,
+                target=f"user:{user.pk}", after={"identity_type": kind},
+            )
             # The bank already holds an account for this identity and refuses a
             # second one BEFORE sending any code, so SMS OTP can never finish here,
             # and the adoption above needs an identity this customer has not yet
