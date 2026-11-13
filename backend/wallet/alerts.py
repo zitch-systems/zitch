@@ -362,23 +362,55 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False):
         return {"success": False, "uncertain": True, "code": "whatsapp_dispatch_unknown"}
 
 
-# "... from NAME" in a bank's description of a deposit, up to the first
-# separator or digit. Account numbers and references are digits, never names.
-_FROM_NAME = re.compile(r"\bfrom\b[\s:.-]*(?P<name>[^/|;,()\d]{2,80})", re.IGNORECASE)
-_NAME_TAIL = re.compile(r"\s+(?:via|to|ref|for|on|through|with)\b.*$", re.IGNORECASE)
+# Wema writes an inward NIP transfer as "NIP:<origin>-<remark>": the origin is
+# the account name the sending bank put on the transfer, and the remark is the
+# payer's narration, which their bank fills with "Transfer from <name>" when it
+# is left empty.
+_NIP_PREFIX = re.compile(r"^\s*NIP\s*:\s*", re.IGNORECASE)
+_TRANSFER_FROM = re.compile(r"^(?:transfer|trf)\s+from\s+(?P<name>.+)$", re.IGNORECASE)
+# An origin that reads like a bank or payment company rather than an account
+# holder. Never named as the payer, even if that leaves a company payer unnamed.
+_INSTITUTION = re.compile(
+    r"\b(?:BANK|MFB|MICROFINANCE|PSB|PLC|LTD|LIMITED|DIGITAL|SERVICES|PAYMENTS?|FINANCE)\b"
+    r"|(?:PAY|MONIEPOINT|KUDA)\b", re.IGNORECASE)
+
+
+def _nip_parts(text: str) -> tuple[str, str]:
+    """(origin, remark) from Wema's "NIP:<origin>-<remark>", or ("", "")."""
+    match = _NIP_PREFIX.match(text)
+    if not match:
+        return "", ""
+    rest = text[match.end():]
+    # A hyphenated surname must not split the origin: cut before the default
+    # remark when there is one, else at the first hyphen.
+    cut = rest.lower().find("-transfer from")
+    if cut < 0:
+        cut = rest.find("-")
+    if cut < 0:
+        return rest.strip(), ""
+    return rest[:cut].strip(" -"), rest[cut + 1:].strip()
+
+
+def _plausible_name(text: str) -> bool:
+    words = text.split()
+    return (1 <= len(words) <= 6 and sum(ch.isalpha() for ch in text) >= 3
+            and not any(ch.isdigit() for ch in text) and not _INSTITUTION.search(text))
 
 
 def deposit_sender(meta) -> tuple[str, str, str]:
-    """(who paid, how, the bank's description) for a deposit's receipt.
+    """(who paid, how, the payer's narration) for a deposit's receipt.
 
     A transfer from another Zitch customer names them, as the ledger recorded
-    it. A bank deposit carries only the bank's words (`statement_note`), so the
-    payer is named from a structured sender field, or where the bank's own
-    heading (`title`) says "from NAME" in so many words. Never from the
-    narration: that is the payer's free text, and "transfer from friend" names
-    nobody. Otherwise no one is named and the description is shown as the bank
-    wrote it. A receipt that names the wrong person as having paid is worse than
-    one that quotes the bank and names nobody.
+    it. A bank deposit carries only the bank's words (`statement_note`). Its
+    payer is named from a structured sender field, or from the origin of
+    Wema's "NIP:<origin>-<remark>": the account name the sending bank put on
+    the transfer.
+
+    The remark is the payer's narration. It is shown, but never read for a
+    name: "transfer from friend" names nobody. An origin that reads like a bank
+    or payment company is not named either. Any other wording names nobody and
+    is shown as the bank wrote it. A receipt that names the wrong person as
+    having paid is worse than one that quotes the bank and names nobody.
     """
     meta = meta if isinstance(meta, dict) else {}
     counterparty = " ".join(str(meta.get("counterparty") or "").split())
@@ -387,17 +419,14 @@ def deposit_sender(meta) -> tuple[str, str, str]:
     note = meta.get("statement") if isinstance(meta.get("statement"), dict) else {}
     title = " ".join(str(note.get("title") or "").split())
     narration = " ".join(str(note.get("narration") or "").split())
-    name = " ".join(str(note.get("sender") or "").split())
-    if any(ch.isdigit() for ch in name) or sum(ch.isalpha() for ch in name) < 3:
-        name = ""
-    match = None if name else _FROM_NAME.search(title)
-    if match:
-        candidate = _NAME_TAIL.sub("", match.group("name")).strip(" -.:'")
-        if sum(ch.isalpha() for ch in candidate) >= 3 and len(candidate.split()) <= 6:
-            name = candidate.upper()
-    rail = str(note.get("type") or "").lower()
-    how = "Bank transfer" if name and ("nip" in rail or "transfer" in rail) else ""
-    return name, how, narration or title
+    text = narration or title
+    sender = " ".join(str(note.get("sender") or "").split())
+    if _plausible_name(sender):
+        return sender.upper(), "", text
+    origin, remark = _nip_parts(title) if _NIP_PREFIX.match(title) else _nip_parts(narration)
+    if origin and _plausible_name(origin):
+        return origin.upper(), "Bank transfer", remark
+    return "", "", text
 
 
 def credit_receipt_rows(txn) -> list:

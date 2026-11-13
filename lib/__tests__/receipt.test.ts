@@ -1,7 +1,8 @@
 import {
-  outcomeMessage, receiptFileName, receiptHtml, receiptStamp, senderRows, shareReceipt,
+  WHATSAPP_START_URL, maskAccount, outcomeMessage, qrPath, receiptFileName, receiptHtml, receiptLayout,
+  receiptStamp, senderRows, shareReceipt,
 } from '@/lib/receipt';
-import { BANK_WHATSAPP_DISPLAY } from '@/components/configFiles/links';
+import { BANK_WHATSAPP, BANK_WHATSAPP_DISPLAY, SUPPORT_EMAIL } from '@/components/configFiles/links';
 
 // Dates are built with the local-time constructor on purpose: the stamp is
 // deliberately local (it is what the person holding the phone saw), so a test
@@ -42,6 +43,97 @@ describe('receiptFileName', () => {
   });
 });
 
+describe('receiptLayout', () => {
+  // The same arrangement as the WhatsApp receipt (backend receipt_layout), so a
+  // customer meets one document wherever they paid.
+  const transfer = receiptLayout({
+    title: 'Money sent',
+    rows: [
+      ['Recipient', 'BOLA JOHNSON'], ['Account', '0123456789'], ['Bank', 'Access Bank'],
+      ['Note', 'June rent'], ['Transfer amount', '₦5,000.00', true],
+      ['Bank fee', '₦10.75'], ['Total debited', '₦5,010.75'],
+      ...senderRows({ name: 'ADA EZE', account: '0100000123', bank: 'Wema Bank' }),
+      ['Date', '13 Nov 2026'], ['Time', '04:01 PM'], ['Reference', 'ZT-1'],
+    ],
+  });
+
+  it('makes the amount the headline and prints it once', () => {
+    expect(transfer.amount).toBe('₦5,000.00');
+    expect(transfer.rows.map(([k]) => k)).not.toContain('Transfer amount');
+  });
+
+  it('puts the date and time under the status, not in the rows', () => {
+    expect(transfer.when).toBe('13 Nov 2026, 04:01 PM');
+    expect(transfer.rows.map(([k]) => k)).not.toEqual(expect.arrayContaining(['Date', 'Time']));
+  });
+
+  it('reads who was paid and who paid as one entry each, masking the payer', () => {
+    expect(transfer.parties).toEqual([
+      { label: 'Recipient', name: 'BOLA JOHNSON', detail: 'Access Bank · 0123456789' },
+      { label: 'Sender', name: 'ADA EZE', detail: 'Wema Bank · 0100****23' },
+    ]);
+  });
+
+  it('keeps everything else in order, with the reference last', () => {
+    expect(transfer.rows.map(([k]) => k)).toEqual(['Note', 'Bank fee', 'Total debited', 'Reference']);
+  });
+
+  it('drops a Total or Amount row that only repeats the headline', () => {
+    const airtime = receiptLayout({
+      title: 'Successful',
+      rows: [['Network', 'MTN'], ['Amount', '₦500.00'], ['Fee', '₦0'], ['Total', '₦500.00', true]],
+    });
+    expect(airtime.amount).toBe('₦500.00');
+    expect(airtime.rows.map(([k]) => k)).toEqual(['Network', 'Fee']);
+  });
+
+  it('heads a loan with the money that moved, keeping the emphasised repayment as a row', () => {
+    const loan = receiptLayout({
+      title: 'Loan disbursed',
+      rows: [['Loan amount', '₦10,000.00'], ['Interest', '₦500.00'], ['Total repayment', '₦10,500.00', true]],
+    });
+    expect(loan.amount).toBe('₦10,000.00');
+    expect(loan.rows).toContainEqual(['Total repayment', '₦10,500.00', true]);
+  });
+
+  it('boxes a token or PIN, the one value someone types somewhere else', () => {
+    const power = receiptLayout({
+      title: 'Token generated',
+      rows: [['Disco', 'Ikeja Electric'], ['Token', '1234 5678 9012 3456 7890'], ['Total', '₦10,000.00', true]],
+    });
+    expect(power.highlights).toEqual([['Token', '1234 5678 9012 3456 7890']]);
+    expect(power.rows.map(([k]) => k)).toEqual(['Disco']);
+    const pins = receiptLayout({ title: 'PIN purchased', rows: [['PIN 1', '111'], ['PIN 2', '222']] });
+    expect(pins.highlights.map(([k]) => k)).toEqual(['PIN 1', 'PIN 2']);
+  });
+
+  it('falls back to the title when nothing is the money that moved', () => {
+    const pending = receiptLayout({ title: 'Savings request processing', rows: [['Requested duration', '30 days']] });
+    expect(pending.amount).toBe('');
+    expect(pending.rows).toEqual([['Requested duration', '30 days', false]]);
+  });
+});
+
+describe('maskAccount', () => {
+  it('masks the middle the way bank alerts do', () => {
+    expect(maskAccount('0123456789')).toBe('0123****89');
+    expect(maskAccount('012-345-6789')).toBe('0123****89');
+    expect(maskAccount('1234')).toBe('1234');
+  });
+});
+
+describe('the WhatsApp code', () => {
+  it('opens a chat with the banking number with "Hi" typed', () => {
+    expect(WHATSAPP_START_URL).toBe(`https://wa.me/${BANK_WHATSAPP}?text=Hi`);
+  });
+
+  it('is a well-formed QR symbol', () => {
+    const { size, d } = qrPath(WHATSAPP_START_URL);
+    expect((size - 17) % 4).toBe(0);           // versions are 21, 25, 29… modules square
+    expect(d.startsWith('M0 0h7v1h-7z')).toBe(true);   // the top-left finder pattern
+  });
+});
+
 describe('receiptHtml', () => {
   const html = receiptHtml({
     title: 'Money sent',
@@ -54,19 +146,32 @@ describe('receiptHtml', () => {
     expect(html).toContain('05 Aug 2026');
   });
 
-  it('marks the emphasised row as the total', () => {
-    expect(html).toContain('<tr class="total"><td class="k">Total</td>');
+  it('puts the amount in the headline, once', () => {
+    expect(html).toContain('<div class="amount">₦2,000.00</div>');
+    expect(html.split('₦2,000.00').length - 1).toBe(2);   // the headline and the message
     expect(html).toContain('<tr><td class="k">Bank</td>');
+  });
+
+  it('emphasises a strong row that is not the headline', () => {
+    const loan = receiptHtml({
+      title: 'Loan disbursed', message: 'x',
+      rows: [['Loan amount', '₦10,000.00'], ['Total repayment', '₦10,500.00', true]],
+    });
+    expect(loan).toContain('<tr class="strong"><td class="k">Total repayment</td>');
   });
 
   it('stamps Successful by default', () => {
     expect(html).toContain('<span class="badge">Successful</span>');
   });
 
-  it('includes the WhatsApp banking advert and contact on every PDF', () => {
+  it('includes Zitch WhatsApp banking, its code and where to get help on every PDF', () => {
     expect(html).toContain('Zitch WhatsApp Banking');
     expect(html).toContain('Bank wherever you chat');
     expect(html).toContain(BANK_WHATSAPP_DISPLAY);
+    expect(html).toContain('zitch.ng');
+    expect(html).toContain(`d="${qrPath(WHATSAPP_START_URL).d}"`);
+    expect(html).toContain('Scan to start');
+    expect(html).toContain(SUPPORT_EMAIL);
   });
 
   // The exported file is what a recipient treats as proof. A pending transfer
@@ -103,9 +208,10 @@ describe('receiptHtml', () => {
     const hostile = receiptHtml({
       title: 'Money sent',
       message: 'ok',
-      rows: [['Note', '<script>alert(1)</script>']],
+      rows: [['Note', '<script>alert(1)</script>'], ['Recipient', '<b>x</b>']],
     });
     expect(hostile).not.toContain('<script>');
+    expect(hostile).not.toContain('<b>x</b>');
     expect(hostile).toContain('&lt;script&gt;');
   });
 });
@@ -143,13 +249,14 @@ describe('senderRows', () => {
     expect(senderRows({ name: ' ADA OKafor ' })).toEqual([['Sender', 'ADA OKafor']]);
   });
 
-  it('feeds receiptHtml as ordinary rows', () => {
+  it('feeds receiptHtml as the Sender entry', () => {
     const html = receiptHtml({
       title: 'Money sent',
       message: 'sent',
-      rows: [['Recipient', 'ADEYEMI WILLIAM'], ...senderRows({ name: 'ADA OKafor' })],
+      rows: [['Recipient', 'ADEYEMI WILLIAM'], ...senderRows({ name: 'ADA OKafor', account: '0123456789' })],
     });
-    expect(html).toContain('<tr><td class="k">Sender</td><td class="v">ADA OKafor</td></tr>');
+    expect(html).toContain('<tr><td class="k">Sender</td><td class="v"><div>ADA OKafor</div><div class="sub">0123****89</div></td></tr>');
+    expect(html).not.toContain('0123456789');
   });
 });
 
@@ -168,9 +275,9 @@ describe('receiptHtml typography', () => {
     expect(sizeOf('  td')).toBeGreaterThanOrEqual(15);
   });
 
-  it('keeps the amount the largest thing on the page after the wordmark', () => {
-    expect(sizeOf('tr.total td')).toBeGreaterThan(sizeOf('  td'));
-    expect(sizeOf('.mark')).toBeGreaterThan(sizeOf('tr.total td'));
+  it('makes the amount the largest thing on the page', () => {
+    expect(sizeOf('.amount')).toBeGreaterThan(sizeOf('  td'));
+    expect(sizeOf('.amount')).toBeGreaterThan(sizeOf('.mark'));
   });
 
   it('leaves no text below 12px, the floor for the footer and labels', () => {
@@ -187,9 +294,9 @@ describe('receiptHtml typography', () => {
 describe('receiptHtml watermark', () => {
   const html = receiptHtml({ title: 'T', message: 'm', rows: [['k', 'v']] });
 
-  it('marks the page so a forwarded copy still carries provenance', () => {
+  it('marks the page with the Z mark so a forwarded copy still carries provenance', () => {
     expect(html).toContain('class="wm"');
-    expect(html).toContain('ZITCH');
+    expect(/\.wm\s*\{[^}]*background-image:\s*url\(data:image\/png;base64,/.test(html)).toBe(true);
   });
 
   it('repeats on every printed page, not just the first', () => {

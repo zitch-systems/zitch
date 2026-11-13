@@ -39,26 +39,47 @@ class StatementNoteTests(TestCase):
         self.assertEqual(txn.amount, Decimal("3900"))
 
 
+def _nip(text):
+    """A statement note in the shape Wema's history returns for an inward NIP
+    transfer: title and narration both "NIP:<origin>-<remark>", type Default."""
+    return {"statement": {"title": text, "narration": text, "type": "Default"}}
+
+
 class DepositSenderTests(TestCase):
     def test_a_zitch_sender_is_named_from_the_ledger(self):
         self.assertEqual(deposit_sender({"counterparty": "Ada Eze", "narration": "lunch"}),
                          ("ADA EZE", "Zitch", "lunch"))
 
-    def test_the_banks_heading_names_the_payer(self):
-        meta = {"statement": {"title": "Transfer from Bola Johnson", "narration": "rent",
-                              "type": "NIP"}}
-        self.assertEqual(deposit_sender(meta), ("BOLA JOHNSON", "Bank transfer", "rent"))
-        meta = {"statement": {"title": "Transfer from BOLA JOHNSON to ADA EZE"}}
-        self.assertEqual(deposit_sender(meta)[0], "BOLA JOHNSON")
+    def test_the_nip_origin_names_the_payer(self):
+        """The default remark only repeats the name, so it is returned for the
+        receipt to drop (see credit_receipt_rows)."""
+        self.assertEqual(
+            deposit_sender(_nip("NIP:BOLA ADE JOHNSON-Transfer from BOLA ADE JOHNSON")),
+            ("BOLA ADE JOHNSON", "Bank transfer", "Transfer from BOLA ADE JOHNSON"))
 
-    def test_the_payers_own_words_name_nobody(self):
-        """The narration is free text the payer typed: "transfer from friend"
-        is shown as written, never turned into a sender called FRIEND."""
-        meta = {"statement": {"title": "Inward transfer", "narration": "transfer from friend"}}
-        self.assertEqual(deposit_sender(meta), ("", "", "transfer from friend"))
+    def test_a_typed_remark_is_kept_and_the_origin_still_names_the_payer(self):
+        self.assertEqual(deposit_sender(_nip("NIP:BOLA ADE JOHNSON-June rent")),
+                         ("BOLA ADE JOHNSON", "Bank transfer", "June rent"))
 
-    def test_digits_are_never_a_name(self):
-        self.assertEqual(deposit_sender({"statement": {"title": "Transfer from 0123456789"}})[0], "")
+    def test_the_payers_own_words_never_name_anyone(self):
+        """The remark is free text the payer typed: "transfer from friend" is
+        shown as written, never turned into a sender called FRIEND."""
+        name, _how, remark = deposit_sender(_nip("NIP:BOLA ADE JOHNSON-transfer from friend"))
+        self.assertEqual(name, "BOLA ADE JOHNSON")
+        self.assertEqual(remark, "transfer from friend")
+        # Without the NIP shape there is no origin, and nobody is named.
+        self.assertEqual(deposit_sender(_nip("transfer from friend")),
+                         ("", "", "transfer from friend"))
+
+    def test_a_hyphenated_name_survives_the_split(self):
+        self.assertEqual(
+            deposit_sender(_nip("NIP:ADA EZE-OKAFOR-Transfer from ADA EZE-OKAFOR"))[0],
+            "ADA EZE-OKAFOR")
+
+    def test_a_bank_or_digits_are_never_named_as_the_payer(self):
+        text = "NIP:OPAY DIGITAL SERVICES-Transfer from BOLA ADE JOHNSON"
+        self.assertEqual(deposit_sender(_nip(text)), ("", "", text))
+        self.assertEqual(deposit_sender(_nip("NIP:0123456789-rent"))[0], "")
         self.assertEqual(deposit_sender({"statement": {"sender": "0123456789"}})[0], "")
 
     def test_nothing_recorded_names_nobody(self):
@@ -76,8 +97,7 @@ class CreditReceiptRowsTests(TestCase):
         return credit(self.user, Decimal("3900"), "Wallet funding", meta=meta, reference=ref)
 
     def test_names_the_account_reached_and_who_paid(self):
-        txn = self._credit("CR-1", {"statement": {
-            "title": "Transfer from BOLA JOHNSON", "narration": "for rent", "type": "NIP"}})
+        txn = self._credit("CR-1", _nip("NIP:BOLA JOHNSON-for rent"))
         rows = credit_receipt_rows(txn)
         self.assertEqual([k for k, _ in rows], [
             "Amount", "To", "Bank", "Account", "From", "Sender", "Narration", "Reference", "Date"])
@@ -91,7 +111,7 @@ class CreditReceiptRowsTests(TestCase):
         self.assertNotIn("0123456789", " ".join(v for _, v in rows))
 
     def test_a_heading_that_only_repeats_the_payer_is_not_printed_twice(self):
-        txn = self._credit("CR-2", {"statement": {"title": "Transfer from BOLA JOHNSON"}})
+        txn = self._credit("CR-2", _nip("NIP:BOLA JOHNSON-Transfer from BOLA JOHNSON"))
         values = dict(credit_receipt_rows(txn))
         self.assertEqual(values["From"], "BOLA JOHNSON")
         self.assertNotIn("Narration", values)
