@@ -2249,6 +2249,13 @@ def _funding_spending_notice(funding: dict) -> str:
 
 
 def _do_balance(user, msisdn: str) -> None:
+    # The bank sends no deposit notification. Read this customer's statement
+    # before answering, so a transfer they have just made shows up now instead
+    # of at the next background pass. Bounded: a slow bank delays the reply by
+    # a few seconds at most, and a deposit found later still gets its alert.
+    from wallet.deposit_sync import refresh_deposits_briefly
+
+    refresh_deposits_briefly(user)
     bals = all_balances(user)
     funding = customer_funding_account(user)
     notice = _funding_spending_notice(funding)

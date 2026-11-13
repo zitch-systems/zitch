@@ -61,8 +61,12 @@ def wallet_balance(request):
     -> {success, wallet, user_first_name, user_last_name, user_phone_number, user_email}
     """
     from accounts.views import avatar_url, spend_account_namespace
+    from wallet.deposit_sync import refresh_deposits_briefly
 
     user = request.user_obj
+    # Read the partner-bank statement first (bounded wait, throttled per
+    # account) so a deposit made seconds ago is in the balance the app shows.
+    refresh_deposits_briefly(user)
     wallet = get_or_create_wallet(user)
     return ok(
         success=True,
@@ -1008,7 +1012,12 @@ def transaction_history(request):
     """POST /api/user-transaction-history/ {access_token}
     -> {status, all_site_transactions: [{service, amount, transaction_status, date}]}
     """
+    from wallet.deposit_sync import refresh_deposits_briefly
+
     user = request.user_obj
+    # The app requests this alongside /api/wallet_balance/; both wait on one
+    # statement read, so a new deposit appears in the list and the balance together.
+    refresh_deposits_briefly(user)
     txns = list(customer_visible_transactions(user.transactions.all())[:100])
     reviews = _transaction_reviews(txns)
     return ok(

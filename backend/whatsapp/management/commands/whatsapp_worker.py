@@ -26,7 +26,8 @@ def _local_flow_digest():
 
 
 class Command(BaseCommand):
-    help = "Process durable WhatsApp messages and retry terminal transaction alerts."
+    help = ("Process durable WhatsApp messages, poll partner-bank statements for "
+            "deposits and retry terminal transaction alerts.")
 
     def add_arguments(self, parser):
         parser.add_argument("--once", action="store_true")
@@ -43,6 +44,12 @@ class Command(BaseCommand):
             type=float,
             default=30.0,
             help="Read back missing partner-bank funding accounts at this interval.",
+        )
+        parser.add_argument(
+            "--deposit-poll-interval-seconds",
+            type=float,
+            default=float(getattr(settings, "WEMA_DEPOSIT_POLL_SECONDS", 30.0) or 0),
+            help="Read partner-bank statements for new deposits at this interval (0 = off).",
         )
         parser.add_argument(
             "--alert-retry-interval-seconds",
@@ -84,6 +91,7 @@ class Command(BaseCommand):
         reconcile_lock = threading.Lock()
         account_repair_lock = threading.Lock()
         alert_retry_lock = threading.Lock()
+        deposit_poll_lock = threading.Lock()
 
         def stop(*_args):
             nonlocal stopped
@@ -129,6 +137,25 @@ class Command(BaseCommand):
                 connections.close_all()
                 account_repair_lock.release()
 
+        def poll_deposits():
+            # Deposits only: a statement read that credits new transfers once, on
+            # the same ledger guard as the Wema cron. Payouts, bills and account
+            # repair stay with the cron. The cron alone runs every 10 minutes and
+            # cannot run more often than once a minute, so without this pass a
+            # customer waited up to 10 minutes to see money they had sent.
+            if not deposit_poll_lock.acquire(blocking=False):
+                return
+            try:
+                close_old_connections()
+                from wallet.deposit_sync import poll_deposits as poll
+
+                poll()
+            except Exception:  # noqa: BLE001 - the next pass and the cron retry
+                self.stderr.write("background deposit poll failed; retrying")
+            finally:
+                connections.close_all()
+                deposit_poll_lock.release()
+
         def retry_transaction_alerts():
             # Money reconciliation belongs exclusively to the Wema cron. This
             # worker-owned pass only resumes delivery of alerts that were already
@@ -166,6 +193,9 @@ class Command(BaseCommand):
             10.0,
             min(float(options["alert_retry_interval_seconds"]), 3600.0),
         )
+        deposit_poll_interval = float(options["deposit_poll_interval_seconds"] or 0)
+        deposit_poll_interval = (
+            0.0 if deposit_poll_interval <= 0 else max(10.0, min(deposit_poll_interval, 3600.0)))
         alert_retry_lookback_days = max(1, min(int(options["alert_retry_lookback_days"]), 7))
         alert_retry_limit = max(1, min(int(options["alert_retry_limit"]), 200))
         # Money reconciliation belongs to the dedicated cron. It can still be
@@ -176,6 +206,7 @@ class Command(BaseCommand):
         next_reconcile = time.monotonic()
         next_account_repair = time.monotonic()
         next_alert_retry = time.monotonic()
+        next_deposit_poll = next_alert_retry
 
         while not stopped:
             now = time.monotonic()
@@ -194,6 +225,16 @@ class Command(BaseCommand):
                     daemon=True,
                 ).start()
                 next_account_repair = now + account_repair_interval
+
+            # Full reconciliation (local/test override) already reads deposits.
+            if (deposit_poll_interval and not run_reconcile and not options["once"]
+                    and now >= next_deposit_poll):
+                threading.Thread(
+                    target=poll_deposits,
+                    name="partner-bank-deposit-poll",
+                    daemon=True,
+                ).start()
+                next_deposit_poll = now + deposit_poll_interval
 
             if not options["once"] and now >= next_alert_retry:
                 threading.Thread(

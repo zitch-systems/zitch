@@ -906,6 +906,20 @@ WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS = int(
     os.environ.get("WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS", "2") or 2)
 WHATSAPP_ALERT_RETRY_LIMIT = int(
     os.environ.get("WHATSAPP_ALERT_RETRY_LIMIT", "50") or 50)
+# Deposit detection between reconcile_wema runs (wallet/deposit_sync.py). The
+# cron reads every statement every 10 minutes; a Render cron cannot run more
+# often than once a minute, and each run boots a fresh machine first. The
+# always-on WhatsApp worker reads statements for deposits only (no payouts or
+# bills) at this interval, stalest accounts first, capped per pass. 0 turns it off.
+WEMA_DEPOSIT_POLL_SECONDS = float(os.environ.get("WEMA_DEPOSIT_POLL_SECONDS", "") or 30)
+WEMA_DEPOSIT_POLL_MAX_WALLETS = int(os.environ.get("WEMA_DEPOSIT_POLL_MAX_WALLETS", "50") or 50)
+# A balance request (WhatsApp or app) reads that customer's statement first,
+# waiting at most WAIT seconds before replying with the balance as it stands
+# (0 skips the read). No account is read more than once per MIN_INTERVAL by the
+# poll or by requests.
+WEMA_DEPOSIT_SYNC_MIN_INTERVAL_SECONDS = float(
+    os.environ.get("WEMA_DEPOSIT_SYNC_MIN_INTERVAL_SECONDS", "") or 15)
+WEMA_DEPOSIT_SYNC_WAIT_SECONDS = float(os.environ.get("WEMA_DEPOSIT_SYNC_WAIT_SECONDS", "") or 5)
 # The web service also drains the inbound queue in a bounded background thread
 # after acknowledging a webhook, so a stopped/crashed/never-created worker service
 # cannot silently swallow every reply. Rows are claimed with SELECT FOR UPDATE, so
