@@ -65,6 +65,8 @@ const SendMoney = () => {
   const [pendingMessage, setPendingMessage] = useState('');
   const [pendingAttempt, setPendingAttempt] = useState<PendingAttempt | null>(null);
   const [recovered, setRecovered] = useState(false);
+  // The bank fee the server reports it charged with this transfer, for the receipt.
+  const [chargedFee, setChargedFee] = useState(0);
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
   // The bank's fee on a transfer to another bank, quoted when the confirm sheet
@@ -348,6 +350,8 @@ const SendMoney = () => {
         await clearSpendAttempt(attempt.scope, attempt.fingerprint, requestKey);
         if (!isCurrentSession()) return;
         setRecovered(isRecoveredSpendResponse(res));
+        const charged = Number(res.fee);
+        setChargedFee(Number.isFinite(charged) && charged > 0 ? charged : 0);
         setTxnRef(String(res.reference || ''));
         setStep(null);
         setDone(true);
@@ -403,7 +407,15 @@ const SendMoney = () => {
             : recovered
               ? 'This confirms your earlier transfer. No new transfer was made. Authorize a new transfer to send again.'
             : `${money(amount)} sent to ${recipientName || 'recipient'}.`}
-          rows={[['Recipient', recipientName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Transfer amount', money(amount), true]]}
+          rows={[
+            ['Recipient', recipientName || '—'], ['Account', acctShown], ['Bank', bankShown],
+            ...(note ? ([['Note', note]] as [string, string][]) : []),
+            ['Transfer amount', money(amount), true],
+            // The fee the bank took with it, as the WhatsApp receipt names it.
+            ...(!pending && chargedFee > 0
+              ? ([['Bank fee', money(chargedFee)], ['Total debited', money(amount + chargedFee)]] as [string, string][])
+              : []),
+          ]}
           reference={txnRef}
           status={pending ? (underReview ? 'Under review' : 'Processing') : 'Successful'}
           footer={pending ? (
