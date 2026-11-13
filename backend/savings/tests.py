@@ -223,7 +223,7 @@ class SavingsSpendGateTests(TestCase):
     Written against the states wallet.services.assert_customer_spending_available
     actually checks on the Partnership rail -- partnership_allowed, the stored
     account number, is_active and partnership_new_business_allowed. The version
-    of these tests written for the 9PSB rail built its states from a BankAccount
+    of these tests written for the previous rail built its states from a BankAccount
     row, which does not exist here; the states below are the Partnership
     equivalents, not a translation of that fixture.
     """

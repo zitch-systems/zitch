@@ -741,6 +741,50 @@ class ClientIpTests(TestCase):
         })
         self.assertEqual(client_ip(request), "198.51.100.8")
 
+    @override_settings(RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_two_customers_behind_the_platform_proxy_are_two_addresses(self):
+        # Observed on the deployed host: the right-most entry is the platform's own
+        # proxy, the same for everyone, so every per-IP limit was one shared bucket.
+        def seen(customer):
+            return client_ip(SimpleNamespace(META={
+                "HTTP_X_FORWARDED_FOR": f"{customer}, 10.30.1.250",
+                "REMOTE_ADDR": "10.30.1.250"}))
+
+        self.assertEqual(seen("41.58.10.7"), "41.58.10.7")
+        self.assertEqual(seen("105.112.3.9"), "105.112.3.9")
+
+    @override_settings(RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_behind_cloudflare_the_customer_is_the_address_cloudflare_names(self):
+        request = SimpleNamespace(META={
+            "HTTP_X_FORWARDED_FOR": "41.58.10.7, 172.70.1.1",
+            "HTTP_CF_CONNECTING_IP": "41.58.10.7", "REMOTE_ADDR": "10.30.1.250"})
+        self.assertEqual(client_ip(request), "41.58.10.7")
+
+    @override_settings(RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_a_prepended_address_cannot_buy_a_fresh_bucket(self):
+        # The caller controls only what is to the LEFT of their own address.
+        request = SimpleNamespace(META={
+            "HTTP_X_FORWARDED_FOR": "8.8.8.8, 41.58.10.7, 10.30.1.250",
+            "HTTP_CF_CONNECTING_IP": "8.8.4.4", "REMOTE_ADDR": "10.30.1.250"})
+        self.assertEqual(client_ip(request), "41.58.10.7")
+
+    @override_settings(RATELIMIT_ENABLE=True, RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_one_customer_at_the_limit_does_not_lock_out_another(self):
+        from django.core.cache import cache
+        from common.ratelimit import ratelimit
+
+        cache.clear()
+        view = ratelimit("shared-bucket-test", 2, 60)(lambda request: "served")
+
+        def call(customer):
+            return view(SimpleNamespace(META={
+                "HTTP_X_FORWARDED_FOR": f"{customer}, 10.30.1.250",
+                "REMOTE_ADDR": "10.30.1.250"}))
+
+        self.assertEqual([call("41.58.10.7") for _ in range(2)], ["served", "served"])
+        self.assertEqual(call("41.58.10.7").status_code, 429)
+        self.assertEqual(call("105.112.3.9"), "served")
+
 
 @override_settings(
     RATELIMIT_ENABLE=True,
@@ -1399,6 +1443,42 @@ class PasswordRecoveryTests(TestCase):
         self.post("/api/password/forgot/", phone="08010000001")
         res, _ = self.post("/api/password/reset/", phone="08010000001", otp="000000", password="NewPassw0rd1!")
         self.assertEqual(res.status_code, 400)
+
+    @override_settings(OTP_DAILY_CODE_LIMIT=3)
+    def test_reset_codes_stop_at_the_daily_allowance(self):
+        # Every code is five more guesses. Without a cap one caller could keep
+        # asking for codes and guess a victim's reset code within weeks.
+        make_user("08010000001", "a@zitch.test")
+        with patch.object(OTP, "RESEND_COOLDOWN_SECONDS", 0):
+            for _ in range(6):
+                res, _ = self.post("/api/password/forgot/", phone="08010000001")
+                self.assertEqual(res.status_code, 200)   # the reply never says which
+        self.assertEqual(OTP.objects.filter(phone="08010000001", purpose=OTP.RESET).count(), 3)
+
+    @override_settings(OTP_DAILY_CODE_LIMIT=3)
+    def test_the_allowance_is_per_purpose_and_rolls_off_after_a_day(self):
+        make_user("08010000001", "a@zitch.test")
+        for _ in range(3):
+            OTP.issue(phone="08010000001", code="111111", purpose=OTP.SIGNUP)
+        OTP.objects.update(created=timezone.now() - timedelta(minutes=5))
+        self.assertTrue(views._otp_on_cooldown("08010000001", OTP.SIGNUP))
+        self.assertFalse(views._otp_on_cooldown("08010000001", OTP.RESET))
+        OTP.objects.update(created=timezone.now() - timedelta(hours=25))
+        self.assertFalse(views._otp_on_cooldown("08010000001", OTP.SIGNUP))
+
+    def test_an_operator_password_cannot_be_reset_through_the_customer_flow(self):
+        staff, _ = make_user("08010000009", "ops@zitch.test")
+        User.objects.filter(pk=staff.pk).update(is_staff=True)
+        res, _ = self.post("/api/password/forgot/", phone="08010000009")
+        self.assertEqual(res.status_code, 200)            # same generic reply
+        self.assertFalse(OTP.objects.filter(phone="08010000009").exists())
+        # Even with a live reset code (issued before the account became staff).
+        OTP.issue(phone="08010000009", code=self.RESET_CODE, email="ops@zitch.test",
+                  purpose=OTP.RESET)
+        res, _ = self.post("/api/password/reset/", phone="08010000009",
+                           otp=self.RESET_CODE, password="NewPassw0rd1!")
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(User.objects.get(pk=staff.pk).check_password("NewPassw0rd1!"))
 
     def test_forgot_and_reset_work_with_an_email_identifier(self):
         user, _ = make_user("08010000001", "a@zitch.test")

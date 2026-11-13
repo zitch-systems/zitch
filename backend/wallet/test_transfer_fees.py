@@ -37,7 +37,20 @@ class TransferFeeQuoteTests(TestCase):
 
     def test_the_banks_own_schedule_wins_when_it_can_be_read(self):
         with patch("utility.providers.payout_charge", return_value=Decimal("12.00")):
-            self.assertEqual(transfer_fee(1000, "058"), Decimal("12.90"))
+            self.assertEqual(transfer_fee(1000, "058"), Decimal("12.00"))
+
+    def test_a_schedule_that_already_includes_vat_is_not_taxed_again(self):
+        # What the bank debits, and what its schedule quotes: charging ₦11.56 for
+        # a ₦10.75 fee left the ledger ₦0.81 below the bank on every transfer.
+        for amount, quoted in ((1000, "10.75"), (20000, "26.88"), (80000, "53.75")):
+            with patch("utility.providers.payout_charge", return_value=Decimal(quoted)):
+                self.assertEqual(transfer_fee(amount, "058"), Decimal(quoted))
+
+    def test_a_schedule_listing_the_bare_tariff_still_gets_vat(self):
+        for amount, bare, charged in ((1000, "10", "10.75"), (20000, "25.00", "26.88"),
+                                      (80000, "50", "53.75")):
+            with patch("utility.providers.payout_charge", return_value=Decimal(bare)):
+                self.assertEqual(transfer_fee(amount, "058"), Decimal(charged))
 
     def test_a_transfer_to_another_wema_account_is_free(self):
         with patch("utility.providers.payout_charge", return_value=Decimal("10.00")):

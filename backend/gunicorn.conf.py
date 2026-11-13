@@ -6,7 +6,9 @@ Render service predates that Blueprint and currently starts with only
 the service working directory, so both deployment paths get the same bounded,
 threaded process model without a dashboard-only command edit.
 """
+import logging
 import os
+import re
 
 
 def _positive_int(name: str, default: int, maximum: int) -> int:
@@ -37,3 +39,28 @@ max_requests_jitter = _positive_int("GUNICORN_MAX_REQUESTS_JITTER", 200, 10000)
 accesslog = "-"
 errorlog = "-"
 capture_output = True
+
+
+# Some URLs carry their credential in the path: the bank callbacks' shared value,
+# and the one-time WhatsApp approval, verification and scan links. The access log
+# prints the request line, so each of those reached the log stream and every drain
+# behind it. Keep the route, drop the last segment.
+_CREDENTIAL_PATH = re.compile(
+    r"(/webhooks/wema/(?:account|authorize|transaction|notification)/"
+    r"|/wa/(?:approve|verify)/|/scan/)[^/\s?]+")
+
+
+class _RedactPathCredentials(logging.Filter):
+    def filter(self, record):
+        atoms = record.args
+        if isinstance(atoms, dict):
+            for key in ("r", "U"):
+                value = atoms.get(key)
+                if isinstance(value, str):
+                    atoms[key] = _CREDENTIAL_PATH.sub(r"\1[redacted]", value)
+        return True
+
+
+def on_starting(server):
+    # Gunicorn's own access logger, before any worker is forked.
+    server.log.access_log.addFilter(_RedactPathCredentials())

@@ -184,6 +184,9 @@ DATABASES = {
     "default": dj_database_url.config(
         default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
         conn_max_age=600,
+        # A reused connection is pinged before each request, so a database restart
+        # or failover costs one reconnect instead of an error on every thread.
+        conn_health_checks=True,
         ssl_require=env_bool("DJANGO_DB_SSL", not DEBUG and bool(_database_url)),
     )
 }
@@ -338,6 +341,10 @@ PUBLIC_HEALTH_DETAILS = env_bool("DJANGO_PUBLIC_HEALTH_DETAILS", DEBUG or TESTIN
 # .env, so a dev's local rate-limit setting can't bleed shared cache counts into
 # unrelated test cases (RateLimitTests opts back in via override_settings).
 RATELIMIT_ENABLE = False if TESTING else env_bool("RATELIMIT_ENABLE", True)
+# One-time codes a phone may be sent per purpose (sign-up, password reset, email
+# confirmation) in any 24 hours. Each code allows five guesses; see
+# accounts.views._otp_on_cooldown. 0 disables the cap.
+OTP_DAILY_CODE_LIMIT = max(0, int(os.environ.get("OTP_DAILY_CODE_LIMIT", "10") or 10))
 # Number of trusted reverse-proxy hops represented at the RIGHT side of
 # X-Forwarded-For. Render is one hop. Taking the configured right-side entry
 # prevents a client from prepending a fake address to rotate rate-limit buckets.
@@ -1026,6 +1033,10 @@ if REDIS_URL and not TESTING:
         "default": {
             "BACKEND": "django.core.cache.backends.redis.RedisCache",
             "LOCATION": REDIS_URL,
+            # redis-py waits forever by default; a stalled cache would then hold
+            # every request thread (and the /readyz probe) until the instance is
+            # replaced. Fail fast so callers reach their own fallbacks.
+            "OPTIONS": {"socket_connect_timeout": 5, "socket_timeout": 5},
         }
     }
 

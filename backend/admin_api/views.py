@@ -649,6 +649,9 @@ def user_status(request):
     revoked = 0
     if status == "frozen":
         revoked = u.tokens.all().delete()[0]
+        # Refresh tokens too: left live, a stolen one minted a new session the
+        # moment the account was unfrozen.
+        u.refresh_tokens.filter(revoked_at__isnull=True).update(revoked_at=timezone.now())
     audit(request, "user.freeze" if status == "frozen" else "user.unfreeze",
           target=f"u_{u.id} ({u.get_full_name() or u.username})",
           before={"status": before}, after={"status": status, "sessions_revoked": revoked})

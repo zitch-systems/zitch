@@ -118,11 +118,28 @@ def _session_payload(user, request) -> dict:
             "expires_in": int(settings.TOKEN_TTL_HOURS) * 3600}
 
 
-def _otp_on_cooldown(phone: str) -> bool:
-    """True if a code was issued for this phone within the resend cooldown,
-    to stop OTP-flooding / rapid brute-force of a victim's number."""
-    cutoff = timezone.now() - timedelta(seconds=OTP.RESEND_COOLDOWN_SECONDS)
-    return OTP.objects.filter(phone=phone, created__gte=cutoff).exists()
+def _otp_on_cooldown(phone: str, purpose: str = OTP.SIGNUP) -> bool:
+    """True if no new code may be issued for this phone right now: one was issued
+    within the resend cooldown, or the day's allowance for this purpose is spent.
+
+    Each code allows OTP.MAX_ATTEMPTS guesses. With only the 20-second cooldown,
+    one caller could keep requesting codes for a victim's number and try about
+    21,600 six-digit guesses a day against a password reset - roughly a 2% chance
+    of taking the account every day. OTP_DAILY_CODE_LIMIT codes per purpose in any
+    24 hours bounds that to a few dozen guesses. Rows are never deleted, so the
+    count needs no cache and survives restarts.
+    """
+    now = timezone.now()
+    issued = OTP.objects.filter(phone=phone)
+    if issued.filter(created__gte=now - timedelta(seconds=OTP.RESEND_COOLDOWN_SECONDS)).exists():
+        return True
+    limit = int(getattr(settings, "OTP_DAILY_CODE_LIMIT", 10) or 0)
+    return limit > 0 and issued.filter(
+        purpose=purpose, created__gte=now - timedelta(hours=24)).count() >= limit
+
+
+def _is_operator(user) -> bool:
+    return bool(user.is_staff or user.is_superuser)
 
 
 def _otp_code() -> str:
@@ -443,7 +460,10 @@ def password_forgot(request):
         except ValidationError:
             return fail("Enter a valid phone number or email address")
     user = User.objects.filter(phone=ident).first() or User.objects.filter(email__iexact=ident).first()
-    if user is not None and user.is_active and user.phone and not _otp_on_cooldown(user.phone):
+    # An operator's password is never reset through the customer flow: a code sent
+    # to a staff member's phone would otherwise be a path to an operator session.
+    if (user is not None and user.is_active and user.phone and not _is_operator(user)
+            and not _otp_on_cooldown(user.phone, OTP.RESET)):
         code = _otp_code()
         OTP.issue(phone=user.phone, code=code, email=user.email or "", purpose=OTP.RESET)
         message = f"Your Zitch password reset code is {code}"
@@ -488,7 +508,7 @@ def password_reset(request):
     with db_transaction.atomic():
         user = (User.objects.select_for_update().filter(phone=ident).first()
                 or User.objects.select_for_update().filter(email__iexact=ident).first())
-        if user is None or not user.is_active or not user.phone:
+        if user is None or not user.is_active or not user.phone or _is_operator(user):
             return fail("Invalid reset code", status=400)
         otp = (OTP.objects.select_for_update().filter(phone=user.phone, purpose=OTP.RESET)
                .order_by("-created", "-pk").first())
@@ -1172,7 +1192,7 @@ def email_verify_start(request):
         target = new_email or (user.email or "").strip().lower()
         if not target:
             return fail("No email address on this account — include one in the request")
-        if _otp_on_cooldown(user.phone):
+        if _otp_on_cooldown(user.phone, OTP.EMAIL):
             return fail("Wait a few seconds before requesting a new email code or changing the address.",
                         status=429, code="otp_cooldown")
         if user.email != target:

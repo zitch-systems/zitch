@@ -64,31 +64,44 @@ def _free_destination(bank_code: str, bank_name: str) -> bool:
     return "wema" in name or "alat" in name
 
 
-def _schedule_charge(amount: Decimal) -> Decimal:
-    from utility.providers import payout_charge
-
-    try:
-        charge = payout_charge(amount)
-    except Exception:  # noqa: BLE001 - fall back to the published tariff
-        charge = None
-    if charge is not None:
-        return Decimal(str(charge))
+def _published_charge(amount: Decimal) -> Decimal:
     for upper, tariff in _FALLBACK_TARIFF:
         if upper is None or amount <= upper:
             return tariff
     return _FALLBACK_TARIFF[-1][1]
 
 
+def _schedule_charge(amount: Decimal):
+    """The bank's own figure for ``amount``, or None when its schedule cannot be read."""
+    from utility.providers import payout_charge
+
+    try:
+        charge = payout_charge(amount)
+    except Exception:  # noqa: BLE001 - fall back to the published tariff
+        return None
+    return None if charge is None else Decimal(str(charge))
+
+
 def transfer_fee(amount, bank_code: str = "", bank_name: str = "") -> Decimal:
-    """The fee the bank will take for sending ``amount`` to this bank: charge + VAT."""
+    """The fee the bank will take for sending ``amount`` to this bank, VAT included.
+
+    The bank's schedule quotes what it debits: ₦10.75, ₦26.88, ₦53.75. Adding VAT
+    to that again charged ₦11.56 for a ₦10.75 fee, and the bank's balance check on
+    13 November found the bank holding ₦1.62 more than the ledger after two
+    transfers. VAT is therefore added only to a bare tariff (₦10, ₦25, ₦50): the
+    published one when the schedule cannot be read, or a schedule that lists it.
+    """
     if not _enabled() or _free_destination(bank_code, bank_name):
         return Decimal("0.00")
     amount = Decimal(str(amount))
     if amount <= 0:
         return Decimal("0.00")
     vat = Decimal(str(getattr(settings, "TRANSFER_FEE_VAT_RATE", "0.075")))
+    published = _published_charge(amount)
     charge = _schedule_charge(amount)
-    return (charge * (Decimal("1") + vat)).quantize(_KOBO, rounding=ROUND_HALF_UP)
+    if charge is None or charge == published:
+        charge = published * (Decimal("1") + vat)
+    return charge.quantize(_KOBO, rounding=ROUND_HALF_UP)
 
 
 def debit_transfer_fee(user, payout, fee: Decimal):

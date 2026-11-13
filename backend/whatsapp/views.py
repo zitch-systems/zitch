@@ -410,6 +410,7 @@ def _process(msg: dict) -> None:
     is_text = msg_type == "text"
     body = (msg.get("text") or {}).get("body", "") if is_text else ""
     is_flow_reply = False
+    is_list_reply = False
     # A voice note or a photo is a message, not an unsupported event. Only the
     # REFERENCE is taken here — the id, and the caption a photo may carry. The
     # bytes are pulled in the worker, off the webhook thread, because Meta
@@ -434,6 +435,9 @@ def _process(msg: dict) -> None:
             picked = (inter.get("list_reply") or inter.get("button_reply") or {})
             if picked.get("id"):
                 is_text, body = True, str(picked["id"])
+                # A list row only means something to the picker that sent it;
+                # the router must not read a stale "5" as the main menu's 5.
+                is_list_reply = bool(inter.get("list_reply"))
     # Mask a PIN before it ever touches the log/monitor — by flow state AND by
     # shape, so a PIN typed out-of-band is never stored in clear.
     looks_like_pin = bool(is_text and _PIN_RE.match(body or ""))
@@ -475,6 +479,7 @@ def _process(msg: dict) -> None:
         row, _created = enqueue_inbound(
             message_id=mid, msisdn=frm, logged_text=logged,
             payload={"is_text": is_text, "body": body, "flow_reply": is_flow_reply,
+                     "list_reply": is_list_reply,
                      "retired_setup_input": private_setup_input,
                      "media_kind": msg_type if media_id else "",
                      "media_id": media_id, "media_caption": media_caption},

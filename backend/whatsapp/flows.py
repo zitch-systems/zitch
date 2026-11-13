@@ -2271,7 +2271,7 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
     # therefore asking for a separate finder and picker only duplicated the same
     # question on screen.
     bank_value = " ".join(str(data.get("bank", "") or "").split())[:80]
-    bank = (Bank.objects.filter(code=bank_value, active=True).exclude(code="9psb").first()
+    bank = (Bank.objects.filter(code=bank_value, active=True).first()
             if bank_value else None)
     if bank is None and bank_value:
         from .router import _match_banks
@@ -2316,6 +2316,18 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
             error=f"Couldn't verify that account at {bank.name} - check the number.")
     name = (res.get("name") or "").strip() or "Bank recipient"
 
+    # Quoted once, here, exactly as the chat path quotes it: the fee shown on the
+    # PIN screen is the fee execute_payout debits, and the balance has to cover
+    # the transfer and its fee before the PIN is asked for.
+    from wallet.transfer_fees import transfer_fee
+
+    fee = transfer_fee(amount, bank.bank_code, bank.name)
+    if fee > 0 and _insufficient(user, amount + fee):
+        balance = _fresh_wallet_balance(user)
+        return _transfer_form_screen(
+            error=f"Insufficient balance - NGN {amount:,.2f} plus the NGN {fee:,.2f} bank fee "
+                  f"is NGN {amount + fee:,.2f}, and you have NGN {balance:,.2f} available.")
+
     # The chat path routes through _arm_confirm, which refuses to raise a PIN pad
     # for an account that has no PIN - a screen the customer can never satisfy.
     # The form chains straight to PIN_SCREEN, so it must make the same refusal.
@@ -2328,7 +2340,7 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
 
     pa.payload.update({"amount": str(amount), "account": account,
                        "bank_code": bank.bank_code, "bank_name": bank.name,
-                       "name": name, "pin_attempts": 0,
+                       "name": name, "fee": str(fee), "pin_attempts": 0,
                        "narration": clean_narration(data.get("narration"))})
     fields = _flow_fields(pa)
     pa.payload["flow_fields"] = fields

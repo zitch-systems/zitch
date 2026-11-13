@@ -28,6 +28,16 @@ class NoRetiredProviderTests(SimpleTestCase):
                      "reconcile_archived_balances"):
             self.assertEqual(list(BACKEND.glob(f"*/management/commands/{name}.py")), [], name)
 
+    def test_9psb_is_named_only_by_the_guard_that_refuses_it(self):
+        offenders = []
+        for path in BACKEND.rglob("*.py"):
+            rel = path.relative_to(BACKEND).as_posix()
+            if "/migrations/" in rel or rel in ALLOWED or path.name.startswith("test"):
+                continue
+            if re.search(r"9\s?psb", path.read_text(errors="ignore"), re.IGNORECASE):
+                offenders.append(rel)
+        self.assertEqual(offenders, [])
+
     def test_no_code_reads_retired_tables(self):
         pattern = re.compile(r"\b(banking_[a-z]+|wema_vas_virtualaccount)\b")
         offenders = []

@@ -50,12 +50,19 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
         try:
             idx = int(text.strip()) - 1
         except ValueError:
+            # The prompt offers "type the bank's exact name" - so an exact,
+            # unambiguous name is the bank, listed or not.
+            named = [b for b in Bank.objects.filter(active=True)
+                     if b.name.lower() == text.strip().lower()]
+            if len(named) == 1:
+                return _resolve_and_confirm(pa, user, msisdn, named[0])
             return _reroute_or_reprompt(pa, msisdn, text,
-                                       "Reply with the number of the bank from the list, or \"cancel\".")
+                                       "Reply with the number of the bank from the list, or type "
+                                       "its exact name - or \"cancel\".")
         if not (0 <= idx < len(choices)):
             return _reroute_or_reprompt(pa, msisdn, text,
                                        "That number isn't on the list. Try again, or \"cancel\".")
-        bank = Bank.objects.filter(code=choices[idx], active=True).exclude(code="9psb").first()
+        bank = Bank.objects.filter(code=choices[idx], active=True).first()
         if bank is None:
             _clear_actions(msisdn)
             return reply(msisdn, "Something went wrong picking that bank. Reply \"menu\" to start over.")
@@ -70,7 +77,7 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
 def _match_banks(text: str) -> list:
     t = text.strip().lower()
-    banks = list(Bank.objects.filter(active=True).exclude(code="9psb"))
+    banks = list(Bank.objects.filter(active=True))
     exact = [b for b in banks if b.name.lower() == t]
     if exact:
         return exact
@@ -111,7 +118,7 @@ def _bank_items(candidates=None, query: str = "") -> list:
     once (#357) - so a bad search must degrade to "no narrowing", never to a
     screen with nothing on it.
     """
-    banks = list(Bank.objects.filter(active=True).exclude(code="9psb").order_by("-popular", "name")[:200])
+    banks = list(Bank.objects.filter(active=True).order_by("-popular", "name")[:200])
     q = " ".join(str(query or "").split()).lower()
     if q:
         hits = [b for b in banks if q in b.name.lower()]
@@ -137,7 +144,7 @@ def nuban_bank_candidates(account: str) -> list:
         return []
     serial, check = digits[:9], int(digits[9])
     out = []
-    for bank in Bank.objects.filter(active=True).exclude(code="9psb"):
+    for bank in Bank.objects.filter(active=True):
         code = "".join(ch for ch in (bank.bank_code or "") if ch.isdigit())
         if not code:
             continue
@@ -387,7 +394,7 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         reply(msisdn, msg)
         return Outcome(msg, OUTCOME_FAILED)
     amount = Decimal(pa.payload["amount"])
-    bank = Bank.objects.filter(bank_code=pa.payload["bank_code"], active=True).exclude(code="9psb").first()
+    bank = Bank.objects.filter(bank_code=pa.payload["bank_code"], active=True).first()
     if bank is None:
         _clear_actions(msisdn)
         msg = f"Something went wrong with your {_money(amount)} transfer. Reply \"menu\" to start over."
@@ -456,6 +463,23 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
             msg = (f"That {_money(amount)} transfer to {who} was submitted before, but its "
                    "status is not available yet. Do not send it again; contact support so "
                    "we can confirm it.")
+            reply(msisdn, msg)
+            return Outcome(msg, OUTCOME_PENDING)
+        if exc.kind == "state_conflict":
+            # The bank said it paid but the ledger disagrees: the money has
+            # probably left. Never a failure that invites a second payout - the
+            # same under-review answer the app gives (transfers.views).
+            from wallet.alerts import mark_awaiting_settlement
+            from wallet.models import Transaction
+
+            _clear_actions(msisdn)
+            prior = Transaction.objects.filter(
+                user=user, idempotency_key=f"wa-{pa.id}").first()
+            if prior is not None:
+                mark_awaiting_settlement(prior)
+            ref = f" Ref {prior.reference}." if prior is not None else ""
+            msg = (f"⏳ Your transfer of {_money(amount)} to {who} is under review. "
+                   f"Do not send it again; we'll confirm after reconciliation.{ref}")
             reply(msisdn, msg)
             return Outcome(msg, OUTCOME_PENDING)
         _clear_actions(msisdn)

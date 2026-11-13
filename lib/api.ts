@@ -15,7 +15,7 @@ import { touchActivity } from '@/lib/session';
 // User-Agent on every API request (covers the screens that call fetch()
 // directly, not just apiPost). USER_AGENT is reused here so an explicit apiPost
 // header and the guard agree. WAF refusals are never routed around the edge.
-import { USER_AGENT, isEdgeBlockMessage } from '@/lib/netPatch';
+import { USER_AGENT, EDGE_BLOCK_USER_MESSAGE, isEdgeBlockMessage } from '@/lib/netPatch';
 import { deviceHeaders } from '@/lib/deviceIntegrity';
 
 // On an authenticated 401 the session is dead (expired or revoked): clear it and
@@ -225,7 +225,7 @@ export async function apiJson<T = any>(path: string, body: Record<string, any> =
         return {
           ...parsed,
           success: false,
-          message: 'A network security check blocked this request. Please try again in a moment.',
+          message: EDGE_BLOCK_USER_MESSAGE,
         } as T;
       }
       // Preserve the transport outcome for money callers that use apiJson.

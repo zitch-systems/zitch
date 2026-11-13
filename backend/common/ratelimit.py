@@ -30,12 +30,80 @@ def opaque_cache_identifier(scope: str, value: str) -> str:
     return hmac.new(key, message, hashlib.sha256).hexdigest()[:32]
 
 
+# Cloudflare's published proxy ranges. CF-Connecting-IP is honoured only when the
+# adjacent public hop is one of these; trusting the header from anyone else would
+# let a direct caller name their own address.
+CLOUDFLARE_PROXY_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+    "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+))
+
+# Addresses that can only be one of the host platform's own proxies.
+_PLATFORM_INTERNAL_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
+    "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
+))
+
+
+def _in_networks(address, networks) -> bool:
+    return any(address.version == network.version and address in network
+               for network in networks)
+
+
+def rightmost_public_ip(request) -> str:
+    """The caller's own address: the right-most PUBLIC entry in X-Forwarded-For,
+    falling back to REMOTE_ADDR.
+
+    A caller can only PREPEND to X-Forwarded-For; every trusted hop APPENDS. So the
+    right-most public entry is the address that connected to the edge, whatever a
+    client puts in the header. When that hop is Cloudflare, the client is the one
+    Cloudflare names in CF-Connecting-IP.
+    """
+    xff = request.META.get("HTTP_X_FORWARDED_FOR", "") or ""
+    public_chain = []
+    for part in [p.strip() for p in xff.split(",") if p.strip()]:
+        try:
+            addr = ipaddress.ip_address(part)
+        except ValueError:
+            continue
+        if addr.is_global:
+            public_chain.append(addr)
+
+    if public_chain:
+        adjacent_proxy = public_chain[-1]
+        if _in_networks(adjacent_proxy, CLOUDFLARE_PROXY_NETWORKS):
+            connecting = (request.META.get("HTTP_CF_CONNECTING_IP", "") or "").strip()
+            try:
+                caller = ipaddress.ip_address(connecting)
+            except ValueError:
+                caller = None
+            if caller is not None and caller.is_global:
+                return str(caller)
+        return str(adjacent_proxy)
+    remote = (request.META.get("REMOTE_ADDR", "") or "").strip()
+    try:
+        return str(ipaddress.ip_address(remote))
+    except ValueError:
+        return "unknown"
+
+
 def client_ip(request) -> str:
     """Best-effort client IP from the configured trusted proxy boundary.
 
     Untrusted clients can prepend arbitrary values to X-Forwarded-For. Selecting
     from the right using the known proxy-hop count prevents that spoof from
     creating a fresh rate-limit bucket for every guess.
+
+    The hop count is only right for one proxy topology. On this platform the entry
+    it selects has been one of the host's own internal proxies (10.x), or
+    Cloudflare's edge on the custom domain - an address EVERY customer shares, so
+    every per-IP limit became one global bucket: a dozen requests a minute from
+    anyone returned 429 to everyone. When the selected hop is a proxy rather than a
+    client, resolve the caller from the right-most public hop instead.
     """
     xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
     hops = int(getattr(settings, "RATELIMIT_TRUSTED_PROXY_HOPS", 0) or 0)
@@ -44,9 +112,14 @@ def client_ip(request) -> str:
         if len(forwarded) >= hops:
             candidate = forwarded[-hops]
             try:
-                return str(ipaddress.ip_address(candidate))
+                address = ipaddress.ip_address(candidate)
             except ValueError:
-                pass
+                address = None
+            if address is not None:
+                if (_in_networks(address, _PLATFORM_INTERNAL_NETWORKS)
+                        or _in_networks(address, CLOUDFLARE_PROXY_NETWORKS)):
+                    return rightmost_public_ip(request)
+                return str(address)
     remote = (request.META.get("REMOTE_ADDR", "") or "").strip()
     try:
         return str(ipaddress.ip_address(remote))

@@ -170,3 +170,42 @@ it('resumes a notification tap only after successful account authentication', as
   expect(mockReplace).toHaveBeenCalledWith('/notifications');
   act(() => tree.unmount());
 });
+
+describe('sign-in failure messages', () => {
+  const { notify } = jest.requireMock<{ notify: jest.Mock }>('@/components/design/Notify');
+  const attempt = async () => {
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Signin />); });
+    await act(async () => { field(tree, 'Email or phone').props.onChangeText('b@zitch.test'); });
+    await act(async () => { field(tree, 'Password').props.onChangeText('secret-pass'); });
+    await act(async () => { await field(tree, 'Sign in').props.onPress(); });
+    act(() => tree.unmount());
+  };
+
+  it('keeps the server message for wrong credentials', async () => {
+    mockPublicPost.mockResolvedValue({ ok: false, status: 401, json: async () => ({ message: 'Incorrect details' }) });
+    await attempt();
+    expect(notify).toHaveBeenCalledWith('Error', 'Incorrect details');
+    expect(mockStoreSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an HTML gateway page', 502, async () => { throw new SyntaxError('Unexpected token <'); }],
+    ['a structured server fault', 500, async () => ({ message: 'Internal error' })],
+    ['an empty gateway timeout', 504, async () => { throw new SyntaxError('Unexpected end of JSON input'); }],
+    ['an unparseable 4xx body', 400, async () => { throw new SyntaxError('Unexpected token <'); }],
+  ])('does not call %s a wrong password', async (_label, status, json) => {
+    mockPublicPost.mockResolvedValue({ ok: false, status, json });
+    await attempt();
+    expect(notify).toHaveBeenCalledWith('Error', 'Zitch is temporarily unavailable. Please try again shortly.');
+    expect(notify).not.toHaveBeenCalledWith('Error', 'Incorrect Details');
+  });
+
+  it('maps a WAF block to the same message the API layer uses', async () => {
+    mockPublicPost.mockResolvedValue({
+      ok: false, status: 403, json: async () => ({ message: 'You are not allowed to access this resource' }),
+    });
+    await attempt();
+    expect(notify).toHaveBeenCalledWith('Error', 'A network security check blocked this request. Please try again in a moment.');
+  });
+});

@@ -616,7 +616,15 @@ const SendMoney = () => {
           ['Bank', picked ? picked.bank_name : mode === 'bank' ? bank?.name || '—' : 'Zitch'],
           ...(sendsToBank ? [['Amount', money(amount)] as [string, string], ['Bank fee', feeLabel] as [string, string]] : []),
         ]}
-        onPay={() => { const attempt = transferAttempt(); reviewedPayment.current = JSON.stringify([attempt.scope, attempt.fingerprint, note]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        onPay={() => {
+          // The bank takes its fee from the same balance, so the balance has to
+          // cover both. Without a quote the server makes this check after the PIN.
+          if (fee !== null && totalWithFee > balance) {
+            setStep(null);
+            notify('Error', `You need ${money(totalWithFee)} for this transfer: ${money(amount)} plus the ${money(fee)} bank fee. Your balance is ${money(balance)}.`);
+            return;
+          }
+          const attempt = transferAttempt(); reviewedPayment.current = JSON.stringify([attempt.scope, attempt.fingerprint, note]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">

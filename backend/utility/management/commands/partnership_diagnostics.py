@@ -23,7 +23,7 @@ def account_inventory(source):
     retired = (numbered.alias(destination_digest=DestinationDigest("account_number"))
                .filter(retired_wallet_markers() | Q(account_number__startswith="711")
                        | Q(destination_digest__in=UnsettledFunding.objects.values("destination_digest"))))
-    # Every 9PSB and Wema VAS table was dropped by wallet.0034; any listed here
+    # Every retired-provider table was dropped by wallet.0034; any listed here
     # means retired schema came back and must be removed again.
     leftover = sorted(t for t in connection.introspection.table_names()
                       if t.startswith(("banking_", "wema_vas_")))

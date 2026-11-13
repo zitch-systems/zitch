@@ -7,6 +7,7 @@ import { enforceHardExpiry, unlockSession } from '@/lib/session';
 import { pendingWhatsAppApproval } from '@/lib/pendingApproval';
 import { registerForPushNotifications, takePendingNotificationOpen } from '@/lib/notifications';
 import { publicPost } from '@/lib/api';
+import { EDGE_BLOCK_USER_MESSAGE, isEdgeBlockMessage } from '@/lib/netPatch';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
@@ -120,7 +121,9 @@ const Signin = () => {
         email_or_phone: form.email.trim(),
         password: form.password,
       });
-      const result = await response.json().catch(() => ({}));
+      const parsed = await response.json().catch(() => null);
+      const readable = !!parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+      const result = readable ? parsed : {};
       if (!mounted.current || generation !== getSessionGeneration()) return;
       if (response.ok && result.access_token) {
         // Persist the session BEFORE navigating so the auth guard sees a token.
@@ -128,6 +131,11 @@ const Signin = () => {
         const authenticatedGeneration = getSessionGeneration();
         await rememberIdentifier(form.email, authenticatedGeneration);
         await enterAccount(authenticatedGeneration);
+      } else if (response.status >= 500 || !readable) {
+        // A gateway page or server fault says nothing about the credentials.
+        notify('Error', 'Zitch is temporarily unavailable. Please try again shortly.');
+      } else if (response.status === 403 && isEdgeBlockMessage(result.message)) {
+        notify('Error', EDGE_BLOCK_USER_MESSAGE);
       } else {
         notify('Error', result.message || 'Incorrect Details');
       }

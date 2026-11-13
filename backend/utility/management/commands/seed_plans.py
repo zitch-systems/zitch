@@ -168,9 +168,6 @@ class Command(BaseCommand):
         # worst possible moment. So the seed value is a STARTING point, applied when
         # the row is new or its code is blank, and presentation fields (name, colour,
         # logo, popularity) stay authoritative here.
-        # Retire the former account partner from new payouts without deleting
-        # any historical beneficiary, account or transaction references.
-        Bank.objects.filter(code="9psb").update(active=False)
         bk = restored = 0
         for code, name, color, bank_code, logo, popular in BANKS:
             bank, created = Bank.objects.update_or_create(
