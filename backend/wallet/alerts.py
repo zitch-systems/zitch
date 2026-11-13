@@ -322,7 +322,12 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False):
                      txn.reference, txn.user_id)
             return {"success": False, "not_dispatched": True, "code": "no_active_link"}
         icon = "💰" if txn.direction == txn.IN else "💸"
-        result = reply(link.wa_msisdn, f"{icon} *{subject}*\n\n{body}")
+        caption = f"{icon} *{subject}*\n\n{body}"
+        result = None
+        if txn.direction == txn.IN and not reversal:
+            result = _whatsapp_credit_image(txn, link.wa_msisdn, caption)
+        if result is None:
+            result = reply(link.wa_msisdn, caption)
         if isinstance(result, dict) and result.get("success") is True:
             return result
         # Free-form text is delivered only INSIDE WhatsApp's 24-hour
@@ -349,6 +354,40 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False):
     except Exception:  # noqa: BLE001
         log.warning("txn_alert_whatsapp_failed ref=%s", txn.reference)
         return {"success": False, "uncertain": True, "code": "whatsapp_dispatch_unknown"}
+
+
+def _whatsapp_credit_image(txn, msisdn: str, caption: str) -> dict | None:
+    """Try an inline credit receipt. Fall back only before delivery or on refusal."""
+    from whatsapp.providers import send_image_media, upload_media, wa_live
+    from whatsapp.receipt import render_receipt
+    from whatsapp.router import _log_out
+
+    if not wa_live():
+        return None
+    rows = [
+        ("Amount", _money(txn.amount, txn.currency)),
+        ("Reference", txn.reference),
+        ("Date", _alert_timestamp(txn.created, "%d %b %Y, %I:%M %p")),
+    ]
+    try:
+        media = render_receipt("Credit received", rows, txn.reference)
+        media_id = upload_media(media, "image/jpeg", "Zitch-Credit.jpg")
+    except Exception:
+        log.exception("txn_alert_credit_image_preparation_failed txn=%s", txn.pk)
+        return None
+    if not media_id:
+        log.warning("txn_alert_credit_image_upload_failed txn=%s", txn.pk)
+        return None
+
+    result = send_image_media(msisdn, media_id, caption=caption)
+    if result.get("success") or _window_closed(result):
+        _log_out(msisdn, caption, result)
+        return result
+    if result.get("uncertain") is False and result.get("retryable") is not True:
+        log.warning("txn_alert_credit_image_refused txn=%s code=%s", txn.pk, result.get("error_code"))
+        return None
+    _log_out(msisdn, caption, result)
+    return result
 
 
 #: Meta error codes that mean WhatsApp's 24-hour customer-service window has

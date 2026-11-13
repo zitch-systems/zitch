@@ -609,10 +609,8 @@ services:
           property: connectionString
       - key: SENTRY_DSN
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
-      # Email/SMS/push remain best-effort at the ledger writer. Terminal
-      # WhatsApp alerts are deliberately deferred to zitch-whatsapp-worker,
-      # which owns the Meta credentials and durable retry sweep. Do not copy
-      # Meta secrets into this scheduled money process.
+      # Queue enabled transaction alerts with the ledger entry. The WhatsApp
+      # worker owns delivery and holds the Meta credentials.
       - key: RESEND_API_KEY
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_API_KEY}
       - key: RESEND_FROM_EMAIL
@@ -632,7 +630,7 @@ services:
       - key: TXN_ALERTS_PUSH
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_PUSH}
       - key: TXN_ALERTS_WHATSAPP
-        value: "false"
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_WHATSAPP}
 
   # Session hygiene — delete access/refresh tokens that can no longer
   # authenticate anything. Nothing removed these before: an AccessToken is
@@ -785,10 +783,8 @@ services:
       # in THIS cron's env (crons are separate processes from the web service).
       - key: SENTRY_DSN
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
-      # Email/SMS/push remain best-effort at the ledger writer. Terminal
-      # WhatsApp alerts are deliberately deferred to zitch-whatsapp-worker,
-      # which owns the Meta credentials and durable retry sweep. Do not copy
-      # Meta secrets into this scheduled money process.
+      # Queue enabled transaction alerts with the ledger entry. The WhatsApp
+      # worker owns delivery and holds the Meta credentials.
       - key: RESEND_API_KEY
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: RESEND_API_KEY}
       - key: RESEND_FROM_EMAIL
@@ -808,7 +804,7 @@ services:
       - key: TXN_ALERTS_PUSH
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_PUSH}
       - key: TXN_ALERTS_WHATSAPP
-        value: "false"
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: TXN_ALERTS_WHATSAPP}
 
   # Ledger <-> balance integrity check — recomputes every wallet from the
   # append-only ledger and fails (alerting via cron failure + AuditLog snapshot)
