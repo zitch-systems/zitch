@@ -1240,13 +1240,17 @@ def resolve_funding_review(reference: str, *, disposition: str, reason: str,
 
 @db_transaction.atomic
 def settle_reserved_funding(transaction_reference: str, amount, user, *,
-                            expected_account: str | None = None) -> Transaction | None:
+                            expected_account: str | None = None,
+                            statement: dict | None = None) -> Transaction | None:
     """Credit a wallet for an inbound bank transfer to its reserved account, once.
 
     Keyed on the provider's transaction_reference (unique per payment): the ledger
     row's unique `reference` is the idempotency guard, so a redelivered webhook
     is a no-op rather than a double-credit. Returns the credit row, or None if
     the payment was already applied (or the inputs are incomplete).
+
+    `statement` is what the bank's statement row said about the payment (see
+    `statement_note`), kept on the row so its receipt can name who paid.
     """
     if not transaction_reference or amount is None:
         log.warning("reserved_funding_incomplete txref=%r amount=%r", transaction_reference, amount)
@@ -1276,9 +1280,12 @@ def settle_reserved_funding(transaction_reference: str, amount, user, *,
         )
         return None
     try:
+        meta = {"reference": transaction_reference, "channel": "reserved_account"}
+        if statement:
+            meta["statement"] = dict(statement)
         return credit(
             user, amount, "Wallet funding",
-            meta={"reference": transaction_reference, "channel": "reserved_account"},
+            meta=meta,
             reference=transaction_reference,
             expected_account=expected_account,
         )
@@ -2544,7 +2551,25 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
         # a historical SUCCESS credit cannot hide a newly discovered review case.
         return None
     return settle_reserved_funding(
-        ledger_ref, norm["amount_naira"], wallet.user, expected_account=wallet.account_number)
+        ledger_ref, norm["amount_naira"], wallet.user, expected_account=wallet.account_number,
+        statement=statement_note(tx))
+
+
+def statement_note(tx: dict) -> dict:
+    """What a bank statement row says about a deposit, for its receipt.
+
+    Wema's statement has no structured payer fields: who paid appears only in
+    the bank's own `title` and `narration` text, and the rail in `type`. They
+    are kept on the credit row, whitespace-collapsed and bounded, so the
+    receipt can name the payer. Display text only: nothing keys or matches on
+    it, and it is never logged.
+    """
+    note = {}
+    for key in ("title", "narration", "type", "sender"):
+        value = " ".join(str((tx or {}).get(key) or "").split())[:140]
+        if value:
+            note[key] = value
+    return note
 
 
 def pending_bank_payouts(cutoff):

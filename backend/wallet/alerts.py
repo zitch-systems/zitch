@@ -21,6 +21,7 @@ Three properties this has to hold:
   run after commit for synchronous development feedback.
 """
 import logging
+import re
 from html import escape
 import secrets
 from datetime import timedelta
@@ -361,6 +362,76 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False):
         return {"success": False, "uncertain": True, "code": "whatsapp_dispatch_unknown"}
 
 
+# "... from NAME" in a bank's description of a deposit, up to the first
+# separator or digit. Account numbers and references are digits, never names.
+_FROM_NAME = re.compile(r"\bfrom\b[\s:.-]*(?P<name>[^/|;,()\d]{2,80})", re.IGNORECASE)
+_NAME_TAIL = re.compile(r"\s+(?:via|to|ref|for|on|through|with)\b.*$", re.IGNORECASE)
+
+
+def deposit_sender(meta) -> tuple[str, str, str]:
+    """(who paid, how, the bank's description) for a deposit's receipt.
+
+    A transfer from another Zitch customer names them, as the ledger recorded
+    it. A bank deposit carries only the bank's words (`statement_note`), so the
+    payer is named from a structured sender field, or where the bank's own
+    heading (`title`) says "from NAME" in so many words. Never from the
+    narration: that is the payer's free text, and "transfer from friend" names
+    nobody. Otherwise no one is named and the description is shown as the bank
+    wrote it. A receipt that names the wrong person as having paid is worse than
+    one that quotes the bank and names nobody.
+    """
+    meta = meta if isinstance(meta, dict) else {}
+    counterparty = " ".join(str(meta.get("counterparty") or "").split())
+    if counterparty:
+        return counterparty.upper(), "Zitch", " ".join(str(meta.get("narration") or "").split())
+    note = meta.get("statement") if isinstance(meta.get("statement"), dict) else {}
+    title = " ".join(str(note.get("title") or "").split())
+    narration = " ".join(str(note.get("narration") or "").split())
+    name = " ".join(str(note.get("sender") or "").split())
+    if any(ch.isdigit() for ch in name) or sum(ch.isalpha() for ch in name) < 3:
+        name = ""
+    match = None if name else _FROM_NAME.search(title)
+    if match:
+        candidate = _NAME_TAIL.sub("", match.group("name")).strip(" -.:'")
+        if sum(ch.isalpha() for ch in candidate) >= 3 and len(candidate.split()) <= 6:
+            name = candidate.upper()
+    rail = str(note.get("type") or "").lower()
+    how = "Bank transfer" if name and ("nip" in rail or "transfer" in rail) else ""
+    return name, how, narration or title
+
+
+def credit_receipt_rows(txn) -> list:
+    """The rows of a deposit's receipt: whose account it reached, who paid, the
+    bank's description, the reference and the time."""
+    from .models import Wallet
+
+    rows = [("Amount", _money(txn.amount, txn.currency))]
+    wallet = (Wallet.objects.filter(user_id=txn.user_id)
+              .only("account_name", "bank_name").first())
+    holder = ((getattr(wallet, "account_name", "") or "").strip()
+              or (txn.user.get_full_name() or "").strip()).upper()
+    if holder:
+        rows.append(("To", holder))
+        number = _transaction_account_number(txn)
+        if number:
+            if getattr(wallet, "bank_name", ""):
+                rows.append(("Bank", wallet.bank_name))
+            rows.append(("Account", _mask_account(number)))
+    name, how, description = deposit_sender(_meta(txn))
+    if name:
+        rows.append(("From", name))
+        if how:
+            rows.append(("Sender", how))
+    # The bank's words, unless they only repeat who paid.
+    leftover = description.upper().replace(name, "") if name else description
+    if " ".join(leftover.replace("/", " ").split()).strip(" -:.").upper() not in (
+            "", "FROM", "TRANSFER FROM", "TRF FROM", "TRANSFER", "NIP TRANSFER FROM"):
+        rows.append(("Narration", description))
+    rows += [("Reference", txn.reference),
+             ("Date", _alert_timestamp(txn.created, "%d %b %Y, %I:%M %p"))]
+    return rows
+
+
 def _whatsapp_credit_image(txn, msisdn: str, caption: str) -> dict | None:
     """Try an inline credit receipt. Fall back only before delivery or on refusal."""
     from whatsapp.providers import send_image_media, upload_media, wa_live
@@ -369,11 +440,12 @@ def _whatsapp_credit_image(txn, msisdn: str, caption: str) -> dict | None:
 
     if not wa_live():
         return None
-    rows = [
-        ("Amount", _money(txn.amount, txn.currency)),
-        ("Reference", txn.reference),
-        ("Date", _alert_timestamp(txn.created, "%d %b %Y, %I:%M %p")),
-    ]
+    try:
+        rows = credit_receipt_rows(txn)
+    except Exception:  # noqa: BLE001 - the receipt falls back to the bare facts
+        log.exception("txn_alert_credit_rows_failed txn=%s", txn.pk)
+        rows = [("Amount", _money(txn.amount, txn.currency)), ("Reference", txn.reference),
+                ("Date", _alert_timestamp(txn.created, "%d %b %Y, %I:%M %p"))]
     try:
         media = render_receipt("Credit received", rows, txn.reference)
         media_id = upload_media(media, "image/jpeg", "Zitch-Credit.jpg")
