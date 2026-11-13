@@ -158,6 +158,18 @@ class Command(BaseCommand):
 
     def _run_unlocked(self, **options):
         today = timezone.localdate()
+        # Without its own Wema channel id and wallet key this cron never reaches
+        # the bank: every history read below comes back unconfigured in
+        # microseconds, and that was reported as "Wema unreachable or auth
+        # rejected" (2026-11-12/13: a day of uncredited deposits with the cause
+        # hidden). Name the missing setting (codes only, never a value) where
+        # operators look first.
+        not_live = [] if wema.wema_live() else wema.not_live_reasons()
+        if not_live:
+            self.stderr.write(
+                "reconcile_wema: Wema not live in this environment ("
+                + ", ".join(not_live) + "); deposits cannot be detected until this "
+                "service has the same Wema credentials as the API")
 
         # Phase 0 — recover NUBANs whose asynchronous Account Creation callback
         # was delayed or missed. Wema's OTP and face endpoints can return PENDING:
@@ -446,9 +458,11 @@ class Command(BaseCommand):
                 level="error", wallets=history_blocked,
             )
         if scanned and fetch_failures == scanned:
-            alert(f"reconcile_wema: all {scanned} wallet history fetches failed — Wema "
-                  f"unreachable or auth rejected; no deposits can be detected",
-                  level="error", wallets=scanned)
+            cause = ("Wema not live in this environment (" + ", ".join(not_live) + ")"
+                     if not_live else "Wema unreachable or auth rejected")
+            alert(f"reconcile_wema: all {scanned} wallet history fetches failed — "
+                  f"{cause}; no deposits can be detected",
+                  level="error", wallets=scanned, not_live=",".join(not_live))
         # A payout stuck PENDING is invisible to every other control. It is a
         # pending DEBIT, so integrity_check counts it as owed, reconcile_balances
         # sees only the benign bank-over-ledger direction, and settlement_report

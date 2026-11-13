@@ -896,8 +896,12 @@ WHATSAPP_WORKER_RECONCILE = env_bool("WHATSAPP_WORKER_RECONCILE", False)
 # Terminal transaction notifications are retried by the credentialed WhatsApp
 # worker, not by bank-reconciliation cron jobs. These bounds keep a transient
 # Meta outage from creating an unbounded catch-up burst after recovery.
+# In production this sweep is also the FIRST send of every credit/debit alert
+# (wallet.alerts._defer queues them), so its interval is the delay a customer
+# waits for the alert. 10s is the worker's minimum; failed sends still back off
+# per delivery row (next_attempt_at), so a faster sweep does not retry faster.
 WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS = int(
-    os.environ.get("WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS", "60") or 60)
+    os.environ.get("WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS", "10") or 10)
 WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS = int(
     os.environ.get("WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS", "2") or 2)
 WHATSAPP_ALERT_RETRY_LIMIT = int(
