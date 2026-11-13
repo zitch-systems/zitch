@@ -1700,7 +1700,7 @@ def card_reveal(card_token: str, *, provider: str = "") -> dict:
 def payout_charge(amount_naira):
     """The NIP fee a bank transfer of `amount_naira` attracts (naira Decimal), or None
     if the schedule isn't available. Caches the near-static fee schedule for an hour.
-    INFORMATIONAL — it does not change what the send flow debits."""
+    wallet.transfer_fees turns this into the fee the send flow debits."""
     from django.core.cache import cache
 
     from . import wema
