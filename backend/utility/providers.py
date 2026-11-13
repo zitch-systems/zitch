@@ -267,12 +267,15 @@ def _wema_vas_route(service_id: str, payload: dict):
     if not var:
         return None  # no plan code -> safe partner-bank configuration error
     if service_id.endswith("-data"):
-        from .models import DataPlan
-        p = DataPlan.objects.filter(plan_code=var).only("wema_code", "price").first()
+        from .models import DataPlan, NETWORKS
+        network = next((key for key, label in NETWORKS
+                        if label.lower() == service_id.removesuffix("-data")), "")
+        p = DataPlan.objects.filter(plan_code=var, network=network, active=True).only("wema_code", "price").first()
         return {"type": "data", "code": p.wema_code, "amount": p.price} if (p and p.wema_code) else None
     if service_id in ("dstv", "gotv", "startimes"):
         from .models import CablePlan
-        p = CablePlan.objects.filter(cable_plan_code=var).only("wema_code", "price").first()
+        p = CablePlan.objects.filter(cable_plan_code=var, provider=_CABLE_PROVIDER_CHOICE[service_id],
+                                     active=True).only("wema_code", "price").first()
         return {"type": "bill", "code": p.wema_code, "amount": p.price} if (p and p.wema_code) else None
     return None
 

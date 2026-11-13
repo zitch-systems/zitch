@@ -403,7 +403,7 @@ class Command(BaseCommand):
             from django.db import DatabaseError
             from django.db.models import Q
 
-            from utility.models import WemaBiller
+            from utility.models import CablePlan, WemaBiller
             try:
                 mapped = WemaBiller.objects.filter(
                     Q(service_id__endswith="-electric", meter_type__in=("prepaid", "postpaid"))
@@ -419,6 +419,25 @@ class Command(BaseCommand):
                            f"{mapped} routable variant(s) mapped" if mapped
                            else "no valid variant mappings — electricity and betting "
                                 "cannot route; review `manage.py seed_wema_plans --only billers --dry-run`"))
+            if wema._vas_live("bills"):
+                reachable, reason = wema.vas_status_entitlement("bills")
+                checks.append((
+                    False, "Partner-bank Bills Payment status/requery",
+                    PASS if reachable else WARN,
+                    "the status endpoint answers" if reachable
+                    else f"new bill payments are blocked before debit: {reason}",
+                ))
+                try:
+                    cable = CablePlan.objects.filter(active=True)
+                    unmapped = cable.filter(wema_code="").count()
+                    total = cable.count()
+                except DatabaseError:
+                    total, unmapped = 0, 0
+                checks.append((
+                    False, "Partner-bank cable catalogue",
+                    PASS if total and not unmapped else WARN,
+                    f"{total - unmapped}/{total} active plans mapped",
+                ))
 
         # SOFT — the VAS status legends. This USED to be described here as money-safe
         # either way, on the grounds that an undecodable code leaves the purchase

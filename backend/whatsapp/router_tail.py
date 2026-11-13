@@ -1561,7 +1561,7 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         # the customer's next message.
         pa.payload.pop("iuc_given", None)
         prov = CABLE_NAMES[pa.payload["prov"]].lower()
-        res = vtu_verify_customer(prov, iuc)
+        res = vtu_verify_customer(prov, iuc, pa.payload["plan_code"])
         if not res.get("success"):
             return _reroute_or_reprompt(pa, msisdn, text,
                                        "Couldn't validate that smartcard. Check the number and try again, or \"cancel\".")
