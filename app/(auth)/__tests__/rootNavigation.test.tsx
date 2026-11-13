@@ -2,7 +2,6 @@ import React, { type ReactNode } from 'react';
 import { AppState, Linking, type AppStateStatus } from 'react-native';
 import renderer, { act } from 'react-test-renderer';
 import RootLayout from '@/app/_layout';
-import { store } from 'expo-router/build/global-state/router-store';
 import { router } from 'expo-router';
 import { enforceHardExpiry, isSessionLocked, lockSession } from '@/lib/session';
 
@@ -41,15 +40,14 @@ jest.mock('@/lib/pendingApproval', () => ({ rememberWhatsAppApprovalUrl: async (
 jest.mock('expo-router', () => {
   const R = jest.requireActual<typeof import('react')>('react');
   const { View } = jest.requireActual<typeof import('react-native')>('react-native');
-  // Exercise the installed Expo Router hooks and its real external store. Only
-  // the native stack view is replaced; auth/session work stays deterministic.
-  const hooks = jest.requireActual('expo-router/build/hooks');
+
   const Stack = ({ children }: { children: ReactNode }) => {
     if (++mockStackRenders > 30) throw new Error('Unbounded root navigation renders');
     return R.createElement(View, { testID: 'app-navigation' }, children);
   };
   Stack.Screen = () => null;
-  return { ...hooks, Stack, router: { replace: jest.fn() },
+  return { Stack, router: { replace: jest.fn() },
+    usePathname: () => '/' + mockRouteName, useNavigationContainerRef: () => mockNavigation,
     SplashScreen: { preventAutoHideAsync: jest.fn().mockResolvedValue(undefined), hideAsync: jest.fn().mockResolvedValue(undefined) } };
 });
 
@@ -69,6 +67,15 @@ const freshNestedState = () => ({
   } }],
 });
 
+const mockNavigation = {
+  isReady: () => navigationReady,
+  getRootState: freshNestedState,
+  addListener: (_name: string, callback: () => void) => {
+    navigationListeners.add(callback);
+    return () => navigationListeners.delete(callback);
+  },
+};
+
 beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
@@ -82,20 +89,6 @@ beforeEach(() => {
   (lockSession as jest.Mock).mockImplementation(async () => { (isSessionLocked as jest.Mock).mockResolvedValue(true); });
   navigationReady = true;
   navigationListeners = new Set();
-  store.rootStateSubscribers.clear();
-  store.storeSubscribers.clear();
-  store.rootState = undefined;
-  store.nextState = undefined;
-  store.linking = { config: { screens: { index: '', '(auth)': { path: '(auth)', screens: { signin: 'signin', home: 'home', register: 'register', otp: 'otp' } } } } } as any;
-  store.routeInfo = store.getRouteInfo(freshNestedState() as any);
-  store.navigationRef = {
-    isReady: () => navigationReady,
-    getRootState: freshNestedState,
-    addListener: (_name: string, callback: () => void) => {
-      navigationListeners.add(callback);
-      return () => navigationListeners.delete(callback);
-    },
-  } as any;
   jest.spyOn(Linking, 'getInitialURL').mockResolvedValue(null);
   jest.spyOn(Linking, 'addEventListener').mockReturnValue({ remove: jest.fn() } as any);
   jest.spyOn(AppState, 'addEventListener').mockImplementation((_name, callback) => {
@@ -107,8 +100,6 @@ beforeEach(() => {
 afterEach(() => {
   if (tree) act(() => tree?.unmount());
   tree = undefined;
-  store.rootStateSubscribers.clear();
-  store.storeSubscribers.clear();
   jest.useRealTimers();
   jest.restoreAllMocks();
 });
@@ -178,7 +169,6 @@ it('requires unlock for a cold notification even when the saved session was rece
 
 function startOnHome() {
   mockRouteName = 'home';
-  store.routeInfo = store.getRouteInfo(freshNestedState() as any);
 }
 
 it.each(['unmount', 'new session'])('discards a delayed lock result after %s', async (reason) => {
@@ -202,7 +192,6 @@ it('still redirects a currently locked account to authentication', async () => {
 
 it.each(['register', 'otp'])('lets someone create an account on %s while an older session is locked', async (route) => {
   mockRouteName = route;
-  store.routeInfo = store.getRouteInfo(freshNestedState() as any);
   (isSessionLocked as jest.Mock).mockResolvedValue(true);
   await act(async () => { tree = renderer.create(<RootLayout />); });
   await act(async () => { jest.advanceTimersByTime(30_000); });

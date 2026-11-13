@@ -45,6 +45,13 @@ def verify_manifest(badging, xmltree, expo):
     return sorted(set(permissions))
 
 
+def target_sdk(badging):
+    match = re.search(r"^targetSdkVersion:'(\d+)'$", badging, re.M)
+    if match is None:
+        raise ValueError('APK target SDK could not be verified')
+    return int(match.group(1))
+
+
 def verify_payload(apk):
     with zipfile.ZipFile(apk) as archive:
         files = archive.namelist()
@@ -122,6 +129,9 @@ def main():
     badging = subprocess.check_output([aapt, 'dump', 'badging', str(args.apk)], text=True)
     manifest = subprocess.check_output([aapt, 'dump', 'xmltree', str(args.apk), 'AndroidManifest.xml'], text=True)
     permissions = verify_manifest(badging, manifest, expo)
+    target = target_sdk(badging)
+    if args.signing == 'upload' and target < 36:
+        raise ValueError(f'Google Play release must target API 36 or later, APK targets {target}')
     verify_payload(args.apk)
     resources = subprocess.check_output([aapt, 'dump', '--values', 'resources', str(args.apk)], text=True)
     push_configuration = verify_push_resources(resources, args.signing)
@@ -149,6 +159,7 @@ def main():
         'package': expo['android']['package'],
         'version': expo['version'],
         'version_code': expo['android']['versionCode'],
+        'target_sdk': target,
         'source_revision': args.revision,
         'signing': 'internal-test-debug-key' if args.signing == 'preview' else 'upload-key',
         'signing_certificate_sha256': fingerprint,

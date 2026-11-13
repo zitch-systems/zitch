@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// These exact-source backports keep Expo 51's protocols and APIs. Versions stay
+// These exact-source backports keep the installed tooling's protocols and APIs. Versions stay
 // unchanged, so advisory scanners still report the locally mitigated packages.
 // Maintained image-size 2.x needs the reviewed Metro Buffer/file adapters.
 const fs = require('node:fs');

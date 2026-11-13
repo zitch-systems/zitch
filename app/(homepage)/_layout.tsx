@@ -11,7 +11,6 @@ const HomeLayout = () => {
   return (
     <AuthGuard>
       <Tabs
-        sceneContainerStyle={wide ? { paddingLeft: railW } : undefined}
         // Phone: bottom nav. Fold/tablet: left sidebar RAIL beside the scene.
         // bottom-tabs renders the custom tabBar at the bottom, so the
         // Sidebar positions itself absolutely on the left and we pad the scene by
@@ -19,6 +18,7 @@ const HomeLayout = () => {
         tabBar={(props) => (wide ? <Sidebar {...props} width={railW} /> : <BottomNav {...props} />)}
         screenOptions={{
           headerShown: false,
+          sceneStyle: wide ? { paddingLeft: railW } : undefined,
         }}
       >
         <Tabs.Screen name="home" />

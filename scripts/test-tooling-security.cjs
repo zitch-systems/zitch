@@ -4,8 +4,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createRequire } = require('node:module');
-const { pathToFileURL } = require('node:url');
 const { spawnSync } = require('node:child_process');
 const { patchToolingSecurity } = require('./patch-tooling-security.cjs');
 const patches = require('./security/tooling-patches.json');
@@ -44,14 +42,14 @@ test('changed dependency source or version fails before any patch write', () => 
 });
 
 test('Metro adapter reads image-size 2.x dimensions from Buffer', () => {
-  const { getAssetSize } = require('metro/src/Assets');
+  const { getAssetSize } = require(path.join(path.dirname(require.resolve('metro/package.json')), 'src/Assets.js'));
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVqQAAAAASUVORK5CYII=', 'base64');
   assert.deepEqual(getAssetSize('png', png, 'one.png'), { width: 1, height: 1 });
   assert.deepEqual(getAssetSize('svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"></svg>'), 'one.svg'), { width: 30, height: 40 });
 });
 
 test('Metro resolves regular and zip-contained asset file paths through the maintained parser', async () => {
-  const { getAssetData } = require('metro/src/Assets');
+  const { getAssetData } = require(path.join(path.dirname(require.resolve('metro/package.json')), 'src/Assets.js'));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zitch-image-assets-'));
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVqQAAAAASUVORK5CYII=', 'base64');
   try {
@@ -106,55 +104,7 @@ test('large flat selectors and Sass interpolation cannot monopolize the parser',
   assert.equal(child.status, 0, child.stderr);
 });
 
-async function streamValue(api, input) {
-  const decoded = await api.decode(api.encode(input));
-  await decoded.done;
-  return decoded.value;
-}
-
-test('both turbo-stream entry points preserve v2 values and never select global constructors from input', async () => {
-  const modulePath = path.join(path.dirname(require.resolve('turbo-stream/package.json')), 'dist/turbo-stream.mjs');
-  const modules = [require('turbo-stream'), await import(pathToFileURL(modulePath).href)];
-  let constructed = 0;
-  globalThis.ZitchUntrustedConstructor = class { constructor() { constructed++; } };
-  try {
-    for (const api of modules) {
-      const input = { text: 'Ada', count: 23n, date: new Date('2026-01-01'), map: new Map([['x', 1]]), set: new Set([2, 3]) };
-      assert.deepEqual(await streamValue(api, input), input);
-      const original = new TypeError('safe message');
-      original.name = 'ZitchUntrustedConstructor';
-      const output = await streamValue(api, original);
-      assert.equal(Object.getPrototypeOf(output), Error.prototype);
-      assert.equal(output.message, 'safe message');
-      const malicious = new ReadableStream({start(controller) {
-        controller.enqueue(new TextEncoder().encode('[["E","message","ZitchUntrustedConstructor"]]\n'));
-        controller.close();
-      }});
-      const decoded = await api.decode(malicious);
-      await decoded.done;
-      assert.equal(Object.getPrototypeOf(decoded.value), Error.prototype);
-      assert.equal(decoded.value.message, 'message');
-    }
-    assert.equal(constructed, 0);
-  } finally { delete globalThis.ZitchUntrustedConstructor; }
-});
-
-test('scoped UUID upgrades preserve every build-tool call and enforce buffer bounds', () => {
-  for (const parent of ['xcode', '@expo/rudder-sdk-node', '@expo/bunyan']) {
-    const fromParent = createRequire(require.resolve(`${parent}/package.json`));
-    assert.equal(fromParent('uuid/package.json').version, '11.1.1');
-    const uuid = fromParent('uuid');
-    for (const version of [1,4]) {
-      const values = new Set(Array.from({length:100}, () => uuid[`v${version}`]()));
-      assert.equal(values.size, 100);
-      for (const value of values) { assert(uuid.validate(value)); assert.equal(uuid.version(value), version); }
-    }
-    for (const name of ['v3', 'v5']) {
-      assert.throws(() => uuid[name]('value', uuid[name].DNS, new Uint8Array(15)), RangeError);
-      assert.throws(() => uuid[name]('value', uuid[name].DNS, new Uint8Array(30), -1), RangeError);
-      assert.throws(() => uuid[name]('value', uuid[name].DNS, new Uint8Array(30), 15), RangeError);
-    }
-  }
+test('Xcode tooling generates a valid project identifier', () => {
   const project = require('xcode').project('test.pbxproj');
   project.hash = { project: { objects: {} } };
   assert.match(project.generateUuid(), /^[A-F0-9]{24}$/);

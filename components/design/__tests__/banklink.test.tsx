@@ -40,9 +40,9 @@ jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('react-native/Libraries/Components/ScrollView/ScrollView', () => {
   const ReactActual = jest.requireActual<typeof import('react')>('react');
   const { View } = jest.requireActual<typeof import('react-native')>('react-native');
-  return function MockScrollView({ children, ...props }: import('react-native').ScrollViewProps) {
+  return { default: function MockScrollView({ children, ...props }: import('react-native').ScrollViewProps) {
     return ReactActual.createElement(View, props, children);
-  };
+  } };
 });
 jest.mock('@/lib/wallet', () => ({
   useWallet: () => ({

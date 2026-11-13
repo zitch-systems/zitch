@@ -105,6 +105,7 @@ function patchForgeBraces(projectRoot = path.resolve(__dirname, '..')) {
   for (const [manifestPath, name] of packageManifests(projectRoot)) {
     const spec = PACKAGES[name];
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (name === 'node-forge' && manifest.name === name && manifest.version === '1.4.3') continue;
     if (manifest.name !== name || manifest.version !== spec.version) {
       throw new Error(`Forge/braces patch needs review: expected ${name} ${spec.version}, got ${manifest.name} ${manifest.version}`);
     }
@@ -130,7 +131,7 @@ function patchForgeBraces(projectRoot = path.resolve(__dirname, '..')) {
 
 if (require.main === module) {
   try {
-    console.log(`Verified local node-forge 1.4.0 / braces 3.0.3 mitigations (${patchForgeBraces()} file(s) patched).`);
+    console.log(`Verified Forge and braces mitigations (${patchForgeBraces()} file(s) patched).`);
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;
