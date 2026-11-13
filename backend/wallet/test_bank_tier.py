@@ -181,6 +181,22 @@ class SyncBankTierTests(TestCase):
         self.assertEqual(sync_bank_tier(Wallet.objects.get(user=self.user)), 2)
 
     @patch("utility.wema.get_kyc_status",
+           return_value={"success": True, "tier": "Partnership Accounts – Tier 1"})
+    def test_parses_the_partnership_product_label(self, _s):
+        # The exact label the bank returned for a live account on 2026-11-13.
+        self.assertEqual(sync_bank_tier(self.wallet), 1)
+        self.assertEqual(Wallet.objects.get(user=self.user).bank_tier, 1)
+
+    def test_only_a_label_ending_in_one_tier_digit_counts(self):
+        from wallet.address_verification import bank_tier_number
+        for label, tier in (("Tier 3", 3), ("tier2", 2), ("1", 1),
+                            ("Partnership Accounts – Tier 2", 2),
+                            ("Tier 12", 0), ("Tier 1 (restricted)", 0), ("Level 2", 0),
+                            ("Retier 2", 0), ("", 0), (None, 0)):
+            with self.subTest(label=label):
+                self.assertEqual(bank_tier_number(label), tier)
+
+    @patch("utility.wema.get_kyc_status",
            return_value={"success": True, "tier": "unclassified"})
     def test_unparseable_tier_is_not_invented(self, _s):
         self.assertEqual(sync_bank_tier(self.wallet), 0)

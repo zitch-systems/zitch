@@ -265,6 +265,31 @@ class PayoutError(Exception):
         super().__init__(message)
 
 
+def _note_source_restricted(user, wallet, txn, message) -> None:
+    """The bank refused to debit the sender's own account because of a hold.
+
+    The pre-debit check let this payout through on a lift, or on the bank's own
+    account-status read saying there was no restriction. The refusal outranks
+    both: put the account back behind the check, stop that status read vouching
+    for it until a real lift succeeds (so retries are refused before any debit
+    instead of debiting and refunding each time), and tell operations. The
+    customer has already been refunded.
+    """
+    import re
+
+    from django.utils import timezone
+
+    from utility.alerts import alert
+    from wallet.models import Wallet
+
+    wema_provider.record_debit_refusal(wallet.account_number)
+    Wallet.objects.filter(pk=wallet.pk).update(pnd_lifted=False, updated=timezone.now())
+    alert("Bank refused a payout because the sender's account has a hold",
+          level="error", user_id=getattr(user, "id", None),
+          account_suffix=wallet.account_number[-4:], reference=txn.reference,
+          bank_message=re.sub(r"\d{4,}", "#", str(message or ""))[:120])
+
+
 def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
                    note: str = "", idempotency_key: str = "", channel: str = "") -> Transaction:
     """Debit the wallet, send the payout, settle/refund, and save the beneficiary.
@@ -336,9 +361,10 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
             and getattr(wallet, "account_number", "") and not wallet.pnd_lifted):
         pnd = wema_provider.lift_debit_restriction(wallet.account_number)
         if not pnd.get("success"):
-            log.warning("payout_source_pnd_not_lifted user=%s account=%s message=%s",
+            log.warning("payout_source_pnd_not_lifted user=%s account=%s message=%s attempts=%s",
                         getattr(user, "id", "?"), wallet.account_number[-4:],
-                        pnd.get("message", ""))
+                        pnd.get("message", ""),
+                        wema_provider.describe_pnd_attempts(pnd.get("attempts")))
             raise PayoutError(
                 "source_restricted",
                 "Your Zitch account is still being activated for transfers. "
@@ -452,6 +478,8 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         # response returns. Its success is authoritative; refunding would create
         # free money after the recipient was paid.
         if settled != "success":
+            if sender_source and wema_provider.is_debit_restriction_message(result.get("message")):
+                _note_source_restricted(user, wallet, txn, result.get("message", ""))
             raise PayoutError("provider", result.get("message", "Transfer failed"))
 
     # Record the recipient for next time. This is a RECENT, never a saved

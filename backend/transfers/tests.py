@@ -623,6 +623,101 @@ class PayoutSourceActivationTests(TestCase):
         self.assertFalse(Transaction.objects.filter(
             user=self.user, direction=Transaction.OUT).exists())
 
+    def _ready_history(self):
+        from wallet.models import BankHistoryCheckpoint
+
+        BankHistoryCheckpoint.objects.create(
+            wallet=get_or_create_wallet(self.user), account_number="0452491368",
+            opening_review_required=False)
+
+    @staticmethod
+    def _lift_answers(product, path, body, params=None):
+        # What the live gateway answered for an unrestricted account on 2026-11-13.
+        from unittest.mock import Mock
+        if product == "wallet_bvn":
+            res = Mock(status_code=400)
+            res.json.return_value = {
+                "message": "Request to lift pnd on this account is not permitted.",
+                "status": False, "code": "0", "statusCode": "BadRequest"}
+        else:
+            res = Mock(status_code=404)
+            res.json.return_value = {"statusCode": 404, "message": "Resource not found"}
+        return res
+
+    UNRESTRICTED = {"success": True, "account_status": "ACTIVE",
+                    "restriction_status": " ", "restriction_reported": True}
+
+    @patch("utility.providers.payout_live", return_value=True)
+    @patch("transfers.services.wema_provider.wema_live", return_value=True)
+    def test_unrestricted_account_status_lets_the_payout_through(self, _wema_live, _payout_live):
+        from django.core.cache import cache
+        from .services import execute_payout
+
+        cache.clear()
+        self._ready_history()
+        with patch("utility.wema._post", side_effect=self._lift_answers), \
+                patch("utility.wema.get_kyc_status", return_value=self.UNRESTRICTED), \
+                patch("transfers.services.payout_send",
+                      return_value={"success": True, "status": "success"}) as send:
+            execute_payout(self.user, Decimal("1000"), "0123456789",
+                           self.bank, "JOHN DOE", channel="app")
+        send.assert_called_once()
+        self.assertTrue(get_or_create_wallet(self.user).pnd_lifted)
+
+    @patch("utility.providers.payout_live", return_value=True)
+    @patch("transfers.services.wema_provider.wema_live", return_value=True)
+    def test_a_bank_hold_refusal_refunds_and_stops_further_debits(self, _wema_live, _payout_live):
+        from django.core.cache import cache
+        from wallet.models import Wallet
+        from .services import PayoutError, execute_payout
+
+        cache.clear()
+        self._ready_history()
+        Wallet.objects.filter(user=self.user).update(pnd_lifted=True)
+        before = get_or_create_wallet(self.user).balance
+        refused = {"success": False, "message": "Account has Post No Debit restriction"}
+        with patch("transfers.services.payout_send", return_value=refused), \
+                patch("utility.alerts.alert") as page:
+            with self.assertRaises(PayoutError) as caught:
+                execute_payout(self.user, Decimal("1000"), "0123456789",
+                               self.bank, "JOHN DOE", channel="app")
+        self.assertEqual(caught.exception.kind, "provider")
+        self.assertEqual(get_or_create_wallet(self.user).balance, before)
+        self.assertFalse(get_or_create_wallet(self.user).pnd_lifted)
+        self.assertTrue(any("hold" in str(c.args[0]) for c in page.call_args_list))
+
+        # The status read still says "unrestricted", but the bank's refusal wins:
+        # the retry is stopped before any debit instead of debiting and refunding.
+        rows = Transaction.objects.filter(user=self.user, direction=Transaction.OUT).count()
+        with patch("utility.wema._post", side_effect=self._lift_answers), \
+                patch("utility.wema.get_kyc_status", return_value=self.UNRESTRICTED) as status, \
+                patch("transfers.services.payout_send") as send:
+            with self.assertRaises(PayoutError) as again:
+                execute_payout(self.user, Decimal("1000"), "0123456789",
+                               self.bank, "JOHN DOE", channel="app")
+        self.assertEqual(again.exception.kind, "source_restricted")
+        send.assert_not_called()
+        status.assert_not_called()
+        self.assertEqual(
+            Transaction.objects.filter(user=self.user, direction=Transaction.OUT).count(), rows)
+
+    @patch("utility.providers.payout_live", return_value=True)
+    @patch("transfers.services.wema_provider.wema_live", return_value=True)
+    def test_a_recipient_side_refusal_does_not_block_the_sender(self, _wema_live, _payout_live):
+        from django.core.cache import cache
+        from wallet.models import Wallet
+        from .services import PayoutError, execute_payout
+
+        cache.clear()
+        self._ready_history()
+        Wallet.objects.filter(user=self.user).update(pnd_lifted=True)
+        refused = {"success": False, "message": "Beneficiary account is restricted"}
+        with patch("transfers.services.payout_send", return_value=refused):
+            with self.assertRaises(PayoutError):
+                execute_payout(self.user, Decimal("1000"), "0123456789",
+                               self.bank, "JOHN DOE", channel="app")
+        self.assertTrue(get_or_create_wallet(self.user).pnd_lifted)
+
     @patch("utility.providers.payout_live", return_value=True)
     @patch("transfers.services.wema_provider.wema_live", return_value=True)
     def test_send_uses_fresh_account_after_cached_wallet_was_replaced(

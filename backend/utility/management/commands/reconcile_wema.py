@@ -295,7 +295,9 @@ class Command(BaseCommand):
                         pnd_lifted += 1
                     else:
                         pnd_failures += 1
-                        self.stderr.write(f"wema_pnd_lift_retry_failed wallet={wallet.pk}")
+                        self.stderr.write(
+                            f"wema_pnd_lift_retry_failed wallet={wallet.pk} "
+                            f"attempts={wema.describe_pnd_attempts(pnd.get('attempts'))}")
                 except Exception:
                     pnd_failures += 1
                     log.exception("wema_pnd_retry_failed wallet=%s", wallet.pk)
