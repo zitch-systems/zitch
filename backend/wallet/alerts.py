@@ -24,6 +24,7 @@ import logging
 from html import escape
 import secrets
 from datetime import timedelta
+from decimal import Decimal
 from time import monotonic
 from zoneinfo import ZoneInfo
 
@@ -114,6 +115,9 @@ def _detail_lines(txn) -> str:
         account = meta.get("account")
         if account:
             add("Account", _mask_account(account))
+        if meta.get("transfer_fee"):
+            # The fee is its own silent ledger row; this alert is where it is named.
+            add("Bank fee", _money(Decimal(str(meta["transfer_fee"])), txn.currency))
     elif "electric" in low or meta.get("meter"):
         add("Service", service)
         add("Customer", meta.get("customer_name") or meta.get("customer"))

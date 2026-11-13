@@ -37,6 +37,9 @@ import unittest
 
 User = get_user_model()
 MSISDN = "2348011112222"
+# The bank's fee on up to ₦5,000 to another bank: ₦10 NIP charge + 7.5% VAT
+# (wallet.transfer_fees), debited with the transfer.
+BANK_FEE_5K = Decimal("10.75")
 
 
 def _b64(b: bytes) -> str:
@@ -225,7 +228,7 @@ class FlowsHandlerTests(TestCase):
         self.assertEqual(resp["screen"], RESULT_SCREEN)
         self.assertEqual(resp["data"]["status"], "✅ Successful")
         self.assertIn("5,000", resp["data"]["message"])
-        self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("5000"))
+        self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("5000") - BANK_FEE_5K)
         self.assertFalse(PendingAction.objects.filter(id=pa.id).exists())   # consumed
 
     def test_a_transaction_takes_one_pin_entry_and_never_sees_the_confirm_screen(self):
@@ -368,7 +371,7 @@ class FlowExecutionOffMetasClockTests(TestCase):
         self.assertGreater(pa.expires_at, timezone.now() + timedelta(minutes=5))
 
         self.assertEqual(process_inbound_message(job.pk), "processed")
-        self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("5000"))
+        self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("5000") - BANK_FEE_5K)
         self.assertFalse(PendingAction.objects.filter(id=pa.id).exists())   # consumed
         receipts = [r.text for r in WaMessageLog.objects.filter(
             msisdn=MSISDN, direction=WaMessageLog.OUT)]
@@ -391,7 +394,7 @@ class FlowExecutionOffMetasClockTests(TestCase):
         job = self.jobs_for(pa).get()
         process_inbound_message(job.pk)
         paid = get_or_create_wallet(self.user).balance
-        self.assertEqual(paid, before - Decimal("5000"))
+        self.assertEqual(paid, before - Decimal("5000") - BANK_FEE_5K)
 
         # A finished job has its payload wiped, so re-running it cannot reach the
         # money path at all — it dead-letters instead of paying again.
@@ -424,7 +427,7 @@ class FlowExecutionOffMetasClockTests(TestCase):
             expires_at=timezone.now() - timedelta(seconds=1))
 
         process_inbound_message(job.pk)
-        self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("5000"))
+        self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("5000") - BANK_FEE_5K)
 
     def test_a_settling_payment_is_never_announced_as_not_charged(self):
         # The timeout notice promises "nothing was charged". That promise cannot
@@ -1462,7 +1465,7 @@ class TransferFormFlowTests(TestCase):
         done = self._submit(pa, pin="1234")
         from .flows import RESULT_SCREEN
         self.assertEqual(done["screen"], RESULT_SCREEN)
-        self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("2300"))
+        self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("2300") - BANK_FEE_5K)
 
 
 class TransferFormChatGuardTests(TestCase):

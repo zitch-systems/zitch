@@ -423,6 +423,19 @@ class Command(BaseCommand):
                     status_failures += 1
                     log.exception("wema_payout_retry_failed transaction=%s", txn.pk)
 
+        # Transfer fees follow their transfer. The payout state functions settle
+        # them directly; this catches any route that resolved a transfer without
+        # them (operator tooling, an older process during a rolling deploy).
+        try:
+            from wallet.transfer_fees import reconcile_transfer_fees
+
+            fees = reconcile_transfer_fees()
+            if fees["confirmed"] or fees["released"]:
+                self.stdout.write(f"transfer_fees confirmed={fees['confirmed']} "
+                                  f"released={fees['released']}")
+        except Exception:  # noqa: BLE001 - fees retry on the next run
+            log.exception("transfer_fee_reconcile_failed")
+
         from whatsapp.ops import record_audit
         record_audit("recon.wema_run", actor_type="system",
                      after={"wallets": scanned, "credited": credited,

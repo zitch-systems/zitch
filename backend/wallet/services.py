@@ -366,6 +366,19 @@ def credit(user, amount, service: str, meta: dict | None = None, reference: str 
         raise
 
 
+def _follow_transfer_fee(txn) -> None:
+    """Settle a bank transfer's fee row after the transfer's own state changed.
+
+    Only transfers that were charged a fee carry ``meta.transfer_fee``, so VAS
+    and bill transitions pay no extra query. Runs inside the caller's
+    transaction, after the transfer row lock (see wallet.transfer_fees).
+    """
+    if (txn.meta or {}).get("transfer_fee"):
+        from wallet.transfer_fees import settle_transfer_fee
+
+        settle_transfer_fee(txn)
+
+
 @db_transaction.atomic
 def refund(txn: Transaction) -> bool:
     """Reverse a PENDING debit exactly once and mark it Failed.
@@ -385,6 +398,7 @@ def refund(txn: Transaction) -> bool:
     current.transaction_status = Transaction.FAILED
     current.save(update_fields=["transaction_status"])
     _release_bill_funding(current)
+    _follow_transfer_fee(current)
     txn.transaction_status = Transaction.FAILED
     return True
 
@@ -431,6 +445,7 @@ def settle_or_refund(txn: Transaction, result: dict) -> str:
         txn.meta = meta
         txn.transaction_status = Transaction.SUCCESS
         txn.save(update_fields=["transaction_status", "meta"])
+        _follow_transfer_fee(txn)
         return "success"
     if result.get("pending"):
         changed = False
@@ -460,6 +475,7 @@ def settle_or_refund(txn: Transaction, result: dict) -> str:
     txn.transaction_status = Transaction.FAILED
     txn.save(update_fields=["transaction_status", "meta"])
     _release_bill_funding(txn)
+    _follow_transfer_fee(txn)
     return "failed"
 
 
@@ -876,6 +892,7 @@ def reverse_transfer(reference: str) -> Transaction | None:
     wallet.save(update_fields=["balance", "updated"])
     txn.transaction_status = Transaction.FAILED
     txn.save(update_fields=["transaction_status"])
+    _follow_transfer_fee(txn)
     return txn
 
 
@@ -913,6 +930,7 @@ def settle_payout(reference: str) -> Transaction | None:
     txn.meta = meta
     txn.transaction_status = Transaction.SUCCESS
     txn.save(update_fields=["transaction_status", "meta"])
+    _follow_transfer_fee(txn)
     return txn
 
 
@@ -2303,6 +2321,7 @@ def _apply_matched_reversal(wallet: Wallet, *, inbound_reference: str,
         case, payout=payout, amount=received_amount,
         status_before=original_status)
     _sync_reversal_quarantine_summary(payout, case)
+    _follow_transfer_fee(payout)
     return {"outcome": "reversed", "ledger_reference": ledger_ref,
             "payout": payout}
 
@@ -2994,6 +3013,9 @@ def resolve_reversal_quarantine(reference: str, *, disposition: str, reason: str
             linked_payout, resolution=resolution)
         if payout is not None and linked_payout.pk == payout.pk:
             active = marker["active"]
+    if payout is not None:
+        # After the hold is synced: a still-active hold keeps the fee as it is.
+        _follow_transfer_fee(payout)
     return {
         "reference": payout.reference if payout else evidence.provider_reference,
         "evidence_id": evidence.pk,

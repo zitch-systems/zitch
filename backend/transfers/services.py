@@ -8,6 +8,7 @@ hand a resolved account name to `execute_payout`.
 import logging
 from decimal import Decimal
 
+from django.db import transaction as db_transaction
 from django.db.models import F
 
 from utility import wema as wema_provider
@@ -291,7 +292,8 @@ def _note_source_restricted(user, wallet, txn, message) -> None:
 
 
 def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
-                   note: str = "", idempotency_key: str = "", channel: str = "") -> Transaction:
+                   note: str = "", idempotency_key: str = "", channel: str = "",
+                   fee: Decimal | None = None) -> Transaction:
     """Debit the wallet, send the payout, settle/refund, and save the beneficiary.
 
     The caller must already have verified the PIN + tier limits and resolved
@@ -309,6 +311,11 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     `channel`, when set to "whatsapp", is stamped onto the ledger row's meta so
     the post-save alert knows the customer already saw a receipt and a balance
     line in that same chat and does not need a second "Debit alert" message.
+
+    `fee` is the bank's transfer fee the customer was shown and confirmed (see
+    wallet.transfer_fees); when omitted it is quoted here. It is debited as its
+    own "Transfer fee" row in the same database transaction as the transfer, so
+    the balance must cover both, and it follows the transfer from then on.
     """
     # A NUBAN minted while the rail was mocked exists nowhere at the bank, but it is
     # still on the wallet once live keys are set — and it is what we send as the
@@ -373,25 +380,41 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         wallet.save(update_fields=["pnd_lifted", "updated"])
 
     narration = " ".join(str(note or "").split())[:60] or f"Transfer to {name}"
+    from wallet.transfer_fees import debit_transfer_fee, transfer_fee
+
+    fee = (transfer_fee(amount, bank.bank_code, bank.name) if fee is None
+           else Decimal(str(fee)).quantize(Decimal("0.01")))
+    meta = {"account": account_number, "bank": bank.name,
+            "recipient_name": name, "note": narration, "narration": narration,
+            "reconcile": True, "channel": channel}
+    if fee > 0:
+        meta["transfer_fee"] = str(fee)
 
     try:
-        txn = debit(
-            user, amount, f"Transfer to {name}",
-            # Pre-flag `reconcile` ATOMICALLY with the debit, BEFORE the provider
-            # call (mirroring run_provider_purchase). The debit commits on its own,
-            # with no lock held across the network I/O, so a worker crash between the
-            # send and the settle write would otherwise orphan a committed PENDING
-            # row the payout sweep (filters meta__reconcile=True) could never find —
-            # money debited, never settled or reversed. Cleared below only on a
-            # definitively delivered result.
-            meta={"account": account_number, "bank": bank.name,
-                  "recipient_name": name, "note": narration, "narration": narration,
-                  "reconcile": True, "channel": channel},
-            idempotency_key=idempotency_key,
-        )
+        # The transfer and its fee commit together or not at all: a balance
+        # that covers the transfer but not the fee refuses both.
+        with db_transaction.atomic():
+            txn = debit(
+                user, amount, f"Transfer to {name}",
+                # Pre-flag `reconcile` ATOMICALLY with the debit, BEFORE the provider
+                # call (mirroring run_provider_purchase). The debit commits on its own,
+                # with no lock held across the network I/O, so a worker crash between the
+                # send and the settle write would otherwise orphan a committed PENDING
+                # row the payout sweep (filters meta__reconcile=True) could never find —
+                # money debited, never settled or reversed. Cleared below only on a
+                # definitively delivered result.
+                meta=meta,
+                idempotency_key=idempotency_key,
+            )
+            if fee > 0:
+                debit_transfer_fee(user, txn, fee)
     except DuplicateTransaction:
         raise PayoutError("duplicate", "This request was already processed.")
     except InsufficientFunds:
+        if fee > 0:
+            raise PayoutError(
+                "insufficient",
+                f"Insufficient wallet balance for this transfer and its ₦{fee:,.2f} bank fee.")
         raise PayoutError("insufficient", "Insufficient wallet balance.")
     except LimitExceeded as exc:
         raise PayoutError("limit_exceeded", str(exc))

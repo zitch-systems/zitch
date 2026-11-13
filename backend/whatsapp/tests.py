@@ -38,6 +38,9 @@ from .router import _local_phone, reply_receipt
 
 User = get_user_model()
 MSISDN = "2348011112222"
+# The bank's fee on up to ₦5,000 to another bank: ₦10 NIP charge + 7.5% VAT
+# (wallet.transfer_fees), debited with the transfer.
+BANK_FEE_5K = Decimal("10.75")
 
 
 def make_user(phone="08010000001", email="ada@zitch.test", pin="1234", balance="50000"):
@@ -648,10 +651,12 @@ class ChannelTests(TestCase):
         self.assertIn("ADEYEMI WILLIAM", self.last_reply())  # the BANK's name, not a typed one
         self.inbound("1234", "t5")
         self.assertIn("Transfer receipt", self.receipt_text())
-        self.assertEqual(self.balance(), Decimal("45000"))
+        self.assertEqual(self.balance(), Decimal("45000") - BANK_FEE_5K)
+        # One transfer; its bank fee is a separate row that settles with it.
         self.assertEqual(
             Transaction.objects.filter(user=self.user, direction=Transaction.OUT,
-                                       transaction_status=Transaction.SUCCESS).count(), 1)
+                                       transaction_status=Transaction.SUCCESS)
+            .exclude(meta__has_key="transfer_fee_for").count(), 1)
 
     def test_oneline_paste_transfer(self):
         self.link()
@@ -659,7 +664,7 @@ class ChannelTests(TestCase):
         self.assertIn("Confirm transfer", self.last_reply())
         self.inbound("1234", "p2")
         self.assertIn("Transfer receipt", self.receipt_text())
-        self.assertEqual(self.balance(), Decimal("45000"))
+        self.assertEqual(self.balance(), Decimal("45000") - BANK_FEE_5K)
 
     def test_paste_amount_before_account(self):
         """"send 5k to 0123456789 gtbank" must read ₦5,000 — not the 10-digit account."""
@@ -668,15 +673,16 @@ class ChannelTests(TestCase):
         self.assertIn("Confirm transfer", self.last_reply())
         self.assertIn("5,000.00", self.last_reply())
         self.inbound("1234", "pb2")
-        self.assertEqual(self.balance(), Decimal("45000"))
+        self.assertEqual(self.balance(), Decimal("45000") - BANK_FEE_5K)
 
     def test_duplicate_webhook_does_not_double_send(self):
         self._run_transfer()
-        self.assertEqual(self.balance(), Decimal("45000"))
+        self.assertEqual(self.balance(), Decimal("45000") - BANK_FEE_5K)
         # Meta re-delivers the PIN message (same id) -> deduped, no second debit.
         self.inbound("1234", "t5")
-        self.assertEqual(self.balance(), Decimal("45000"))
-        self.assertEqual(Transaction.objects.filter(user=self.user, direction=Transaction.OUT).count(), 1)
+        self.assertEqual(self.balance(), Decimal("45000") - BANK_FEE_5K)
+        # One transfer and one fee row: the redelivery wrote neither again.
+        self.assertEqual(Transaction.objects.filter(user=self.user, direction=Transaction.OUT).count(), 2)
         self.assertIsNotNone(WaMessageLog.objects.get(wa_message_id="t5").processed_at)
 
     def test_failed_handler_releases_claim_so_meta_retry_is_not_lost(self):

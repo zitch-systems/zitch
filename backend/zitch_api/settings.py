@@ -644,6 +644,15 @@ RESEND = {
 # selectable from a session that might be stolen. Unset => the admin export refuses,
 # rather than falling back to showing the record in a browser.
 COMPLIANCE_EXPORT_EMAIL = os.environ.get("COMPLIANCE_EXPORT_EMAIL", "").strip()
+# The partner bank's fee on a transfer to another bank (wallet/transfer_fees.py):
+# Wema's NIP schedule charge plus VAT, taken from the sender's own account by the
+# bank and debited by Zitch as its own "Transfer fee" row so the two balances
+# agree. Transfers to these bank codes (or any Wema/ALAT name) are on-us and free.
+TRANSFER_FEE_ENABLED = env_bool("TRANSFER_FEE_ENABLED", True)
+TRANSFER_FEE_VAT_RATE = os.environ.get("TRANSFER_FEE_VAT_RATE", "") or "0.075"
+TRANSFER_FEE_FREE_BANK_CODES = tuple(
+    code.strip() for code in (os.environ.get("TRANSFER_FEE_FREE_BANK_CODES", "") or "035,000017").split(",")
+    if code.strip())
 # Credit/debit alerts, per channel (see wallet/alerts.py). Email defaults ON —
 # it is effectively free and customers expect an alert on every movement. SMS
 # defaults OFF: at Nigerian per-message rates, one alert per transaction is a

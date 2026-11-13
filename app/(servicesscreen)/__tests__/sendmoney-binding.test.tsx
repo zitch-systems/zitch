@@ -11,6 +11,7 @@ const mockAcquireSpendAttempt = jest.fn();
 const mockClearSpendAttempt = jest.fn();
 const mockClassifySpendResponse = jest.fn();
 const mockSendLegacy = jest.fn();
+const mockCharge = jest.fn();
 const mockBiometricAvailable = jest.fn();
 const mockAuthenticate = jest.fn();
 const mockGetToken = jest.fn();
@@ -52,6 +53,7 @@ jest.mock('@/lib/services/transfers', () => ({
     resolve: (...args: unknown[]) => mockResolveBank(...args),
     resolveLegacy: (...args: unknown[]) => mockResolveLegacy(...args),
     send: jest.fn(),
+    charge: (...args: unknown[]) => mockCharge(...args),
     sendLegacy: (...args: unknown[]) => mockSendLegacy(...args),
   },
 }));
@@ -137,11 +139,16 @@ jest.mock('@/components/design/flowkit', () => {
         )),
       ),
     QuickAmounts: () => null,
-    ConfirmSheet: ({ open, onPay }: { open: boolean; onPay: () => void }) => open
+    ConfirmSheet: ({ open, onPay, total, rows }: {
+      open: boolean; onPay: () => void; total: number; rows: [string, string][];
+    }) => open
+      // total/rows ride along so tests can read what the sheet would show.
       ? ReactActual.createElement(Pressable, {
         accessibilityLabel: 'Confirm transfer',
         onPress: onPay,
-      })
+        total,
+        rows,
+      } as React.ComponentProps<typeof Pressable> & { total: number; rows: [string, string][] })
       : null,
     BalanceHint: () => null,
     Monogram: () => null,
@@ -188,6 +195,7 @@ describe('SendMoney recipient response binding', () => {
     mockClearSpendAttempt.mockReset();
     mockClassifySpendResponse.mockReset();
     mockSendLegacy.mockReset();
+    mockCharge.mockReset().mockResolvedValue({ success: true, fee: '10.75', total: '0' });
     mockBiometricAvailable.mockReset().mockResolvedValue(false);
     mockAuthenticate.mockReset().mockResolvedValue(false);
     mockGetToken.mockReset().mockResolvedValue(null);
@@ -384,6 +392,52 @@ describe('SendMoney recipient response binding', () => {
     expect(control(tree, 'Continue').props.disabled).toBe(true);
     expect(tree.root.findAllByType(Text).some((node) =>
       String(node.props.children).includes('Name enquiry unavailable'))).toBe(true);
+    act(() => tree.unmount());
+  });
+
+  it('shows the bank fee and the total before a bank transfer is confirmed', async () => {
+    loadBankCatalogue();
+    mockResolveBank.mockResolvedValueOnce({ success: true, name: 'Fee Holder' });
+    mockCharge.mockResolvedValueOnce({ success: true, fee: '10.75', total: '1010.75' });
+
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<SendMoney />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      control(tree, 'Account number').props.onChangeText('0123456789');
+      control(tree, 'Enter amount').props.onChangeText('1000');
+    });
+    await act(async () => { pressAncestor(control(tree, 'Bank')); });
+    await act(async () => { await pressText(tree, 'Bank A'); });
+    await act(async () => { control(tree, 'Continue').props.onPress(); });
+
+    expect(mockCharge).toHaveBeenCalledWith(1000, 'bank-a');
+    const sheet = control(tree, 'Confirm transfer');
+    expect(sheet.props.total).toBe(1010.75);
+    expect(sheet.props.rows).toEqual(expect.arrayContaining([['Bank fee', '₦10.75']]));
+    act(() => tree.unmount());
+  });
+
+  it('asks for no bank fee on a transfer to another Zitch customer', async () => {
+    mockResolveLegacy.mockResolvedValueOnce({
+      success: true, name: 'Zitch Friend', recipient_key: 'recipient-key-friend',
+    });
+
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<SendMoney />); });
+    await act(async () => { control(tree, 'To Zitch').props.onPress(); });
+    await act(async () => {
+      control(tree, 'Zitch tag or phone').props.onChangeText('08020000003');
+      control(tree, 'Enter amount').props.onChangeText('1000');
+    });
+    await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
+    await act(async () => { control(tree, 'Continue').props.onPress(); });
+
+    expect(mockCharge).not.toHaveBeenCalled();
+    expect(control(tree, 'Confirm transfer').props.total).toBe(1000);
     act(() => tree.unmount());
   });
 
