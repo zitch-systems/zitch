@@ -13,7 +13,7 @@ token for one customer. Output carries user ids and account suffixes only.
 Usage:
     python manage.py prepare_settlement_funding
     python manage.py prepare_settlement_funding --user-id 34 --apply \\
-        --operator-reference "settle 9PSB-era balance, approved by <name>"
+        --operator-reference "settle pre-Wema balance, approved by <name>"
 """
 import secrets
 import string
