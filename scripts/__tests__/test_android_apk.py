@@ -21,6 +21,11 @@ SIGNER = f'Number of signers: 1\nSigner #1 certificate DN: C=US, O=Android, CN=A
 
 
 class AndroidApkVerificationTests(unittest.TestCase):
+    def test_target_sdk_is_read_from_the_packaged_manifest(self):
+        self.assertEqual(verifier.target_sdk(BADGING + "targetSdkVersion:'36'\n"), 36)
+        with self.assertRaisesRegex(ValueError, 'target SDK'):
+            verifier.target_sdk(BADGING)
+
     def test_push_metadata_comes_from_nonempty_compiled_firebase_resources(self):
         resources = '''
         resource 0x7f110081 com.zitch.app:string/google_app_id: t=0x03 d=0x0010

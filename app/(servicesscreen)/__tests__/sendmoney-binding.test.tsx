@@ -29,9 +29,9 @@ let mockSearchParams: Record<string, string> = {};
 jest.mock('react-native/Libraries/Components/ScrollView/ScrollView', () => {
   const ReactActual = jest.requireActual<typeof import('react')>('react');
   const { View } = jest.requireActual<typeof import('react-native')>('react-native');
-  return function MockScrollView({ children, ...props }: { children?: ReactNode }) {
+  return { default: function MockScrollView({ children, ...props }: { children?: ReactNode }) {
     return ReactActual.createElement(View, props, children);
-  };
+  } };
 });
 
 jest.mock('expo-router', () => ({

@@ -21,6 +21,14 @@ import { BANK_WHATSAPP } from '@/components/configFiles/links';
 import { isBiometricAvailable, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 import { clearSession } from '@/lib/secureStore';
 
+jest.mock('react-native/Libraries/Components/Pressable/Pressable', () => {
+  const ReactActual = jest.requireActual('react');
+  return { default: function MockPressable({ children, ...props }: any) {
+    return ReactActual.createElement('View', props,
+      typeof children === 'function' ? children({ pressed: false }) : children);
+  } };
+});
+
 const mockApiJson = jest.fn();
 const mockApiPost = jest.fn();
 const mockRegisterNotifications = jest.fn();

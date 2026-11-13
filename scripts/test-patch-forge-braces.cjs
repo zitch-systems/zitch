@@ -19,16 +19,12 @@ test('forge/braces refuses changed source and version before writing another pac
       for (const file of ['package.json', ...files]) fs.copyFileSync(path.join(installed, file), path.join(dir, file));
     }
     assert.equal(patchForgeBraces(root), 0);
-    const forgePath = path.join(root, 'node_modules/node-forge/lib/rsa.js');
-    let original = fs.readFileSync(forgePath, 'utf8');
-    for (const [before, after] of [...require('./security/forge-canonical-patch.json').replacements].reverse()) {
-      original = original.replace(after, before);
-    }
-    fs.writeFileSync(forgePath, original);
+    const bracesPath = path.join(root, 'node_modules/braces/lib/parse.js');
+    const original = fs.readFileSync(bracesPath, 'utf8');
     fs.appendFileSync(path.join(root, 'node_modules/braces/lib/stringify.js'), '\n// unreviewed');
     assert.throws(() => patchForgeBraces(root), /source changed/);
-    assert.equal(fs.readFileSync(forgePath, 'utf8'), original);
-    fs.writeFileSync(path.join(root, 'node_modules/node-forge/package.json'), '{"name":"node-forge","version":"999.0.0"}');
+    assert.equal(fs.readFileSync(bracesPath, 'utf8'), original);
+    fs.writeFileSync(path.join(root, 'node_modules/braces/package.json'), '{"name":"braces","version":"999.0.0"}');
     assert.throws(() => patchForgeBraces(root), /needs review/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -4,6 +4,14 @@ import { Pressable } from 'react-native';
 import { ConfirmSheet } from '../flowkit';
 import { NText } from '../Naira';
 
+jest.mock('react-native/Libraries/Components/Pressable/Pressable', () => {
+  const ReactActual = jest.requireActual('react');
+  return { default: function MockPressable({ children, ...props }: any) {
+    return ReactActual.createElement('View', props,
+      typeof children === 'function' ? children({ pressed: false }) : children);
+  } };
+});
+
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 jest.mock('@/lib/screenCapture', () => ({ usePinScreenProtection: jest.fn() }));
@@ -16,8 +24,9 @@ it('shows one titled close control, complete review values and both payment choi
   const pay = jest.fn();
   const recipient = 'Ada Chinyere Okafor-Adekunle';
   const reference = 'REFERENCE-012345678901234567890123456789';
-  const tree = renderer.create(<ConfirmSheet open onClose={close} title="Review transfer" total={1234.5} balance={5000}
-    rows={[["Recipient", recipient], ["Reference", reference]]} onPay={pay} />);
+  let tree!: renderer.ReactTestRenderer;
+  act(() => { tree = renderer.create(<ConfirmSheet open onClose={close} title="Review transfer" total={1234.5} balance={5000}
+    rows={[["Recipient", recipient], ["Reference", reference]]} onPay={pay} />); });
   const closeButtons = tree.root.findAllByType(Pressable).filter(node => /^Close/.test(node.props.accessibilityLabel || ''));
   expect(closeButtons).toHaveLength(1);
   expect(closeButtons[0].props.accessibilityLabel).toBe('Close Review transfer');
