@@ -1237,7 +1237,11 @@ def lift_debit_restriction(account_number: str, *, bvn: bool | None = None,
     callbacks/reconciliation, where the original identity rail is no longer
     available: try both account-creation products and accept only an authenticated
     success. LiftPnd is idempotent, so this safely repairs accounts that were
-    previously retried against the wrong product."""
+    previously retried against the wrong product.
+
+    When no product lifts a hold, an authenticated account-status read showing
+    an ACTIVE account with no restriction also counts (``already_clear``): there
+    was no hold to lift. ``attempts`` lists every product's answer for logs."""
     if not wema_live():
         return {"success": not _mock_blocked(), "mock": True}
 
@@ -1245,7 +1249,7 @@ def lift_debit_restriction(account_number: str, *, bvn: bool | None = None,
                 (("wallet_bvn",) if bvn else ("wallet_nin",)))
     # An account opened by the hosted face check belongs to that product.
     products = products + ("face_account",)
-    last = {"success": False, "message": "Request failed"}
+    results = []
     for product in products:
         if product == "face_account" and not _product_live(product):
             continue
@@ -1254,28 +1258,162 @@ def lift_debit_restriction(account_number: str, *, bvn: bool | None = None,
                              {"pndType": "PlacePnd" if place else "LiftPnd",
                               "accountNumber": account_number})
             data = response.json()
-            last = {"success": (200 <= response.status_code < 300
-                                and response.status_code != 202 and _ok(data)),
-                    "message": _msg(data), "raw": data,
-                    "product": product}
-            if last["success"]:
-                return last
+            result = {"success": (200 <= response.status_code < 300
+                                  and response.status_code != 202 and _ok(data)),
+                      "message": _msg(data), "raw": data,
+                      "product": product, "http_status": response.status_code}
         except (requests.RequestException, ValueError) as exc:
-            last = _unreachable(exc)
-            last["product"] = product
+            result = _unreachable(exc)
+            result["product"] = product
+            result["unreachable"] = True
+        results.append(result)
+        if result["success"]:
+            if not place:
+                _clear_debit_refusal(account_number)
+            result["attempts"] = _pnd_attempts(results)
+            return result
 
-    # A readable balance proves an account exists, not that the bank permits a
-    # debit. A missing restriction record can also be a routing/entitlement error.
-    # Recover only from an explicit active + unrestricted bank status readback.
-    if (not place and "resource not found" in str(last.get("message") or "").casefold()):
-        account = get_kyc_status(account_number)
-        if (account.get("success") is True and not account.get("mock")
-                and str(account.get("account_status") or "").strip().casefold() == "active"
-                and str(account.get("restriction_status") or "").strip().casefold() == "none"):
+    attempts = _pnd_attempts(results)
+    # On the live gateway (2026-11-13) only the BVN product answered this
+    # operation; the NIN and face products returned the gateway's own 404
+    # "Resource not found", which says nothing about the account. Report the
+    # bank's real reason rather than whichever product happened to be asked last.
+    answered = [r for r in results if not r.get("unreachable")]
+    informative = [r for r in answered
+                   if "resource not found" not in str(r.get("message") or "").casefold()]
+    last = dict((informative or answered or results or
+                 [{"success": False, "message": "Request failed"}])[-1])
+    last["attempts"] = attempts
+
+    # No product lifted a hold. That is also what the bank answers when there is
+    # no hold to lift ("Request to lift pnd on this account is not permitted",
+    # observed 2026-11-13 on an ACTIVE, unrestricted face-opened account), so ask
+    # the bank whether the account is restricted at all. A readable balance proves
+    # only that an account exists, so it is not asked; only an authenticated
+    # account-status read saying ACTIVE with no restriction counts. Skipped when
+    # the gateway never answered, and while a debit refusal is on record (below).
+    if not place and answered:
+        if _debit_refusal_recorded(account_number):
+            last["debit_refused_recently"] = True
+            return last
+        status = get_kyc_status(account_number)
+        if _restriction_clear(status):
+            evidence = {"account_status": str(status.get("account_status") or "").strip(),
+                        "restriction_status": str(status.get("restriction_status") or "")}
+            log.info("wema_pnd_already_clear account=%s attempts=%s evidence=%s",
+                     _mask_account(account_number), describe_pnd_attempts(attempts), evidence)
             return {"success": True, "already_clear": True,
                     "message": "No debit restriction is registered",
-                    "product": last.get("product", ""), "raw": last.get("raw")}
+                    "product": "upgrade", "attempts": attempts, "evidence": evidence}
     return last
+
+
+def _pnd_attempts(results: list) -> list:
+    """Each product's answer to a PND request, without the raw envelope."""
+    return [{"product": r.get("product", ""), "http_status": r.get("http_status"),
+             "message": str(r.get("message") or ""), "unreachable": bool(r.get("unreachable"))}
+            for r in results]
+
+
+def describe_pnd_attempts(attempts) -> str:
+    """One log-safe line: product:http_status:message per attempt, digits masked."""
+    parts = []
+    for a in attempts or ():
+        if not isinstance(a, dict):
+            continue
+        message = re.sub(r"\d{4,}", "#", str(a.get("message") or ""))
+        status = "unreachable" if a.get("unreachable") else a.get("http_status")
+        parts.append(f"{a.get('product', '')}:{status}:{_log_safe(message, 80)}")
+    return "|".join(parts) or "none"
+
+
+def _restriction_clear(status) -> bool:
+    """Whether an account-status read says the NUBAN can be debited.
+
+    Requires an authenticated, non-mock read of an ACTIVE account whose
+    restriction field says there is none. The bank reports "no restriction" as
+    a BLANK value (the core-banking freeze code is a space when no freeze is
+    held; a debit freeze is a letter such as "D"), so blank counts only when the
+    bank actually sent the field. A missing field is not evidence of anything.
+    """
+    if not isinstance(status, dict) or status.get("success") is not True or status.get("mock"):
+        return False
+    if str(status.get("account_status") or "").strip().casefold() != "active":
+        return False
+    restriction = status.get("restriction_status")
+    if not isinstance(restriction, str):
+        return False
+    text = restriction.strip().casefold()
+    if text == "none":
+        return True
+    return text == "" and status.get("restriction_reported") is True
+
+
+# A bank that refuses a debit for a restriction outranks a status read that said
+# there was none. While such a refusal is on record the status read is not
+# trusted for that account: otherwise every retry would debit, be refused and be
+# refunded. A genuine lift clears it; otherwise it expires and is asked again.
+_DEBIT_REFUSAL_TTL = 24 * 3600
+
+
+def _debit_refusal_key(account_number: str) -> str:
+    return "wema:debit-refused:" + _fingerprint(account_number)
+
+
+# The marker saves the customer a debit-and-refund round trip; it is not what
+# keeps money safe (the bank refuses the debit and the ledger refunds it). So a
+# cache outage must never fail a payout check: reads fail open, writes are logged.
+def record_debit_refusal(account_number: str) -> None:
+    """Remember that the bank refused a debit from this NUBAN for a restriction."""
+    from django.core.cache import cache
+
+    if not account_number:
+        return
+    try:
+        cache.set(_debit_refusal_key(account_number), True, _DEBIT_REFUSAL_TTL)
+    except Exception:                                    # noqa: BLE001 — see above
+        log.warning("wema_debit_refusal_not_recorded account=%s",
+                    _mask_account(account_number), exc_info=True)
+
+
+def _debit_refusal_recorded(account_number: str) -> bool:
+    from django.core.cache import cache
+
+    if not account_number:
+        return False
+    try:
+        return bool(cache.get(_debit_refusal_key(account_number)))
+    except Exception:                                    # noqa: BLE001 — see above
+        log.warning("wema_debit_refusal_unreadable account=%s",
+                    _mask_account(account_number), exc_info=True)
+        return False
+
+
+def _clear_debit_refusal(account_number: str) -> None:
+    from django.core.cache import cache
+
+    if not account_number:
+        return
+    try:
+        cache.delete(_debit_refusal_key(account_number))
+    except Exception:                                    # noqa: BLE001 — see above
+        log.warning("wema_debit_refusal_not_cleared account=%s",
+                    _mask_account(account_number), exc_info=True)
+
+
+# Only a hold on the PAYING account: a recipient-side restriction ("Beneficiary
+# account is restricted") must not block the sender's future transfers.
+_DEBIT_RESTRICTION_RE = re.compile(
+    r"\bpnd\b|post[\s_-]*no[\s_-]*debit|\bdebit[\s_-]*(?:freeze|frozen|restrict\w*)"
+    r"|\b(?:source|debit|sender'?s?|originator)[\s_-]+account\b[^.]{0,40}"
+    r"\b(?:restricted|frozen|freeze|on hold)\b",
+    re.I,
+)
+
+
+def is_debit_restriction_message(message) -> bool:
+    """Whether a bank refusal blames a hold on the paying account."""
+    return bool(_DEBIT_RESTRICTION_RE.search(str(message or "")))
 
 
 def get_kyc_status(account_number: str) -> dict:
@@ -1304,6 +1442,8 @@ def get_kyc_status(account_number: str) -> dict:
         return {"success": _kyc_ok(data) and bool(d), "tier": d.get("accountTier", ""),
                 "account_status": d.get("accountStatus", ""),
                 "restriction_status": d.get("restrictionStatus", ""),
+                # Blank is how the bank says "no restriction"; absent says nothing.
+                "restriction_reported": isinstance(d.get("restrictionStatus"), str),
                 "address_verification": d.get("addressVerificationStatus", ""),
                 "name": d.get("accountName", ""), "raw": data}
     except requests.RequestException as exc:

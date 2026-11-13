@@ -440,8 +440,10 @@ def wema_account_callback(request):
         # for an account it created, and retries something that cannot get better.
         # Swallow broadly and let the poller retry the lift: acknowledging the
         # provisioning matters more than reporting a hold we can fix later.
+        pnd = {}
         try:
-            lifted = bool(wema_provider.lift_debit_restriction(nuban).get("success"))
+            pnd = wema_provider.lift_debit_restriction(nuban)
+            lifted = bool(pnd.get("success"))
         except Exception:                        # noqa: BLE001 — see above
             log.exception("wema_pnd_lift_error_cb user=%s account=%s",
                           user.id, mask_pii(nuban))
@@ -450,8 +452,10 @@ def wema_account_callback(request):
             wallet.pnd_lifted = True
             wallet.save(update_fields=["pnd_lifted", "updated"])
         else:
-            log.warning("wema_pnd_lift_failed_cb user=%s account=%s",
-                        user.id, mask_pii(nuban))
+            log.warning("wema_pnd_lift_failed_cb user=%s account=%s attempts=%s",
+                        user.id, mask_pii(nuban),
+                        wema_provider.describe_pnd_attempts(
+                            pnd.get("attempts") if isinstance(pnd, dict) else None))
 
     # OTP acceptance can precede the account callback; no code replay is needed.
     try:

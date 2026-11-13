@@ -23,8 +23,12 @@ def tier3_address_capability():
 
 
 def bank_tier_number(value):
-    """Accept one explicit tier, never concatenate digits from an unknown label."""
-    match = re.fullmatch(r"(?:tier[\s_-]*)?([123])", str(value or "").strip(), re.I)
+    """Accept one explicit tier, never concatenate digits from an unknown label.
+
+    The bank's label may name the product first ("Partnership Accounts – Tier 1",
+    observed 2026-11-13); only a label that ENDS in a single tier digit counts.
+    """
+    match = re.fullmatch(r"(?:.*?\btier[\s_-]*)?([123])", str(value or "").strip(), re.I)
     return int(match.group(1)) if match else 0
 
 
