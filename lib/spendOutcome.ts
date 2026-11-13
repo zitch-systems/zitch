@@ -29,6 +29,17 @@ const PRE_EXECUTION_FAILURE_CODES = new Set([
   'rate_limited',
 ]);
 
+// HTTP 409 refusals the transfer views return after the idempotency replay
+// check and before any debit or payout call: a changed quote, a bank
+// account whose live holder is not the confirmed name (transfers/views.py), or
+// a Zitch alias that no longer resolves to the confirmed account
+// (wallet/views.py). Every other 409, notably `duplicate`, stays ambiguous.
+const PRE_EXECUTION_CONFLICT_CODES = new Set([
+  'price_changed',
+  'account_mismatch',
+  'recipient_changed',
+]);
+
 export function classifySpendResponse(
   response: SpendResponse | null | undefined,
   transport?: boolean | number,
@@ -47,9 +58,11 @@ export function classifySpendResponse(
     || status === 429
     || (typeof status === 'number' && status >= 500);
   if (response?.pending === true) return 'pending';
-  // Quote changes are rejected before execution. Other conflicts can represent
+  // These conflicts are rejected before execution. Other conflicts can represent
   // an in-flight duplicate and must keep their durable retry marker.
-  if (status === 409 && response?.code === 'price_changed') return 'failed';
+  if (status === 409
+      && typeof response?.code === 'string'
+      && PRE_EXECUTION_CONFLICT_CODES.has(response.code)) return 'failed';
   if ((status === undefined || status === 429)
       && typeof response?.code === 'string'
       && PRE_EXECUTION_FAILURE_CODES.has(response.code)) return 'failed';

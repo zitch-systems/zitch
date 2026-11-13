@@ -611,6 +611,52 @@ describe('SendMoney recipient response binding', () => {
     act(() => tree.unmount());
   });
 
+  it('returns to the form with the server message when the recipient changed before the debit', async () => {
+    jest.useFakeTimers();
+    const { classifySpendResponse } = jest.requireActual<typeof import('@/lib/spendOutcome')>('@/lib/spendOutcome');
+    mockClassifySpendResponse.mockImplementation(classifySpendResponse);
+    mockResolveLegacy.mockResolvedValueOnce({
+      success: true, name: 'Changed Recipient', recipient_key: 'recipient-key-changed',
+    });
+    mockAcquireSpendAttempt.mockResolvedValueOnce('refused-transfer-key');
+    mockSendLegacy.mockResolvedValueOnce({
+      success: false,
+      code: 'recipient_changed',
+      message: 'The recipient detail changed. Resolve the recipient again before sending.',
+      _httpOk: false,
+      _httpStatus: 409,
+    });
+
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<SendMoney />); });
+    await act(async () => { control(tree, 'To Zitch').props.onPress(); });
+    await act(async () => {
+      control(tree, 'Zitch tag or phone').props.onChangeText('08020000004');
+      control(tree, 'Enter amount').props.onChangeText('1000');
+    });
+    await act(async () => { await control(tree, 'Confirm recipient').props.onPress(); });
+    await act(async () => { control(tree, 'Continue').props.onPress(); });
+    await act(async () => {
+      control(tree, 'Confirm transfer').props.onPress();
+      jest.advanceTimersByTime(320);
+    });
+    await act(async () => { await control(tree, 'Submit PIN').props.onPress(); });
+
+    expect(mockClearSpendAttempt).toHaveBeenCalledWith(
+      'zitch-transfer',
+      'recipient-key-changed|1000',
+      'refused-transfer-key',
+    );
+    expect(mockNotify).toHaveBeenCalledWith(
+      'Error',
+      'The recipient detail changed. Resolve the recipient again before sending.',
+    );
+    expect(JSON.stringify(tree.toJSON())).not.toContain('Transfer processing');
+    expect(control(tree, 'Continue')).toBeTruthy();
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Submit PIN' })).toHaveLength(0);
+    act(() => tree.unmount());
+  });
+
   it('offers a bank-list retry after a network failure', async () => {
     mockGetToken.mockResolvedValue('token');
     mockApiPost.mockResolvedValue({ json: async () => ({ beneficiaries: [] }) });

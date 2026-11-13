@@ -18,6 +18,9 @@ const EDGE_BLOCK_RE = /not (allowed|authorized) to access this resource/i;
 export const isEdgeBlockMessage = (message: unknown): boolean =>
   typeof message === 'string' && EDGE_BLOCK_RE.test(message);
 
+// What the user sees instead of the WAF's raw block-page sentence.
+export const EDGE_BLOCK_USER_MESSAGE = 'A network security check blocked this request. Please try again in a moment.';
+
 // Install a global fetch guard so EVERY request to our API carries the User-Agent
 // (and Accept: application/json) — including the screens that call `fetch()`
 // directly (auth + some service lists) rather than going through `apiPost`.

@@ -74,6 +74,34 @@ describe('classifySpendResponse', () => {
     expect(classifySpendResponse({ success: false, message: 'Duplicate request' } as any, 409)).toBe('unknown');
   });
 
+  it.each(['account_mismatch', 'recipient_changed'])(
+    'treats the pre-debit transfer refusal %s on HTTP 409 as failed',
+    (code) => {
+      expect(classifySpendResponse({ success: false, code }, 409)).toBe('failed');
+      expect(classifySpendResponse({
+        success: false,
+        code,
+        _httpOk: false,
+        _httpStatus: 409,
+      })).toBe('failed');
+    },
+  );
+
+  it.each([408, 425, 429, 500, 502])(
+    'does not trust a transfer refusal code on ambiguous HTTP %s',
+    (status) => {
+      expect(classifySpendResponse({ success: false, code: 'account_mismatch' }, status)).toBe('unknown');
+      expect(classifySpendResponse({ success: false, code: 'recipient_changed' }, status)).toBe('unknown');
+    },
+  );
+
+  it.each(['duplicate', 'idempotency_conflict', 'duplicate_unknown', undefined])(
+    'keeps any other HTTP 409 (code %s) ambiguous',
+    (code) => {
+      expect(classifySpendResponse({ success: false, code, duplicate: true }, 409)).toBe('unknown');
+    },
+  );
+
   it('distinguishes a confirmed earlier attempt from a new success', () => {
     expect(isRecoveredSpendResponse({ success: true, duplicate: true }, true)).toBe(true);
     expect(isRecoveredSpendResponse({ success: true }, true)).toBe(false);

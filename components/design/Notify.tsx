@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Modal, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
+import { isMissingTransactionPinMessage } from '@/lib/transactionPin';
 
 /**
  * Branded success/error/info popup — a nicer replacement for the OS `Alert.alert`
@@ -16,7 +18,7 @@ import { useTheme, font } from '@/lib/theme';
  * action buttons should keep using Alert.alert (this is for one-shot messages).
  */
 type Kind = 'success' | 'error' | 'info';
-type Item = { title: string; message?: string; kind: Kind; dismissMs?: number };
+type Item = { title: string; message?: string; kind: Kind; dismissMs?: number; setPin?: boolean };
 
 /** How long a self-clearing popup stays up: long enough to read, short enough
  *  that it never feels like something waiting on you. */
@@ -30,7 +32,10 @@ const inferKind = (title: string): Kind =>
       : 'info';
 
 export function notify(title: string, message?: string, kind?: Kind): void {
-  _emit?.({ title, message, kind: kind ?? inferKind(title) });
+  // Every payment screen surfaces the server's refusal here. An account that
+  // never set a transaction PIN gets the same refusal on every payment, so the
+  // popup carries the one way out instead of a dead-end OK.
+  _emit?.({ title, message, kind: kind ?? inferKind(title), setPin: isMissingTransactionPinMessage(message) });
 }
 export const notifySuccess = (title: string, message?: string) => notify(title, message, 'success');
 export const notifyError = (title: string, message?: string) => notify(title, message, 'error');
@@ -128,6 +133,11 @@ export const NotifyHost = () => {
           ) : null}
           {/* No button on a self-clearing popup — there is nothing to acknowledge,
               and an OK that outlives the message it confirms is just a dead tap. */}
+          {item.setPin ? (
+            <Pressable onPress={() => { close(); router.push('/setpin'); }} accessibilityRole="button" accessibilityLabel="Set PIN" style={{ marginTop: 26, alignSelf: 'stretch', height: 54, borderRadius: 18, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: c.inkOnBrand, fontSize: 15.5, fontFamily: font.bold }}>Set PIN</Text>
+            </Pressable>
+          ) : null}
           {item.dismissMs ? null : (
             <Pressable onPress={close} accessibilityRole="button" accessibilityLabel="Close notification" style={{ marginTop: 26, alignSelf: 'stretch', height: 54, borderRadius: 18, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}>
               <Text style={{ color: c.inkOnBrand, fontSize: 15.5, fontFamily: font.bold }}>OK</Text>
