@@ -287,7 +287,7 @@ class WemaLiveTests(SimpleTestCase):
             "accountNumber": "0410530975",
             "from": "2026-07-01",
             "to": "2026-08-20",
-            "keyword": "payment",
+            "keyWord": "payment",
         })
         headers = mock_post.call_args.kwargs["headers"]
         self.assertEqual(headers["x-api-key"], "chan-1")
