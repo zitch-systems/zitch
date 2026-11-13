@@ -849,8 +849,9 @@ class WemaCallbacksDiagnoseTests(TestCase):
         self.assertEqual(body["this_request_came_from"], "41.58.1.9")
         self.assertTrue(body["source_ip_detection"]["safe_to_enable_ip_enforcement"])
         self.assertTrue(body["ready_to_send_to_the_bank"])
-        # ...but the hop count still governs rate-limit bucketing, so it stays visible.
-        self.assertEqual(body["source_ip_detection"]["rate_limit_bucket_ip"], "10.30.28.8")
+        # Rate limiting no longer buckets on the platform's own proxy either: that
+        # address is shared by every customer, which made each per-IP limit global.
+        self.assertEqual(body["source_ip_detection"]["rate_limit_bucket_ip"], "41.58.1.9")
 
     @override_settings(WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
                        RATELIMIT_TRUSTED_PROXY_HOPS=1)

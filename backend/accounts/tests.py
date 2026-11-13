@@ -741,6 +741,50 @@ class ClientIpTests(TestCase):
         })
         self.assertEqual(client_ip(request), "198.51.100.8")
 
+    @override_settings(RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_two_customers_behind_the_platform_proxy_are_two_addresses(self):
+        # Observed on the deployed host: the right-most entry is the platform's own
+        # proxy, the same for everyone, so every per-IP limit was one shared bucket.
+        def seen(customer):
+            return client_ip(SimpleNamespace(META={
+                "HTTP_X_FORWARDED_FOR": f"{customer}, 10.30.1.250",
+                "REMOTE_ADDR": "10.30.1.250"}))
+
+        self.assertEqual(seen("41.58.10.7"), "41.58.10.7")
+        self.assertEqual(seen("105.112.3.9"), "105.112.3.9")
+
+    @override_settings(RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_behind_cloudflare_the_customer_is_the_address_cloudflare_names(self):
+        request = SimpleNamespace(META={
+            "HTTP_X_FORWARDED_FOR": "41.58.10.7, 172.70.1.1",
+            "HTTP_CF_CONNECTING_IP": "41.58.10.7", "REMOTE_ADDR": "10.30.1.250"})
+        self.assertEqual(client_ip(request), "41.58.10.7")
+
+    @override_settings(RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_a_prepended_address_cannot_buy_a_fresh_bucket(self):
+        # The caller controls only what is to the LEFT of their own address.
+        request = SimpleNamespace(META={
+            "HTTP_X_FORWARDED_FOR": "8.8.8.8, 41.58.10.7, 10.30.1.250",
+            "HTTP_CF_CONNECTING_IP": "8.8.4.4", "REMOTE_ADDR": "10.30.1.250"})
+        self.assertEqual(client_ip(request), "41.58.10.7")
+
+    @override_settings(RATELIMIT_ENABLE=True, RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_one_customer_at_the_limit_does_not_lock_out_another(self):
+        from django.core.cache import cache
+        from common.ratelimit import ratelimit
+
+        cache.clear()
+        view = ratelimit("shared-bucket-test", 2, 60)(lambda request: "served")
+
+        def call(customer):
+            return view(SimpleNamespace(META={
+                "HTTP_X_FORWARDED_FOR": f"{customer}, 10.30.1.250",
+                "REMOTE_ADDR": "10.30.1.250"}))
+
+        self.assertEqual([call("41.58.10.7") for _ in range(2)], ["served", "served"])
+        self.assertEqual(call("41.58.10.7").status_code, 429)
+        self.assertEqual(call("105.112.3.9"), "served")
+
 
 @override_settings(
     RATELIMIT_ENABLE=True,
