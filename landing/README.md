@@ -19,6 +19,12 @@ marks). Icons load from Lucide (unpkg) and type from Google Fonts.
 `prototype.html` + `app/` + `shared.jsx` remain the interactive app prototype (served at
 `/prototype.html`), independent of the marketing pages.
 
+`assets/zitch-loader.v1.js` is the branded coil loader (`ZitchLoader.mount(el, { height })`) — the
+prototype's boot splash and its "Authorizing payment…" state use it. It is also the source the
+mobile app's loader sprite is baked from (`scripts/bake-loader-sprite.cjs`), so web and app play
+the same animation. The filename is versioned because `/assets/*` is cached as immutable: bump it
+(`v2`) when the animation changes.
+
 Why split it out of the backend: the Django app on Render's free plan serves this page at `/`,
 but free Render services sleep after idle — the first visitor waits ~50s for a cold start.
 A static edge host serves it instantly and free.

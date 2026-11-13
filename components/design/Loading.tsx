@@ -1,38 +1,60 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, Animated, Easing, AccessibilityInfo } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { View, Text, Animated, Easing, AccessibilityInfo, PixelRatio } from 'react-native';
 import { useTheme, font } from '@/lib/theme';
 
-// Direct (relative) require so the logo always resolves in the bundle,
+// Direct (relative) require so the sprite always resolves in the bundle,
 // independent of path-alias handling — the loader's mark must never be missing.
-const LOGO = require('../../assets/images/zitch-mark.png');
+//
+// The sheet is baked from the website's canvas renderer
+// (landing/assets/zitch-loader.v1.js) by scripts/bake-loader-sprite.cjs, so the
+// app and the web play the very same animation. Re-run that script to change it;
+// the constants below must match the ones at the top of the script.
+const SPRITE = require('../../assets/images/zitch-loader-sprite.png');
+const FRAMES = 84;      // one 2.8s beat at 30fps
+const COLS = 12;
+const ROWS = 7;
+const FRAME_W = 168;    // px per cell in the sheet
+const FRAME_H = 256;
 
-/** One turn of the mark.
- *
- *  Fast enough to read as "working on it", slow enough to still read as the
- *  logo rather than a blur. This was 1800ms, which is a deliberate, premium
- *  cadence in isolation but the wrong one here: a loader is the thing people
- *  stare at while they wait, and a slow rotation makes the wait itself feel
- *  slower. Perceived speed is what this component is actually for. */
-const SPIN_MS = 1150;
+/** One beat of the coil: wind up → one full turn → settle and rest on the Z.
+ *  Matches the web loader's default, so the two are indistinguishable. */
+const BEAT_MS = 2800;
+
+// A stepped interpolation: the value holds on each frame and jumps to the next,
+// so the sheet never slides visibly between cells. Built once for every loader.
+const STEP_IN: number[] = [];
+const STEP_COL: number[] = [];
+const STEP_ROW: number[] = [];
+for (let i = 0; i < FRAMES; i++) {
+  STEP_IN.push(i / FRAMES, (i + 1) / FRAMES - 1e-6);
+  STEP_COL.push(i % COLS, i % COLS);
+  STEP_ROW.push(Math.floor(i / COLS), Math.floor(i / COLS));
+}
 
 /**
- * ZSpin — the Zitch mark rotating about its own vertical axis, like a coin on a
- * table. One native-driver loop, one Image: this replaced a 13-band helical coil
- * that approximated a spinning "Z" out of animated rectangles. Showing the real
- * logo is both more on-brand and dramatically cheaper — the coil ran 39 baked
- * interpolations (three per band) on every loader in the app, including the
- * inline ones that sit inside list rows.
+ * ZCoil — the Zitch "Z" as a ribbon wrapped round a cylinder: it winds up, makes
+ * one full turn, then settles on the logo pose, squashing and stretching like a
+ * spring as it goes. This is the branded loader from the design file, frame for
+ * frame.
  *
- * `perspective` is what makes it read as rotation in depth rather than a flat
- * horizontal squash; without it a rotateY just scales the image on X. It scales
- * with `size` so the foreshortening looks the same at 20px and 120px.
+ * It plays as a sprite sheet: ONE image inside a clipped box, moved a whole cell
+ * at a time by two native-driver transforms. No per-frame JS and no stack of
+ * animated views — an earlier coil built from 13 animated rectangles cost 39
+ * interpolations per loader and was dropped for that reason; this one costs two,
+ * and keeps running smoothly while the JS thread is busy (which is exactly when
+ * a loader is on screen).
  *
- * Honours the OS "reduce motion" setting: vestibular-sensitive users get a still
- * mark instead of a perpetual spin, and the surrounding label still says what is
- * happening.
+ * `height` is the height of one cell. The ribbon itself fills roughly the middle
+ * three-quarters of it; the rest is transparent padding that keeps neighbouring
+ * frames from bleeding in. `box` is the square layout footprint: the cell is
+ * centred on it and may overhang (only its transparent padding does).
+ *
+ * Honours the OS "reduce motion" setting: vestibular-sensitive users get the
+ * still Z pose (frame 0) instead of a perpetual spin, and the surrounding label
+ * still says what is happening.
  */
-const ZSpin = ({ size }: { size: number }) => {
-  const [spin] = useState(() => new Animated.Value(0));
+const ZCoil = ({ height, box }: { height: number; box: number }) => {
+  const [beat] = useState(() => new Animated.Value(0));
   const [reduceMotion, setReduceMotion] = useState(false);
 
   useEffect(() => {
@@ -47,40 +69,59 @@ const ZSpin = ({ size }: { size: number }) => {
   useEffect(() => {
     if (reduceMotion) return;
     // Reset first: a loop restarted after a motion-setting change would otherwise
-    // resume from wherever the value was left, jumping the mark mid-turn.
-    spin.setValue(0);
+    // resume from wherever the value was left, jumping the coil mid-turn.
+    beat.setValue(0);
     const loop = Animated.loop(
-      Animated.timing(spin, {
-        toValue: 1, duration: SPIN_MS, easing: Easing.linear, useNativeDriver: true,
+      Animated.timing(beat, {
+        toValue: 1, duration: BEAT_MS, easing: Easing.linear, useNativeDriver: true,
       }),
     );
     loop.start();
     return () => loop.stop();
-  }, [spin, reduceMotion]);
+  }, [beat, reduceMotion]);
 
-  const rotateY = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  // Snap the cell to whole device pixels so every frame lands on the same pixel
+  // grid — a fractional cell would make the coil shimmer by a sub-pixel per frame.
+  const h = PixelRatio.roundToNearestPixel(height);
+  const w = PixelRatio.roundToNearestPixel((height * FRAME_W) / FRAME_H);
+
+  const transform = useMemo(
+    () => [
+      { translateX: beat.interpolate({ inputRange: STEP_IN, outputRange: STEP_COL.map((col) => -col * w), extrapolate: 'clamp' }) },
+      { translateY: beat.interpolate({ inputRange: STEP_IN, outputRange: STEP_ROW.map((row) => -row * h), extrapolate: 'clamp' }) },
+    ],
+    [beat, w, h],
+  );
 
   return (
-    <Animated.Image
-      source={LOGO}
-      resizeMode="contain"
-      accessible={false}
-      style={{
-        width: size,
-        height: size,
-        transform: reduceMotion ? [] : [{ perspective: size * 8 }, { rotateY }],
-      }}
-    />
+    <View style={{ width: box, height: box }}>
+      <View style={{ position: 'absolute', left: (box - w) / 2, top: (box - h) / 2, width: w, height: h, overflow: 'hidden' }}>
+        <Animated.Image
+          source={SPRITE}
+          accessible={false}
+          fadeDuration={0}
+          resizeMode="stretch"
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            width: w * COLS,
+            height: h * ROWS,
+            transform: reduceMotion ? [] : transform,
+          }}
+        />
+      </View>
+    </View>
   );
 };
 
 /**
- * Branded loading indicator — the Zitch mark spinning on its own axis, so
- * loading is unmistakably active and on-brand (never blank).
+ * Branded loading indicator — the Zitch coil turning on its axis, so loading is
+ * unmistakably active and on-brand (never blank).
  *
- *   <Loading />                        // full-screen splash (mark + ZITCH wordmark)
+ *   <Loading />                        // full-screen splash (coil + ZITCH wordmark)
  *   <Loading label="Processing…" />    // full-screen with a status label
- *   <Loading full={false} />           // inline block (mark only)
+ *   <Loading full={false} />           // inline block (coil only)
  */
 export const Loading = ({ label, full = true }: { label?: string; full?: boolean }) => {
   const { c } = useTheme();
@@ -98,8 +139,8 @@ export const Loading = ({ label, full = true }: { label?: string; full?: boolean
       }
     >
       <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
-        {/* Soft brand halo behind the mark. Sits under the spinning image and
-            does NOT rotate, so the glow stays put while the logo turns. */}
+        {/* Soft brand halo behind the coil. It does NOT animate, so the glow stays
+            put while the ribbon turns. */}
         <View
           style={{
             position: 'absolute',
@@ -110,7 +151,9 @@ export const Loading = ({ label, full = true }: { label?: string; full?: boolean
             opacity: 0.12,
           }}
         />
-        <ZSpin size={size * 0.66} />
+        {/* A cell slightly taller than the box: its transparent padding overflows,
+            leaving the ribbon itself comfortably inside the halo. */}
+        <ZCoil height={size * 1.1} box={size} />
       </View>
       {label ? (
         <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.medium }}>{label}</Text>
@@ -126,19 +169,19 @@ export const Loading = ({ label, full = true }: { label?: string; full?: boolean
 };
 
 /**
- * Compact inline variant — the same spinning mark, sized to sit inside a field or
- * list row (e.g. the bank auto-detect state on Send money). No ring around it any
- * more: the logo itself is the moving part, so a second spinning element was just
- * competing with it.
+ * Compact inline variant — the same coil, sized to sit inside a field or list row
+ * (e.g. the bank auto-detect state on Send money). The cell is drawn a little
+ * larger than `size` so the ribbon itself (not its transparent padding) fills the
+ * box; the layout footprint is still exactly `size` × `size`.
  */
-export const LoadingMark = ({ size = 20 }: { size?: number }) => (
+export const LoadingMark = ({ size = 20, label = 'Loading' }: { size?: number; label?: string }) => (
   <View
     accessible
     accessibilityRole="progressbar"
-    accessibilityLabel="Loading"
+    accessibilityLabel={label}
     style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}
   >
-    <ZSpin size={size} />
+    <ZCoil height={size * 1.3} box={size} />
   </View>
 );
 
