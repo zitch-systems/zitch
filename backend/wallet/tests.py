@@ -205,6 +205,7 @@ class WalletTests(TestCase):
         recipient = User.objects.create(
             username="recipient_alias",
             email="recipient-alias@zitch.test",
+            email_verified=True,
             first_name="Alias",
             last_name="Recipient",
         )
@@ -224,10 +225,21 @@ class WalletTests(TestCase):
         self.assertNotIn("recipient_alias", expected)
         self.assertNotIn("recipient-alias@zitch.test", expected)
 
+    def test_an_unverified_email_does_not_name_a_recipient(self):
+        # Anyone can type someone else's address at sign-up; only a confirmed one
+        # may receive a transfer addressed to it.
+        User.objects.create(username="squatter", email="victim@zitch.test",
+                            first_name="Not", last_name="Them")
+        response, body = self.post("/api/transfer/resolve/", {
+            "access_token": self.token, "identifier": "victim@zitch.test"})
+        self.assertNotEqual(response.status_code, 200)
+        self.assertFalse(body.get("success"))
+
     def test_recipient_resolution_repairs_old_release_null_namespace(self):
         recipient = User.objects.create(
             username="cutover_recipient",
             email="cutover-recipient@zitch.test",
+            email_verified=True,
             first_name="Cutover",
             last_name="Recipient",
         )
