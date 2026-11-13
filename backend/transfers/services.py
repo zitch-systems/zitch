@@ -146,7 +146,7 @@ def compare_bank_codes(remote: list[dict]) -> dict:
     out = {"agree": [], "differ": [], "ambiguous": [], "unmatched": [],
            "rail_unmatched": [], "remote_count": len(rows)}
     claimed = set()
-    for bank in Bank.objects.filter(active=True).exclude(code="9psb").order_by("name"):
+    for bank in Bank.objects.filter(active=True).order_by("name"):
         row = {"name": bank.name, "ours": bank.bank_code, "code": bank.code}
         hits, via = [], ""
         for i, key in enumerate(bank_name_keys(bank.name)):
@@ -226,9 +226,9 @@ def detect_account_banks(account_number: str) -> list[dict]:
     # just isn't auto-detected; the user picks the bank manually (which
     # resolves at that one bank). Falls back to every active bank if no bank
     # is flagged popular (e.g. a stale seed).
-    banks = list(Bank.objects.filter(active=True, popular=True).exclude(code="9psb").exclude(bank_code=""))
+    banks = list(Bank.objects.filter(active=True, popular=True).exclude(bank_code=""))
     if not banks:
-        banks = list(Bank.objects.filter(active=True).exclude(code="9psb").exclude(bank_code=""))
+        banks = list(Bank.objects.filter(active=True).exclude(bank_code=""))
     if not payout_live():
         # No live name-enquiry rail: this is a placeholder, NOT a real detection.
         # Flag it `mock` so callers don't present the stub bank/name as verified.
