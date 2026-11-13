@@ -17,7 +17,7 @@ const flat = (style: unknown): Record<string, any> =>
 
 // Host nodes only (the rendered native views), so wrapper components don't get in the way.
 const hosts = (tree: renderer.ReactTestRenderer) => tree.root.findAll((n) => typeof n.type === 'string');
-const sheetOf = (tree: renderer.ReactTestRenderer) => hosts(tree).find((n) => n.type === 'Image')!;
+const sheetOf = (tree: renderer.ReactTestRenderer) => hosts(tree).find((n) => String(n.type) === 'Image')!;
 const cellOf = (tree: renderer.ReactTestRenderer) => hosts(tree).find((n) => flat(n.props.style).overflow === 'hidden')!;
 
 async function mount(el: React.ReactElement) {
