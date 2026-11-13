@@ -1609,51 +1609,85 @@ class WhatsAppReceiptTests(TestCase):
         self.assertGreaterEqual(img.width, 2000)
 
     @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
-    def test_the_amount_is_shown_once_and_the_rest_are_ordinary_rows(self):
-        """The receipt is laid out as the MOBILE APP lays it out, because a
-        customer who sees one of each and cannot tell they came from the same
-        company is being given exactly the doubt a receipt exists to remove.
+    def test_each_fact_appears_once_where_a_reader_looks_for_it(self):
+        """The amount is the headline and the date sits under the status, so
+        neither is repeated as a row: printed twice, a value reads as a fault.
+        Who was paid and who paid each read as one entry, and the reference
+        comes last, once, whether or not a row already carried it."""
+        from whatsapp.receipt import receipt_layout, tabulated_rows
 
-        The app puts the amount in the sentence under the heading and NOT in the
-        table (printed twice it reads as a fault), while date, time and reference
-        are rows on its card. So they are rows here."""
+        rows = [("From", "ADA EZE"), ("Sender", "Wema Bank · 010****123"),
+                ("To", "BOLA JOHNSON"), ("Bank", "Access Bank"), ("Account", "0123456789"),
+                ("Amount", "₦5,000.00"), ("Narration", "Rent"), ("Bank fee", "₦10.75"),
+                ("Reference", "ZTC-1"), ("Date", "13 Nov 2026, 16:01")]
+        layout = receipt_layout("Transfer receipt", rows, "ZTC-1")
+        self.assertEqual(layout["amount"], "₦5,000.00")
+        self.assertEqual(layout["when"], "13 Nov 2026, 16:01")
+        self.assertEqual(layout["parties"], [
+            ("Recipient", "BOLA JOHNSON", "Access Bank · 0123456789"),
+            ("Sender", "ADA EZE", "Wema Bank · 010****123")])
+        self.assertEqual(layout["rows"], [("Narration", "Rent"), ("Bank fee", "₦10.75"),
+                                          ("Reference", "ZTC-1")])
+        # The reference is supplied when no row carries it, and never doubled.
+        self.assertEqual(tabulated_rows([("Network", "MTN"), ("Amount", "₦500.00")], "ZTC-2"),
+                         [("Network", "MTN"), ("Reference", "ZTC-2")])
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_a_token_is_boxed_where_it_is_found_first(self):
+        """An electricity token or exam PIN is the one value someone types
+        somewhere else, so it is lifted out of the rows into its own box."""
+        from whatsapp.receipt import receipt_layout
+
+        layout = receipt_layout("Electricity receipt", [
+            ("Disco", "Ikeja Electric"), ("Amount", "₦10,000.00"),
+            ("Token", "1234 5678 9012 3456 7890"), ("Reference", "ZTC-3")], "ZTC-3")
+        self.assertEqual(layout["highlights"], [("Token", "1234 5678 9012 3456 7890")])
+        self.assertNotIn("Token", [k for k, _ in layout["rows"]])
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_more_rows_make_a_taller_receipt(self):
+        """Rows are tabulated, never silently dropped to fit a fixed sheet."""
         import io
 
         from PIL import Image
 
         from whatsapp.receipt import render_receipt
-        base = [("Recipient", "ADA"), ("Amount", "₦500.00")]
-        lean = Image.open(io.BytesIO(render_receipt("Money sent", base, "ZTC-1")))
+        base = [("To", "ADA"), ("Amount", "₦500.00")]
+        lean = Image.open(io.BytesIO(render_receipt("Transfer receipt", base, "ZTC-1")))
         full = Image.open(io.BytesIO(render_receipt(
-            "Money sent",
-            base + [("Reference", "ZTC-1"), ("Date", "01 Jan 2026")], "ZTC-1")))
-        # Two more rows means a taller sheet: they are tabulated, not swallowed.
+            "Transfer receipt", base + [("Narration", "Rent"), ("Bank fee", "₦10.75")],
+            "ZTC-1")))
         self.assertGreater(full.height, lean.height)
-
-        # ...and the amount is never one of them. Asserted on the row choice
-        # itself rather than on pixel heights, which conflate "this became a row"
-        # with "this made the sentence under the heading longer".
-        from whatsapp.receipt import tabulated_rows
-
-        labels = [k for k, _ in tabulated_rows(base, "ZTC-1")]
-        self.assertNotIn("Amount", labels)
-        self.assertEqual(labels, ["Recipient", "Reference"])
-        # A reference already in the rows is not appended a second time.
-        self.assertEqual(
-            [k for k, _ in tabulated_rows(base + [("Reference", "ZTC-1")], "ZTC-1")],
-            ["Recipient", "Reference"])
 
     @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
     def test_a_failed_receipt_never_claims_the_money_was_sent(self):
-        """"₦2,000.00 sent to ADEYEMI WILLIAM" on a FAILED receipt is a false
-        statement about money, on the one document whose whole job is to be true
-        about money. Only a settled success may say "sent"."""
-        from whatsapp.receipt import _sent_verb
+        """The renderer writes no sentence of its own about the money: the
+        outcome is the status it is given, in the pill. So a failed or pending
+        receipt cannot say "sent" or "successful" through anything it adds."""
+        from whatsapp.receipt import receipt_layout
 
-        self.assertEqual(_sent_verb("Successful"), "sent to")
-        self.assertEqual(_sent_verb("Failed"), "to")
-        self.assertEqual(_sent_verb("Not completed"), "to")
-        self.assertEqual(_sent_verb("Pending"), "on its way to")
+        rows = [("To", "ADEYEMI WILLIAM"), ("Bank", "Access Bank"), ("Account", "0123456789"),
+                ("Amount", "₦2,000.00"), ("Reference", "ZTC-4")]
+        for status in ("Failed", "Not completed", "Pending"):
+            layout = receipt_layout("Transfer receipt", rows, "ZTC-4", status=status)
+            self.assertEqual(layout["status"], status)
+            words = " ".join([layout["title"], layout["amount"], layout["when"]]
+                             + [" ".join(p) for p in layout["parties"]]
+                             + [" ".join(r) for r in layout["rows"]]).lower()
+            self.assertNotIn("sent", words)
+            self.assertNotIn("successful", words)
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_the_naira_sign_is_drawn_not_left_to_the_font(self):
+        """Manrope, the app's typeface, has no naira sign: typeset, it would
+        print the empty box. The renderer builds one from Manrope's own N, so
+        every amount carries a real sign at the digits' own weight."""
+        from whatsapp.receipt import _BOLD, _font, _has_glyph, _text_width
+
+        bold = _font(_BOLD, 22)
+        self.assertFalse(_has_glyph(bold, "₦"))      # why the sign is drawn
+        self.assertTrue(_has_glyph(bold, "N"))
+        self.assertGreater(_text_width("₦5", bold), bold.getlength("N5"))
 
     @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
     def test_a_refused_payment_does_not_wear_the_success_mark(self):
@@ -2911,6 +2945,18 @@ class ReceiptPrivacyTests(TestCase):
         self.assertNotIn("08010000001", text)          # never the full number
         self.assertNotIn("balance", text.lower())
         self.assertNotIn("12,345", text)
+
+    def test_the_sender_is_named_by_bank_and_masked_account_once_there_is_one(self):
+        """The recipient can check a bank and account against their alert; the
+        payer's phone digits told them nothing. Masked in the middle, as bank
+        receipts are, and never the full number or the phone."""
+        give_account(self.user, "0100000123")
+        text = reply_receipt(MSISDN, "Airtime receipt", [("Network", "MTN")],
+                             ref="ZTC-5", user=self.user)
+        self.assertIn("From: ADA EZE", text)
+        self.assertIn("Sender: Wema Bank · 010****123", text)
+        self.assertNotIn("0100000123", text)
+        self.assertNotIn("0001", text)
 
     def test_balance_arrives_as_its_own_message_after_the_receipt(self):
         reply_receipt(MSISDN, "Airtime receipt", [("Network", "MTN")],

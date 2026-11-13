@@ -396,11 +396,33 @@ def _sender_rows(user) -> list:
     rows = []
     if name:
         rows.append(("From", name))
-    if phone:
+    account = _sender_account(user)
+    if account:
+        rows.append(("Sender", account))
+    elif phone:
         # Last four only: the receipt is designed to be forwarded, and a full
         # number on a shared artifact is an invitation to impersonation.
         rows.append(("Sender", f"•••••••{phone[-4:]}"))
     return rows
+
+
+def _sender_account(user) -> str:
+    """The account the money left, as a receipt shows it: "Wema Bank · 012****789".
+
+    The app's receipt names the sender's bank and account, and so does every
+    Nigerian bank receipt a recipient has seen; the payer's phone digits told
+    them nothing they could check. Masked in the middle, as those receipts do:
+    enough to recognise, not enough to reuse. Empty until the customer has an
+    account, when the phone digits stand in as before.
+    """
+    from wallet.models import Wallet
+
+    wallet = Wallet.objects.filter(user=user).only("account_number", "bank_name").first()
+    number = "".join(ch for ch in (getattr(wallet, "account_number", "") or "") if ch.isdigit())
+    if len(number) < 8:
+        return ""
+    return " · ".join(x for x in ((wallet.bank_name or "").strip(),
+                                   f"{number[:3]}****{number[-3:]}") if x)
 
 
 def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str,

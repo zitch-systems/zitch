@@ -356,6 +356,7 @@ def _transfer_outcome(pa: PendingAction, user, msisdn: str, txn, *, replay: bool
     charged = (txn.meta or {}).get("transfer_fee")
     if charged:
         rows.append(("Bank fee", _money(Decimal(str(charged)))))
+        rows.append(("Total debited", _money(amount + Decimal(str(charged)))))
     rows += [("Reference", txn.reference), ("Date", txn.created.strftime("%d %b %Y, %H:%M"))]
     reply_receipt(msisdn, "Transfer receipt", _with_narration(pa, rows),
                   ref=txn.reference, user=user, balance_after=wallet.balance)
