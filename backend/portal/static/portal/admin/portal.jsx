@@ -4,13 +4,21 @@ const { useState, useEffect } = React;
 function Login({ onDone }) {
   const [ident, setIdent] = useState('');
   const [pw, setPw] = useState('');
+  const [code, setCode] = useState('');
+  const [needsCode, setNeedsCode] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setErr('');
-    try { await ZAPI.login(ident, pw); onDone(); }
-    catch (ex) { setErr(ex.message); }
+    try { await ZAPI.login(ident, pw, code); onDone(); }
+    catch (ex) {
+      if (ex.code === 'mfa_required' || ex.code === 'mfa_invalid') {
+        setNeedsCode(true);
+        setCode('');
+      }
+      setErr(ex.message);
+    }
     setBusy(false);
   };
   return (
@@ -19,12 +27,19 @@ function Login({ onDone }) {
         <img src="/static/portal/assets/brand/zitch-ribbon2.png" alt="Zitch" style={{ width: 42, margin: '0 auto 10px' }} />
         <div className="card-title" style={{ textAlign: 'center' }}>ZITCH <em>Admin</em></div>
         <p className="dim sm" style={{ textAlign: 'center', margin: '4px 0 16px' }}>Staff sign-in · every action is audit-logged</p>
-        <label className="f-label">Email / username</label>
-        <input className="f-input" value={ident} onChange={(e) => setIdent(e.target.value)} autoFocus />
-        <label className="f-label">Password</label>
-        <input className="f-input" type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
-        {err && <div className="note warn" style={{ marginTop: 10 }}><Icon name="alert" size={14} /> {err}</div>}
-        <button className="btn primary w100" style={{ marginTop: 14 }} disabled={busy || !ident || !pw}>
+        <label className="f-label" htmlFor="ops-login-identifier">Email / username</label>
+        <input id="ops-login-identifier" className="f-input" autoComplete="username" value={ident}
+          onChange={(e) => { setIdent(e.target.value); setCode(''); setNeedsCode(false); }} autoFocus />
+        <label className="f-label" htmlFor="ops-login-password">Password</label>
+        <input id="ops-login-password" className="f-input" type="password" autoComplete="current-password"
+          value={pw} onChange={(e) => setPw(e.target.value)} />
+        {needsCode && <>
+          <label className="f-label" htmlFor="ops-login-code">Authenticator code</label>
+          <input autoFocus id="ops-login-code" className="f-input" inputMode="numeric" autoComplete="one-time-code"
+            maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} />
+        </>}
+        {err && <div role="alert" className="note warn" style={{ marginTop: 10 }}><Icon name="alert" size={14} /> {err}</div>}
+        <button className="btn primary w100" style={{ marginTop: 14 }} disabled={busy || !ident || !pw || (needsCode && code.length !== 6)}>
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
       </form>

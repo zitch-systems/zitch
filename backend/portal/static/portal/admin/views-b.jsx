@@ -437,6 +437,7 @@ function Settings({ toast, refresh }) {
           <div className="note" style={{ marginTop: 12 }}><Icon name="lock" size={14} /> Staff accounts and role groups are managed in Django admin.</div>
         </Card>
       </div>
+      <OperatorMfaCard />
       <DjangoAdminCard />
       <Card title="Role permissions" sub="Enforced server-side on every endpoint" pad={false}>
         <table className="tbl">
@@ -454,6 +455,62 @@ function Settings({ toast, refresh }) {
         </table>
       </Card>
     </div>
+  );
+}
+
+function OperatorMfaCard() {
+  const [status, setStatus] = useStateB(null);
+  const [secret, setSecret] = useStateB('');
+  const [code, setCode] = useStateB('');
+  const [busy, setBusy] = useStateB(false);
+  const [message, setMessage] = useStateB('');
+
+  useEffectB(() => {
+    let active = true;
+    ZAPI.call('mfa').then((value) => { if (active) setStatus(value); })
+      .catch((error) => { if (active) setMessage(error.message); });
+    return () => { active = false; };
+  }, []);
+
+  const enroll = async () => {
+    setBusy(true);
+    setMessage('');
+    try {
+      const result = await ZAPI.call('mfa-enroll');
+      setSecret(result.secret);
+    } catch (error) { setMessage(error.message); }
+    finally { setBusy(false); }
+  };
+
+  const confirm = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setMessage('');
+    try {
+      await ZAPI.call('mfa-confirm', { code });
+      setSecret('');
+      setCode('');
+      setStatus((value) => ({ ...value, enrolled: true }));
+    } catch (error) { setMessage(error.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Card title="Two-factor authentication">
+      {status?.enrolled && <p>Authenticator sign-in is on for your account.</p>}
+      {status && !status.enrolled && !secret && (
+        <button className="btn primary" type="button" disabled={busy} onClick={enroll}>Set up authenticator</button>
+      )}
+      {secret && <form onSubmit={confirm}>
+        <p>Add a time-based entry for Zitch in your authenticator using this setup key.</p>
+        <p><code>{secret}</code></p>
+        <label className="f-label" htmlFor="ops-mfa-enroll-code">Authenticator code</label>
+        <input id="ops-mfa-enroll-code" className="f-input" inputMode="numeric" autoComplete="one-time-code"
+          maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))} />
+        <button className="btn primary" disabled={busy || code.length !== 6}>Confirm setup</button>
+      </form>}
+      {message && <p role="alert">{message}</p>}
+    </Card>
   );
 }
 

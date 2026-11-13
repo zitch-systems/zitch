@@ -12,13 +12,17 @@ window.ZAPI = (function () {
       body: JSON.stringify(body || {}),
     });
     const data = await res.json().catch(() => ({}));
-    if (res.status === 401) { logout(); throw new Error(data.message || 'Session expired — sign in again'); }
-    if (!res.ok) throw new Error(data.message || ('Request failed (' + res.status + ')'));
+    if (res.status === 401 && path !== 'login') logout();
+    if (!res.ok) {
+      const error = new Error(data.message || ('Request failed (' + res.status + ')'));
+      error.code = data.code;
+      throw error;
+    }
     return data;
   }
 
-  async function login(identifier, password) {
-    const data = await call('login', { identifier, password });
+  async function login(identifier, password, code = '') {
+    const data = await call('login', { identifier, password, code });
     token = data.token;
     me = { role: data.role, caps: data.caps, name: data.name, email: data.email };
     localStorage.setItem('zops_token', token);
