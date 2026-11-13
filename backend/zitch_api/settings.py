@@ -184,6 +184,9 @@ DATABASES = {
     "default": dj_database_url.config(
         default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
         conn_max_age=600,
+        # A reused connection is pinged before each request, so a database restart
+        # or failover costs one reconnect instead of an error on every thread.
+        conn_health_checks=True,
         ssl_require=env_bool("DJANGO_DB_SSL", not DEBUG and bool(_database_url)),
     )
 }
@@ -1026,6 +1029,10 @@ if REDIS_URL and not TESTING:
         "default": {
             "BACKEND": "django.core.cache.backends.redis.RedisCache",
             "LOCATION": REDIS_URL,
+            # redis-py waits forever by default; a stalled cache would then hold
+            # every request thread (and the /readyz probe) until the instance is
+            # replaced. Fail fast so callers reach their own fallbacks.
+            "OPTIONS": {"socket_connect_timeout": 5, "socket_timeout": 5},
         }
     }
 
