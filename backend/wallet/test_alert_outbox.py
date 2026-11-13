@@ -27,7 +27,8 @@ class TransactionAlertOutboxTests(TestCase):
             email_verified=True, phone_verified=True, first_name="Ada",
         )
         get_or_create_wallet(self.user)
-        WhatsAppLink.objects.create(user=self.user, wa_msisdn="2348010000651", status=WhatsAppLink.ACTIVE)
+        self.link = WhatsAppLink.objects.create(
+            user=self.user, wa_msisdn="2348010000651", status=WhatsAppLink.ACTIVE)
         self.email = self.enterContext(patch("utility.providers.send_email", return_value={"success": True, "raw": {"id": "email-1"}}))
         self.sms = self.enterContext(patch("utility.providers.send_sms", return_value={"success": True, "message_id": "sms-1"}))
         self.whatsapp = self.enterContext(patch("whatsapp.router.reply", return_value={"success": True, "message_id": "wa-1"}))
@@ -62,6 +63,40 @@ class TransactionAlertOutboxTests(TestCase):
         self.sms.assert_called_once()
         self.whatsapp.assert_called_once()
         self.assertEqual(retry_pending_whatsapp_alerts(limit=10), 0)
+
+    def test_credit_alert_prefers_inline_image_with_one_provider_acceptance(self):
+        txn = self.movement()
+        with (patch("whatsapp.providers.wa_live", return_value=True),
+              patch("whatsapp.providers.upload_media", return_value="media-1") as upload,
+              patch("whatsapp.providers.send_image_media",
+                    return_value={"success": True, "message_id": "image-1"}) as image):
+            self.assertTrue(_dispatch_alert(txn.alert_deliveries.get(channel="whatsapp").pk))
+        self.assertTrue(upload.call_args.args[0].startswith(b"\xff\xd8"))
+        self.assertEqual(image.call_args.args, (self.link.wa_msisdn, "media-1"))
+        self.assertIn("Credit alert", image.call_args.kwargs["caption"])
+        self.whatsapp.assert_not_called()
+        self.assertEqual(txn.alert_deliveries.get(channel="whatsapp").provider_reference, "image-1")
+
+    def test_credit_alert_does_not_fall_back_after_an_uncertain_image_send(self):
+        txn = self.movement()
+        with (patch("whatsapp.providers.wa_live", return_value=True),
+              patch("whatsapp.providers.upload_media", return_value="media-1"),
+              patch("whatsapp.providers.send_image_media", return_value={"success": False, "uncertain": True})):
+            self.assertFalse(_dispatch_alert(txn.alert_deliveries.get(channel="whatsapp").pk))
+        self.whatsapp.assert_not_called()
+        self.assertEqual(txn.alert_deliveries.get(channel="whatsapp").state, Delivery.REVIEW)
+
+    def test_credit_alert_uses_the_template_when_the_service_window_is_closed(self):
+        txn = self.movement()
+        with (patch("whatsapp.providers.wa_live", return_value=True),
+              patch("whatsapp.providers.upload_media", return_value="media-1"),
+              patch("whatsapp.providers.send_image_media",
+                    return_value={"success": False, "uncertain": False, "error_code": 131047}),
+              patch("wallet.alerts._whatsapp_alert_via_template",
+                    return_value={"success": True, "message_id": "template-1"}) as template):
+            self.assertTrue(_dispatch_alert(txn.alert_deliveries.get(channel="whatsapp").pk))
+        template.assert_called_once()
+        self.whatsapp.assert_not_called()
 
     @override_settings(DEBUG=False, TESTING=False)
     def test_production_commit_queues_alerts_without_sending_then_worker_delivers(self):
