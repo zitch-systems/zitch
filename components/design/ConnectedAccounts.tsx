@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, View, Text, Pressable, ScrollView, ActivityIndicator, Animated } from 'react-native';
+import { Alert, View, Text, Pressable, ScrollView, Animated } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { useWallet } from '@/lib/wallet';
 import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
+import { LoadingMark } from '@/components/design/Loading';
 import { Card, money, Sheet, Tap } from '@/components/design/ui';
 import { Monogram } from '@/components/design/flowkit';
 import { SectionLabel } from '@/components/design/widgets';
@@ -113,7 +114,7 @@ const LinkedBankCard = ({ a, onRefresh, refreshing, onOpen }: { a: Linked; onRef
           <Text numberOfLines={1} style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.medium, fontVariant: ['tabular-nums'] }}>{a.account_number}</Text>
         </Pressable>
         <Pressable onPress={onRefresh} hitSlop={8} style={{ width: 28, height: 28, borderRadius: 9, backgroundColor: c.surface3, alignItems: 'center', justifyContent: 'center' }}>
-          {refreshing ? <ActivityIndicator size="small" color={c.ink3} /> : <ZIcon name="convert" size={15} color={c.ink2} />}
+          {refreshing ? <LoadingMark size={18} /> : <ZIcon name="convert" size={15} color={c.ink2} />}
         </Pressable>
       </View>
 

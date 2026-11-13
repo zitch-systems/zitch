@@ -1,10 +1,11 @@
 import React, { useRef, useState } from 'react';
 import { router } from 'expo-router';
-import { View, Text, Pressable, ActivityIndicator, ScrollView, Image, StyleSheet } from 'react-native';
+import { View, Text, Pressable, ScrollView, Image, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path } from 'react-native-svg';
 import * as Clipboard from 'expo-clipboard';
 import ZIcon from '@/components/design/ZIcon';
+import { LoadingMark } from '@/components/design/Loading';
 import { Btn } from '@/components/design/ui';
 import { NText } from '@/components/design/Naira';
 import { flash, notifyError } from '@/components/design/Notify';
@@ -336,7 +337,7 @@ const Receipt = ({
             style={({ pressed }) => ({ flex: 1, alignItems: 'center', gap: 6, paddingVertical: 12, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, opacity: pressed || busy ? 0.85 : 1 })}
           >
             {busy && ic !== 'copy'
-              ? <ActivityIndicator size="small" color={c.brand} style={{ height: 20 }} />
+              ? <LoadingMark size={20} />
               : <ZIcon name={ic} size={20} color={c.brand} />}
             <Text style={{ fontSize: 12, fontFamily: font.semibold, color: c.ink2 }}>{lb}</Text>
           </Pressable>

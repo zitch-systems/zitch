@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Linking, ActivityIndicator, AppState, Alert } from 'react-native';
+import { View, Text, Pressable, Linking, AppState, Alert } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { Screen, Header, Card, Btn, PinSheet } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
+import { LoadingMark } from '@/components/design/Loading';
 import { apiJson } from '@/lib/api';
 import { useTheme, font } from '@/lib/theme';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
@@ -209,7 +210,7 @@ const LinkWhatsApp = () => {
       </View>
 
       {stage === 'loading' && (
-        <View style={{ paddingVertical: 40, alignItems: 'center' }}><ActivityIndicator color={c.brand} /></View>
+        <View style={{ paddingVertical: 40, alignItems: 'center' }}><LoadingMark size={36} /></View>
       )}
 
       {error ? <Text accessibilityRole="alert" style={{ color: c.red, marginBottom: 14 }}>{error}</Text> : null}
@@ -245,7 +246,7 @@ const LinkWhatsApp = () => {
             openWa(`LINK ${code}`);
           }} />
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 34, marginTop: 4 }}>
-            {!expired && <ActivityIndicator size="small" color={c.ink3} />}
+            {!expired && <LoadingMark size={20} />}
             {!expired && <Text style={{ fontFamily: font.regular, fontSize: 12.5, color: c.ink3 }}>Waiting for the code…</Text>}
           </View>
           {expired ? <Text style={{ color: c.red, textAlign: 'center', marginBottom: 12 }}>This code has expired. Generate a new one to continue.</Text> : null}

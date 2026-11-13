@@ -242,6 +242,20 @@
     );
   }
 
+  // ---------- Branded loader ----------
+  // The Zitch coil, drawn live by assets/zitch-loader.v1.js (same animation as the mobile app).
+  function ZLoader({ height = 120, shadow = false, label }) {
+    const ref = useRef(null);
+    useEffect(() => {
+      if (!ref.current || !window.ZitchLoader) return;
+      const l = window.ZitchLoader.mount(ref.current, { height, shadow, label });
+      return () => l.destroy();
+    }, [height, shadow, label]);
+    const box = window.ZitchLoader ? window.ZitchLoader.BOX : { w: 140, h: 214, hShadow: 232 };
+    return <div ref={ref} style={{ width: Math.round(height * box.w / (shadow ? box.hShadow : box.h)), height }} />;
+  }
+  window.ZLoader = ZLoader;
+
   // ---------- PIN sheet ----------
   function PinSheet({ amount, onDone, onClose, onBio }) {
     const [pin, setPin] = useState('');
@@ -270,7 +284,7 @@
                 animation: state === 'loading' ? `zpulse 1s ${i * .12}s infinite` : 'none' }} />
             ))}
           </div>
-          {state === 'loading' ? <div style={{ height: 232 }} /> : (
+          {state === 'loading' ? <div style={{ height: 232, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><ZLoader height={150} label="Authorizing payment" /></div> : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6 }}>
               {keys.map((k, i) => (
                 <Tap key={i} onClick={() => k === 'del' ? press(k) : (k === '' ? (onBio && onBio()) : press(k))}>

@@ -18,6 +18,13 @@
   @keyframes zpulse { 0%,100% { opacity: .35; transform: scale(.85); } 50% { opacity: 1; transform: scale(1); } }
   @keyframes ztoast { from { transform: translateY(-14px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
   @media (prefers-reduced-motion: reduce) { * { animation-duration: .01ms !important; } }
+  /* Boot splash — the branded coil while React + the app scripts download and compile. */
+  #zboot { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+           background: radial-gradient(120% 90% at 50% 0%, #16302B, #0A1614 70%); color: #fff; font-family: var(--font, system-ui, sans-serif);
+           transition: opacity .35s ease; }
+  #zboot.out { opacity: 0; pointer-events: none; }
+  #zboot .w { font-size: 22px; font-weight: 800; letter-spacing: .26em; padding-left: .26em; }
+  #zboot .t { font-size: 12.5px; color: rgba(255,255,255,.7); margin-top: -14px; }
 </style>
 </head>
 <body>
@@ -28,7 +35,28 @@
     <circle cx="69" cy="30" r="6" fill="#9DF5EB"/>
   </svg>
 </template>
+<div id="zboot" role="status" aria-label="Loading Zitch">
+  <div id="zboot-coil" style="width:118px;height:196px"></div>
+  <div class="w" aria-hidden="true">ZITCH</div>
+  <div class="t" aria-hidden="true">Pay. Send. Grow.</div>
+</div>
 <div id="root"></div>
+<script src="assets/zitch-loader.v1.js"></script>
+<script>
+  // Show the coil straight away, then fade it out the moment the app has rendered.
+  (function () {
+    var boot = document.getElementById('zboot'), root = document.getElementById('root');
+    var loader = window.ZitchLoader && window.ZitchLoader.mount(document.getElementById('zboot-coil'), { height: 196, shadow: true, label: 'Loading Zitch' });
+    function done() {
+      if (!boot || boot.className === 'out') return;
+      boot.className = 'out';
+      setTimeout(function () { if (loader) loader.destroy(); if (boot.parentNode) boot.parentNode.removeChild(boot); }, 400);
+    }
+    if (root.childNodes.length) return done();
+    var mo = new MutationObserver(function () { if (root.childNodes.length) { mo.disconnect(); done(); } });
+    mo.observe(root, { childList: true });
+  })();
+</script>
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>

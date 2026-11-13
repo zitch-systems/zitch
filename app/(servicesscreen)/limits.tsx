@@ -1,8 +1,9 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { View, Text, ActivityIndicator } from 'react-native';
+import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Screen, Header, Card, Field, Btn, PinSheet, money } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
+import { LoadingMark } from '@/components/design/Loading';
 import { apiJson } from '@/lib/api';
 import { useTheme, font } from '@/lib/theme';
 import AuthGuard from '@/components/AuthGuard';
@@ -107,7 +108,7 @@ const Limits = () => {
       <Screen>
         <Header title="Transaction limit" sub="How much you can send in one go" onBack={() => router.back()} />
 
-        {loading ? <ActivityIndicator accessibilityLabel="Loading limits" color={c.brand} /> : null}
+        {loading ? <View style={{ alignItems: 'center' }}><LoadingMark size={36} label="Loading limits" /></View> : null}
         {error ? <Card><Text accessibilityRole="alert" style={{ color: c.red, marginBottom: 12 }}>{error}</Text><Btn label="Try again" onPress={() => void load()} /></Card> : null}
         <Card>
           <Row label="Your limit per transaction" value={limits ? money(Number(limits.transaction_limit)) : '—'} strong />
