@@ -4199,6 +4199,22 @@ def _page_missing_nuban(user, detail) -> None:
     )
 
 
+def _page_existing_customer(user, kind: str) -> None:
+    """Page once per user/hour: the bank holds an account we cannot link.
+
+    The customer is told support will contact them, so this page is what makes
+    that true. Carries the identity TYPE only, never the number.
+    """
+    if cache.add(f"wema-existing-customer:{user.pk}", True, timeout=60 * 60):
+        try:
+            from utility.alerts import alert
+            alert("Partner bank says the customer already exists; face recovery unavailable",
+                  level="error", user_id=user.pk, identity_type=kind, channel="whatsapp")
+        except Exception:
+            log.exception("wema_existing_customer_alert_failed user=%s", user.pk)
+    log.error("wema_existing_customer_unlinked user=%s kind=%s channel=whatsapp", user.pk, kind)
+
+
 def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
     from wallet.partnership import first_partnership_setup
     funding = customer_funding_account(user)
@@ -4451,12 +4467,31 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
                   "We reconnected the account. Your verified identity details are up to date; "
                   "reply *8* anytime to review what is left.")
             return "adopted"
-        _clear_actions(msisdn)
         if wallet_views._ALREADY_ONBOARDED.search(res.get("message", "") or ""):
             _record_identity_review(pa.payload.get("id_type", "id"), "Wema Wallet Service returned customer already exists")
-            reply(msisdn, "⚠️ Our partner bank says these details already exist. Support needs to review this setup; we won't ask you to keep retrying the same BVN/NIN.")
-        else:
-            reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed - please try again later.')}")
+            # The bank already holds an account for this identity and refuses a
+            # second one BEFORE sending any code, so SMS OTP can never finish here,
+            # and the adoption above needs an identity this customer has not yet
+            # verified. The bank's face check needs no code: a pass verifies the
+            # identity, and the face callback then reads the existing account back
+            # and attaches it when the holder name matches. Offer that, with the
+            # identity already entered, instead of a dead end whose promised
+            # "support review" nobody was ever asked to do - and which reply 6
+            # contradicted by asking for the same BVN again.
+            if _send_identity_face_option(pa, user, msisdn, kind, digits, account_setup=True):
+                _clear_actions(msisdn)
+                reply(msisdn, f"Our partner bank already has an account for this {kind.upper()}. "
+                              "Confirm it's you with the face check above and we'll link that "
+                              "account to Zitch. No SMS code is needed.")
+                return "face"
+            _clear_actions(msisdn)
+            _page_existing_customer(user, kind)
+            reply(msisdn, "⚠️ Our partner bank already has an account for these details and we "
+                          "couldn't link it automatically. Our support team has been alerted and "
+                          "will contact you, so there's no need to retry.")
+            return "fail"
+        _clear_actions(msisdn)
+        reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed - please try again later.')}")
         return "fail"
     pa.payload["tracking_id"] = str(res.get("tracking_id") or "")
     pa.payload["using_bvn"] = using_bvn

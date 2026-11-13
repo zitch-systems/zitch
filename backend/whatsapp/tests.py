@@ -4729,6 +4729,47 @@ class FailedAccountSetupDoesNotCloseTheFlowGreenTests(TestCase):
         body = json.dumps(self._submit(), ensure_ascii=False)
         self.assertIn("Account found ✅", body)
 
+    @patch("whatsapp.router._send_identity_face_option", return_value=True)
+    @patch("whatsapp.router.reply")
+    @patch("whatsapp.router.wallet_views._adopt_existing_wema_account", return_value=None)
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    def test_an_existing_bank_customer_is_handed_the_face_check(self, start, _adopt, said, face):
+        """The bank refuses a second account before sending any SMS code, so the
+        OTP route can never finish; its face check needs no code and lets the
+        callback link the account the bank already holds. Seen live 2026-11-13:
+        the customer was told support would review, nobody was paged, and reply
+        6 asked for the same BVN again."""
+        start.return_value = ({"success": False,
+                               "message": "Customer records already exist"}, None)
+        body = json.dumps(self._submit(), ensure_ascii=False)
+        self.assertIn("face-verification link", body)
+        self.assertNotIn("received ✅", body)
+        _pa, user, _msisdn, kind, digits = face.call_args.args
+        self.assertEqual((user.pk, kind, digits), (self.user.pk, "bvn", "12345678901"))
+        self.assertTrue(face.call_args.kwargs["account_setup"])
+        text = " ".join(str(c.args[1]) for c in said.call_args_list)
+        self.assertIn("already has an account", text)
+        self.assertNotIn("Support needs to review", text)
+        self.assertFalse(PendingAction.objects.filter(pk=self.pa.pk).exists())
+
+    @patch("whatsapp.router._send_identity_face_option", return_value=False)
+    @patch("whatsapp.router.reply")
+    @patch("whatsapp.router.wallet_views._adopt_existing_wema_account", return_value=None)
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    def test_an_unlinkable_existing_customer_pages_support(self, start, _adopt, said, _face):
+        from django.core.cache import cache
+
+        cache.clear()
+        start.return_value = ({"success": False,
+                               "message": "Customer records already exist"}, None)
+        with patch("utility.alerts.alert") as page:
+            self._assert_failure_screen(self._submit())
+        page.assert_called_once()
+        self.assertEqual(page.call_args.kwargs["user_id"], self.user.pk)
+        self.assertNotIn("12345678901", str(page.call_args))
+        text = " ".join(str(c.args[1]) for c in said.call_args_list)
+        self.assertIn("support team has been alerted", text)
+
 
 class TemplateErrorAbandonsTheWholeBroadcastTests(TestCase):
     """A template-level refusal is the same for every recipient.
