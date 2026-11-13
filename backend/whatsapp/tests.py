@@ -142,81 +142,28 @@ class WebhookTests(TestCase):
 class WhatsAppWorkerAlertSweepTests(TestCase):
     @override_settings(WHATSAPP_WORKER_RECONCILE=False)
     def test_one_shot_worker_leaves_background_alert_retry_disabled(self):
-        """`--once` remains a deterministic queue-drain operation."""
         with patch("whatsapp.management.commands.whatsapp_worker.process_once",
                    return_value=(2, 3)) as process, \
-             patch("wallet.alerts.retry_pending_whatsapp_alerts") as retry, \
-             patch("utility.management.commands.reconcile_wema.Command._run") as reconcile:
+             patch("whatsapp.management.commands.whatsapp_worker.threading.Thread") as thread:
             call_command("whatsapp_worker", "--once")
 
         process.assert_called_once_with(20)
-        retry.assert_not_called()
-        reconcile.assert_not_called()
+        thread.assert_not_called()
 
-    @override_settings(WHATSAPP_WORKER_RECONCILE=False)
-    def test_alert_sweep_is_bounded_and_never_runs_money_reconciliation(self):
-        """The continuous worker alone owns periodic Meta delivery recovery."""
+    @override_settings(WHATSAPP_WORKER_RECONCILE=False, WEMA_RECENT_CREDIT_POLL_SECONDS=5)
+    def test_worker_dispatches_alerts_independently_of_bank_and_chat(self):
         handlers = {}
-        processed = []
+        workers = []
 
-        class InlineThread:
-            def __init__(self, *, target, **_kwargs):
-                self.target = target
+        class RecordedThread:
+            def __init__(self, *, target, args=(), name, **kwargs):
+                workers.append((name, target, args))
 
             def start(self):
-                self.target()
+                pass
 
-        def register(signum, handler):
-            handlers[signum] = handler
-
-        def drain_once(_batch):
-            processed.append(True)
-            if len(processed) == 4:
-                handlers[signal.SIGTERM](signal.SIGTERM, None)
-            return 0, 0
-
-        with patch("whatsapp.management.commands.whatsapp_worker.signal.signal",
-                   side_effect=register), \
-             patch("whatsapp.management.commands.whatsapp_worker.threading.Thread",
-                   InlineThread), \
-             patch("whatsapp.management.commands.whatsapp_worker.time.monotonic",
-                   side_effect=[0, 0, 0, 0, 5, 10, 11]), \
-             patch("whatsapp.management.commands.whatsapp_worker.time.sleep"), \
-             patch("whatsapp.management.commands.whatsapp_worker.close_old_connections"), \
-             patch("whatsapp.management.commands.whatsapp_worker.connections.close_all"), \
-             patch("whatsapp.management.commands.whatsapp_worker.process_once",
-                   side_effect=drain_once), \
-             patch("wallet.services.repair_missing_funding_accounts"), \
-             patch("wallet.alerts.retry_pending_whatsapp_alerts",
-                   return_value=0) as retry, \
-             patch("utility.management.commands.reconcile_wema.Command._run") as reconcile:
-            call_command(
-                "whatsapp_worker",
-                "--alert-retry-interval-seconds", "1",
-                "--alert-retry-lookback-days", "20",
-                "--alert-retry-limit", "500",
-                "--account-repair-interval-seconds", "3600",
-            )
-
-        self.assertEqual(len(processed), 4)
-        self.assertEqual(retry.call_count, 2)
-        for call in retry.call_args_list:
-            self.assertEqual(call.kwargs["limit"], 200)
-            elapsed = timezone.now() - call.kwargs["since"]
-            self.assertGreaterEqual(elapsed, timedelta(days=7))
-            self.assertLess(elapsed, timedelta(days=7, seconds=2))
-        reconcile.assert_not_called()
-
-    @override_settings(WHATSAPP_WORKER_RECONCILE=False)
-    def test_alert_retry_failure_does_not_stop_message_processing(self):
-        handlers = {}
-
-        class InlineThread:
-            def __init__(self, *, target, **_kwargs):
-                self.target = target
-
-            def start(self):
-                self.target()
+            def join(self, *, timeout):
+                pass
 
         def register(signum, handler):
             handlers[signum] = handler
@@ -225,26 +172,35 @@ class WhatsAppWorkerAlertSweepTests(TestCase):
             handlers[signal.SIGTERM](signal.SIGTERM, None)
             return 1, 0
 
-        stderr = StringIO()
         with patch("whatsapp.management.commands.whatsapp_worker.signal.signal",
                    side_effect=register), \
-             patch("whatsapp.management.commands.whatsapp_worker.threading.Thread",
-                   InlineThread), \
-             patch("whatsapp.management.commands.whatsapp_worker.time.monotonic",
-                   side_effect=[0, 0, 0, 0]), \
-             patch("whatsapp.management.commands.whatsapp_worker.close_old_connections"), \
-             patch("whatsapp.management.commands.whatsapp_worker.connections.close_all"), \
-             patch("whatsapp.management.commands.whatsapp_worker.process_once",
-                   side_effect=drain_once) as process, \
-             patch("wallet.services.repair_missing_funding_accounts"), \
-             patch("wallet.alerts.retry_pending_whatsapp_alerts",
-                   side_effect=RuntimeError("Meta is temporarily unavailable")) as retry:
-            call_command("whatsapp_worker", stderr=stderr)
+             patch("whatsapp.management.commands.whatsapp_worker.threading.Thread", RecordedThread), \
+             patch("whatsapp.management.commands.whatsapp_worker.process_once", side_effect=drain_once):
+            call_command("whatsapp_worker", "--alert-retry-limit", "500")
 
-        retry.assert_called_once()
-        process.assert_called_once_with(20)
-        self.assertIn("background WhatsApp transaction alert retry failed; retrying",
-                      stderr.getvalue())
+        self.assertEqual([name for name, _, _ in workers], [
+            "transaction-alert-outbox", "partner-bank-account-repair", "wema-recent-credits",
+        ])
+        self.assertEqual(workers[0][2][1:3], (0.25, 8))
+
+    def test_alert_loop_recovers_lookup_error_and_dispatches_ready_row(self):
+        from threading import Event
+        from whatsapp.management.commands.whatsapp_worker import _dispatch_alerts_until_stopped
+
+        stop = Event()
+        stderr = StringIO()
+
+        def dispatch(_pk):
+            stop.set()
+
+        with patch("wallet.alerts.pending_alert_delivery_ids",
+                   side_effect=[RuntimeError("database temporarily unavailable"), [42]]) as pending, \
+             patch("wallet.alerts._dispatch_alert", side_effect=dispatch) as send:
+            _dispatch_alerts_until_stopped(stop, 0.001, 1, stderr)
+
+        self.assertEqual(pending.call_count, 2)
+        send.assert_called_once_with(42)
+        self.assertIn("outbox lookup failed; retrying", stderr.getvalue())
 
 
 class ChannelTests(TestCase):

@@ -334,7 +334,7 @@ def debit(user, amount, service: str, meta: dict | None = None, reference: str |
 
 @db_transaction.atomic
 def credit(user, amount, service: str, meta: dict | None = None, reference: str | None = None,
-           idempotency_key: str = "") -> Transaction:
+           idempotency_key: str = "", *, expected_account: str | None = None) -> Transaction | None:
     """Atomically credit the wallet and write a Successful inbound ledger row.
 
     With an `idempotency_key`, a duplicate (same user + key) raises
@@ -344,6 +344,8 @@ def credit(user, amount, service: str, meta: dict | None = None, reference: str 
     """
     amount = Decimal(str(amount))
     wallet = Wallet.objects.select_for_update().get(user=user)
+    if expected_account is not None and wallet.account_number != expected_account:
+        return None
     wallet.balance += amount
     wallet.save(update_fields=["balance", "updated"])
     try:
@@ -1219,7 +1221,8 @@ def resolve_funding_review(reference: str, *, disposition: str, reason: str,
 
 
 @db_transaction.atomic
-def settle_reserved_funding(transaction_reference: str, amount, user) -> Transaction | None:
+def settle_reserved_funding(transaction_reference: str, amount, user, *,
+                            expected_account: str | None = None) -> Transaction | None:
     """Credit a wallet for an inbound bank transfer to its reserved account, once.
 
     Keyed on the provider's transaction_reference (unique per payment): the ledger
@@ -1259,6 +1262,7 @@ def settle_reserved_funding(transaction_reference: str, amount, user) -> Transac
             user, amount, "Wallet funding",
             meta={"reference": transaction_reference, "channel": "reserved_account"},
             reference=transaction_reference,
+            expected_account=expected_account,
         )
     except IntegrityError:
         # Raced duplicate webhook slipped past the exists() check — the unique
@@ -1266,9 +1270,7 @@ def settle_reserved_funding(transaction_reference: str, amount, user) -> Transac
         return None
 
 
-# Account-reference prefix that marks a wallet as provisioned on Wema/ALAT. Wema
-# has no inbound-credit webhook, so these
-# wallets are the ones the reconcile_wema poller sweeps for deposits.
+# Account-reference prefix for Wema/ALAT wallets included in deposit reconciliation.
 WEMA_ACCOUNT_REF_PREFIX = "WEMA-WALLET-"
 
 
@@ -2522,7 +2524,8 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
         # Ordinary idempotent re-poll.  Reversal-shaped rows are handled above so
         # a historical SUCCESS credit cannot hide a newly discovered review case.
         return None
-    return settle_reserved_funding(ledger_ref, norm["amount_naira"], wallet.user)
+    return settle_reserved_funding(
+        ledger_ref, norm["amount_naira"], wallet.user, expected_account=wallet.account_number)
 
 
 def pending_bank_payouts(cutoff):

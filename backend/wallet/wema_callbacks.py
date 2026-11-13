@@ -837,7 +837,7 @@ def wema_transaction_callback(request):
 
 
 # ---------------------------------------------------------------------------
-# 4. Transaction Notification (production only) — record only
+# 4. Transaction Notification (production only)
 # ---------------------------------------------------------------------------
 @wema_callback("notify")
 def wema_notification_callback(request):
@@ -864,14 +864,14 @@ def wema_notification_callback(request):
         request.wema_action = "ignored:not_credit_or_missing_account"
         return _notification_ok()
 
-    from .models import Wallet
-    from .services import apply_wema_credit, self_payout_references
+    from .reconciliation import reconcile_recent_credits
+    from .services import wema_provisioned_wallets
     from wallet.partnership import retired_funding_destination
 
     if retired_funding_destination(account):
         request.wema_action = "ignored:retired_funding_account"
         return _notification_ok()
-    wallet = Wallet.objects.filter(account_number=account).select_related("user").first()
+    wallet = wema_provisioned_wallets().filter(account_number=account).select_related("user").first()
     if wallet is None:
         log.warning("wema_notify_unknown_account account_suffix=%s ip=%s",
                     account[-4:], request.wema_ip)
@@ -879,32 +879,11 @@ def wema_notification_callback(request):
         return _notification_ok()
 
     business_date = _notification_business_date(body)
-    result = wema_provider.get_transactions(
-        account,
-        (business_date - timedelta(days=2)).strftime("%Y-%m-%d"),
-        (business_date + timedelta(days=1)).strftime("%Y-%m-%d"),
-    )
-    rows = result.get("transactions") if isinstance(result, dict) else None
-    if (not isinstance(result, dict) or not result.get("success") or result.get("mock")
-            or result.get("complete") is False or not isinstance(rows, list)
-            or any(not isinstance(row, dict) for row in rows)):
-        log.warning("wema_notify_reconcile_failed account_suffix=%s", account[-4:])
-        request.wema_action = "pending:history_unavailable"
-        return _notification_ok()
-
-    from .reconciliation import history_credit_opening_review_required
-    applied = 0
-    opening_review = False
-    self_refs = self_payout_references(wallet.user)
-    for row in rows:
-        if history_credit_opening_review_required(wallet, row):
-            opening_review = True
-            continue
-        if apply_wema_credit(wallet, row, self_refs=self_refs) is not None:
-            applied += 1
-    request.wema_action = ("pending:history_opening_review" if opening_review else f"reconciled:{applied}")
-    log.info("wema_notify_reconciled account_suffix=%s applied=%s opening_review=%s",
-             account[-4:], applied, opening_review)
+    applied, error = reconcile_recent_credits(
+        wallet, business_date - timedelta(days=2), business_date + timedelta(days=1))
+    request.wema_action = f"pending:{error}" if error else f"reconciled:{applied}"
+    log.info("wema_notify_reconciled account_suffix=%s applied=%s result=%s",
+             account[-4:], applied, error or "ok")
     return _notification_ok()
 
 

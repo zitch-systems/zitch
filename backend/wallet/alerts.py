@@ -24,6 +24,7 @@ import logging
 from html import escape
 import secrets
 from datetime import timedelta
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
@@ -572,6 +573,10 @@ def retry_pending_whatsapp_alerts(*, since=None, limit: int = 50) -> int:
     claims carry no acceptance evidence and are not replayed or marked delivered.
     Expired preparation is safe to resume; expired dispatch needs review.
     """
+    return sum(_dispatch_alert(pk) for pk in pending_alert_delivery_ids(limit=limit))
+
+
+def pending_alert_delivery_ids(*, limit, exclude=()):
     from .models import TransactionAlertDelivery
     from django.db.models import F, Q
 
@@ -582,11 +587,11 @@ def retry_pending_whatsapp_alerts(*, since=None, limit: int = 50) -> int:
               lease_expires_at__lte=now)
     # Fresh work has no next-attempt time and goes first. A long-lived missing
     # contact/route must not monopolize each bounded sweep and starve new alerts.
-    qs = TransactionAlertDelivery.objects.filter(due | stale).order_by(
+    qs = TransactionAlertDelivery.objects.filter(due | stale).exclude(pk__in=exclude).order_by(
         F("next_attempt_at").asc(nulls_first=True), "created", "pk")
     # Enqueued jobs stay owed even when the transaction ages outside the worker's
     # lookback. `since` is retained for API compatibility, not used to drop work.
-    return sum(_dispatch_alert(pk) for pk in qs.values_list("pk", flat=True)[:max(0, int(limit or 0))])
+    return list(qs.values_list("pk", flat=True)[:max(0, int(limit or 0))])
 
 
 MAX_ALERT_ATTEMPTS = 5
@@ -691,9 +696,12 @@ def _prepare_alert(pk):
                 and not (getattr(settings, "WHATSAPP", {}) or {}).get("TXN_ALERT_TEMPLATE")):
             reason = "template_unconfigured"
         if reason:
+            first_failure = row.error_code != reason
             row.state, row.error_code = row.READY, reason
             row.next_attempt_at = now + timedelta(seconds=60)
             row.save(update_fields=["state", "error_code", "next_attempt_at", "updated"])
+            if first_failure and reason.endswith("_unconfigured"):
+                db_transaction.on_commit(lambda: _report_alert_route_unavailable(reason))
             return None
         if row.attempts >= MAX_ALERT_ATTEMPTS:
             row.state, row.error_code = row.EXHAUSTED, "retry_limit"
@@ -727,6 +735,18 @@ def _send_alert_channel(row):
     return _deliver_claimed_whatsapp_alert(txn, reversal=row.reversal)
 
 
+def _report_alert_route_unavailable(reason):
+    from django.core.cache import cache
+    from utility.alerts import alert
+
+    try:
+        if cache.add(f"transaction-alert-route:{reason}", True, timeout=3600):
+            alert("Transaction alerts are queued because a delivery route is unconfigured",
+                  reason=reason)
+    except Exception:
+        log.warning("txn_alert_route_unavailable reason=%s", reason)
+
+
 def _dispatch_alert(pk):
     from .models import TransactionAlertDelivery
 
@@ -734,6 +754,7 @@ def _dispatch_alert(pk):
     if row is None:
         return False
     now = timezone.now()
+    started = monotonic()
     if not TransactionAlertDelivery.objects.filter(
             pk=row.pk, state=row.PREPARING, claim_token=row.claim_token,
     ).update(state=row.DISPATCHING, attempts=row.attempts + 1,
@@ -746,6 +767,10 @@ def _dispatch_alert(pk):
         # An exception after the persisted boundary cannot prove non-delivery.
         result = {"success": False, "uncertain": True, "code": "dispatch_exception"}
     accepted = _finish_alert(row, result)
+    if accepted:
+        log.info("txn_alert_accepted delivery=%s channel=%s queue_ms=%d dispatch_ms=%d",
+                 row.pk, row.channel, (now - row.created).total_seconds() * 1000,
+                 (monotonic() - started) * 1000)
     if accepted and row.channel == "whatsapp":
         _set_accepted_whatsapp_flag(row.transaction_id, row.reversal)
     return accepted
