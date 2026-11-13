@@ -307,6 +307,7 @@ def user_action(request):
         user.is_active = False
         user.save(update_fields=["is_active"])
         user.tokens.all().delete()  # a frozen account loses its sessions immediately
+        user.refresh_tokens.filter(revoked_at__isnull=True).update(revoked_at=timezone.now())
         record_audit("user.freeze", actor=request.user_obj, target=f"user:{user.id}",
                      before=before, after={"is_active": False})
     elif action == "unfreeze":

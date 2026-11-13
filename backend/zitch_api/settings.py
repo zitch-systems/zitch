@@ -341,6 +341,10 @@ PUBLIC_HEALTH_DETAILS = env_bool("DJANGO_PUBLIC_HEALTH_DETAILS", DEBUG or TESTIN
 # .env, so a dev's local rate-limit setting can't bleed shared cache counts into
 # unrelated test cases (RateLimitTests opts back in via override_settings).
 RATELIMIT_ENABLE = False if TESTING else env_bool("RATELIMIT_ENABLE", True)
+# One-time codes a phone may be sent per purpose (sign-up, password reset, email
+# confirmation) in any 24 hours. Each code allows five guesses; see
+# accounts.views._otp_on_cooldown. 0 disables the cap.
+OTP_DAILY_CODE_LIMIT = max(0, int(os.environ.get("OTP_DAILY_CODE_LIMIT", "10") or 10))
 # Number of trusted reverse-proxy hops represented at the RIGHT side of
 # X-Forwarded-For. Render is one hop. Taking the configured right-side entry
 # prevents a client from prepending a fake address to rotate rate-limit buckets.

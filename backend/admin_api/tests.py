@@ -157,6 +157,18 @@ class AdminApiTests(TestCase):
         self.customer.refresh_from_db()
         self.assertTrue(self.customer.is_active)
 
+    def test_freezing_a_customer_ends_their_refresh_tokens_too(self):
+        # Left live, a stolen refresh token minted a new session after the unfreeze.
+        from accounts.models import RefreshToken
+
+        RefreshToken.issue(self.customer, device_id="stolen-device")
+        self.post("users/status", self.finance_token,
+                  {"uid": self.customer.id, "status": "frozen"})
+        self.post("users/status", self.finance_token,
+                  {"uid": self.customer.id, "status": "active"})
+        self.assertFalse(RefreshToken.objects.filter(
+            user=self.customer, revoked_at__isnull=True).exists())
+
     def test_user_pin_unlock(self):
         self.customer.pin_failed_attempts = 3
         self.customer.pin_locked_until = timezone.now() + timedelta(minutes=20)
