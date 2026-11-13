@@ -1,7 +1,10 @@
 """Durable per-account partner-bank statement recovery."""
+import logging
 from datetime import timedelta
+from time import monotonic
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
@@ -10,8 +13,10 @@ from utility import wema
 from wallet.models import BankHistoryCheckpoint, ReversalEvidence, Transaction, Wallet
 from wallet.services import (
     _reversal_ledger_reference, _reversal_provider_hash,
-    apply_wema_credit, self_payout_references,
+    apply_wema_credit, self_payout_references, wema_provisioned_wallets,
 )
+
+log = logging.getLogger("wallet")
 
 
 def _credit_accounted_for(wallet, row, norm):
@@ -70,6 +75,68 @@ def history_credit_opening_review_required(wallet, row, norm=None, *, baseline=N
     bank_date = _credit_date(row)
     baseline = baseline if baseline is not None else timezone.localdate(wallet.created)
     return bank_date is None or bank_date < baseline
+
+
+def reconcile_recent_credits(wallet, start, end):
+    """Post confirmed recent credits without changing statement coverage."""
+    account = wallet.account_number
+    result = wema.get_transactions(account, start.isoformat(), end.isoformat())
+    if not isinstance(result, dict):
+        return 0, "history_unavailable"
+    rows = result.get("transactions")
+    if (not result.get("success") or result.get("mock") or result.get("complete") is False
+            or not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)):
+        status = (result.get("diagnostic") or {}).get("http_status")
+        return 0, "history_rate_limited" if status == 429 else "history_unavailable"
+
+    applied = 0
+    opening_review = False
+    if not rows:
+        return applied, ""
+    if not Wallet.objects.filter(pk=wallet.pk, account_number=account).exists():
+        return 0, "account_changed"
+    refs = self_payout_references(wallet.user)
+    for row in rows:
+        if history_credit_opening_review_required(wallet, row):
+            opening_review = True
+            continue
+        if apply_wema_credit(wallet, row, self_refs=refs) is not None:
+            applied += 1
+    return applied, "history_opening_review" if opening_review else ""
+
+
+def poll_recent_wema_credits(interval_seconds):
+    """Read one account per worker interval across instances, in wallet order."""
+    if cache.get("wema:recent-credit:backoff") or not cache.add(
+            "wema:recent-credit:poll", True, timeout=interval_seconds):
+        return
+    wallets = wema_provisioned_wallets().select_related("user").order_by("pk")
+    cursor = cache.get("wema:recent-credit:cursor", 0)
+    wallet = wallets.filter(pk__gt=cursor).first() or wallets.first()
+    if wallet is None:
+        return
+    cache.set("wema:recent-credit:cursor", wallet.pk, timeout=None)
+    today = timezone.localdate()
+    started = monotonic()
+    applied, error = reconcile_recent_credits(wallet, today - timedelta(days=1), today)
+    if error == "history_rate_limited":
+        cache.set("wema:recent-credit:backoff", True, timeout=60)
+    if error and cache.add(f"wema:recent-credit:error:{wallet.pk}", True, timeout=300):
+        from utility.alerts import alert
+
+        alert("Wema recent credit check could not confirm account history", level="warning",
+              wallet_id=wallet.pk, reason=error)
+    if applied:
+        log.info("wema_recent_credit_posted wallet=%s credits=%s elapsed_ms=%d",
+                 wallet.pk, applied, (monotonic() - started) * 1000)
+        from utility.alerts import alert
+        from whatsapp.models import WebhookEvent
+
+        if (not WebhookEvent.objects.filter(source="wema.notify", verified=True,
+                outcome=WebhookEvent.ACCEPTED, created__gte=timezone.now() - timedelta(minutes=10)).exists()
+                and cache.add("wema:recent-credit:notification-missing", True, timeout=3600)):
+            alert("Wema statement recovered a deposit with no recent accepted notification",
+                  level="warning", wallet_id=wallet.pk)
 
 
 def reconcile_account_history(wallet, *, today=None, overlap_days=2, on_shape=None):
@@ -150,10 +217,7 @@ def reconcile_account_history(wallet, *, today=None, overlap_days=2, on_shape=No
                 if not _credit_accounted_for(wallet, row, norm):
                     window_error = "history_credit_not_accounted"
             except Exception:  # A single account must not stop other settlements.
-                import logging
-
-                logging.getLogger("wallet").exception(
-                    "wema_history_apply_failed wallet=%s", wallet.pk)
+                log.exception("wema_history_apply_failed wallet=%s", wallet.pk)
                 window_error = "history_apply_failed"
         if window_error:
             error_code = window_error

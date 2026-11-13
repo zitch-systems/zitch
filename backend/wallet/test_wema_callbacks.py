@@ -574,6 +574,44 @@ class WemaNotificationCallbackTests(TestCase):
         )
 
     @patch("utility.wema.get_transactions")
+    def test_recent_poll_credits_without_a_notification_and_replay_is_safe(self, history):
+        from django.core.cache import cache
+        from wallet.models import BankHistoryCheckpoint
+        from wallet.reconciliation import poll_recent_wema_credits
+
+        history.return_value = {"success": True, "complete": True, "transactions": [{
+            "referenceId": "POLL-CREDIT", "amount": 3900, "creditType": "Credit",
+            "status": "Successfull", "date": timezone.now().isoformat(),
+        }]}
+        cache.clear()
+        self.addCleanup(cache.clear)
+        poll_recent_wema_credits(5)
+        poll_recent_wema_credits(5)
+        history.assert_called_once()
+        self._post({"accountNumber": self.wallet.account_number, "transactionType": "Credit"})
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("3900"))
+        self.assertEqual(Transaction.objects.filter(user=self.user).count(), 1)
+        self.assertFalse(BankHistoryCheckpoint.objects.filter(wallet=self.wallet).exists())
+
+    @patch("utility.wema._post")
+    def test_recent_poll_respects_bank_rate_limit_after_a_new_interval(self, post):
+        from django.core.cache import cache
+        from requests import HTTPError, Response
+        from wallet.reconciliation import poll_recent_wema_credits
+
+        response = Response()
+        response.status_code = 429
+        post.side_effect = HTTPError(response=response)
+        cache.clear()
+        self.addCleanup(cache.clear)
+        with patch("utility.wema._product_live", return_value=True):
+            poll_recent_wema_credits(5)
+            cache.delete("wema:recent-credit:poll")
+            poll_recent_wema_credits(5)
+        post.assert_called_once()
+
+    @patch("utility.wema.get_transactions")
     def test_credit_notification_reconciles_authenticated_history(self, history):
         history.return_value = {"success": True, "transactions": [{
             "referenceId": "338135484403", "amount": 100,

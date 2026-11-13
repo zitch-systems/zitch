@@ -615,9 +615,13 @@ def _unreachable(exc: Exception, *, pending: bool = False) -> dict:
     """
     log.warning("wema_gateway_unreachable operation_pending=%s error_type=%s",
                 pending, type(exc).__name__)
+    diagnostic = {"error_type": type(exc).__name__}
+    response = getattr(exc, "response", None)
+    if response is not None:
+        diagnostic["http_status"] = response.status_code
     return {"success": False, "pending": pending,
             "message": "Bank gateway is temporarily unavailable",
-            "diagnostic": {"error_type": type(exc).__name__}}
+            "diagnostic": diagnostic}
 
 def security_info_value() -> str:
     """Return the private seed used to derive per-transaction securityInfo.

@@ -69,6 +69,16 @@ class SendEmailLoggingTests(SimpleTestCase):
         self.assertTrue(out["success"])
         log.warning.assert_not_called()
 
+    def test_invalid_authorization_header_is_not_dispatched_or_logged(self):
+        from requests.exceptions import InvalidHeader
+
+        with patch("utility.providers.requests.post", side_effect=InvalidHeader("secret-value")):
+            with self.assertLogs("zitch", level="WARNING") as logs:
+                result = send_email("k@zitch.test", "s", "m")
+        self.assertEqual(result["code"], "email_unconfigured")
+        self.assertTrue(result["not_dispatched"])
+        self.assertNotIn("secret-value", "\n".join(logs.output))
+
 
 @override_settings(RESEND=_CFG)
 class EmailProbeTests(SimpleTestCase):
