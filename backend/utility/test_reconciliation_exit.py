@@ -154,3 +154,48 @@ class ReconciliationExitTests(TestCase):
         report = AuditLog.objects.get(action="recon.wema_run").after
         self.assertEqual(report["identity_completion_pending"], 1)
         self.assertIn("vas_checked", report)
+
+
+_UNCONFIGURED_WEMA = {"BASE_URL": "https://bank.example", "CHANNEL_ID": "",
+                      "KEYS": {"wallet": ""}, "SIMULATION": False}
+_LIVE_WEMA = {"BASE_URL": "https://bank.example", "CHANNEL_ID": "test-channel",
+              "KEYS": {"wallet": "test-wallet"}, "SIMULATION": False}
+
+
+class UnconfiguredCronNamesTheCauseTests(TestCase):
+    """A cron without the API's Wema settings must say so, not blame the bank."""
+
+    def setUp(self):
+        cache.clear()
+        user, _ = make_user("08033331890", "recon-unconfigured@example.test")
+        self.wallet = Wallet.objects.get(user=user)
+        self.wallet.pnd_lifted = True
+        self.wallet.save(update_fields=["pnd_lifted"])
+
+    def _sweep(self):
+        failed = dict(credited=0, windows=1, error_code="history_fetch_failed",
+                      fetch_failed=True, backlog=False, diagnostic={})
+        err = StringIO()
+        module = "utility.management.commands.reconcile_wema."
+        with patch(module + "wema_provisioned_wallets", return_value=[self.wallet]), \
+             patch(module + "reconcile_account_history", return_value=failed), \
+             patch("utility.alerts.alert") as page, self.assertRaises(SystemExit):
+            call_command("reconcile_wema", account_recovery_limit=0,
+                         stdout=StringIO(), stderr=err)
+        return err.getvalue(), [str(c.args[0]) for c in page.call_args_list]
+
+    @override_settings(WEMA_RECONCILE_FAIL_INCOMPLETE=True, WEMA=_UNCONFIGURED_WEMA)
+    def test_missing_settings_are_named(self):
+        err, pages = self._sweep()
+        self.assertIn("Wema not live in this environment "
+                      "(channel_id_missing, wallet_key_missing)", err)
+        fetch_pages = [m for m in pages if "history fetches failed" in m]
+        self.assertEqual(len(fetch_pages), 1)
+        self.assertIn("channel_id_missing", fetch_pages[0])
+        self.assertNotIn("unreachable", fetch_pages[0])
+
+    @override_settings(WEMA_RECONCILE_FAIL_INCOMPLETE=True, WEMA=_LIVE_WEMA)
+    def test_a_real_outage_is_still_reported_as_one(self):
+        err, pages = self._sweep()
+        self.assertNotIn("not live", err)
+        self.assertTrue(any("unreachable or auth rejected" in m for m in pages))
