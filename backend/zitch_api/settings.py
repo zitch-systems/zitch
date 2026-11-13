@@ -957,6 +957,12 @@ WHATSAPP_WEB_DRAIN = env_bool("WHATSAPP_WEB_DRAIN", True)
 # Zero under the test runner: the suite drives the queue itself, so there is
 # never anything to wait FOR, and a default budget would add its full length to
 # every queued-execution test. The tests that exercise the wait set it back.
+# How long a bank transfer the bank answered "processing" waits for its outcome
+# before the customer is told so. The bank usually confirms within a few seconds;
+# reporting at once produced "still processing" followed by "successful" a moment
+# later, and no receipt. 0 reports immediately.
+PAYOUT_SETTLE_WAIT_SECONDS = 0.0 if TESTING else max(0.0, min(
+    float(os.environ.get("PAYOUT_SETTLE_WAIT_SECONDS", "10") or 0), 15.0))
 WHATSAPP_FLOW_SETTLE_WAIT = 0.0 if TESTING else max(0.0, min(
     float(os.environ.get("WHATSAPP_FLOW_SETTLE_WAIT", "6") or 0), 6.0))
 WHATSAPP_QUEUE_KEY = os.environ.get("WHATSAPP_QUEUE_KEY", "").strip()

@@ -456,6 +456,12 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         reply(msisdn, msg)
         return Outcome(msg, OUTCOME_FAILED)
 
+    # The bank usually confirms within seconds of answering "processing". Wait
+    # for that, so the customer gets the receipt instead of "still processing"
+    # followed by a second message.
+    from transfers.services import await_payout_settlement
+
+    await_payout_settlement(txn)
     return _transfer_outcome(pa, user, msisdn, txn)
 
 

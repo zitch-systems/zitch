@@ -2319,7 +2319,7 @@ def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to 
         body = "\n".join(f"🔢 *{a.get('account_number')}* - {a.get('bank_name')}" for a in accts)
     else:
         body = f"🔢 *{funding.get('account_number', '')}*\n🏛️ {funding.get('bank_name', '')}"
-    timing = ('Your wallet is credited automatically, usually within seconds.')
+    timing = "Your wallet is credited automatically once the transfer arrives."
     spending = _funding_spending_notice(funding)
     reply(
         msisdn,
@@ -4173,11 +4173,25 @@ def _do_account_details(user, msisdn: str) -> None:
     lines = [
         "🧾 *My account details*\n",
         f"👤 {user.get_full_name() or user.first_name or '-'}",
-        f"📱 {user.phone}",
     ]
+    # The bank account sits in the same message as the profile: it is one answer
+    # to one question, and the Add money screen (6) is where the instructions go.
+    account_ready = bool(wallet.account_number and funding.get("can_fund")
+                         and funding.get("account_number")
+                         and funding.get("account_setup_state") != "partnership_unavailable")
+    if account_ready:
+        accounts = funding.get("bank_accounts") or []
+        if len(accounts) > 1:
+            lines += [f"🔢 *{a.get('account_number')}* - {a.get('bank_name')}" for a in accounts]
+        else:
+            lines += [f"🔢 *{funding.get('account_number', '')}*",
+                      f"🏛️ {funding.get('bank_name', '')}"]
+    lines.append(f"📱 {user.phone}")
     if user.email:
         lines.append(f"📧 {user.email}" + ("" if user.email_verified else " (unconfirmed)"))
     reply(msisdn, "\n".join(lines))
+    if account_ready:
+        return None
     if wallet.account_number:
         return _send_account_details(msisdn, wallet, intro="🏦 *Your funding account*")
     from wallet.identity import accepted_identity_pending

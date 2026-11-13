@@ -1662,9 +1662,14 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
                     "diagnostic": _product_config_diag("acct_mgt")}
         return {"success": True, "mock": True, "transactions": []}
     try:
+        body = {"accountNumber": account_number, "from": date_from, "to": date_to}
+        if keyword:
+            # Sent only for a real search. An empty keyWord switched the bank to its
+            # search response and deposits stopped being found; without the field
+            # it returns the plain statement.
+            body["keyWord"] = keyword
         resp = _post("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
-                     {"accountNumber": account_number, "from": date_from, "to": date_to,
-                      "keyWord": keyword})
+                     body)
         data = resp.json()
         if not isinstance(data, dict):
             return {"success": False, "transactions": [], "message": "Request failed",
