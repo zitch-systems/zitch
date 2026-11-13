@@ -51,3 +51,18 @@ class AccountLookupAcrossProductsTests(SimpleTestCase):
         with patch("utility.wema._get_account_details_from", return_value=_found()) as read:
             wema.get_account_details("08000000000", bvn=True)
         self.assertEqual(read.call_count, 1)
+
+
+class StatusQueryRefusalTests(SimpleTestCase):
+    def test_unprofiled_400_is_named_not_reported_as_unconfirmed(self):
+        ok, reason = wema._vas_status_access_response(
+            {"result": None, "errorMessage": "You've not been profiled to use this service",
+             "errorMessages": None, "hasError": True}, 400, "ZITCH-PREFLIGHT-X")
+        self.assertFalse(ok)
+        self.assertIn("not profiled", reason)
+
+    def test_other_400_stays_unconfirmed(self):
+        ok, reason = wema._vas_status_access_response(
+            {"result": None, "errorMessage": "Something else", "hasError": True}, 400, "R")
+        self.assertFalse(ok)
+        self.assertIn("unconfirmed", reason)
