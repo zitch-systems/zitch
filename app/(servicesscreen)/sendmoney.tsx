@@ -67,6 +67,11 @@ const SendMoney = () => {
   const [recovered, setRecovered] = useState(false);
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
+  // The bank's fee on a transfer to another bank, quoted when the confirm sheet
+  // opens and debited with the transfer. null = not known yet (or quote failed).
+  const [fee, setFee] = useState<number | null>(null);
+  const [feeLoading, setFeeLoading] = useState(false);
+  const feeQuote = useRef(0);
   const sendInFlight = useRef(false);
   const reviewedPayment = useRef<string | null>(null);
 
@@ -183,6 +188,31 @@ const SendMoney = () => {
     : !!activeResolvedName;
   const recipientName = picked ? picked.name : mode === 'bank' ? activeBankName : activeResolvedName;
   const valid = transfersAvailable === true && (pickedReady || acctReady) && amount >= MIN_TRANSFER && amount <= balance;
+  // Zitch-to-Zitch transfers never reach a bank, so they carry no bank fee.
+  const sendsToBank = (picked && picked.bank_name !== 'Zitch') || (!picked && mode === 'bank');
+  const quoteBankCode = picked ? pickedBankCode : bank?.code || '';
+
+  useEffect(() => {
+    if (step !== 'confirm') return;
+    if (!sendsToBank) { setFee(0); setFeeLoading(false); return; }
+    const quote = ++feeQuote.current;
+    setFee(null);
+    setFeeLoading(true);
+    transfersService.charge(amount, quoteBankCode).then((res) => {
+      if (quote !== feeQuote.current || !isCurrentSession()) return;
+      const quoted = Number(res?.fee);
+      setFee(res?.success === true && Number.isFinite(quoted) && quoted >= 0 ? quoted : null);
+    }).catch(() => {
+      if (quote === feeQuote.current) setFee(null);
+    }).finally(() => {
+      if (quote === feeQuote.current) setFeeLoading(false);
+    });
+    // Quoted once per opening: amount and bank cannot change while the sheet is open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
+  const feeLabel = feeLoading ? 'Checking…' : fee === null ? 'Charged by the bank' : fee > 0 ? money(fee) : 'Free';
+  const totalWithFee = amount + (fee || 0);
 
   const resolveZitch = async () => {
     if (!isCurrentSession()) return;
@@ -566,15 +596,20 @@ const SendMoney = () => {
         open={step === 'confirm'}
         onClose={() => setStep(null)}
         title="Confirm transfer"
-        total={amount}
+        total={totalWithFee}
         balance={balance}
-        rows={[['To', recipientName || '—'], ['Account', picked ? picked.account_number : mode === 'bank' ? acct : identifier], ['Bank', picked ? picked.bank_name : mode === 'bank' ? bank?.name || '—' : 'Zitch']]}
+        rows={[
+          ['To', recipientName || '—'],
+          ['Account', picked ? picked.account_number : mode === 'bank' ? acct : identifier],
+          ['Bank', picked ? picked.bank_name : mode === 'bank' ? bank?.name || '—' : 'Zitch'],
+          ...(sendsToBank ? [['Amount', money(amount)] as [string, string], ['Bank fee', feeLabel] as [string, string]] : []),
+        ]}
         onPay={() => { const attempt = transferAttempt(); reviewedPayment.current = JSON.stringify([attempt.scope, attempt.fingerprint, note]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
-          {busy ? 'Sending…' : `Confirm transfer of ${money(amount)}`}
+          {busy ? 'Sending…' : `Confirm transfer of ${money(amount)}${sendsToBank && fee ? ` + ${money(fee)} bank fee` : ''}`}
         </Text>
         <PinPad onComplete={(p) => send(p)} busy={busy} error={pinError} />
       </Sheet>

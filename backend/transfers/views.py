@@ -13,7 +13,7 @@ from common.http import (
     parse_amount, require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
-from utility.providers import payout_charge, payout_resolve_account
+from utility.providers import payout_resolve_account
 from wallet.models import Transaction
 from wallet.services import existing_for_key
 
@@ -256,20 +256,28 @@ def resolve_account(request):
 @api
 @require_user
 def transfer_charge(request):
-    """POST /api/transfers/charge/ {access_token, amount} -> {fee}
+    """POST /api/transfers/charge/ {access_token, amount, bank?} -> {fee, total}
 
-    The NIP fee the bank levies on an inter-bank transfer of ``amount`` (from Wema's
-    GetNIPCharges schedule). Informational — for display before the user confirms;
-    the send flow itself is unchanged. An unavailable quote is not a free transfer.
+    The fee the bank takes for sending ``amount`` to ``bank``, and the total the
+    send flow will debit. ``bank`` is the same value /api/transfers/send/ takes
+    (the bank's ``code``); a numeric bank code also works. It is the quote the send
+    debits as its own "Transfer fee" row (wallet.transfer_fees): Wema's NIP charge
+    plus VAT, nothing for a transfer to another Wema account. Without ``bank`` the
+    quote assumes another bank.
     """
+    from wallet.transfer_fees import transfer_fee
+
     amount = parse_amount(request.data.get("amount"))
     if amount is None:
         return fail("Enter a valid amount")
-    fee = payout_charge(amount)
-    if fee is None:
-        return fail("Transfer fees are temporarily unavailable. Please try again shortly.",
-                    status=503, success=False, code="transfer_fee_unavailable", retryable=True)
-    return ok(success=True, amount=str(amount), fee=str(fee))
+    requested = str(request.data.get("bank") or "").strip()
+    bank = None
+    if requested:
+        bank = (Bank.objects.filter(code=requested).first()
+                or Bank.objects.filter(bank_code=requested).first())
+    fee = (transfer_fee(amount, bank.bank_code, bank.name) if bank is not None
+           else transfer_fee(amount, requested))
+    return ok(success=True, amount=str(amount), fee=str(fee), total=str(amount + fee))
 
 
 @api
@@ -359,7 +367,8 @@ def bank_transfer(request):
                 status=409, code="duplicate", duplicate=True,
             )
         if exc.kind == "insufficient":
-            return fail("Insufficient wallet balance", status=402)
+            # Names the bank fee when it is what tipped the balance over.
+            return fail(exc.message or "Insufficient wallet balance", status=402)
         if exc.kind == "limit_exceeded":
             return fail(exc.message, status=403, code="limit_exceeded")
         if exc.kind == "state_conflict":
@@ -401,12 +410,14 @@ def bank_transfer(request):
 
     from wallet.services import get_or_create_wallet
     wallet = get_or_create_wallet(user)
+    # The bank's transfer fee debited alongside (wallet.transfer_fees), for the receipt.
+    fee = str((txn.meta or {}).get("transfer_fee") or "0.00")
     quarantine = (txn.meta or {}).get("wema_reversal_quarantine") or {}
     if (txn.transaction_status == Transaction.PENDING
             or (isinstance(quarantine, dict) and quarantine.get("active") is True)):
         # Rail queued it but hasn't confirmed — don't claim "sent".
         return ok(pending=True, wallet=str(wallet.balance), reference=txn.reference, name=name,
-                  narration=(txn.meta or {}).get("narration", ""),
+                  fee=fee, narration=(txn.meta or {}).get("narration", ""),
                   message=("Your transfer is under review. Do not send it again; "
                            "we will update its final status after reconciliation."
                            if isinstance(quarantine, dict) and quarantine.get("active") is True
@@ -414,7 +425,7 @@ def bank_transfer(request):
                            "Your transfer is processing. Its final status will be updated "
                            "after the bank confirms the outcome."))
     return ok(success=True, wallet=str(wallet.balance), reference=txn.reference, name=name,
-              narration=(txn.meta or {}).get("narration", ""),
+              fee=fee, narration=(txn.meta or {}).get("narration", ""),
               # So the receipt can offer "save this recipient" and act on the tap
               # with an id, rather than posting an account number back and paying
               # for a second name enquiry to identify a row we just wrote.

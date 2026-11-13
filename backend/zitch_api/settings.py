@@ -644,6 +644,15 @@ RESEND = {
 # selectable from a session that might be stolen. Unset => the admin export refuses,
 # rather than falling back to showing the record in a browser.
 COMPLIANCE_EXPORT_EMAIL = os.environ.get("COMPLIANCE_EXPORT_EMAIL", "").strip()
+# The partner bank's fee on a transfer to another bank (wallet/transfer_fees.py):
+# Wema's NIP schedule charge plus VAT, taken from the sender's own account by the
+# bank and debited by Zitch as its own "Transfer fee" row so the two balances
+# agree. Transfers to these bank codes (or any Wema/ALAT name) are on-us and free.
+TRANSFER_FEE_ENABLED = env_bool("TRANSFER_FEE_ENABLED", True)
+TRANSFER_FEE_VAT_RATE = os.environ.get("TRANSFER_FEE_VAT_RATE", "") or "0.075"
+TRANSFER_FEE_FREE_BANK_CODES = tuple(
+    code.strip() for code in (os.environ.get("TRANSFER_FEE_FREE_BANK_CODES", "") or "035,000017").split(",")
+    if code.strip())
 # Credit/debit alerts, per channel (see wallet/alerts.py). Email defaults ON —
 # it is effectively free and customers expect an alert on every movement. SMS
 # defaults OFF: at Nigerian per-message rates, one alert per transaction is a
@@ -906,6 +915,15 @@ WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS = int(
     os.environ.get("WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS", "2") or 2)
 WHATSAPP_ALERT_RETRY_LIMIT = int(
     os.environ.get("WHATSAPP_ALERT_RETRY_LIMIT", "50") or 50)
+# A balance request (WhatsApp or app) reads that customer's recent statement
+# first (wallet/deposit_sync.py). The worker's recent-credit poll above reaches
+# each account in turn, so with many accounts the customer asking is rarely the
+# one it is reading. The reply waits at most WAIT seconds before showing the
+# balance as it stands (0 skips the read); no account is read for a balance
+# request more than once per MIN_INTERVAL.
+WEMA_DEPOSIT_SYNC_MIN_INTERVAL_SECONDS = float(
+    os.environ.get("WEMA_DEPOSIT_SYNC_MIN_INTERVAL_SECONDS", "") or 15)
+WEMA_DEPOSIT_SYNC_WAIT_SECONDS = float(os.environ.get("WEMA_DEPOSIT_SYNC_WAIT_SECONDS", "") or 5)
 # The web service also drains the inbound queue in a bounded background thread
 # after acknowledging a webhook, so a stopped/crashed/never-created worker service
 # cannot silently swallow every reply. Rows are claimed with SELECT FOR UPDATE, so

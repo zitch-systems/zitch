@@ -53,6 +53,8 @@ export const EP = {
     // Canonical (plural) paths.
     resolve: '/api/transfers/resolve/',
     send: '/api/transfers/send/',
+    // The bank's fee on a transfer, debited with it (backend wallet/transfer_fees.py).
+    charge: '/api/transfers/charge/',
     beneficiaries: '/api/transfers/beneficiaries/',
     // Legacy singular aliases still referenced by some screens — see NOTE above.
     resolveLegacy: '/api/transfer/resolve/',

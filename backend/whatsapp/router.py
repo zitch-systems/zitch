@@ -514,8 +514,10 @@ def _flow_summary(pa: PendingAction) -> str:
     at = pa.action_type
     try:
         if at == "transfer":
+            fee = Decimal(str(p.get("fee") or "0"))
+            cost = f" · bank fee {_money(fee)}" if fee > 0 else ""
             return (f"Send {_money(Decimal(p['amount']))} to {p.get('name', 'recipient').upper()}"
-                    f" · {p.get('bank_name', '')} {p.get('account', '')}".rstrip())
+                    f" · {p.get('bank_name', '')} {p.get('account', '')}".rstrip() + cost)
         if at == "airtime":
             return f"{_money(Decimal(p['amount']))} {NETWORK_NAMES.get(p.get('net', ''), '')} airtime -> {p.get('phone', '')}"
         if at == "data":
@@ -668,10 +670,12 @@ def _flow_fields(pa: PendingAction) -> dict:
         if at in ("savings_create", "loan_repay"):
             return _with_context(savings_loans.confirmation_fields(pa))
         if at == "transfer":
+            fee = Decimal(str(p.get("fee") or "0"))
+            cost = f" · Bank fee {_money(fee)}" if fee > 0 else ""
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
                 "recipient": f"To {p.get('name', 'recipient').upper()}",
-                "details": f"{p.get('bank_name', '')} · {p.get('account', '')}".strip(" ·")})
+                "details": f"{p.get('bank_name', '')} · {p.get('account', '')}".strip(" ·") + cost})
         if at == "airtime":
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
@@ -932,7 +936,15 @@ def _pending_spend_amount(pa: PendingAction) -> Decimal | None:
         amount = Decimal(str(raw))
     except (InvalidOperation, TypeError):
         return None
-    return amount if amount > 0 else None
+    if amount <= 0:
+        return None
+    if pa.action_type == "transfer":
+        # The bank's transfer fee is debited with the transfer (wallet.transfer_fees).
+        try:
+            amount += Decimal(str(p.get("fee") or "0"))
+        except (InvalidOperation, TypeError):
+            pass
+    return amount
 
 
 def _fresh_wallet_balance(user) -> Decimal:
@@ -2249,6 +2261,13 @@ def _funding_spending_notice(funding: dict) -> str:
 
 
 def _do_balance(user, msisdn: str) -> None:
+    # The bank sends no deposit notification. Read this customer's statement
+    # before answering, so a transfer they have just made shows up now instead
+    # of at the next background pass. Bounded: a slow bank delays the reply by
+    # a few seconds at most, and a deposit found later still gets its alert.
+    from wallet.deposit_sync import refresh_deposits_briefly
+
+    refresh_deposits_briefly(user)
     bals = all_balances(user)
     funding = customer_funding_account(user)
     notice = _funding_spending_notice(funding)

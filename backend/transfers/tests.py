@@ -13,6 +13,10 @@ from wallet.tests import make_user
 
 from .models import Bank, Beneficiary
 
+# The bank's fee on ₦10,000 to another bank: ₦25 NIP charge + 7.5% VAT
+# (wallet.transfer_fees), debited with the transfer and refunded with it.
+BANK_FEE_10K = Decimal("26.88")
+
 
 class BankTransferTests(TestCase):
     def setUp(self):
@@ -72,29 +76,35 @@ class BankTransferTests(TestCase):
                 resolve.assert_not_called()
         self.assertEqual(self.balance(), Decimal("50000"))
 
-    def test_transfer_charge_returns_nip_fee(self):
-        from decimal import Decimal
-        with patch("transfers.views.payout_charge", return_value=Decimal("25.00")):
+    def test_transfer_charge_returns_the_nip_fee_with_vat(self):
+        # The bank takes its schedule charge plus 7.5% VAT: ₦25 -> ₦26.88.
+        with patch("utility.providers.payout_charge", return_value=Decimal("25.00")):
             res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(body["fee"], "25.00")
+        self.assertEqual(body["fee"], "26.88")
+        self.assertEqual(body["total"], "20026.88")
 
-    def test_transfer_charge_is_retryable_when_schedule_unavailable(self):
-        with patch("transfers.views.payout_charge", return_value=None):
+    def test_transfer_charge_quotes_the_published_tariff_when_the_schedule_is_unavailable(self):
+        # The bank charges its fee either way; the quote is never "free" by omission.
+        with patch("utility.providers.payout_charge", return_value=None):
             res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
-        self.assertEqual(res.status_code, 503)
-        self.assertFalse(body["success"])
-        self.assertEqual(body["code"], "transfer_fee_unavailable")
-        self.assertTrue(body["retryable"])
-        self.assertNotIn("fee", body)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["fee"], "26.88")
         self.assertEqual(self.balance(), Decimal("50000"))
         self.assertFalse(Transaction.objects.filter(user=self.user, direction=Transaction.OUT).exists())
 
     def test_transfer_charge_preserves_confirmed_zero_fee(self):
-        with patch("transfers.views.payout_charge", return_value=Decimal("0.00")):
+        with patch("utility.providers.payout_charge", return_value=Decimal("0.00")):
             res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["success"])
+        self.assertEqual(body["fee"], "0.00")
+
+    def test_transfer_charge_to_another_wema_account_is_free(self):
+        with patch("utility.providers.payout_charge", return_value=Decimal("10.00")):
+            res, body = self.post("/api/transfers/charge/", {
+                "access_token": self.token, "amount": "2000", "bank": "035"})
+        self.assertEqual(res.status_code, 200)
         self.assertEqual(body["fee"], "0.00")
 
     def test_transfer_below_50_rejected(self):
@@ -131,7 +141,7 @@ class BankTransferTests(TestCase):
             })
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body.get("success") or body.get("pending"))
-        self.assertEqual(self.balance(), Decimal("40000"))
+        self.assertEqual(self.balance(), Decimal("40000") - BANK_FEE_10K)
 
     def test_banks_listed(self):
         res, body = self.post("/api/transfers/banks/", {})
@@ -203,7 +213,7 @@ class BankTransferTests(TestCase):
         })
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["success"])
-        self.assertEqual(self.balance(), Decimal("40000"))
+        self.assertEqual(self.balance(), Decimal("40000") - BANK_FEE_10K)
         # Ledger row settled, beneficiary auto-saved & deduped.
         self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.SUCCESS)
         self.assertEqual(Beneficiary.objects.filter(user=self.user, account_number="0123456789").count(), 1)
@@ -260,7 +270,7 @@ class BankTransferTests(TestCase):
         txn = Transaction.objects.get(reference=body["reference"])
         self.assertEqual(txn.transaction_status, Transaction.PENDING)
         self.assertTrue(txn.meta.get("reconcile"))
-        self.assertEqual(self.balance(), Decimal("40000"))  # debited, not refunded
+        self.assertEqual(self.balance(), Decimal("40000") - BANK_FEE_10K)  # debited, not refunded
 
     def test_pending_payout_excluded_from_vtu_reconcile_sweep(self):
         """Regression: a PENDING bank payout shares the reconcile+OUT shape with a
@@ -292,7 +302,7 @@ class BankTransferTests(TestCase):
         self.assertIn(vtu.reference, swept)         # VAS purchase is reconciled
         self.assertNotIn(payout.reference, swept)   # bank payout is not
 
-        self.assertEqual(self.balance(), Decimal("40500"))  # 50000 - 10000 payout + 1000 seed - 500 vtu
+        self.assertEqual(self.balance(), Decimal("40500") - BANK_FEE_10K)  # 50000 - 10000 payout and its fee + 1000 seed - 500 vtu
 
     def test_send_refunds_when_payout_fails(self):
         """If the payout provider declines, the wallet debit must be reversed."""
@@ -331,7 +341,7 @@ class BankTransferTests(TestCase):
         txn = Transaction.objects.get(reference=body["reference"])
         self.assertEqual(txn.transaction_status, Transaction.PENDING)  # held, not settled
         self.assertTrue(txn.meta.get("reconcile"))                     # sweepable
-        self.assertEqual(self.balance(), Decimal("40000"))             # debited, NOT refunded
+        self.assertEqual(self.balance(), Decimal("40000") - BANK_FEE_10K)             # debited, NOT refunded
         self.assertFalse(
             Transaction.objects.filter(user=self.user, transaction_status=Transaction.FAILED).exists())
 
@@ -351,7 +361,7 @@ class BankTransferTests(TestCase):
         txn = Transaction.objects.get(reference=body["reference"])
         self.assertEqual(txn.transaction_status, Transaction.PENDING)
         self.assertTrue(txn.meta.get("reconcile"))
-        self.assertEqual(self.balance(), Decimal("40000"))  # held, not refunded
+        self.assertEqual(self.balance(), Decimal("40000") - BANK_FEE_10K)  # held, not refunded
 
     def test_explicit_failed_status_refunds_even_when_envelope_succeeded(self):
         with patch("transfers.services.payout_send",
@@ -528,7 +538,8 @@ class PayoutFailureIsRecordedTests(TestCase):
                 "idempotency_key": "failure-reason-send-1",
             }), content_type="application/json")
         self.assertFalse(res.json().get("success"))
-        txn = Transaction.objects.filter(user=self.user, direction=Transaction.OUT).first()
+        txn = (Transaction.objects.filter(user=self.user, direction=Transaction.OUT)
+               .exclude(meta__has_key="transfer_fee_for").first())
         self.assertEqual(txn.transaction_status, Transaction.FAILED)
         self.assertEqual(txn.meta.get("failure"), reason)
         self.assertEqual(txn.meta.get("failure_status"), "FAILED")

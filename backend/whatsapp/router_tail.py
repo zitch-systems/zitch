@@ -158,13 +158,20 @@ def _resolve_and_confirm(pa: PendingAction, user, msisdn: str, bank) -> None:
                              "Re-enter the 10-digit account number, or \"cancel\".")
     name = (res.get("name") or "").strip() or "Bank recipient"
     amount = Decimal(pa.payload["amount"])
-    pa.payload.update({"bank_code": bank.bank_code, "bank_name": bank.name, "name": name})
+    # Quoted once, here: the fee the customer sees before confirming is the fee
+    # the transfer debits, and the funds check before the PIN covers both.
+    from wallet.transfer_fees import transfer_fee
+
+    fee = transfer_fee(amount, bank.bank_code, bank.name)
+    pa.payload.update({"bank_code": bank.bank_code, "bank_name": bank.name, "name": name,
+                       "fee": str(fee)})
     if not _arm_confirm(pa, user):
         return
+    cost = (f"\nBank fee {_money(fee)} • Total {_money(amount + fee)}" if fee > 0 else "")
     _send_confirm(pa, msisdn,
                   "Confirm transfer\n"
                   f"{_money(amount)} -> {name.upper()}\n"
-                  f"{bank.name} • {acct}")
+                  f"{bank.name} • {acct}{cost}")
 
 
 def _flow_pin_ok(pa: PendingAction, user, msisdn: str, text: str) -> bool:
@@ -340,14 +347,18 @@ def _transfer_outcome(pa: PendingAction, user, msisdn: str, txn, *, replay: bool
     # safe; replaying the payout is not, which is why this helper is reached only
     # after the idempotency lookup.
     wallet = get_or_create_wallet(user)
-    reply_receipt(msisdn, "Transfer receipt", _with_narration(pa, [
+    rows = [
         ("To", who),
         ("Bank", pa.payload["bank_name"]),
         ("Account", pa.payload["account"]),
         ("Amount", _money(amount)),
-        ("Reference", txn.reference),
-        ("Date", txn.created.strftime("%d %b %Y, %H:%M")),
-    ]), ref=txn.reference, user=user, balance_after=wallet.balance)
+    ]
+    charged = (txn.meta or {}).get("transfer_fee")
+    if charged:
+        rows.append(("Bank fee", _money(Decimal(str(charged)))))
+    rows += [("Reference", txn.reference), ("Date", txn.created.strftime("%d %b %Y, %H:%M"))]
+    reply_receipt(msisdn, "Transfer receipt", _with_narration(pa, rows),
+                  ref=txn.reference, user=user, balance_after=wallet.balance)
     if not replay:
         _offer_to_save(user, msisdn, getattr(txn, "beneficiary_id", None))
     if replay:
@@ -415,12 +426,18 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
             # which is what every transfer sent before narration existed.
             note=_narration(pa),
             idempotency_key=f"wa-{pa.id}", channel="whatsapp",
+            # The fee shown on the confirm card; older pending actions have none
+            # stored and are quoted afresh.
+            fee=Decimal(pa.payload["fee"]) if pa.payload.get("fee") is not None else None,
         )
     except PayoutError as exc:
         who = pa.payload["name"].upper()
         if exc.kind == "insufficient":
             _clear_actions(msisdn)
-            msg = f"Insufficient balance for the {_money(amount)} transfer to {who} - cancelled."
+            fee = Decimal(str(pa.payload.get("fee") or "0"))
+            and_fee = f" and its {_money(fee)} bank fee" if fee > 0 else ""
+            msg = (f"Insufficient balance for the {_money(amount)} transfer to {who}"
+                   f"{and_fee} - cancelled.")
             reply(msisdn, msg)
             return Outcome(msg, OUTCOME_FAILED)
         if exc.kind == "duplicate":

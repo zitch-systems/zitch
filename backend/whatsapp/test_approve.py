@@ -32,6 +32,9 @@ from django.utils import timezone
 
 User = get_user_model()
 MSISDN = "2348011112222"
+# The bank's fee on up to ₦5,000 to another bank: ₦10 NIP charge + 7.5% VAT
+# (wallet.transfer_fees), debited with the transfer.
+BANK_FEE_5K = Decimal("10.75")
 
 _WA_ON = {"MODE": "sandbox", "ALLOW_CHAT_SIGNUP": True, "VERIFY_TOKEN": "",
           "APP_SECRET": "", "TOKEN": "", "PHONE_NUMBER_ID": "", "BUSINESS_NUMBER": ""}
@@ -160,7 +163,7 @@ class ApproveEndpointTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["success"])
         self.assertEqual(body["outcome"], "success")
-        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("45000"))
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("45000") - BANK_FEE_5K)
         # Execution cleared the action: the same hand-off cannot be redeemed twice.
         self.assertIsNone(resolve_approve_token(self.handoff))
         res2, _ = self.post("/api/whatsapp/approve/execute/",
