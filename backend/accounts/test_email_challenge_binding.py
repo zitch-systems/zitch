@@ -14,6 +14,7 @@ class EmailChallengeBindingTests(TestCase):
         cache.clear()
         self.user = User.objects.create_user(
             username="email-bound", phone="08010000541", email="first@zitch.test",
+            password="Current-passw0rd!",
             email_verified=False, phone_verified=True, bvn_verified=True,
         )
         self.token = AccessToken.issue(self.user).key
@@ -53,7 +54,8 @@ class EmailChallengeBindingTests(TestCase):
         OTP.objects.filter(pk=old.pk).update(created=timezone.now() - timedelta(seconds=21))
         with patch("accounts.views._otp_code", return_value="343434"), \
                 patch("accounts.views.send_email", return_value={"success": True}) as send:
-            response = self.post("start", email="Second@Zitch.Test")
+            response = self.post("start", email="Second@Zitch.Test",
+                                 current_password="Current-passw0rd!")
         self.assertEqual(response.status_code, 200)
         send.assert_called_once()
         self.assertEqual(send.call_args.args[0], "second@zitch.test")

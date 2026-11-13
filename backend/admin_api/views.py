@@ -2021,6 +2021,9 @@ def mfa_disable(request):
     from accounts.models import OperatorTotp
     from accounts.totp import verify
 
+    if _mfa_required_for(request.staff):
+        return fail("Two-factor authentication is required for your role.",
+                    status=403, code="mfa_required")
     row = OperatorTotp.objects.filter(user=request.staff, confirmed=True).first()
     if row is None:
         return ok(success=True, message="Two-factor authentication was not enabled.")

@@ -45,17 +45,17 @@ class TheFlowCardIsTheOnlyCardTests(TestCase):
         reply.assert_not_called()
         image.assert_not_called()
 
-    def test_the_sms_code_rung_still_gets_its_card(self):
+    def test_the_app_approval_fallback_gets_its_card(self):
         """It has no card of its own — suppressing this would leave the customer
         with a charge to authorise and nothing to authorise it with."""
         pa = _airtime_action(self.user, "pin")
-        pa.payload["otp_hash"] = "x"
+        pa.payload["app_approval_only"] = True
         pa.save(update_fields=["payload"])
         with patch.object(router, "reply") as reply:
             router._send_confirm(pa, MSISDN, "Confirm airtime\n₦5,000.00 MTN → 08166938327")
         said = reply.call_args[0][1]
         self.assertIn("₦5,000.00", said)
-        self.assertIn("6-digit code", said)
+        self.assertIn("Open the Zitch app", said)
 
     def test_the_logo_card_is_used_when_one_is_given(self):
         pa = _airtime_action(self.user, "pin")
