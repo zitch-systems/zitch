@@ -11,6 +11,8 @@ import secrets
 import requests
 from django.conf import settings
 
+from common.http_pool import pooled_session
+
 REQUEST_TIMEOUT = 30
 log = logging.getLogger("zitch")
 
@@ -573,7 +575,7 @@ def send_email(to: str, subject: str, message: str, html: str | None = None,
             for a in attachments
         ]
     try:
-        resp = requests.post(
+        resp = pooled_session("resend").post(
             f"{cfg['BASE_URL']}/emails",
             json=payload,
             headers={
@@ -598,10 +600,13 @@ def send_email(to: str, subject: str, message: str, html: str | None = None,
                 "http_status": resp.status_code,
                 "uncertain": not ok and (resp.status_code >= 500 or resp.ok),
                 "retryable": not ok and 400 <= resp.status_code < 500}
+    except requests.exceptions.InvalidHeader:
+        log.warning("email_unconfigured reason=invalid_request_header")
+        return {"success": False, "not_dispatched": True, "code": "email_unconfigured"}
     except requests.RequestException as exc:
-        log.warning("email_unreachable error=%s", str(exc)[:200])
+        log.warning("email_unreachable error_type=%s", type(exc).__name__)
         return {"success": False, "uncertain": True,
-                "message": f"Email provider unreachable: {exc}"}
+                "message": "Email provider unreachable"}
     except (TypeError, ValueError):
         return {"success": False, "uncertain": True,
                 "message": "Email provider returned an unreadable response"}

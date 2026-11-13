@@ -4,13 +4,12 @@ import re
 import signal
 import threading
 import time
-from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections, connections
-from django.utils import timezone
 
 from whatsapp.jobs import process_once
 from whatsapp.providers import wa_live
@@ -25,9 +24,40 @@ def _local_flow_digest():
         return "unreadable"
 
 
+def _dispatch_alerts_until_stopped(stop, interval, concurrency, stderr):
+    from wallet.alerts import _dispatch_alert, pending_alert_delivery_ids
+
+    def dispatch(pk):
+        close_old_connections()
+        try:
+            return _dispatch_alert(pk)
+        finally:
+            close_old_connections()
+
+    in_flight = {}
+    try:
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="transaction-alert") as pool:
+            while not stop.is_set():
+                for pk, future in list(in_flight.items()):
+                    if future.done():
+                        del in_flight[pk]
+                        if future.exception() is not None:
+                            stderr.write("transaction alert dispatch failed; outbox recovery remains active")
+                try:
+                    available = concurrency - len(in_flight)
+                    if available:
+                        close_old_connections()
+                        for pk in pending_alert_delivery_ids(limit=available, exclude=in_flight):
+                            in_flight[pk] = pool.submit(dispatch, pk)
+                except Exception:
+                    stderr.write("transaction alert outbox lookup failed; retrying")
+                stop.wait(interval)
+    finally:
+        connections.close_all()
+
+
 class Command(BaseCommand):
-    help = ("Process durable WhatsApp messages, poll partner-bank statements for "
-            "deposits and retry terminal transaction alerts.")
+    help = "Process durable WhatsApp messages and retry terminal transaction alerts."
 
     def add_arguments(self, parser):
         parser.add_argument("--once", action="store_true")
@@ -46,28 +76,22 @@ class Command(BaseCommand):
             help="Read back missing partner-bank funding accounts at this interval.",
         )
         parser.add_argument(
-            "--deposit-poll-interval-seconds",
-            type=float,
-            default=float(getattr(settings, "WEMA_DEPOSIT_POLL_SECONDS", 30.0) or 0),
-            help="Read partner-bank statements for new deposits at this interval (0 = off).",
-        )
-        parser.add_argument(
             "--alert-retry-interval-seconds",
             type=float,
-            default=float(getattr(settings, "WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS", 60.0)),
-            help="Retry undelivered terminal transaction alerts at this interval.",
+            default=settings.WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS,
+            help="Check the transaction alert outbox at this interval.",
         )
         parser.add_argument(
             "--alert-retry-lookback-days",
             type=int,
             default=int(getattr(settings, "WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS", 2)),
-            help="Recent terminal-transaction window for alert retries (default: 2 days).",
+            help="Legacy option. Alerts remain queued regardless of transaction age.",
         )
         parser.add_argument(
             "--alert-retry-limit",
             type=int,
             default=int(getattr(settings, "WHATSAPP_ALERT_RETRY_LIMIT", 50)),
-            help="Maximum terminal transaction alerts to retry per sweep (default: 50).",
+            help="Upper bound on concurrent alert sends, capped at eight.",
         )
 
     def handle(self, *args, **options):
@@ -87,15 +111,13 @@ class Command(BaseCommand):
         self.stdout.write(f"whatsapp_worker_flow flow_id={selected} contract_sha256={_local_flow_digest()}")
         self.stdout.flush()
 
-        stopped = False
+        stopped = threading.Event()
         reconcile_lock = threading.Lock()
         account_repair_lock = threading.Lock()
-        alert_retry_lock = threading.Lock()
-        deposit_poll_lock = threading.Lock()
+        credit_poll_lock = threading.Lock()
 
         def stop(*_args):
-            nonlocal stopped
-            stopped = True
+            stopped.set()
 
         def reconcile_money():
             # This is the safety net for missed bank callbacks. Keep this pass out
@@ -137,45 +159,19 @@ class Command(BaseCommand):
                 connections.close_all()
                 account_repair_lock.release()
 
-        def poll_deposits():
-            # Deposits only: a statement read that credits new transfers once, on
-            # the same ledger guard as the Wema cron. Payouts, bills and account
-            # repair stay with the cron. The cron alone runs every 10 minutes and
-            # cannot run more often than once a minute, so without this pass a
-            # customer waited up to 10 minutes to see money they had sent.
-            if not deposit_poll_lock.acquire(blocking=False):
+        def poll_recent_credits():
+            if not credit_poll_lock.acquire(blocking=False):
                 return
             try:
                 close_old_connections()
-                from wallet.deposit_sync import poll_deposits as poll
+                from wallet.reconciliation import poll_recent_wema_credits
 
-                poll()
-            except Exception:  # noqa: BLE001 - the next pass and the cron retry
-                self.stderr.write("background deposit poll failed; retrying")
+                poll_recent_wema_credits(credit_poll_interval)
+            except Exception:
+                self.stderr.write("Wema recent-credit check failed; retrying")
             finally:
                 connections.close_all()
-                deposit_poll_lock.release()
-
-        def retry_transaction_alerts():
-            # Money reconciliation belongs exclusively to the Wema cron. This
-            # worker-owned pass only resumes delivery of alerts that were already
-            # claimed safely on terminal ledger rows. It uses the worker's Meta
-            # credentials, so the bank cron never needs to hold or duplicate them.
-            if not alert_retry_lock.acquire(blocking=False):
-                return
-            try:
-                close_old_connections()
-                from wallet.alerts import retry_pending_whatsapp_alerts
-
-                retry_pending_whatsapp_alerts(
-                    since=timezone.now() - timedelta(days=alert_retry_lookback_days),
-                    limit=alert_retry_limit,
-                )
-            except Exception:  # noqa: BLE001 - delivery is retried on the next scheduled pass
-                self.stderr.write("background WhatsApp transaction alert retry failed; retrying")
-            finally:
-                connections.close_all()
-                alert_retry_lock.release()
+                credit_poll_lock.release()
 
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
@@ -189,15 +185,9 @@ class Command(BaseCommand):
             30.0,
             min(float(options["account_repair_interval_seconds"]), 3600.0),
         )
-        alert_retry_interval = max(
-            10.0,
-            min(float(options["alert_retry_interval_seconds"]), 3600.0),
-        )
-        deposit_poll_interval = float(options["deposit_poll_interval_seconds"] or 0)
-        deposit_poll_interval = (
-            0.0 if deposit_poll_interval <= 0 else max(10.0, min(deposit_poll_interval, 3600.0)))
-        alert_retry_lookback_days = max(1, min(int(options["alert_retry_lookback_days"]), 7))
-        alert_retry_limit = max(1, min(int(options["alert_retry_limit"]), 200))
+        alert_retry_interval = max(0.1, min(float(options["alert_retry_interval_seconds"]), 3600.0))
+        alert_concurrency = max(1, min(8, int(options["alert_retry_limit"])))
+        credit_poll_interval = settings.WEMA_RECENT_CREDIT_POLL_SECONDS
         # Money reconciliation belongs to the dedicated cron. It can still be
         # enabled explicitly for a single-process local/test worker, but keeping
         # it off by default prevents several worker processes from sweeping and
@@ -205,10 +195,19 @@ class Command(BaseCommand):
         run_reconcile = bool(getattr(settings, "WHATSAPP_WORKER_RECONCILE", False))
         next_reconcile = time.monotonic()
         next_account_repair = time.monotonic()
-        next_alert_retry = time.monotonic()
-        next_deposit_poll = next_alert_retry
+        next_credit_poll = time.monotonic()
 
-        while not stopped:
+        alert_thread = None
+        if not options["once"]:
+            alert_thread = threading.Thread(
+                target=_dispatch_alerts_until_stopped,
+                args=(stopped, alert_retry_interval, alert_concurrency, self.stderr),
+                name="transaction-alert-outbox",
+                daemon=True,
+            )
+            alert_thread.start()
+
+        while not stopped.is_set():
             now = time.monotonic()
             if run_reconcile and not options["once"] and now >= next_reconcile:
                 threading.Thread(
@@ -226,23 +225,13 @@ class Command(BaseCommand):
                 ).start()
                 next_account_repair = now + account_repair_interval
 
-            # Full reconciliation (local/test override) already reads deposits.
-            if (deposit_poll_interval and not run_reconcile and not options["once"]
-                    and now >= next_deposit_poll):
+            if credit_poll_interval and not options["once"] and now >= next_credit_poll:
                 threading.Thread(
-                    target=poll_deposits,
-                    name="partner-bank-deposit-poll",
+                    target=poll_recent_credits,
+                    name="wema-recent-credits",
                     daemon=True,
                 ).start()
-                next_deposit_poll = now + deposit_poll_interval
-
-            if not options["once"] and now >= next_alert_retry:
-                threading.Thread(
-                    target=retry_transaction_alerts,
-                    name="whatsapp-transaction-alert-retry",
-                    daemon=True,
-                ).start()
-                next_alert_retry = now + alert_retry_interval
+                next_credit_poll = now + credit_poll_interval
 
             inbound, outbound = process_once(batch)
             if options["once"]:
@@ -250,3 +239,5 @@ class Command(BaseCommand):
                 return
             if inbound == 0 and outbound == 0:
                 time.sleep(poll)
+        if alert_thread is not None:
+            alert_thread.join(timeout=45)

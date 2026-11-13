@@ -893,30 +893,25 @@ WHATSAPP_WORKER_CONCURRENCY = int(os.environ.get("WHATSAPP_WORKER_CONCURRENCY", 
 # off the WhatsApp message worker prevents multiple worker processes from polling
 # and notifying on the same settlement at once.
 WHATSAPP_WORKER_RECONCILE = env_bool("WHATSAPP_WORKER_RECONCILE", False)
-# Terminal transaction notifications are retried by the credentialed WhatsApp
-# worker, not by bank-reconciliation cron jobs. These bounds keep a transient
-# Meta outage from creating an unbounded catch-up burst after recovery.
-# In production this sweep is also the FIRST send of every credit/debit alert
-# (wallet.alerts._defer queues them), so its interval is the delay a customer
-# waits for the alert. 10s is the worker's minimum; failed sends still back off
-# per delivery row (next_attempt_at), so a faster sweep does not retry faster.
-WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS = int(
-    os.environ.get("WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS", "10") or 10)
+# The worker checks one account at a time between the full reconciliation runs.
+WEMA_RECENT_CREDIT_POLL_SECONDS = max(0, int(
+    os.environ.get("WEMA_RECENT_CREDIT_POLL_SECONDS", "5") or 5))
+if WEMA_RECENT_CREDIT_POLL_SECONDS:
+    WEMA_RECENT_CREDIT_POLL_SECONDS = max(5, WEMA_RECENT_CREDIT_POLL_SECONDS)
+# First delivery and retries share the durable outbox. Provider refusals retain
+# their per-delivery backoff independently of how often the worker checks it.
+WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS = float(
+    os.environ.get("WHATSAPP_ALERT_RETRY_INTERVAL_SECONDS", "0.25") or 0.25)
 WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS = int(
     os.environ.get("WHATSAPP_ALERT_RETRY_LOOKBACK_DAYS", "2") or 2)
 WHATSAPP_ALERT_RETRY_LIMIT = int(
     os.environ.get("WHATSAPP_ALERT_RETRY_LIMIT", "50") or 50)
-# Deposit detection between reconcile_wema runs (wallet/deposit_sync.py). The
-# cron reads every statement every 10 minutes; a Render cron cannot run more
-# often than once a minute, and each run boots a fresh machine first. The
-# always-on WhatsApp worker reads statements for deposits only (no payouts or
-# bills) at this interval, stalest accounts first, capped per pass. 0 turns it off.
-WEMA_DEPOSIT_POLL_SECONDS = float(os.environ.get("WEMA_DEPOSIT_POLL_SECONDS", "") or 30)
-WEMA_DEPOSIT_POLL_MAX_WALLETS = int(os.environ.get("WEMA_DEPOSIT_POLL_MAX_WALLETS", "50") or 50)
-# A balance request (WhatsApp or app) reads that customer's statement first,
-# waiting at most WAIT seconds before replying with the balance as it stands
-# (0 skips the read). No account is read more than once per MIN_INTERVAL by the
-# poll or by requests.
+# A balance request (WhatsApp or app) reads that customer's recent statement
+# first (wallet/deposit_sync.py). The worker's recent-credit poll above reaches
+# each account in turn, so with many accounts the customer asking is rarely the
+# one it is reading. The reply waits at most WAIT seconds before showing the
+# balance as it stands (0 skips the read); no account is read for a balance
+# request more than once per MIN_INTERVAL.
 WEMA_DEPOSIT_SYNC_MIN_INTERVAL_SECONDS = float(
     os.environ.get("WEMA_DEPOSIT_SYNC_MIN_INTERVAL_SECONDS", "") or 15)
 WEMA_DEPOSIT_SYNC_WAIT_SECONDS = float(os.environ.get("WEMA_DEPOSIT_SYNC_WAIT_SECONDS", "") or 5)
