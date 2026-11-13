@@ -1616,7 +1616,7 @@ class WhatsAppReceiptTests(TestCase):
         comes last, once, whether or not a row already carried it."""
         from whatsapp.receipt import receipt_layout, tabulated_rows
 
-        rows = [("From", "ADA EZE"), ("Sender", "Wema Bank · 010****123"),
+        rows = [("From", "ADA EZE"), ("Sender", "Wema Bank · 0100****23"),
                 ("To", "BOLA JOHNSON"), ("Bank", "Access Bank"), ("Account", "0123456789"),
                 ("Amount", "₦5,000.00"), ("Narration", "Rent"), ("Bank fee", "₦10.75"),
                 ("Reference", "ZTC-1"), ("Date", "13 Nov 2026, 16:01")]
@@ -1625,7 +1625,7 @@ class WhatsAppReceiptTests(TestCase):
         self.assertEqual(layout["when"], "13 Nov 2026, 16:01")
         self.assertEqual(layout["parties"], [
             ("Recipient", "BOLA JOHNSON", "Access Bank · 0123456789"),
-            ("Sender", "ADA EZE", "Wema Bank · 010****123")])
+            ("Sender", "ADA EZE", "Wema Bank · 0100****23")])
         self.assertEqual(layout["rows"], [("Narration", "Rent"), ("Bank fee", "₦10.75"),
                                           ("Reference", "ZTC-1")])
         # The reference is supplied when no row carries it, and never doubled.
@@ -1676,6 +1676,28 @@ class WhatsAppReceiptTests(TestCase):
                              + [" ".join(r) for r in layout["rows"]]).lower()
             self.assertNotIn("sent", words)
             self.assertNotIn("successful", words)
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_every_receipt_invites_the_reader_to_bank_on_whatsapp(self):
+        """Every receipt is forwarded to someone. Its code opens a chat with the
+        banking number with "Hi" typed, which the bot answers with its welcome,
+        and the number is printed for whoever reads it on the phone they would
+        scan with. With no number configured there is no code at all: one that
+        opens nothing is worse than none."""
+        from django.conf import settings
+
+        from whatsapp.receipt import _qr_modules, render_receipt, whatsapp_start
+
+        rows = [("Network", "MTN"), ("Amount", "₦500.00")]
+        with self.settings(WHATSAPP={**settings.WHATSAPP, "BUSINESS_NUMBER": "2349062831750"}):
+            link, shown = whatsapp_start()
+            self.assertEqual(link, "https://wa.me/2349062831750?text=Hi")
+            self.assertEqual(shown, "+234 906 283 1750")
+            self.assertIsNotNone(_qr_modules(link))
+            self.assertEqual(render_receipt("Airtime receipt", rows, "ZTC-6")[:2], b"\xff\xd8")
+        with self.settings(WHATSAPP={**settings.WHATSAPP, "BUSINESS_NUMBER": ""}):
+            self.assertEqual(whatsapp_start(), ("", ""))
+            self.assertEqual(render_receipt("Airtime receipt", rows, "ZTC-7")[:2], b"\xff\xd8")
 
     @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
     def test_the_naira_sign_is_drawn_not_left_to_the_font(self):
@@ -2954,7 +2976,7 @@ class ReceiptPrivacyTests(TestCase):
         text = reply_receipt(MSISDN, "Airtime receipt", [("Network", "MTN")],
                              ref="ZTC-5", user=self.user)
         self.assertIn("From: ADA EZE", text)
-        self.assertIn("Sender: Wema Bank · 010****123", text)
+        self.assertIn("Sender: Wema Bank · 0100****23", text)
         self.assertNotIn("0100000123", text)
         self.assertNotIn("0001", text)
 

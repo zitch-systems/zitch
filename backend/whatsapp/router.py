@@ -411,18 +411,19 @@ def _sender_account(user) -> str:
 
     The app's receipt names the sender's bank and account, and so does every
     Nigerian bank receipt a recipient has seen; the payer's phone digits told
-    them nothing they could check. Masked in the middle, as those receipts do:
-    enough to recognise, not enough to reuse. Empty until the customer has an
-    account, when the phone digits stand in as before.
+    them nothing they could check. Masked in the middle the way the bank's own
+    alerts are (wallet.alerts._mask_account): enough to recognise, not enough to
+    reuse. Empty until the customer has an account, when the phone digits stand
+    in as before.
     """
+    from wallet.alerts import _mask_account
     from wallet.models import Wallet
 
     wallet = Wallet.objects.filter(user=user).only("account_number", "bank_name").first()
     number = "".join(ch for ch in (getattr(wallet, "account_number", "") or "") if ch.isdigit())
     if len(number) < 8:
         return ""
-    return " · ".join(x for x in ((wallet.bank_name or "").strip(),
-                                   f"{number[:3]}****{number[-3:]}") if x)
+    return " · ".join(x for x in ((wallet.bank_name or "").strip(), _mask_account(number)) if x)
 
 
 def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str,

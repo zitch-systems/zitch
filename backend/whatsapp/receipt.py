@@ -22,7 +22,7 @@ as tofu.
 import io
 import os
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 _ASSETS = os.path.join(os.path.dirname(__file__), "assets")
 _FONT_DIR = os.path.join(_ASSETS, "fonts")
@@ -459,12 +459,200 @@ def _mark_texture(size, mark) -> Image.Image:
     return layer
 
 
+# --- the WhatsApp banking panel -------------------------------------------
+
+# WhatsApp's own greens: the brand green for the logo tile (the app promo's
+# WA_GREEN), and its teal green for text, which reads on a light background
+# where the brand green does not.
+_WA_GREEN = (37, 211, 102)
+_WA_TEAL = (18, 140, 126)
+_GLYPH_PATH = os.path.join(_ASSETS, "whatsapp-glyph.png")
+
+# The app's promo copy (components/design/whatsapp-banking-promo.tsx), so the
+# offer reads the same wherever a customer meets it.
+_PROMO_LABEL = "ZITCH WHATSAPP BANKING"
+_PROMO_HEADLINE = "Bank wherever you chat"
+_PROMO_BODY = "Send money, buy airtime and check your balance on WhatsApp."
+
+
+def whatsapp_start() -> tuple:
+    """(link, number as printed) that opens a chat with Zitch's banking number
+    with "Hi" already typed, which the bot answers with its welcome.
+
+    Both empty when no number is configured: a code that opens nothing is worse
+    than no code.
+    """
+    from django.conf import settings
+
+    raw = (getattr(settings, "WHATSAPP", {}) or {}).get("BUSINESS_NUMBER") or ""
+    digits = "".join(ch for ch in str(raw) if ch.isdigit())
+    if len(digits) < 10:
+        return "", ""
+    if digits.startswith("234") and len(digits) == 13:
+        shown = f"+234 {digits[3:6]} {digits[6:9]} {digits[9:]}"
+    else:
+        shown = f"+{digits}"
+    return f"https://wa.me/{digits}?text=Hi", shown
+
+
+def _qr_modules(data: str):
+    """The QR code for `data` as rows of booleans, without its quiet zone, or
+    None if the library is missing. Medium error correction: the code is plain
+    and must survive JPEG compression and a photo of a screen."""
+    try:
+        import qrcode
+        from qrcode.constants import ERROR_CORRECT_M
+    except ImportError:
+        return None
+    code = qrcode.QRCode(error_correction=ERROR_CORRECT_M, border=0)
+    code.add_data(data)
+    code.make(fit=True)
+    return code.get_matrix()
+
+
+def _load_glyph(size: int):
+    """The WhatsApp glyph (components/design/WhatsAppGlyph.tsx, rasterised) as
+    a `size`-pixel white silhouette, or None if the asset is missing."""
+    try:
+        alpha = Image.open(_GLYPH_PATH).convert("RGBA").getchannel("A")
+    except (OSError, ValueError):
+        return None
+    glyph = Image.new("RGBA", (size, size), (255, 255, 255, 255))
+    glyph.putalpha(alpha.resize((size, size), Image.LANCZOS))
+    return glyph
+
+
+def _ring_mask(size, radius: int, width: int) -> Image.Image:
+    """A rounded-rectangle outline `width` px thick, softened a pixel."""
+    w, h = size
+    outer = Image.new("L", size, 0)
+    ImageDraw.Draw(outer).rounded_rectangle([0, 0, w - 1, h - 1], radius=radius, fill=255)
+    inner = Image.new("L", size, 0)
+    ImageDraw.Draw(inner).rounded_rectangle([width, width, w - 1 - width, h - 1 - width],
+                                            radius=max(0, radius - width), fill=255)
+    return ImageChops.subtract(outer, inner).filter(ImageFilter.GaussianBlur(0.7))
+
+
+def _draw_tracked(d, x: float, baseline: float, text: str, font, fill, tracking: float) -> float:
+    """Draw `text` letter-spaced by `tracking` px, as the app sets its labels."""
+    for ch in text:
+        d.text((x, baseline), ch, font=font, fill=fill, anchor="ls")
+        x += font.getlength(ch) + tracking
+    return x
+
+
+def _promo_plan(x0: int, x1: int, link: str, site: str, number: str) -> dict:
+    """Fonts, wrapped lines and height of the WhatsApp banking panel."""
+    plan = {
+        "label": _font(_BOLD, 14), "head": _font(_HEAVY, 23), "body": _font(_MEDIUM, 17),
+        "site": _font(_BOLD, 18), "number": _font(_MEDIUM, 17), "caption": _font(_BOLD, 13.5),
+        "pad": _px(24), "icon": _px(56), "modules": _qr_modules(link) if link else None,
+    }
+    modules = plan["modules"]
+    plan["cell"] = max(2, _px(112) // len(modules)) if modules else 0
+    plan["qr"] = plan["cell"] * len(modules) if modules else 0
+    plan["quiet"] = 2 * plan["cell"]
+    plan["tile"] = plan["qr"] + 2 * plan["quiet"]
+    plan["text_x"] = x0 + plan["pad"] + plan["icon"] + _px(18)
+    right = x1 - plan["pad"] - (plan["tile"] + _px(24) if modules else 0)
+    width = right - plan["text_x"]
+    plan["body_lines"] = _wrap(_PROMO_BODY, plan["body"], width)
+    joined = f"{site}  \u00b7  {number}" if number else site
+    plan["contact"] = [joined] if _text_width(joined, plan["site"]) <= width else \
+        [x for x in (site, number) if x]
+    plan["text_h"] = (_cap_height(plan["label"]) + _px(15) + _cap_height(plan["head"])
+                      + _px(16) + _cap_height(plan["body"])
+                      + (len(plan["body_lines"]) - 1) * _px(25)
+                      + _px(20) + _cap_height(plan["site"])
+                      + (len(plan["contact"]) - 1) * _px(26) + _px(5))
+    plan["qr_h"] = (plan["tile"] + _px(10) + _cap_height(plan["caption"])) if modules else 0
+    plan["inner_h"] = max(plan["text_h"], plan["qr_h"], plan["icon"])
+    plan["height"] = plan["inner_h"] + 2 * plan["pad"]
+    return plan
+
+
+def _draw_promo(img: Image.Image, x0: int, top: int, x1: int, plan: dict, site: str,
+                number: str) -> None:
+    """Zitch WhatsApp banking: the app's promo, with a code to scan.
+
+    Every receipt is forwarded to someone, which makes it the one place the
+    offer reaches people who do not bank with Zitch yet. The code opens a chat
+    with the banking number with "Hi" typed; the number is printed beside it
+    for the reader who is looking at the receipt on the phone they would scan
+    with.
+    """
+    height = plan["height"]
+    ring = _ring_mask((x1 - x0, height), _px(22), max(1, _px(1.5)))
+    tone = Image.new("RGBA", ring.size, tuple(_WA_GREEN) + (0,))
+    tone.putalpha(ring.point(lambda a: int(a * 0.45)))
+    img.alpha_composite(tone, (x0, top))
+
+    inner_top = top + plan["pad"]
+    text_top = inner_top + (plan["inner_h"] - plan["text_h"]) // 2
+    icon = plan["icon"]
+    ix, iy = x0 + plan["pad"], text_top
+
+    def tile(d, s, factor):
+        (ax, ay), (bx, by) = s(ix, iy, ix + icon, iy + icon)
+        d.rounded_rectangle([ax, ay, bx, by], radius=(bx - ax) * 0.29,
+                            fill=tuple(_WA_GREEN) + (255,))
+
+    _supersampled(img, (ix, iy, ix + icon, iy + icon), tile)
+    glyph = _load_glyph(int(icon * 0.58))
+    if glyph is not None:
+        img.alpha_composite(glyph, (int(ix + (icon - glyph.width) / 2),
+                                    int(iy + (icon - glyph.height) / 2)))
+
+    d = ImageDraw.Draw(img)
+    x = plan["text_x"]
+    base = text_top + _cap_height(plan["label"])
+    _draw_tracked(d, x, base, _PROMO_LABEL, plan["label"], _WA_TEAL, _px(1.3))
+    base += _px(15) + _cap_height(plan["head"])
+    d.text((x, base), _PROMO_HEADLINE, font=plan["head"], fill=_INK_1, anchor="ls")
+    base += _px(16) + _cap_height(plan["body"])
+    for index, line in enumerate(plan["body_lines"]):
+        d.text((x, base + index * _px(25)), line, font=plan["body"], fill=_INK_3, anchor="ls")
+    base += (len(plan["body_lines"]) - 1) * _px(25) + _px(20) + _cap_height(plan["site"])
+    for line in plan["contact"]:
+        if line.startswith(site):
+            end = _draw_text(d, x, base, site, plan["site"], _TEAL_700)
+            rest = line[len(site):]
+            if rest:
+                d.text((end, base), rest, font=plan["number"], fill=_INK_3, anchor="ls")
+        else:
+            d.text((x, base), line, font=plan["number"], fill=_INK_3, anchor="ls")
+        base += _px(26)
+
+    modules = plan["modules"]
+    if not modules:
+        return
+    size = plan["tile"]
+    qx = x1 - plan["pad"] - size
+    qy = inner_top + (plan["inner_h"] - plan["qr_h"]) // 2
+
+    def white(d2, s, factor):
+        (ax, ay), (bx, by) = s(qx, qy, qx + size, qy + size)
+        d2.rounded_rectangle([ax, ay, bx, by], radius=_px(12) * factor, fill=(255, 255, 255, 255))
+
+    _supersampled(img, (qx, qy, qx + size, qy + size), white)
+    d = ImageDraw.Draw(img)
+    cell, ox, oy = plan["cell"], qx + plan["quiet"], qy + plan["quiet"]
+    for r, row in enumerate(modules):
+        for c, dark in enumerate(row):
+            if dark:
+                d.rectangle([ox + c * cell, oy + r * cell, ox + (c + 1) * cell - 1,
+                             oy + (r + 1) * cell - 1], fill=_INK_1)
+    d.text((qx + size / 2, qy + size + _px(10) + _cap_height(plan["caption"])),
+           "Scan to start", font=plan["caption"], fill=_INK_3, anchor="ms")
+
+
 def render_receipt(title: str, rows: list, ref: str, *, status: str = "Successful") -> bytes:
     """Return JPEG bytes for a receipt titled `title` with `rows` = [(label, value)].
 
     The sheet: a teal Zitch header with the receipt's title, then a white ticket
     with the amount, the status pill and the time, a tear line, and the rows as
-    `receipt_layout` arranges them. Contact details close it.
+    `receipt_layout` arranges them. Under it, Zitch WhatsApp banking with a code
+    to scan (`_draw_promo`), then where to get help.
     """
     from django.conf import settings
     from django.utils import timezone
@@ -480,8 +668,8 @@ def render_receipt(title: str, rows: list, ref: str, *, status: str = "Successfu
     sub_font = _font(_MEDIUM, 19)
     box_label = _font(_BOLD, 16)
     box_value = _font(_HEAVY, 30)
-    foot = _font(_MEDIUM, 19)
-    foot_small = _font(_MEDIUM, 17)
+    foot = _font(_MEDIUM, 17)
+    foot_small = _font(_MEDIUM, 15)
 
     W = _px(820)
     margin = _px(34)                     # canvas edge to ticket
@@ -536,8 +724,14 @@ def render_receipt(title: str, rows: list, ref: str, *, status: str = "Successfu
     box_gap = _px(14)
     body_h = sum(h + (box_gap if k == "box" else 0) for k, _l, _v, _s, h in blocks)
     card_bottom = body_top + body_h + _px(26)
-    foot_top = card_bottom + _px(40)
-    H = foot_top + _px(26) + _px(34) + _px(46)
+
+    links = getattr(settings, "ZITCH_LINKS", {}) or {}
+    site = (links.get("WEBSITE") or "https://zitch.ng").split("://", 1)[-1].rstrip("/")
+    link, number = whatsapp_start()
+    promo_top = card_bottom + _px(30)
+    promo = _promo_plan(margin, W - margin, link, site, number)
+    foot_top = promo_top + promo["height"] + _px(34)
+    H = foot_top + _cap_height(foot) + _px(24) + _cap_height(foot_small) + _px(44)
 
     # --- the sheet ------------------------------------------------------------
     img = Image.new("RGBA", (W, H), tuple(_PAPER) + (255,))
@@ -634,13 +828,15 @@ def render_receipt(title: str, rows: list, ref: str, *, status: str = "Successfu
     img.alpha_composite(texture, (margin, card_top))
     d = ImageDraw.Draw(img)
 
-    # Footer: where to get help, and a reminder to keep the receipt.
-    links = getattr(settings, "ZITCH_LINKS", {}) or {}
-    site = (links.get("WEBSITE") or "https://zitch.ng").split("://", 1)[-1].rstrip("/")
-    help_line = " · ".join(x for x in (site, links.get("SUPPORT_EMAIL", "")) if x)
+    # Zitch WhatsApp banking, then where to get help.
+    _draw_promo(img, margin, promo_top, W - margin, promo, site, number)
+    d = ImageDraw.Draw(img)
+    support = links.get("SUPPORT_EMAIL", "")
     base = foot_top + _cap_height(foot)
-    d.text((cx, base), help_line, font=foot, fill=_TEAL_700, anchor="ms")
-    d.text((cx, base + _px(34)), "Keep this receipt for your records.", font=foot_small,
+    if support:
+        d.text((cx, base), f"Need help? {support}", font=foot, fill=_INK_3, anchor="ms")
+        base += _px(24) + _cap_height(foot_small)
+    d.text((cx, base), "Keep this receipt for your records.", font=foot_small,
            fill=_INK_3, anchor="ms")
 
     buf = io.BytesIO()
