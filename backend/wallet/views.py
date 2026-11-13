@@ -1788,8 +1788,11 @@ def _find_recipient(identifier: str):
     identifier = (identifier or "").strip().lstrip("@")
     if not identifier:
         return None
+    # An unverified email is whatever its holder typed at sign-up: resolving it let
+    # anyone register someone else's address and receive transfers meant for them.
     return User.objects.filter(
-        Q(phone=identifier) | Q(username=identifier) | Q(email__iexact=identifier)
+        Q(phone=identifier) | Q(username=identifier)
+        | Q(email__iexact=identifier, email_verified=True)
     ).first()
 
 

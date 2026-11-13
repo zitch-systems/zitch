@@ -233,8 +233,20 @@ def new_device_step_up_error(user, amount) -> "str | None":
         log.warning("missing_device_header_step_up user=%s amount=%s", user.pk, amount)
         return ("For your security, verify your face before sending this much from an "
                 "unrecognised device.")
-    if KnownDevice.objects.filter(user=user, device_id=device["id"]).exists():
-        return None
+    # Sign-in records the device, so "have we seen it" was true for every device by
+    # the time it could spend, and this gate never fired. A device counts as known
+    # once it has been on the account for a day, or when it is the only device the
+    # account has ever used.
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    devices = KnownDevice.objects.filter(user=user)
+    current = devices.filter(device_id=device["id"]).first()
+    if current is not None:
+        settled = current.first_seen <= timezone.now() - timedelta(hours=24)
+        if settled or not devices.filter(first_seen__lt=current.first_seen).exists():
+            return None
     log.warning("new_device_step_up user=%s device=%s amount=%s",
                 user.pk, device["id"][:12], amount)
     return ("For your security, verify your face before sending this much from a new "

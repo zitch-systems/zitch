@@ -402,6 +402,8 @@ WA_REAUTH_IDLE_MINUTES = 0 if TESTING else int(os.environ.get("WA_REAUTH_IDLE_MI
 # channel; the notification is only ever a trigger. Blank keys => MOCK; WEMA_SIMULATION=true serves the mock
 # flow even in prod (no real money or debt). securityInfo is a per-reference
 # HMAC derived from WEMA_SECURITY_INFO, a private seed chosen by Zitch. See utility.wema.
+WEMA_CONFIRMED_PAYMENT_LEGEND = (
+    "200=success,400=failed,401=unauthorized_authentication_failed_or_invalid_api")
 WEMA = {
     "BASE_URL": os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng"),
     # Optional per-product host override for cases where Wema profiles one live
@@ -489,8 +491,13 @@ WEMA = {
     # Codes absent from the legend keep today's behaviour (PENDING, logged), and an
     # unparseable entry is dropped with an error rather than defaulting — so a typo
     # can never turn an unknown code into a settlement. See utility.wema._vas_legend.
-    "VAS_STATUS_LEGEND": os.environ.get("WEMA_VAS_STATUS_LEGEND", ""),
-    "BILLS_STATUS_LEGEND": os.environ.get("WEMA_BILLS_STATUS_LEGEND", ""),
+    # Wema's confirmed payment outcomes are the default for airtime/data and bills,
+    # so a deploy without the variables can still settle or refund a purchase. The
+    # variables override them.
+    "VAS_STATUS_LEGEND": (os.environ.get("WEMA_VAS_STATUS_LEGEND", "")
+                          or WEMA_CONFIRMED_PAYMENT_LEGEND),
+    "BILLS_STATUS_LEGEND": (os.environ.get("WEMA_BILLS_STATUS_LEGEND", "")
+                            or WEMA_CONFIRMED_PAYMENT_LEGEND),
     # Remita is its own ALAT product with its own status enum, so it gets its own
     # legend rather than borrowing the airtime one.
     "REMITA_STATUS_LEGEND": os.environ.get("WEMA_REMITA_STATUS_LEGEND", ""),

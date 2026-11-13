@@ -181,6 +181,27 @@ class NewDeviceStepUpTests(TestCase):
         remember_device(self.user, attach_device(_request(), self.user))
         self.assertIsNone(send_limit_error(self.user, Decimal("60000")))
 
+    def test_a_second_device_added_today_is_still_new(self):
+        # Sign-in records every device, so "seen before" alone let a stolen
+        # password spend at once. A second device has to have been on the account
+        # for a day.
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from accounts.models import KnownDevice
+
+        KnownDevice.objects.create(user=self.user, device_id="the-owners-old-phone")
+        KnownDevice.objects.filter(user=self.user).update(
+            first_seen=timezone.now() - timedelta(days=30))
+        self._attach()
+        remember_device(self.user, attach_device(_request(), self.user))
+        self.assertIn("verify your face", send_limit_error(self.user, Decimal("60000")))
+        KnownDevice.objects.filter(user=self.user).exclude(
+            device_id="the-owners-old-phone").update(
+            first_seen=timezone.now() - timedelta(hours=25))
+        self.assertIsNone(send_limit_error(self.user, Decimal("60000")))
+
     def test_face_verified_user_is_not_asked_again(self):
         self.user.face_verified = True
         self.user.save(update_fields=["face_verified"])
