@@ -257,7 +257,7 @@ def buycable(request):
     err = _check_pin(user, data)
     if err:
         return err
-    verified = vtu_verify_customer(CABLE_NAMES[prov].lower(), iuc)
+    verified = vtu_verify_customer(CABLE_NAMES[prov].lower(), iuc, plan_code)
     if not verified.get("success"):
         return fail(verified.get("message", "Could not verify IUC number"), status=400)
     outcome = _run_purchase(

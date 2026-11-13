@@ -51,7 +51,7 @@ class Command(BaseCommand):
                     d += 1
         for prov, plans in CABLE.items():
             for name, validity, code, price in plans:
-                CablePlan.objects.update_or_create(
+                CablePlan.objects.get_or_create(
                     cable_plan_code=code,
                     defaults={"provider": prov, "name": name, "validity": validity,
                               "price": price, "active": True},

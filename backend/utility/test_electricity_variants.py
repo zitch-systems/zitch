@@ -6,9 +6,35 @@ from django.core.management import call_command
 from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 
-from utility.models import WemaBiller
+from utility.models import CablePlan, WemaBiller
 from utility.providers import _wema_vas_route, vtu_purchase, vtu_verify_customer
 from utility.test_wema_billers import WEMA_ON
+
+
+@override_settings(WEMA=WEMA_ON)
+class CableCatalogueSyncTests(TestCase):
+    def test_sync_updates_only_the_exact_monthly_package_and_preserves_the_price(self):
+        call_command("seed_plans", stdout=StringIO())
+        with mock.patch("utility.wema.get_bills", return_value={
+                "success": True, "raw": {"result": [{"name": "Cable Tv", "billers": [
+                    {"name": "GoTV", "packages": [
+                        {"id": 12, "name": "GoTV Jolli Bouquet", "amount": 5800},
+                        {"id": 13, "name": "GoTV Max", "amount": 3950},
+                    ]},
+                    {"name": "Startimes Payments", "packages": [
+                        {"id": 21, "name": "DTT Nova Monthly (NGN1900)", "amount": 1900},
+                        {"id": 22, "name": "DTH Nova Monthly (NGN1900)", "amount": 1900},
+                    ]},
+                ]}]}}):
+            call_command("seed_wema_plans", only="cable", dry_run=True, stdout=StringIO())
+            self.assertEqual(CablePlan.objects.get(cable_plan_code="gotv-jolli").wema_code, "")
+            call_command("seed_wema_plans", only="cable", stdout=StringIO())
+
+        call_command("seed_plans", stdout=StringIO())
+        plan = CablePlan.objects.get(cable_plan_code="gotv-jolli")
+        self.assertEqual((plan.wema_code, plan.price), ("12", 5800))
+        self.assertEqual(CablePlan.objects.get(cable_plan_code="startimes-nova").wema_code, "")
+        self.assertIsNone(_wema_vas_route("dstv", {"variation_code": "gotv-jolli"}))
 
 
 def catalogue(*, category="Electricity", biller="Ikeja Electricity", packages=None):

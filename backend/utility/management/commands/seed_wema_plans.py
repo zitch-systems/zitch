@@ -8,8 +8,8 @@ optional optimisation. Electricity requires a distinct prepaid/postpaid package.
 Airtime needs no catalogue. Every live product still requires status-query access;
 catalogue mapping does not grant the bank subscription or settlement permission.
 
-Matching is best-effort: data plans are matched within a network by exact price, then
-by a normalised size/name; cable bouquets by exact price, then by a normalised name.
+Data matching is best-effort. Cable matching requires an exact subscription
+biller and an unambiguous monthly bouquet name from the bank catalogue.
 Run it with LIVE Wema keys and REVIEW the result — the ALAT catalogue field names are
 VERIFY-BEFORE-LIVE (this reads `packageCode`/`packageId`/`code`/`price`/`name` defensively).
 
@@ -64,6 +64,14 @@ def _name(row: dict) -> str:
     return ""
 
 
+_CABLE_BILLERS = {"1": "gotv", "2": "dstvsubscription", "3": "startimespayments"}
+
+
+def _cable_bouquet(name, provider):
+    name = _norm(name).removeprefix(provider)
+    return name.removesuffix("monthly").removesuffix("bouquet")
+
+
 class Command(BaseCommand):
     help = "Map Wema catalogue package IDs onto data/cable plans and electricity meter variants."
 
@@ -111,28 +119,53 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"data: {matched} plan(s) mapped{' (dry-run)' if dry else ''}"))
 
     def _sync_cable(self, dry):
-        # wema.get_bills() already flattens categories -> billers -> packages into
-        # {code, name, amount, biller, category} rows (code = the packageId PayBill
-        # wants). Scope each CablePlan's search to rows whose biller/category names
-        # the provider (DStv/GOtv/StarTimes) so an unrelated biller package with a
-        # coincidentally equal price can't be mis-mapped; fall back to the full set.
+        from django.db import transaction
+
         res = wema.get_bills()
-        rows = res.get("bills", []) or [] if res.get("success") else []
+        raw = res.get("raw") if res.get("success") is True and not res.get("mock") else None
+        categories = raw.get("result") if isinstance(raw, dict) else None
+        if not isinstance(categories, list):
+            self.stdout.write(self.style.WARNING("cable: catalogue unavailable; no plans changed"))
+            return
+
+        packages = {}
+        for category in categories:
+            if not isinstance(category, dict) or _norm(str(category.get("name", ""))) != "cabletv":
+                continue
+            for biller in category.get("billers") or []:
+                if not isinstance(biller, dict):
+                    continue
+                biller_name = _norm(str(biller.get("name", "")))
+                packages.setdefault(biller_name, []).append(biller.get("packages") or [])
+
         matched = 0
-        for plan in CablePlan.objects.all():
-            prov = _norm(plan.get_provider_display())
-            scoped = [r for r in rows
-                      if prov and (prov in _norm(r.get("biller", "")) or prov in _norm(r.get("category", "")))]
-            pool = scoped or rows
-            hit = next((r for r in pool if _price(r) == plan.price), None) \
-                or next((r for r in pool if _norm(_name(r)) == _norm(plan.name)), None)
-            code = _code(hit) if hit else ""
-            if code and plan.wema_code != code:
+        with transaction.atomic():
+            plans = CablePlan.objects.filter(active=True)
+            if not dry:
+                plans = plans.select_for_update()
+            for plan in plans:
+                provider = _norm(plan.get_provider_display())
+                name = _cable_bouquet(plan.name, provider)
+                billers = packages.get(_CABLE_BILLERS.get(plan.provider), [])
+                rows = billers[0] if len(billers) == 1 and isinstance(billers[0], list) else []
+                candidates = [row for row in rows if isinstance(row, dict)
+                              and _cable_bouquet(_name(row), provider) == name]
+                if len(candidates) != 1:
+                    self.stdout.write(self.style.WARNING(f"  cable {plan.name}: no unique package match"))
+                    continue
+                hit = candidates[0]
+                code, price = str(hit.get("id") or ""), _price(hit)
+                if (not code.isascii() or not code.isdecimal() or len(code) > 10
+                        or not 0 < int(code) <= 2_147_483_647
+                        or price is None or not price.is_finite() or not 0 < price < 100_000_000):
+                    continue
+                if (plan.wema_code, plan.price) == (code, price):
+                    continue
                 matched += 1
-                self.stdout.write(f"  cable {plan.get_provider_display():10} {plan.name:16} -> {code}")
+                self.stdout.write(f"  cable {plan.name}: package {code}, price {plan.price} -> {price}")
                 if not dry:
-                    plan.wema_code = code
-                    plan.save(update_fields=["wema_code"])
+                    plan.wema_code, plan.price = code, price
+                    plan.save(update_fields=["wema_code", "price"])
         self.stdout.write(self.style.SUCCESS(f"cable: {matched} bouquet(s) mapped{' (dry-run)' if dry else ''}"))
 
     # Exact biller identities observed in the live Electricity catalogue. A
