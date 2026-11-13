@@ -275,6 +275,8 @@ def process_inbound_message(pk: int, *, raise_errors=False) -> str:
                 reply(row.msisdn, instead)
         elif not payload.get("is_text"):
             reply(row.msisdn, media.CANNOT_READ["other"])
+        elif payload.get("list_reply"):
+            handle_inbound(row.msisdn, str(payload.get("body") or ""), list_reply=True)
         else:
             handle_inbound(row.msisdn, str(payload.get("body") or ""))
     except Exception as exc:  # noqa: BLE001 — durable retry/dead-letter boundary

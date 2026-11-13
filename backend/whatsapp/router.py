@@ -694,7 +694,8 @@ def _flow_fields(pa: PendingAction) -> dict:
             return _with_context(savings_loans.confirmation_fields(pa))
         if at == "transfer":
             fee = Decimal(str(p.get("fee") or "0"))
-            cost = f" · Bank fee {_money(fee)}" if fee > 0 else ""
+            cost = (f" · Bank fee {_money(fee)} · Total {_money(Decimal(p['amount']) + fee)}"
+                    if fee > 0 else "")
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
                 "recipient": f"To {p.get('name', 'recipient').upper()}",
@@ -1467,7 +1468,7 @@ def _handle_simulation_command(user, msisdn: str, low: str) -> None:
 # --------------------------------------------------------------------------- #
 # entry point (called by the webhook, after dedupe)
 # --------------------------------------------------------------------------- #
-def handle_inbound(msisdn: str, text: str) -> None:
+def handle_inbound(msisdn: str, text: str, *, list_reply: bool = False) -> None:
     text = (text or "").strip()
     link = active_link_for(msisdn)
     if link is None:
@@ -1538,6 +1539,12 @@ def handle_inbound(msisdn: str, text: str) -> None:
         # just died. The stray-PIN warning below is true but not the point here,
         # and it would be the last thing they read.
         return None
+    if list_reply:
+        # A row tapped on a list whose picker is gone. Every list is sent by a
+        # live picker, so its row ids ("5", "2") are that picker's - read here
+        # they would be main-menu numbers and start a different product.
+        return reply(msisdn, "⌛ That list has expired, so nothing was selected. "
+                             "Reply \"menu\" to start again.")
 
     # Idle re-auth. WhatsApp's Chat Lock guards the window and we can neither
     # require nor verify it, so this guards the thing we can: what the bot will
@@ -5176,7 +5183,25 @@ def _is_new_command(text: str) -> bool:
         return False
     if any(ch.isdigit() for ch in low) and not any(ch.isalpha() for ch in low):
         return False        # digits only - far more likely a code than a request
+    if _is_acknowledgement(low):
+        return False        # "ok", "done" - agreeing with the open card, not leaving it
     return True
+
+
+#: Words that only acknowledge. Typed with a card open they mean "got it", and
+#: reading them as a new instruction silently dropped the payment being agreed to.
+_ACK_WORDS = frozenset((
+    "ok", "okay", "okey", "oki", "okk", "k", "kk", "yes", "yeah", "yea", "yep", "yup",
+    "ya", "sure", "done", "alright", "all", "right", "fine", "thanks", "thank", "you",
+    "thx", "cool", "great", "noted", "got", "it", "good", "nice", "seen", "sharp",
+))
+
+
+def _is_acknowledgement(text: str) -> bool:
+    """A bare "ok" / "yes" / "done, thanks" (or an emoji alone): every word an
+    acknowledgement, nothing that names something to do."""
+    words = re.sub(r"[^a-z]+", " ", (text or "").lower()).split()
+    return len(words) <= 4 and all(word in _ACK_WORDS for word in words)
 
 
 #: What to tell someone who has just put a secret in their own chat history.
