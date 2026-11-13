@@ -478,8 +478,12 @@ def _auth_callback_fields(body: dict) -> tuple:
     """
     holder = _transaction_callback_data(body) or {}
 
+    top = {str(key).casefold(): value for key, value in body.items()}
+
     def pick(key: str) -> str:
-        return str(holder.get(key) or body.get(key) or "")
+        # Key spelling is matched case-insensitively at both levels: the reference
+        # already was, and a "SecurityInfo" read as absent denies every payout.
+        return str(holder.get(key) or top.get(key.casefold()) or "")
 
     return pick("transactionReference").strip(), pick("securityInfo")
 
@@ -686,7 +690,7 @@ def _transaction_callback_data(body: dict) -> dict:
                 normalized = dict(data)
                 normalized["transactionReference"] = str(data[actual]).strip()
                 for field in ("status", "transactionStatus", "transactionStan", "platformTransactionReference",
-                              "originalTxnTransactionDate", "orinalTxnTransactionDate"):
+                              "originalTxnTransactionDate", "orinalTxnTransactionDate", "securityInfo"):
                     source_key = keys.get(field.casefold())
                     if source_key is not None:
                         normalized[field] = data[source_key]

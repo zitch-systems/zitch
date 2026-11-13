@@ -2048,6 +2048,18 @@ def transfer(amount_naira, reference: str, narration: str, *, source_account: st
         return _unreachable(exc, pending=True)
 
 
+def _status_not_asked(reference: str) -> dict:
+    """The answer to a status lookup this process could not make.
+
+    A real-money deploy whose service has no bank keys (a cron or worker missing
+    its environment) has asked the bank nothing, so it knows nothing. That must
+    read as PENDING: a bare ``success: False`` is what a declined transfer looks
+    like, and the callback and poller would refund a payout the bank may have paid.
+    """
+    return {"success": False, "pending": True, "status": "PENDING", "reference": reference,
+            "message": "Bank status service is not configured"}
+
+
 def confirm_transfer_status(reference: str, *, platform_reference: str = "") -> dict:
     """Poll terminal transfer status using both references returned by ALAT.
 
@@ -2061,8 +2073,9 @@ def confirm_transfer_status(reference: str, *, platform_reference: str = "") -> 
     unbound, conflicting, or unreachable lookups remain PENDING.
     """
     if not wema_live():
-        return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS",
-                "reference": reference}
+        if _mock_blocked():
+            return _status_not_asked(reference)
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
 
     candidates = []
     for value in (reference, platform_reference):
@@ -2227,7 +2240,9 @@ def credit_wallet(amount_naira, reference: str, narration: str, *, destination_a
 def confirm_credit_status(reference: str) -> dict:
     """Poll terminal status of a FundWallet credit by our transactionReference."""
     if not wema_live():
-        return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS", "reference": reference}
+        if _mock_blocked():
+            return _status_not_asked(reference)
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
     try:
         resp = _get("credit", f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{reference}")
         data = resp.json()
