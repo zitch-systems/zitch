@@ -1664,7 +1664,7 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
     try:
         resp = _post("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
                      {"accountNumber": account_number, "from": date_from, "to": date_to,
-                      "keyword": keyword})
+                      "keyWord": keyword})
         data = resp.json()
         if not isinstance(data, dict):
             return {"success": False, "transactions": [], "message": "Request failed",
@@ -2377,7 +2377,8 @@ def purchase_data(amount_naira, reference: str, phone: str, network: str, packag
         return {"success": False, "message": "Data is temporarily unavailable"}
     try:
         body = {"transactionReference": reference, "accountNumber": src, "phoneNumber": phone,
-                "packageCode": package_code, "amount": float(amount_naira), "network": network,
+                # int32 in the bank's spec; a quoted number is refused by strict parsers.
+                "packageCode": _as_int(package_code), "amount": float(amount_naira), "network": network,
                 "securityInfo": _security_info(op="data", reference=reference, amount=amount_naira),
                 "clientId": settings.WEMA.get("CHANNEL_ID", "")}
         resp = _post("airtime", "/api/Data/Client/PurchaseData", body)

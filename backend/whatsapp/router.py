@@ -1018,10 +1018,12 @@ def _arm_confirm(pa: PendingAction, user) -> bool:
     1. A WhatsApp Flow (secure PIN pad) when configured - the PIN is typed into a
        native masked field and submitted ENCRYPTED to our endpoint, so the chat
        never carries it at all.
-    2. A single-use 6-digit SMS code (live SMS, no Flow) - the chat carries a code
-       that's worthless after one use / 5 minutes, never the PIN.
+    2. A single-use 6-digit SMS code - only where WHATSAPP_SMS_PAYMENT_CONFIRMATION
+       turns it on. The code goes to the phone this chat is already on, so it
+       proves possession of that phone and nothing else: whoever holds an
+       unlocked handset could pay up to the daily limit without the PIN.
     3. The PIN in chat only in explicit dev/test mode. Production fails closed
-       when neither secure channel is available.
+       when no secure channel is available.
 
     Whichever rung is armed, the deep-link approval (biometric in the app) is
     offered alongside it - see _approve_link_line."""
@@ -1046,7 +1048,7 @@ def _arm_confirm(pa: PendingAction, user) -> bool:
         return True
     # Checked before sending, not after: unkeyed, send_sms succeeds in mock mode, which
     # would arm this rung around a code that never left the building.
-    if sms_live():
+    if getattr(settings, "WHATSAPP_SMS_PAYMENT_CONFIRMATION", False) and sms_live():
         code = f"{secrets.randbelow(10**6):06d}"
         sent = send_sms(user.phone or "",
                         f"Zitch: {code} is your confirmation code. It expires in 5 minutes. Never share it.")

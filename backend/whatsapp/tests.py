@@ -1446,9 +1446,10 @@ class OperatorTests(TestCase):
         self.assertEqual(broadcast.count_unknown, 0)
 
 
+@override_settings(WHATSAPP_SMS_PAYMENT_CONFIRMATION=True)
 class SmsCodeConfirmTests(TestCase):
-    """With live SMS configured, money flows confirm with a SINGLE-USE 6-digit
-    code sent by SMS — the chat never carries the transaction PIN."""
+    """Where WHATSAPP_SMS_PAYMENT_CONFIRMATION allows it, money flows confirm with
+    a SINGLE-USE 6-digit code sent by SMS — the chat never carries the PIN."""
 
     def setUp(self):
         # Mirror VtuTests' setup by reusing its fixtures via a fresh instance.
@@ -1489,6 +1490,27 @@ class ProductionConfirmSafetyTests(TestCase):
         # Both halves of the premise are pinned: production, and no SMS rail to fall
         # back to. An empty key here rather than an absent one, so the test keeps
         # meaning what it says if a Termii key ever reaches the test environment.
+        TERMII={"BASE_URL": "", "API_KEY": "", "SENDER_ID": "Zitch", "CHANNEL": "dnd"},
+    )
+    def test_production_does_not_confirm_a_payment_by_sms_code_alone(self):
+        # The code goes to the phone the chat is on: with live SMS and no secure
+        # PIN screen, the payment is refused rather than confirmed without the PIN.
+        from whatsapp.router import _arm_confirm
+
+        user, _ = make_user()
+        action = PendingAction.objects.create(
+            user=user, msisdn=MSISDN, action_type="airtime", state="amount",
+            payload={"amount": "200"}, expires_at=timezone.now() + timedelta(minutes=5))
+        with patch("whatsapp.router.sms_live", return_value=True), \
+                patch("whatsapp.router.send_sms") as sms:
+            self.assertFalse(_arm_confirm(action, user))
+        sms.assert_not_called()
+        self.assertFalse(PendingAction.objects.filter(pk=action.pk).exists())
+
+    @override_settings(
+        DEBUG=False,
+        TESTING=False,
+        WHATSAPP_FLOW={"FLOW_ID": "", "PRIVATE_KEY": "", "CTA": "Confirm with PIN"},
         TERMII={"BASE_URL": "", "API_KEY": "", "SENDER_ID": "Zitch", "CHANNEL": "dnd"},
     )
     def test_production_never_falls_back_to_requesting_pin_in_chat(self):

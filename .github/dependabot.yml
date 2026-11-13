@@ -25,6 +25,21 @@ updates:
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "react"
         update-types: ["version-update:semver-major"]
+      # Expo pins every expo-* and react-native-* module to its SDK; a bump made
+      # outside `expo install` does not build (expo-router 3 -> 58 was proposed).
+      - dependency-name: "expo-*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@expo/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-native-*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@react-native-*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # NativeWind v2 needs Tailwind 3.
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "nativewind"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: pip
     directory: "/backend"

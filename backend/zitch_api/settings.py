@@ -761,12 +761,17 @@ SOCIAL_LINKS = {name: url for name, url in {
     "LinkedIn": os.environ.get("ZITCH_SOCIAL_LINKEDIN", "").strip(),
 }.items() if url}
 
+# Let a WhatsApp payment be confirmed by an SMS code when the secure PIN screen
+# cannot be sent. Off by default: the code reaches the same phone the chat is on,
+# so it shows possession of that phone alone. With it off such a payment is
+# refused and the customer is pointed at the app.
+WHATSAPP_SMS_PAYMENT_CONFIRMATION = env_bool("WHATSAPP_SMS_PAYMENT_CONFIRMATION", False)
+
 # WhatsApp Flows — the secure PIN pad. When a published Flow ID + our RSA private
 # key are set (and the WhatsApp channel is live), a money confirm sends an
 # encrypted Flow whose masked PIN field never reaches the chat; the submit hits
-# our data-exchange endpoint. Blank => the channel falls back to the single-use
-# SMS confirmation code (verify-before-live: nothing changes until Meta business
-# verification is done and these are set). The PRIVATE_KEY decrypts Meta's
+# our data-exchange endpoint. Blank => a payment is refused in chat unless
+# WHATSAPP_SMS_PAYMENT_CONFIRMATION allows the single-use SMS code. The PRIVATE_KEY decrypts Meta's
 # request; its public half is uploaded to the WABA once.
 WHATSAPP_FLOW = {
     "FLOW_ID": os.environ.get("WHATSAPP_FLOW_ID", ""),
