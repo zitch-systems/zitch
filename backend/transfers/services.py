@@ -291,6 +291,53 @@ def _note_source_restricted(user, wallet, txn, message) -> None:
           bank_message=re.sub(r"\d{4,}", "#", str(message or ""))[:120])
 
 
+def await_payout_settlement(txn, budget_seconds=None) -> None:
+    """Give a PENDING bank transfer a few seconds to reach its outcome.
+
+    The bank often answers the transfer request "processing" and confirms it
+    moments later. This watches the ledger row, which the bank's callback or the
+    poller may settle, and also asks the bank for the status itself. Only a
+    confirmed SUCCESS is acted on here; a failure or anything unclear is left to
+    the callback and the reconcile job, exactly as before. It never sends or
+    re-sends money.
+    """
+    import time
+
+    from django.conf import settings
+
+    from wallet.services import settle_payout
+
+    if budget_seconds is None:
+        budget_seconds = getattr(settings, "PAYOUT_SETTLE_WAIT_SECONDS", 0)
+    budget = max(0.0, min(float(budget_seconds or 0), 15.0))
+    if budget <= 0 or txn is None:
+        return
+    started = time.monotonic()
+    next_lookup = 1.5
+    while True:
+        txn.refresh_from_db(fields=["transaction_status", "meta"])
+        if txn.transaction_status != Transaction.PENDING:
+            return
+        elapsed = time.monotonic() - started
+        if elapsed >= budget:
+            return
+        if elapsed >= next_lookup:
+            next_lookup = elapsed + 3.0
+            try:
+                transfer_meta = (txn.meta or {}).get("wema_transfer") or {}
+                status = wema_provider.confirm_transfer_status(
+                    txn.reference,
+                    platform_reference=str(transfer_meta.get("platform_reference") or ""))
+                outcome = classify_transfer_status(
+                    (status.get("status") or "").upper(), envelope_ok=True)
+                if status.get("success") and outcome == "success":
+                    settle_payout(txn.reference)
+                    continue
+            except Exception:  # noqa: BLE001 - the reconcile job still settles it
+                log.warning("payout_settle_wait_lookup_failed ref=%s", txn.reference)
+        time.sleep(min(0.75, max(0.05, budget - elapsed)))
+
+
 def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
                    note: str = "", idempotency_key: str = "", channel: str = "",
                    fee: Decimal | None = None) -> Transaction:

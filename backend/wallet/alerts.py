@@ -90,6 +90,11 @@ def _narration_line(txn) -> str:
     """
     meta = _meta(txn)
     note = str(meta.get("note") or meta.get("narration") or "").strip()
+    recipient = str(meta.get("recipient_name") or "").strip()
+    if recipient and note.casefold() == f"transfer to {recipient}".casefold():
+        # The default narration, filled in when the customer wrote none. It says
+        # only what the "To:" line already does.
+        return ""
     return f"For: {note[:60]}\n" if note else ""
 
 
@@ -328,10 +333,12 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False):
                      txn.reference, txn.user_id)
             return {"success": False, "not_dispatched": True, "code": "no_active_link"}
         icon = "💰" if txn.direction == txn.IN else "💸"
-        caption = f"{icon} *{subject}*\n\n{body}"
+        caption = _whatsapp_caption(txn, icon, subject, body, reversal=reversal)
         result = None
         if txn.direction == txn.IN and not reversal:
             result = _whatsapp_credit_image(txn, link.wa_msisdn, caption)
+        elif not reversal and _settled_transfer(txn):
+            result = _whatsapp_transfer_image(txn, link.wa_msisdn, caption)
         if result is None:
             result = reply(link.wa_msisdn, caption)
         if isinstance(result, dict) and result.get("success") is True:
@@ -461,8 +468,86 @@ def credit_receipt_rows(txn) -> list:
     return rows
 
 
+def _whatsapp_caption(txn, icon: str, subject: str, body: str, *, reversal: bool) -> str:
+    """The alert as one WhatsApp message, with each fact said once.
+
+    The body opens with a sentence that repeats the heading ("Transfer
+    successful: ₦53.00" twice) and names the other party a second time. Here the
+    heading stands alone and the other party gets a single "To:" / "From:" line.
+    A reversal keeps its sentence: it is the explanation, not a repeat.
+    """
+    lines = body.split("\n")
+    if reversal or len(lines) < 2:
+        return f"{icon} *{subject}*\n\n{body}"
+    rest = lines[1:]
+    if not any(line.startswith(("To: ", "From: ")) for line in rest):
+        meta = _meta(txn)
+        who = " ".join(str(meta.get("recipient_name") or meta.get("counterparty")
+                           or "").split())[:120]
+        if who:
+            rest.insert(0, f"{'From' if txn.direction == txn.IN else 'To'}: {who}")
+    return f"{icon} *{subject}*\n" + "\n".join(rest)
+
+
+def _settled_transfer(txn) -> bool:
+    """A transfer out that has succeeded: the alert that should carry a receipt."""
+    service = str(getattr(txn, "service", "") or "").lower()
+    return (txn.direction == txn.OUT and "transfer" in service
+            and getattr(txn, "transaction_status", None) == txn.SUCCESS
+            and bool(_meta(txn).get("recipient_name")))
+
+
+def transfer_receipt_rows(txn) -> list:
+    """The rows of a sent transfer's receipt, from its ledger row."""
+    from whatsapp.router import _sender_rows
+
+    meta = _meta(txn)
+    rows = list(_sender_rows(txn.user))
+    rows.append(("To", str(meta.get("recipient_name") or "").upper()))
+    if meta.get("bank"):
+        rows.append(("Bank", str(meta["bank"])))
+    if meta.get("account"):
+        rows.append(("Account", str(meta["account"])))
+    rows.append(("Amount", _money(txn.amount, txn.currency)))
+    if meta.get("transfer_fee"):
+        fee = Decimal(str(meta["transfer_fee"]))
+        rows.append(("Bank fee", _money(fee, txn.currency)))
+        rows.append(("Total debited", _money(txn.amount + fee, txn.currency)))
+    note = _narration_line(txn).removeprefix("For: ").strip()
+    if note:
+        rows.append(("Narration", note))
+    rows += [("Reference", txn.reference),
+             ("Date", _alert_timestamp(txn.created, "%d %b %Y, %I:%M %p"))]
+    return rows
+
+
+def _whatsapp_transfer_image(txn, msisdn: str, caption: str) -> dict | None:
+    """The transfer receipt as an image, for a transfer the chat has not shown one
+    for: one that settled after "processing", or one made in the app."""
+    try:
+        rows = transfer_receipt_rows(txn)
+    except Exception:  # noqa: BLE001 - the text alert still goes out
+        log.exception("txn_alert_transfer_rows_failed txn=%s", txn.pk)
+        return None
+    return _whatsapp_receipt_image(txn, msisdn, caption, "Transfer receipt", rows,
+                                   f"Zitch-Receipt-{txn.reference}.jpg")
+
+
 def _whatsapp_credit_image(txn, msisdn: str, caption: str) -> dict | None:
     """Try an inline credit receipt. Fall back only before delivery or on refusal."""
+    try:
+        rows = credit_receipt_rows(txn)
+    except Exception:  # noqa: BLE001 - the receipt falls back to the bare facts
+        log.exception("txn_alert_credit_rows_failed txn=%s", txn.pk)
+        rows = [("Amount", _money(txn.amount, txn.currency)), ("Reference", txn.reference),
+                ("Date", _alert_timestamp(txn.created, "%d %b %Y, %I:%M %p"))]
+    return _whatsapp_receipt_image(txn, msisdn, caption, "Credit received", rows,
+                                   "Zitch-Credit.jpg")
+
+
+def _whatsapp_receipt_image(txn, msisdn: str, caption: str, title: str, rows: list,
+                            filename: str) -> dict | None:
+    """Send a receipt image with the alert as its caption, or None to fall back to text."""
     from whatsapp.providers import send_image_media, upload_media, wa_live
     from whatsapp.receipt import render_receipt
     from whatsapp.router import _log_out
@@ -470,14 +555,8 @@ def _whatsapp_credit_image(txn, msisdn: str, caption: str) -> dict | None:
     if not wa_live():
         return None
     try:
-        rows = credit_receipt_rows(txn)
-    except Exception:  # noqa: BLE001 - the receipt falls back to the bare facts
-        log.exception("txn_alert_credit_rows_failed txn=%s", txn.pk)
-        rows = [("Amount", _money(txn.amount, txn.currency)), ("Reference", txn.reference),
-                ("Date", _alert_timestamp(txn.created, "%d %b %Y, %I:%M %p"))]
-    try:
-        media = render_receipt("Credit received", rows, txn.reference)
-        media_id = upload_media(media, "image/jpeg", "Zitch-Credit.jpg")
+        media = render_receipt(title, rows, txn.reference)
+        media_id = upload_media(media, "image/jpeg", filename)
     except Exception:
         log.exception("txn_alert_credit_image_preparation_failed txn=%s", txn.pk)
         return None

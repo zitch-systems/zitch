@@ -408,7 +408,14 @@ def bank_transfer(request):
             reference=prior.reference if prior is not None else "",
         )
 
+    from django.conf import settings as dj_settings
+
     from wallet.services import get_or_create_wallet
+
+    from .services import await_payout_settlement
+
+    await_payout_settlement(
+        txn, min(5.0, float(getattr(dj_settings, "PAYOUT_SETTLE_WAIT_SECONDS", 0) or 0)))
     wallet = get_or_create_wallet(user)
     # The bank's transfer fee debited alongside (wallet.transfer_fees), for the receipt.
     fee = str((txn.meta or {}).get("transfer_fee") or "0.00")
