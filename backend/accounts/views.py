@@ -803,6 +803,24 @@ def verify_pin(request):
     return ok(success=True)
 
 
+def _email_change_reauth(user, data):
+    from common.http import evaluate_transaction_pin
+
+    password = data.get("password") or data.get("current_password") or ""
+    raw_pin = data.get("transaction_pin") or data.get("pin") or ""
+    if isinstance(password, str) and isinstance(raw_pin, str):
+        if password and user.check_password(password):
+            return None
+        if raw_pin.strip():
+            accepted, code, message = evaluate_transaction_pin(user, raw_pin.strip())
+            if accepted:
+                return None
+            if code == "pin_locked":
+                return fail(message, status=403, code=code)
+    return fail("Enter your current password or transaction PIN to change your email.",
+                status=403, code="reauth_required")
+
+
 @api
 @ratelimit("update_info", limit=10, window=300)
 @require_user
@@ -827,8 +845,6 @@ def update_info(request):
 
     A name-only update needs neither: it moves no trust and gates nothing.
     """
-    from common.http import evaluate_transaction_pin
-
     data = request.data
     values = [data.get(field) or "" for field in ("email", "phone", "first_name", "last_name")]
     if not all(isinstance(value, str) for value in values):
@@ -873,22 +889,10 @@ def update_info(request):
                             status=403, code="phone_change_unavailable")
             if changing_email and User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
                 return fail("That email is already in use")
-            if changing_email or changing_phone:
-                password = data.get("password") or data.get("current_password") or ""
-                raw_pin = data.get("transaction_pin") or data.get("pin") or ""
-                if not isinstance(password, str) or not isinstance(raw_pin, str):
-                    return fail("Enter your password to change your email or phone number",
-                                status=403, code="reauth_required")
-                pin = raw_pin.strip()
-                ok_pwd = bool(password) and user.check_password(password)
-                ok_pin = False
-                if not ok_pwd and pin:
-                    ok_pin, code, message = evaluate_transaction_pin(user, pin)
-                    if code == "pin_locked":
-                        return fail(message, status=403, code="pin_locked")
-                if not (ok_pwd or ok_pin):
-                    return fail("Enter your password to change your email or phone number",
-                                status=403, code="reauth_required")
+            if changing_email:
+                error = _email_change_reauth(user, data)
+                if error is not None:
+                    return error
             fields = []
             if first_name:
                 user.first_name = first_name
@@ -1195,9 +1199,13 @@ def email_verify_start(request):
         if _otp_on_cooldown(user.phone, OTP.EMAIL):
             return fail("Wait a few seconds before requesting a new email code or changing the address.",
                         status=429, code="otp_cooldown")
-        if user.email != target:
+        if target != (user.email or "").strip().lower():
+            error = _email_change_reauth(user, request.data)
+            if error is not None:
+                return error
             user.email = target
             user.save(update_fields=["email"])
+            OTP.objects.filter(phone=user.phone, used=False).update(used=True)
         OTP.objects.filter(phone=user.phone, purpose=OTP.EMAIL, used=False).update(used=True)
         code = _otp_code()
         challenge = OTP.issue(phone=user.phone, code=code, email=target, purpose=OTP.EMAIL)
@@ -1222,7 +1230,7 @@ def email_verify_start(request):
     # Dropping it here strands the customer on the email step with a 200 that the
     # app reads as a failure — and email is a Tier 1 requirement, so the whole
     # ladder stops. It has been dropped once already; leave it explicit.
-    return ok(success=True, message=f"We sent a code to {user.email}")
+    return ok(success=True, message=f"We sent a code to {target}")
 
 
 @ratelimit("otp_verify", limit=20, window=60)

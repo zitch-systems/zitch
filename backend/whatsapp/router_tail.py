@@ -182,42 +182,11 @@ def _resolve_and_confirm(pa: PendingAction, user, msisdn: str, bank) -> None:
 
 
 def _flow_pin_ok(pa: PendingAction, user, msisdn: str, text: str) -> bool:
-    """Shared confirm gate for every money flow: True if the reply is the armed
-    single-use SMS code (preferred - the chat never carries the PIN) or, when no
-    code was armed (dev/mock SMS), the transaction PIN. Sends the right message
-    (expired / locked / retry / cancel) and returns False otherwise."""
-    otp_hash = pa.payload.get("otp_hash", "")
-    if otp_hash:
-        exp = pa.payload.get("otp_exp", "")
-        expired = True
-        try:
-            expired = timezone.now() > timezone.datetime.fromisoformat(exp)
-        except (TypeError, ValueError):
-            pass
-        if expired:
-            _clear_actions(msisdn)
-            reply(msisdn, "That code has expired - cancelled for your safety. Reply \"menu\" to start over.")
-            return False
-        if check_password(text.strip(), otp_hash):
-            pa.payload.pop("otp_hash", None)   # single use - a replay can't confirm twice
-            _touch(pa, payload=pa.payload)
-            return True
-        attempts = int(pa.payload.get("pin_attempts", 0)) + 1
-        if attempts >= PIN_FLOW_ATTEMPTS:
-            _clear_actions(msisdn)
-            reply(msisdn, "Too many wrong codes. Cancelled - reply \"menu\" to start over.")
-            return False
-        pa.payload["pin_attempts"] = attempts
-        _touch(pa, payload=pa.payload)
-        reply(msisdn, "That code isn't right. Check the SMS we sent and try again, or \"cancel\".")
+    """Allow a chat PIN only in local development and tests."""
+    if pa.payload.get("app_approval_only"):
+        reply(msisdn, _confirm_prompt(pa))
         return False
-    # The PIN-from-chat fallback is re-gated HERE, not only where the rung was
-    # armed: _arm_confirm never arms it in production, but this function is the
-    # point of acceptance, and an action that reaches "pin" without an armed
-    # code on a production host (a stale row from a config flip, a future
-    # arming bug) must fail closed rather than quietly start reading PINs out
-    # of a chat that keeps them forever.
-    if not _pin_in_chat_allowed():
+    if pa.payload.get("otp_hash") or not _pin_in_chat_allowed():
         _clear_actions(msisdn)
         reply(msisdn, "For your security this needs to be confirmed in the Zitch app. "
                       "Nothing was sent - please start again.")

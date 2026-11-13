@@ -982,7 +982,7 @@ def _fresh_wallet_balance(user) -> Decimal:
 
 
 def _has_live_funds(pa: PendingAction, user, *, notify: bool = True) -> bool:
-    """Re-check funds immediately before a PIN/OTP/biometric confirmation opens."""
+    """Re-check funds immediately before a payment confirmation opens."""
     amount = _pending_spend_amount(pa)
     if amount is None:
         return True
@@ -1013,20 +1013,7 @@ def _unavailable_product_for_action(pa: PendingAction) -> str:
 
 
 def _arm_confirm(pa: PendingAction, user) -> bool:
-    """Move a money flow to its confirm step. Preference, most-secure first:
-
-    1. A WhatsApp Flow (secure PIN pad) when configured - the PIN is typed into a
-       native masked field and submitted ENCRYPTED to our endpoint, so the chat
-       never carries it at all.
-    2. A single-use 6-digit SMS code - only where WHATSAPP_SMS_PAYMENT_CONFIRMATION
-       turns it on. The code goes to the phone this chat is already on, so it
-       proves possession of that phone and nothing else: whoever holds an
-       unlocked handset could pay up to the daily limit without the PIN.
-    3. The PIN in chat only in explicit dev/test mode. Production fails closed
-       when no secure channel is available.
-
-    Whichever rung is armed, the deep-link approval (biometric in the app) is
-    offered alongside it - see _approve_link_line."""
+    """Require the secure PIN Flow or PIN-backed Zitch app approval."""
     unavailable = _unavailable_product_for_action(pa)
     if unavailable:
         _clear_actions(pa.msisdn)
@@ -1046,18 +1033,11 @@ def _arm_confirm(pa: PendingAction, user) -> bool:
         return False
     if flows_live() and _send_pin_flow(pa, user):
         return True
-    # Checked before sending, not after: unkeyed, send_sms succeeds in mock mode, which
-    # would arm this rung around a code that never left the building.
-    if getattr(settings, "WHATSAPP_SMS_PAYMENT_CONFIRMATION", False) and sms_live():
-        code = f"{secrets.randbelow(10**6):06d}"
-        sent = send_sms(user.phone or "",
-                        f"Zitch: {code} is your confirmation code. It expires in 5 minutes. Never share it.")
-        if sent.get("success"):
-            pa.payload["otp_hash"] = make_password(code)
-            pa.payload["otp_exp"] = (timezone.now() + timedelta(minutes=5)).isoformat()
-            _touch(pa, state="pin", payload=pa.payload)
-            return True
-    if settings.DEBUG or getattr(settings, "TESTING", False):
+    if _pin_in_chat_allowed():
+        _touch(pa, state="pin", payload=pa.payload)
+        return True
+    if _approve_url(pa):
+        pa.payload["app_approval_only"] = True
         _touch(pa, state="pin", payload=pa.payload)
         return True
     # Never ask a production user to disclose their permanent transaction PIN
@@ -1071,15 +1051,9 @@ def _arm_confirm(pa: PendingAction, user) -> bool:
 def _confirm_prompt(pa: PendingAction) -> str:
     if pa.state == "blocked":
         return "Secure confirmation is temporarily unavailable. Please try this payment again shortly or contact Zitch support."
-    has_app = _has_app_session(pa.user)
-    if pa.payload.get("otp_hash"):
-        code_line = ("🔐 Or enter the *6-digit code* we just sent you by SMS, or reply \"cancel\". "
-                     "(Never type your PIN here.)") if has_app else \
-                    ("🔐 Enter the *6-digit code* we just sent you by SMS, or reply \"cancel\". "
-                     "(Never type your PIN here.)")
-        if has_app:
-            return f"{_approve_link_line(pa, primary=True)}\n\n{code_line}"
-        return code_line + _approve_link_line(pa, primary=False)
+    if pa.payload.get("app_approval_only"):
+        return (f"🔐 Open the Zitch app to confirm securely:\n{_approve_url(pa)}\n\n"
+                'Or reply "cancel".')
     if pa.state == FLOW_PIN_STATE:
         # The secure Flow is already open and carries its own confirm button, so
         # this line must NOT restate the ask. It used to fall through to the
@@ -1108,8 +1082,7 @@ def _send_confirm(pa: PendingAction, msisdn: str, body: str, logo: str = "") -> 
     unactionable, with the real one scrolled above it - and the second card
     invited a tap it could not service. One PIN request, one card.
 
-    The chat card is still the right answer on every other rung: an SMS code and
-    the dev/test PIN prompt have no card of their own, so this IS their card.
+    App approval and the dev/test PIN prompt use this chat card.
     """
     if pa.state == FLOW_PIN_STATE:
         return None
@@ -1284,7 +1257,7 @@ def _channel_linked(user, msisdn: str) -> bool:
 
 
 #: States in which a payment is armed and waiting for the customer to authorise
-#: it - the chat PIN/SMS-code step, and the secure Flow's PIN pad.
+#: it through app approval, the secure PIN Flow, or a local test PIN.
 _AWAITING_PIN_STATES = {"pin", FLOW_PIN_STATE}
 
 
@@ -3435,7 +3408,7 @@ def _kyc_send_email_code(pa: PendingAction, user, msisdn: str) -> None:
                              "the code here in the chat. Reply *8* to try again in a moment.")
     _touch(pa, state="email", payload=pa.payload)
     reply(msisdn, f"📧 We sent a 6-digit code to *{user.email}*. Enter it here. "
-                  "(Reply *resend* for a new one, or *change* to use a different address.)")
+                  "(Reply *resend* for a new one.)")
 
 
 # --------------------------------------------------------------------------- #
@@ -3458,12 +3431,15 @@ def kyc_flow_email_address(pa: PendingAction, email: str) -> tuple[str, str]:
         _clear_actions(pa.msisdn)
         reply(pa.msisdn, rail_error)
         return "stop", "Email verification is unavailable right now - see the chat."
-    changed = str(user.email or "").strip().lower() != email
-    user.email = email
-    if changed:
-        # A verified flag belongs to one inbox, not its replacement.
-        user.email_verified = False
-    user.save(update_fields=["email", "email_verified"] if changed else ["email"])
+    with db_transaction.atomic():
+        user = User.objects.select_for_update().get(pk=user.pk)
+        current = (user.email or "").strip().lower()
+        if current and current != email:
+            return "retry", "To change the email on your account, use your security details in the Zitch app."
+        if not current:
+            user.email = email
+            user.email_verified = False
+            user.save(update_fields=["email", "email_verified"])
     if not _kyc_mail_code(pa, user):
         _clear_actions(pa.msisdn)
         reply(pa.msisdn, "⚠️ We couldn't send the email just now. Please try again shortly.")
@@ -3657,16 +3633,22 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return reply(msisdn, "That doesn't look like an email address. Enter it like *name@example.com*.")
         if User.objects.filter(email__iexact=email).exclude(pk=user.pk).exists():
             return reply(msisdn, "That email is already on another Zitch account. Enter a different one.")
-        user.email = email
-        user.save(update_fields=["email"])
+        with db_transaction.atomic():
+            user = User.objects.select_for_update().get(pk=user.pk)
+            current = (user.email or "").strip().lower()
+            if current and current != email:
+                return reply(msisdn, "To change your email, verify your security details in the Zitch app.")
+            if not current:
+                user.email = email
+                user.email_verified = False
+                user.save(update_fields=["email", "email_verified"])
         return _kyc_send_email_code(pa, user, msisdn)
 
     if state == "email":
         if low == "resend":
             return _kyc_send_email_code(pa, user, msisdn)
         if low == "change":
-            _touch(pa, state="email_address", payload=pa.payload)
-            return reply(msisdn, "What's the correct *email address*?")
+            return reply(msisdn, "To change your email, verify your security details in the Zitch app.")
         if not re.fullmatch(r"\d{6}", val):
             return reply(msisdn, "Enter the 6-digit code from the email, or reply *resend*.")
         status, message = kyc_flow_email_code(pa, val)

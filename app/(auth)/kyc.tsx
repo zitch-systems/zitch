@@ -98,6 +98,9 @@ const Kyc = () => {
   const [email, setEmail] = useState('');
   const [emailOtp, setEmailOtp] = useState('');
   const [emailSent, setEmailSent] = useState(false);
+  const [emailProof, setEmailProof] = useState('');
+  const [emailProofIsPin, setEmailProofIsPin] = useState(false);
+  const [emailProofRequired, setEmailProofRequired] = useState(false);
   const [bvnOtp, setBvnOtp] = useState('');
   const [bvnSent, setBvnSent] = useState(false);
   const [bvnTrackingId, setBvnTrackingId] = useState('');
@@ -232,6 +235,7 @@ const Kyc = () => {
     setMethod('menu');
     setBvnSent(false);
     setEmail(''); setEmailOtp(''); setEmailSent(false);
+    setEmailProof(''); setEmailProofRequired(false); setEmailProofIsPin(false);
     setBvnTrackingId(''); setBvnOtpDestination('');
     setBvnDeliveryNotice('');
     setNinSent(false);
@@ -267,14 +271,22 @@ const Kyc = () => {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target) || !beginAction()) return;
     const isCurrent = bindFlow();
     try {
-      const res = await kycService.startEmail(target);
+      const proof = emailProof
+        ? (emailProofIsPin ? { transaction_pin: emailProof } : { current_password: emailProof })
+        : undefined;
+      const res = await kycService.startEmail(target, proof);
       if (!isCurrent()) return;
       if (res.success) {
         setEmail(target);
         setEmailOtp('');
         setEmailSent(true);
+        setEmailProof('');
+        setEmailProofRequired(false);
         notify('Email code sent', res.message || `Enter the code sent to ${target}.`, 'success');
-      } else notify('Could not send code', res.message || 'Check the email address and try again.');
+      } else {
+        if (res.code === 'reauth_required' || res.code === 'pin_locked') setEmailProofRequired(true);
+        notify('Could not send code', res.message || 'Check the email address and try again.');
+      }
     } catch { if (isCurrent()) notify('Could not send code', 'Check your connection and try again.'); }
     finally { endAction(isCurrent); }
   };
@@ -835,6 +847,19 @@ const Kyc = () => {
               <>
                 <Field editable={!busy} label="Email address" autoCorrect={false} autoComplete="email" placeholder="you@example.com" keyboardType="email-address" autoCapitalize="none"
                   value={email || status?.email || ''} onChangeText={setEmail} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
+                {emailProofRequired && (
+                  <>
+                    <Field editable={!busy} label={emailProofIsPin ? 'Transaction PIN' : 'Current password'}
+                      secureTextEntry autoCapitalize="none" autoCorrect={false}
+                      keyboardType={emailProofIsPin ? 'number-pad' : 'default'}
+                      value={emailProof} onChangeText={setEmailProof} />
+                    <Tap disabled={busy} onPress={() => { setEmailProof(''); setEmailProofIsPin(!emailProofIsPin); }}>
+                      <Text style={{ color: c.brand, fontFamily: font.semibold }}>
+                        {emailProofIsPin ? 'Use current password' : 'Use transaction PIN'}
+                      </Text>
+                    </Tap>
+                  </>
+                )}
                 <View style={{ height: 22 }} />
                 <Btn label={busy ? 'Sending…' : 'Send email code'} disabled={busy || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((email || status?.email || '').trim())} onPress={startEmail} />
               </>

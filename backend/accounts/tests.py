@@ -548,15 +548,19 @@ class KycTierTests(TestCase):
         self.assertEqual(body["tier"], 1)
 
     def test_email_can_be_set_while_unverified(self):
-        # A blank or mistyped address must not strand the account below Tier 1:
-        # start() accepts a replacement for as long as the email is unverified.
+        # A missing email still has a recovery path through the account password.
         self.user.email, self.user.email_verified = "", False
-        self.user.save(update_fields=["email", "email_verified"])
+        self.user.set_password("Passw0rd123!")
+        self.user.save(update_fields=["email", "email_verified", "password"])
         res, body = self.post("/api/email/verify/start/", {"access_token": self.token})
         self.assertEqual(res.status_code, 400)  # nothing on file, none supplied
+        res, body = self.post("/api/email/verify/start/",
+                              {"access_token": self.token, "email": "Ada.New@Zitch.test"})
+        self.assertEqual((res.status_code, body["code"]), (403, "reauth_required"))
         with patch("accounts.views._otp_code", return_value="909090"):
             res, body = self.post("/api/email/verify/start/",
-                                  {"access_token": self.token, "email": "Ada.New@Zitch.test"})
+                                  {"access_token": self.token, "email": "Ada.New@Zitch.test",
+                                   "current_password": "Passw0rd123!"})
         self.assertEqual(res.status_code, 200)
         self.user.refresh_from_db()
         self.assertEqual(self.user.email, "ada.new@zitch.test")

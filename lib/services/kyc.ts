@@ -124,7 +124,8 @@ export const classifyKycResponse = (response: {
 
 export const kycService = {
   getStatus: () => apiJson<KycStatus>(EP.kyc.status),
-  startEmail: (email: string) => apiJson<KycStatus>(EP.auth.emailVerifyStart, { email }),
+  startEmail: (email: string, proof?: { current_password?: string; transaction_pin?: string }) =>
+    apiJson<KycStatus>(EP.auth.emailVerifyStart, { email, ...proof }),
   confirmEmail: (otp: string) => apiJson<KycStatus>(EP.auth.emailVerifyConfirm, { otp }),
   startBvn: (bvn: string) => apiJson<KycStatus>(EP.kyc.bvnStart, { bvn }),
   confirmBvn: (trackingId: string, otp: string) =>

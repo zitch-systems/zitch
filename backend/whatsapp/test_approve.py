@@ -233,10 +233,10 @@ class HandoffSurfaceTests(TestCase):
         from .router import _confirm_prompt
 
         pa = _armed_transfer(self.user, state="pin")
-        pa.payload["otp_hash"] = "x"
+        pa.payload["app_approval_only"] = True
         prompt = _confirm_prompt(pa)
         self.assertIn("https://api.zitch.test/wa/approve/", prompt)
-        self.assertIn("fingerprint or Face ID", prompt)
+        self.assertIn("Open the Zitch app", prompt)
 
     def test_the_bounce_page_forwards_into_the_app_and_shows_nothing(self):
         """Unauthenticated by design, so it must render no amount, recipient or
@@ -315,30 +315,21 @@ class BiometricPrimaryTests(TestCase):
         self.assertIn("Have the Zitch app?", body)
         self.assertEqual(kwargs.get("cta"), "")
 
-    def test_the_sms_rung_leads_with_biometric_for_an_app_customer(self):
+    def test_app_only_fallback_prompts_for_secure_approval(self):
         from whatsapp.router import _confirm_prompt
 
         self._give_app()
         pa = _armed_transfer(self.user, state="pin")
-        pa.payload["otp_hash"] = "x"
+        pa.payload["app_approval_only"] = True
         prompt = _confirm_prompt(pa)
-        self.assertLess(prompt.find("fingerprint or Face ID"), prompt.find("6-digit code"))
-        self.assertIn("Or enter the *6-digit code*", prompt)
-
-    def test_the_sms_rung_stays_code_first_without_the_app(self):
-        from whatsapp.router import _confirm_prompt
-
-        pa = _armed_transfer(self.user, state="pin")
-        pa.payload["otp_hash"] = "x"
-        prompt = _confirm_prompt(pa)
-        self.assertTrue(prompt.startswith("🔐 Enter the *6-digit code*"))
-        self.assertIn("Have the Zitch app?", prompt)
-
+        self.assertIn("Open the Zitch app", prompt)
+        self.assertIn("/wa/approve/", prompt)
+        self.assertNotIn("6-digit code", prompt)
 
 class HealthFlowReadinessTests(TestCase):
     """`whatsapp_live` true with `whatsapp_flow_ready` false is the difference
     between a PIN typed into a masked field and submitted encrypted, and the
-    channel quietly falling back to an SMS code. Nothing else reported it, and
+    channel requiring app approval instead. Nothing else reported it, and
     /healthz is the only reading an operator can take without a login."""
 
     def test_health_reports_whether_the_secure_pin_flow_is_armed(self):
