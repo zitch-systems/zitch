@@ -389,13 +389,14 @@ class RetiredRailRequeryTests(TestCase):
         status.assert_called_once()
 
     def test_legacy_pending_row_without_type_requeries_by_service(self):
-        from wallet.models import Transaction
+        from wallet.services import debit
+        from wallet.tests import make_user
 
-        txn = self._pending(None)
+        user, _ = make_user("08044440010", "requery@zitch.app", balance="5000", tier=3)
         for service, kind in (("Cable — DStv", "bill"), ("Data MTN", "data"),
                               ("Remita RRR", "remita")):
             with self.subTest(service=service), \
                     mock.patch("utility.wema.vas_status", return_value={"pending": True}) as status:
-                Transaction.objects.filter(pk=txn.pk).update(service=service, meta={"reconcile": True})
+                txn = debit(user, Decimal("300"), service, meta={"reconcile": True})
                 P.vtu_requery(txn.reference)
                 status.assert_called_once_with(txn.reference, kind)
