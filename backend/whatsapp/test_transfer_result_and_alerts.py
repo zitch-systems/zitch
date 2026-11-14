@@ -175,7 +175,10 @@ class StatementRequestTests(TestCase):
                 patch.object(wema, "_is_empty_history_response", return_value=False):
             wema.get_transactions("0458386712", "2026-11-13", "2026-11-14")
             wema.get_transactions("0458386712", "2026-11-13", "2026-11-14", "rent")
-        first, second = (call.args[2] for call in post.call_args_list)
-        self.assertNotIn("keyWord", first)
-        self.assertNotIn("keyword", first)
-        self.assertEqual(second["keyWord"], "rent")
+        bodies = [call.args[2] for call in post.call_args_list]
+        # A plain read never carries the field, in either spelling or empty.
+        self.assertNotIn("keyWord", bodies[0])
+        self.assertTrue(all("keyword" not in body for body in bodies))
+        self.assertTrue(all(body.get("keyWord", "rent") == "rent" for body in bodies))
+        # A real search does.
+        self.assertEqual(bodies[-1]["keyWord"], "rent")
