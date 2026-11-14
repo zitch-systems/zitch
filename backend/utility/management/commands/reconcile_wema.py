@@ -298,8 +298,30 @@ class Command(BaseCommand):
                     f"credits={digest['credits']} newest={digest['newest']} today={today}")
                 window_logged = True
 
+        def probe_history(wallet):
+            # One account, every spelling of `to`, once per run: which of them
+            # returns today's rows. The reads that follow use the best one.
+            try:
+                found = wema.probe_history_to_forms(
+                    wallet.account_number, (today - timedelta(days=1)).isoformat(),
+                    today.isoformat())
+            except Exception:  # noqa: BLE001 - a diagnostic must not stop the sweep
+                log.exception("wema_history_probe_failed wallet=%s", wallet.pk)
+                return
+            for entry in found:
+                self.stdout.write(
+                    "transhistoryV2 probe: "
+                    f"to={entry['form']} ok={entry['ok']} http={entry['http_status']} "
+                    f"rows={entry['rows']} credits={entry['credits']} "
+                    f"newest={entry['newest'] or 'none'} "
+                    f"({entry.get('newest_transaction_date') or '-'}; "
+                    f"{entry.get('newest_kind') or '-'}) today={today}"
+                    f"{' <- used' if entry.get('chosen') else ''}")
+
         for wallet in wema_provisioned_wallets():
             scanned += 1
+            if scanned == 1:
+                probe_history(wallet)
             if wallet.pk in pending_address_wallets:
                 from wallet.address_verification import refresh_address_verification
 
