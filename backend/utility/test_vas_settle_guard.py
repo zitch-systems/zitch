@@ -30,7 +30,8 @@ _KEYED = {"BASE_URL": "https://apiplayground.alat.ng", "CHANNEL_ID": "chan-1",
           "KEYS": {"wallet": "subkey", "airtime": "airkey"},
           "SOURCE_ACCOUNT": "0100000001", "SECURITY_INFO": "sec", "SIMULATION": False}
 _AIRTIME_LEGEND = {**_KEYED, "VAS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
-_BILLS_LEGEND = {**_KEYED, "BILLS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
+_BILLS_LEGEND = {**_KEYED, "CALLBACK_TOKEN": "test-token", "CALLBACK_ENFORCE_IPS": True,
+                 "CALLBACK_IPS": ["135.236.18.76"], "AUTH_REQUIRE_SECURITY_INFO": True, "BILLS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
 _REMITA_KEYED = {
     **_KEYED,
     "KEYS": {**_KEYED["KEYS"], "remita": "remita-key"},
@@ -62,8 +63,7 @@ class CanSettleTests(SimpleTestCase):
     @override_settings(WEMA={**_AIRTIME_LEGEND, "BILLS_STATUS_LEGEND": _BILLS_LEGEND["BILLS_STATUS_LEGEND"]})
     def test_live_status_refusal_blocks_each_retained_product_despite_valid_legend(self):
         self.entitlement.return_value = (False, "status-query subscription unavailable")
-        for product, status_product in (("airtime", "airtime"), ("data", "airtime"),
-                                        ("bill", "bills"), ("bills", "bills")):
+        for product, status_product in (("airtime", "airtime"), ("data", "airtime")):
             with self.subTest(product=product):
                 self.assertEqual(P.vas_can_settle(product),
                                  (False, "status-query subscription unavailable"))
@@ -87,6 +87,14 @@ class CanSettleTests(SimpleTestCase):
             self.assertTrue(P.vas_can_settle("bill")[0])
 
     @override_settings(WEMA=_AIRTIME_LEGEND)
+    @override_settings(WEMA=_BILLS_LEGEND)
+    def test_client_bills_do_not_require_pool_status_access(self):
+        self.entitlement.return_value = (False, "not profiled")
+        self.assertEqual(P.vas_can_settle("bill"), (True, ""))
+        self.entitlement.assert_not_called()
+        with override_settings(WEMA={**_BILLS_LEGEND, "CALLBACK_ENFORCE_IPS": False}):
+            self.assertFalse(P.vas_can_settle("bill")[0])
+
     def test_data_settles_against_the_airtime_legend(self):
         # Data requeries the airtime status endpoint with transactionType=2, so it is
         # the airtime legend that decodes it — not a legend of its own.
@@ -253,8 +261,9 @@ class RefusalRefundsTests(TestCase):
                 run_provider_purchase(self.user, Decimal("500"), "Electricity — Ikeja", {}, interrupted)
         txn = Transaction.objects.get(user=self.user, transaction_status=Transaction.PENDING)
         with mock.patch("utility.wema.vas_status", return_value={"pending": True}) as status:
-            P.vtu_requery(txn.reference)
-        status.assert_called_once_with(txn.reference, "bill")
+            result = P.vtu_requery(txn.reference)
+        status.assert_not_called()
+        self.assertEqual(result["status"], "AWAITING_BANK_CALLBACK")
 
     @override_settings(WEMA=_AIRTIME_LEGEND)
     def test_second_guard_refunds_if_status_access_disappears_after_reservation(self):
@@ -398,5 +407,9 @@ class RetiredRailRequeryTests(TestCase):
             with self.subTest(service=service), \
                     mock.patch("utility.wema.vas_status", return_value={"pending": True}) as status:
                 txn = debit(user, Decimal("300"), service, meta={"reconcile": True})
-                P.vtu_requery(txn.reference)
-                status.assert_called_once_with(txn.reference, kind)
+                result = P.vtu_requery(txn.reference)
+                if kind == "bill":
+                    status.assert_not_called()
+                    self.assertTrue(result["pending"])
+                else:
+                    status.assert_called_once_with(txn.reference, kind)
