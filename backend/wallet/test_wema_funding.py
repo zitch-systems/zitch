@@ -439,6 +439,27 @@ class WemaAlatFundingTests(TestCase):
         self.assertEqual(body["transactions"][0]["reference"], "D1")
         self.assertTrue(body["transactions"][0]["is_credit"])
 
+    def test_statement_keeps_to_the_dates_asked_for(self):
+        # The bank is asked a week past `to`. A row that happened after `to` is
+        # left out; a Saturday deposit the bank dated on Monday stays in.
+        w = Wallet.objects.get(user=self.user)
+        w.account_number = "0155500011"
+        w.save(update_fields=["account_number"])
+        rows = [
+            {"referenceId": "SAT", "amount": "21000", "creditType": "Credit", "status": "Default",
+             "date": "2026-11-16T00:00:00", "transactionDate": "14 Nov 2026"},
+            {"referenceId": "LATER", "amount": "50", "creditType": "Debit", "status": "Default",
+             "date": "2026-11-17T09:00:00", "transactionDate": "17 Nov 2026"},
+            {"referenceId": "FRI", "amount": "2000", "creditType": "Credit", "status": "Default",
+             "date": "2026-11-13T18:52:48", "transactionDate": "13 Nov 2026"},
+        ]
+        with patch("utility.wema.get_transactions",
+                   return_value={"success": True, "transactions": rows}) as history:
+            r = self._post("/api/wallet/statement/", {"from": "2026-11-13", "to": "2026-11-14"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(history.call_args.args[1:], ("2026-11-13", "2026-11-14"))
+        self.assertEqual([row["reference"] for row in r.json()["transactions"]], ["SAT", "FRI"])
+
     def test_statement_needs_account(self):
         r = self._post("/api/wallet/statement/", {})
         self.assertEqual(r.status_code, 404)

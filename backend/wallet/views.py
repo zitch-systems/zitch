@@ -1608,7 +1608,7 @@ def wema_statement(request):
     (defaults to the last 30 days). Distinct from the Zitch ledger history — this is
     the raw bank-account movement."""
     import re
-    from datetime import timedelta
+    from datetime import date, timedelta
 
     from django.utils import timezone
 
@@ -1633,8 +1633,18 @@ def wema_statement(request):
     res = wema_provider.get_transactions(wallet.account_number, date_from, date_to)
     if not res.get("success"):
         return fail(res.get("message", "Couldn't fetch your statement right now"), status=502)
+    # The bank is asked a week past `to` so that a deposit it dates on its next
+    # business day is not missed. Rows that happened after `to` are not part of
+    # the statement the customer asked for.
+    try:
+        last_day = date.fromisoformat(date_to)
+    except ValueError:
+        last_day = None
     rows = []
     for tx in res.get("transactions", []) or []:
+        day = wema_provider.transaction_day(tx)
+        if last_day is not None and day is not None and day > last_day:
+            continue
         n = wema_provider.normalize_transaction(tx)
         rows.append({
             "reference": n["reference"],

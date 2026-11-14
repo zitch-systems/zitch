@@ -286,9 +286,10 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(mock_post.call_args.kwargs["json"], {
             "accountNumber": "0410530975",
             "from": "2026-07-01",
-            # The day after: `to` is an instant, and the statement must include
-            # the whole of 20 August (utility/test_history_window.py).
-            "to": "2026-08-21",
+            # A week after: `to` is an instant, the statement must include the
+            # whole of 20 August, and the bank dates a weekend transaction on
+            # its next business day (utility/test_history_window.py).
+            "to": "2026-08-27",
             "keyWord": "payment",
         })
         headers = mock_post.call_args.kwargs["headers"]

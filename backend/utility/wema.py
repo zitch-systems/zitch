@@ -1774,15 +1774,22 @@ def _history_is_incomplete(containers: list[dict], row_count: int) -> bool:
 # asks all of them on each run (probe_history_to_forms), the one whose answer
 # reaches furthest is remembered, and every other read uses it first. The bare
 # date stays in the list, so the worst case is what it always was.
+#   week-ahead   seven days on, asked first. The bank dates a transaction made
+#                after its end of day, or at a weekend, on its next business
+#                day: on Saturday 14 November 2026 a N21,000 deposit came back
+#                dated Monday 16 November (`transactionDate` 14 Nov), so every
+#                window ending on the Saturday or Sunday missed it. A week
+#                covers a weekend and a public holiday after it. Asked first
+#                because it holds everything the narrower ones do, so the
+#                worker's minute poll, a balance check and a notification find
+#                such a deposit at once, not after the next reconcile probe.
+#                Readers that must stay inside their dates (a customer's
+#                statement, the evidence report) drop the later rows
+#                themselves, by transaction_day.
 #   next-day     the following date, i.e. up to the first instant of tomorrow
 #   end-of-day   the same date at 23:59:59
 #   now          the current time in Lagos (only when the day is today)
 #   now-utc      the current time in UTC, marked Z (only when the day is today)
-#   week-ahead   seven days on. A bank dates a transaction made after its end of
-#                day, or at a weekend, on its next business day: on Friday 13
-#                November 2026 every transaction after 18:58 was missing from
-#                every window that ended on the Saturday or the Sunday. A
-#                week covers a weekend and a public holiday after it.
 #   plain        the bare date
 _HISTORY_TO_FORM_KEY = "wema:history:to-form"
 _HISTORY_TO_PROVEN_KEY = "wema:history:to-form-proven"
@@ -1803,15 +1810,53 @@ def _history_to_values(date_to: str) -> list[tuple[str, str]]:
         day = date.fromisoformat(text)
     except ValueError:
         return [("as-given", date_to)]
-    values = [("next-day", (day + timedelta(days=1)).isoformat()),
+    values = [("week-ahead", (day + timedelta(days=7)).isoformat()),
+              ("next-day", (day + timedelta(days=1)).isoformat()),
               ("end-of-day", f"{text}T23:59:59")]
     now = timezone.localtime()
     if day == now.date():
         values.append(("now", now.strftime("%Y-%m-%dT%H:%M:%S")))
         values.append(("now-utc", now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")))
-    values.append(("week-ahead", (day + timedelta(days=7)).isoformat()))
     values.append(("plain", text))
     return values
+
+
+def transaction_day(tx) -> "date | None":
+    """The calendar day a statement row's money moved, or None.
+
+    `transactionDate` ("14 Nov 2026") is preferred because `date` can be the
+    bank's business date instead: a Saturday deposit comes back dated the
+    Monday after. `date` is used when `transactionDate` is missing or unreadable.
+    """
+    from datetime import datetime as _datetime
+
+    from django.utils import timezone
+    from django.utils.dateparse import parse_date, parse_datetime
+
+    if not isinstance(tx, dict):
+        return None
+    for key in ("transactionDate", "date"):
+        raw = str(tx.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            moment = parse_datetime(raw)
+        except ValueError:
+            moment = None
+        if moment is not None:
+            return (timezone.localtime(moment) if timezone.is_aware(moment) else moment).date()
+        try:
+            day = parse_date(raw)
+        except ValueError:
+            day = None
+        if day is not None:
+            return day
+        for fmt in ("%d %b %Y", "%d %B %Y"):
+            try:
+                return _datetime.strptime(raw, fmt).date()
+            except ValueError:
+                continue
+    return None
 
 
 def _history_note(key: str, value=None, timeout: int = 3600):
