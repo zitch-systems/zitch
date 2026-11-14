@@ -79,18 +79,19 @@ class StatementWindowTests(_Base):
 
     def test_the_bare_date_is_the_last_resort(self):
         with patch("utility.wema.requests.post",
-                   side_effect=[_resp(REFUSED, 400), _resp(REFUSED, 422), _resp(OK)]) as post:
+                   side_effect=[_resp(REFUSED, 400), _resp(REFUSED, 422),
+                                _resp(REFUSED, 400), _resp(OK)]) as post:
             result = wema.get_transactions("0458386712", "2026-07-19", "2026-07-20")
         self.assertTrue(result["success"])
         self.assertEqual(result["to_form"], "plain")
         self.assertEqual(self._asked(post),
-                         ["2026-07-21", "2026-07-20T23:59:59", "2026-07-20"])
+                         ["2026-07-21", "2026-07-20T23:59:59", "2026-07-27", "2026-07-20"])
 
     def test_a_refusal_of_everything_remembers_nothing(self):
         with patch("utility.wema.requests.post", return_value=_resp(REFUSED, 400)) as post:
             result = wema.get_transactions("0458386712", "2026-07-19", "2026-07-20")
         self.assertFalse(result["success"])
-        self.assertEqual(len(post.call_args_list), 3)
+        self.assertEqual(len(post.call_args_list), 4)
         self.assertIsNone(cache.get(wema._HISTORY_TO_FORM_KEY))
 
     def test_an_outage_or_a_sign_in_failure_is_not_retried_another_way(self):
@@ -154,27 +155,30 @@ class TodayTests(_Base):
             ("end-of-day", "2026-07-20T23:59:59"),
             ("now", "2026-07-20T03:31:07"),
             ("now-utc", "2026-07-20T02:31:07Z"),
+            ("week-ahead", "2026-07-27"),
             ("plain", "2026-07-20"),
         ])
 
     def test_another_day_does_not(self):
         self.assertEqual([name for name, _ in wema._history_to_values("2026-07-19")],
-                         ["next-day", "end-of-day", "plain"])
+                         ["next-day", "end-of-day", "week-ahead", "plain"])
 
     def test_the_probe_prefers_the_spelling_that_reaches_furthest(self):
         # Tomorrow's date and end-of-day still end on yesterday's row; "now" in
         # Lagos time returns this morning's deposit. That one is used from then on.
-        answers = [_resp(STALE), _resp(STALE), _resp(OK), _resp(REFUSED, 400), _resp(STALE)]
+        answers = [_resp(STALE), _resp(STALE), _resp(OK), _resp(REFUSED, 400), _resp(STALE),
+                   _resp(STALE)]
         with patch("utility.wema.requests.post", side_effect=answers) as post:
             found = wema.probe_history_to_forms("0458386712", "2026-07-19", "2026-07-20")
         self.assertEqual(self._asked(post), [
             "2026-07-21", "2026-07-20T23:59:59", "2026-07-20T03:31:07",
-            "2026-07-20T02:31:07Z", "2026-07-20"])
+            "2026-07-20T02:31:07Z", "2026-07-27", "2026-07-20"])
         self.assertEqual([(e["form"], e["ok"], e["rows"], e["newest"]) for e in found], [
             ("next-day", True, 1, "2026-07-19T18:52:00"),
             ("end-of-day", True, 1, "2026-07-19T18:52:00"),
             ("now", True, 1, "2026-07-20T00:10:00"),
             ("now-utc", False, 0, ""),
+            ("week-ahead", True, 1, "2026-07-19T18:52:00"),
             ("plain", True, 1, "2026-07-19T18:52:00"),
         ])
         self.assertEqual([e["form"] for e in found if e.get("chosen")], ["now"])
@@ -222,3 +226,33 @@ class WindowDigestTests(SimpleTestCase):
 
         self.assertEqual(history_window_digest({}, []),
                          {"to_form": "as-given", "rows": 0, "credits": 0, "newest": "none"})
+
+
+# Saturday 14 November 2026, late evening in Lagos.
+SATURDAY = datetime(2026, 11, 14, 22, 30, 0, tzinfo=LAGOS)
+FRIDAY_ROW = {**ROW, "referenceId": "R-FRI", "rrn": "R-FRI", "date": "2026-11-13T18:58:58.5"}
+# Paid in on Saturday, dated by the bank on its next business day, Monday.
+MONDAY_ROW = {**ROW, "referenceId": "R-MON", "rrn": "R-MON", "amount": 21000,
+              "date": "2026-11-16T10:53:00"}
+FRIDAY_ONLY = {"successful": True, "message": "Successful!", "result": [FRIDAY_ROW]}
+THROUGH_MONDAY = {"successful": True, "message": "Successful!", "result": [MONDAY_ROW, FRIDAY_ROW]}
+
+
+@override_settings(WEMA=WEMA_LIVE)
+class NextBusinessDayTests(_Base):
+    """A weekend deposit the bank dates on Monday is found on the weekend."""
+    now = SATURDAY
+
+    def test_a_week_ahead_is_asked_for_and_reaches_the_next_business_day(self):
+        answers = [_resp(FRIDAY_ONLY), _resp(FRIDAY_ONLY), _resp(FRIDAY_ONLY),
+                   _resp(FRIDAY_ONLY), _resp(THROUGH_MONDAY), _resp(FRIDAY_ONLY)]
+        with patch("utility.wema.requests.post", side_effect=answers) as post:
+            found = wema.probe_history_to_forms("0458386712", "2026-11-13", "2026-11-14")
+        self.assertIn("2026-11-21", self._asked(post))
+        self.assertEqual([e["form"] for e in found if e.get("chosen")], ["week-ahead"])
+        # Every read after the probe asks through the week first, and sees Monday's row.
+        with patch("utility.wema.requests.post", return_value=_resp(THROUGH_MONDAY)) as post:
+            result = wema.get_transactions("0458386712", "2026-11-13", "2026-11-14")
+        self.assertEqual(self._asked(post), ["2026-11-21"])
+        self.assertEqual(result["to_form"], "week-ahead")
+        self.assertIn(MONDAY_ROW, result["transactions"])
