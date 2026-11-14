@@ -592,6 +592,43 @@
   /* ---------- calculator: the answer follows you while you choose (phones) ---------- */
   .calc-live{display:none;}
 
+  /* ---------- brands: two logo tickers running in opposite directions (still row without script or with reduced motion) ---------- */
+  .brands{padding:30px 0 34px;border-bottom:1px solid var(--line);background:var(--bg);overflow:hidden;}
+  .brands-h{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);text-align:center;margin:0 0 16px;}
+  .mq + .wrap .brands-h{margin-top:26px;}
+  .mq{overflow:hidden;-webkit-mask-image:linear-gradient(90deg,transparent,#000 7%,#000 93%,transparent);mask-image:linear-gradient(90deg,transparent,#000 7%,#000 93%,transparent);}
+  .mq-track{display:flex;flex-wrap:wrap;justify-content:center;row-gap:12px;list-style:none;padding:0;margin:0;}
+  .mq-track li{flex:none;height:68px;min-width:132px;margin:0 7px;padding:0 26px;border-radius:16px;background:#fff;border:1px solid var(--line);display:grid;place-items:center;}
+  .mq-track li img{height:var(--h,32px);width:auto;max-width:none;}
+  .mq.sm .mq-track li{height:54px;min-width:96px;padding:0 18px;border-radius:14px;}
+  .mq.run .mq-track{flex-wrap:nowrap;justify-content:flex-start;width:max-content;animation:mq var(--t,42s) linear infinite;will-change:transform;}
+  .mq.run.back .mq-track{animation-direction:reverse;}
+  .mq.run:hover .mq-track{animation-play-state:paused;}
+  @keyframes mq{to{transform:translate3d(-50%,0,0);}}
+
+  /* ---------- headlines arrive word by word; the hero arrives in order; a thin line tracks how far down you are ---------- */
+  .w{display:inline-block;overflow:hidden;vertical-align:top;padding:.14em 0;margin:-.14em 0;}
+  .w > i{display:inline-block;font-style:normal;transform:translateY(118%);transition:transform .85s var(--ease);transition-delay:calc(var(--i,0) * 42ms + var(--d,0s) + .05s);}
+  .vis .w > i{transform:none;}
+  .nav-prog{position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,var(--teal),var(--cyan));transform:scaleX(0);transform-origin:0 50%;pointer-events:none;}
+  @media (prefers-reduced-motion:no-preference){
+    .hero-copy > *{animation:heroIn .9s var(--ease) backwards;}
+    .hero-copy > :nth-child(1){animation-delay:.05s;} .hero-copy > :nth-child(2){animation-delay:.14s;} .hero-copy > :nth-child(3){animation-delay:.26s;}
+    .hero-copy > :nth-child(4){animation-delay:.38s;} .hero-copy > :nth-child(5){animation-delay:.5s;}
+    .s3d{animation:heroIn 1.1s var(--ease) .55s backwards;}
+  }
+  @keyframes heroIn{from{opacity:0;transform:translateY(24px);}to{opacity:1;transform:none;}}
+
+  /* ---------- how it works plays itself: each step lights up in turn with a progress line ---------- */
+  .steps li::after{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:linear-gradient(90deg,var(--teal),var(--cyan));transform:scaleX(0);transform-origin:0 50%;}
+  .steps.auto li{transition:background .5s var(--ease),transform .4s var(--ease);}
+  .steps.auto li .n,.steps.auto li h3{transition:color .4s;}
+  .steps.auto li.on{background:rgba(3,62,86,.96);}
+  .steps.auto li.on .n{color:#fff;}
+  .steps.auto li.on::after{animation:stepbar var(--dur,4.6s) linear forwards;}
+  .steps.auto:hover li.on::after{animation-play-state:paused;}
+  @keyframes stepbar{to{transform:scaleX(1);}}
+
   /* ---------- responsive ---------- */
   @media (max-width:1020px){
     .nav-links{display:none;}
@@ -682,7 +719,11 @@
     /* steps, days: swipe instead of stacking */
     .steps{display:flex;gap:12px;margin:40px calc(var(--gut) * -1) 0;padding:0 var(--gut) 6px;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;border:0;border-radius:0;background:none;}
     .steps::-webkit-scrollbar{display:none;}
-    .steps li{flex:0 0 78%;scroll-snap-align:center;border-radius:20px;border:1px solid rgba(255,255,255,.12);padding:22px 20px 24px;}
+    .steps li{flex:0 0 78%;scroll-snap-align:center;border-radius:20px;border:1px solid rgba(255,255,255,.12);padding:22px 20px 24px;overflow:hidden;}
+    .brands{padding:22px 0 26px;}
+    .mq-track li{height:58px;min-width:112px;margin:0 5px;padding:0 20px;border-radius:14px;}
+    .mq-track li img{height:calc(var(--h,32px) * .84);}
+    .mq.sm .mq-track li{height:48px;min-width:84px;padding:0 15px;}
     .days{gap:14px;padding-top:58px;}
     .day .body{padding:20px 20px 24px;}
     .day h3{font-size:19.5px;}
@@ -753,7 +794,8 @@
   @media (prefers-reduced-motion:reduce){
     html{scroll-behavior:auto;}
     .rev{opacity:1;transform:none;transition:none;}
-    .float,.pop-chip,.s3d-stage.pop .s3d-ph,.s3d-stage.pop .s3d-sw{animation:none;}
+    .float,.pop-chip,.s3d-stage.pop .s3d-ph,.s3d-stage.pop .s3d-sw,.mq.run .mq-track,.steps.auto li.on::after{animation:none;}
+    .w > i{transform:none;transition:none;}
     .c-body > .in,.pin-sheet,.form-sheet,.live-dot{animation:none;}
     .vcard-in,.stage-phones .ph{transition:none;}
     .btn-cyan::after{display:none;}
@@ -793,6 +835,7 @@
 </defs></svg>
 
 <header class="nav" id="nav">
+  <span class="nav-prog" id="navProg" aria-hidden="true"></span>
   <div class="wrap">
     <div class="nav-in">
       <a class="brand" href="#top" aria-label="Zitch home"><span class="coil" data-coil data-h="50"><img src="assets/brand/zitch-ribbon2.png" alt="" /></span>ZITCH</a>
@@ -879,34 +922,38 @@
 <div class="strip">
   <div class="wrap">
     <div class="strip-in">
-      <div class="stat rev"><div class="n">5,000<em>+</em></div><div class="l">people bank with Zitch</div></div>
-      <div class="stat rev" style="--d:.06s"><div class="n">₦1bn<em>+</em></div><div class="l">in transactions processed</div></div>
-      <div class="stat rev" style="--d:.12s"><div class="n">5</div><div class="l">currencies — ₦ $ £ C$ ¥</div></div>
-      <div class="stat rev" style="--d:.18s"><div class="n">24/7</div><div class="l">banking from your WhatsApp</div></div>
+      <div class="stat rev"><div class="n"><span data-count="5000">5,000</span><em>+</em></div><div class="l">people bank with Zitch</div></div>
+      <div class="stat rev" style="--d:.06s"><div class="n">₦<span data-count="1">1</span>bn<em>+</em></div><div class="l">in transactions processed</div></div>
+      <div class="stat rev" style="--d:.12s"><div class="n"><span data-count="5">5</span></div><div class="l">currencies — ₦ $ £ C$ ¥</div></div>
+      <div class="stat rev" style="--d:.18s"><div class="n"><span data-count="24">24</span>/7</div><div class="l">banking from your WhatsApp</div></div>
     </div>
   </div>
 </div>
-<div class="trust">
-  <div class="wrap trust-in rev">
-    <div class="trust-item"><span class="tl">In partnership with</span><span class="tn">Wema Bank</span></div>
-    <div class="trust-item"><span class="tl">Secured by the</span><span class="tn">NDIC</span></div>
-    <div class="trust-item"><span class="tl">In partnership with</span><span class="tn">Prembly</span></div>
-  </div>
-</div>
-<div class="wrap">
-  <div class="prov rev">
-    <span class="lbl">Top up and pay on</span>
-    <ul>
-      <li><img src="assets/logos/mtn.jpg" alt="MTN" /></li>
-      <li><img src="assets/logos/airtel.svg" alt="Airtel" /></li>
-      <li><img src="assets/logos/glo.jpg" alt="Glo" /></li>
-      <li><img src="assets/logos/9mobile.svg" alt="9mobile" /></li>
-      <li><img src="assets/logos/dstv.svg" alt="DStv" /></li>
-      <li><img src="assets/logos/gotv.svg" alt="GOtv" /></li>
-      <li><img src="assets/logos/startimes.png" alt="StarTimes" /></li>
+<section class="brands" aria-label="Partners and providers">
+  <div class="wrap"><p class="brands-h">Working with trusted institutions</p></div>
+  <div class="mq" data-mq style="--t:46s">
+    <ul class="mq-track">
+      <li><img src="assets/partners-v1/wema-bank.png" alt="Wema Bank" width="223" height="44" style="--h:30px" decoding="async" /></li>
+      <li><img src="assets/partners-v1/ndic.png" alt="Nigeria Deposit Insurance Corporation" width="362" height="140" style="--h:38px" decoding="async" /></li>
+      <li><img src="assets/partners-v1/cbn.svg" alt="Central Bank of Nigeria" width="269" height="357" style="--h:50px" decoding="async" /></li>
+      <li><img src="assets/partners-v1/9psb.png" alt="9 Payment Service Bank" width="374" height="140" style="--h:36px" decoding="async" /></li>
+      <li><img src="assets/partners-v1/mono.png" alt="Mono" width="380" height="79" style="--h:24px" decoding="async" /></li>
+      <li><img src="assets/partners-v1/prembly.svg" alt="Prembly" width="5814" height="1796" style="--h:30px" decoding="async" /></li>
     </ul>
   </div>
-</div>
+  <div class="wrap"><p class="brands-h">Top up and pay on</p></div>
+  <div class="mq sm back" data-mq style="--t:38s">
+    <ul class="mq-track">
+      <li><img src="assets/logos/mtn.jpg" alt="MTN" style="--h:26px" decoding="async" /></li>
+      <li><img src="assets/logos/airtel.svg" alt="Airtel" style="--h:26px" decoding="async" /></li>
+      <li><img src="assets/logos/glo.jpg" alt="Glo" style="--h:26px" decoding="async" /></li>
+      <li><img src="assets/logos/9mobile.svg" alt="9mobile" style="--h:26px" decoding="async" /></li>
+      <li><img src="assets/logos/dstv.svg" alt="DStv" style="--h:26px" decoding="async" /></li>
+      <li><img src="assets/logos/gotv.svg" alt="GOtv" style="--h:26px" decoding="async" /></li>
+      <li><img src="assets/logos/startimes.png" alt="StarTimes" style="--h:26px" decoding="async" /></li>
+    </ul>
+  </div>
+</section>
 
 <!-- ================= CHAT BANKING ================= -->
 <section class="wa block" id="whatsapp">
@@ -1756,6 +1803,66 @@
       });
     }, 1200);
     setTimeout(function(){ all.forEach(show); }, 3500);
+  })();
+
+  // Logo tickers, counting stats, word-by-word headlines, self-playing steps, scroll progress — all skipped for reduced motion
+  (function(){
+    var RM = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    var hasIO = 'IntersectionObserver' in window;
+
+    // scroll progress under the nav (one transform per frame)
+    var prog = document.getElementById('navProg'), pq = 0;
+    function progRun(){ pq = 0; var max = document.documentElement.scrollHeight - (window.innerHeight || 800); prog.style.transform = 'scaleX(' + (max > 0 ? Math.min(1, (window.pageYOffset || 0) / max) : 0).toFixed(4) + ')'; }
+    if (prog) { window.addEventListener('scroll', function(){ if (!pq) pq = requestAnimationFrame(progRun); }, { passive: true }); progRun(); }
+    if (RM) return;
+
+    // tickers: repeat the row until it is wider than the screen, then double it so a −50% slide loops without a seam
+    [].forEach.call(document.querySelectorAll('[data-mq]'), function(mq){
+      var track = mq.querySelector('.mq-track'), items = [].slice.call(track.children);
+      mq.classList.add('run');
+      var setW = track.scrollWidth, need = Math.max(1, Math.ceil(Math.max(window.innerWidth, 1600) / setW)), i, k;
+      var copy = function(){ items.forEach(function(li){ var c = li.cloneNode(true); c.setAttribute('aria-hidden', 'true'); var im = c.querySelector('img'); if (im) im.alt = ''; track.appendChild(c); }); };
+      for (k = 1; k < need; k++) copy();
+      for (k = 0; k < need; k++) copy();
+      if (hasIO) new IntersectionObserver(function(es){ track.style.animationPlayState = es[0].isIntersecting ? '' : 'paused'; }).observe(mq);   // no work off-screen
+    });
+
+    // stats count up once, when they come into view
+    var nums = [].slice.call(document.querySelectorAll('[data-count]'));
+    var count = function(el){
+      var to = +el.getAttribute('data-count'), t0 = performance.now(), dur = 1500;
+      (function step(now){
+        var p = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - p, 4);
+        el.textContent = Math.round(to * e).toLocaleString('en-NG');
+        if (p < 1) requestAnimationFrame(step);
+      })(t0);
+    };
+    if (hasIO) { var ioN = new IntersectionObserver(function(es){ es.forEach(function(e){ if (e.isIntersecting) { ioN.unobserve(e.target); count(e.target); } }); }, { threshold: .6 }); nums.forEach(function(n){ ioN.observe(n); }); }
+
+    // headlines: wrap each word so it can rise into place when its block is revealed
+    [].forEach.call(document.querySelectorAll('.rev .sec-head h2, .sec-head.rev h2, .cta-box.rev h2'), function(h){
+      if (h.children.length) return;
+      var words = h.textContent.trim().split(/\s+/); h.textContent = '';
+      words.forEach(function(w, i){
+        var o = document.createElement('span'), n = document.createElement('i'); o.className = 'w'; n.textContent = w; n.style.setProperty('--i', i);
+        o.appendChild(n); h.appendChild(o); if (i < words.length - 1) h.appendChild(document.createTextNode(' '));
+      });
+    });
+
+    // how it works: on wide screens the four steps play in turn; hovering one holds it
+    var steps = document.querySelector('.steps'), wide = window.matchMedia('(min-width: 1021px)');
+    if (steps && hasIO) {
+      var lis = [].slice.call(steps.children), cur = 0;
+      var go = function(i){ cur = (i + lis.length) % lis.length; lis.forEach(function(li, j){ li.classList.toggle('on', j === cur); }); };
+      lis.forEach(function(li, i){
+        li.addEventListener('animationend', function(e){ if (e.animationName === 'stepbar') go(i + 1); });
+        li.addEventListener('mouseenter', function(){ if (steps.classList.contains('auto') && i !== cur) go(i); });
+      });
+      new IntersectionObserver(function(es){
+        var on = es[0].isIntersecting && wide.matches;
+        steps.classList.toggle('auto', on); if (on) go(cur); else lis.forEach(function(li){ li.classList.remove('on'); });
+      }, { threshold: .35 }).observe(steps);
+    }
   })();
 
   // Mobile menu
