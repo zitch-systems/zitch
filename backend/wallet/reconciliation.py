@@ -139,7 +139,23 @@ def poll_recent_wema_credits(interval_seconds):
                   level="warning", wallet_id=wallet.pk)
 
 
-def reconcile_account_history(wallet, *, today=None, overlap_days=2, on_shape=None):
+def history_window_digest(result, rows):
+    """What one statement read covered, with no customer data: how `to` was
+    spelled, how many rows and credits came back and the newest row's date.
+    "newest" a day behind the calendar means today's rows are not being returned.
+    """
+    dates = [d for d in (_credit_date(row) for row in rows) if d is not None]
+    return {
+        "to_form": result.get("to_form") or "as-given",
+        "rows": len(rows),
+        "credits": sum(1 for row in rows
+                       if str(row.get("creditType") or "").strip().casefold() == "credit"),
+        "newest": max(dates).isoformat() if dates else "none",
+    }
+
+
+def reconcile_account_history(wallet, *, today=None, overlap_days=2, on_shape=None,
+                              on_window=None):
     """Recover missing days in bounded windows, advancing only durable coverage.
 
     No database lock spans a bank request. Repeated windows and crash retries use
@@ -184,6 +200,8 @@ def reconcile_account_history(wallet, *, today=None, overlap_days=2, on_shape=No
             break
         if on_shape and rows:
             on_shape(rows[0])
+        if on_window:
+            on_window(history_window_digest(result, rows))
         window_error = ""
         # Apply every confirmed row, even when another row needs retry. Coverage
         # stays pinned so old Pending/incomplete deposits are still re-observed.

@@ -89,6 +89,29 @@ class BankHistoryCheckpointTests(TestCase):
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.balance, Decimal("425.50"))
 
+    def test_a_same_day_deposit_is_credited_and_the_window_is_reported(self):
+        # The bank answers with a row dated today: it is credited on this run, not
+        # after midnight, and the run can say what the statement covered.
+        BankHistoryCheckpoint.objects.filter(
+            wallet=self.wallet, account_number=self.wallet.account_number
+        ).update(covered_through=self.today - timedelta(days=1))
+        today_row = _credit("SAME-DAY-DEPOSIT", "500.00",
+                            transaction_date=f"{self.today.isoformat()}T00:10:00+01:00")
+        seen = []
+        with patch(
+            "utility.wema.get_transactions",
+            return_value={"success": True, "transactions": [today_row],
+                          "to_form": "next-day"},
+        ):
+            result = reconcile_account_history(
+                self.wallet, today=self.today, on_window=seen.append)
+
+        self.assertEqual(result["credited"], 1)
+        self.wallet.refresh_from_db()
+        self.assertEqual(self.wallet.balance, Decimal("500.00"))
+        self.assertEqual(seen, [{"to_form": "next-day", "rows": 1, "credits": 1,
+                                 "newest": self.today.isoformat()}])
+
     def test_overlap_reobserves_a_credit_without_duplicating_it(self):
         BankHistoryCheckpoint.objects.filter(
             wallet=self.wallet, account_number=self.wallet.account_number
