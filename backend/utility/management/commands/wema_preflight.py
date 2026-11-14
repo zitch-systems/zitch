@@ -182,22 +182,14 @@ class Command(BaseCommand):
                     True, "Partner-bank Airtime/Data subscription", PASS,
                     "key set" if product_keys.get("airtime")
                     else "covered by the Wallet Services key"))
-                # SOFT, and scoped to what it actually probes. Selling airtime and
-                # settling it live behind different ALAT products, so this cannot
-                # speak for the purchase endpoint — it asks only whether the
-                # PartnerPayment status endpoint answers us. It is reported because
-                # settlement runs entirely through that endpoint: without it a
-                # PROCESSING purchase can never resolve, which is what
-                # providers.vas_can_settle refuses a sale over.
-                reachable, why = wema.vas_status_entitlement("airtime")
+                from utility.providers import vas_can_settle
+
+                reachable, why = vas_can_settle("airtime")
                 checks.append((
-                    False, "Partner-bank VAS status/requery",
+                    False, "Partner-bank Airtime/Data settlement",
                     PASS if reachable else WARN,
-                    "authenticated Client Account callbacks configured" if reachable
-                    else (f"the gateway refuses the PartnerPayment status endpoint: {why}. "
-                          f"Purchases may still complete, but any that come back PROCESSING "
-                          f"cannot be settled or refunded automatically — ask the bank to "
-                          f"profile the tenant for PartnerPayment status")))
+                    "Single Account callback configuration passed" if reachable
+                    else (f"Single Account airtime and data are blocked before debit: {why}")))
         if card_provider() == "wema":
             card_ready = bool(product_keys.get("card") and settings.WEMA.get("CARD_PRODUCT_KEY"))
             checks.append((

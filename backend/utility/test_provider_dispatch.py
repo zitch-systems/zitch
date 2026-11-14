@@ -503,19 +503,21 @@ class WemaVasRoutingTests(TestCase):
         self.assertEqual(result["code"], "biller_funding_unavailable")
         mw.assert_not_called()
 
-    def test_requery_uses_partner_bank_rail(self):
+    def test_single_account_airtime_awaits_bank_callback(self):
         from wallet.services import debit
         from wallet.tests import make_user
         user, _ = make_user("08033330001", "vas@zitch.test", balance="1000")
         txn = debit(user, Decimal("500"), "Airtime", meta={"vas_rail": "wema", "vas_type": "airtime"})
         with patch("utility.wema.vas_status", return_value={"success": True}) as mw:
-            P.vtu_requery(txn.reference)
-        mw.assert_called_once_with(txn.reference, "airtime")
+            result = P.vtu_requery(txn.reference)
+        mw.assert_not_called()
+        self.assertTrue(result["pending"])
 
-    def test_requery_defaults_to_partner_bank(self):
+    def test_unknown_reference_does_not_query_pool(self):
         with patch("utility.wema.vas_status", return_value={"success": True}) as mw:
-            P.vtu_requery("NO-SUCH-REF")
-        mw.assert_called_once_with("NO-SUCH-REF", "airtime")
+            result = P.vtu_requery("NO-SUCH-REF")
+        mw.assert_not_called()
+        self.assertTrue(result["pending"])
 
 
 PREMBLY_LIVE = {"BASE_URL": "https://api.prembly.com", "API_KEY": "k", "APP_ID": "a"}

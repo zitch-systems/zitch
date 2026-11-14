@@ -39,6 +39,10 @@ class CablePlan(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     active = models.BooleanField(default=True)
 
+    @classmethod
+    def available_for_provider(cls, provider):
+        return cls.objects.filter(provider=provider, active=True).exclude(wema_code="")
+
     def __str__(self):
         return f"{self.get_provider_display()} {self.name}"
 

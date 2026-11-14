@@ -20,6 +20,8 @@ LIVE = {
              "bills": "test-bills", "remita": "test-remita"},
     "SECURITY_INFO": "test-security", "SIMULATION": False,
     "SOURCE_ACCOUNT": "0100000001",
+    "CALLBACK_TOKEN": "test-token", "CALLBACK_ENFORCE_IPS": True,
+    "CALLBACK_IPS": ["192.0.2.5"], "AUTH_REQUIRE_SECURITY_INFO": True,
     "VAS_STATUS_LEGEND": "200=success 400=failed",
     "BILLS_STATUS_LEGEND": "200=success 400=failed",
     "REMITA_STATUS_LEGEND": "200=success 400=failed",
@@ -133,7 +135,7 @@ class RetainedBillerBoundaryTests(SimpleTestCase):
                 "amount": AMOUNT, "phone": "08000000000", "source_account": SUPPLIED_SOURCE,
             }, REFERENCE)
         self.assertTrue(result["success"])
-        entitlement.assert_called_once_with("airtime")
+        entitlement.assert_not_called()
         resolve.assert_called_once_with(REFERENCE, amount=AMOUNT, source_account=SUPPLIED_SOURCE)
         purchase.assert_called_once_with(AMOUNT, REFERENCE, "08000000000", "MTN",
                                          source_account=APPROVED_SOURCE)

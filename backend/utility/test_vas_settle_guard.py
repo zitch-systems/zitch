@@ -28,7 +28,9 @@ from utility import providers as P
 # so the wallet key alone already makes bill payments live.
 _KEYED = {"BASE_URL": "https://apiplayground.alat.ng", "CHANNEL_ID": "chan-1",
           "KEYS": {"wallet": "subkey", "airtime": "airkey"},
-          "SOURCE_ACCOUNT": "0100000001", "SECURITY_INFO": "sec", "SIMULATION": False}
+          "SOURCE_ACCOUNT": "0100000001", "SECURITY_INFO": "sec", "SIMULATION": False,
+          "CALLBACK_TOKEN": "test-token", "CALLBACK_ENFORCE_IPS": True,
+          "CALLBACK_IPS": ["135.236.18.76"], "AUTH_REQUIRE_SECURITY_INFO": True}
 _AIRTIME_LEGEND = {**_KEYED, "VAS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
 _BILLS_LEGEND = {**_KEYED, "CALLBACK_TOKEN": "test-token", "CALLBACK_ENFORCE_IPS": True,
                  "CALLBACK_IPS": ["135.236.18.76"], "AUTH_REQUIRE_SECURITY_INFO": True, "BILLS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
@@ -61,13 +63,13 @@ class CanSettleTests(SimpleTestCase):
         self.assertEqual(P.vas_can_settle("airtime"), (True, ""))
 
     @override_settings(WEMA={**_AIRTIME_LEGEND, "BILLS_STATUS_LEGEND": _BILLS_LEGEND["BILLS_STATUS_LEGEND"]})
-    def test_live_status_refusal_blocks_each_retained_product_despite_valid_legend(self):
-        self.entitlement.return_value = (False, "status-query subscription unavailable")
-        for product, status_product in (("airtime", "airtime"), ("data", "airtime")):
+    def test_single_account_products_do_not_query_pool_status(self):
+        for product in ("airtime", "data", "bill"):
             with self.subTest(product=product):
-                self.assertEqual(P.vas_can_settle(product),
-                                 (False, "status-query subscription unavailable"))
-                self.entitlement.assert_called_with(status_product)
+                self.assertEqual(P.vas_can_settle(product), (True, ""))
+                status = P.vas_requery("TEST", {"vas_type": product})
+                self.assertEqual(status["status"], "AWAITING_BANK_CALLBACK")
+        self.entitlement.assert_not_called()
 
     def test_live_with_only_one_terminal_direction_cannot_settle(self):
         for legend in ("1=success 2=pending", "1=failed 2=pending"):
@@ -218,8 +220,8 @@ class RefusalRefundsTests(TestCase):
         entitlement.assert_not_called()
         self.assert_no_debit()
 
-    @override_settings(WEMA=_AIRTIME_LEGEND)
-    def test_denied_entitlement_refuses_before_any_debit(self):
+    @override_settings(WEMA={**_AIRTIME_LEGEND, "CALLBACK_TOKEN": ""})
+    def test_missing_callback_configuration_refuses_before_any_debit(self):
         from wallet.services import LimitExceeded
 
         with mock.patch("utility.wema.purchase_airtime") as buy, \
@@ -266,17 +268,17 @@ class RefusalRefundsTests(TestCase):
         self.assertEqual(result["status"], "AWAITING_BANK_CALLBACK")
 
     @override_settings(WEMA=_AIRTIME_LEGEND)
-    def test_second_guard_refunds_if_status_access_disappears_after_reservation(self):
+    def test_second_guard_refunds_if_callback_configuration_disappears_after_reservation(self):
         from wallet.models import BillFundingRefund, Transaction
 
         with mock.patch("utility.wema.purchase_airtime") as buy, \
-                mock.patch("utility.wema.vas_status_entitlement",
-                           side_effect=[(True, ""), (False, "not profiled")]), \
+                mock.patch("utility.providers.vas_can_settle",
+                           side_effect=[(True, ""), (False, "callback unavailable")]), \
                 mock.patch("utility.alerts.alert"):
             status, txn, result = self.purchase()
         buy.assert_not_called()
         self.assertEqual(status, "failed")
-        self.assertEqual(result["unsettleable"], "not profiled")
+        self.assertEqual(result["unsettleable"], "callback unavailable")
         txn.refresh_from_db()
         self.assertEqual(txn.transaction_status, Transaction.FAILED)
         self.assertFalse((txn.meta or {}).get("reconcile"))
@@ -380,22 +382,20 @@ class RetiredRailRequeryTests(TestCase):
         self.assertNotIn("vas_rail", res)
         self.assertEqual(res["retired_rail"], "vtung")
 
-    def test_a_partner_bank_row_is_requeried_normally(self):
+    def test_a_partner_bank_row_awaits_callback(self):
         txn = self._pending("wema")
         with mock.patch("utility.wema.vas_status",
                         return_value={"success": True, "pending": False}) as status:
             res = P.vtu_requery(txn.reference)
-        status.assert_called_once_with(txn.reference, "airtime")
-        self.assertTrue(res["success"])
+        status.assert_not_called()
+        self.assertTrue(res["pending"])
 
-    def test_a_row_with_no_recorded_rail_is_still_requeried(self):
-        # Unchanged behaviour, deliberately: absent metadata is not evidence of the
-        # retired rail, and the partner-bank status check is money-safe either way.
+    def test_a_row_with_no_recorded_rail_awaits_callback(self):
         txn = self._pending(None)
         with mock.patch("utility.wema.vas_status",
                         return_value={"success": False, "pending": True}) as status:
             P.vtu_requery(txn.reference)
-        status.assert_called_once()
+        status.assert_not_called()
 
     def test_legacy_pending_row_without_type_requeries_by_service(self):
         from wallet.services import debit
@@ -408,7 +408,7 @@ class RetiredRailRequeryTests(TestCase):
                     mock.patch("utility.wema.vas_status", return_value={"pending": True}) as status:
                 txn = debit(user, Decimal("300"), service, meta={"reconcile": True})
                 result = P.vtu_requery(txn.reference)
-                if kind == "bill":
+                if kind in {"bill", "data"}:
                     status.assert_not_called()
                     self.assertTrue(result["pending"])
                 else:
