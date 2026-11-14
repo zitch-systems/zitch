@@ -284,6 +284,20 @@ class Command(BaseCommand):
                                   f"once per run): {sorted(row.keys())}")
                 shape_logged = True
 
+        window_logged = False
+
+        def log_history_window(digest):
+            # Counts and dates only. The newest row's date is the check that the
+            # statement includes today: a day behind means deposits are waiting
+            # for midnight.
+            nonlocal window_logged
+            if not window_logged:
+                self.stdout.write(
+                    "transhistoryV2 window (once per run): "
+                    f"to={digest['to_form']} rows={digest['rows']} "
+                    f"credits={digest['credits']} newest={digest['newest']} today={today}")
+                window_logged = True
+
         for wallet in wema_provisioned_wallets():
             scanned += 1
             if wallet.pk in pending_address_wallets:
@@ -316,7 +330,7 @@ class Command(BaseCommand):
             try:
                 res = reconcile_account_history(
                     wallet, today=today, overlap_days=options["lookback_days"],
-                    on_shape=log_history_shape)
+                    on_shape=log_history_shape, on_window=log_history_window)
             except Exception:
                 # Preserve retry coverage and continue other wallets/settlement
                 # phases. The durable report and nonzero exit still expose this.

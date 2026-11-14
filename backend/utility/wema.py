@@ -1654,19 +1654,124 @@ def _history_is_incomplete(containers: list[dict], row_count: int) -> bool:
     return False
 
 
+# The statement's `to` is a date-time and the bank returns rows up to that instant.
+# A bare date is the first instant of its day, so a statement asked "to today"
+# stopped at last midnight: a deposit was not in it until the next day. Production,
+# 13-14 November 2026: the first row changed at 00:00 WAT exactly, before that
+# night's transfer was sent, and a deposit the bank's balance already held stayed
+# out of every statement read after it.
+#
+# So the `to` day is asked for whole. Two spellings say that; the widest is tried
+# first and the plain date stays as the last resort, so a refusal can only leave
+# things as they were:
+#   next-day     the following date, i.e. up to the first instant of tomorrow
+#   end-of-day   the same date at 23:59:59
+#   plain        the bare date (rows before that day only)
+_HISTORY_TO_FORMS = ("next-day", "end-of-day", "plain")
+_HISTORY_TO_FORM_KEY = "wema:history:to-form"
+_HISTORY_TO_PROVEN_KEY = "wema:history:to-form-proven"
+
+
+def _history_to_values(date_to: str) -> list[str]:
+    """The `to` values to ask with, widest first. A value that is not a bare
+    date is the caller's own instant and is sent as given."""
+    from datetime import date, timedelta
+
+    text = str(date_to or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return [date_to]
+    try:
+        day = date.fromisoformat(text)
+    except ValueError:
+        return [date_to]
+    return [(day + timedelta(days=1)).isoformat(), f"{text}T23:59:59", text]
+
+
+def _history_note(key: str, value=None, timeout: int = 3600):
+    """Read (no value) or write a small statement-request note in the shared
+    cache. A cache that is down reads as "nothing noted": the widest request is
+    tried again, which is always safe."""
+    from django.core.cache import cache
+
+    try:
+        if value is None:
+            return cache.get(key)
+        cache.set(key, value, timeout=timeout)
+    except Exception:  # noqa: BLE001 - notes only ever save a round trip
+        pass
+    return None
+
+
+def _history_window_refused(result: dict) -> bool:
+    """True when the bank turned the request itself down (a 4xx that is not
+    sign-in or rate limiting), as opposed to an outage or an empty statement."""
+    status = (result.get("diagnostic") or {}).get("http_status")
+    return (isinstance(status, int) and 400 <= status < 500
+            and status not in (401, 403, 408, 429))
+
+
 def get_transactions(account_number: str, date_from: str, date_to: str, keyword: str = "") -> dict:
-    """Transaction history — the source for detecting inbound credits (creditType=='Credit')."""
+    """Transaction history — the source for detecting inbound credits (creditType=='Credit').
+
+    Covers `date_from` through the END of `date_to`. The result names the `to`
+    spelling that was answered in ``to_form``.
+    """
     if not _product_live("acct_mgt"):
         if _mock_blocked():
             return {"success": False, "message": "Account services are not configured",
                     "diagnostic": _product_config_diag("acct_mgt")}
         return {"success": True, "mock": True, "transactions": []}
+    values = _history_to_values(date_to)
+    if len(values) == 1:
+        return _history_request(account_number, date_from, values[0], keyword)
+    plain = len(values) - 1
+    try:
+        first = max(0, min(int(_history_note(_HISTORY_TO_FORM_KEY) or 0), plain))
+    except (TypeError, ValueError):
+        first = 0
+    refused = refused_status = None
+    result = {}
+    for index in range(first, len(values)):
+        result = _history_request(account_number, date_from, values[index], keyword)
+        result["to_form"] = _HISTORY_TO_FORMS[index]
+        if not result.get("success"):
+            if index == plain or not _history_window_refused(result):
+                return result
+            if refused is None:
+                refused = index
+                refused_status = (result.get("diagnostic") or {}).get("http_status")
+            continue
+        if refused is not None:
+            # The wider spelling was turned down and this one answered: skip the
+            # refused one for an hour instead of asking twice on every read.
+            _history_note(_HISTORY_TO_FORM_KEY, index)
+            log.warning("wema_history_to_form_refused refused=%s using=%s http_status=%s",
+                        _HISTORY_TO_FORMS[refused], _HISTORY_TO_FORMS[index], refused_status)
+        if index == plain:
+            return result
+        if result.get("transactions"):
+            _history_note(_HISTORY_TO_PROVEN_KEY, True, timeout=7 * 86400)
+        elif not _history_note(_HISTORY_TO_PROVEN_KEY):
+            # "Nothing", from a spelling that has not yet returned a row here. A
+            # wider window can only hold more rows than the plain one, so if the
+            # plain date has rows the bank is answering this spelling wrongly:
+            # keep the plain answer rather than read an account as empty.
+            check = _history_request(account_number, date_from, values[plain], keyword)
+            if check.get("success") and check.get("transactions"):
+                _history_note(_HISTORY_TO_FORM_KEY, plain)
+                log.warning("wema_history_to_form_hides_rows form=%s", _HISTORY_TO_FORMS[index])
+                check["to_form"] = _HISTORY_TO_FORMS[plain]
+                return check
+        return result
+    return result
+
+
+def _history_request(account_number: str, date_from: str, date_to: str, keyword: str = "") -> dict:
+    """One statement request, with `to` sent exactly as given."""
     try:
         body = {"accountNumber": account_number, "from": date_from, "to": date_to}
         if keyword:
-            # Sent only for a real search. An empty keyWord switched the bank to its
-            # search response and deposits stopped being found; without the field
-            # it returns the plain statement.
+            # Optional in the bank's spec; sent only for a real search.
             body["keyWord"] = keyword
         resp = _post("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
                      body)
