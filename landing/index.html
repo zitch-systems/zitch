@@ -860,7 +860,7 @@
         <div class="s3d-clip"><div class="s3d-pan"><img class="s3d-bg" src="assets/landing-v1/phones-3d.webp" alt="Two phones standing on a teal plinth: Zitch in a chat on the left, the Zitch app on the right" width="2000" height="1333" decoding="async" fetchpriority="high" /><img class="s3d-blur" src="assets/landing-v1/phones-3d-blur.jpg" alt="" aria-hidden="true" width="480" height="320" decoding="async" /></div><div class="s3d-shade"></div></div>
         <div class="s3d-glow" aria-hidden="true"></div>
         <div class="s3d-ph"><span class="s3d-bz" aria-hidden="true"></span><div class="s3d-scr"><div class="chat" data-chat="hero" data-seed="transfer"></div><span class="s3d-isl"></span><span class="s3d-gl"></span><span class="s3d-sw"></span><span class="s3d-dm"></span></div></div>
-        <div class="s3d-ph"><span class="s3d-bz" aria-hidden="true"></span><div class="s3d-scr"><img src="assets/landing-v1/app-home.webp" alt="" width="828" height="1736" decoding="async" /><iframe class="app-live" id="appLive" data-src="prototype.html?embed=1" title="The Zitch app — live demo you can tap through"></iframe><span class="app-hint" aria-hidden="true"><i class="live-dot"></i>Live demo — tap to start</span><span class="s3d-isl"></span><span class="s3d-gl"></span><span class="s3d-sw"></span><span class="s3d-dm"></span></div></div>
+        <div class="s3d-ph"><span class="s3d-bz" aria-hidden="true"></span><div class="s3d-scr"><img src="assets/landing-v1/app-home.webp" alt="" width="828" height="1736" decoding="async" /><iframe class="app-live" id="appLive" title="The Zitch app — live demo you can tap through"></iframe><span class="app-hint" aria-hidden="true"><i class="live-dot"></i>Live demo — tap to start</span><span class="s3d-isl"></span><span class="s3d-gl"></span><span class="s3d-sw"></span><span class="s3d-dm"></span></div></div>
         <div class="s3d-frame" aria-hidden="true"></div>
         <div class="s3d-fl s3d-fl-a pop-chip" aria-hidden="true"><span class="ci"><svg class="i" aria-hidden="true" width="18" height="18"><use href="#i-send"/></svg></span><span><b>₦5,000 sent</b><small>to Ada · Fee ₦10.00</small></span></div>
         <div class="s3d-fl s3d-fl-b pop-chip" aria-hidden="true"><span class="ci"><svg class="i" aria-hidden="true" width="18" height="18"><use href="#i-bolt"/></svg></span><span><b>+₦60.00 back</b><small>on ₦2,000 airtime</small></span></div>
@@ -1523,6 +1523,7 @@
     var mq = function(q){ return !!(window.matchMedia && window.matchMedia(q).matches); };
     var RM = mq('(prefers-reduced-motion: reduce)'), touch = mq('(hover: none), (pointer: coarse)');
     var SRC_W = 2000, BW = 414, BH = 868, DEG = Math.PI / 180;
+    var APP_SRC = 'prototype.html?embed=1';   // fixed address of the live app demo
     // screen corners in the 2000 × 1333 render: top-left, top-right, bottom-right, bottom-left
     var QUADS = [
       [[524.5,155.4],[944.9,246.4],[957.6,1120.5],[614.8,984.7]],
@@ -1585,7 +1586,7 @@
     function wake(){                            // boot the live app only when someone reaches for it — it is the one heavy thing on the page
       if (!live || live._on) return; live._on = true;
       stage.classList.add('booting');
-      live.src = live.getAttribute('data-src');
+      live.src = APP_SRC;
       var tries = 0, t = setInterval(function(){
         var ok = false;
         try { var r = live.contentDocument && live.contentDocument.getElementById('root'); ok = !!(r && r.childNodes.length); } catch (e) { ok = tries > 12; }
