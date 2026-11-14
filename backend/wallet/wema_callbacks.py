@@ -130,23 +130,29 @@ def _notification_ok():
     return HttpResponse("OK()", status=200, content_type="text/plain")
 
 
-def _token_ok(supplied: str) -> bool:
-    """Constant-time compare against the configured token (and the previous one, so a
-    rotation has an overlap window). Whitespace is stripped on both sides because a
-    pasted dashboard value routinely carries a trailing newline.
+def _callback_token_match(supplied: str) -> str:
+    """Return the configured slot that matched, without exposing the token.
 
-    With NO token configured: allowed only in local development/tests and refused
-    on every deployed host, including simulation. Fake balances and KYC state are
-    still customer data and cannot be left publicly attacker-mutable.
+    An unconfigured token is allowed only in local development and tests.
     """
     current = (_conf("CALLBACK_TOKEN", "") or "").strip()
     previous = (_conf("CALLBACK_TOKEN_PREV", "") or "").strip()
     if not current and not previous:
         from django.conf import settings
 
-        return bool(getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False))
+        return "local" if settings.DEBUG or getattr(settings, "TESTING", False) else ""
     supplied = (supplied or "").strip()
-    return any(hmac.compare_digest(supplied, known) for known in (current, previous) if known)
+    matches_current = bool(current and hmac.compare_digest(supplied, current))
+    matches_previous = bool(previous and hmac.compare_digest(supplied, previous))
+    if matches_current:
+        return "current"
+    if matches_previous:
+        return "overlap"
+    return ""
+
+
+def _token_ok(supplied: str) -> bool:
+    return bool(_callback_token_match(supplied))
 
 
 def _callback_source_ip(request) -> str:
@@ -233,7 +239,8 @@ def wema_callback(kind: str, token_required: bool = True):
                 record_webhook(source, outcome=WebhookEvent.REJECTED_METHOD,
                                http_status=405, remote_ip=_callback_source_ip(request))
                 return JsonResponse({"message": "Method not allowed"}, status=405)
-            if token_required and not _token_ok(token):
+            token_slot = _callback_token_match(token) if token_required else ""
+            if token_required and not token_slot:
                 refused_from = _callback_source_ip(request)
                 log.warning("wema_cb_bad_token kind=%s ip=%s", kind, refused_from)
                 record_webhook(source, outcome=WebhookEvent.REJECTED_TOKEN,
@@ -252,6 +259,8 @@ def wema_callback(kind: str, token_required: bool = True):
                 record_webhook(source, outcome=WebhookEvent.REJECTED_IP,
                                http_status=403, remote_ip=ip)
                 return JsonResponse({"message": "Forbidden"}, status=403)
+            if token_slot in {"current", "overlap"} and _conf("CALLBACK_TOKEN_PREV"):
+                log.info("wema_callback_cutover kind=%s token_slot=%s", kind, token_slot)
             try:
                 declared_size = int(request.META.get("CONTENT_LENGTH") or 0)
             except (TypeError, ValueError):
