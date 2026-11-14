@@ -2566,9 +2566,21 @@ def validate_bill_customer(identifier: str, package_id: str) -> dict:
     try:
         body = {"channelId": settings.WEMA.get("CHANNEL_ID", ""), "identifier": identifier,
                 "packageId": _as_int(package_id)}
-        data = _post("bills", "/api/BillsPayment/ValidateCustomer", body).json()
-        r = data.get("result", {}) or {}
-        return {"success": _ok(data),
+        response = _post("bills", "/api/BillsPayment/ValidateCustomer", body)
+        data = response.json()
+        result = data.get("result") if isinstance(data, dict) else None
+        r = result if isinstance(result, dict) else {}
+        # ALAT distinguishes transport success from identifier validation.
+        # Older successful responses omit isValidated and still return a name.
+        valid_envelope = 200 <= response.status_code < 300 and _ok(data) and bool(r)
+        if not valid_envelope or r.get("isValidated", True) is not True:
+            invalid_identifier = valid_envelope and r.get("isValidated") is False
+            return {"success": False,
+                    "message": ("The selected biller could not verify this customer number."
+                                if invalid_identifier else
+                                "The biller could not verify this customer number. Please try again."),
+                    "raw": data}
+        return {"success": True,
                 "name": r.get("customerName") or r.get("name", ""),
                 # customerAddress is the spelling ALAT uses elsewhere in its contract
                 # (the card-issue body), so it is tried first.
@@ -2576,6 +2588,8 @@ def validate_bill_customer(identifier: str, package_id: str) -> dict:
                 "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
+    except ValueError:
+        return {"success": False, "message": "The biller returned an unreadable validation response."}
 
 
 #: Field names a prepaid-meter token could arrive under. A PREPAID electricity

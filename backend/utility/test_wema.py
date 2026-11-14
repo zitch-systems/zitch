@@ -1605,6 +1605,23 @@ class WemaConformanceFixTests(BillerTransportSourceMixin, SimpleTestCase):
         self.assertEqual(mock_post.call_args[1]["json"]["packageId"], 42)  # int, not "42"
 
     @patch("utility.wema.requests.post")
+    def test_bill_validation_rejects_negative_customer_outcome_and_http_error(self, mock_post):
+        for validation, status, expected in ((False, 200, False), ("false", 200, False),
+                                             (True, 400, False), (True, 200, True)):
+            with self.subTest(validation=validation, status=status):
+                mock_post.return_value = _resp({"hasError": False, "result": {
+                    "isValidated": validation, "customerName": "ADA",
+                }}, status=status)
+                self.assertIs(wema.validate_bill_customer("1234567890", "42")["success"], expected)
+
+    @patch("utility.wema.requests.post")
+    def test_bill_validation_handles_unreadable_result(self, mock_post):
+        mock_post.return_value = _resp({"hasError": False, "result": ["unexpected"]})
+        self.assertFalse(wema.validate_bill_customer("1234567890", "42")["success"])
+        mock_post.return_value.json.side_effect = ValueError("unreadable")
+        self.assertFalse(wema.validate_bill_customer("1234567890", "42")["success"])
+
+    @patch("utility.wema.requests.post")
     def test_pay_bill_sends_integer_packageid(self, mock_post):
         mock_post.return_value = _resp({"result": {"status": "SUCCESS"}, "hasError": False})
         wema.pay_bill(2000, "R", package_id="7", identifier="1234567890", source_account="01")
