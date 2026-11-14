@@ -34,6 +34,48 @@ class ReconciliationExitTests(TestCase):
             call_command("reconcile_wema", account_recovery_limit=0,
                          stdout=StringIO(), stderr=StringIO())
 
+    def test_each_run_reports_how_far_every_statement_spelling_reaches(self):
+        # One probe per run, before any history is read, printed without
+        # customer data; a probe that fails must not stop the sweep.
+        found = [
+            {"form": "next-day", "ok": True, "http_status": 200, "rows": 17, "credits": 4,
+             "newest": "2026-11-13T23:01:33"},
+            {"form": "now", "ok": True, "http_status": 200, "rows": 18, "credits": 5,
+             "newest": "2026-11-14T00:10:05", "chosen": True,
+             "newest_transaction_date": "14 Nov 2026 12:10 AM",
+             "newest_kind": "Credit/InterBank"},
+        ]
+        out = StringIO()
+        report = dict(credited=0, windows=1, error_code="", fetch_failed=False,
+                      backlog=False, diagnostic={})
+        with patch("utility.management.commands.reconcile_wema.wema_provisioned_wallets",
+                   return_value=[self.wallet, self.wallet]), \
+             patch("utility.management.commands.reconcile_wema.reconcile_account_history",
+                   return_value=report), \
+             patch("utility.management.commands.reconcile_wema.wema.probe_history_to_forms",
+                   return_value=found) as probe, \
+             patch("utility.alerts.alert"):
+            call_command("reconcile_wema", account_recovery_limit=0,
+                         stdout=out, stderr=StringIO())
+        self.assertEqual(probe.call_count, 1)
+        text = out.getvalue()
+        self.assertIn("transhistoryV2 probe: to=next-day ok=True http=200 rows=17 "
+                      "credits=4 newest=2026-11-13T23:01:33 (-; -) today=", text)
+        self.assertIn("to=now ok=True http=200 rows=18 credits=5 "
+                      "newest=2026-11-14T00:10:05 (14 Nov 2026 12:10 AM; Credit/InterBank)", text)
+        self.assertEqual(text.count("<- used"), 1)
+
+        with patch("utility.management.commands.reconcile_wema.wema_provisioned_wallets",
+                   return_value=[self.wallet]), \
+             patch("utility.management.commands.reconcile_wema.reconcile_account_history",
+                   return_value=report) as sweep, \
+             patch("utility.management.commands.reconcile_wema.wema.probe_history_to_forms",
+                   side_effect=RuntimeError("probe broke")), \
+             patch("utility.alerts.alert"):
+            call_command("reconcile_wema", account_recovery_limit=0,
+                         stdout=StringIO(), stderr=StringIO())
+        self.assertEqual(sweep.call_count, 1)
+
     @override_settings(WEMA_RECONCILE_FAIL_INCOMPLETE=True)
     def test_opening_review_fails_after_durable_report_without_changing_balance(self):
         before = self.wallet.balance

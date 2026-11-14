@@ -1654,43 +1654,54 @@ def _history_is_incomplete(containers: list[dict], row_count: int) -> bool:
     return False
 
 
-# The statement's `to` is a date-time and the bank returns rows up to that instant.
-# A bare date is the first instant of its day, so a statement asked "to today"
-# stopped at last midnight: a deposit was not in it until the next day. Production,
-# 13-14 November 2026: the first row changed at 00:00 WAT exactly, before that
-# night's transfer was sent, and a deposit the bank's balance already held stayed
-# out of every statement read after it.
-#
-# So the `to` day is asked for whole. Two spellings say that; the widest is tried
-# first and the plain date stays as the last resort, so a refusal can only leave
-# things as they were:
+# Which rows a statement holds depends on how its `to` is written, and the bank
+# does not document it. Production, 13-14 November 2026:
+#   - `to` as today's bare date stopped at the previous midnight: the first row
+#     changed at 00:00 WAT exactly, before that night's transfer was sent;
+#   - `to` as tomorrow's date was accepted and still ended on yesterday's rows,
+#     while the bank's balance already held that morning's deposit.
+# So no one spelling is assumed. A day can be asked for several ways; reconcile
+# asks all of them on each run (probe_history_to_forms), the one whose answer
+# reaches furthest is remembered, and every other read uses it first. The bare
+# date stays in the list, so the worst case is what it always was.
 #   next-day     the following date, i.e. up to the first instant of tomorrow
 #   end-of-day   the same date at 23:59:59
-#   plain        the bare date (rows before that day only)
-_HISTORY_TO_FORMS = ("next-day", "end-of-day", "plain")
+#   now          the current time in Lagos (only when the day is today)
+#   now-utc      the current time in UTC, marked Z (only when the day is today)
+#   plain        the bare date
 _HISTORY_TO_FORM_KEY = "wema:history:to-form"
 _HISTORY_TO_PROVEN_KEY = "wema:history:to-form-proven"
 
 
-def _history_to_values(date_to: str) -> list[str]:
-    """The `to` values to ask with, widest first. A value that is not a bare
-    date is the caller's own instant and is sent as given."""
-    from datetime import date, timedelta
+def _history_to_values(date_to: str) -> list[tuple[str, str]]:
+    """(name, value) for each way to ask through the end of `date_to`, in the
+    order tried. A value that is not a bare date is the caller's own instant
+    and is sent as given."""
+    from datetime import UTC, date, timedelta
+
+    from django.utils import timezone
 
     text = str(date_to or "").strip()
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
-        return [date_to]
+        return [("as-given", date_to)]
     try:
         day = date.fromisoformat(text)
     except ValueError:
-        return [date_to]
-    return [(day + timedelta(days=1)).isoformat(), f"{text}T23:59:59", text]
+        return [("as-given", date_to)]
+    values = [("next-day", (day + timedelta(days=1)).isoformat()),
+              ("end-of-day", f"{text}T23:59:59")]
+    now = timezone.localtime()
+    if day == now.date():
+        values.append(("now", now.strftime("%Y-%m-%dT%H:%M:%S")))
+        values.append(("now-utc", now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")))
+    values.append(("plain", text))
+    return values
 
 
 def _history_note(key: str, value=None, timeout: int = 3600):
     """Read (no value) or write a small statement-request note in the shared
-    cache. A cache that is down reads as "nothing noted": the widest request is
-    tried again, which is always safe."""
+    cache. A cache that is down reads as "nothing noted": the default order is
+    used, which is always safe."""
     from django.core.cache import cache
 
     try:
@@ -1710,11 +1721,63 @@ def _history_window_refused(result: dict) -> bool:
             and status not in (401, 403, 408, 429))
 
 
+def _history_newest(rows: list) -> dict:
+    """The latest row by `date`, reduced to what places it in time: the two
+    timestamps as the bank wrote them and whether it is a credit or a debit."""
+    rows = [row for row in rows if isinstance(row, dict)]
+    if not rows:
+        return {"date": "", "transaction_date": "", "kind": ""}
+    row = max(rows, key=lambda item: str(item.get("date") or "").strip())
+    return {"date": str(row.get("date") or "").strip()[:32],
+            "transaction_date": str(row.get("transactionDate") or "").strip()[:32],
+            "kind": f"{str(row.get('creditType') or '').strip()}/{str(row.get('type') or '').strip()}"[:40]}
+
+
+def probe_history_to_forms(account_number: str, date_from: str, date_to: str) -> list[dict]:
+    """Ask for the same statement every way `to` can be spelled.
+
+    Returns one entry per spelling with what came back: whether it answered,
+    how many rows and credits, and the newest row's timestamp. Nothing here
+    names a customer. The spelling that reaches furthest (newest row, then most
+    rows; the earlier one on a tie) is remembered for get_transactions.
+    """
+    if not _product_live("acct_mgt"):
+        return []
+    found = []
+    best = None
+    for form, value in _history_to_values(date_to):
+        result = _history_request(account_number, date_from, value)
+        rows = result.get("transactions") if result.get("success") else []
+        rows = rows if isinstance(rows, list) else []
+        newest = _history_newest(rows)
+        entry = {
+            "form": form,
+            "ok": bool(result.get("success")),
+            "http_status": (result.get("diagnostic") or {}).get("http_status"),
+            "rows": len(rows),
+            "credits": sum(1 for row in rows
+                           if str(row.get("creditType") or "").strip().casefold() == "credit"),
+            "newest": newest["date"],
+            "newest_transaction_date": newest["transaction_date"],
+            "newest_kind": newest["kind"],
+        }
+        found.append(entry)
+        if entry["ok"] and rows and (
+                best is None or (entry["newest"], entry["rows"]) > (best["newest"], best["rows"])):
+            best = entry
+    if best is not None:
+        _history_note(_HISTORY_TO_FORM_KEY, best["form"], timeout=6 * 3600)
+        _history_note(_HISTORY_TO_PROVEN_KEY, True, timeout=7 * 86400)
+        for entry in found:
+            entry["chosen"] = entry is best
+    return found
+
+
 def get_transactions(account_number: str, date_from: str, date_to: str, keyword: str = "") -> dict:
     """Transaction history — the source for detecting inbound credits (creditType=='Credit').
 
-    Covers `date_from` through the END of `date_to`. The result names the `to`
-    spelling that was answered in ``to_form``.
+    Covers `date_from` through the END of `date_to`, as far as the bank returns
+    it. The result names the `to` spelling that was answered in ``to_form``.
     """
     if not _product_live("acct_mgt"):
         if _mock_blocked():
@@ -1723,31 +1786,30 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
         return {"success": True, "mock": True, "transactions": []}
     values = _history_to_values(date_to)
     if len(values) == 1:
-        return _history_request(account_number, date_from, values[0], keyword)
-    plain = len(values) - 1
-    try:
-        first = max(0, min(int(_history_note(_HISTORY_TO_FORM_KEY) or 0), plain))
-    except (TypeError, ValueError):
-        first = 0
+        return _history_request(account_number, date_from, values[0][1], keyword)
+    # The spelling last seen to reach furthest goes first; the rest keep their order.
+    preferred = _history_note(_HISTORY_TO_FORM_KEY)
+    values.sort(key=lambda item: item[0] != preferred)
+    plain = dict(values)["plain"]
     refused = refused_status = None
     result = {}
-    for index in range(first, len(values)):
-        result = _history_request(account_number, date_from, values[index], keyword)
-        result["to_form"] = _HISTORY_TO_FORMS[index]
+    for index, (form, value) in enumerate(values):
+        result = _history_request(account_number, date_from, value, keyword)
+        result["to_form"] = form
+        last = index == len(values) - 1
         if not result.get("success"):
-            if index == plain or not _history_window_refused(result):
+            if last or not _history_window_refused(result):
                 return result
             if refused is None:
-                refused = index
-                refused_status = (result.get("diagnostic") or {}).get("http_status")
+                refused, refused_status = form, (result.get("diagnostic") or {}).get("http_status")
             continue
         if refused is not None:
-            # The wider spelling was turned down and this one answered: skip the
-            # refused one for an hour instead of asking twice on every read.
-            _history_note(_HISTORY_TO_FORM_KEY, index)
+            # A spelling was turned down and this one answered: use it first for
+            # an hour instead of asking twice on every read.
+            _history_note(_HISTORY_TO_FORM_KEY, form)
             log.warning("wema_history_to_form_refused refused=%s using=%s http_status=%s",
-                        _HISTORY_TO_FORMS[refused], _HISTORY_TO_FORMS[index], refused_status)
-        if index == plain:
+                        refused, form, refused_status)
+        if form == "plain":
             return result
         if result.get("transactions"):
             _history_note(_HISTORY_TO_PROVEN_KEY, True, timeout=7 * 86400)
@@ -1756,11 +1818,11 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
             # wider window can only hold more rows than the plain one, so if the
             # plain date has rows the bank is answering this spelling wrongly:
             # keep the plain answer rather than read an account as empty.
-            check = _history_request(account_number, date_from, values[plain], keyword)
+            check = _history_request(account_number, date_from, plain, keyword)
             if check.get("success") and check.get("transactions"):
-                _history_note(_HISTORY_TO_FORM_KEY, plain)
-                log.warning("wema_history_to_form_hides_rows form=%s", _HISTORY_TO_FORMS[index])
-                check["to_form"] = _HISTORY_TO_FORMS[plain]
+                _history_note(_HISTORY_TO_FORM_KEY, "plain")
+                log.warning("wema_history_to_form_hides_rows form=%s", form)
+                check["to_form"] = "plain"
                 return check
         return result
     return result
