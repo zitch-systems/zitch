@@ -104,8 +104,14 @@ class WemaCallbackAuthTests(TestCase):
     @override_settings(WEMA={**WEMA_CB, "CALLBACK_TOKEN": "new-token",
                              "CALLBACK_TOKEN_PREV": TOKEN})
     def test_previous_token_still_accepted_during_rotation(self):
-        self.assertEqual(self._post(f"/webhooks/wema/account/{TOKEN}", {"data": {}}).status_code, 200)
-        self.assertEqual(self._post("/webhooks/wema/account/new-token", {"data": {}}).status_code, 200)
+        with self.assertLogs("zitch.security", level="INFO") as captured:
+            self.assertEqual(self._post(f"/webhooks/wema/account/{TOKEN}", {"data": {}}).status_code, 200)
+            self.assertEqual(self._post("/webhooks/wema/account/new-token", {"data": {}}).status_code, 200)
+        cutover = [line for line in captured.output if "wema_callback_cutover" in line]
+        self.assertEqual(cutover, [
+            "INFO:zitch.security:wema_callback_cutover kind=account token_slot=overlap",
+            "INFO:zitch.security:wema_callback_cutover kind=account token_slot=current",
+        ])
 
     @override_settings(DEBUG=False, TESTING=False,
                        WEMA={**WEMA_CB, "SIMULATION": True, "CALLBACK_TOKEN": "",

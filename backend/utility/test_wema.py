@@ -301,6 +301,7 @@ class WemaLiveTests(SimpleTestCase):
 
         result = wema.get_transactions("0410530975", "2026-07-01", "2026-08-20")
 
+        self.assertNotIn("keyWord", mock_post.call_args.kwargs["json"])
         self.assertTrue(result["success"])
         self.assertEqual(result["transactions"], [])
         self.assertTrue(result["empty"])
