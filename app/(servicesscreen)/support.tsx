@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import { Screen, Header, Card, ZItem } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
+import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { useTheme, font } from '@/lib/theme';
 import { SUPPORT_EMAIL, SUPPORT_PHONE, SUPPORT_WHATSAPP, FAQ_URL } from '@/components/configFiles/links';
 
@@ -21,8 +22,8 @@ const Support = () => {
   const { c } = useTheme();
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
 
-  const channels = [
-    { icon: 'chat', title: 'Chat on WhatsApp', sub: 'Send our support team a message', go: () => open(`https://wa.me/${SUPPORT_WHATSAPP}`) },
+  const channels: { icon?: string; leading?: React.ReactNode; title: string; sub: string; go: () => void }[] = [
+    { leading: <WhatsAppGlyph size={22} />, title: 'Chat on WhatsApp', sub: 'Send our support team a message', go: () => open(`https://wa.me/${SUPPORT_WHATSAPP}`) },
     { icon: 'phone', title: 'Call us', sub: SUPPORT_PHONE, go: () => open(`tel:${SUPPORT_PHONE}`) },
     { icon: 'mail', title: 'Email support', sub: SUPPORT_EMAIL, go: () => open(`mailto:${SUPPORT_EMAIL}`) },
     { icon: 'help', title: 'Help center / FAQ', sub: 'Answers to common questions', go: () => open(FAQ_URL) },
@@ -48,7 +49,7 @@ const Support = () => {
         <Card style={{ marginTop: 14 }} pad={0}>
           <View style={{ paddingHorizontal: 16 }}>
             {channels.map((r, i) => (
-              <ZItem key={r.title} icon={r.icon} title={r.title} sub={r.sub} onPress={r.go} last={i === channels.length - 1} right={chev} />
+              <ZItem key={r.title} icon={r.icon} leading={r.leading} title={r.title} sub={r.sub} onPress={r.go} last={i === channels.length - 1} right={chev} />
             ))}
           </View>
         </Card>

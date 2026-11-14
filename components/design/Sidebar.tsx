@@ -56,7 +56,7 @@ const Sidebar = ({ state, navigation, width }: BottomTabBarProps & { width?: num
           );
         })}
         <Pressable onPress={() => router.push('/linkwhatsapp')} accessibilityRole="button" accessibilityLabel="Bank on WhatsApp" style={{ flexDirection: 'row', alignItems: 'center', gap: 13, minHeight: 48, paddingVertical: 13, paddingHorizontal: 14, borderRadius: 14 }}>
-          <WhatsAppGlyph size={22} color={c.brand} />
+          <WhatsAppGlyph size={22} />
           <Text style={{ flex: 1, fontSize: 15, fontFamily: font.semibold, color: c.ink2 }}>WhatsApp</Text>
         </Pressable>
       </ScrollView>

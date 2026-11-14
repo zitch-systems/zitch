@@ -24,7 +24,7 @@ import qrcode from 'qrcode-generator';
 import { BANK_WHATSAPP, BANK_WHATSAPP_DISPLAY, SUPPORT_EMAIL } from '@/components/configFiles/links';
 import { MARK_TEAL_PNG, MARK_WHITE_PNG } from '@/lib/receiptArt';
 import { transactionStatusPresentation, type TxnState } from '@/lib/transactionStatus';
-import { WHATSAPP_GLYPH_PATH } from '@/lib/whatsappGlyph';
+import { WHATSAPP_GLYPH_PATH, WHATSAPP_GLYPH_VIEWBOX } from '@/lib/whatsappGlyph';
 
 export type ReceiptRow = [string, string, boolean?];
 export type ReceiptFormat = 'jpeg' | 'pdf';
@@ -390,7 +390,7 @@ export const receiptHtml = ({
   <table>${body}</table>
 </div>
 <div class="wa">
-  <div class="wa-tile"><svg width="28" height="28" viewBox="0 0 24 24"><path fill="#fff" d="${WHATSAPP_GLYPH_PATH}"/></svg></div>
+  <div class="wa-tile"><svg width="28" height="28" viewBox="${WHATSAPP_GLYPH_VIEWBOX}"><path fill="#fff" fill-rule="evenodd" clip-rule="evenodd" d="${WHATSAPP_GLYPH_PATH}"/></svg></div>
   <div class="wa-text">
     <div class="wa-kicker">Zitch WhatsApp Banking</div>
     <div class="wa-title">Bank wherever you chat</div>

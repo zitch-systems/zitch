@@ -1,5 +1,6 @@
 import React from 'react';
 import Svg, { Path, Rect, Circle } from 'react-native-svg';
+import { WHATSAPP_GLYPH_PATH } from '@/lib/whatsappGlyph';
 
 /**
  * ZIcon — direct port of the prototype's inline SVG icon set
@@ -132,6 +133,10 @@ const P: Record<string, (color: string) => React.ReactNode> = {
   mail: () => [
     <Rect key="a" x={2} y={4} width={20} height={16} rx={2} />,
     <Path key="b" d="m22 7-10 5L2 7" />,
+  ],
+  // The WhatsApp logo (filled, not stroked), scaled from its 360 x 362 grid onto the 24 grid.
+  whatsapp: (color) => [
+    <Path key="a" d={WHATSAPP_GLYPH_PATH} fill={color} stroke="none" fillRule="evenodd" clipRule="evenodd" transform="scale(0.0663)" />,
   ],
   chat: () => [<Path key="a" d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />],
   gift: () => [

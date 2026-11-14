@@ -219,7 +219,7 @@ const WaApprove = ({ token }: { token: string }) => {
           <Text style={{ fontSize: 19, fontFamily: font.extrabold, color: c.ink1, textAlign: 'center' }}>{ending.title}</Text>
           <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular, marginTop: 10, textAlign: 'center', lineHeight: 21 }}>{outcome}</Text>
           <View style={{ marginTop: 26, alignSelf: 'stretch', gap: 10 }}>
-            <Btn label="Back to WhatsApp" icon="chat" onPress={backToWhatsApp} />
+            <Btn label="Back to WhatsApp" icon="whatsapp" onPress={backToWhatsApp} />
             <Btn label="Stay in Zitch" variant="outline" onPress={() => router.replace('/home')} />
           </View>
         </View>
