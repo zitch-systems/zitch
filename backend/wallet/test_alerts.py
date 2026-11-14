@@ -46,6 +46,17 @@ class TransactionAlertTests(TestCase):
         self.assertIn("Credit", email.call_args[0][1])
         self.assertIn("5,000.00", email.call_args[0][1])
 
+    def test_email_receipt_uses_the_shared_jpeg_and_keeps_html(self):
+        with patch("utility.providers.send_email") as email, \
+                patch("utility.providers.send_sms"):
+            with self.captureOnCommitCallbacks(execute=True):
+                credit(self.user, Decimal("5000"), "funding")
+        kwargs = email.call_args.kwargs
+        self.assertIn("Credit alert", kwargs["html"])
+        receipt, = kwargs["attachments"]
+        self.assertEqual(receipt["filename"], "Zitch-Receipt.jpg")
+        self.assertTrue(receipt["content"].startswith(b"\xff\xd8"))
+
     def test_a_pending_debit_does_not_alert_until_it_settles(self):
         """debit() writes PENDING and the caller flips it later. Alerting at debit
         time would announce spends that then fail and reverse."""
