@@ -178,32 +178,10 @@ _VAS_UNAVAILABLE = ("This is temporarily unavailable on our side. You have not b
 
 
 def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
-    """Whether a purchase that comes back PROCESSING could EVER be resolved here.
+    """Check settlement readiness before accepting a payment.
 
-    The hazard this closes is specific and total. ALAT's airtime/data and bills
-    purchase endpoints may answer ``PROCESSING``, which settle_or_refund correctly
-    treats as "hold the money, requery later" — it must never refund a purchase that
-    may have been delivered. Settlement then depends on ``wema.vas_status``, whose
-    only answer is a bare integer ``transactionStatus``. The confirmed payment
-    legend is 200 success, 400 failure and 401 API/auth failure; with no matching
-    ``WEMA_VAS_STATUS_LEGEND`` / ``WEMA_BILLS_STATUS_LEGEND``,
-    ``_parse_vas`` reports ``pending`` for every code, forever. There is no second
-    settlement path: the bank's own transaction callback also routes through
-    ``vtu_requery``. So on a legend-less deploy a PROCESSING purchase leaves the
-    customer debited with nothing delivered and nothing refunded, permanently, and
-    no cron can ever clear it.
-
-    A legend alone is insufficient: the bank must also grant status-query access.
-    The shared purchase runner checks both before debit; ``vtu_purchase`` repeats
-    the check before sending a purchase, refunding if access has since disappeared.
-
-    Scope is deliberately narrow: this gates only the case where REAL calls will be
-    made. When ``_vas_live`` is false the rail already resolves itself safely — it
-    fails closed in production, and in dev/tests/simulation it mocks a synchronous
-    SUCCESS that needs no requery — so there is nothing to strand.
-
-    Returns ``(True, "")`` when a purchase is safe to accept, else
-    ``(False, <operator-facing reason>)``.
+    Client Account bills settle from authenticated callbacks. Airtime and data
+    still require a working status endpoint.
     """
     from . import wema
 
@@ -230,6 +208,13 @@ def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
         env = "WEMA_" + wema._LEGEND_SETTING.get(product, "VAS_STATUS_LEGEND")
         return False, (f"{env} must contain unambiguous success and failed outcomes, "
                        f"so every PROCESSING purchase can be settled or refunded")
+    if product == "bills":
+        bank = settings.WEMA
+        if not (bank.get("CALLBACK_TOKEN") and bank.get("CALLBACK_ENFORCE_IPS")
+                and bank.get("CALLBACK_IPS") and bank.get("AUTH_REQUIRE_SECURITY_INFO")
+                and bank.get("SECURITY_INFO")):
+            return False, "Client Account bills require authenticated Wema callbacks."
+        return True, ""
     entitled, reason = wema.vas_status_entitlement(product)
     if not entitled:
         return False, reason or "The bank status-query service is unavailable for this product"
@@ -385,6 +370,9 @@ def vas_requery(reference: str, meta: dict | None = None, *, service: str = "") 
                 "message": "Made on a retired provider; needs manual settlement."}
     # Older interrupted reservations have a service label but no saved type.
     vas_type = (meta or {}).get("vas_type") or biller_transaction_type(service) or "airtime"
+    if vas_type == "bill":
+        return {"success": False, "pending": True, "status": "AWAITING_BANK_CALLBACK",
+                "reference": reference, "message": "Awaiting Wema Client Account settlement evidence."}
     return wema.vas_status(reference, vas_type)
 
 

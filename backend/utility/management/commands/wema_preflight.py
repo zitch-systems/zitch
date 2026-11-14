@@ -193,7 +193,7 @@ class Command(BaseCommand):
                 checks.append((
                     False, "Partner-bank VAS status/requery",
                     PASS if reachable else WARN,
-                    "the status endpoint answers" if reachable
+                    "authenticated Client Account callbacks configured" if reachable
                     else (f"the gateway refuses the PartnerPayment status endpoint: {why}. "
                           f"Purchases may still complete, but any that come back PROCESSING "
                           f"cannot be settled or refunded automatically — ask the bank to "
@@ -420,11 +420,13 @@ class Command(BaseCommand):
                            else "no valid variant mappings — electricity and betting "
                                 "cannot route; review `manage.py seed_wema_plans --only billers --dry-run`"))
             if wema._vas_live("bills"):
-                reachable, reason = wema.vas_status_entitlement("bills")
+                from utility.providers import vas_can_settle
+
+                reachable, reason = vas_can_settle("bills")
                 checks.append((
-                    False, "Partner-bank Bills Payment status/requery",
+                    False, "Partner-bank Bills Payment callback configuration",
                     PASS if reachable else WARN,
-                    "the status endpoint answers" if reachable
+                    "authenticated Client Account callbacks configured" if reachable
                     else f"new bill payments are blocked before debit: {reason}",
                 ))
                 try:

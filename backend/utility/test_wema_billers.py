@@ -15,6 +15,8 @@ from utility.providers import _wema_vas_route, vtu_purchase, vtu_verify_customer
 # could then never be settled or refunded. Without them the tests below would assert
 # routing against a purchase that is (correctly) never submitted.
 WEMA_ON = {"KEYS": {"wallet": "k", "airtime": "k", "bills": "k"}, "CHANNEL_ID": "c",
+           "CALLBACK_TOKEN": "test-token", "CALLBACK_ENFORCE_IPS": True,
+           "CALLBACK_IPS": ["135.236.18.76"], "AUTH_REQUIRE_SECURITY_INFO": True, "SECURITY_INFO": "test-info",
            "SIMULATION": False, "SOURCE_ACCOUNT": "0123456789",
            "VAS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api",
            "BILLS_STATUS_LEGEND": "200=success 400=failed 401=unauthorized_authentication_failed_or_invalid_api"}
