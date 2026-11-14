@@ -1778,6 +1778,11 @@ def _history_is_incomplete(containers: list[dict], row_count: int) -> bool:
 #   end-of-day   the same date at 23:59:59
 #   now          the current time in Lagos (only when the day is today)
 #   now-utc      the current time in UTC, marked Z (only when the day is today)
+#   week-ahead   seven days on. A bank dates a transaction made after its end of
+#                day, or at a weekend, on its next business day: on Friday 13
+#                November 2026 every transaction after 18:58 was missing from
+#                every window that ended on the Saturday or the Sunday. A
+#                week covers a weekend and a public holiday after it.
 #   plain        the bare date
 _HISTORY_TO_FORM_KEY = "wema:history:to-form"
 _HISTORY_TO_PROVEN_KEY = "wema:history:to-form-proven"
@@ -1804,6 +1809,7 @@ def _history_to_values(date_to: str) -> list[tuple[str, str]]:
     if day == now.date():
         values.append(("now", now.strftime("%Y-%m-%dT%H:%M:%S")))
         values.append(("now-utc", now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")))
+    values.append(("week-ahead", (day + timedelta(days=7)).isoformat()))
     values.append(("plain", text))
     return values
 
