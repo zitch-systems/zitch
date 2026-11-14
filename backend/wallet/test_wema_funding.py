@@ -8,7 +8,7 @@ credit-reconciliation poller (ALAT has no inbound-credit webhook).
 """
 import json
 import importlib
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -459,6 +459,23 @@ class WemaAlatFundingTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(history.call_args.args[1:], ("2026-11-13", "2026-11-14"))
         self.assertEqual([row["reference"] for row in r.json()["transactions"]], ["SAT", "FRI"])
+
+    def test_the_default_statement_ends_on_the_lagos_day(self):
+        # 00:30 in Lagos on 15 November is still 14 November in UTC. A deposit
+        # made at 00:10 must be on the default statement, not cut off as later
+        # than a UTC `to`.
+        w = Wallet.objects.get(user=self.user)
+        w.account_number = "0155500011"
+        w.save(update_fields=["account_number"])
+        row = {"referenceId": "AFTER-MIDNIGHT", "amount": "500", "creditType": "Credit",
+               "status": "Default", "date": "2026-11-16T00:00:00", "transactionDate": "15 Nov 2026"}
+        with patch("django.utils.timezone.localdate", return_value=date(2026, 11, 15)), \
+                patch("utility.wema.get_transactions",
+                      return_value={"success": True, "transactions": [row]}) as history:
+            r = self._post("/api/wallet/statement/", {})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(history.call_args.args[1:], ("2026-10-16", "2026-11-15"))
+        self.assertEqual([row["reference"] for row in r.json()["transactions"]], ["AFTER-MIDNIGHT"])
 
     def test_statement_needs_account(self):
         r = self._post("/api/wallet/statement/", {})

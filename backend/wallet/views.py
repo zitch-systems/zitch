@@ -1627,7 +1627,10 @@ def wema_statement(request):
         v = (v or "").strip()
         return v if re.match(r"^\d{4}-\d{2}-\d{2}$", v) else default
 
-    today = timezone.now().date()
+    # The customer's calendar day, not UTC's: between midnight and 1 am in Lagos
+    # the UTC date is still yesterday, and the rows after midnight would be cut
+    # off as later than `to` below.
+    today = timezone.localdate()
     date_to = _date(request.data.get("to"), today.strftime("%Y-%m-%d"))
     date_from = _date(request.data.get("from"), (today - timedelta(days=30)).strftime("%Y-%m-%d"))
     res = wema_provider.get_transactions(wallet.account_number, date_from, date_to)
