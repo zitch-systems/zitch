@@ -911,7 +911,11 @@ def _send_alert_channel(row):
     txn = row.transaction
     subject, body = _describe(txn, reversal=row.reversal)
     if row.channel == "email":
-        return send_email(txn.user.email, subject, body, html=_email_alert_html(txn, reversal=row.reversal))
+        return send_email(
+            txn.user.email, subject, body,
+            html=_email_alert_html(txn, reversal=row.reversal),
+            attachments=_email_receipt_attachments(txn, reversal=row.reversal),
+        )
     if row.channel == "sms":
         return send_sms(txn.user.phone, _sms_alert(txn, reversal=row.reversal))
     if row.channel == "push":
@@ -1132,6 +1136,30 @@ def _sms_alert(txn, *, reversal: bool = False) -> str:
     # what the customer checks, and a second segment costs a second message.
     room = _SMS_MAX - len(head) - len(tail) - len("Desc :")
     return head + "Desc :" + desc[:max(room, 0)].strip() + tail
+
+
+def _email_receipt_attachments(txn, *, reversal: bool = False) -> list:
+    """Attach the shared receipt artwork while retaining the readable alert."""
+    if reversal or txn.transaction_status != txn.SUCCESS:
+        return []
+
+    from whatsapp.receipt import render_receipt
+
+    title = ("Credit received" if txn.direction == txn.IN
+             else "Transfer receipt" if _settled_transfer(txn) else "Debit receipt")
+    try:
+        rows = [
+            ("Amount", _money(txn.amount, txn.currency)),
+            ("Description", _meta(txn).get("recipient_name")
+             or _meta(txn).get("counterparty") or txn.service),
+            ("Account", _mask_account(_transaction_account_number(txn))),
+            ("Date", _alert_timestamp(txn.created, "%d %b %Y, %I:%M %p")),
+        ]
+        return [{"filename": "Zitch-Receipt.jpg",
+                 "content": render_receipt(title, rows, txn.reference)}]
+    except Exception:  # The alert must still reach the customer if rendering fails.
+        log.exception("txn_alert_email_receipt_failed txn=%s", txn.pk)
+        return []
 
 
 def _email_alert_html(txn, *, reversal: bool = False) -> str:
