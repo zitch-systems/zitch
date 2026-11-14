@@ -11,7 +11,7 @@ So a balance request reads that customer's recent statement first, through the
 same reader and the same once-only ledger guard as the poll (the bank's
 per-transaction reference, credited under a wallet row lock). Reading it here,
 there and in the cron at the same moment cannot credit a deposit twice. It also
-shares the poll's backoff after the bank answers 429.
+shares the poll's backoff after a read the bank refused or did not answer.
 """
 import logging
 import threading
@@ -26,7 +26,8 @@ from utility import wema
 
 log = logging.getLogger("wallet")
 
-#: Set by the worker poll (and here) for 60 seconds after the bank answers 429.
+#: Set by the worker poll (and here) after a statement read the bank refused
+#: or did not answer readably. See reconciliation.note_statement_read.
 BACKOFF_KEY = "wema:recent-credit:backoff"
 
 
@@ -61,15 +62,11 @@ def _claim_account(wallet_pk) -> bool:
 
 def _read_statement(wallet) -> int:
     """Credit confirmed deposits from yesterday and today. Returns how many."""
-    from wallet.reconciliation import reconcile_recent_credits
+    from wallet.reconciliation import note_statement_read, reconcile_recent_credits
 
     today = timezone.localdate()
     credited, error = reconcile_recent_credits(wallet, today - timedelta(days=1), today)
-    if error == "history_rate_limited":
-        try:
-            cache.set(BACKOFF_KEY, True, timeout=60)
-        except Exception:  # noqa: BLE001 - the next read simply tries again
-            pass
+    note_statement_read(error)
     return credited
 
 

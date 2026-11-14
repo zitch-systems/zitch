@@ -105,9 +105,43 @@ def reconcile_recent_credits(wallet, start, end):
     return applied, "history_opening_review" if opening_review else ""
 
 
+#: Set while every statement reader (the worker poll, balance requests) should
+#: leave the bank alone. deposit_sync reads the same key.
+STATEMENT_BACKOFF_KEY = "wema:recent-credit:backoff"
+_STATEMENT_FAILURES_KEY = "wema:recent-credit:failures"
+#: Errors that mean the bank refused the read or gave no readable answer.
+_BANK_READ_FAILURES = frozenset({"history_unavailable", "history_rate_limited"})
+_BACKOFF_FIRST_SECONDS = 60
+_BACKOFF_MAX_SECONDS = 900
+
+
+def note_statement_read(error):
+    """Back every statement reader off after a failed read, longer each time.
+
+    Only a 429 used to back off, for 60 seconds. On 14 November 2026 the
+    gateway answered every call with something unreadable from 15:05 WAT, and
+    the worker kept asking for the same statement every five seconds for
+    hours. Calling a failing partner at that rate can only keep it failing.
+
+    Each failed read doubles the pause, from a minute up to fifteen. A read
+    that succeeds clears it. Errors about our own data (an account that
+    changed, a history review) are not the bank's and change nothing here.
+    """
+    try:
+        if error in _BANK_READ_FAILURES:
+            failures = int(cache.get(_STATEMENT_FAILURES_KEY) or 0) + 1
+            cache.set(_STATEMENT_FAILURES_KEY, failures, timeout=3600)
+            pause = min(_BACKOFF_MAX_SECONDS, _BACKOFF_FIRST_SECONDS * 2 ** min(failures - 1, 8))
+            cache.set(STATEMENT_BACKOFF_KEY, True, timeout=pause)
+        elif not error:
+            cache.delete(_STATEMENT_FAILURES_KEY)
+    except Exception:  # noqa: BLE001 - the next read simply asks again
+        pass
+
+
 def poll_recent_wema_credits(interval_seconds):
     """Read one account per worker interval across instances, in wallet order."""
-    if cache.get("wema:recent-credit:backoff") or not cache.add(
+    if cache.get(STATEMENT_BACKOFF_KEY) or not cache.add(
             "wema:recent-credit:poll", True, timeout=interval_seconds):
         return
     wallets = wema_provisioned_wallets().select_related("user").order_by("pk")
@@ -119,8 +153,7 @@ def poll_recent_wema_credits(interval_seconds):
     today = timezone.localdate()
     started = monotonic()
     applied, error = reconcile_recent_credits(wallet, today - timedelta(days=1), today)
-    if error == "history_rate_limited":
-        cache.set("wema:recent-credit:backoff", True, timeout=60)
+    note_statement_read(error)
     if error and cache.add(f"wema:recent-credit:error:{wallet.pk}", True, timeout=300):
         from utility.alerts import alert
 
