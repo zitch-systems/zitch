@@ -17,6 +17,11 @@ What is on the landing page:
 - **Chat demo** — a scripted copy of the real WhatsApp flow: "Hi" → numbered menu → reply with a
   number or type it → private form → name check → PIN → receipt. Every name, account and price
   in it is a sample; nothing is sent anywhere.
+- **Logo tickers** — partner logos (`assets/partners-v1/`, the files supplied by the owner, only
+  trimmed and resized) and provider logos run as two tickers. Without script, or with reduced
+  motion, they are a still, centred row.
+- **Small motion** — stats count up once, section headlines rise in word by word, the four
+  "how it works" steps play in turn on wide screens, and a thin line under the nav tracks scroll.
 - **Animated mark** — `landing-v1/zitch-coil.v2.js`, the same renderer as
   `assets/zitch-loader.v1.js` plus `decorative`, `maxDensity`, `fps` and adaptive segment size
   for small and background coils.
@@ -29,8 +34,7 @@ What is on the landing page:
 
 > **Before relying on the page commercially:** the App Store / Google Play badges and the
 > "Chat on WhatsApp" buttons point at on-page anchors until real store listings and the bot's
-> `wa.me` link are supplied; partner names (Wema Bank, NDIC, Prembly) are text until official
-> logo files are supplied.
+> `wa.me` link are supplied.
 
 > **⚠️ Legal placeholders:** the Terms and Privacy pages carry `class="ph"` placeholders
 > (legal entity, RC number, registered address, support/phone). Grep for `class="ph"` and
