@@ -54,6 +54,7 @@ import re
 import secrets
 from decimal import Decimal, InvalidOperation
 from functools import wraps
+from urllib.parse import urlsplit
 
 import requests
 from django.conf import settings
@@ -318,6 +319,59 @@ def _url_for_base(product: str, base: str, path: str) -> str:
     return f"{base.rstrip('/')}{_PATH[product]}{path}"
 
 
+def _host(url: str) -> str:
+    try:
+        return urlsplit(str(url or "")).hostname or ""
+    except ValueError:
+        return ""
+
+
+def connection_report() -> dict:
+    """Where each Wema product's requests go from this process, with no secret in it.
+
+    Per product: the host it calls, where its subscription key comes from ("own"
+    for a product-specific variable, "wallet" for the Wallet Services fallback,
+    "none"), and a keyed fingerprint of the key it sends. Fingerprints are keyed
+    by the deployment secret, which the API, worker and cron share, so the same
+    key prints the same fingerprint on each of them and a different key prints a
+    different one.
+
+    It exists for a failure of exactly this shape: on 14 November 2026 only the
+    statement endpoint was answered with a gateway's 403 page while transfers and
+    airtime went through, and no log said which host or key the statement read
+    had used.
+    """
+    keys = settings.WEMA.get("KEYS") or {}
+    report = {
+        "base_host": _host(settings.WEMA.get("BASE_URL")),
+        "channel_id": _fingerprint(settings.WEMA.get("CHANNEL_ID", "")),
+        "wallet_key": _fingerprint(keys.get("wallet", "")),
+        "products": {},
+    }
+    for product in _PATH:
+        if product == "bnpl":  # merchant credentials, reported by nothing here
+            continue
+        key = _sub_key(product)
+        report["products"][product] = {
+            "host": _host(_base_url(product)),
+            "key": "own" if keys.get(product) else ("wallet" if key else "none"),
+            "key_id": _fingerprint(key),
+        }
+    return report
+
+
+def connection_summary() -> str:
+    """connection_report() as one line: base host, channel and wallet-key
+    fingerprints, then product=host/key-source:fingerprint for each product."""
+    report = connection_report()
+    parts = [f"base={report['base_host'] or '-'}",
+             f"channel={report['channel_id'] or '-'}",
+             f"wallet_key={report['wallet_key'] or '-'}"]
+    for product, entry in report["products"].items():
+        parts.append(f"{product}={entry['host'] or '-'}/{entry['key']}:{entry['key_id'] or '-'}")
+    return " ".join(parts)
+
+
 _NEGATIVE_STATUS_RE = re.compile(
     r"\b(?:false|fail(?:ed|ure)?|rejected|declined|denied|unsuccessful|error)\b",
     re.I,
@@ -565,11 +619,28 @@ def _note_non_json(product: str, path: str, resp: requests.Response) -> requests
         json.loads(body)
     except ValueError:
         headers = getattr(resp, "headers", None) or {}
-        log.warning("wema_gateway_non_json product=%s route=%s http_status=%s "
-                    "content_type=%s bytes=%d", product, _gateway_route(path),
+        # The gateway's own request id is what the bank needs to find the call
+        # in its logs. Its absence says the refusal never reached the API
+        # gateway: something in front of it answered.
+        log.warning("wema_gateway_non_json product=%s host=%s route=%s http_status=%s "
+                    "content_type=%s bytes=%d server=%s request_id=%s", product,
+                    _host(_base_url(product)) or "-", _gateway_route(path),
                     resp.status_code, _log_safe(headers.get("Content-Type", ""), 60),
-                    len(body))
+                    len(body), _log_safe(headers.get("Server", "") or "-", 60),
+                    _gateway_request_id(headers) or "-")
     return resp
+
+
+_REQUEST_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
+
+
+def _gateway_request_id(headers) -> str:
+    """The API gateway's request id, when the response carries a well-formed one."""
+    for name in ("apim-request-id", "x-ms-request-id"):
+        value = (headers or {}).get(name)
+        if isinstance(value, str) and _REQUEST_ID.fullmatch(value):
+            return value
+    return ""
 
 
 def _get(product: str, path: str, params: dict | None = None) -> requests.Response:
@@ -593,12 +664,9 @@ def _response_meta(resp: requests.Response, data) -> dict:
         "gateway_code": data.get("code") if isinstance(data, dict) else None,
         "message": _msg(data),
     }
-    headers = getattr(resp, "headers", {}) or {}
-    for name in ("apim-request-id", "x-ms-request-id"):
-        value = headers.get(name)
-        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value, re.I):
-            details["gateway_request_id"] = value
-            break
+    request_id = _gateway_request_id(getattr(resp, "headers", {}) or {})
+    if request_id:
+        details["gateway_request_id"] = request_id
     return details
 
 

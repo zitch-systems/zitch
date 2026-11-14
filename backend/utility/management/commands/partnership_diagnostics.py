@@ -61,6 +61,9 @@ class Command(BaseCommand):
                 "base_host": urlsplit(str(bank.get("BASE_URL") or "")).hostname,
                 "product_keys_configured": {name: bool(value)
                                             for name, value in (bank.get("KEYS") or {}).items()},
+                # Host and key each product actually uses; compare with the
+                # "wema connection:" line the reconcile cron prints.
+                "routing": wema.connection_report(),
             },
             "simulation": bool(bank.get("SIMULATION")),
             "bank_biller_enabled": providers.biller_enabled(),
