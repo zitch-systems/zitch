@@ -39,6 +39,16 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
                                  for command in starts), 8, filename)
             self.assertNotRegex(text, r"manage.py migrate(?:[\"\n]| &&)")
 
+    def test_the_worker_receives_the_deploy_signal_itself(self):
+        # Behind the shell that runs `&&`, SIGTERM can reach the shell and not the
+        # worker, which is then killed mid-send and drops the alerts it claimed.
+        for filename in ("render.yaml", "render.frankfurt.yaml"):
+            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
+            starts = [command for command in re.findall(r'^    startCommand: "([^"]+)"', text, re.MULTILINE)
+                      if "whatsapp_worker" in command]
+            self.assertEqual(len(starts), 1, filename)
+            self.assertIn("&& exec python manage.py whatsapp_worker", starts[0], filename)
+
     def test_only_the_credentialed_worker_owns_terminal_whatsapp_delivery(self):
         """Money crons leave WhatsApp alerts retryable without copying Meta secrets."""
         keys = (

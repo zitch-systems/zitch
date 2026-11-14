@@ -396,7 +396,10 @@ services:
     # Build-time schema gate: a failed candidate is never promoted, so the prior
     # healthy worker keeps running until zitch-api has applied shared migrations.
     buildCommand: "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
-    startCommand: "python manage.py migrate --check && python manage.py whatsapp_worker --batch-size 50 --poll-seconds 0.5"
+    # `exec` makes the worker itself the process Render signals on a deploy.
+    # Behind the shell that runs `&&`, SIGTERM can reach the shell and not
+    # the worker, which is then killed mid-send when the shutdown delay ends.
+    startCommand: "python manage.py migrate --check && exec python manage.py whatsapp_worker --batch-size 50 --poll-seconds 0.5"
     maxShutdownDelaySeconds: 60
     envVars:
       # Partnership settings are shared with the API.

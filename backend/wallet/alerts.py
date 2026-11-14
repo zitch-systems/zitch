@@ -868,9 +868,28 @@ def _prepare_alert(pk):
             return None
         if row.state == row.DISPATCHING:
             if row.lease_expires_at and row.lease_expires_at <= now:
-                row.state, row.error_code = row.REVIEW, "dispatch_lease_expired"
-                row.save(update_fields=["state", "error_code", "updated"])
-                log.warning("txn_alert_review delivery=%s channel=%s reason=dispatch_lease_expired", row.pk, row.channel)
+                # The process that claimed this send went away mid-dispatch: a
+                # deploy, a restart or a crash. This used to park the row for
+                # review, where nothing ever retried it, and on 14 November 2026
+                # all nine alerts for three deposits were dropped that way when a
+                # deploy restarted the worker one second after the credit.
+                #
+                # A customer who is never told about money is worse off than one
+                # told twice, so the send is retried. Only a process that died
+                # after the provider accepted the message, and before recording
+                # it, can produce a duplicate. The attempt cap still applies.
+                exhausted = row.attempts >= MAX_ALERT_ATTEMPTS
+                row.state = row.EXHAUSTED if exhausted else row.RETRY
+                row.error_code = "dispatch_lease_expired"
+                row.next_attempt_at = None if exhausted else now
+                row.lease_expires_at = None
+                row.save(update_fields=["state", "error_code", "next_attempt_at", "lease_expires_at",
+                                        "updated"])
+                log.warning("txn_alert_redispatch delivery=%s channel=%s attempts=%s state=%s "
+                            "reason=dispatch_lease_expired", row.pk, row.channel, row.attempts, row.state)
+                if exhausted:
+                    db_transaction.on_commit(
+                        lambda: _report_alert_attention(row.channel, row.EXHAUSTED, "dispatch_lease_expired"))
             return None
         if row.state == row.PREPARING and row.lease_expires_at and row.lease_expires_at > now:
             return None
@@ -1017,7 +1036,28 @@ def _finish_alert(row, result):
              attempts=max(0, row.attempts - 1) if undispatched else row.attempts, updated=now)
     if changed and state in (row.REVIEW, row.EXHAUSTED):
         log.warning("txn_alert_attention delivery=%s channel=%s state=%s reason=%s", row.pk, row.channel, state, reason)
+        _report_alert_attention(row.channel, state, reason)
     return bool(changed and state == row.ACCEPTED)
+
+
+def _report_alert_attention(channel, state, reason):
+    """Tell the operator, at most once an hour per channel and reason, that a
+    transaction alert stopped short of the customer and needs a person.
+
+    These rows are not retried on their own (the outcome is unknown, or the
+    retries ran out), so a log line nobody reads is how a customer goes without
+    an alert for good. ``requeue_transaction_alerts`` sends them again.
+    """
+    from django.core.cache import cache
+    from utility.alerts import alert
+
+    try:
+        if cache.add(f"transaction-alert-attention:{channel}:{state}:{reason}", True, timeout=3600):
+            alert("A transaction alert did not reach the customer and needs review; "
+                  "run requeue_transaction_alerts to send it again",
+                  level="error", channel=channel, state=state, reason=reason)
+    except Exception:  # noqa: BLE001 - the warning log above already records it
+        log.warning("txn_alert_attention_report_failed channel=%s state=%s", channel, state)
 
 
 def _set_accepted_whatsapp_flag(txn_pk, reversal):

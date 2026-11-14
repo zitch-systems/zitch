@@ -11,8 +11,8 @@ from django.utils import timezone
 
 from accounts.models import User
 from wallet.alerts import (
-    _dispatch_alert, _email_alert_html, _prepare_alert, retry_pending_whatsapp_alerts,
-    send_transaction_alert,
+    _dispatch_alert, _email_alert_html, _prepare_alert, pending_alert_delivery_ids,
+    retry_pending_whatsapp_alerts, send_transaction_alert,
 )
 from wallet.models import Transaction, TransactionAlertDelivery as Delivery
 from wallet.services import get_or_create_wallet
@@ -178,7 +178,10 @@ class TransactionAlertOutboxTests(TestCase):
         self.assertTrue(_dispatch_alert(row.pk))
         self.email.assert_called_once()
 
-    def test_crash_after_dispatch_boundary_is_visible_for_review(self):
+    def test_crash_after_dispatch_boundary_is_sent_again(self):
+        # 14 November 2026: a deploy restarted the worker one second after three
+        # deposits were credited, and all nine alerts it had claimed were parked
+        # for review and never sent. A send the process never finished is retried.
         txn = self.movement()
         row = txn.alert_deliveries.get(channel="email")
         Delivery.objects.filter(pk=row.pk).update(
@@ -187,9 +190,60 @@ class TransactionAlertOutboxTests(TestCase):
         )
         self.assertFalse(_dispatch_alert(row.pk))
         row.refresh_from_db()
-        self.assertEqual(row.state, Delivery.REVIEW)
+        self.assertEqual(row.state, Delivery.RETRY)
         self.assertEqual(row.error_code, "dispatch_lease_expired")
         self.email.assert_not_called()
+        self.assertIn(row.pk, pending_alert_delivery_ids(limit=10))
+        self.assertTrue(_dispatch_alert(row.pk))
+        self.email.assert_called_once()
+        row.refresh_from_db()
+        self.assertEqual(row.state, Delivery.ACCEPTED)
+        self.assertEqual(row.attempts, 2)
+
+    def test_a_send_cut_off_on_its_last_attempt_is_exhausted_and_reported(self):
+        txn = self.movement()
+        row = txn.alert_deliveries.get(channel="email")
+        Delivery.objects.filter(pk=row.pk).update(
+            state=Delivery.DISPATCHING, attempts=5, claim_token="in-flight-token",
+            lease_expires_at=timezone.now() - timedelta(seconds=1),
+        )
+        with patch("utility.alerts.alert") as ops, self.captureOnCommitCallbacks(execute=True):
+            self.assertFalse(_dispatch_alert(row.pk))
+        row.refresh_from_db()
+        self.assertEqual(row.state, Delivery.EXHAUSTED)
+        self.email.assert_not_called()
+        ops.assert_called_once()
+
+    def test_an_alert_left_for_review_is_reported_to_the_operator(self):
+        txn = self.movement()
+        self.email.return_value = {"success": False, "uncertain": True}
+        row = txn.alert_deliveries.get(channel="email")
+        with patch("utility.alerts.alert") as ops:
+            self.assertFalse(_dispatch_alert(row.pk))
+        row.refresh_from_db()
+        self.assertEqual(row.state, Delivery.REVIEW)
+        ops.assert_called_once()
+        self.assertEqual(ops.call_args.kwargs["reason"], "dispatch_outcome_unknown")
+
+    def test_the_operator_command_lists_then_requeues_alerts_that_need_review(self):
+        txn = self.movement()
+        row = txn.alert_deliveries.get(channel="email")
+        Delivery.objects.filter(pk=row.pk).update(
+            state=Delivery.REVIEW, attempts=1, error_code="dispatch_outcome_unknown")
+        out = StringIO()
+        call_command("requeue_transaction_alerts", stdout=out)
+        self.assertIn(f"delivery {row.pk}: email", out.getvalue())
+        self.assertIn("would be requeued", out.getvalue())
+        row.refresh_from_db()
+        self.assertEqual(row.state, Delivery.REVIEW)
+        self.assertNotIn("outbox@zitch.test", out.getvalue())
+
+        out = StringIO()
+        call_command("requeue_transaction_alerts", "--apply", stdout=out)
+        row.refresh_from_db()
+        self.assertEqual((row.state, row.attempts), (Delivery.READY, 0))
+        self.assertTrue(_dispatch_alert(row.pk))
+        self.email.assert_called_once()
 
     def test_mutable_ledger_meta_cannot_recreate_an_accepted_delivery(self):
         txn = self.movement()
