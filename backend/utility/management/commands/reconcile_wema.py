@@ -318,6 +318,14 @@ class Command(BaseCommand):
                     f"{entry.get('newest_kind') or '-'}) today={today}"
                     f"{' <- used' if entry.get('chosen') else ''}")
 
+        # Where each product's requests go from this cron, and with which key.
+        # Compare with partnership_diagnostics on the API: the same fingerprint
+        # means the same key, a different host or fingerprint means different config.
+        try:
+            self.stdout.write(f"wema connection: {wema.connection_summary()}")
+        except Exception:  # noqa: BLE001 - a diagnostic must not stop the sweep
+            log.exception("wema_connection_report_failed")
+
         for wallet in wema_provisioned_wallets():
             scanned += 1
             if scanned == 1:

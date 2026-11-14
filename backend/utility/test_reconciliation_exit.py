@@ -64,6 +64,9 @@ class ReconciliationExitTests(TestCase):
         self.assertIn("to=now ok=True http=200 rows=18 credits=5 "
                       "newest=2026-11-14T00:10:05 (14 Nov 2026 12:10 AM; Credit/InterBank)", text)
         self.assertEqual(text.count("<- used"), 1)
+        # Once per run, the host and key source each product uses.
+        self.assertEqual(text.count("wema connection: base="), 1)
+        self.assertIn(" acct_mgt=", text)
 
         with patch("utility.management.commands.reconcile_wema.wema_provisioned_wallets",
                    return_value=[self.wallet]), \
