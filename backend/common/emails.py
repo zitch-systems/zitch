@@ -113,6 +113,69 @@ def email_shell(content: str, *, preheader: str = "") -> str:
 </td></tr></table></body></html>"""
 
 
+# The receipt's palette (whatsapp/receipt.py, which takes it from the app's light
+# theme), so an alert email reads as the same document as the receipt image.
+RECEIPT_INK = "#06231f"
+RECEIPT_DIM = "#526863"
+RECEIPT_LINE = "#e2eeeb"
+RECEIPT_TEAR = "#cde0dc"
+RECEIPT_PAPER = "#f4f9f8"
+_RECEIPT_TOP = "#12a596"
+_RECEIPT_DEEP = "#0b6f66"
+#: How far the ticket rises into the header.
+_RECEIPT_OVERLAP = 46
+
+
+def receipt_shell(title: str, ticket: str, *, below: str = "", preheader: str = "") -> str:
+    """The receipt's layout as an email: a teal header naming the document, a
+    white ticket rising into it, then whatever follows the ticket and the same
+    footer as every other Zitch email.
+
+    `ticket` is table rows for inside the ticket; `below` is table rows for
+    under it. Both arrive already escaped and inline-styled.
+
+    The ticket overlaps the header without a negative margin, which Gmail
+    removes: the cell holding it is painted in the header's colour for its
+    first few pixels. A client that draws no gradients shows the ticket just
+    under the header instead, which reads the same.
+    """
+    pre = (
+        f'<span style="display:none;max-height:0;overflow:hidden;mso-hide:all">{preheader}</span>'
+        if preheader else ""
+    )
+    lift = (f"background-color:{RECEIPT_PAPER};background-image:linear-gradient(180deg,"
+            f"{_RECEIPT_DEEP} 0,{_RECEIPT_DEEP} {_RECEIPT_OVERLAP}px,"
+            f"{RECEIPT_PAPER} {_RECEIPT_OVERLAP}px,{RECEIPT_PAPER} 100%)")
+    return f"""<!doctype html><html><body style="margin:0;padding:0;background:{RECEIPT_PAPER}">{pre}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{RECEIPT_PAPER};padding:24px 10px">
+<tr><td align="center">
+<table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;width:100%">
+  <tr><td style="background-color:{_RECEIPT_DEEP};background-image:linear-gradient(180deg,{_RECEIPT_TOP} 0%,{_RECEIPT_DEEP} 100%);border-radius:16px 16px 0 0;padding:22px 26px 24px">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+      <td align="left" style="{_FONT}">
+        <img src="{LOGO_URL}" alt="" width="32" height="32"
+             style="vertical-align:middle;border-radius:9px">
+        <span style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:.2px;
+                     vertical-align:middle;margin-left:9px;{_FONT}">zitch</span>
+      </td>
+      <td align="right" style="color:#ffffff;font-size:14px;font-weight:700;{_FONT}">{title}</td>
+    </tr></table>
+  </td></tr>
+  <tr><td style="{lift};padding:0 14px">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+           style="background:#ffffff;border-radius:18px;border:1px solid {RECEIPT_LINE}">
+      {ticket}
+    </table>
+  </td></tr>
+  {below}
+  <tr><td style="padding:22px 20px 0;text-align:center">
+    {_footer()}
+  </td></tr>
+</table>
+<p style="margin:14px 0 0;color:{_FAINT};font-size:11px;{_FONT}">&copy; Zitch</p>
+</td></tr></table></body></html>"""
+
+
 def branded_message(title: str, intro: str, *, code: str = "", note: str = "") -> str:
     """A message email: heading, intro, an optional prominent one-time code, an
     optional fine-print note. Serves every verification and OTP mail, so a code

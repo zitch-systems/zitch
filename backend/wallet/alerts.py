@@ -436,6 +436,15 @@ def deposit_sender(meta) -> tuple[str, str, str]:
     return "", "", text
 
 
+def _deposit_narration(name: str, description: str) -> str:
+    """The bank's words for a deposit, or "" when they only repeat who paid."""
+    leftover = description.upper().replace(name, "") if name else description
+    if " ".join(leftover.replace("/", " ").split()).strip(" -:.").upper() in (
+            "", "FROM", "TRANSFER FROM", "TRF FROM", "TRANSFER", "NIP TRANSFER FROM"):
+        return ""
+    return description
+
+
 def credit_receipt_rows(txn) -> list:
     """The rows of a deposit's receipt: whose account it reached, who paid, the
     bank's description, the reference and the time."""
@@ -458,11 +467,9 @@ def credit_receipt_rows(txn) -> list:
         rows.append(("From", name))
         if how:
             rows.append(("Sender", how))
-    # The bank's words, unless they only repeat who paid.
-    leftover = description.upper().replace(name, "") if name else description
-    if " ".join(leftover.replace("/", " ").split()).strip(" -:.").upper() not in (
-            "", "FROM", "TRANSFER FROM", "TRF FROM", "TRANSFER", "NIP TRANSFER FROM"):
-        rows.append(("Narration", description))
+    narration = _deposit_narration(name, description)
+    if narration:
+        rows.append(("Narration", narration))
     rows += [("Reference", txn.reference),
              ("Date", _alert_timestamp(txn.created, "%d %b %Y, %I:%M %p"))]
     return rows
@@ -1134,56 +1141,159 @@ def _sms_alert(txn, *, reversal: bool = False) -> str:
     return head + "Desc :" + desc[:max(room, 0)].strip() + tail
 
 
+def _email_alert_entries(txn, *, reversal: bool = False) -> list:
+    """(label, value, detail) for each line of the alert's ticket, in order.
+
+    The other party is one entry, as on the receipt: a named recipient with
+    their bank and masked account, or whoever paid a deposit. Anything else is
+    described by its service. The customer's own account, a bank fee, the
+    narration and the reference follow.
+    """
+    meta = _meta(txn)
+    credit = reversal or txn.direction == txn.IN
+    word = "Reversal" if reversal else ("Credit" if credit else "Debit")
+
+    def clean(value, limit=120):
+        return " ".join(str(value or "").split())[:limit]
+
+    recipient = clean(meta.get("recipient_name"))
+    counterparty = clean(meta.get("counterparty"))
+    described = recipient or counterparty or clean(txn.service, 90) or word
+    entries, narration = [], ""
+    if reversal:
+        entries.append(("Description", described, ""))
+    elif not credit and recipient:
+        account = _mask_account(meta["account"]) if meta.get("account") else ""
+        entries.append(("Recipient", recipient,
+                        " · ".join(x for x in (clean(meta.get("bank")), account) if x)))
+        narration = _narration_line(txn).removeprefix("For: ").strip()
+    elif credit:
+        name, how, description = deposit_sender(meta)
+        payer = recipient or counterparty or name
+        entries.append(("Sender", payer, how) if payer else ("Description", described, ""))
+        narration = _deposit_narration(name, description)
+    else:
+        entries.append(("Description", described, ""))
+        narration = _narration_line(txn).removeprefix("For: ").strip()
+
+    entries.append(("Account", _mask_account(_transaction_account_number(txn)), ""))
+    if not credit and meta.get("transfer_fee"):
+        try:
+            fee = Decimal(str(meta["transfer_fee"]))
+            entries += [("Bank fee", _money(fee, txn.currency), ""),
+                        ("Total debited", _money(txn.amount + fee, txn.currency), "")]
+        except (ArithmeticError, ValueError):
+            pass
+    if narration:
+        entries.append(("Narration", clean(narration), ""))
+    entries.append(("Reference", txn.reference, ""))
+    return entries
+
+
+#: The receipt's WhatsApp tile (whatsapp/receipt.py), served from the marketing
+#: site like the logo, so the email carries no attachment.
+_WHATSAPP_TILE_URL = "https://zitch.ng/assets/brand/whatsapp-tile.png"
+
+
+def _email_whatsapp_panel() -> str:
+    """The receipt's Zitch WhatsApp Banking panel, as table rows. The banking
+    number is a link that opens the chat, where the receipt prints a code."""
+    from common.emails import RECEIPT_DIM, RECEIPT_INK, _FONT
+
+    try:
+        from whatsapp.receipt import (
+            _PROMO_BODY, _PROMO_HEADLINE, _PROMO_LABEL, whatsapp_start)
+        link, number = whatsapp_start()
+    except Exception:  # noqa: BLE001 - the alert goes out without the panel
+        return ""
+    site = ((getattr(settings, "ZITCH_LINKS", {}) or {}).get("WEBSITE") or "https://zitch.ng")
+    contact = (f'<a href="{escape(site, quote=True)}" style="color:#066e66;font-weight:700;'
+               f'text-decoration:none">zitch.ng</a>')
+    if link:
+        contact += (f' &nbsp;&middot;&nbsp; <a href="{escape(link, quote=True)}" '
+                    f'style="color:{RECEIPT_DIM};text-decoration:none">{escape(number)}</a>')
+    return f"""
+  <tr><td style="padding:16px 14px 0">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+           style="border:1px solid #a9e8c3;border-radius:16px">
+      <tr>
+        <td width="48" valign="top" style="padding:16px 0 16px 16px">
+          <img src="{_WHATSAPP_TILE_URL}" alt="WhatsApp" width="44" height="44"
+               style="display:block;border-radius:13px;background:#25d366">
+        </td>
+        <td valign="top" style="padding:15px 16px 16px 14px;{_FONT}">
+          <p style="margin:0;color:#128c7e;font-size:11px;font-weight:700;letter-spacing:.1em">{_PROMO_LABEL}</p>
+          <p style="margin:5px 0 0;color:{RECEIPT_INK};font-size:17px;font-weight:700">{_PROMO_HEADLINE}</p>
+          <p style="margin:5px 0 0;color:{RECEIPT_DIM};font-size:13px;line-height:1.5">{_PROMO_BODY}</p>
+          <p style="margin:9px 0 0;font-size:13px">{contact}</p>
+        </td>
+      </tr>
+    </table>
+  </td></tr>"""
+
+
 def _email_alert_html(txn, *, reversal: bool = False) -> str:
-    """The alert as a bank-standard card inside the shared brand shell — same
-    header, same footer (team sign-off, contact points, socials) as every other
-    Zitch email. The plain-text body stays as the fallback, so clients that
-    refuse HTML lose the layout and nothing else."""
-    from common.emails import email_shell
+    """The alert laid out as the receipt: the amount, the outcome in a pill and
+    the time on a white ticket under the Zitch header, then one entry per party
+    and a row for everything else. The plain-text body stays as the fallback,
+    so clients that refuse HTML lose the layout and nothing else."""
+    from common.emails import (
+        RECEIPT_DIM, RECEIPT_INK, RECEIPT_LINE, RECEIPT_TEAR, _FONT, receipt_shell)
 
     credit = reversal or txn.direction == txn.IN
     word = "Reversal" if reversal else ("Credit" if credit else "Debit")
     colour = "#0f9c93" if credit else "#b8402f"
-    sign = "+" if credit else "\u2212"
+    sign = "+" if credit else "−"
+    # The receipt's own pill colours (whatsapp/receipt.py _status_art, _status_ink).
+    # An alert is only sent for a settled movement, so there are two outcomes.
+    if reversal:
+        pill = ('<span style="display:inline-block;background:#fdf3e0;color:#966008;'
+                'border-radius:999px;padding:7px 16px;font-size:14px;font-weight:700">Reversed</span>')
+    else:
+        pill = ('<span style="display:inline-block;background:#e8f6ee;color:#128c4a;'
+                'border-radius:999px;padding:6px 16px 6px 8px;font-size:14px;font-weight:700">'
+                '<span style="display:inline-block;width:20px;height:20px;line-height:20px;'
+                'border-radius:10px;background:#00b51d;color:#ffffff;font-size:12px;'
+                'text-align:center;vertical-align:middle;margin-right:7px">&#10003;</span>'
+                '<span style="vertical-align:middle">Successful</span></span>')
 
-    account = _mask_account(_transaction_account_number(txn))
-    balance_rows = _balance_rows(txn)
+    lines = _email_alert_entries(txn, reversal=reversal)
+    lines += [(label, value, "") for label, value in _balance_rows(txn)]
 
-    counterparty = (_meta(txn).get("recipient_name") or _meta(txn).get("counterparty")
-                    or (txn.service or "").strip() or word)
-    first = (txn.user.first_name or "").strip().title() or "there"
+    def row(index, label, value, detail):
+        edge = f"border-top:1px solid {RECEIPT_LINE};" if index else ""
+        under = (f'<br><span style="color:{RECEIPT_DIM};font-size:13px;font-weight:400">'
+                 f'{escape(str(detail))}</span>') if detail else ""
+        # The label keeps to one line; a long reference breaks inside its own cell.
+        return (f'<tr><td valign="top" style="{edge}padding:13px 12px 13px 0;color:{RECEIPT_DIM};'
+                f'font-size:14px;line-height:1.45;white-space:nowrap;{_FONT}">{escape(str(label))}</td>'
+                f'<td align="right" valign="top" style="{edge}padding:13px 0;color:{RECEIPT_INK};'
+                f'font-size:14px;font-weight:700;line-height:1.45;word-break:break-word;'
+                f'overflow-wrap:anywhere;{_FONT}">{escape(str(value))}{under}</td></tr>')
 
-    def row(label, value, bold=False):
-        weight = "600" if bold else "400"
-        return (f'<tr><td style="padding:7px 0;color:#8fa3a0;font-size:13px;'
-                f'font-family:Arial,Helvetica,sans-serif">{escape(str(label))}</td>'
-                f'<td align="right" style="padding:7px 0;color:#12201f;font-size:13px;'
-                f'font-weight:{weight};font-family:Arial,Helvetica,sans-serif">{escape(str(value))}</td></tr>')
-
-    content = f"""
-  <tr><td style="padding:28px 28px 6px;font-family:Arial,Helvetica,sans-serif">
-    <p style="margin:0 0 4px;color:#8fa3a0;font-size:12px;letter-spacing:.12em;
-              text-transform:uppercase">{word} alert</p>
-    <p style="margin:0;color:{colour};font-size:32px;font-weight:700">
-      {sign}{_money(txn.amount, txn.currency)}</p>
-    <p style="margin:10px 0 0;color:#5f7370;font-size:14px">Hi {escape(first)}, here are the details:</p>
-  </td></tr>
-  <tr><td style="padding:14px 28px 4px;font-family:Arial,Helvetica,sans-serif">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
-           style="border-top:1px solid #e4ecea">
-      {row("Description", counterparty)}
-      {row("Account", account)}
-      {row("Reference", txn.reference)}
-      {row("Date", _alert_timestamp(txn.created, "%d %b %Y, %I:%M %p"))}
-      {"".join(row(label, value, bold=True) for label, value in balance_rows)}
-    </table>
-  </td></tr>
-  <tr><td style="padding:16px 28px 26px;font-family:Arial,Helvetica,sans-serif">
-    <p style="margin:0;padding:12px 14px;background:#eef4f3;border-radius:8px;
-              color:#5f7370;font-size:12px;line-height:1.5">
-      Didn\u2019t make this transaction? Contact
-      <a href="mailto:support@zitch.ng" style="color:#0a6b65">support@zitch.ng</a> immediately.
+    ticket = f"""
+      <tr><td align="center" style="padding:30px 22px 24px;{_FONT}">
+        <p style="margin:0;color:{colour};font-size:38px;line-height:1.15;font-weight:800;
+                  letter-spacing:-.5px">{sign}{_money(txn.amount, txn.currency)}</p>
+        <p style="margin:14px 0 0">{pill}</p>
+        <p style="margin:14px 0 0;color:{RECEIPT_DIM};font-size:14px">
+          {_alert_timestamp(txn.created, "%d %b %Y, %I:%M %p")}</p>
+      </td></tr>
+      <tr><td style="padding:0 22px">
+        <div style="border-top:2px dashed {RECEIPT_TEAR};height:0;font-size:0;line-height:0">&nbsp;</div>
+      </td></tr>
+      <tr><td style="padding:4px 22px 8px">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+          {"".join(row(i, *line) for i, line in enumerate(lines))}
+        </table>
+      </td></tr>"""
+    below = _email_whatsapp_panel() + f"""
+  <tr><td style="padding:20px 20px 0;text-align:center;{_FONT}">
+    <p style="margin:0;color:{RECEIPT_DIM};font-size:13px;line-height:1.6">
+      Didn’t make this transaction? Contact
+      <a href="mailto:support@zitch.ng" style="color:#066e66;font-weight:700;text-decoration:none">support@zitch.ng</a> immediately.
     </p>
+    <p style="margin:6px 0 0;color:{RECEIPT_DIM};font-size:12px">Keep this email for your records.</p>
   </td></tr>"""
-    return email_shell(content,
-                       preheader=f"{word} of {_money(txn.amount, txn.currency)} on your Zitch account")
+    return receipt_shell(f"{word} alert", ticket, below=below,
+                         preheader=f"{word} of {_money(txn.amount, txn.currency)} on your Zitch account")
