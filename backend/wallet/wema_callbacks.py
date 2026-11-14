@@ -784,7 +784,7 @@ def wema_transaction_callback(request):
             outcome = settle_or_refund(txn, result)
         elif vas_purchase:
             from utility import providers
-            result = providers.vtu_requery(ref)
+            result = providers.vtu_requery(ref, bank_callback=True)
             outcome = settle_or_refund(txn, result)
         else:
             # Card funding and every future provider rail have their own

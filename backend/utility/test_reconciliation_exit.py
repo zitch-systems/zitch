@@ -159,7 +159,8 @@ class ReconciliationExitTests(TestCase):
     @override_settings(WEMA_RECONCILE_FAIL_INCOMPLETE=True)
     def test_failed_bill_lookup_does_not_refund_or_stop_later_bill(self):
         module = "utility.management.commands.reconcile_wema."
-        rows = [SimpleNamespace(pk=n, reference=f"BILL-{n}", meta={}, service="Electricity — Ikeja")
+        rows = [SimpleNamespace(pk=n, reference=f"BILL-{n}", meta={}, service="Electricity — Ikeja",
+                                created=timezone.now())
                 for n in (1, 2)]
         result = {"success": True, "status": "SUCCESS"}
         with patch(module + "wema_provisioned_wallets", return_value=[]), \
@@ -173,6 +174,9 @@ class ReconciliationExitTests(TestCase):
                          stdout=StringIO(), stderr=StringIO())
         settle.assert_called_once_with(rows[1], result)
         self.assertEqual(query.call_args.kwargs["service"], rows[1].service)
+        # The row's age goes with it: it is what lets a purchase the bank never
+        # asked to authorise be returned (providers.vas_never_authorised).
+        self.assertEqual(query.call_args.kwargs["created"], rows[1].created)
         report = AuditLog.objects.get(action="recon.wema_run").after
         self.assertEqual(report["vas_status_failures"], 1)
         self.assertEqual(report["vas_settled"], 1)
