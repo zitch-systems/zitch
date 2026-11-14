@@ -226,6 +226,53 @@ def _callbacks_authenticated() -> bool:
 #: It covers clock difference between the processes that read the same row.
 _NEVER_AUTHORISED_GRACE_SECONDS = 300
 
+#: Recorded on a purchase made while the bank's callbacks were authenticated in
+#: full: the seconds the bank then had to ask to authorise it (AUTH_MAX_AGE).
+BANK_AUTH_WINDOW_KEY = "bank_auth_window"
+
+
+def bank_auth_window_stamp() -> dict:
+    """What a new purchase records about how the bank must authorise it.
+
+    Written with the reservation, by the service that sells: the API, which is
+    also the service the bank's callbacks reach. The reconcile cron receives no
+    callbacks and is not given their token, so it cannot judge this from its own
+    settings. It reads the row instead. Empty when callbacks are not
+    authenticated in full here, which records nothing.
+    """
+    if not _callbacks_authenticated():
+        return {}
+    try:
+        window = int(settings.WEMA.get("AUTH_MAX_AGE") or 900)
+    except (TypeError, ValueError):
+        return {}
+    return {BANK_AUTH_WINDOW_KEY: window} if window > 0 else {}
+
+
+def _authorisation_window(meta: dict):
+    """Seconds the bank had to ask to authorise this purchase, or None when that
+    cannot be known in this process.
+
+    A purchase stamped when it was made says so itself. Otherwise this process
+    must have the bank's callbacks authenticated in full, as the API does. The
+    longer of the stamp and this process's AUTH_MAX_AGE is used, so neither can
+    shorten the wait.
+    """
+    try:
+        own = int(settings.WEMA.get("AUTH_MAX_AGE") or 900)
+    except (TypeError, ValueError):
+        return None
+    stamped = meta.get(BANK_AUTH_WINDOW_KEY)
+    if stamped is None:
+        return own if _callbacks_authenticated() else None
+    if isinstance(stamped, bool):
+        return None
+    try:
+        stamped = int(stamped)
+    except (TypeError, ValueError):
+        return None
+    return max(stamped, own) if stamped > 0 else None
+
 
 def vas_never_authorised(reference: str, meta: dict | None, created) -> bool:
     """Whether the bank never asked to make this purchase, and no longer can.
@@ -243,8 +290,10 @@ def vas_never_authorised(reference: str, meta: dict | None, created) -> bool:
 
     Every condition must hold:
 
-    * Callbacks are authenticated in full, so the bank has to ask, and an
-      answer of yes can only have gone to the bank.
+    * Callbacks were authenticated in full, so the bank had to ask, and an
+      answer of yes could only have gone to the bank. The purchase records this
+      when it is made (bank_auth_window_stamp); a purchase made before that was
+      recorded is judged by this process's settings, which only the API has.
     * The row is older than AUTH_MAX_AGE plus a grace period. From then on an
       authorisation request for it is refused as stale.
     * The row carries no authorisation and no transaction callback.
@@ -257,16 +306,16 @@ def vas_never_authorised(reference: str, meta: dict | None, created) -> bool:
     """
     from django.utils import timezone
 
-    if created is None or not _callbacks_authenticated():
+    meta = meta if isinstance(meta, dict) else {}
+    window = _authorisation_window(meta)
+    if created is None or window is None:
         return False
     try:
-        window = int(settings.WEMA.get("AUTH_MAX_AGE") or 900)
         age = (timezone.now() - created).total_seconds()
     except (TypeError, ValueError):
         return False
     if age <= window + _NEVER_AUTHORISED_GRACE_SECONDS:
         return False
-    meta = meta if isinstance(meta, dict) else {}
     if meta.get("wema_auth") or meta.get("wema_callback"):
         return False
     from whatsapp.models import WebhookEvent

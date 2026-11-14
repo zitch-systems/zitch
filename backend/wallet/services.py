@@ -641,7 +641,13 @@ def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
             raise LimitExceeded(_VAS_UNAVAILABLE)
         # Commit the status route with the reservation. A worker can stop after
         # submitting the bill and before receiving or saving the bank's reply.
-        reconcile_meta.update(vas_type=vas_type)
+        # Whether the bank must authorise it, and how long it has to ask, goes
+        # with it: only this service can tell (providers.bank_auth_window_stamp).
+        # A caller's meta never supplies it.
+        from utility.providers import BANK_AUTH_WINDOW_KEY, bank_auth_window_stamp
+
+        reconcile_meta.pop(BANK_AUTH_WINDOW_KEY, None)
+        reconcile_meta.update(vas_type=vas_type, **bank_auth_window_stamp())
     txn = debit(user, amount, service, meta=reconcile_meta, idempotency_key=idempotency_key)
     result = provider_call(txn.reference)
     status = settle_or_refund(txn, result)

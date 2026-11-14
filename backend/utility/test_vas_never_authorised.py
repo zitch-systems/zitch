@@ -157,13 +157,69 @@ class NeverAuthorisedPurchaseTests(TestCase):
         result = P.vtu_requery(txn.reference, bank_callback=True)
         self.assertEqual(result["status"], "AWAITING_BANK_CALLBACK")
 
-    def test_nothing_is_returned_unless_callbacks_are_authenticated_in_full(self):
+    def legacy(self, txn):
+        """The row as a purchase made before the window was recorded on it."""
+        txn.meta = {k: v for k, v in txn.meta.items() if k != P.BANK_AUTH_WINDOW_KEY}
+        txn.save(update_fields=["meta"])
+        return txn
+
+    def test_a_purchase_records_how_long_the_bank_had_to_ask(self):
         txn = self.held_purchase()
+        self.assertEqual(txn.meta[P.BANK_AUTH_WINDOW_KEY], 900)
+
+    def test_the_reconcile_cron_returns_it_without_the_callback_token(self):
+        """Production: the cron receives no callbacks and is not given their token.
+
+        It judged the purchase by its own settings, found callbacks not
+        authenticated, and held the ₦70 for good. The row now says so itself.
+        """
+        txn = self.held_purchase()
+        with override_settings(WEMA={**LIVE, "CALLBACK_TOKEN": ""}):
+            self.assertEqual(P.vtu_requery(txn.reference)["status"], "NEVER_AUTHORISED")
+
+    def test_an_unrecorded_purchase_is_judged_only_where_callbacks_are_authenticated(self):
+        txn = self.legacy(self.held_purchase())
         for missing in ("CALLBACK_TOKEN", "CALLBACK_ENFORCE_IPS", "CALLBACK_IPS",
                         "AUTH_REQUIRE_SECURITY_INFO", "SECURITY_INFO"):
             with self.subTest(missing=missing), override_settings(WEMA={**LIVE, missing: ""}):
                 self.assertEqual(P.vtu_requery(txn.reference)["status"],
                                  "AWAITING_BANK_CALLBACK")
+        # The API has them all: its operator requery returns it.
+        self.assertEqual(P.vtu_requery(txn.reference)["status"], "NEVER_AUTHORISED")
+
+    def test_the_longer_window_wins(self):
+        """Sold while the API allowed an hour; the cron's own default is 15 minutes."""
+        with override_settings(WEMA={**LIVE, "AUTH_MAX_AGE": 3600}):
+            young = self.held_purchase(minutes_ago=30)
+            old = self.held_purchase(minutes_ago=70)
+        self.assertEqual(young.meta[P.BANK_AUTH_WINDOW_KEY], 3600)
+        with override_settings(WEMA={**LIVE, "CALLBACK_TOKEN": ""}):
+            self.assertEqual(P.vtu_requery(young.reference)["status"], "AWAITING_BANK_CALLBACK")
+            self.assertEqual(P.vtu_requery(old.reference)["status"], "NEVER_AUTHORISED")
+
+    def test_a_malformed_record_returns_nothing(self):
+        txn = self.held_purchase()
+        for value in (True, "soon", 0, -5, None):
+            with self.subTest(value=value):
+                txn.meta = {**txn.meta, P.BANK_AUTH_WINDOW_KEY: value}
+                if value is None:
+                    continue  # absent: judged by settings, covered above
+                txn.save(update_fields=["meta"])
+                with override_settings(WEMA={**LIVE, "CALLBACK_TOKEN": ""}):
+                    self.assertEqual(P.vtu_requery(txn.reference)["status"],
+                                     "AWAITING_BANK_CALLBACK")
+
+    def test_a_caller_cannot_supply_the_record(self):
+        made_at = timezone.now() - timedelta(minutes=30)
+        with override_settings(WEMA={**LIVE, "CALLBACK_TOKEN": ""}), \
+             mock.patch("utility.providers.vas_can_settle", return_value=(True, "")), \
+             mock.patch("utility.wema.purchase_airtime", return_value=dict(UNANSWERED)), \
+             mock.patch("django.utils.timezone.now", return_value=made_at):
+            _status, txn, _result = run_provider_purchase(
+                self.user, Decimal("70"), "Airtime MTN 70", {P.BANK_AUTH_WINDOW_KEY: 60},
+                lambda ref: dict(UNANSWERED))
+        txn.refresh_from_db()
+        self.assertNotIn(P.BANK_AUTH_WINDOW_KEY, txn.meta)
 
     def test_a_requery_without_the_rows_age_returns_nothing(self):
         txn = self.held_purchase()
