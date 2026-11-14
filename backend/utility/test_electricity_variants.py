@@ -1,5 +1,6 @@
 """Electricity must validate and pay the package for the selected meter type."""
 from io import StringIO
+import json
 from unittest import mock
 
 from django.core.management import call_command
@@ -13,6 +14,28 @@ from utility.test_wema_billers import WEMA_ON
 
 @override_settings(WEMA=WEMA_ON)
 class CableCatalogueSyncTests(TestCase):
+    def test_app_lists_only_mapped_active_packages_for_the_selected_provider(self):
+        for code, provider, wema_code, active in (
+            ("mapped", "3", "21", True),
+            ("unmapped", "3", "", True),
+            ("inactive", "3", "22", False),
+            ("other-provider", "1", "23", True),
+        ):
+            CablePlan.objects.create(
+                provider=provider, name=code, cable_plan_code=code,
+                wema_code=wema_code, active=active, price=1900,
+            )
+        response = self.client.post(
+            "/api/utility/get_cable_plans/",
+            data=json.dumps({"cablenetwork": "3"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [plan["cable_plan_code"] for plan in response.json()["cable_plans"]],
+            ["mapped"],
+        )
+
     def test_sync_updates_only_the_exact_monthly_package_and_preserves_the_price(self):
         call_command("seed_plans", stdout=StringIO())
         with mock.patch("utility.wema.get_bills", return_value={

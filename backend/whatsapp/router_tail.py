@@ -1522,7 +1522,7 @@ def _begin_cable(user, msisdn: str, biller, customer_id) -> None:
 def _cable_packages(pa: PendingAction, user, msisdn: str, prov: str) -> None:
     """Show the chosen provider's packages (the step every cable payment reaches,
     whether the provider was tapped from the list or named in the message)."""
-    plans = list(CablePlan.objects.filter(provider=prov, active=True)[:8])
+    plans = list(CablePlan.available_for_provider(prov)[:8])
     if not plans:
         _clear_actions(msisdn)
         return reply(msisdn, "No packages available for that provider right now.")
@@ -1541,8 +1541,9 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return reply(msisdn, "Reply with the provider number.\n" + CABLE_PROMPT)
         return _cable_packages(pa, user, msisdn, p)
     if st == "plan":
+        available = CablePlan.available_for_provider(pa.payload["prov"])
         plan = _pick(text, pa.payload.get("plan_choices", []),
-                     lambda c: CablePlan.objects.filter(cable_plan_code=c).first())
+                     lambda c: available.filter(cable_plan_code=c).first())
         if plan is None:
             return _reroute_or_reprompt(pa, msisdn, text,
                                        "Reply with a package number from the list, or \"cancel\".")

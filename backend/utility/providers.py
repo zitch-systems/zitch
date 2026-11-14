@@ -180,8 +180,8 @@ _VAS_UNAVAILABLE = ("This is temporarily unavailable on our side. You have not b
 def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
     """Check settlement readiness before accepting a payment.
 
-    Client Account bills settle from authenticated callbacks. Airtime and data
-    still require a working status endpoint.
+    Single Account airtime, data and bills use authenticated callbacks for
+    purchases whose immediate response does not establish a final result.
     """
     from . import wema
 
@@ -208,16 +208,11 @@ def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
         env = "WEMA_" + wema._LEGEND_SETTING.get(product, "VAS_STATUS_LEGEND")
         return False, (f"{env} must contain unambiguous success and failed outcomes, "
                        f"so every PROCESSING purchase can be settled or refunded")
-    if product == "bills":
-        bank = settings.WEMA
-        if not (bank.get("CALLBACK_TOKEN") and bank.get("CALLBACK_ENFORCE_IPS")
-                and bank.get("CALLBACK_IPS") and bank.get("AUTH_REQUIRE_SECURITY_INFO")
-                and bank.get("SECURITY_INFO")):
-            return False, "Client Account bills require authenticated Wema callbacks."
-        return True, ""
-    entitled, reason = wema.vas_status_entitlement(product)
-    if not entitled:
-        return False, reason or "The bank status-query service is unavailable for this product"
+    bank = settings.WEMA
+    if not (bank.get("CALLBACK_TOKEN") and bank.get("CALLBACK_ENFORCE_IPS")
+            and bank.get("CALLBACK_IPS") and bank.get("AUTH_REQUIRE_SECURITY_INFO")
+            and bank.get("SECURITY_INFO")):
+        return False, "Single Account payments require authenticated Wema callbacks."
     return True, ""
 
 
@@ -370,7 +365,7 @@ def vas_requery(reference: str, meta: dict | None = None, *, service: str = "") 
                 "message": "Made on a retired provider; needs manual settlement."}
     # Older interrupted reservations have a service label but no saved type.
     vas_type = (meta or {}).get("vas_type") or biller_transaction_type(service) or "airtime"
-    if vas_type == "bill":
+    if vas_type in {"airtime", "data", "bill"}:
         return {"success": False, "pending": True, "status": "AWAITING_BANK_CALLBACK",
                 "reference": reference, "message": "Awaiting Wema Client Account settlement evidence."}
     return wema.vas_status(reference, vas_type)

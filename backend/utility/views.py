@@ -194,7 +194,7 @@ def buydata(request):
 @api
 def get_cable_plans(request):
     prov = str(request.data.get("cablenetwork", ""))
-    plans = CablePlan.objects.filter(provider=prov, active=True)
+    plans = CablePlan.available_for_provider(prov)
     return ok(cable_plans=[
         {"name": p.name, "validity": p.validity, "cable_plan_code": p.cable_plan_code, "price": str(p.price)}
         for p in plans
@@ -203,7 +203,9 @@ def get_cable_plans(request):
 
 @api
 def get_cable_plans_price(request):
-    plan = CablePlan.objects.filter(cable_plan_code=str(request.data.get("cable_plan_code", ""))).first()
+    plan = CablePlan.objects.filter(
+        cable_plan_code=str(request.data.get("cable_plan_code", "")), active=True,
+    ).exclude(wema_code="").first()
     if plan is None:
         return fail("Plan not found", status=404)
     return ok(cable_plans_price=str(plan.price))
@@ -248,8 +250,8 @@ def buycable(request):
     replay = idempotent_replay(existing_for_key(user, key))
     if replay:
         return replay
-    plan = CablePlan.objects.filter(cable_plan_code=plan_code, provider=prov).first()
-    if plan is None or not plan.active:
+    plan = CablePlan.available_for_provider(prov).filter(cable_plan_code=plan_code).first()
+    if plan is None:
         return fail("Plan not found", status=404)
     price_error = check_confirmed_price(data, plan.price)
     if price_error is not None:
