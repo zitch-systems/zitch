@@ -915,8 +915,11 @@ WHATSAPP_WORKER_CONCURRENCY = int(os.environ.get("WHATSAPP_WORKER_CONCURRENCY", 
 # and notifying on the same settlement at once.
 WHATSAPP_WORKER_RECONCILE = env_bool("WHATSAPP_WORKER_RECONCILE", False)
 # The worker checks one account at a time between the full reconciliation runs.
+# Every 5 seconds (the old default) is about 17,000 statement requests a day
+# for a single account, around the clock. A customer who asks for their
+# balance still has their own statement read at that moment (deposit_sync).
 WEMA_RECENT_CREDIT_POLL_SECONDS = max(0, int(
-    os.environ.get("WEMA_RECENT_CREDIT_POLL_SECONDS", "5") or 5))
+    os.environ.get("WEMA_RECENT_CREDIT_POLL_SECONDS", "60") or 60))
 if WEMA_RECENT_CREDIT_POLL_SECONDS:
     WEMA_RECENT_CREDIT_POLL_SECONDS = max(5, WEMA_RECENT_CREDIT_POLL_SECONDS)
 # First delivery and retries share the durable outbox. Provider refusals retain
