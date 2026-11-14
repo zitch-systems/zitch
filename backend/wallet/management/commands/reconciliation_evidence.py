@@ -231,11 +231,20 @@ def build_evidence(wallet, *, days=90, max_rows=50):
                 or not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)):
             complete, failure_status = False, _http_status(result)
             break
+        # Each window is asked a week past its end (utility.wema "week-ahead"),
+        # because the bank dates a transaction made after its end of day or at
+        # a weekend on its next business day. A row dated after an earlier
+        # window's end is reported by the window that holds its date. In the
+        # last window, one dated up to a week ahead is such a transaction.
+        last = end >= today
+        upper = end + timedelta(days=7) if last else end
         for row in rows:
             norm = wema.normalize_transaction(row)
             day = _credit_date(row)
             direction = str(row.get("creditType") or "").strip().casefold()
-            if (day is None or not cursor <= day <= end or direction not in {"credit", "debit"}
+            if day is not None and not last and end < day <= end + timedelta(days=7):
+                continue
+            if (day is None or not cursor <= day <= upper or direction not in {"credit", "debit"}
                     or norm["amount_naira"] is None or not norm["reference"]):
                 malformed_rows += 1
                 complete = False

@@ -101,12 +101,27 @@ class ReconciliationEvidenceTests(TestCase):
 
     def test_invalid_or_out_of_window_history_is_flagged(self):
         report, _, _, _ = self.run_report([
-            self.row(date=(self.today + timedelta(days=1)).isoformat()),
+            self.row(date=(self.today + timedelta(days=8)).isoformat()),
             self.row(amount="NaN"), self.row(referenceId="", tranId=""),
         ])
         self.assertFalse(report["bank_history_range_complete"])
         self.assertEqual(report["invalid_bank_rows"], 3)
         self.assertEqual(report["bank_totals"], [])
+
+    def test_a_row_the_bank_dated_on_its_next_business_day_is_counted_once(self):
+        # Each window is asked a week ahead. A row dated after an earlier
+        # window's end is left to the window that holds its date, and in the
+        # last window a row dated within the coming week is a weekend deposit.
+        Wallet.objects.filter(user=self.user).update(created=timezone.now() - timedelta(days=10))
+        report, _, _, history = self.run_report([
+            self.row(referenceId="MONDAY", date=(self.today + timedelta(days=2)).isoformat()),
+            self.row(referenceId="YESTERDAY", date=(self.today - timedelta(days=1)).isoformat()),
+        ], days=10)
+        self.assertEqual(history.call_count, 2)
+        self.assertTrue(report["bank_history_range_complete"])
+        self.assertEqual(report["invalid_bank_rows"], 0)
+        self.assertEqual(report["duplicate_bank_rows"], 0)
+        self.assertEqual(report["bank_totals"][0]["count"], 2)
 
     def test_duplicate_rows_are_flagged_and_not_added_twice(self):
         report, _, _, _ = self.run_report([self.row(), self.row()])

@@ -5,7 +5,8 @@ production (13-14 November 2026) a bare date stopped at the previous midnight,
 and tomorrow's date was accepted yet still ended on yesterday's rows while the
 bank's balance already held that morning's deposit. So no spelling is assumed:
 each is tried, the one that reaches furthest is remembered, and the bare date
-stays as the last resort. These tests pin that behaviour.
+stays as the last resort. A week ahead is asked first: the bank dates a weekend
+deposit on its next business day. These tests pin that behaviour.
 """
 from datetime import date, datetime
 from unittest.mock import patch
@@ -50,32 +51,32 @@ class _Base(SimpleTestCase):
 
 @override_settings(WEMA=WEMA_LIVE)
 class StatementWindowTests(_Base):
-    """A day that is not today: next day, end of day, then the bare date."""
+    """A day that is not today: a week ahead, next day, end of day, then the bare date."""
 
-    def test_the_statement_is_asked_past_the_end_of_the_day(self):
+    def test_the_statement_is_asked_a_week_past_the_end_of_the_day(self):
         with patch("utility.wema.requests.post", return_value=_resp(OK)) as post:
             result = wema.get_transactions("0458386712", "2026-07-19", "2026-07-20")
         self.assertTrue(result["success"])
-        self.assertEqual(result["to_form"], "next-day")
-        self.assertEqual(self._asked(post), ["2026-07-21"])
+        self.assertEqual(result["to_form"], "week-ahead")
+        self.assertEqual(self._asked(post), ["2026-07-27"])
         self.assertEqual(post.call_args.kwargs["json"]["from"], "2026-07-19")
         self.assertEqual(result["transactions"], [ROW])
 
     def test_a_month_or_year_end_rolls_over(self):
         with patch("utility.wema.requests.post", return_value=_resp(OK)) as post:
             wema.get_transactions("0458386712", "2026-12-01", "2026-12-31")
-        self.assertEqual(self._asked(post), ["2027-01-01"])
+        self.assertEqual(self._asked(post), ["2027-01-07"])
 
     def test_a_refused_spelling_falls_back_and_the_working_one_goes_first_afterwards(self):
         with patch("utility.wema.requests.post",
                    side_effect=[_resp(REFUSED, 400), _resp(OK)]) as post:
             result = wema.get_transactions("0458386712", "2026-07-19", "2026-07-20")
         self.assertTrue(result["success"])
-        self.assertEqual(result["to_form"], "end-of-day")
-        self.assertEqual(self._asked(post), ["2026-07-21", "2026-07-20T23:59:59"])
+        self.assertEqual(result["to_form"], "next-day")
+        self.assertEqual(self._asked(post), ["2026-07-27", "2026-07-21"])
         with patch("utility.wema.requests.post", return_value=_resp(OK)) as post:
             wema.get_transactions("0458386712", "2026-07-19", "2026-07-20")
-        self.assertEqual(self._asked(post), ["2026-07-20T23:59:59"])
+        self.assertEqual(self._asked(post), ["2026-07-21"])
 
     def test_the_bare_date_is_the_last_resort(self):
         with patch("utility.wema.requests.post",
@@ -85,7 +86,7 @@ class StatementWindowTests(_Base):
         self.assertTrue(result["success"])
         self.assertEqual(result["to_form"], "plain")
         self.assertEqual(self._asked(post),
-                         ["2026-07-21", "2026-07-20T23:59:59", "2026-07-27", "2026-07-20"])
+                         ["2026-07-27", "2026-07-21", "2026-07-20T23:59:59", "2026-07-20"])
 
     def test_a_refusal_of_everything_remembers_nothing(self):
         with patch("utility.wema.requests.post", return_value=_resp(REFUSED, 400)) as post:
@@ -113,7 +114,7 @@ class StatementWindowTests(_Base):
             result = wema.get_transactions("0458386712", "2026-07-19", "2026-07-20")
         self.assertTrue(result["success"])
         self.assertTrue(result["empty"])
-        self.assertEqual(self._asked(post), ["2026-07-21"])
+        self.assertEqual(self._asked(post), ["2026-07-27"])
 
     def test_an_unproven_spelling_that_says_nothing_is_checked_against_the_plain_date(self):
         # The wide request has never returned a row and now says "nothing", but the
@@ -122,7 +123,7 @@ class StatementWindowTests(_Base):
                    side_effect=[_resp(EMPTY, 400), _resp(OK)]) as post, \
                 patch("utility.wema.requests.get", return_value=_resp(BALANCE)):
             result = wema.get_transactions("0458386712", "2026-07-19", "2026-07-20")
-        self.assertEqual(self._asked(post), ["2026-07-21", "2026-07-20"])
+        self.assertEqual(self._asked(post), ["2026-07-27", "2026-07-20"])
         self.assertEqual(result["to_form"], "plain")
         self.assertEqual(result["transactions"], [ROW])
         with patch("utility.wema.requests.post", return_value=_resp(OK)) as post:
@@ -135,8 +136,8 @@ class StatementWindowTests(_Base):
             result = wema.get_transactions("0458386712", "2026-07-19", "2026-07-20")
         self.assertTrue(result["success"])
         self.assertTrue(result["empty"])
-        self.assertEqual(result["to_form"], "next-day")
-        self.assertEqual(self._asked(post), ["2026-07-21", "2026-07-20"])
+        self.assertEqual(result["to_form"], "week-ahead")
+        self.assertEqual(self._asked(post), ["2026-07-27", "2026-07-20"])
 
     def test_an_instant_the_caller_chose_is_sent_as_given(self):
         with patch("utility.wema.requests.post", return_value=_resp(OK)) as post:
@@ -151,34 +152,34 @@ class TodayTests(_Base):
 
     def test_today_adds_the_two_now_spellings(self):
         self.assertEqual(wema._history_to_values("2026-07-20"), [
+            ("week-ahead", "2026-07-27"),
             ("next-day", "2026-07-21"),
             ("end-of-day", "2026-07-20T23:59:59"),
             ("now", "2026-07-20T03:31:07"),
             ("now-utc", "2026-07-20T02:31:07Z"),
-            ("week-ahead", "2026-07-27"),
             ("plain", "2026-07-20"),
         ])
 
     def test_another_day_does_not(self):
         self.assertEqual([name for name, _ in wema._history_to_values("2026-07-19")],
-                         ["next-day", "end-of-day", "week-ahead", "plain"])
+                         ["week-ahead", "next-day", "end-of-day", "plain"])
 
     def test_the_probe_prefers_the_spelling_that_reaches_furthest(self):
         # Tomorrow's date and end-of-day still end on yesterday's row; "now" in
         # Lagos time returns this morning's deposit. That one is used from then on.
-        answers = [_resp(STALE), _resp(STALE), _resp(OK), _resp(REFUSED, 400), _resp(STALE),
+        answers = [_resp(STALE), _resp(STALE), _resp(STALE), _resp(OK), _resp(REFUSED, 400),
                    _resp(STALE)]
         with patch("utility.wema.requests.post", side_effect=answers) as post:
             found = wema.probe_history_to_forms("0458386712", "2026-07-19", "2026-07-20")
         self.assertEqual(self._asked(post), [
-            "2026-07-21", "2026-07-20T23:59:59", "2026-07-20T03:31:07",
-            "2026-07-20T02:31:07Z", "2026-07-27", "2026-07-20"])
+            "2026-07-27", "2026-07-21", "2026-07-20T23:59:59", "2026-07-20T03:31:07",
+            "2026-07-20T02:31:07Z", "2026-07-20"])
         self.assertEqual([(e["form"], e["ok"], e["rows"], e["newest"]) for e in found], [
+            ("week-ahead", True, 1, "2026-07-19T18:52:00"),
             ("next-day", True, 1, "2026-07-19T18:52:00"),
             ("end-of-day", True, 1, "2026-07-19T18:52:00"),
             ("now", True, 1, "2026-07-20T00:10:00"),
             ("now-utc", False, 0, ""),
-            ("week-ahead", True, 1, "2026-07-19T18:52:00"),
             ("plain", True, 1, "2026-07-19T18:52:00"),
         ])
         self.assertEqual([e["form"] for e in found if e.get("chosen")], ["now"])
@@ -190,8 +191,8 @@ class TodayTests(_Base):
     def test_when_every_spelling_ends_on_the_same_row_the_first_is_kept(self):
         with patch("utility.wema.requests.post", return_value=_resp(STALE)):
             found = wema.probe_history_to_forms("0458386712", "2026-07-19", "2026-07-20")
-        self.assertEqual([e["form"] for e in found if e.get("chosen")], ["next-day"])
-        self.assertEqual(cache.get(wema._HISTORY_TO_FORM_KEY), "next-day")
+        self.assertEqual([e["form"] for e in found if e.get("chosen")], ["week-ahead"])
+        self.assertEqual(cache.get(wema._HISTORY_TO_FORM_KEY), "week-ahead")
 
     def test_the_probe_reports_no_customer_data(self):
         row = {**ROW, "sender": "SOMEONE", "narration": "Transfer from SOMEONE",
@@ -244,8 +245,8 @@ class NextBusinessDayTests(_Base):
     now = SATURDAY
 
     def test_a_week_ahead_is_asked_for_and_reaches_the_next_business_day(self):
-        answers = [_resp(FRIDAY_ONLY), _resp(FRIDAY_ONLY), _resp(FRIDAY_ONLY),
-                   _resp(FRIDAY_ONLY), _resp(THROUGH_MONDAY), _resp(FRIDAY_ONLY)]
+        answers = [_resp(THROUGH_MONDAY), _resp(FRIDAY_ONLY), _resp(FRIDAY_ONLY),
+                   _resp(FRIDAY_ONLY), _resp(FRIDAY_ONLY), _resp(FRIDAY_ONLY)]
         with patch("utility.wema.requests.post", side_effect=answers) as post:
             found = wema.probe_history_to_forms("0458386712", "2026-11-13", "2026-11-14")
         self.assertIn("2026-11-21", self._asked(post))
@@ -256,3 +257,28 @@ class NextBusinessDayTests(_Base):
         self.assertEqual(self._asked(post), ["2026-11-21"])
         self.assertEqual(result["to_form"], "week-ahead")
         self.assertIn(MONDAY_ROW, result["transactions"])
+
+
+    def test_the_first_read_needs_no_probe_to_find_a_monday_dated_deposit(self):
+        # Nothing remembered yet: the worker's minute poll, a balance check or
+        # a notification must find the deposit without waiting for a probe.
+        with patch("utility.wema.requests.post", return_value=_resp(THROUGH_MONDAY)) as post:
+            result = wema.get_transactions("0458386712", "2026-11-13", "2026-11-14")
+        self.assertEqual(self._asked(post), ["2026-11-21"])
+        self.assertIn(MONDAY_ROW, result["transactions"])
+
+
+class TransactionDayTests(SimpleTestCase):
+    def test_the_day_the_money_moved_is_preferred_to_the_business_date(self):
+        self.assertEqual(wema.transaction_day(
+            {"date": "2026-11-16T00:00:00", "transactionDate": "14 Nov 2026"}), date(2026, 11, 14))
+
+    def test_other_spellings_and_fallbacks(self):
+        self.assertEqual(wema.transaction_day({"transactionDate": "2026-07-01"}), date(2026, 7, 1))
+        self.assertEqual(wema.transaction_day({"transactionDate": "14 November 2026"}),
+                         date(2026, 11, 14))
+        self.assertEqual(wema.transaction_day({"transactionDate": "soon", "date": "2026-11-13T18:58:58.5"}),
+                         date(2026, 11, 13))
+        self.assertIsNone(wema.transaction_day({"transactionDate": "soon"}))
+        self.assertIsNone(wema.transaction_day({}))
+        self.assertIsNone(wema.transaction_day(None))
