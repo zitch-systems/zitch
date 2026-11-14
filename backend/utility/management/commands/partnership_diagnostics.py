@@ -39,6 +39,8 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--require-clean-config", action="store_true",
                             help="Fail if retired virtual-account settings remain deployed.")
+        parser.add_argument("--probe-bills", action="store_true",
+                            help="Check the live bill catalogue and settlement route without paying a bill.")
 
     def handle(self, *args, **options):
         bank = settings.WEMA
@@ -74,6 +76,24 @@ class Command(BaseCommand):
             "limitation": "This inspection does not verify bank acceptance, OTP, live payments, "
                           "published Flow contents, physical devices or recovery.",
         }
+        if options["probe_bills"]:
+            configured = wema._vas_live("bills")
+            catalogue = wema.get_bills() if configured else {}
+            settlement_ready, reason = (
+                providers.vas_can_settle("bills") if configured else
+                (False, "Wema Bills Payment credentials are missing or simulation is enabled.")
+            )
+            enabled = report["bank_biller_enabled"]
+            report["scope"] = "Configuration, local evidence and read-only bill catalogue/status queries."
+            report["bills"] = {
+                "configured": configured,
+                "enabled": enabled,
+                "catalogue_reachable": catalogue.get("success") is True,
+                "catalogue_packages": len(catalogue.get("bills") or []),
+                "settlement_ready": settlement_ready,
+                "settlement_reason": reason,
+                "purchase_gate_open": enabled and configured and settlement_ready,
+            }
         self.stdout.write(json.dumps(report, sort_keys=True))
         if options["require_clean_config"] and not report["retired_account_configuration"]["clean"]:
             raise CommandError("Retired account configuration remains; see variable names above.")

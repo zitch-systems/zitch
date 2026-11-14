@@ -117,18 +117,20 @@ class ReconciliationExitTests(TestCase):
     @override_settings(WEMA_RECONCILE_FAIL_INCOMPLETE=True)
     def test_failed_bill_lookup_does_not_refund_or_stop_later_bill(self):
         module = "utility.management.commands.reconcile_wema."
-        rows = [SimpleNamespace(pk=n, reference=f"BILL-{n}", meta={}) for n in (1, 2)]
+        rows = [SimpleNamespace(pk=n, reference=f"BILL-{n}", meta={}, service="Electricity — Ikeja")
+                for n in (1, 2)]
         result = {"success": True, "status": "SUCCESS"}
         with patch(module + "wema_provisioned_wallets", return_value=[]), \
              patch(module + "pending_vas_purchases", side_effect=[rows, []]), \
              patch(module + "recorded_vas_outcome", return_value=None), \
              patch(module + "claim_status_lookup", return_value=True), \
-             patch(module + "vas_requery", side_effect=[ValueError("malformed"), result]), \
+             patch(module + "vas_requery", side_effect=[ValueError("malformed"), result]) as query, \
              patch(module + "settle_or_refund", return_value="success") as settle, \
              patch("utility.alerts.alert"), self.assertRaises(SystemExit):
             call_command("reconcile_wema", account_recovery_limit=0,
                          stdout=StringIO(), stderr=StringIO())
         settle.assert_called_once_with(rows[1], result)
+        self.assertEqual(query.call_args.kwargs["service"], rows[1].service)
         report = AuditLog.objects.get(action="recon.wema_run").after
         self.assertEqual(report["vas_status_failures"], 1)
         self.assertEqual(report["vas_settled"], 1)

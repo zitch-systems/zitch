@@ -627,19 +627,21 @@ def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
     # debit still arbitrates concurrent requests via its unique idempotency key.
     if existing_for_key(user, idempotency_key) is not None:
         raise DuplicateTransaction(idempotency_key)
-    if is_biller_service(service):
+    reconcile_meta = {**(meta or {}), "reconcile": True,
+                      "provider_purchase": True}
+    vas_type = biller_transaction_type(service)
+    if vas_type:
         from utility.providers import _VAS_UNAVAILABLE, vas_can_settle
 
-        kind = re.match(r"[a-z]+", str(service).strip(), re.I).group().lower()
-        product = "airtime" if kind in {"airtime", "data"} else (
-            "remita" if kind == "remita" else "bills")
+        product = {"data": "airtime", "bill": "bills"}.get(vas_type, vas_type)
         # A read-only status probe runs before any ledger mutation and outside
         # wallet locks. The provider boundary checks again before sending money.
         can_settle, _reason = vas_can_settle(product)
         if not can_settle:
             raise LimitExceeded(_VAS_UNAVAILABLE)
-    reconcile_meta = {**(meta or {}), "reconcile": True,
-                      "provider_purchase": True}
+        # Commit the status route with the reservation. A worker can stop after
+        # submitting the bill and before receiving or saving the bank's reply.
+        reconcile_meta.update(vas_type=vas_type)
     txn = debit(user, amount, service, meta=reconcile_meta, idempotency_key=idempotency_key)
     result = provider_call(txn.reference)
     status = settle_or_refund(txn, result)
@@ -3342,10 +3344,19 @@ def assert_customer_spending_available(user) -> None:
         raise LimitExceeded(PARTNERSHIP_ARCHIVED_MESSAGE)
 
 
+def biller_transaction_type(service) -> str:
+    """Map a stored utility service label to its Wema status request type."""
+    match = re.match(r"^(airtime|data|cable|electricity|remita|betting|exam)\b",
+                     str(service or "").strip(), re.I)
+    if match is None:
+        return ""
+    kind = match.group(1).lower()
+    return kind if kind in {"airtime", "data", "remita"} else "bill"
+
+
 def is_biller_service(service) -> bool:
     """Only retained utility products; never cards, transfers or savings."""
-    return bool(re.match(r"^(airtime|data|cable|electricity|remita|betting|exam)(?:\b|\s)",
-                         str(service or "").strip(), re.I))
+    return bool(biller_transaction_type(service))
 
 
 def _biller_funding_context(user, amount=Decimal("0"), *, wallet=None):
