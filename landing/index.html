@@ -592,6 +592,14 @@
   /* ---------- calculator: the answer follows you while you choose (phones) ---------- */
   .calc-live{display:none;}
 
+  /* ---------- the WhatsApp logo (the supplied file, unmodified): on a white disc inside buttons, bare beside labels ---------- */
+  .wa-ic{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#fff;flex:none;margin-left:-4px;}
+  .wa-ic img{width:16px;height:16px;}
+  .wa-logo{display:inline-block;width:16px;height:16px;flex:none;}
+  .eyebrow .wa-logo{width:15px;height:15px;}
+  .demo-note .wa-logo{vertical-align:-3px;margin-right:7px;}
+  .steps .n .wa-logo{width:19px;height:19px;}
+
   /* ---------- brands: two logo tickers running in opposite directions (still row without script or with reduced motion) ---------- */
   .brands{padding:30px 0 34px;border-bottom:1px solid var(--line);background:var(--bg);overflow:hidden;}
   .brands-h{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);text-align:center;margin:0 0 16px;}
@@ -876,11 +884,11 @@
   <div class="amb amb-2" data-coil data-h="230" data-density=".6" data-fps="30" data-k="-.14" aria-hidden="true"></div>
   <div class="wrap hero-in">
     <div class="hero-copy">
-      <span class="eyebrow">WhatsApp banking<span class="eb-x"> · Send · Top up · Pay</span></span>
+      <span class="eyebrow"><img class="wa-logo" src="assets/landing-v1/whatsapp.svg" alt="" width="16" height="16" />WhatsApp banking<span class="eb-x"> · Send · Top up · Pay</span></span>
       <h1>Money that speaks<br /><span class="roll" id="roll"><span class="sizer">your language.</span></span></h1>
       <p class="lead">Send money, buy airtime and pay bills by texting Zitch on WhatsApp — in plain language, with your PIN on every kobo. The full Zitch app is there when you want more.</p>
       <div class="hero-ctas">
-        <a class="btn btn-cyan" href="#whatsapp"><svg class="i" aria-hidden="true" width="20" height="20"><use href="#i-chat"/></svg>Chat on WhatsApp</a>
+        <a class="btn btn-cyan" href="#whatsapp"><span class="wa-ic" aria-hidden="true"><img src="assets/landing-v1/whatsapp.svg" alt="" width="16" height="16" /></span>Chat on WhatsApp</a>
         <span class="brk" aria-hidden="true"></span>
         <a class="store" href="#cta" aria-label="Download on the App Store">
           <span class="ico"><img src="assets/landing-v1/apple.svg" alt="" /></span>
@@ -963,7 +971,7 @@
       <div class="rev wa-copy">
         <span class="ai-pill"><svg class="i" aria-hidden="true" width="15" height="15"><use href="#i-spark"/></svg>AI-assisted — reply with a number, or just say it</span>
         <div class="sec-head">
-          <span class="eyebrow">WhatsApp banking</span>
+          <span class="eyebrow"><img class="wa-logo" src="assets/landing-v1/whatsapp.svg" alt="" width="16" height="16" />WhatsApp banking</span>
           <h2>Your bank lives where your chats live.</h2>
           <p>Say hi and Zitch sends its menu. Reply with a number, or type it the way you'd say it — "send 5k to Ada" just works. Details go on a private form, and your PIN guards every kobo.</p>
         </div>
@@ -993,7 +1001,7 @@
           <div class="wa-feat"><div class="ic"><svg class="i" aria-hidden="true" width="24" height="24"><use href="#i-swap"/></svg></div><div><h3>Balance, history &amp; conversion</h3><p>Check every wallet, see your recent transactions, or convert NGN to USD, GBP and CAD with a 60-second locked quote.</p></div></div>
         </div>
         <div class="wa-cta">
-          <a class="btn btn-cyan" href="#cta">Link your WhatsApp</a>
+          <a class="btn btn-cyan" href="#cta"><span class="wa-ic" aria-hidden="true"><img src="assets/landing-v1/whatsapp.svg" alt="" width="16" height="16" /></span>Link your WhatsApp</a>
           <a class="btn btn-ghost" href="#services">See the app</a>
         </div>
       </div>
@@ -1002,12 +1010,12 @@
         <div class="wa-phone">
           <div class="ph"><div class="scr"><div class="chat" id="chatMain" data-chat="main" data-seed="hello"></div></div></div>
         </div>
-        <p class="demo-note">Interactive demo with sample names, prices and rates. No real money moves, and any 4-digit PIN works.</p>
+        <p class="demo-note"><img class="wa-logo" src="assets/landing-v1/whatsapp.svg" alt="" width="16" height="16" />Zitch on WhatsApp. Interactive demo with sample names, prices and rates. No real money moves, and any 4-digit PIN works.</p>
       </div>
     </div>
 
     <ol class="steps rev" aria-label="How WhatsApp banking works">
-      <li><span class="n"><svg class="i" aria-hidden="true" width="20" height="20"><use href="#i-chat"/></svg>01</span><h3>Say hi</h3><p>Link your number once in the app. After that, a simple "Hi" brings up the Zitch menu.</p></li>
+      <li><span class="n"><img class="wa-logo" src="assets/landing-v1/whatsapp.svg" alt="" width="16" height="16" />01</span><h3>Say hi</h3><p>Link your number once in the app. After that, a simple "Hi" brings up the Zitch menu.</p></li>
       <li><span class="n"><svg class="i" aria-hidden="true" width="20" height="20"><use href="#i-menu"/></svg>02</span><h3>Pick a number, or just say it</h3><p>Reply 2 to send money — or type "send 5k to Ada". Both get you to the same place.</p></li>
       <li><span class="n"><svg class="i" aria-hidden="true" width="20" height="20"><use href="#i-lock"/></svg>03</span><h3>Private form, then your PIN</h3><p>Details go on a secure form, not in the chat. Zitch shows the account name, and only your PIN moves money.</p></li>
       <li><span class="n"><svg class="i" aria-hidden="true" width="20" height="20"><use href="#i-receipt"/></svg>04</span><h3>Receipt in the same chat</h3><p>Money lands in seconds, and tokens, PINs and receipts come straight back to you.</p></li>
@@ -1187,7 +1195,7 @@
       <h2>Join 5,000+ people moving money the easy way.</h2>
       <p>Open a free account in minutes, link your WhatsApp, and your money goes wherever your conversations go.</p>
       <div class="row">
-        <a class="btn btn-navy" style="height:56px" href="#whatsapp">Bank on WhatsApp</a>
+        <a class="btn btn-navy" style="height:56px" href="#whatsapp"><span class="wa-ic" aria-hidden="true"><img src="assets/landing-v1/whatsapp.svg" alt="" width="16" height="16" /></span>Bank on WhatsApp</a>
         <a class="store" href="#cta" aria-label="Download on the App Store"><span class="ico"><img src="assets/landing-v1/apple.svg" alt="" /></span><span class="t"><small>Download on the</small><b>App Store</b></span></a>
         <a class="store" href="#cta" aria-label="Get it on Google Play"><span class="ico gp"><img src="assets/landing-v1/google-play.svg" alt="" /></span><span class="t"><small>Get it on</small><b>Google Play</b></span></a>
         
