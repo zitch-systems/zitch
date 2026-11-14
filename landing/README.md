@@ -1,16 +1,36 @@
 # Zitch landing page — static deploy
 
-Self-contained static site for Zitch's **VTU / bill-payment** offering — airtime, data,
-recharge PINs, cable TV, electricity, internet, exam PINs and betting-wallet funding. Ported
-from `design_handoff_zitch_vtu_landing/` (design handoff). No build step, no server code —
-deployable to any static host.
+Self-contained static site for Zitch: **WhatsApp banking first** (send money, airtime and data,
+bills — by chat), with the Zitch app as the second half of the page. No build step, no server
+code — deployable to any static host.
 
-Pages: `index.html` (landing) · `terms.html` · `privacy.html`. Shared: `_ds/` (base design-system
-tokens + local font fallbacks), `uploads/zitch-logo.png` (brand mark), `assets/logos/` (provider
-marks). Icons load from Lucide (unpkg) and type from Google Fonts.
+Pages: `index.html` (landing) · `terms.html` · `privacy.html` · `pay.html`. Type loads from
+Google Fonts; everything else `index.html` needs is in `assets/` (`brand/`, `logos/`,
+`landing-v1/`).
 
-> The previous marketing landing (banking/transfers/FX positioning) is archived in
-> `../landing-legacy/` — preserved in git, not deployed.
+What is on the landing page:
+
+- **Hero 3D mockup** — two screens mapped onto a product render (`landing-v1/phones-3d.webp`)
+  that lift out into phones you can use. Script only writes transforms and opacities, so it
+  animates on the compositor. The live app (`prototype.html?embed=1`) boots only when a visitor
+  reaches for the app phone.
+- **Chat demo** — a scripted copy of the real WhatsApp flow: "Hi" → numbered menu → reply with a
+  number or type it → private form → name check → PIN → receipt. Every name, account and price
+  in it is a sample; nothing is sent anywhere.
+- **Animated mark** — `landing-v1/zitch-coil.v2.js`, the same renderer as
+  `assets/zitch-loader.v1.js` plus `decorative`, `maxDensity`, `fps` and adaptive segment size
+  for small and background coils.
+
+> `/assets/*` is cached as immutable for a year (`_headers`). Never edit a file under
+> `assets/landing-v1/` in place: add `landing-v2/` (or a new filename) and point `index.html` at it.
+
+> The previous VTU / bill-payment landing was replaced by this page. It is in git history:
+> `git show d07a767:landing/index.html`. The older banking landing is still in `../landing-legacy/`.
+
+> **Before relying on the page commercially:** the App Store / Google Play badges and the
+> "Chat on WhatsApp" buttons point at on-page anchors until real store listings and the bot's
+> `wa.me` link are supplied; partner names (Wema Bank, NDIC, Prembly) are text until official
+> logo files are supplied.
 
 > **⚠️ Legal placeholders:** the Terms and Privacy pages carry `class="ph"` placeholders
 > (legal entity, RC number, registered address, support/phone). Grep for `class="ph"` and
@@ -61,5 +81,5 @@ commercial product you need Pro ($20/seat/mo).
   (the static app prototype, same one Render serves at `/prototype/`).
 - The footer's "Admin portal" link was deliberately removed from this public copy — the staff
   console stays on Render at `/portal/`. Restore the `<li>` in `index.html` if you want it back.
-- External CDNs used: Google Fonts (landing + prototype) and unpkg React/Babel (prototype only).
+- External CDNs used: Google Fonts (landing + prototype) and unpkg React/Babel (prototype only). The landing no longer loads Lucide.
 - `_headers` sets security headers on Cloudflare Pages; other hosts (Vercel etc.) ignore the file.
