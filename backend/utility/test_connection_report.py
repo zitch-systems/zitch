@@ -86,4 +86,26 @@ class RefusalNamesTheHostTests(SimpleTestCase):
         line = logs.output[0]
         self.assertIn("host=other-gw.example", line)
         self.assertIn("server=Microsoft-Azure-Application-Gateway/v2", line)
+        self.assertIn("request_id=-", line)
         self.assertNotIn("blocked", line)
+
+    @_with()
+    def test_the_gateway_request_id_is_logged_for_the_bank_to_trace(self):
+        resp = requests.Response()
+        resp.status_code = 403
+        resp._content = b"<html></html>"
+        resp.headers["apim-request-id"] = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        with self.assertLogs("zitch", level="WARNING") as logs:
+            wema._note_non_json("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2", resp)
+        self.assertIn("request_id=0f8fad5b-d9cb-469f-a165-70867728950e", logs.output[0])
+
+    @_with()
+    def test_a_malformed_request_id_is_not_logged(self):
+        resp = requests.Response()
+        resp.status_code = 403
+        resp._content = b"<html></html>"
+        resp.headers["apim-request-id"] = "x\nforged=1"
+        with self.assertLogs("zitch", level="WARNING") as logs:
+            wema._note_non_json("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2", resp)
+        self.assertIn("request_id=-", logs.output[0])
+        self.assertNotIn("forged", logs.output[0])

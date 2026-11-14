@@ -619,12 +619,28 @@ def _note_non_json(product: str, path: str, resp: requests.Response) -> requests
         json.loads(body)
     except ValueError:
         headers = getattr(resp, "headers", None) or {}
+        # The gateway's own request id is what the bank needs to find the call
+        # in its logs. Its absence says the refusal never reached the API
+        # gateway: something in front of it answered.
         log.warning("wema_gateway_non_json product=%s host=%s route=%s http_status=%s "
-                    "content_type=%s bytes=%d server=%s", product,
+                    "content_type=%s bytes=%d server=%s request_id=%s", product,
                     _host(_base_url(product)) or "-", _gateway_route(path),
                     resp.status_code, _log_safe(headers.get("Content-Type", ""), 60),
-                    len(body), _log_safe(headers.get("Server", "") or "-", 60))
+                    len(body), _log_safe(headers.get("Server", "") or "-", 60),
+                    _gateway_request_id(headers) or "-")
     return resp
+
+
+_REQUEST_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
+
+
+def _gateway_request_id(headers) -> str:
+    """The API gateway's request id, when the response carries a well-formed one."""
+    for name in ("apim-request-id", "x-ms-request-id"):
+        value = (headers or {}).get(name)
+        if isinstance(value, str) and _REQUEST_ID.fullmatch(value):
+            return value
+    return ""
 
 
 def _get(product: str, path: str, params: dict | None = None) -> requests.Response:
@@ -648,12 +664,9 @@ def _response_meta(resp: requests.Response, data) -> dict:
         "gateway_code": data.get("code") if isinstance(data, dict) else None,
         "message": _msg(data),
     }
-    headers = getattr(resp, "headers", {}) or {}
-    for name in ("apim-request-id", "x-ms-request-id"):
-        value = headers.get(name)
-        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value, re.I):
-            details["gateway_request_id"] = value
-            break
+    request_id = _gateway_request_id(getattr(resp, "headers", {}) or {})
+    if request_id:
+        details["gateway_request_id"] = request_id
     return details
 
 
