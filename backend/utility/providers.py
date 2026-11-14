@@ -208,12 +208,71 @@ def vas_can_settle(product: str = "airtime") -> tuple[bool, str]:
         env = "WEMA_" + wema._LEGEND_SETTING.get(product, "VAS_STATUS_LEGEND")
         return False, (f"{env} must contain unambiguous success and failed outcomes, "
                        f"so every PROCESSING purchase can be settled or refunded")
-    bank = settings.WEMA
-    if not (bank.get("CALLBACK_TOKEN") and bank.get("CALLBACK_ENFORCE_IPS")
-            and bank.get("CALLBACK_IPS") and bank.get("AUTH_REQUIRE_SECURITY_INFO")
-            and bank.get("SECURITY_INFO")):
+    if not _callbacks_authenticated():
         return False, "Single Account payments require authenticated Wema callbacks."
     return True, ""
+
+
+def _callbacks_authenticated() -> bool:
+    """Whether the bank's callbacks are authenticated in full: the URL token, the
+    source address and the per-transaction security value."""
+    bank = settings.WEMA
+    return bool(bank.get("CALLBACK_TOKEN") and bank.get("CALLBACK_ENFORCE_IPS")
+                and bank.get("CALLBACK_IPS") and bank.get("AUTH_REQUIRE_SECURITY_INFO")
+                and bank.get("SECURITY_INFO"))
+
+
+#: How long after the authorisation window closes a purchase is still left alone.
+#: It covers clock difference between the processes that read the same row.
+_NEVER_AUTHORISED_GRACE_SECONDS = 300
+
+
+def vas_never_authorised(reference: str, meta: dict | None, created) -> bool:
+    """Whether the bank never asked to make this purchase, and no longer can.
+
+    The bank debits a Single Account purchase only after asking this deploy to
+    authorise it (the authentication callback, wallet/wema_callbacks.py), and
+    that callback refuses any row older than AUTH_MAX_AGE. So a purchase past
+    that age which was never authorised was not made, and cannot be made later.
+
+    Without this, such a purchase had no way out. Callbacks are the only thing
+    that settles a purchase, and the bank sends none for a request it never
+    processed: on 14 November 2026 its gateway answered an airtime purchase
+    with something unreadable, and the customer's debit was held with nothing
+    in this system, a person included, able to return it.
+
+    Every condition must hold:
+
+    * Callbacks are authenticated in full, so the bank has to ask, and an
+      answer of yes can only have gone to the bank.
+    * The row is older than AUTH_MAX_AGE plus a grace period. From then on an
+      authorisation request for it is refused as stale.
+    * The row carries no authorisation and no transaction callback.
+    * No authentication or transaction callback was ever recorded for the
+      reference, whatever it said. One that was means the bank knows the
+      purchase, and its outcome is left to the bank.
+
+    Age alone decides nothing here. It only marks when the bank lost the
+    ability to ask.
+    """
+    from django.utils import timezone
+
+    if created is None or not _callbacks_authenticated():
+        return False
+    try:
+        window = int(settings.WEMA.get("AUTH_MAX_AGE") or 900)
+        age = (timezone.now() - created).total_seconds()
+    except (TypeError, ValueError):
+        return False
+    if age <= window + _NEVER_AUTHORISED_GRACE_SECONDS:
+        return False
+    meta = meta if isinstance(meta, dict) else {}
+    if meta.get("wema_auth") or meta.get("wema_callback"):
+        return False
+    from whatsapp.models import WebhookEvent
+
+    return not WebhookEvent.objects.filter(
+        source__in=("wema.auth", "wema.txn"), reference=reference).exists()
 
 
 def _wema_vas_route(service_id: str, payload: dict):
@@ -331,8 +390,14 @@ def vas_retired_rail(meta: dict | None) -> str:
 _RETIRED_RAIL_ALERT_COOLDOWN = 24 * 60 * 60
 
 
-def vas_requery(reference: str, meta: dict | None = None, *, service: str = "") -> dict:
+def vas_requery(reference: str, meta: dict | None = None, *, service: str = "",
+                created=None) -> dict:
     """Requery one VAS purchase, given the ledger row's ``meta`` if the caller has it.
+
+    ``created`` is the ledger row's creation time. A caller that passes it lets a
+    purchase the bank never asked to authorise be returned to the customer; see
+    vas_never_authorised. The bank's own callback handler does not pass it: a
+    callback arriving is the bank saying it knows the purchase.
 
     A row still PENDING from the RETIRED rail is never requeried. Its reference means
     nothing to the partner bank, so the status check answers "no status" — which
@@ -366,19 +431,38 @@ def vas_requery(reference: str, meta: dict | None = None, *, service: str = "") 
     # Older interrupted reservations have a service label but no saved type.
     vas_type = (meta or {}).get("vas_type") or biller_transaction_type(service) or "airtime"
     if vas_type in {"airtime", "data", "bill"}:
+        if vas_never_authorised(reference, meta, created):
+            from .alerts import alert
+
+            log.warning("wema_vas_never_authorised ref=%s vas_type=%s (the bank never asked "
+                        "to authorise it and no longer can: refunding)",
+                        wema._log_safe(reference), vas_type)
+            alert("vas_purchase_never_authorised: the bank never asked to authorise a "
+                  "purchase, so it was returned to the customer", level="warning",
+                  reference=reference, vas_type=vas_type)
+            return {"success": False, "pending": False, "status": "NEVER_AUTHORISED",
+                    "reference": reference,
+                    "message": "This payment did not reach the bank. Your money has been returned."}
         return {"success": False, "pending": True, "status": "AWAITING_BANK_CALLBACK",
                 "reference": reference, "message": "Awaiting Wema Client Account settlement evidence."}
     return wema.vas_status(reference, vas_type)
 
 
-def vtu_requery(reference: str) -> dict:
-    """Requery a VAS purchase by reference alone, loading the row's meta to do it."""
+def vtu_requery(reference: str, *, bank_callback: bool = False) -> dict:
+    """Requery a VAS purchase by reference alone, loading the row's meta to do it.
+
+    ``bank_callback`` is set by the bank's transaction callback, which is recorded
+    only after it has been handled: its arrival is the evidence that the bank
+    knows the purchase, so the never-authorised release is not offered there.
+    """
     from wallet.models import Transaction
 
-    txn = Transaction.objects.filter(reference=reference).only("meta", "service").first()
+    txn = (Transaction.objects.filter(reference=reference)
+           .only("meta", "service", "created").first())
     if txn is None:
         return vas_requery(reference)
-    return vas_requery(reference, txn.meta, service=txn.service)
+    return vas_requery(reference, txn.meta, service=txn.service,
+                       created=None if bank_callback else txn.created)
 
 #: Our cable service_ids, and the CablePlan.provider choice each maps to.
 _CABLE_PROVIDER_CHOICE = {"gotv": "1", "dstv": "2", "startimes": "3"}

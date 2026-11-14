@@ -530,16 +530,58 @@ def _gateway():
     return pooled_session("wema-gateway")
 
 
+_GATEWAY_ROUTE_SEGMENT = re.compile(r"[A-Za-z][A-Za-z-]*(?:V\d)?")
+
+
+def _gateway_route(path: str) -> str:
+    """The fixed part of a gateway path, for a log line.
+
+    Some paths end in a reference, an account number or a card token. A segment
+    that is not a plain word ends the route, and no route is longer than four
+    segments, so none of those is logged.
+    """
+    kept = []
+    for segment in str(path or "").strip("/").split("/")[:4]:
+        if not _GATEWAY_ROUTE_SEGMENT.fullmatch(segment):
+            break
+        kept.append(segment)
+    return "/" + "/".join(kept)
+
+
+def _note_non_json(product: str, path: str, resp: requests.Response) -> requests.Response:
+    """Record what the gateway sent when it was not JSON.
+
+    Every caller parses the body next, and reports one it cannot parse as the
+    gateway being unreachable. That outcome is right, and it hid the evidence: on
+    14 November 2026 every statement read failed this way for hours and the log
+    said only "JSONDecodeError". The status, content type and size tell a block
+    page from an empty reply from a maintenance page. Nothing from the body
+    itself is logged.
+    """
+    body = getattr(resp, "content", None)
+    if not isinstance(body, (bytes, bytearray)):
+        return resp
+    try:
+        json.loads(body)
+    except ValueError:
+        headers = getattr(resp, "headers", None) or {}
+        log.warning("wema_gateway_non_json product=%s route=%s http_status=%s "
+                    "content_type=%s bytes=%d", product, _gateway_route(path),
+                    resp.status_code, _log_safe(headers.get("Content-Type", ""), 60),
+                    len(body))
+    return resp
+
+
 def _get(product: str, path: str, params: dict | None = None) -> requests.Response:
-    return _raise_if_ambiguous(
+    return _note_non_json(product, path, _raise_if_ambiguous(
         _gateway().get(_url(product, path), params=params or {},
-                       headers=_headers(product), timeout=REQUEST_TIMEOUT))
+                       headers=_headers(product), timeout=REQUEST_TIMEOUT)))
 
 
 def _post(product: str, path: str, body: dict, params: dict | None = None) -> requests.Response:
-    return _raise_if_ambiguous(
+    return _note_non_json(product, path, _raise_if_ambiguous(
         _gateway().post(_url(product, path), json=body, params=params or {},
-                        headers=_headers(product), timeout=REQUEST_TIMEOUT))
+                        headers=_headers(product), timeout=REQUEST_TIMEOUT)))
 
 
 def _response_meta(resp: requests.Response, data) -> dict:
@@ -613,12 +655,12 @@ def _unreachable(exc: Exception, *, pending: bool = False) -> dict:
     terminal outcome. Do not echo the exception to clients; request exceptions can
     contain provider URLs and customer identifiers.
     """
-    log.warning("wema_gateway_unreachable operation_pending=%s error_type=%s",
-                pending, type(exc).__name__)
     diagnostic = {"error_type": type(exc).__name__}
     response = getattr(exc, "response", None)
     if response is not None:
         diagnostic["http_status"] = response.status_code
+    log.warning("wema_gateway_unreachable operation_pending=%s error_type=%s http_status=%s",
+                pending, type(exc).__name__, diagnostic.get("http_status"))
     return {"success": False, "pending": pending,
             "message": "Bank gateway is temporarily unavailable",
             "diagnostic": diagnostic}
@@ -2467,6 +2509,31 @@ def _vas_source() -> str:
     return ""
 
 
+def _vas_submitted(product: str, reference: str, resp, data, out: dict) -> dict:
+    """Log a purchase the bank's reply left unsettled, as transfer() does.
+
+    Such a purchase is then settled only by the bank's callbacks. Without this
+    line nothing recorded what the bank had answered, so a purchase that stayed
+    pending could not be told apart from one the bank had never received.
+    """
+    if out.get("pending"):
+        log.warning("wema_vas_purchase_pending ref=%s product=%s status=%s meta=%s raw=%s",
+                    _log_safe(reference), product, _log_safe(out.get("status") or ""),
+                    _response_meta(resp, data), _trim(data))
+    return out
+
+
+def _vas_unanswered(product: str, reference: str, exc: Exception) -> dict:
+    """A purchase the gateway gave no readable answer to. It is held, because
+    nothing here shows whether the bank took the instruction, and it is logged,
+    because until now it was held in silence."""
+    response = getattr(exc, "response", None)
+    log.warning("wema_vas_purchase_unanswered ref=%s product=%s error_type=%s http_status=%s "
+                "(held PENDING)", _log_safe(reference), product, type(exc).__name__,
+                getattr(response, "status_code", None))
+    return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
 @_new_biller_instruction
 def purchase_airtime(amount_naira, reference: str, phone: str, network: str, *,
                      source_account: str = "") -> dict:
@@ -2484,9 +2551,11 @@ def purchase_airtime(amount_naira, reference: str, phone: str, network: str, *,
                 "securityInfo": _security_info(op="airtime", reference=reference, amount=amount_naira),
                 "clientId": settings.WEMA.get("CHANNEL_ID", "")}
         resp = _post("airtime", "/api/Airtime/Client/PurchaseAirtime", body)
-        return _parse_vas(resp.json(), reference, http_status=resp.status_code)
+        data = resp.json()
+        return _vas_submitted("airtime", reference, resp, data,
+                              _parse_vas(data, reference, http_status=resp.status_code))
     except requests.RequestException as exc:
-        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+        return _vas_unanswered("airtime", reference, exc)
 
 
 def _flatten_data_plans(result, network: str = "") -> list:
@@ -2554,9 +2623,11 @@ def purchase_data(amount_naira, reference: str, phone: str, network: str, packag
                 "securityInfo": _security_info(op="data", reference=reference, amount=amount_naira),
                 "clientId": settings.WEMA.get("CHANNEL_ID", "")}
         resp = _post("airtime", "/api/Data/Client/PurchaseData", body)
-        return _parse_vas(resp.json(), reference, http_status=resp.status_code)
+        data = resp.json()
+        return _vas_submitted("data", reference, resp, data,
+                              _parse_vas(data, reference, http_status=resp.status_code))
     except requests.RequestException as exc:
-        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+        return _vas_unanswered("data", reference, exc)
 
 
 def _flatten_bills(result) -> list:
@@ -2706,11 +2777,12 @@ def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, 
                 "securityInfo": _security_info(op="bill", reference=reference, amount=amount_naira)}
         resp = _post("bills", "/api/Shared/PayBill", body)
         data = resp.json()
-        res = _parse_vas(data, reference, product="bills", http_status=resp.status_code)
+        res = _vas_submitted("bills", reference, resp, data, _parse_vas(
+            data, reference, product="bills", http_status=resp.status_code))
         token = _vas_token(data)
         return {**res, "token": token} if token else res
     except requests.RequestException as exc:
-        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+        return _vas_unanswered("bills", reference, exc)
 
 
 def vas_status(reference: str, txn_type: str = "") -> dict:

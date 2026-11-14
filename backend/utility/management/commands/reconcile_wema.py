@@ -404,7 +404,7 @@ class Command(BaseCommand):
                 # on the route it actually takes. The row's meta is passed in because we
                 # already hold it — no second query per row.
                 res = recorded if recorded is not None else vas_requery(
-                    txn.reference, meta, service=txn.service)
+                    txn.reference, meta, service=txn.service, created=txn.created)
                 if res.get("pending"):
                     self.stdout.write(
                         "wema_vas_requery_pending "
