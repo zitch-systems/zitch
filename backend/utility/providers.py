@@ -351,7 +351,7 @@ def vas_retired_rail(meta: dict | None) -> str:
 _RETIRED_RAIL_ALERT_COOLDOWN = 24 * 60 * 60
 
 
-def vas_requery(reference: str, meta: dict | None = None) -> dict:
+def vas_requery(reference: str, meta: dict | None = None, *, service: str = "") -> dict:
     """Requery one VAS purchase, given the ledger row's ``meta`` if the caller has it.
 
     A row still PENDING from the RETIRED rail is never requeried. Its reference means
@@ -364,6 +364,8 @@ def vas_requery(reference: str, meta: dict | None = None) -> dict:
     Every requery path goes through here — the reconcile cron, the operator portal and
     the admin action — so the guard cannot be bypassed by the caller that matters.
     """
+    from wallet.services import biller_transaction_type
+
     from . import wema
 
     rail = vas_retired_rail(meta)
@@ -381,15 +383,19 @@ def vas_requery(reference: str, meta: dict | None = None) -> dict:
         return {"success": False, "pending": True, "status": "RETIRED_RAIL",
                 "reference": reference, "retired_rail": rail,
                 "message": "Made on a retired provider; needs manual settlement."}
-    return wema.vas_status(reference, (meta or {}).get("vas_type", "airtime"))
+    # Older interrupted reservations have a service label but no saved type.
+    vas_type = (meta or {}).get("vas_type") or biller_transaction_type(service) or "airtime"
+    return wema.vas_status(reference, vas_type)
 
 
 def vtu_requery(reference: str) -> dict:
     """Requery a VAS purchase by reference alone, loading the row's meta to do it."""
     from wallet.models import Transaction
 
-    txn = Transaction.objects.filter(reference=reference).only("meta").first()
-    return vas_requery(reference, (txn.meta if txn else None) or {})
+    txn = Transaction.objects.filter(reference=reference).only("meta", "service").first()
+    if txn is None:
+        return vas_requery(reference)
+    return vas_requery(reference, txn.meta, service=txn.service)
 
 #: Our cable service_ids, and the CablePlan.provider choice each maps to.
 _CABLE_PROVIDER_CHOICE = {"gotv": "1", "dstv": "2", "startimes": "3"}

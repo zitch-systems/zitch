@@ -237,6 +237,25 @@ class RefusalRefundsTests(TestCase):
                 provider_call.assert_not_called()
                 self.assert_no_debit()
 
+    @override_settings(WEMA=_BILLS_LEGEND)
+    def test_interrupted_bill_requeries_the_bill_route_from_the_saved_reservation(self):
+        from wallet.models import Transaction
+        from wallet.services import run_provider_purchase
+
+        def interrupted(reference):
+            txn = Transaction.objects.get(reference=reference)
+            self.assertEqual(txn.meta["vas_type"], "bill")
+            self.assertTrue(txn.meta["reconcile"])
+            raise RuntimeError("worker interrupted")
+
+        with mock.patch("utility.wema.vas_status_entitlement", return_value=(True, "")):
+            with self.assertRaisesMessage(RuntimeError, "worker interrupted"):
+                run_provider_purchase(self.user, Decimal("500"), "Electricity — Ikeja", {}, interrupted)
+        txn = Transaction.objects.get(user=self.user, transaction_status=Transaction.PENDING)
+        with mock.patch("utility.wema.vas_status", return_value={"pending": True}) as status:
+            P.vtu_requery(txn.reference)
+        status.assert_called_once_with(txn.reference, "bill")
+
     @override_settings(WEMA=_AIRTIME_LEGEND)
     def test_second_guard_refunds_if_status_access_disappears_after_reservation(self):
         from wallet.models import BillFundingRefund, Transaction
@@ -368,3 +387,16 @@ class RetiredRailRequeryTests(TestCase):
                         return_value={"success": False, "pending": True}) as status:
             P.vtu_requery(txn.reference)
         status.assert_called_once()
+
+    def test_legacy_pending_row_without_type_requeries_by_service(self):
+        from wallet.services import debit
+        from wallet.tests import make_user
+
+        user, _ = make_user("08044440010", "requery@zitch.app", balance="5000", tier=3)
+        for service, kind in (("Cable — DStv", "bill"), ("Data MTN", "data"),
+                              ("Remita RRR", "remita")):
+            with self.subTest(service=service), \
+                    mock.patch("utility.wema.vas_status", return_value={"pending": True}) as status:
+                txn = debit(user, Decimal("300"), service, meta={"reconcile": True})
+                P.vtu_requery(txn.reference)
+                status.assert_called_once_with(txn.reference, kind)
