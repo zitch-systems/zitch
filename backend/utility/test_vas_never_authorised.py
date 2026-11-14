@@ -55,17 +55,24 @@ class NeverAuthorisedPurchaseTests(TestCase):
         self.addCleanup(alerts.stop)
 
     def held_purchase(self, *, minutes_ago=30):
-        """An airtime purchase the gateway gave no readable answer to."""
-        with mock.patch("utility.wema.purchase_airtime", return_value=dict(UNANSWERED)):
+        """An airtime purchase the gateway gave no readable answer to, made
+        `minutes_ago` minutes ago.
+
+        The clock is set back while the purchase is made, so the ledger row is
+        written with its age. Backdating it afterwards would be an UPDATE of
+        `created`, which the PostgreSQL ledger trigger refuses.
+        """
+        made_at = timezone.now() - timedelta(minutes=minutes_ago)
+        with mock.patch("utility.wema.purchase_airtime", return_value=dict(UNANSWERED)), \
+             mock.patch("django.utils.timezone.now", return_value=made_at):
             status, txn, _result = run_provider_purchase(
                 self.user, Decimal("70"), "Airtime MTN 70", {},
                 lambda ref: P.vtu_purchase(
                     "mtn-airtime", {"amount": "70", "phone": "08166938327",
                                     "source_account": "0155500070"}, ref))
         self.assertEqual(status, "pending")
-        Transaction.objects.filter(pk=txn.pk).update(
-            created=timezone.now() - timedelta(minutes=minutes_ago))
         txn.refresh_from_db()
+        self.assertEqual(txn.created, made_at)
         return txn
 
     def balance(self):
@@ -119,8 +126,9 @@ class NeverAuthorisedPurchaseTests(TestCase):
         self.assertEqual(_authorize_payout(
             txn.reference, wema.security_info_for_reference(txn.reference), BANK_IP),
             (True, "authorized"))
-        Transaction.objects.filter(pk=txn.pk).update(created=timezone.now() - timedelta(hours=3))
-        self.assertEqual(P.vtu_requery(txn.reference)["status"], "AWAITING_BANK_CALLBACK")
+        later = timezone.now() + timedelta(hours=3)
+        with mock.patch("django.utils.timezone.now", return_value=later):
+            self.assertEqual(P.vtu_requery(txn.reference)["status"], "AWAITING_BANK_CALLBACK")
 
     def test_a_purchase_the_bank_has_called_back_about_is_left_to_the_bank(self):
         stamped = self.held_purchase()
