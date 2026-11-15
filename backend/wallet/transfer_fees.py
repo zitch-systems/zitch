@@ -50,6 +50,22 @@ def fee_reference(payout_reference: str) -> str:
     return f"{payout_reference}-FEE"
 
 
+#: From #631 to #636 (13 November 2026) the fee added VAT to the bank's own
+#: VAT-inclusive figure. Each overcharged amount, and the fee the bank took.
+DOUBLE_VAT_FEES = {
+    Decimal("11.56"): Decimal("10.75"),
+    Decimal("28.90"): Decimal("26.88"),
+    Decimal("57.78"): Decimal("53.75"),
+}
+REFUND_SERVICE = "Transfer fee refund"
+REFUND_FOR_KEY = "transfer_fee_refund_for"
+REFUND_TAKEN_BACK_SERVICE = "Transfer fee refund reversed"
+
+
+def overcharge_refund_reference(fee_ref: str) -> str:
+    return f"FEEREFUND-{fee_ref}"
+
+
 def _enabled() -> bool:
     return bool(getattr(settings, "TRANSFER_FEE_ENABLED", True))
 
@@ -152,9 +168,36 @@ def settle_transfer_fee(payout) -> str:
             fee_row.transaction_status = Transaction.FAILED
             fee_row.save(update_fields=["transaction_status"])
             log.info("transfer_fee_released payout=%s fee=%s", payout.reference, fee_row.amount)
+            _take_back_overcharge_refund(fee_row)
             return "released"
         return "unchanged"
     return "unchanged"
+
+
+def _take_back_overcharge_refund(fee_row) -> None:
+    """The whole fee has just been returned, so a refund of part of it is taken back.
+
+    Without this a transfer reversed after its overcharge was refunded would
+    return that part twice. It is its own ledger row, so the books stay
+    append-only. Runs inside settle_transfer_fee's locks.
+    """
+    from wallet.models import Transaction
+    from wallet.services import debit
+
+    refund = Transaction.objects.filter(
+        reference=overcharge_refund_reference(fee_row.reference), user_id=fee_row.user_id,
+        direction=Transaction.IN, transaction_status=Transaction.SUCCESS).first()
+    if refund is None:
+        return
+    reference = f"{refund.reference}-REV"
+    if Transaction.objects.filter(reference=reference).exists():
+        return
+    row = debit(fee_row.user, refund.amount, REFUND_TAKEN_BACK_SERVICE,
+                meta={REFUND_FOR_KEY: fee_row.reference, "suppress_transaction_alert": True},
+                reference=reference, enforce_limits=False)
+    row.transaction_status = Transaction.SUCCESS
+    row.save(update_fields=["transaction_status"])
+    log.info("transfer_fee_refund_taken_back fee=%s amount=%s", fee_row.reference, refund.amount)
 
 
 def reconcile_transfer_fees(limit: int = 500) -> dict:
