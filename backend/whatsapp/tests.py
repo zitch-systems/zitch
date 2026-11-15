@@ -124,13 +124,18 @@ class WebhookTests(TestCase):
                                  "BUSINESS_NUMBER": "2348000000000"})
     def test_live_webhook_rejects_another_meta_phone_number_id(self):
         event = {"entry": [{"changes": [{"value": {
-            "metadata": {"phone_number_id": "attacker-phone"}}}]}]}
+            "metadata": {"phone_number_id": "attacker-phone"},
+            "messages": [{"id": "wamid.other-number", "from": "2348011111111",
+                          "type": "text", "text": {"body": "menu"}}]}}]}]}
         body = json.dumps(event).encode()
         sig = hmac.new(b"shh", body, hashlib.sha256).hexdigest()
         response = self.client.post("/webhooks/whatsapp", data=body,
                                     content_type="application/json",
                                     HTTP_X_HUB_SIGNATURE_256=f"sha256={sig}")
-        self.assertEqual(response.status_code, 400)
+        # Acknowledged so Meta stops retrying it, but never processed.
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json().get("ignored"))
+        self.assertFalse(WaMessageLog.objects.filter(direction=WaMessageLog.IN).exists())
 
     @override_settings(DEBUG=False, TESTING=False, WHATSAPP_QUEUE_KEY="queue-key")
     def test_production_worker_refuses_to_consume_when_channel_is_not_live(self):

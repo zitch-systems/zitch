@@ -215,3 +215,56 @@ class SettleWaitTests(TestCase):
             outcome = router.authorise_flow_execution(pa, self.user)
         self.assertEqual(outcome.status, router.OUTCOME_PENDING)
         self.assertNotIn("✅", outcome)
+
+
+class FlowNeverInlineInProductionTests(TestCase):
+    """Production logs: the Confirm spinner ran ~10s on transfers because the
+    Flow executed the payment inline (name check, bank call, settle wait,
+    receipt render, chat sends) before answering Meta - long after the bank had
+    already confirmed. With WHATSAPP_FLOW_INLINE off, the Flow must queue the
+    payment and answer as soon as the ledger settles, even when
+    WHATSAPP_PROCESS_INLINE is on for chat messages."""
+
+    def setUp(self):
+        self.user = _make_user()
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=True, WHATSAPP_FLOW_INLINE=False,
+                       WHATSAPP_FLOW_SETTLE_WAIT=2)
+    def test_flow_queues_even_when_chat_processing_is_inline(self):
+        pa = _action(self.user)
+        _ledger(self.user, pa.id, Transaction.SUCCESS)
+        with patch("whatsapp.router.run_flow_execution") as inline, \
+             patch("whatsapp.jobs.enqueue_flow_execution") as enqueue, \
+             patch("whatsapp.jobs.drain_in_background"):
+            outcome = router.authorise_flow_execution(pa, self.user)
+        inline.assert_not_called()
+        enqueue.assert_called_once()
+        self.assertEqual(outcome.status, router.OUTCOME_SUCCESS)
+
+
+class VtuPendingOutcomeTests(TestCase):
+    """A pending airtime/data/bill purchase must still render its outcome.
+    The grace-wait helper once shared a name with _await_settlement further
+    down router_tail, so the later definition replaced it and the pending
+    path raised a TypeError instead of telling the customer anything."""
+
+    def test_helper_names_do_not_collide(self):
+        import inspect
+
+        self.assertEqual(list(inspect.signature(router._await_vtu_settlement).parameters),
+                         ["txn"])
+        self.assertIn("action_id", inspect.signature(router._await_settlement).parameters)
+
+    def test_pending_purchase_says_still_processing(self):
+        pa = PendingAction.objects.create(
+            user=_make_user(), msisdn=MSISDN,
+            action_type="airtime", state="executing",
+            payload={"amount": "100", "phone": "08012345678", "network": "mtn"},
+            expires_at=timezone.now() + timedelta(minutes=5))
+        txn = _ledger(pa.user, pa.id, Transaction.PENDING)
+        with patch("whatsapp.router.reply"), \
+             patch("wallet.alerts.mark_awaiting_settlement"):
+            outcome = router._vtu_outcome(pa, pa.user, MSISDN, Decimal("100"), "Airtime",
+                                               txn, {}, lambda t, r: ("x", []))
+        self.assertEqual(outcome.status, router.OUTCOME_PENDING)
+        self.assertIn("still processing", outcome)

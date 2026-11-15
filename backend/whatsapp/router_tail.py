@@ -286,7 +286,7 @@ def _try_pin(pa: PendingAction, user, msisdn: str, text: str) -> None:
 #: How often the settle wait re-reads the ledger. Short enough that a fast rail
 #: is caught almost immediately, long enough that a 3-second budget is a handful
 #: of queries rather than hundreds.
-_SETTLE_POLL = 0.25
+_SETTLE_POLL = 0.1
 
 #: The three things that can have happened to money by the time a Flow closes,
 #: plus the untagged default. The Flow's terminal screen shows one of them as its
@@ -1086,7 +1086,7 @@ def _vtu_detail(pa: PendingAction, amount: Decimal) -> str:
     return f"{_money(amount)}{' - ' + recip if recip else ''}"
 
 
-def _await_settlement(txn) -> None:
+def _await_vtu_settlement(txn) -> None:
     """Give the bank a few seconds to confirm a purchase before calling it pending.
 
     The partner bank usually settles airtime/data/bills by callback a second or
@@ -1121,7 +1121,7 @@ def _vtu_outcome(pa: PendingAction, user, msisdn: str, amount: Decimal, label: s
 
     txn.refresh_from_db(fields=["transaction_status", "meta", "reference"])
     if txn.transaction_status == Transaction.PENDING and not replay:
-        _await_settlement(txn)
+        _await_vtu_settlement(txn)
     result = {**(result or {}), **_stored_provider_result(txn)}
     _clear_actions(msisdn)
     detail = _vtu_detail(pa, amount)
@@ -2460,7 +2460,8 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     keeps running it in-process, exactly as the webhook does - see
     WHATSAPP_PROCESS_INLINE.
     """
-    if getattr(settings, "WHATSAPP_PROCESS_INLINE", False):
+    if (getattr(settings, "WHATSAPP_PROCESS_INLINE", False)
+            and getattr(settings, "WHATSAPP_FLOW_INLINE", True)):
         return run_flow_execution(pa, user)
     from .jobs import drain_in_background, enqueue_flow_execution
     proof = (getattr(pa, "_unlock_proof", None) or pa.payload

@@ -1863,6 +1863,7 @@ def _submit_pin(token: str, data: dict) -> dict:
     if pa.action_type == "unlock":
         from .router import _unlock_proof
         pa._unlock_proof = _unlock_proof(user, pa.msisdn)
+    pin_started = time.monotonic()
     ok, code, message = evaluate_transaction_pin(user, pin)
     if not ok:
         # Lockout is enforced inside evaluate_transaction_pin (row-locked, shared
@@ -1935,7 +1936,13 @@ def _submit_pin(token: str, data: dict) -> dict:
         # Hands off to the queue in production and runs in-process in dev/test -
         # either way this returns fast enough for Meta's 10-second data-exchange
         # deadline, which executing a payout inline did not.
+        exec_started = time.monotonic()
         outcome = authorise_flow_execution(pa, user)
+        # Stage timing for the Confirm spinner: PIN check vs execution/settle.
+        log.info("wa_flow_pin_timing pa=%s action=%s pin_ms=%d exec_ms=%d status=%s",
+                 pa.id, pa.action_type, int((exec_started - pin_started) * 1000),
+                 int((time.monotonic() - exec_started) * 1000),
+                 getattr(outcome, "status", "") or "-")
     except Exception:  # never leak a stack to the Flow; the money paths are idempotent
         log.exception("flow execution failed for pa=%s", pa.id)
         _clear_actions(pa.msisdn)
