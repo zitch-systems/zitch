@@ -709,6 +709,12 @@ PREMBLY = {
     "ORGANISATION_ID": os.environ.get("PREMBLY_ORGANISATION_ID", ""),
     "FACE_SDK_ENABLED": env_bool("PREMBLY_FACE_SDK_ENABLED", False),
 }
+# Tier 2 live face check (wallet/face_check.py): the app and the WhatsApp page
+# send a straight selfie and head-turn frames, checked here before the photo
+# goes to the bank. The WhatsApp page always requires it. App builds released
+# before it send one photo without a proof; keep accepting those (quality
+# checked, logged) until the new app is out, then set this to true.
+TIER2_LIVENESS_REQUIRED = env_bool("TIER2_LIVENESS_REQUIRED", False)
 # Prembly supplies BVN/NIN lookup and the registered-phone ownership challenge
 # for VAS, alongside selfie/liveness, address and document-image verification.
 # Historical bank identity attempts retain their own completion handlers.

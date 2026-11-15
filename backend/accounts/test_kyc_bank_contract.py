@@ -15,6 +15,7 @@ from utility import wema
 from utility.providers import (kyc_verify_address, kyc_verify_face,
                                kyc_verify_id_document, kyc_verify_nin_document)
 from wallet.models import WemaFaceSession, WemaProvisioningAttempt
+from wallet import selfie_fixtures as fx
 from wallet.services import get_or_create_wallet
 from wallet.views import upgrade_wema_identity
 
@@ -26,6 +27,8 @@ PILOT = {
     "FACE_VERIFY_URL": "https://face-verification-pilot.azurewebsites.net",
 }
 BVN, NIN = "22222222222", "33333333333"
+#: A Tier 2 selfie that passes the photo checks (face landmarks from fx.detector).
+SELFIE = fx.selfie_b64()
 
 
 def prembly_liveness_pass():
@@ -216,6 +219,9 @@ class BankUpgradeContractsTests(TestCase):
         blocker = patch("requests.sessions.Session.request", side_effect=AssertionError("Unexpected network"))
         blocker.start()
         self.addCleanup(blocker.stop)
+        faces = fx.detector()
+        faces.__enter__()
+        self.addCleanup(faces.__exit__, None, None, None)
 
     def post_address(self, **data):
         return self.client.post("/api/kyc/address/", {"access_token": self.token,
@@ -306,7 +312,7 @@ class BankUpgradeContractsTests(TestCase):
     def test_tier2_cannot_replace_an_already_verified_nin(self):
         with patch("utility.liveness.verify_tier2_liveness") as face, patch("utility.wema.upgrade_tier2") as bank:
             response = upgrade_wema_identity(self.user, {
-                "bvn": BVN, "nin": "44444444444", "live_image": "ZmFrZQ=="})
+                "bvn": BVN, "nin": "44444444444", "live_image": SELFIE})
         self.assertEqual(response.status_code, 409)
         face.assert_not_called()
         bank.assert_not_called()
@@ -318,10 +324,10 @@ class BankUpgradeContractsTests(TestCase):
                 patch("utility.wema.get_kyc_status", return_value={
                     "success": True, "tier": "Tier 2", "name": "ADA EZE"}):
             result = upgrade_wema_identity(self.user, {
-                "bvn": BVN, "nin": NIN, "liveImageOfFace": "data:image/jpeg;base64,ZmFrZQ==",
+                "bvn": BVN, "nin": NIN, "liveImageOfFace": "data:image/jpeg;base64," + SELFIE,
                 "accountNumber": "9999999999"})
         self.assertEqual(result.status_code, 200)
-        bank.assert_called_once_with(self.wallet.account_number, bvn=BVN, nin=NIN, live_image="ZmFrZQ==")
+        bank.assert_called_once_with(self.wallet.account_number, bvn=BVN, nin=NIN, live_image=SELFIE)
         self.wallet.refresh_from_db()
         self.assertEqual(self.wallet.bank_tier, 2)
 
@@ -332,18 +338,18 @@ class BankUpgradeContractsTests(TestCase):
         with patch("utility.wema.upgrade_tier2", return_value={"success": True}) as bank, \
                 patch("utility.wema.get_kyc_status", return_value={
                     "success": True, "tier": "Tier 2", "name": "ADA EZE"}):
-            result = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="})
+            result = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": SELFIE})
         self.assertEqual(result.status_code, 200, result.content)
-        bank.assert_called_once_with(self.wallet.account_number, bvn=BVN, nin=NIN, live_image="ZmFrZQ==")
+        bank.assert_called_once_with(self.wallet.account_number, bvn=BVN, nin=NIN, live_image=SELFIE)
         self.user.refresh_from_db()
         self.assertTrue(self.user.face_verified)
         self.assertEqual(self.user.tier, 2)
 
     def test_tier2_without_bvn_and_nin_never_reaches_the_bank(self):
-        for data in ({"live_image": "ZmFrZQ=="},
-                     {"bvn": BVN, "live_image": "ZmFrZQ=="},
-                     {"nin": NIN, "live_image": "ZmFrZQ=="},
-                     {"bvn": "123", "nin": NIN, "live_image": "ZmFrZQ=="}):
+        for data in ({"live_image": SELFIE},
+                     {"bvn": BVN, "live_image": SELFIE},
+                     {"nin": NIN, "live_image": SELFIE},
+                     {"bvn": "123", "nin": NIN, "live_image": SELFIE}):
             with self.subTest(data=sorted(data)), patch("utility.wema.upgrade_tier2") as bank:
                 result = upgrade_wema_identity(self.user, data)
             self.assertEqual(result.status_code, 400)
@@ -359,7 +365,7 @@ class BankUpgradeContractsTests(TestCase):
         self.user.tier = 1
         self.user.save(update_fields=["nin_verified", "face_verified", "nin_hash", "nin_last4", "tier"])
         with patch("utility.wema.upgrade_tier2", return_value={"success": True, "pending": True}):
-            response = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="})
+            response = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": SELFIE})
         self.assertEqual(response.status_code, 202)
         marker = cache.get(_TIER2_PENDING_KEY.format(self.user.pk))
         self.assertNotIn(NIN, json.dumps(marker))
@@ -386,7 +392,7 @@ class BankUpgradeContractsTests(TestCase):
                 patch("utility.wema.get_kyc_status", return_value={
                     "success": True, "tier": "Tier 1", "name": "ADA EZE"}):
             response = self.client.post("/api/wallet/wema/upgrade-tier2/", {
-                "access_token": self.token, "bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="},
+                "access_token": self.token, "bvn": BVN, "nin": NIN, "live_image": SELFIE},
                 content_type="application/json")
         self.assertEqual(response.status_code, 202, response.content)
         biometric.assert_not_called()
@@ -405,7 +411,7 @@ class BankUpgradeContractsTests(TestCase):
         with patch("utility.wema.upgrade_tier2", return_value={"success": False}), \
                 patch("utility.wema.get_kyc_status") as readback:
             response = self.client.post("/api/wallet/wema/upgrade-tier2/", {
-                "access_token": self.token, "bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="},
+                "access_token": self.token, "bvn": BVN, "nin": NIN, "live_image": SELFIE},
                 content_type="application/json")
         self.assertEqual(response.status_code, 502, response.content)
         readback.assert_not_called()
@@ -419,7 +425,7 @@ class BankUpgradeContractsTests(TestCase):
         self.user.nin_verified = self.user.face_verified = False
         self.user.save(update_fields=["nin_verified", "face_verified"])
         with                 patch("utility.wema.upgrade_tier2", return_value={"success": True, "pending": True}):
-            response = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="})
+            response = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": SELFIE})
         self.assertEqual(response.status_code, 202)
         self.user.refresh_from_db()
         self.assertFalse(self.user.nin_verified or self.user.face_verified)
@@ -446,7 +452,7 @@ class BankUpgradeContractsTests(TestCase):
         with                 patch("utility.wema.upgrade_tier2", side_effect=bank_result), \
                 patch("utility.wema.get_kyc_status", return_value={
                     "success": True, "tier": "Tier 2", "name": "ADA EZE"}):
-            result = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="})
+            result = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": SELFIE})
         self.assertEqual(result.status_code, 409)
         self.user.refresh_from_db()
         self.assertEqual(self.user.nin_hash, hash_identifier(replacement))
@@ -459,7 +465,7 @@ class BankUpgradeContractsTests(TestCase):
             "status": True, "data": {"face_match": True}}))
         with patch("utility.providers.requests.post", return_value=response) as vendor, \
                 patch("utility.wema.upgrade_tier2", return_value={"success": False}):
-            result = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="})
+            result = upgrade_wema_identity(self.user, {"bvn": BVN, "nin": NIN, "live_image": SELFIE})
         self.assertEqual(result.status_code, 502)
         vendor.assert_not_called()
         self.user.refresh_from_db()
@@ -472,14 +478,14 @@ class BankUpgradeContractsTests(TestCase):
                 patch("utility.wema.get_kyc_status", return_value={
                     "success": True, "tier": "Tier 1", "name": "ADA EZE"}):
             response = upgrade_wema_identity(self.user, {
-                "bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ==",
+                "bvn": BVN, "nin": NIN, "live_image": SELFIE,
                 "session_id": "client-session", "verified": True,
                 "verification": {"status": "VERIFIED", "reference": "forged"},
                 "liveness_passed": True,
             })
         self.assertEqual(response.status_code, 202)
         # Only the account, identity numbers and photo reach the bank.
-        bank.assert_called_once_with(self.wallet.account_number, bvn=BVN, nin=NIN, live_image="ZmFrZQ==")
+        bank.assert_called_once_with(self.wallet.account_number, bvn=BVN, nin=NIN, live_image=SELFIE)
         self.user.refresh_from_db()
         self.assertFalse(self.user.face_verified)
         self.assertEqual(self.user.tier, 1)
@@ -493,7 +499,7 @@ class BankUpgradeContractsTests(TestCase):
                 patch("utility.wema.get_kyc_status", return_value={
                     "success": True, "tier": "Tier 1", "name": "ADA EZE"}):
             response = upgrade_wema_identity(self.user, {
-                "bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="})
+                "bvn": BVN, "nin": NIN, "live_image": SELFIE})
         self.assertEqual(response.status_code, 202)
         self.user.refresh_from_db()
         self.wallet.refresh_from_db()
@@ -518,7 +524,7 @@ class BankUpgradeContractsTests(TestCase):
                 patch("utility.wema.get_kyc_status", return_value={
                     "success": True, "tier": "Tier 2", "name": "ADA EZE"}):
             response = upgrade_wema_identity(self.user, {
-                "bvn": BVN, "nin": NIN, "live_image": "ZmFrZQ=="})
+                "bvn": BVN, "nin": NIN, "live_image": SELFIE})
         self.assertEqual(response.status_code, 409)
         self.user.refresh_from_db()
         self.assertFalse(self.user.face_verified)
@@ -615,7 +621,7 @@ class BankKycEnvelopeTests(SimpleTestCase):
                 ({"status": True, "message": "Request submitted for processing"}, 200, True)):
             for tier in (2, 3):
                 with self.subTest(tier=tier, data=data), patch("utility.wema._post", return_value=self.response(data, status)):
-                    result = (wema.upgrade_tier2("0123456789", bvn=BVN, nin=NIN, live_image="ZmFrZQ==")
+                    result = (wema.upgrade_tier2("0123456789", bvn=BVN, nin=NIN, live_image=SELFIE)
                               if tier == 2 else wema.upgrade_tier3("0123456789", "12 Allen Avenue"))
                     self.assertEqual(result["success"], not pending)
                     self.assertEqual(result["pending"], pending)
@@ -632,7 +638,7 @@ class BankKycEnvelopeTests(SimpleTestCase):
             for tier in (2, 3):
                 with self.subTest(tier=tier, data=data), \
                         patch("utility.wema._post", return_value=self.response(data)):
-                    result = (wema.upgrade_tier2("0123456789", bvn=BVN, nin=NIN, live_image="ZmFrZQ==")
+                    result = (wema.upgrade_tier2("0123456789", bvn=BVN, nin=NIN, live_image=SELFIE)
                               if tier == 2 else wema.upgrade_tier3("0123456789", "12 Allen Avenue"))
                     self.assertFalse(result["success"])
                     self.assertTrue(result["pending"])
@@ -648,14 +654,14 @@ class BankKycEnvelopeTests(SimpleTestCase):
                 for tier in (2, 3):
                     with self.subTest(tier=tier, data=data, status=status), \
                             patch("utility.wema._post", return_value=self.response(data, status)):
-                        result = (wema.upgrade_tier2("0123456789", bvn=BVN, nin=NIN, live_image="ZmFrZQ==")
+                        result = (wema.upgrade_tier2("0123456789", bvn=BVN, nin=NIN, live_image=SELFIE)
                                   if tier == 2 else wema.upgrade_tier3("0123456789", "12 Allen Avenue"))
                         self.assertFalse(result["success"])
                         self.assertFalse(result["pending"])
         for tier in (2, 3):
             with self.subTest(tier=tier), patch("utility.wema._post", return_value=self.response(
                     {"status": True, "data": {"pending": True}}, 500)):
-                result = (wema.upgrade_tier2("0123456789", bvn=BVN, nin=NIN, live_image="ZmFrZQ==")
+                result = (wema.upgrade_tier2("0123456789", bvn=BVN, nin=NIN, live_image=SELFIE)
                           if tier == 2 else wema.upgrade_tier3("0123456789", "12 Allen Avenue"))
                 self.assertFalse(result["success"])
                 self.assertFalse(result["pending"])
