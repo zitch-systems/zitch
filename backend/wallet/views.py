@@ -1075,6 +1075,13 @@ def _txn_row(t, review_kind=_REVIEW_UNSET) -> dict:
         # before there was a field to fill either, and wallet.alerts._narration_line
         # already reads both the same way.
         "narration": str(meta.get("note") or meta.get("narration") or "")[:120],
+        # Who a bank transfer went to, for the receipt (Live UI review): the
+        # name, account and bank the customer confirmed, and the fee shown.
+        # Blank for anything that is not a transfer to a bank account.
+        "recipient_name": str(meta.get("recipient_name") or "")[:120],
+        "recipient_account": str(meta.get("account") or "")[:20],
+        "recipient_bank": str(meta.get("bank") or "")[:80],
+        "fee": str(meta.get("transfer_fee") or ""),
     }
 
 

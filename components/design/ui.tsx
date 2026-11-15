@@ -1247,6 +1247,11 @@ export type Txn = {
   underReview?: boolean;
   statusMessage?: string;
   reviewKind?: string;
+  /** Who a bank transfer went to, and its fee, for the receipt. Blank otherwise. */
+  recipientName?: string;
+  recipientAccount?: string;
+  recipientBank?: string;
+  fee?: string;
   /** Epoch ms parsed from the backend's date string, or undefined when it
    *  couldn't be read. Grouping by month needs a real instant; `detail` is a
    *  pre-formatted display string and cannot be sorted or bucketed. */

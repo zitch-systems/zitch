@@ -22,6 +22,24 @@ const STATUS_POLL_INTERVAL_MS = 4000;
 const MAX_STATUS_POLLS = 5;
 const TRANSFER_SPEND_SCOPES = new Set(['bank-transfer', 'zitch-transfer']);
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** The name a sent receipt's subline uses; none for money received. */
+const recipientNameForLine = (name: unknown, inflow: boolean) => (inflow ? '' : String(name ?? '').trim());
+
+/** "14 Nov 2026, 6:40 PM" from epoch ms, or from the server's "2026-11-14 18:40". */
+export const receiptWhen = (ts: string | undefined, detail: string): string => {
+  let t = Number(ts);
+  if (!Number.isFinite(t) || t <= 0) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(detail || '');
+    if (!m) return detail;
+    t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime();
+  }
+  const d = new Date(t);
+  const h = d.getHours();
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}, ${h % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+};
+
 type TransactionStatusRow = {
   service?: string;
   amount?: string | number;
@@ -38,6 +56,10 @@ type TransactionStatusRow = {
   customer_name?: string;
   customer_address?: string;
   electricity_units?: string;
+  recipient_name?: string;
+  recipient_account?: string;
+  recipient_bank?: string;
+  fee?: string;
 };
 
 type TransactionStatusResult = {
@@ -64,6 +86,7 @@ const TxnDetail = () => {
   const p = useLocalSearchParams<{
     type?: string; amount?: string; status?: string; dir?: string; detail?: string; reference?: string; icon?: string;
     narration?: string; underReview?: string; statusMessage?: string; reviewKind?: string;
+    recipientName?: string; recipientAccount?: string; recipientBank?: string; fee?: string; ts?: string;
     spendScope?: string; spendFingerprint?: string; spendKey?: string;
   }>();
 
@@ -197,8 +220,12 @@ const TxnDetail = () => {
     : state === 'pending' ? (underReview ? 'Under review' : 'Processing')
       : inflow ? 'Money received' : isTransfer ? 'Money sent' : 'Payment successful';
   const subline = absAmount
-    ? `${absAmount} ${state === 'failed' ? 'not ' : ''}${inflow ? 'received' : isTransfer ? 'sent' : 'paid'} · ${type}`
+    ? (recipientNameForLine(liveTxn?.recipient_name ?? p.recipientName, inflow)
+      ? `${absAmount} ${state === 'failed' ? 'not ' : ''}sent to ${recipientNameForLine(liveTxn?.recipient_name ?? p.recipientName, inflow)}.`
+      : `${absAmount} ${state === 'failed' ? 'not ' : ''}${inflow ? 'received' : isTransfer ? 'sent' : 'paid'} · ${type}`)
     : type;
+  // "14 Nov 2026, 6:40 PM" from the row's own time, never the raw server string.
+  const when = receiptWhen(p.ts, detail);
   const badge = state === 'failed' ? { bg: '#E5484D', icon: 'x' } : state === 'pending' ? { bg: '#E8A33D', icon: 'history' } : { bg: '#00B51D', icon: 'check' };
   const electricityToken = state === 'success' && !underReview ? String(liveTxn?.token || '').trim() : '';
   const electricityRows = electricityToken ? [
@@ -208,12 +235,26 @@ const TxnDetail = () => {
     ['Units', liveTxn?.electricity_units],
   ].filter((row) => row[1]) : [];
 
-  const rows: [string, string, boolean?][] = [
+  // A bank transfer reads as the design's receipt: who, which account and bank,
+  // the reference, the fee and the total. Anything else keeps its description.
+  const recipientName = String(liveTxn?.recipient_name ?? p.recipientName ?? '').trim();
+  const recipientAccount = String(liveTxn?.recipient_account ?? p.recipientAccount ?? '').trim();
+  const recipientBank = String(liveTxn?.recipient_bank ?? p.recipientBank ?? '').trim();
+  const feeValue = Number(liveTxn?.fee ?? p.fee ?? '');
+  const fee = Number.isFinite(feeValue) && feeValue > 0 ? money(feeValue) : '';
+  const total = Number.isFinite(amount) ? money(Math.abs(amount) + (fee ? feeValue : 0)) : formattedAmount;
+  const rows: [string, string, boolean?][] = recipientName && !inflow ? [
+    ['Recipient', recipientName],
+    ...(recipientAccount ? ([['Account', recipientAccount]] as [string, string][]) : []),
+    ...(recipientBank ? ([['Bank', recipientBank]] as [string, string][]) : []),
+    ...(narration && !/^transfer to /i.test(narration) ? ([['Note', narration]] as [string, string][]) : []),
+    ['Reference', reference || '—'],
+    ...(fee ? ([['Fee', fee]] as [string, string][]) : []),
+    ['Total', total, true],
+  ] : [
     ['Description', type],
-    ...(detail ? ([['Date', detail]] as [string, string][]) : []),
     ...(narration ? ([['Note', narration]] as [string, string][]) : []),
     ['Reference', reference || '—'],
-    ['Channel', 'Zitch Wallet'],
     ...electricityRows.map(([label, value]) => [String(label), String(value)] as [string, string]),
     ['Total', formattedAmount.replace(/^[+-]/, ''), true],
   ];
@@ -262,16 +303,18 @@ const TxnDetail = () => {
           </View>
           <Text style={{ marginTop: 14, fontSize: 24, fontFamily: font.extrabold, color: '#fff', letterSpacing: -0.3 }}>{headline}</Text>
           <NText style={{ marginTop: 6, fontSize: 14, fontFamily: font.medium, color: 'rgba(255,255,255,0.9)', textAlign: 'center' }}>{subline}</NText>
-          <View style={{ marginTop: 10, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.18)' }}>
-            <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: '#fff' }}>{status}</Text>
-          </View>
+          {state !== 'success' ? (
+            <View style={{ marginTop: 10, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.18)' }}>
+              <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: '#fff' }}>{status}</Text>
+            </View>
+          ) : null}
         </LinearGradient>
         <View style={{ paddingTop: 4, paddingHorizontal: 20 }}>
           {rows.map(([k, v, strong], i) => <Row2 key={k} k={k} v={v} strong={strong} last={i === rows.length - 1} />)}
         </View>
         <View style={{ alignItems: 'center', paddingTop: 16, paddingHorizontal: 20, paddingBottom: 20 }}>
           <Text style={{ fontSize: 19, fontFamily: font.extrabold, color: R.brand, letterSpacing: -0.2 }}>Zitch</Text>
-          <Text style={{ marginTop: 3, fontSize: 12, fontFamily: font.regular, color: R.foot }}>Transaction receipt{detail ? ` · ${detail}` : ''}</Text>
+          <Text style={{ marginTop: 3, fontSize: 12, fontFamily: font.regular, color: R.foot }}>Transaction receipt{when ? ` · ${when}` : ''}</Text>
         </View>
       </View>
 

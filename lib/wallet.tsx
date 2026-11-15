@@ -76,6 +76,10 @@ export const mapTxn = (raw: any, i: number): Txn => {
     underReview,
     statusMessage: underReview ? String(raw?.status_message ?? '') : '',
     reviewKind: underReview ? String(raw?.review_kind ?? '') : '',
+    recipientName: String(raw?.recipient_name ?? ''),
+    recipientAccount: String(raw?.recipient_account ?? ''),
+    recipientBank: String(raw?.recipient_bank ?? ''),
+    fee: String(raw?.fee ?? ''),
   };
 };
 
@@ -85,6 +89,9 @@ export const transactionParams = (txn: Txn) => ({
   detail: txn.detail, reference: txn.reference ?? '', icon: txn.icon,
   narration: txn.narration ?? '', underReview: txn.underReview ? '1' : '',
   statusMessage: txn.statusMessage ?? '', reviewKind: txn.reviewKind ?? '',
+  recipientName: txn.recipientName ?? '', recipientAccount: txn.recipientAccount ?? '',
+  recipientBank: txn.recipientBank ?? '', fee: txn.fee ?? '',
+  ts: txn.ts != null ? String(txn.ts) : '',
 });
 
 type WalletValue = {
