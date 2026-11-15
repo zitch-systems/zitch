@@ -269,7 +269,7 @@ const BuyData = () => {
       <BalanceHint amount={amount} balance={balance} />
       {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
-      <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
+      <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
 
       <ConfirmSheet
         open={step === 'confirm'}

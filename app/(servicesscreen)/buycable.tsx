@@ -57,12 +57,23 @@ const BuyCable = () => {
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
   const validationGeneration = useRef(0);
-  // The smartcard field opens with the last one used on this provider.
+  // The screen opens on the provider of the last smartcard paid (GoTV when
+  // there is none), and the smartcard field with the last one used on it.
   const recents = useBillRecents();
   const iucEdited = useRef(false);
+  const providerChosen = useRef(false);
   const cards = recents.smartcards.filter((r) => r.provider === prov);
   useEffect(() => {
     if (iucEdited.current) return;
+    if (!providerChosen.current && recents.smartcards.length) {
+      providerChosen.current = true;
+      const lastProvider = recents.smartcards[0].provider;
+      if (lastProvider !== prov && PROVIDERS.some((p) => p.id === lastProvider)) {
+        // The effect runs again for the new provider and fills its last card.
+        setProv(lastProvider);
+        return;
+      }
+    }
     const last = recents.smartcards.find((r) => r.provider === prov);
     setIuc(last ? last.iuc : '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -168,6 +179,7 @@ const BuyCable = () => {
   };
 
   const changeProvider = (value: string) => {
+    providerChosen.current = true;
     validationGeneration.current += 1;
     setValidating(false);
     setValidatedName('');
@@ -299,7 +311,7 @@ const BuyCable = () => {
           <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {verifiedName}</Text>
         ) : iuc.length >= 8 ? (
           // Names resolve on their own once the number is complete; this is the retry.
-          <Btn label={validating ? 'Validating…' : 'Validate IUC'} variant="outline" size="sm" full={false} onPress={validateIuc} disabled={validating} />
+          <Btn label={validating ? 'Validating…' : 'Validate IUC'} variant="ghost" size="sm" full={false} onPress={validateIuc} disabled={validating} style={{ backgroundColor: 'transparent', alignSelf: 'flex-start' }} />
         ) : null}
       </View>
 
@@ -316,7 +328,7 @@ const BuyCable = () => {
       {amount > 0 ? <BalanceHint amount={amount} balance={balance} /> : null}
       {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
-      <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
+      <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
 
       <ConfirmSheet
         open={step === 'confirm'}

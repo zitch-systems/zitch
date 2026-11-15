@@ -28,9 +28,22 @@ const DISCOS = [
   { id: '8', name: 'Enugu (EEDC)', color: '#1A8E5F' },
   { id: '9', name: 'Ibadan (IBEDC)', color: '#6C2FB3' },
 ];
+const discoInitials = (name: string) =>
+  name.replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase();
 const ELEC_AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 
 type Step = null | 'confirm' | 'pin';
+
+/** The disco's initials on its colour, beside each recent meter. */
+const DiscoTile = ({ disco }: { disco: string }) => {
+  const d = DISCOS.find((x) => x.id === disco);
+  if (!d) return null;
+  return (
+    <View style={{ width: 34, height: 34, borderRadius: 11, backgroundColor: d.color, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+      <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: 12 }}>{discoInitials(d.name)}</Text>
+    </View>
+  );
+};
 
 const BuyElectricity = () => {
   const { c } = useTheme();
@@ -45,6 +58,8 @@ const BuyElectricity = () => {
   const [customerAddress, setCustomerAddress] = useState('');
   const [validating, setValidating] = useState(false);
   const [validatedFor, setValidatedFor] = useState('');
+  // The meter check that last failed, so "Try again" shows only for that one.
+  const [checkFailedFor, setCheckFailedFor] = useState('');
   const [purchasedToken, setPurchasedToken] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
@@ -73,6 +88,7 @@ const BuyElectricity = () => {
     const requestedFor = `${requestedDisco}|${requestedType}|${requestedMeter}`;
     const generation = ++validationGeneration.current;
     setValidating(true);
+    setCheckFailedFor('');
     try {
       const response = await apiPost(EP.utility.validateMeter, {
         meter: requestedMeter,
@@ -86,10 +102,12 @@ const BuyElectricity = () => {
         setCustomerAddress(String(result.customer_address || result.address || ''));
         setValidatedFor(requestedFor);
       } else {
+        setCheckFailedFor(requestedFor);
         notify('Error', result.message || 'Could not verify meter number.');
       }
     } catch {
       if (isCurrentSession() && generation === validationGeneration.current) {
+        setCheckFailedFor(requestedFor);
         notify('Error', 'Something went wrong. Please try again later.');
       }
     } finally {
@@ -103,15 +121,27 @@ const BuyElectricity = () => {
     setCustomerName('');
     setCustomerAddress('');
     setValidatedFor('');
+    setCheckFailedFor('');
   };
 
-  // The meter field opens with the last meter paid on this disco, and lists the
-  // others; the name and address resolve as soon as the number is complete.
+  // The screen opens on the disco of the last meter paid, and the meter field
+  // with the last meter paid on that disco, listing the others; the name and
+  // address resolve as soon as the number is complete.
   const recents = useBillRecents();
   const meterEdited = useRef(false);
+  const discoChosen = useRef(false);
   const meters = recents.meters.filter((r) => r.disco === disco);
   useEffect(() => {
     if (meterEdited.current) return;
+    if (!discoChosen.current && recents.meters.length) {
+      discoChosen.current = true;
+      const lastDisco = recents.meters[0].disco;
+      if (lastDisco !== disco && DISCOS.some((d) => d.id === lastDisco)) {
+        // The effect runs again for the new disco and fills its last meter.
+        setDisco(lastDisco);
+        return;
+      }
+    }
     const last = recents.meters.find((r) => r.disco === disco);
     invalidateMeter();
     setMeter(last ? last.meter : '');
@@ -128,6 +158,7 @@ const BuyElectricity = () => {
   }, [validationKey, verifiedCustomer, validating]);
 
   const changeDisco = (value: string) => {
+    discoChosen.current = true;
     invalidateMeter();
     meterEdited.current = false;
     setDisco(value);
@@ -265,6 +296,7 @@ const BuyElectricity = () => {
         }}
         items={meters.slice(0, 5).map((r) => ({
           value: r.meter,
+          leading: <DiscoTile disco={r.disco} />,
           sub: [DISCOS.find((d) => d.id === r.disco)?.name.replace(/ \(.*\)$/, '') + ' Electric', r.name].filter(Boolean).join(' · '),
         }))}
         menuTitle="Recent meter numbers"
@@ -276,9 +308,12 @@ const BuyElectricity = () => {
       <View style={{ marginBottom: 8 }}>
         {verifiedCustomer ? (
           <ResolvedAccount name={verifiedCustomer} detail={customerAddress} />
-        ) : meter.length >= 8 ? (
-          <View style={{ marginTop: 8 }}>
-            <Btn label={validating ? 'Checking…' : 'Validate meter'} variant="outline" size="sm" full={false} onPress={validateMeter} disabled={validating} />
+        ) : validating ? (
+          // The meter resolves on its own once the number is complete.
+          <Text style={{ marginTop: 8, color: c.ink3, fontFamily: font.regular, fontSize: 12.5 }}>Checking…</Text>
+        ) : checkFailedFor === validationKey ? (
+          <View style={{ marginTop: 4, alignSelf: 'flex-start' }}>
+            <Btn label="Try again" variant="ghost" size="sm" full={false} onPress={validateMeter} style={{ backgroundColor: 'transparent', paddingHorizontal: 0 }} />
           </View>
         ) : null}
       </View>

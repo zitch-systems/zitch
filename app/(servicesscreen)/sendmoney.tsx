@@ -684,7 +684,7 @@ const SendMoney = () => {
       />
 
       <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
           {busy ? 'Sending…' : `Confirm transfer of ${money(amount)}${sendsToBank && fee ? ` + ${money(fee)} bank fee` : ''}`}
         </Text>
         <PinPad onComplete={(p) => send(p)} busy={busy} error={pinError} />
