@@ -464,6 +464,7 @@ class SavingsLoanFlowTests(FlowContractMixin, TestCase):
     def test_live_menu_does_not_advertise_new_unavailable_products(self):
         menu = router.menu_text()
         self.assertNotIn("Convert currency", menu)
-        self.assertIn("Existing savings", menu)
-        self.assertIn("Existing loan", menu)
-        self.assertNotIn("loan / repayment", menu)
+        # Switched-off products are left out entirely: no gap, no placeholder.
+        self.assertNotIn("Savings", menu)
+        self.assertNotIn("loan", menu.lower().split("or just type")[0])
+        self.assertNotIn("*12.*", menu)

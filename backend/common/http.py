@@ -277,7 +277,7 @@ def unverified_error(user) -> "str | None":
         listed = missing[0]
     return (
         f"Before you can send money we need to verify your {listed}. "
-        "On WhatsApp reply *8* to complete verification securely in this chat."
+        "On WhatsApp reply *7* to complete verification securely in this chat."
     )
 
 

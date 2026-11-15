@@ -224,7 +224,7 @@ _SCANNER = """
     canvas.toBlob(function (blob) {
       if (!blob || stopped) return;
       send(blob).then(function (res) {
-        if (res.expired) { return finish({ message: 'This link expired. Reply 11 in WhatsApp to scan again.' }); }
+        if (res.expired) { return finish({ message: 'This link expired. Reply 10 in WhatsApp to scan again.' }); }
         if (res.found) { return finish(res); }
         setTimeout(tick, 700);
       }).catch(function () { setTimeout(tick, 1200); });

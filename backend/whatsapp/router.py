@@ -165,10 +165,10 @@ def _upgrade_block(user) -> str:
         tail = ("You're on our highest tier. For a larger one-off payment, "
                 "talk to us.")
     elif _kyc_outstanding(user):
-        tail = ("Reply *8* to finish verifying your identity securely from WhatsApp. "
+        tail = ("Reply *7* to finish verifying your identity securely from WhatsApp. "
                 "Your limit changes after verification is confirmed.")
     else:
-        tail = ("Reply *8* to review your verification status. "
+        tail = ("Reply *7* to review your verification status. "
                 "Contact Zitch Support for help with higher limits.")
     block = _more_info_block()
     return tail + (f"\n\n{block}" if block else "")
@@ -181,22 +181,31 @@ def _limit_reply(msisdn: str, user, msg: str) -> None:
     reply(msisdn, f"{msg}\n\n{_upgrade_block(user)}")
 
 
-MENU_BODY = (
-    "💚 *Zitch* - what would you like to do?\n\n"
-    "1️⃣  💰 Check balance\n"
-    "2️⃣  💸 Send money\n"
-    "3️⃣  📱 Airtime / Data\n"
-    "4️⃣  💡 Pay a bill\n"
-    "5️⃣  💱 Convert currency\n"
-    "6️⃣  🏦 Add money\n"
-    "7️⃣  🧾 My account details\n"
-    "8️⃣  ✅ Verify my identity\n"
-    "9️⃣  🧾 Transaction history\n"
-    "🔟  🎓 Exam PIN\n"
-    "1️⃣1️⃣  📷 Scan a QR code\n"
-    "1️⃣2️⃣  ⭐ My saved people\n"
-    "1️⃣3️⃣  🏦 Savings\n"
-    "1️⃣4️⃣  💳 My loan / repayment\n\n"
+#: The main menu, in order. Numbers are assigned at render time from the items
+#: actually on offer (see _menu_items), so the list never has gaps: a product
+#: that is switched off disappears instead of leaving a hole or an "Existing ..."
+#: placeholder. Core items keep fixed numbers 1-11 (chat replies quote them, e.g.
+#: "reply *7*"); optional products follow, only while available.
+MENU_CORE = (
+    ("balance", "💰", "Check balance"),
+    ("send money", "💸", "Send money"),
+    ("3", "📱", "Airtime / Data"),
+    ("bill", "💡", "Pay a bill"),
+    ("add money", "🏦", "Add money"),
+    ("account details", "🧾", "My account details"),
+    ("verify", "✅", "Verify my identity"),
+    ("history", "📜", "Transaction history"),
+    ("exam", "🎓", "Exam PIN"),
+    ("scan", "📷", "Scan a QR code"),
+    ("saved people", "⭐", "My saved people"),
+)
+MENU_OPTIONAL = (
+    ("convert", "💱", "Convert currency", "fx"),
+    ("savings", "🏦", "Savings", "savings"),
+    ("loan", "💳", "My loan / repayment", "loans"),
+)
+MENU_HEADER = "💚 *Zitch* - what would you like to do?\n\n"
+MENU_FOOTER = (
     # "just type it" was a promise the channel could not keep: free-form routing
     # needs the customer's own AI consent, which defaults off and which nobody
     # guesses the phrase for. Name the phrase where the promise is made.
@@ -205,25 +214,64 @@ MENU_BODY = (
 )
 
 
+def _menu_items() -> list:
+    """[(number, keyword, emoji, label)] for the menu as currently offered."""
+    items = [(str(i), key, emoji, label) for i, (key, emoji, label) in enumerate(MENU_CORE, 1)]
+    number = len(MENU_CORE)
+    for key, emoji, label, product in MENU_OPTIONAL:
+        number += 1
+        if product_available(product):
+            items.append((str(number), key, emoji, label))
+    return items
+
+
+def menu_keyword(low: str) -> str:
+    """Translate a menu NUMBER into the keyword its branch already handles.
+
+    Optional products keep their number (12-14) even while hidden, so a
+    customer who types one is told it is unavailable rather than routed into
+    something else. Anything that is not a menu number comes back unchanged.
+    """
+    if not re.fullmatch(r"\d{1,2}", low or ""):
+        return low
+    n = int(low)
+    if 1 <= n <= len(MENU_CORE):
+        return MENU_CORE[n - 1][0]
+    extra = n - len(MENU_CORE) - 1
+    if 0 <= extra < len(MENU_OPTIONAL):
+        return MENU_OPTIONAL[extra][0]
+    return low
+
+
+def _menu_lines(*, transfers_live: bool = True) -> str:
+    lines = []
+    for number, key, emoji, label in _menu_items():
+        if not transfers_live and key == "send money":
+            label = "Transfers unavailable"
+        if not transfers_live and key == "scan":
+            label = "QR payments unavailable"
+        lines.append(f"*{number}.*  {emoji}  {label}")
+    return "\n".join(lines)
+
+
+#: Kept for callers/tests that read the static menu; the live menu is menu_text().
+MENU_BODY = MENU_HEADER + "\n".join(
+    f"*{i}.*  {emoji}  {label}" for i, (_k, emoji, label) in enumerate(MENU_CORE, 1)
+) + "\n\n" + MENU_FOOTER
+
+
 def menu_text() -> str:
     """The menu plus the links footer. Built per call, not frozen at import, so
     the links follow settings (which deployments and tests both override)."""
     from utility.providers import partnership_new_business_allowed
 
-    body = MENU_BODY
-    if not partnership_new_business_allowed():
-        # The collection-account product has no outgoing transfer rail yet.
-        # Keep familiar option numbers, but do not invite a payment that the
-        # shared spending guard must refuse before it can begin.
-        body = body.replace("2️⃣  💸 Send money\n", "2️⃣  💸 Transfers unavailable\n")
-        body = body.replace("1️⃣1️⃣  📷 Scan a QR code\n", "1️⃣1️⃣  📷 QR payments unavailable\n")
-        body = body.replace('"send 5k to Ada", "2k airtime".', '"check balance", "2k airtime".')
-    if not product_available("fx"):
-        body = body.replace("5️⃣  💱 Convert currency\n", "")
-    if not product_available("savings"):
-        body = body.replace("1️⃣3️⃣  🏦 Savings\n", "1️⃣3️⃣  🏦 Existing savings\n")
-    if not product_available("loans"):
-        body = body.replace("1️⃣4️⃣  💳 My loan / repayment\n", "1️⃣4️⃣  💳 Existing loan\n")
+    transfers_live = partnership_new_business_allowed()
+    footer = MENU_FOOTER
+    if not transfers_live:
+        # The collection-account product has no outgoing transfer rail yet:
+        # do not invite a payment the shared spending guard must refuse.
+        footer = footer.replace('"send 5k to Ada", "2k airtime".', '"check balance", "2k airtime".')
+    body = MENU_HEADER + _menu_lines(transfers_live=transfers_live) + "\n\n" + footer
     block = _more_info_block()
     return body + (f"\n\n{block}" if block else "")
 UNLINKED = (
@@ -1219,10 +1267,10 @@ def _announce_timeout(msisdn: str) -> bool:
     if is_retired_setup(stale) or stale.action_type in ("kyc", "add_account", "unlock", "setpin"):
         purpose = "identity confirmation" if stale.action_type == "unlock" else "secure setup"
         restart = {
-            "kyc": "Reply *8* to continue verification.",
+            "kyc": "Reply *7* to continue verification.",
             "unlock": "Repeat your request to confirm your identity securely.",
             "setpin": "Reply *reset pin* to continue securely.",
-        }.get(stale.action_type, "Reply *6* to continue account setup, or choose another menu option.")
+        }.get(stale.action_type, "Reply *5* to continue account setup, or choose another menu option.")
         reply(msisdn, f"⌛ That {purpose} session expired. Your saved account details and completed "
                       f"verification are unchanged.\n\n{restart}")
         return True
@@ -1571,13 +1619,15 @@ def handle_inbound(msisdn: str, text: str, *, list_reply: bool = False) -> None:
                              "on its own.\n\n"
                              "Reply \"menu\" for options.")
 
-    # Fresh command (keyword or menu number).
-    if low in ("balance", "bal", "1"):
+    # Fresh command (keyword or menu number). Numbers come from the one menu
+    # list (menu_keyword), so the menu text and the routing cannot disagree.
+    low = menu_keyword(low)
+    if low in ("balance", "bal"):
         return _do_balance(user, msisdn)
-    if low in ("6", "add money", "fund", "fund wallet", "fund account", "deposit",
+    if low in ("add money", "fund", "fund wallet", "fund account", "deposit",
                "account", "account number", "add cash", "top up", "topup"):
         return _do_add_money(user, msisdn)
-    if low in ("2", "transfer", "send", "send money"):
+    if low in ("transfer", "send", "send money"):
         return _start_transfer(user, msisdn)
     if low == "airtime":
         return _start_airtime(user, msisdn)
@@ -1589,35 +1639,35 @@ def handle_inbound(msisdn: str, text: str, *, list_reply: bool = False) -> None:
         return _start_electricity(user, msisdn)
     if low in ("cable", "tv", "dstv", "gotv", "startimes"):
         return _start_cable(user, msisdn)
-    if low in ("4", "bill", "bills", "pay bill"):
+    if low in ("bill", "bills", "pay bill"):
         return _start_service_menu(user, msisdn, "bill")
-    if low in ("5", "convert", "conversion"):
+    if low in ("convert", "conversion"):
         return _start_convert(user, msisdn)
-    if low in ("7", "account", "my account", "account details", "my details", "details"):
+    if low in ("my account", "account details", "my details", "details"):
         return _do_account_details(user, msisdn)
     if low in ("support", "customer care", "care", "contact", "contact us", "info", "more info"):
         return _do_support(msisdn)
     if low in ("lock", "lock chat", "chat lock", "fingerprint", "face id", "biometric",
                "biometrics", "secure chat"):
         return reply(msisdn, _chat_lock_tip())
-    if low in ("11", "scan", "scan qr", "qr", "qr code", "scan code", "scan a qr code"):
+    if low in ("scan", "scan qr", "qr", "qr code", "scan code", "scan a qr code"):
         return _start_qr_scan(user, msisdn)
-    if low in ("12", "beneficiaries", "beneficiary", "saved", "saved people",
+    if low in ("beneficiaries", "beneficiary", "saved", "saved people",
                "my people", "payees", "my saved people"):
         return _do_beneficiaries(user, msisdn)
-    if low in ("9", "history", "transactions", "my transactions", "recent"):
+    if low in ("history", "transactions", "my transactions", "recent"):
         return _do_history(user, msisdn)
-    if low in ("10", "exam", "exam pin", "exam pins", "waec pin", "neco pin",
+    if low in ("exam", "exam pin", "exam pins", "waec pin", "neco pin",
                "jamb pin", "nabteb pin"):
         return _start_exam(user, msisdn)
     # A statement is the one history request that explicitly wants the FILE.
     if low in ("statement", "download statement", "bank statement", "account statement", "pdf"):
         return _do_history(user, msisdn, as_document=True)
-    if low in ("14", "loan", "my loan", "loan balance", "my loan balance", "loans"):
+    if low in ("loan", "my loan", "loan balance", "my loan balance", "loans"):
         return _do_loan_balance(user, msisdn)
     if low in ("repay loan", "loan repayment", "repay my loan", "pay loan", "pay my loan"):
         return savings_loans.start_repayment(user, msisdn)
-    if low in ("13", "savings", "my savings", "savings balance", "my savings balance",
+    if low in ("savings", "my savings", "savings balance", "my savings balance",
                "fixed save", "my fixed save", "manage savings"):
         return _do_savings_balance(user, msisdn)
     if low in ("new savings", "create savings", "start savings", "new fixed save", "create fixed save"):
@@ -1642,7 +1692,7 @@ def handle_inbound(msisdn: str, text: str, *, list_reply: bool = False) -> None:
                      "or new savings to create a separate plan.")
     if low in ("reset pin", "change pin", "forgot pin", "new pin", "set pin", "pin"):
         return _start_pin_reset(user, msisdn)
-    if low in ("8", "verify", "verify me", "verify identity", "kyc", "upgrade", "limits"):
+    if low in ("verify", "verify me", "verify identity", "kyc", "upgrade", "limits"):
         return _start_kyc(user, msisdn)
     if low in ("ai on", "enable ai", "ai off", "disable ai", "ai"):
         return _do_ai_consent(link, msisdn, low)
@@ -1803,19 +1853,19 @@ def _answer_question(pa, user, msisdn: str, text: str) -> None:
 #: email, tier, account number) out without the idle challenge the other
 #: synonyms trigger - the gate is only as strong as its least-covered alias.
 _SENSITIVE_READS = {
-    "1", "balance", "bal", "my balance", "check balance",
-    "7", "account", "account details", "my account", "account number",
+    "balance", "bal", "my balance", "check balance",
+    "account", "account details", "my account", "account number",
     "details", "my details",
-    "statement", "history", "transactions", "my transactions", "9", "recent",
+    "statement", "history", "transactions", "my transactions", "recent",
     # The statement-file aliases send the same PDF "statement" does.
     "download statement", "bank statement", "account statement", "pdf",
     # The address book names people and their account numbers, which is
     # strictly more than the account details already behind this gate.
-    "12", "beneficiaries", "beneficiary", "saved", "saved people",
+    "beneficiaries", "beneficiary", "saved", "saved people",
     "my people", "payees", "my saved people",
-    "13", "savings", "my savings", "savings balance", "my savings balance",
+    "savings", "my savings", "savings balance", "my savings balance",
     "fixed save", "my fixed save", "manage savings", "savings history",
-    "14", "loan", "my loan", "loan balance", "my loan balance", "loans",
+    "loan", "my loan", "loan balance", "my loan balance", "loans",
     "repay loan", "loan repayment", "repay my loan", "pay loan", "pay my loan",
 }
 _RETIRED_SETUP_COMMANDS = {"register", "reregister", "re-register", "re register", "vas"}
@@ -1837,7 +1887,9 @@ def _is_sensitive_read(low: str) -> bool:
     # recipient's name, so they are gated like any other read of the address
     # book. _send_unlock replays the original text afterwards, and these ids
     # are well inside the length it can carry.
-    return low.strip() in _SENSITIVE_READS or low.startswith((
+    # Menu numbers are translated first, so the gate follows the menu's own
+    # numbering instead of a second hard-coded copy of it.
+    return menu_keyword(low.strip()) in _SENSITIVE_READS or low.startswith((
         "bene:save:", "bene:no:", "savings page ", "savings history ", "savings plan "))
 
 
@@ -2256,7 +2308,7 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
         # balance refusal as their first real interaction - which reads as the
         # account not working, rather than as the one step nobody told them
         # about. The account number this points at is minted just below.
-        "💰 *Next: add money.* Your wallet starts at ₦0 - reply *6* any time for "
+        "💰 *Next: add money.* Your wallet starts at ₦0 - reply *5* any time for "
         "your Zitch account number and transfer to it from any bank.\n\n"
         + ("" if pin else
            "🔐 Reply *reset pin* to set your *transaction PIN* securely before "
@@ -2272,12 +2324,12 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
         # integration is off is there nothing to roll into, so only then is the
         # customer told to start it themselves.
         + ("" if wallet_views._wema_funding_enabled() else
-           "To verify your identity, reply *8* - we'll do your phone, email and "
+           "To verify your identity, reply *7* - we'll do your phone, email and "
            "BVN or NIN right here.\n\n")
         + "🔒 *Tip:* lock this chat with your fingerprint - tap our name above -> "
           "*Chat lock*. Reply *lock* for the steps.\n\n"
         + menu_text()
-        + "\n\n📋 *Note:* verify your *BVN or NIN* - reply *8* - before your "
+        + "\n\n📋 *Note:* verify your *BVN or NIN* - reply *7* - before your "
           "personal Zitch account number can be created.",
     )
     # Roll straight into minting their funding NUBAN - a wallet you can't pay
@@ -2319,14 +2371,14 @@ def check_onboarding_phone_code(ob: WaOnboarding, code: str):
     exp = ob.payload.get("phone_code_exp", "")
     if not ob.payload.get("phone_code_hash") or (
             exp and timezone.now() > timezone.datetime.fromisoformat(exp)):
-        return "unverified", "That code expired - we'll verify your number later (reply 8)."
+        return "unverified", "That code expired - we'll verify your number later (reply 7)."
     if not check_password(digits, ob.payload["phone_code_hash"]):
         attempts = int(ob.payload.get("phone_code_attempts") or 0) + 1
         ob.payload["phone_code_attempts"] = attempts
         ob.save(update_fields=["payload"])
         if attempts >= 3:
             return "unverified", ("That's 3 incorrect codes - we'll verify your number "
-                                  "later (reply 8).")
+                                  "later (reply 7).")
         return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
     ob.payload["phone_verified_flow"] = True
     for key in ("phone_code_hash", "phone_code_exp", "phone_code_attempts"):
@@ -2480,7 +2532,7 @@ def _start_pin_reset(user, msisdn: str) -> None:
         _clear_actions(msisdn)
         return reply(msisdn, f"🔐 To set a new PIN we first need to verify your {listed} - "
                              "your PIN authorises payments, so we confirm it's really you.\n\n"
-                             "Reply *8* to verify now.")
+                             "Reply *7* to verify now.")
     _clear_actions(msisdn)
     # The verified flags prove who the account belongs to; they do not prove who
     # is HOLDING this chat today. A messenger session outlives a SIM swap, and a
@@ -2690,7 +2742,7 @@ def _do_history(user, msisdn: str, count=None, *, amount=None, days_ago=None,
             return reply(
                 msisdn,
                 f"🔍 I couldn't find {said} on your account.\n\n"
-                "It may have been sent from another app or account. Reply *9* to see your "
+                "It may have been sent from another app or account. Reply *8* to see your "
                 "recent transactions, or tell me more about it and I'll take another look.")
         if len(rows) == 1:
             t = rows[0]
@@ -2725,7 +2777,7 @@ def _do_history(user, msisdn: str, count=None, *, amount=None, days_ago=None,
     rows = list(customer_visible_transactions(
         Transaction.objects.filter(user=user)).order_by("-created")[:count])
     if not rows:
-        return reply(msisdn, "🧾 No transactions yet. Reply *6* to add money and get started.")
+        return reply(msisdn, "🧾 No transactions yet. Reply *5* to add money and get started.")
 
     lines, pdf_rows = [], []
     for t in rows:
@@ -3118,7 +3170,7 @@ def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
         _clear_actions(msisdn)
         return reply(msisdn, "Your bank accepted the verification code. Your identity "
                      "check is still processing. You do not need to submit your BVN "
-                     "or the code again. Reply *8* to check your status shortly.")
+                     "or the code again. Reply *7* to check your status shortly.")
     if not funding.get("account_number"):
         setup = _existing_customer_setup_status(user)
         if setup:
@@ -3194,7 +3246,7 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
                              "Your current verification stays saved. Do not submit your address again.")
             return reply(msisdn, "⏳ *Your address is being checked.*\n\n"
                          "Your Tier 3 request is already submitted. You do not need to send it again. "
-                         "Reply *8* to refresh your verification status.")
+                         "Reply *7* to refresh your verification status.")
         user.refresh_from_db(fields=["tier", "address_verified"])
     from utility.liveness import refresh_tier2_liveness
 
@@ -3256,7 +3308,7 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
         return reply(msisdn, TIER2_LIVENESS_UNAVAILABLE)
     if tier == 2 and not Wallet.objects.filter(user_id=user.pk).exclude(account_number="").exists():
         return reply(msisdn, "Tier 2 upgrades your Zitch account, and your account number "
-                     "isn't ready yet. Reply 6 (Add money) to finish your account first.")
+                     "isn't ready yet. Reply 5 (Add money) to finish your account first.")
     # The WhatsApp worker issues the PIN-gated link. The API that serves it
     # checks the Prembly credentials before creating or verifying a session.
     if tier == 3:
@@ -3288,7 +3340,7 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
     body = (("📸 *Tier 2 · Live face check*\n\n"
              "Tap *Verify face* to open the camera check (by Prembly). Enter your BVN "
              "when asked, allow camera access, and follow the on-screen moves.\n\n"
-             "When you're done, come back here and reply *8* to see your result. "
+             "When you're done, come back here and reply *7* to see your result. "
              "The link expires in 15 minutes.")
             if tier == 2 else
             ("Verify your address securely. Confirm your Zitch PIN on the page, then "
@@ -3342,7 +3394,7 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
         # (wa_identity_flow_send_failed and the provider rejection beside it).
         _clear_actions(msisdn)
         return reply(msisdn, "⚠️ The secure entry screen didn't go through, so I won't ask for "
-                             "your ID number here in the chat. Reply *8* to try again in a "
+                             "your ID number here in the chat. Reply *7* to try again in a "
                              "moment. You can complete verification here on WhatsApp.")
     which = step.upper()
     _touch(pa, state=step, payload=pa.payload)
@@ -3381,7 +3433,7 @@ def _kyc_finish(pa: PendingAction, user, msisdn: str) -> None:
                     tail += (f"\n\n🏦 Your personal Zitch account number is ready: "
                              f"*{acct}*\nFund your wallet by bank transfer to it any time.")
             elif wallet_views._wema_funding_enabled():
-                tail += ("\n\n🏦 One last step: reply *6* to open your personal Zitch "
+                tail += ("\n\n🏦 One last step: reply *5* to open your personal Zitch "
                          "account number - the bank sends its own SMS code to finish.")
     reply(msisdn, "🎉 *Thanks!* Here's where you stand:\n\n" + _kyc_status_lines(user) + tail)
 
@@ -3513,7 +3565,7 @@ def _kyc_send_email_code(pa: PendingAction, user, msisdn: str) -> None:
         # dispatch must not demote the code to a chat message.
         _clear_actions(msisdn)
         return reply(msisdn, "⚠️ The secure entry screen didn't go through, so I won't ask for "
-                             "the code here in the chat. Reply *8* to try again in a moment.")
+                             "the code here in the chat. Reply *7* to try again in a moment.")
     _touch(pa, state="email", payload=pa.payload)
     reply(msisdn, f"📧 We sent a 6-digit code to *{user.email}*. Enter it here. "
                   "(Reply *resend* for a new one.)")
@@ -3582,7 +3634,7 @@ def kyc_flow_email_code(pa: PendingAction, code: str) -> tuple[str, str]:
             pk=pa.pk, user_id=user.pk, action_type="kyc"
         ).first()
         if locked is None or locked.expired or is_retired_setup(locked):
-            return "stop", "This verification has ended. Reply 8 in the chat to start again."
+            return "stop", "This verification has ended. Reply 7 in the chat to start again."
         target = str(locked.payload.get("code_target") or "")
         if (not target
                 or not secrets.compare_digest(target, _email_challenge_target(user))):
@@ -3610,15 +3662,15 @@ def kyc_flow_email_code(pa: PendingAction, code: str) -> tuple[str, str]:
     if changed:
         _clear_actions(msisdn)
         reply(msisdn, "Your email address changed after this code was sent, so the code was cancelled. "
-                     "Reply *8* to verify the current address.")
-        return "stop", "Your email address changed. Reply 8 in the chat to verify the current address."
+                     "Reply *7* to verify the current address.")
+        return "stop", "Your email address changed. Reply 7 in the chat to verify the current address."
     if verdict == "used":
         return "stop", "That code has already been used. Return to the chat for your current status."
     if verdict == "expired":
-        return "stop", "That code has expired. Reply 8 in the chat to start again."
+        return "stop", "That code has expired. Reply 7 in the chat to start again."
     if verdict == "locked":
         _clear_actions(msisdn)
-        reply(msisdn, "Too many incorrect codes. Reply *8* to start verification again.")
+        reply(msisdn, "Too many incorrect codes. Reply *7* to start verification again.")
         return "stop", "Too many incorrect codes - see the chat."
     if verdict != "ok":
         left = 3 - int(pa.payload.get("code_attempts", 0))
@@ -3662,7 +3714,7 @@ def _kyc_code_ok(pa: PendingAction, msisdn: str, val: str) -> bool | None:
         return False
     if verdict == "locked":
         _clear_actions(msisdn)
-        reply(msisdn, "Too many incorrect codes. Reply *8* to start verification again.")
+        reply(msisdn, "Too many incorrect codes. Reply *7* to start verification again.")
         return None
     left = 3 - int(pa.payload.get("code_attempts", 0))
     _touch(pa, payload=pa.payload)
@@ -3681,7 +3733,7 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if state == KYC_UPGRADE_STATE:
         if low in ("later", "cancel", "no"):
             _clear_actions(msisdn)
-            return reply(msisdn, "No problem. Reply *8* whenever you want to continue upgrading.")
+            return reply(msisdn, "No problem. Reply *7* whenever you want to continue upgrading.")
         if low in ("tier2", "2", "upgrade", "upgrade to tier 2", "tier2_app", "nin_face"):
             if not user.tier1_identity_verified:
                 return _start_kyc(user, msisdn)
@@ -3872,7 +3924,7 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
             # Bounded so the screen cannot be used to probe numbers.
             _clear_actions(msisdn)
             reply(msisdn, f"⚠️ That's {_MAX_ID_ATTEMPTS} incorrect {kind.upper()} attempts. "
-                          "Please check the number and reply *8* to start again, or contact "
+                          "Please check the number and reply *7* to start again, or contact "
                           "support if you believe this is wrong.")
             return "stop"
         return "invalid"
@@ -3893,7 +3945,7 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
         _touch(pa, payload=pa.payload)
         reply(msisdn, f"⚠️ We couldn't reach the verification service just now. "
                       f"Your {kind.upper()} was not verified or submitted for review. "
-                      "Reply *8* to try again shortly.")
+                      "Reply *7* to try again shortly.")
         return "fail"
 
     previous_identity = {field: getattr(user, field) for field in fields}
@@ -3912,7 +3964,7 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
             reply(msisdn, f"✅ Your {kind.upper()} is already verified.")
             return _kyc_next(pa, user, msisdn)
         reply(msisdn, f"⚠️ Your {kind.upper()} verification changed while this request "
-                      "was processing. Nothing was replaced. Reply *8* to check your "
+                      "was processing. Nothing was replaced. Reply *7* to check your "
                       "status and continue.")
         return "fail"
     # A name match proves someone knows a name. A code delivered to the line
@@ -3945,7 +3997,7 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
         _touch(pa, payload=pa.payload)
         reply(msisdn, f"⚠️ We couldn't complete the {kind.upper()} verification "
                       "challenge just now. Your identity was not verified or submitted "
-                      "for review. Reply *8* to try again shortly.")
+                      "for review. Reply *7* to try again shortly.")
         return "fail"
     # Dev/test deploys have no SMS and no Flow to collect a code in; the suite
     # and the simulation walkthrough still need the ladder to complete.
@@ -4006,7 +4058,7 @@ def _kyc_start_face_step(pa: PendingAction, user, msisdn: str) -> None:
     pa.payload.pop("id_purpose", None)
     pa.payload["attempted"] = sorted(set(pa.payload.get("attempted") or []) | {"face"})
     _touch(pa, state="idle", payload=pa.payload)
-    reply(msisdn, "The secure face verification form could not open. Reply *8* to "
+    reply(msisdn, "The secure face verification form could not open. Reply *7* to "
                   "try again shortly; your completed checks are saved.")
     return _kyc_next(pa, user, msisdn)
 
@@ -4067,7 +4119,7 @@ def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits:
     if _face_account_setup_held(user):
         _clear_actions(msisdn)
         return reply(msisdn, "Your identity check is already complete or processing. "
-                     "Reply *6* to check your funding account; do not repeat face verification.")
+                     "Reply *5* to check your funding account; do not repeat face verification.")
     from accounts.models import hash_identifier
     from accounts.views import (FACE_SESSION_TTL_MINUTES, _face_callback_url,
                                 _identity_owned_by_another_user, face_identity_error)
@@ -4091,7 +4143,7 @@ def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits:
     session = _face_session_for_link(user, kind, digits)
     if session is None:
         _clear_actions(msisdn)
-        return reply(msisdn, "Your account setup changed. Reply *6* to check its current status.")
+        return reply(msisdn, "Your account setup changed. Reply *5* to check its current status.")
     expires_minutes = max(1, int((session.expires_at - timezone.now()).total_seconds() / 60))
     url = wema_provider.face_verification_url(kind, digits, _face_callback_url(session.state))
     # Same reason as kyc_face_start: without the verifier host a failure inside the
@@ -4211,7 +4263,7 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
             action_type="kyc", state=FLOW_ID_STATE,
         ).first()
         if locked is None or locked.expired or not user.is_active or is_retired_setup(locked):
-            return "stop", "This verification has ended. Reply 8 in the chat to start again."
+            return "stop", "This verification has ended. Reply 7 in the chat to start again."
         kind = locked.payload.get("id_otp_kind")
         challenge_hash = locked.payload.get("id_otp_hash")
         # A stale in-flight confirmation cannot consume a newly issued code.
@@ -4229,7 +4281,7 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
                 locked.payload.pop(key, None)
             locked.save(update_fields=["payload"])
             pa.payload = locked.payload
-            return "stop", "That code expired or the identity changed. Reply 8 in the chat to try again."
+            return "stop", "That code expired or the identity changed. Reply 7 in the chat to try again."
         if getattr(user, f"{kind}_verified"):
             for key in challenge_keys:
                 locked.payload.pop(key, None)
@@ -4246,7 +4298,7 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
                 locked.save(update_fields=["payload"])
                 pa.payload = locked.payload
                 _record_identity_review(kind, "three wrong verification codes")
-                return "stop", "That's 3 incorrect codes. Reply 8 to start verification again or contact Support."
+                return "stop", "That's 3 incorrect codes. Reply 7 to start verification again or contact Support."
             locked.save(update_fields=["payload"])
             pa.payload = locked.payload
             return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
@@ -4308,11 +4360,11 @@ def _do_account_details(user, msisdn: str) -> None:
     from wallet.identity import accepted_identity_pending
     if accepted_identity_pending(user):
         return reply(msisdn, "Your bank accepted the verification code. Your account setup "
-                     "is still processing. Reply *6* to check shortly.")
+                     "is still processing. Reply *5* to check shortly.")
     setup = _existing_customer_setup_status(user)
     if setup:
         return reply(msisdn, setup[1])
-    return reply(msisdn, "Your funding account number is not available yet. Reply *6* "
+    return reply(msisdn, "Your funding account number is not available yet. Reply *5* "
                  "(Add money) to check its setup status. If your BVN or NIN is "
                  "already verified, you do not need to submit it again.")
 
@@ -4427,7 +4479,7 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
     from wallet.identity import accepted_identity_pending
     if accepted_identity_pending(user):
         return reply(msisdn, "Your bank accepted the verification code. Your account setup is still processing. "
-                     "You do not need to submit your BVN or the code again. Reply *6* to check shortly.")
+                     "You do not need to submit your BVN or the code again. Reply *5* to check shortly.")
     setup = _existing_customer_setup_status(user)
     if setup:
         return reply(msisdn, setup[1])
@@ -4487,7 +4539,7 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
                 "account with a live face check. Your identity number never appears in this chat.")
         _clear_actions(msisdn)
         return reply(msisdn, f"Your {kind.upper()} remains verified, but the secure recovery form could "
-                             "not open. Reply *6* again shortly to finish account setup.")
+                             "not open. Reply *5* again shortly to finish account setup.")
     PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="add_account", state="id_type",
         payload={}, expires_at=_flow_deadline("id_type"),
@@ -4537,7 +4589,7 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
     if accepted_identity_pending(user):
         _clear_actions(msisdn)
         reply(msisdn, "Your bank accepted the verification code. Account setup is still processing. "
-                     "You do not need to enter your identity or code again. Reply *6* to check shortly.")
+                     "You do not need to enter your identity or code again. Reply *5* to check shortly.")
         return "processing"
     kind = "bvn" if pa.payload.get("id_type") == "bvn" else "nin"
     using_bvn = kind == "bvn"
@@ -4547,7 +4599,7 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
     if identity_already_verified and not wallet.account_number and not first_partnership_setup(user):
         # A stale WhatsApp action can survive the callback which verifies the
         # identity.  The old guard returned "already verified" here and discarded
-        # the only remaining route to a NUBAN, so every subsequent reply 6 landed
+        # the only remaining route to a NUBAN, so every subsequent reply 5 landed
         # in the same loop.  Recovery must be account-aware: first read back any
         # account Wema already minted, then offer the authenticated face creation
         # route when the callback completed identity verification without a NUBAN.
@@ -4638,7 +4690,7 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
             _clear_actions(msisdn)
             return "face"
         _clear_actions(msisdn)
-        reply(msisdn, "Face verification could not start. Reply *6* to try again or choose SMS OTP.")
+        reply(msisdn, "Face verification could not start. Reply *5* to try again or choose SMS OTP.")
         return "fail"
 
     res, identity_error = wallet_views._start_wema_attempt(
@@ -4661,7 +4713,7 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
                 reply(msisdn,
                       "✅ Your BVN remains verified. Your account is already open, "
                       "so our partner bank requires the remaining Tier 2 details together in "
-                      "one upgrade rather than a second OTP. Reply *8* to continue.")
+                      "one upgrade rather than a second OTP. Reply *7* to continue.")
                 _kyc_bank_upgrade_notice(user, msisdn)
                 return "upgrade"
             if not (user.bvn_verified or user.nin_verified):
@@ -4672,7 +4724,7 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
                 return "adopted"
             reply(msisdn,
                   "We reconnected the account. Your verified identity details are up to date; "
-                  "reply *8* anytime to review what is left.")
+                  "reply *7* anytime to review what is left.")
             return "adopted"
         if wallet_views._ALREADY_ONBOARDED.search(res.get("message", "") or ""):
             _record_identity_review(pa.payload.get("id_type", "id"), "Wema Wallet Service returned customer already exists")
@@ -4687,7 +4739,7 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
             # identity, and the face callback then reads the existing account back
             # and attaches it when the holder name matches. Offer that, with the
             # identity already entered, instead of a dead end whose promised
-            # "support review" nobody was ever asked to do - and which reply 6
+            # "support review" nobody was ever asked to do - and which reply 5
             # contradicted by asking for the same BVN again.
             if _send_identity_face_option(pa, user, msisdn, kind, digits, account_setup=True):
                 _clear_actions(msisdn)
@@ -4847,7 +4899,7 @@ def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:
         return "done", "Identity accepted ✅ - account creation is in progress."
     if status == 400:   # expired / mismatched attempt: retrying the same code cannot help
         _clear_actions(msisdn)
-        reply(msisdn, "⚠️ " + (payload.get("message") or "That didn't work.") + " Reply *6* to start again.")
+        reply(msisdn, "⚠️ " + (payload.get("message") or "That didn't work.") + " Reply *5* to start again.")
         return "done", "That attempt expired - see the chat."
     return "retry", (payload.get("message") or "That code didn't work.")
 
@@ -4869,7 +4921,7 @@ def _kyc_continue_after_account(user, msisdn: str, *, attempted: set[str] | None
     # Only roll in when every remaining step can actually run. A dead rail ends
     # the ladder with "we can't send SMS codes" - fine as an answer to someone
     # who asked to verify, but not as the last thing a customer reads after
-    # their account number was minted successfully. They can still reply 8.
+    # their account number was minted successfully. They can still reply 7.
     if not all(_kyc_rail_ready(user, step) for step in outstanding):
         log.info("wa_kyc_rollin_skipped steps=%s - a rail is unavailable", ",".join(outstanding))
         return None
@@ -4900,7 +4952,7 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
         if _send_identity_face_option(pa, user, msisdn, kind, digits, account_setup=True):
             _clear_actions(msisdn)
             return None
-        return reply(msisdn, "Face verification is temporarily unavailable. Reply *6* to try again shortly.")
+        return reply(msisdn, "Face verification is temporarily unavailable. Reply *5* to try again shortly.")
     if pa.state == "id_type":
         low = val.lower()
         if low in ("1", "bvn"):
@@ -4942,7 +4994,7 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
         if flows_live():
             _clear_actions(msisdn)
             return reply(msisdn, "⚠️ The secure entry screen didn't go through, so I won't ask for "
-                                 "your ID number here in the chat. Reply *6* to try again in a "
+                                 "your ID number here in the chat. Reply *5* to try again in a "
                                  "moment, or contact Zitch support if it continues.")
         return reply(msisdn, f"Enter your 11-digit *{kind.upper()}*. It is used only to open your "
                              "account.\n\n_Delete your message afterwards (press and hold -> Delete -> "
@@ -4974,7 +5026,7 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
                 return reply(msisdn, "Use the secure form above to enter your ID again, then open the bank's face-verification page. Your ID will not appear in this chat.")
             if flows_live():
                 _clear_actions(msisdn)
-                return reply(msisdn, "⚠️ The secure face-verification form could not open. Reply *6* to try again in a moment.")
+                return reply(msisdn, "⚠️ The secure face-verification form could not open. Reply *5* to try again in a moment.")
             return reply(msisdn, f"Enter your 11-digit {kind.upper()} again to use face verification instead of SMS.")
         if val.lower() == "resend":
             res = wema_provider.resend_wallet_otp(user.phone or "", pa.payload.get("tracking_id", ""),
@@ -5163,7 +5215,7 @@ def _advance_qr(pa: PendingAction, user, msisdn: str, text: str) -> None:
     account = str(pa.payload.get("account") or "")
     _clear_actions(msisdn)
     if not account:
-        return reply(msisdn, "That code expired. Reply *11* to scan again.")
+        return reply(msisdn, "That code expired. Reply *10* to scan again.")
     if not _begin_bank_transfer(user, msisdn, amount, account, ""):
         reply(msisdn, "I couldn't work out which bank that account belongs to. "
                       "Reply *2* to send money and pick the bank yourself.")
