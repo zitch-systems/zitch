@@ -1,7 +1,18 @@
 # Dependency update automation (SECURITY_AUDIT SEC-05).
-# Grouped, weekly, low-noise. Expo pins native module versions, so npm bumps are
-# kept conservative — review against `npx expo install --fix` before merging
-# anything that touches an expo-* or react-native* package.
+#
+# Low noise by design: each directory gets ONE grouped pull request a week that
+# carries all of its minor and patch bumps. A major bump still gets its own PR,
+# because it usually needs code changes. Without the groups every bump opened
+# its own PR, and the open-PR limits below filled up with them.
+#
+# Expo SDK 54 decides the versions of expo, expo-*, react-native and its native
+# modules, React, jest-expo and eslint-config-expo, and the Jest, TypeScript and
+# Babel majors its toolchain runs on. Bumping any of those outside
+# `npx expo install --fix` can break the native build while CI stays green, so
+# the npm ignore rules below hold them back. Move them during an SDK upgrade.
+#
+# Every ignore rule sets update-types, which only applies to version updates:
+# Dependabot security updates still open for every package listed here.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -10,31 +21,48 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
-      # Batch the low-risk dev/test tooling into one PR.
-      dev-tooling:
-        patterns:
-          - "@types/*"
-          - "jest*"
-          - "typescript"
-          - "babel*"
+      app:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     ignore:
-      # Major bumps of these are gated by the Expo SDK; bump via `expo install`.
+      # Pinned to the SDK's minor version. Patches inside its ~range are fine.
       - dependency-name: "expo"
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "expo-*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "@expo/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "jest-expo"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "eslint-config-expo"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "react-native"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
-      - dependency-name: "react"
-        update-types: ["version-update:semver-major"]
-      # Expo pins every expo-* and react-native-* module to its SDK; a bump made
-      # outside `expo install` does not build (expo-router 3 -> 58 was proposed).
-      - dependency-name: "expo-*"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "@expo/*"
-        update-types: ["version-update:semver-major"]
       - dependency-name: "react-native-*"
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "@react-native-*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # React must equal the renderer bundled in react-native exactly; even a
+      # patch bump fails at startup with "Incompatible React versions".
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
+      - dependency-name: "react-test-renderer"
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
+      # The SDK 54 toolchain: jest-expo runs on Jest 29; Expo targets
+      # TypeScript 5.9 and Babel 7.
+      - dependency-name: "jest"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/jest"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@babel/core"
+        update-types: ["version-update:semver-major"]
+      # ESLint 9 and later ignore .eslintrc.js. Move to eslint.config.js first.
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
       # NativeWind v2 needs Tailwind 3.
       - dependency-name: "tailwindcss"
         update-types: ["version-update:semver-major"]
@@ -46,15 +74,29 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      backend:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: npm
     directory: "/zitch-meta-connector"
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    groups:
+      meta-connector:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    groups:
+      # Every action in one PR, majors included. CodeQL fails unless its init,
+      # autobuild and analyze steps run the same version, and separate PRs
+      # bumped them one at a time.
+      actions:
+        patterns: ["*"]
