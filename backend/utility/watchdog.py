@@ -7,6 +7,9 @@
   minutes means the deposit and payout backstop has stopped.
 - The scheduler checks the alert outbox: an alert that has waited 5 minutes for
   its first send (the worker picks them up within a second) is stuck.
+- The scheduler checks Wema's deposit notifications: deposits credited in the
+  last few hours with no notification from Wema in that time means the bank is
+  not calling (polling still credits them, minutes later instead of at once).
 
 Each check alerts through utility.alerts (log, email, Sentry) and never raises.
 """
@@ -23,6 +26,9 @@ WORKER_HEARTBEAT_KEY = "ops:heartbeat:whatsapp-worker"
 WORKER_SILENT_AFTER = 300          # seconds
 SCHEDULER_SILENT_AFTER = 20 * 60   # seconds
 OUTBOX_STUCK_AFTER = 300           # seconds
+#: Deposits credited in this window with no Wema notification in it means the
+#: bank's notifications are not reaching us.
+NOTIFICATION_WINDOW = timedelta(hours=6)
 
 
 def beat_worker() -> None:
@@ -104,3 +110,38 @@ def check_alert_outbox(now=None) -> bool:
           level="error", waiting=count,
           oldest_minutes=int(((now or timezone.now()) - oldest).total_seconds() // 60))
     return False
+
+
+def check_wema_notifications(now=None) -> bool:
+    """Alert when deposits arrive but Wema's deposit notifications do not.
+
+    Every Wema callback, accepted or refused, is recorded as a WebhookEvent
+    (source ``wema.notify`` for deposit notifications). A deposit credit is a
+    ``WEMA-CR-`` ledger row. Deposits in the window and not one accepted
+    notification means the bank is not calling, or is calling an address we do
+    not answer, and every credit is waiting for the next poll.
+    """
+    from utility.alerts import alert
+    from wallet.models import Transaction
+    from whatsapp.models import WebhookEvent
+
+    now = now or timezone.now()
+    since = now - NOTIFICATION_WINDOW
+    try:
+        deposits = Transaction.objects.filter(reference__startswith="WEMA-CR-",
+                                              created__gte=since).count()
+        if not deposits:
+            return True
+        notices = WebhookEvent.objects.filter(source="wema.notify")
+        if notices.filter(outcome=WebhookEvent.ACCEPTED, created__gte=since).exists():
+            return True
+        last_any = notices.order_by("-created").values_list("created", "outcome").first()
+    except Exception:  # noqa: BLE001
+        log.warning("watchdog_wema_notification_check_failed")
+        return True
+    alert("Wema deposit notifications are not arriving: deposits are credited only by polling",
+          level="error", deposits_last_6h=deposits,
+          last_notification=(f"{last_any[0]:%Y-%m-%d %H:%M} UTC ({last_any[1]})"
+                             if last_any else "never"))
+    return False
+

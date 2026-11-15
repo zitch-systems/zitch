@@ -64,11 +64,13 @@ class Command(BaseCommand):
             if code != 0:
                 problems.append((job, code, run.attempts))
 
-        # The other services: is the worker alive, is the alert outbox moving?
+        # The other services: is the worker alive, is the alert outbox moving,
+        # are Wema's deposit notifications arriving?
         from utility import watchdog
 
         watchdog.check_worker()
         watchdog.check_alert_outbox()
+        watchdog.check_wema_notifications()
 
         try:
             schedule.forget_old_runs(now)
