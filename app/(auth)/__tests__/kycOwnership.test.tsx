@@ -12,7 +12,7 @@ const mockRedirect = jest.fn();
 const mockPush = jest.fn();
 const mockNotify = jest.fn();
 const mockPick = jest.fn();
-const mockOpenBrowser = jest.fn();
+const mockFaceSheet = jest.fn();
 let mockGeneration = 0;
 let mockBlur: (() => void) | undefined;
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));
@@ -34,7 +34,7 @@ jest.mock('expo-image-picker', () => ({
   launchImageLibraryAsync: (...args: unknown[]) => mockPick(...args),
   MediaTypeOptions: { Images: 'Images' },
 }));
-jest.mock('expo-web-browser', () => ({ openBrowserAsync: (...args: unknown[]) => mockOpenBrowser(...args) }));
+jest.mock('@/components/design/FaceVerifyModal', () => (props: unknown) => { mockFaceSheet(props); return null; });
 jest.mock('@/lib/session', () => ({
   beginExternalActivity: jest.fn(), endExternalActivity: jest.fn(),
   isSessionLocked: () => mockSessionLocked(),
