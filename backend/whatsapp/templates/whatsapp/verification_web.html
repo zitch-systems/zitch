@@ -42,29 +42,16 @@
     </form>
     <p class="note">Forgot your PIN? Return to WhatsApp and send “reset pin”. Too many incorrect attempts lock your PIN across Zitch.</p>
   {% elif screen == 'tier2' %}
-    <h1>Tier 2 · Live face verification</h1>
-    <p>Your verified identity is saved. No additional NIN verification is needed.</p>
-    <p>Prembly will guide you through a live camera check. Complete it in good lighting, then return here to check your result.</p>
+    <h1>Tier 2 · Face check</h1>
+    <p>Take a quick selfie with your front camera. Your bank matches it to the photo on your BVN or NIN record.</p>
     {% if message %}<p class="message" role="status">{{ message }}</p>{% endif %}
-    {% if face_url %}
-      <p><a href="{{ face_url }}" target="_blank" rel="noopener noreferrer">Open Prembly face verification</a></p>
-      <form method="post">
-        {% csrf_token %}
-        <input type="hidden" name="action" value="face_status">
-        <button type="submit">Check face verification</button>
-        <p class="note" id="progress" role="status" aria-live="polite"></p>
-      </form>
-    {% else %}
-      <form method="post">
-        {% csrf_token %}
-        <input type="hidden" name="action" value="tier2">
-        <button type="submit">Start Prembly face verification</button>
-        <p class="note" id="progress" role="status" aria-live="polite"></p>
-      </form>
-    {% endif %}
+    <p><a href="{{ face_url }}">Take my selfie</a></p>
+  {% elif screen == 'face_pending' %}
+    <h1>Your bank is checking your photo</h1>
+    <p>We'll message you in WhatsApp with the result. You can close this page.</p>
   {% elif screen == 'face_complete' %}
-    <h1>Tier 2 face verification complete</h1>
-    <p>Your live face check is verified. Return to WhatsApp and send “8” to see your updated tier.</p>
+    <h1>Tier 2 verification complete</h1>
+    <p>Your face check passed and your account limits have been upgraded. You can close this page and return to WhatsApp.</p>
   {% elif screen == 'address' %}
     <h1>Verify your address</h1>
     {% if proof_required %}

@@ -187,7 +187,7 @@ it('refreshes an already verified BVN on the same profile without resetting veri
     const menu = JSON.stringify(tree.toJSON());
     expect(menu).toContain('BVN verification');
     expect(menu).toContain('NIN verification');
-    expect(menu).toContain('Selfie verification');
+    expect(menu).toContain('Face verification');
     expect(tree.root.findAllByType(Text).filter((node) => node.props.children === 'Verified')).toHaveLength(3);
     expect(menu).not.toContain('12345678901');
   } finally {
@@ -406,7 +406,7 @@ it('rejects a face capture from a session that no longer owns the KYC screen', a
     bank_upgrade_required: true, tier2_face_available: true });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  act(() => { tree.root.findByProps({ accessibilityLabel: 'Tier 2 · Face verification, Confirm your identity details and take a selfie' }).props.onPress(); });
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Tier 2 · Face verification, Enter your BVN and NIN, then take a selfie' }).props.onPress(); });
   act(() => { tree.root.findByProps({ accessibilityLabel: 'Take a selfie' }).props.onPress(); });
   const capture = tree.root.findByProps({ testID: 'face-capture' });
   mockGeneration += 1;
@@ -452,6 +452,34 @@ it.each([undefined, '0', '50000.00'])('leaves the per-transaction limit off the 
 });
 
 
+it('Tier 2 on the bank rail sends BVN, NIN and a selfie together', async () => {
+  mockParams.verify_identity = '';
+  const verified = { ...state, bvn_verified: true, email_verified: true, phone_verified: true,
+    tier: 1, bank_upgrade_required: true, tier2_face_rail: 'wema', tier2_face_flow: 'wema_selfie',
+    tier2_face_available: true };
+  let upgraded = false;
+  mockApiJson.mockImplementation(async (path: string) => {
+    if (path === EP.kyc.status) return upgraded ? { ...verified, nin_verified: true, face_verified: true, tier: 2, bank_upgrade_required: false } : verified;
+    if (path === EP.wallet.wemaUpgradeTier2) { upgraded = true; return { success: true, bvn_verified: true, nin_verified: true, face_verified: true, tier: 2 }; }
+    throw new Error(`Unexpected API call: ${path}`);
+  });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Tier 2 · Face verification, Enter your BVN and NIN, then take a selfie' }).props.onPress(); });
+  // Wema's Tier 2 takes BVN and NIN with the photo; no third-party face check.
+  const inputs = tree.root.findAllByType(TextInput);
+  expect(inputs).toHaveLength(2);
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Prembly');
+  act(() => { inputs[0].props.onChangeText('22222222222'); });
+  act(() => { inputs[1].props.onChangeText('33333333333'); });
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Take a selfie' }).props.onPress(); });
+  act(() => { tree.root.findByProps({ testID: 'face-capture' }).props.onCapture('SELFIE64'); });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Finish verification' }).props.onPress(); });
+  expect(mockApiJson).toHaveBeenCalledWith(EP.wallet.wemaUpgradeTier2, { bvn: '22222222222', nin: '33333333333', live_image: 'SELFIE64' });
+  expect(mockNotify).toHaveBeenCalledWith('Identity verified — tier upgraded', undefined, 'success');
+  await act(async () => tree.unmount());
+});
+
 it('sends a BVN-verified customer to the Tier 2 page without using the bank upgrade', async () => {
   mockParams.verify_identity = '';
   const verified = { ...state, bvn_verified: true, email_verified: true, phone_verified: true,
@@ -463,7 +491,7 @@ it('sends a BVN-verified customer to the Tier 2 page without using the bank upgr
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
   expect(JSON.stringify(tree.toJSON())).not.toContain('Prembly');
-  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Selfie verification, Tier 2 · NIN and a face check' }).props.onPress(); });
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Face verification, Tier 2' }).props.onPress(); });
   expect(mockPush).toHaveBeenCalledWith('/tier2');
   expect(mockApiJson.mock.calls.map(([path]) => path)).not.toContain(EP.wallet.wemaUpgradeTier2);
   await act(async () => tree.unmount());

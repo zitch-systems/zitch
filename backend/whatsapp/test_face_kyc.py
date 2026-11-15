@@ -194,7 +194,7 @@ class FaceLinkTests(TestCase):
         identity_flow.assert_not_called()
         cta.assert_not_called()
         body = str(reply.call_args.args[1])
-        self.assertIn("do not need to verify NIN after BVN", body)
+        self.assertIn("Your verified identity is saved", body)
         self.assertIn("temporarily unavailable", body)
         self.assertFalse(self.user.face_verified)
 

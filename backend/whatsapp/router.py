@@ -3109,7 +3109,7 @@ def _kyc_outstanding(user) -> list:
         "nin": user.nin_verified,
     }
     # Wema hosted face is an ALTERNATIVE way to complete the BVN/NIN item, not a
-    # fifth KYC rung. Tier-2 liveness is Prembly and is handled by the combined bank
+    # fifth KYC rung. Tier 2 is a face photo sent to the bank with the account
     # upgrade, so neither belongs in the initial identity checklist.
     return [step for step in _KYC_STEPS if not done[step]]
 
@@ -3258,9 +3258,9 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
                          "Your Tier 3 request is already submitted. You do not need to send it again. "
                          "Reply *7* to refresh your verification status.")
         user.refresh_from_db(fields=["tier", "address_verified"])
-    from utility.liveness import refresh_tier2_liveness
+    from wallet.views import refresh_tier2_face
 
-    refresh_tier2_liveness(user)
+    refresh_tier2_face(user)
     status = (
         ("✅ *Tier 1 verification is complete.*\n\n" if not _kyc_outstanding(user)
          else "🪪 *Your verification status*\n\n")
@@ -3284,8 +3284,8 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
         return reply_buttons(
             msisdn,
             status + "\n\n*Upgrade to Tier 2*\n"
-            "Tier 2 adds a Prembly live face check to your verified identity. "
-            "Your verified BVN is enough; no additional NIN verification is needed.",
+            "Tier 2 needs your BVN, NIN and a quick selfie. Your bank matches "
+            "the selfie to your BVN and NIN.",
             [("tier2", "Upgrade to Tier 2"), ("later", "Later")],
         )
     return reply_buttons(
@@ -3312,15 +3312,16 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
     from .verification_web import face_link, start_verification
     from django.core.exceptions import ImproperlyConfigured
 
-    if tier == 2 and settings.PREMBLY.get("FACE_SDK_ENABLED") is not True:
-        from utility.liveness import TIER2_LIVENESS_UNAVAILABLE
+    if tier == 2:
+        from wallet.views import TIER2_FACE_UNAVAILABLE, tier2_face_available
 
-        return reply(msisdn, TIER2_LIVENESS_UNAVAILABLE)
+        if not tier2_face_available():
+            return reply(msisdn, TIER2_FACE_UNAVAILABLE)
     if tier == 2 and not Wallet.objects.filter(user_id=user.pk).exclude(account_number="").exists():
         return reply(msisdn, "Tier 2 upgrades your Zitch account, and your account number "
                      "isn't ready yet. Reply 5 (Add money) to finish your account first.")
     # The WhatsApp worker issues the PIN-gated link. The API that serves it
-    # checks the Prembly credentials before creating or verifying a session.
+    # re-checks the link and the bank's availability before using the camera.
     if tier == 3:
         from wallet.address_verification import tier3_address_capability
 
@@ -3332,7 +3333,7 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
             _clear_actions(msisdn)
             return reply(msisdn, capability["tier3_address_unavailable_reason"])
     try:
-        # Tier 2 goes straight to the Prembly camera: no Zitch page, no PIN.
+        # Tier 2 opens the camera page directly: no PIN, no BVN re-entry.
         url = face_link(user, msisdn) if tier == 2 else start_verification(user, msisdn, tier)
     except (ValueError, ImproperlyConfigured) as exc:
         # Two unrelated causes land here and the customer sees one message for
@@ -3350,8 +3351,8 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
     # The result is sent here automatically once the check finishes
     # (verification_web.notify_face_results), so the customer is not told to
     # come back and ask for it.
-    body = (("📸 *Tier 2 · Live face check*\n\n"
-             "Tap *Verify face*, allow camera access and follow the on-screen moves. "
+    body = (("📸 *Tier 2 · Face check*\n\n"
+             "Tap *Verify face*, enter your BVN and NIN, allow camera access and take a clear selfie. "
              "We'll message you here with the result. The link expires in 15 minutes.")
             if tier == 2 else
             ("Verify your address securely. Confirm your Zitch PIN on the page, then "
