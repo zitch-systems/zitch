@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
+import { pickContactPhone } from '@/lib/contacts';
 import { Loading } from '@/components/design/Loading';
 import { router } from 'expo-router';
 import { apiPost, publicPost } from '@/lib/api';
@@ -231,6 +232,15 @@ const BuyData = () => {
     );
   }
 
+  // The contacts button on the phone field: asks for permission, then the
+  // system picker; only the chosen number is read.
+  const pickFromContacts = async () => {
+    const res = await pickContactPhone();
+    if (res.ok) changePhone(res.contact.phone);
+    else if (res.reason === 'no-number') notify('No Nigerian number', 'That contact has no Nigerian mobile number. Pick another contact.');
+    else if (res.reason === 'unavailable') notify('Contacts', 'Contacts are not available on this device.');
+  };
+
   return (
     <Screen>
       <Header title="Data" onBack={() => router.back()} />
@@ -242,6 +252,7 @@ const BuyData = () => {
         label="Phone number"
         value={phone}
         onChangeText={changePhone}
+        onContacts={pickFromContacts}
         onPick={(it) => changePhone(it.value)}
         items={phoneItems}
         menuTitle="Numbers you've topped up"
