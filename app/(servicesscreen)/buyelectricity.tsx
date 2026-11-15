@@ -315,6 +315,12 @@ const BuyElectricity = () => {
           <View style={{ marginTop: 4, alignSelf: 'flex-start' }}>
             <Btn label="Try again" variant="ghost" size="sm" full={false} onPress={validateMeter} style={{ backgroundColor: 'transparent', paddingHorizontal: 0 }} />
           </View>
+        ) : meter.length >= 8 && meter.length < 10 ? (
+          // Shorter meters are valid but not checked on their own (the auto
+          // check waits for 10 digits so it does not fire mid-typing).
+          <View style={{ marginTop: 4, alignSelf: 'flex-start' }}>
+            <Btn label="Check meter" variant="ghost" size="sm" full={false} onPress={validateMeter} style={{ backgroundColor: 'transparent', paddingHorizontal: 0 }} />
+          </View>
         ) : null}
       </View>
 
