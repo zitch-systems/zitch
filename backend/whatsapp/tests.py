@@ -872,6 +872,17 @@ class VtuTests(TestCase):
         self.inbound("1", "b2")               # 1 -> Electricity -> disco prompt
         self.assertIn("disco", self.last_reply().lower())
 
+    def test_short_menus_go_out_as_one_tap_buttons(self):
+        # A WhatsApp list needs a tap AND a Send; buttons send on the first tap,
+        # so a menu with three options or fewer must use buttons.
+        from unittest import mock
+        with mock.patch("whatsapp.providers.wa_live", return_value=True), \
+                mock.patch("whatsapp.router.send_buttons", return_value={"success": True}) as buttons, \
+                mock.patch("whatsapp.router.send_list", return_value={"success": True}) as lst:
+            self.inbound("4", "btn1")
+        lst.assert_not_called()
+        self.assertEqual([b[0] for b in buttons.call_args.args[2]], ["1", "2"])
+
     def test_service_menu_reprompts_on_bad_pick(self):
         self.inbound("3", "r1")
         self.inbound("banana", "r2")          # not a valid pick -> re-prompt, no crash
@@ -5682,6 +5693,19 @@ class SavedPeopleTests(TestCase):
         self.inbound("2k to. Yahaya 0998787776 polaris", "b2")
         row.refresh_from_db()
         self.assertEqual(row.nickname, "")
+
+    def test_a_bill_instruction_at_the_name_prompt_starts_the_bill(self):
+        """Reported: "Recharge 45058723664 Ikeja electric 500" at the nickname
+        prompt was refused with "That doesn't look like a name". Anything that
+        is not a name must skip naming and go to the normal router instead."""
+        row = self.make_row()
+        self.inbound(f"bene:save:{row.pk}", "r1")
+        self.inbound("Recharge 45058723664 Ikeja electric 500", "r2")
+        row.refresh_from_db()
+        self.assertEqual(row.nickname, "")
+        joined = " ".join(self.replies())
+        self.assertNotIn("doesn't look like a name", joined)
+        self.assertIn("Kept as", joined)
 
     def test_an_ordinary_name_is_never_mistaken_for_a_command(self):
         # "Elizabeth" contains "bet" and "Ricardo" contains "card"; the intent

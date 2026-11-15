@@ -679,9 +679,14 @@ def _advance_beneficiary(pa: PendingAction, user, msisdn: str, text: str) -> Non
         # looks like has neither failure - a name has letters and no account
         # number, and an instruction almost always carries digits.
         if not _looks_like_a_name(text):
-            return _reroute_or_reprompt(pa, msisdn, text,
-                                        "That doesn't look like a name. Reply with a short "
-                                        "one like \"Mum\", or *skip* to keep the bank's name.")
+            # Optional step: anything that is not a name is the customer moving on
+            # ("Recharge 4505... Ikeja electric 500" was refused here). Keep the
+            # bank's name and hand the message to the normal router/AI instead of
+            # stonewalling with "that doesn't look like a name".
+            _clear_actions(msisdn)
+            reply(msisdn, f"Kept as {row.name.upper()}.")
+            from .router import handle_inbound
+            return handle_inbound(msisdn, text)
         nickname, problem = clean_nickname(text)
         if problem:
             return reply(msisdn, f"{problem} Or reply *skip*.")
@@ -1081,6 +1086,29 @@ def _vtu_detail(pa: PendingAction, amount: Decimal) -> str:
     return f"{_money(amount)}{' - ' + recip if recip else ''}"
 
 
+def _await_settlement(txn) -> None:
+    """Give the bank a few seconds to confirm a purchase before calling it pending.
+
+    The partner bank usually settles airtime/data/bills by callback a second or
+    two after accepting them. Announcing "still processing" in that gap showed
+    customers a Pending screen for purchases that had in fact succeeded, so poll
+    the ledger briefly and only fall through to pending if it is still open.
+    Kept short: the WhatsApp Flow endpoint must answer within Meta's timeout.
+    """
+    import time
+
+    from django.conf import settings as dj_settings
+    from wallet.models import Transaction
+
+    grace = float(getattr(dj_settings, "VTU_PENDING_GRACE_SECONDS", 5) or 0)
+    deadline = time.monotonic() + max(0.0, grace)
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        txn.refresh_from_db(fields=["transaction_status", "meta", "reference"])
+        if txn.transaction_status != Transaction.PENDING:
+            return
+
+
 def _vtu_outcome(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
                  txn, result: dict, receipt, *, replay: bool = False) -> Outcome:
     """Render a VAS purchase from the ledger's durable state.
@@ -1092,6 +1120,8 @@ def _vtu_outcome(pa: PendingAction, user, msisdn: str, amount: Decimal, label: s
     from wallet.models import Transaction
 
     txn.refresh_from_db(fields=["transaction_status", "meta", "reference"])
+    if txn.transaction_status == Transaction.PENDING and not replay:
+        _await_settlement(txn)
     result = {**(result or {}), **_stored_provider_result(txn)}
     _clear_actions(msisdn)
     detail = _vtu_detail(pa, amount)
@@ -1637,6 +1667,12 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
     return send_menu(msisdn)
 
 
+def _bill_contact(user, msisdn: str) -> dict:
+    """Customer contact details the partner bank's PayBill expects with every bill."""
+    name = " ".join(filter(None, [getattr(user, "first_name", ""), getattr(user, "last_name", "")])).strip()
+    return {"email": (getattr(user, "email", "") or "").strip(), "phone": msisdn, "name": name}
+
+
 def _exec_electricity(pa: PendingAction, user, msisdn: str) -> str:
     amount = Decimal(pa.payload["amount"])
     disco = DISCO_NAMES[pa.payload["disco"]].lower()
@@ -1658,7 +1694,8 @@ def _exec_electricity(pa: PendingAction, user, msisdn: str) -> str:
     return _run_vtu(
         pa, user, msisdn, amount, f"Electricity - {disco_name}",
         lambda ref: vtu_purchase(f"{disco}-electric",
-                                 {"billersCode": meter, "variation_code": mt, "amount": str(amount)}, reference=ref),
+                                 {"billersCode": meter, "variation_code": mt, "amount": str(amount),
+                                  **_bill_contact(user, msisdn)}, reference=ref),
         _receipt_rows,
     )
 
@@ -1770,7 +1807,8 @@ def _exec_cable(pa: PendingAction, user, msisdn: str) -> str:
     iuc, plan_code, price = pa.payload["iuc"], pa.payload["plan_code"], Decimal(pa.payload["price"])
     return _run_vtu(
         pa, user, msisdn, price, f"Cable - {prov_name} {pa.payload['plan_name']}",
-        lambda ref: vtu_purchase(prov, {"billersCode": iuc, "variation_code": plan_code}, reference=ref),
+        lambda ref: vtu_purchase(prov, {"billersCode": iuc, "variation_code": plan_code,
+                                         **_bill_contact(user, msisdn)}, reference=ref),
         lambda txn, res: ("Cable receipt", [
             ("Provider", prov_name), ("Package", pa.payload["plan_name"]), ("Smartcard", iuc),
             ("Amount", _money(price)), ("Reference", txn.reference),

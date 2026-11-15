@@ -1136,3 +1136,8 @@ if SENTRY_DSN and not TESTING:
         )
     except Exception:  # noqa: BLE001 — observability must never break boot
         pass
+
+# Seconds a VAS purchase waits for the bank's settlement callback before the
+# customer is told it is "still processing" (whatsapp.router_tail._await_settlement).
+# Zero under tests so pending-path tests stay fast and deterministic.
+VTU_PENDING_GRACE_SECONDS = 0 if TESTING else float(os.environ.get("VTU_PENDING_GRACE_SECONDS", "5"))

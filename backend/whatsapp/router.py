@@ -493,18 +493,27 @@ def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str,
 def reply_list(msisdn: str, body: str, rows, button_label: str = "Choose") -> None:
     """Interactive list with a numbered-text fallback: live sends a tappable list
     (row ids = the text the router expects), mock/dev sends the equivalent
-    numbered text. The OUT log row records the fallback text either way."""
+    numbered text. The OUT log row records the fallback text either way.
+
+    Three options or fewer go out as reply BUTTONS instead: a WhatsApp list makes
+    the customer tap a row and then tap Send, while a button sends on the first
+    tap. Button ids are the same row ids, so the router sees identical input."""
+    rows = list(rows)
     fallback = body + "\n" + "\n".join(
         f"{rid}  {title}" + (f" - {desc}" if desc else "") for rid, title, desc in rows)
+    if 0 < len(rows) <= 3:
+        details = "\n".join(f"{title} - {desc}" for _, title, desc in rows if desc)
+        return reply_buttons(msisdn, body + (f"\n\n{details}" if details else ""),
+                             [(rid, title) for rid, title, _ in rows], fallback=fallback)
     from .providers import wa_live
     sent = send_list(msisdn, body, rows, button_label=button_label) if wa_live() else {}
     result = sent if sent.get("success") else send_text(msisdn, fallback)
     _log_out(msisdn, fallback, result)
 
 
-def reply_buttons(msisdn: str, body: str, buttons) -> None:
+def reply_buttons(msisdn: str, body: str, buttons, fallback: str = "") -> None:
     """Interactive reply buttons (max 3) with a text fallback, logged like reply()."""
-    fallback = body + "\n" + " / ".join(f"\"{bid}\"" for bid, _ in buttons)
+    fallback = fallback or body + "\n" + " / ".join(f"\"{bid}\"" for bid, _ in buttons)
     from .providers import wa_live
     sent = send_buttons(msisdn, body, buttons) if wa_live() else {}
     result = sent if sent.get("success") else send_text(msisdn, fallback)
@@ -5234,6 +5243,16 @@ _INTENT_WORDS = (
 )
 
 
+#: Intent words matched as WHOLE words only. Short or common tokens ("glo",
+#: "pay", "buy") would hit bank and person names as substrings ("Globus",
+#: "Payne"), so they live here rather than in _INTENT_WORDS.
+_INTENT_WORDS_WHOLE = re.compile(
+    r"\b(recharge|electric|nepa|phcn|disco|"
+    r"mtn|glo|airtel|9mobile|etisalat|vtu|subscribe|subscription|renew|"
+    r"buy|pay|withdraw)\b"
+)
+
+
 def _names_another_intent(text: str) -> bool:
     """Whether this message asks for something OTHER than what we are waiting for.
 
@@ -5249,7 +5268,7 @@ def _names_another_intent(text: str) -> bool:
     a half-typed bank name would cancel the transfer it was meant for.
     """
     low = (text or "").strip().lower()
-    return any(word in low for word in _INTENT_WORDS)
+    return any(word in low for word in _INTENT_WORDS) or bool(_INTENT_WORDS_WHOLE.search(low))
 
 
 def _reroute_or_reprompt(pa, msisdn: str, text: str, prompt: str) -> None:
