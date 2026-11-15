@@ -87,7 +87,6 @@ export const useHomeProducts = () => {
 
 const IconButton = ({ icon, label, onPress, dot }: { icon: string; label: string; onPress: () => void; dot?: boolean }) => {
   const { c } = useTheme();
-  const ink = useTabInk();
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} hitSlop={4}
       style={{ width: 42, height: 42, borderRadius: 14, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}>
@@ -99,6 +98,7 @@ const IconButton = ({ icon, label, onPress, dot }: { icon: string; label: string
 
 const QuickTile = ({ icon, label, color, onPress }: { icon: string; label: string; color: string; onPress: () => void }) => {
   const { c } = useTheme();
+  const ink = useTabInk();
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress}
       style={({ pressed }) => ({ flex: 1, minWidth: 0, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, borderRadius: 18,
