@@ -64,6 +64,9 @@ class Beneficiary(models.Model):
     transfer_count = models.PositiveIntegerField(default=0)
     # WhatsApp asks about automatic saving at most once per recipient.
     save_offer_sent = models.BooleanField(default=False)
+    # When money last went to this account, so the send screen can list recent
+    # transfers newest first. Empty on rows written before it existed.
+    last_sent_at = models.DateTimeField(null=True, blank=True)
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:

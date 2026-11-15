@@ -80,7 +80,7 @@ const TearLine = () => (
 );
 
 const Entry = ({ label, children }: { label: string; children: React.ReactNode }) => (
-  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingVertical: 12, gap: 14 }}>
+  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingVertical: 8.5, gap: 14 }}>
     <Text style={{ fontSize: 13.5, color: C.muted, fontFamily: font.regular }}>{label}</Text>
     <View style={{ flex: 1, alignItems: 'flex-end' }}>{children}</View>
   </View>
@@ -113,29 +113,34 @@ const WhatsAppPanel = () => (
     accessibilityRole="button"
     accessibilityLabel="Set up Zitch banking on WhatsApp"
     style={({ pressed }) => ({
-      marginHorizontal: 12, marginTop: 14, borderRadius: 18, borderWidth: 1.5,
-      borderColor: 'rgba(37,211,102,.45)', padding: 12, flexDirection: 'row', alignItems: 'center',
+      marginHorizontal: 12, marginTop: 10, borderRadius: 18, borderWidth: 1.5,
+      borderColor: 'rgba(37,211,102,.45)', paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center',
       gap: 11, opacity: pressed ? 0.88 : 1,
     })}
   >
-    <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: C.whatsapp, alignItems: 'center', justifyContent: 'center', alignSelf: 'flex-start' }}>
-      <WhatsAppGlyph size={22} color="#fff" />
-    </View>
+    {/* The WhatsApp mark sits in line with the eyebrow, so the text gets the
+        width and the panel stays short enough for the receipt to fit one
+        screen with every detail in it (review, Nov 2026). */}
     <View style={{ flex: 1, minWidth: 0 }}>
-      <Text style={{ color: C.whatsappText, fontFamily: font.bold, fontSize: 9.5, letterSpacing: 0.8 }}>ZITCH WHATSAPP BANKING</Text>
-      <Text style={{ color: C.ink, fontFamily: font.extrabold, fontSize: 14, marginTop: 2 }}>Bank wherever you chat</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <View style={{ width: 20, height: 20, borderRadius: 6, backgroundColor: C.whatsapp, alignItems: 'center', justifyContent: 'center' }}>
+          <WhatsAppGlyph size={12} color="#fff" />
+        </View>
+        <Text style={{ color: C.whatsappText, fontFamily: font.bold, fontSize: 9.5, letterSpacing: 0.8 }}>ZITCH WHATSAPP BANKING</Text>
+      </View>
+      <Text style={{ color: C.ink, fontFamily: font.extrabold, fontSize: 14, marginTop: 5 }}>Bank wherever you chat</Text>
       <Text style={{ color: C.muted, fontFamily: font.regular, fontSize: 11, lineHeight: 15, marginTop: 2 }}>
         Send money, buy airtime and check your balance on WhatsApp.
       </Text>
-      <Text selectable style={{ color: C.muted, fontFamily: font.semibold, fontSize: 11, marginTop: 5 }}>
+      <Text selectable style={{ color: C.muted, fontFamily: font.semibold, fontSize: 11, marginTop: 4 }}>
         <Text style={{ color: C.brandText, fontFamily: font.bold }}>zitch.ng</Text>
         {'  ·  '}
         {BANK_WHATSAPP_DISPLAY}
       </Text>
     </View>
     <View style={{ alignItems: 'center' }} accessibilityLabel="QR code to start Zitch banking on WhatsApp">
-      <View style={{ backgroundColor: '#fff', borderRadius: 8, padding: 4 }}>
-        <Svg width={68} height={68} viewBox={`0 0 ${QR.size} ${QR.size}`}>
+      <View style={{ backgroundColor: '#fff', borderRadius: 7, padding: 3 }}>
+        <Svg width={60} height={60} viewBox={`0 0 ${QR.size} ${QR.size}`}>
           <Path d={QR.d} fill={C.ink} />
         </Svg>
       </View>
@@ -256,7 +261,7 @@ const Receipt = ({
               colors={[C.brand, C.brandDeep]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
-              style={{ height: 150, paddingHorizontal: 18, paddingTop: 18, overflow: 'hidden' }}
+              style={{ height: 140, paddingHorizontal: 18, paddingTop: 18, overflow: 'hidden' }}
             >
               <Image source={MARK} resizeMode="contain" style={{ position: 'absolute', right: -30, top: -36, width: 150, height: 206, tintColor: '#fff', opacity: 0.08 }} />
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -272,9 +277,9 @@ const Receipt = ({
 
             {/* The ticket: a shadow on the outer view, the clip on the inner one,
                 because iOS drops the shadow of a view that clips its children. */}
-            <View style={{ marginTop: -86, marginHorizontal: 12, borderRadius: 20, backgroundColor: C.card, shadowColor: C.brandDeep, shadowOpacity: 0.12, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 3 }}>
+            <View style={{ marginTop: -76, marginHorizontal: 12, borderRadius: 20, backgroundColor: C.card, shadowColor: C.brandDeep, shadowOpacity: 0.12, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 3 }}>
               <View style={{ borderRadius: 20, overflow: 'hidden', backgroundColor: C.card }}>
-                <View style={{ alignItems: 'center', paddingTop: 22, paddingHorizontal: 18, paddingBottom: 14 }}>
+                <View style={{ alignItems: 'center', paddingTop: 18, paddingHorizontal: 18, paddingBottom: 12 }}>
                   <NText
                     numberOfLines={1}
                     adjustsFontSizeToFit
@@ -284,7 +289,7 @@ const Receipt = ({
                   </NText>
                   <StatusPill status={status} />
                   {layout.when ? (
-                    <Text style={{ fontSize: 13, fontFamily: font.medium, color: C.muted, marginTop: 10 }}>{layout.when}</Text>
+                    <Text style={{ fontSize: 13, fontFamily: font.medium, color: C.muted, marginTop: 8 }}>{layout.when}</Text>
                   ) : null}
                   {message ? (
                     <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: C.muted, marginTop: 6, textAlign: 'center', lineHeight: 18, maxWidth: 290 }}>
@@ -316,7 +321,7 @@ const Receipt = ({
 
             <WhatsAppPanel />
 
-            <View style={{ alignItems: 'center', marginTop: 14, gap: 4 }}>
+            <View style={{ alignItems: 'center', marginTop: 8, gap: 2 }}>
               <Text style={{ fontSize: 12, fontFamily: font.regular, color: C.muted }}>Need help? {SUPPORT_EMAIL}</Text>
               <Text style={{ fontSize: 11, fontFamily: font.regular, color: C.muted }}>Keep this receipt for your records.</Text>
             </View>
@@ -336,12 +341,12 @@ const Receipt = ({
             accessibilityRole="button"
             accessibilityLabel={lb}
             accessibilityState={{ disabled: busy }}
-            style={({ pressed }) => ({ flex: 1, alignItems: 'center', gap: 6, paddingVertical: 12, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, opacity: pressed || busy ? 0.85 : 1 })}
+            style={({ pressed }) => ({ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 11, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, opacity: pressed || busy ? 0.85 : 1 })}
           >
             {busy && ic !== 'copy'
-              ? <LoadingMark size={20} />
-              : <ZIcon name={ic} size={20} color={c.brand} />}
-            <Text style={{ fontSize: 12, fontFamily: font.semibold, color: c.ink2 }}>{lb}</Text>
+              ? <LoadingMark size={17} />
+              : <ZIcon name={ic} size={17} color={c.brand} />}
+            <Text style={{ fontSize: 12.5, fontFamily: font.semibold, color: c.ink2 }}>{lb}</Text>
           </Pressable>
         ))}
       </View>
@@ -363,7 +368,7 @@ const Receipt = ({
 
       {footer}
 
-      <View style={{ paddingBottom: 24, paddingTop: 10 }}>
+      <View style={{ paddingBottom: 16, paddingTop: 10 }}>
         <Btn label="Back to Dashboard" onPress={onDone} />
       </View>
     </View>

@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from django.db import transaction as db_transaction
 from django.db.models import F
+from django.utils import timezone
 
 from utility import wema as wema_provider
 from utility.providers import payout_send
@@ -567,7 +568,8 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     # After transfer #3 it becomes eligible for account-number search/autofill;
     # after transfer #51 it is promoted to Beneficiary (saved=True). This is
     # idempotent for retries because the payout itself is idempotent.
-    Beneficiary.objects.filter(pk=row.pk).update(transfer_count=F("transfer_count") + 1)
+    Beneficiary.objects.filter(pk=row.pk).update(transfer_count=F("transfer_count") + 1,
+                                                 last_sent_at=timezone.now())
     row.refresh_from_db(fields=["transfer_count", "saved", "name", "bank_code", "color", "nickname"])
     if row.transfer_count > 50 and not row.saved:
         row.saved = True

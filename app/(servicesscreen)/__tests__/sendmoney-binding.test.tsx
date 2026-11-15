@@ -238,7 +238,7 @@ describe('SendMoney recipient response binding', () => {
     mockApiPost.mockResolvedValue({ json: async () => ({ beneficiaries: [{ id: 1, name: 'Saved Recipient', account_number: '08012345678', bank_name: 'Zitch', initials: 'SR' }] }) });
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<SendMoney />); });
-    await act(async () => { pressText(tree, 'Saved'); });
+    await act(async () => { pressText(tree, 'Saved Recipient'); });
     await act(async () => { control(tree, 'Enter amount').props.onChangeText('1000'); });
     expect(control(tree, 'Zitch tag or phone').props.value).toBe('08012345678');
     expect(control(tree, 'Continue').props.disabled).toBe(true);

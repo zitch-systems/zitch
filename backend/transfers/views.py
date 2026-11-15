@@ -8,6 +8,8 @@ reconcile_wema poller (utility/management/commands/reconcile_wema.py).
 """
 import re
 
+from django.db.models import F
+
 from common.http import (
     MIN_TRANSFER, api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok,
     parse_amount, require_user, spend_key, verify_transaction_pin,
@@ -75,6 +77,7 @@ def _beneficiary(b) -> dict:
         "display_name": b.display_name, "saved": b.saved,
         "transfer_count": b.transfer_count,
         "frequent": b.transfer_count >= 3,
+        "last_sent_at": b.last_sent_at.isoformat() if b.last_sent_at else None,
     }
 
 
@@ -122,7 +125,9 @@ def list_beneficiaries(request):
     # Which of these rows belongs in the ADDRESS BOOK is a different question,
     # answered by `saved` on each row and applied by the client. `frequent_recipients`
     # stays for callers that want the pre-filtered view.
-    items = request.user_obj.beneficiaries.all()
+    # Newest transfer first, so the send screen's "Recent transfers" reads in
+    # order; rows from before last_sent_at existed follow, newest first.
+    items = request.user_obj.beneficiaries.order_by(F("last_sent_at").desc(nulls_last=True), "-created")
     frequent = request.user_obj.beneficiaries.filter(transfer_count__gte=3).order_by("-created")
     return ok(
         beneficiaries=[_beneficiary(b) for b in items],

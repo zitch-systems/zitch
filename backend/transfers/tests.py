@@ -785,6 +785,27 @@ class SavedBeneficiaryTests(TestCase):
         self.assertFalse(row.saved)
         self.assertEqual(row.nickname, "")
 
+    def test_recent_transfers_list_newest_payment_first(self):
+        # The send screen's "Recent transfers" tab reads this order.
+        from datetime import timedelta
+        from django.utils import timezone
+        bank = Bank.objects.create(code="gtb3", name="Kuda Bank", bank_code="50211")
+        from .services import execute_payout
+        with patch("transfers.services.payout_send",
+                   return_value={"success": True, "status": "success"}):
+            execute_payout(self.user, Decimal("1000"), "0888888888", bank, "CHIDI EZE", channel="app")
+        newest = Beneficiary.objects.get(user=self.user, account_number="0888888888")
+        self.assertIsNotNone(newest.last_sent_at)
+        older = Beneficiary.objects.create(
+            user=self.user, name="ADA OKAFOR", account_number="0011223344", bank_name="Access Bank",
+            last_sent_at=timezone.now() - timedelta(days=3))
+        _, body = self.post("/api/transfers/beneficiaries/", {"access_token": self.token})
+        order = [b["account_number"] for b in body["beneficiaries"]]
+        # paid most recently, then paid earlier, then rows from before the date was kept
+        self.assertEqual(order, ["0888888888", older.account_number, self.row.account_number])
+        self.assertIsNone(body["beneficiaries"][2]["last_sent_at"])
+        self.assertTrue(body["beneficiaries"][0]["last_sent_at"])
+
     def test_saving_keeps_the_recipient(self):
         res, body = self.post("/api/transfers/beneficiaries/save/", {
             "access_token": self.token, "beneficiary_id": self.row.id})

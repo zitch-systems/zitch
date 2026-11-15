@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Share } from 'react-native';
+import { View, Text, Pressable, Share } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { notify } from '@/components/design/Notify';
+import { notify, flash, notifyError } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Btn, money } from '@/components/design/ui';
-import { Monogram } from '@/components/design/flowkit';
+import { NText } from '@/components/design/Naira';
+import { receiptHtml, shareReceipt, outcomeMessage, type ReceiptFormat } from '@/lib/receipt';
 import { useTheme, font } from '@/lib/theme';
 import { apiJson } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
@@ -44,21 +46,24 @@ type TransactionStatusResult = {
   message?: string;
 };
 
-const Row2 = ({ k, v }: { k: string; v: string }) => {
-  const { c } = useTheme();
-  return (
-    <View style={{ flexDirection: 'row', gap: 12, justifyContent: 'space-between', paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.line }}>
-      <Text style={{ flex: 1, fontSize: 14, color: c.ink3, fontFamily: font.regular }}>{k}</Text>
-      <Text selectable style={{ flex: 1.7, fontSize: 14, fontFamily: font.semibold, color: c.ink1, textAlign: 'right' }}>{v}</Text>
-    </View>
-  );
-};
+// The receipt card is drawn on fixed colours: it is shared as an image, and a
+// shared receipt must read the same whatever theme the sender's phone was in.
+const R = { card: '#FFFFFF', ink: '#06231F', muted: '#5E7470', line: '#EAF2F0', brand: '#0FA295', foot: '#7A8B87' };
+
+const Row2 = ({ k, v, strong, last }: { k: string; v: string; strong?: boolean; last?: boolean }) => (
+  <View style={{ flexDirection: 'row', gap: 14, justifyContent: 'space-between', alignItems: 'center', paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: R.line }}>
+    <Text style={{ fontSize: 14, color: R.muted, fontFamily: font.regular }}>{k}</Text>
+    <NText selectable style={{ flex: 1, fontSize: strong ? 16 : 14.5, fontFamily: strong ? font.extrabold : font.semibold, color: R.ink, textAlign: 'right', fontVariant: ['tabular-nums'] }}>{v}</NText>
+  </View>
+);
 
 const TxnDetail = () => {
   const { c } = useTheme();
+  const card = useRef<View>(null);
+  const [sharing, setSharing] = useState<ReceiptFormat | null>(null);
   const p = useLocalSearchParams<{
     type?: string; amount?: string; status?: string; dir?: string; detail?: string; reference?: string; icon?: string;
-    underReview?: string; statusMessage?: string; reviewKind?: string;
+    narration?: string; underReview?: string; statusMessage?: string; reviewKind?: string;
     spendScope?: string; spendFingerprint?: string; spendKey?: string;
   }>();
 
@@ -172,7 +177,6 @@ const TxnDetail = () => {
   const type = String(liveTxn?.service ?? p.type ?? 'Transaction');
   const detail = String(liveTxn?.date ?? p.detail ?? '');
   const reference = String(liveTxn?.reference ?? p.reference ?? '');
-  const mono = type.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
   // Status badge reflects the latest backend status — not just the route param.
   const underReview = liveTxn
     ? liveTxn.under_review === true
@@ -185,8 +189,17 @@ const TxnDetail = () => {
   const rawStatus = underReview
     ? 'Under review'
     : String(liveTxn?.transaction_status ?? p.status ?? '').trim();
-  const { state, label: status, icon: statusIcon } = transactionStatusPresentation(rawStatus);
-  const statusColor = state === 'failed' ? c.red : state === 'pending' ? c.amber : c.lime;
+  const { state, label: status } = transactionStatusPresentation(rawStatus);
+  const narration = String(p.narration || '').trim();
+  const isTransfer = /transfer|send|withdraw/i.test(type);
+  const absAmount = Number.isFinite(amount) ? money(Math.abs(amount)) : '';
+  const headline = state === 'failed' ? 'Transaction failed'
+    : state === 'pending' ? (underReview ? 'Under review' : 'Processing')
+      : inflow ? 'Money received' : isTransfer ? 'Money sent' : 'Payment successful';
+  const subline = absAmount
+    ? `${absAmount} ${state === 'failed' ? 'not ' : ''}${inflow ? 'received' : isTransfer ? 'sent' : 'paid'} · ${type}`
+    : type;
+  const badge = state === 'failed' ? { bg: '#E5484D', icon: 'x' } : state === 'pending' ? { bg: '#E8A33D', icon: 'history' } : { bg: '#00B51D', icon: 'check' };
   const electricityToken = state === 'success' && !underReview ? String(liveTxn?.token || '').trim() : '';
   const electricityRows = electricityToken ? [
     ['Electricity token', electricityToken],
@@ -195,27 +208,71 @@ const TxnDetail = () => {
     ['Units', liveTxn?.electricity_units],
   ].filter((row) => row[1]) : [];
 
+  const rows: [string, string, boolean?][] = [
+    ['Description', type],
+    ...(detail ? ([['Date', detail]] as [string, string][]) : []),
+    ...(narration ? ([['Note', narration]] as [string, string][]) : []),
+    ['Reference', reference || '—'],
+    ['Channel', 'Zitch Wallet'],
+    ...electricityRows.map(([label, value]) => [String(label), String(value)] as [string, string]),
+    ['Total', formattedAmount.replace(/^[+-]/, ''), true],
+  ];
+
+  const share = async (format: ReceiptFormat) => {
+    if (sharing) return;
+    setSharing(format);
+    try {
+      const outcome = await shareReceipt(format, {
+        capture: async () => {
+          const { captureRef } = await import('react-native-view-shot');
+          if (!card.current) throw new Error('Receipt is not ready to capture');
+          return captureRef(card.current, { format: 'jpg', quality: 0.95, result: 'tmpfile' });
+        },
+        html: receiptHtml({ title: headline, message: subline, rows, status }),
+        reference,
+      });
+      const line = outcomeMessage(outcome, format);
+      if (!line) return;
+      if (outcome === 'shared' || outcome === 'saved') flash('Ready', line);
+      else notifyError('Receipt', line);
+    } catch {
+      notifyError('Receipt', 'Could not prepare the receipt. Please try again.');
+    } finally {
+      setSharing(null);
+    }
+  };
+
   return (
     <Screen>
-      <Header title="Transaction details" onBack={() => router.back()} />
+      <Header title="Transaction receipt" onBack={() => router.back()} />
 
-      <View style={{ alignItems: 'center', paddingTop: 16 }}>
-        <Monogram text={mono} color={inflow ? c.lime : c.brand} size={64} />
-        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6} style={{ maxWidth: '100%', fontSize: 32, fontFamily: font.extrabold, color: inflow ? c.lime : c.ink1, marginTop: 14, fontVariant: ['tabular-nums'] }}>
-          {formattedAmount}
-        </Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: `${statusColor}1F` }}>
-          <ZIcon name={statusIcon} size={13} color={statusColor} />
-          <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: statusColor }}>{status}</Text>
+      {/* Everything in this view is what "Share as image" captures. */}
+      <View ref={card} collapsable={false} style={{ marginTop: 4, borderRadius: 24, backgroundColor: R.card, overflow: 'hidden', shadowColor: '#063731', shadowOpacity: 0.1, shadowRadius: 14, shadowOffset: { width: 0, height: 12 }, elevation: 4 }}>
+        <LinearGradient
+          colors={['#14A899', '#0A8C80', '#047C71']}
+          locations={[0, 0.55, 1]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={{ borderRadius: 24, alignItems: 'center', paddingTop: 26, paddingHorizontal: 20, paddingBottom: 30 }}
+        >
+          <View style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' }}>
+            <View style={{ width: 46, height: 46, borderRadius: 23, backgroundColor: badge.bg, alignItems: 'center', justifyContent: 'center' }}>
+              <ZIcon name={badge.icon} size={24} color="#fff" stroke={3} />
+            </View>
+          </View>
+          <Text style={{ marginTop: 14, fontSize: 24, fontFamily: font.extrabold, color: '#fff', letterSpacing: -0.3 }}>{headline}</Text>
+          <NText style={{ marginTop: 6, fontSize: 14, fontFamily: font.medium, color: 'rgba(255,255,255,0.9)', textAlign: 'center' }}>{subline}</NText>
+          <View style={{ marginTop: 10, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.18)' }}>
+            <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: '#fff' }}>{status}</Text>
+          </View>
+        </LinearGradient>
+        <View style={{ paddingTop: 4, paddingHorizontal: 20 }}>
+          {rows.map(([k, v, strong], i) => <Row2 key={k} k={k} v={v} strong={strong} last={i === rows.length - 1} />)}
         </View>
-      </View>
-
-      <View style={{ marginTop: 22, borderRadius: 18, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, paddingHorizontal: 16, paddingBottom: 8 }}>
-        <Row2 k="Description" v={type} />
-        {detail ? <Row2 k="Date" v={detail} /> : null}
-        <Row2 k="Reference" v={reference || '—'} />
-        <Row2 k="Channel" v="Zitch Wallet" />
-        {electricityRows.map(([label, value]) => <Row2 key={label} k={String(label)} v={String(value)} />)}
+        <View style={{ alignItems: 'center', paddingTop: 16, paddingHorizontal: 20, paddingBottom: 20 }}>
+          <Text style={{ fontSize: 19, fontFamily: font.extrabold, color: R.brand, letterSpacing: -0.2 }}>Zitch</Text>
+          <Text style={{ marginTop: 3, fontSize: 12, fontFamily: font.regular, color: R.foot }}>Transaction receipt{detail ? ` · ${detail}` : ''}</Text>
+        </View>
       </View>
 
       {underReview ? (
@@ -253,25 +310,45 @@ const TxnDetail = () => {
             ) : null}
           </View>
         ) : null}
-        <Btn
-          label={state === 'pending' ? 'Share status' : 'Share receipt'}
-          icon="share"
-          variant="outline"
-          onPress={() => {
-            Share.share({
-              message: [
-                type,
-                `Amount: ${formattedAmount}`,
-                `Status: ${status}`,
-                detail ? `Date: ${detail}` : '',
-                `Reference: ${reference || '—'}`,
-                ...electricityRows.map(([label, value]) => `${label}: ${value}`),
-                '',
-                'Sent with Zitch',
-              ].filter(Boolean).join('\n'),
-            }).catch(() => notify('Could not share', 'Please try again.'));
-          }}
-        />
+        {/* A transaction still in flight is shared as a status, never as a
+            receipt: a forwarded receipt reads as proof of payment. */}
+        {state === 'pending' ? (
+          <Btn
+            label="Share status"
+            icon="share"
+            variant="outline"
+            onPress={() => {
+              Share.share({
+                message: [
+                  type,
+                  `Amount: ${formattedAmount}`,
+                  `Status: ${status}`,
+                  detail ? `Date: ${detail}` : '',
+                  `Reference: ${reference || '—'}`,
+                  '',
+                  'Sent with Zitch',
+                ].filter(Boolean).join('\n'),
+              }).catch(() => notify('Could not share', 'Please try again.'));
+            }}
+          />
+        ) : (
+        <View style={{ flexDirection: 'row', gap: 10 }}>
+          {([['jpeg', 'image', 'Share as image'], ['pdf', 'file', 'Share as PDF']] as [ReceiptFormat, string, string][]).map(([fmt, icon, label]) => (
+            <Pressable
+              key={fmt}
+              onPress={() => void share(fmt)}
+              disabled={sharing !== null}
+              accessibilityRole="button"
+              accessibilityLabel={label}
+              accessibilityState={{ disabled: sharing !== null }}
+              style={({ pressed }) => ({ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 54, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, opacity: pressed || sharing === fmt ? 0.7 : 1 })}
+            >
+              <ZIcon name={icon} size={19} color={c.brand} />
+              <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1 }}>{label}</Text>
+            </Pressable>
+          ))}
+        </View>
+        )}
       </View>
     </Screen>
   );

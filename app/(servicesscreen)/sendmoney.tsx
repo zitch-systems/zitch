@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
+import { View, Text, Alert, Pressable } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { getToken, getSessionGeneration } from '@/lib/secureStore';
 import { apiPost, publicPost } from '@/lib/api';
@@ -10,7 +10,7 @@ import { transfersService } from '@/lib/services/transfers';
 import { isBiometricAvailable, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
-import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram } from '@/components/design/flowkit';
+import { Label, Segmented, ConfirmSheet, BalanceHint, Monogram } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -18,17 +18,19 @@ import { useWallet } from '@/lib/wallet';
 import { paymentDestination } from '@/lib/phone';
 import { normalizeAmountInput, MIN_TRANSFER } from '@/lib/amounts';
 
-const AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 // Mirrors backend User.LARGE_TXN_THRESHOLD — drives the device biometric step-up.
 const LARGE_TXN = 100000;
 type Step = null | 'confirm' | 'pin';
 type Bank = { code: string; name: string; color: string };
-type Beneficiary = { id: number; name: string; account_number: string; bank_name: string; bank_code?: string; initials: string; color: string };
+type Beneficiary = {
+  id: number; name: string; account_number: string; bank_name: string; bank_code?: string; initials: string; color: string;
+  display_name?: string; saved?: boolean; last_sent_at?: string | null;
+};
 type BankMatch = { bank: string; bank_name: string; name: string };
 type PendingAttempt = { scope: string; fingerprint: string; key: string };
 
 const SendMoney = () => {
-  const { c } = useTheme();
+  const { c, theme } = useTheme();
   const sessionGeneration = useRef(getSessionGeneration());
   const isCurrentSession = () => sessionGeneration.current === getSessionGeneration();
   const { balance, reload, transfersAvailable } = useWallet();
@@ -41,6 +43,9 @@ const SendMoney = () => {
   const [bankRevision, setBankRevision] = useState(0);
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
   const [query, setQuery] = useState('');
+  const [listTab, setListTab] = useState<'recent' | 'saved'>('recent');
+  const [searching, setSearching] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
   const [picked, setPicked] = useState<Beneficiary | null>(null);
 
   // bank mode
@@ -444,7 +449,12 @@ const SendMoney = () => {
     );
   }
 
-  const filteredBens = beneficiaries.filter((b) => (b.name + ' ' + b.account_number).toLowerCase().includes(query.toLowerCase()));
+  // Recent: newest transfer first (the server's last_sent_at; older servers
+  // order by first payment). Saved: the customer's own address book.
+  const sentAt = (b: Beneficiary) => Date.parse(String(b.last_sent_at || '')) || 0;
+  const pool = listTab === 'saved' ? beneficiaries.filter((b) => b.saved) : [...beneficiaries].sort((x, y) => sentAt(y) - sentAt(x));
+  const q = query.trim().toLowerCase();
+  const shownBens = (q ? pool.filter((b) => `${b.display_name || ''} ${b.name} ${b.account_number}`.toLowerCase().includes(q)) : pool).slice(0, listTab === 'saved' || q ? 20 : 5);
 
   return (
     <Screen>
@@ -507,7 +517,7 @@ const SendMoney = () => {
               label="Bank"
               value={bank?.name || ''}
               editable={false}
-              placeholder={resolvingBank ? 'Detecting…' : 'Auto-detected from account — or tap to choose'}
+              placeholder={resolvingBank ? 'Detecting…' : 'Select bank'}
               prefix={bank ? <View style={{ width: 18, height: 18, borderRadius: 5, backgroundColor: bank.color }} /> : <ZIcon name="bank" size={18} color={c.ink3} />}
               suffix={<ZIcon name="down" size={16} color={c.ink3} />}
               pointerEvents="none"
@@ -551,41 +561,83 @@ const SendMoney = () => {
       )}
 
       <Label>Amount</Label>
-      <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
       <Field value={amt} onChangeText={(v) => { const normalized = normalizeAmountInput(v); if (normalized !== null) setAmt(normalized); }} keyboardType="decimal-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
       <View style={{ height: 6 }} />
-      <BalanceHint amount={amount} balance={balance} min={MIN_TRANSFER} />
+      {/* The note is one tap away instead of a field of its own, so the recent
+          transfers fit on the screen (review, Nov 2026). */}
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+        {noteOpen || note ? null : (
+          <Pressable onPress={() => setNoteOpen(true)} accessibilityRole="button" accessibilityLabel="Add a note" hitSlop={8} style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingTop: 2 }}>
+            <ZIcon name="plus" size={15} color={c.brand} stroke={2.4} />
+            <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand }}>Add a note</Text>
+          </Pressable>
+        )}
+        <View style={{ flex: 1 }}>
+          <BalanceHint amount={amount} balance={balance} min={MIN_TRANSFER} />
+        </View>
+      </View>
       {transfersAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Transfers are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
-      <Field label="Narration (optional)" value={note} onChangeText={setNote} placeholder="What's it for?" />
-      <View style={{ height: 20 }} />
+      {noteOpen || note ? (
+        <>
+          <Field label="Note (optional)" value={note} onChangeText={setNote} placeholder="What's it for?" />
+          <View style={{ height: 14 }} />
+        </>
+      ) : null}
 
       <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
 
-      {/* Saved beneficiaries — moved to the bottom; tap one to fill the form above */}
+      {/* Recent transfers first, saved recipients a tab away; tap one to fill the form above */}
       {!picked && beneficiaries.length > 0 && (
         <>
-          <View style={{ height: 28 }} />
-          <Label>Saved beneficiaries</Label>
-          <Field value={query} onChangeText={setQuery} placeholder="Search by name or account" prefix={<ZIcon name="search" size={18} color={c.ink3} />} />
-          <View style={{ height: 12 }} />
-          {filteredBens.length === 0 ? (
-            <Text style={{ fontSize: 13, color: c.ink3, marginBottom: 14, fontFamily: font.regular }}>No matching beneficiary</Text>
+          <View style={{ height: 22 }} />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <View accessibilityRole="tablist" style={{ flex: 1, flexDirection: 'row', gap: 4, padding: 4, borderRadius: 14, backgroundColor: theme === 'dark' ? 'rgba(234,251,247,0.07)' : 'rgba(6,110,102,0.07)' }}>
+              {([['recent', 'Recent transfers'], ['saved', 'Saved beneficiaries']] as const).map(([v, label]) => {
+                const on = listTab === v;
+                return (
+                  <Pressable key={v} onPress={() => setListTab(v)} accessibilityRole="tab" accessibilityLabel={label} accessibilityState={{ selected: on }}
+                    style={{ flex: 1, alignItems: 'center', paddingVertical: 9, borderRadius: 10, backgroundColor: on ? c.surface : 'transparent' }}>
+                    <Text style={{ fontSize: 13.5, fontFamily: font.bold, color: on ? c.brand : c.ink3 }}>{label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Pressable onPress={() => { setSearching((s) => !s); setQuery(''); }} accessibilityRole="button" accessibilityLabel="Search by name or account"
+              style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}>
+              <ZIcon name={searching ? 'x' : 'search'} size={19} color={c.ink2} />
+            </Pressable>
+          </View>
+          {searching ? (
+            <View style={{ marginTop: 12 }}>
+              <Field value={query} onChangeText={setQuery} placeholder="Search by name or account" prefix={<ZIcon name="search" size={18} color={c.ink3} />} />
+            </View>
+          ) : null}
+          {shownBens.length === 0 ? (
+            <Text style={{ fontSize: 13, color: c.ink3, marginTop: 14, marginBottom: 14, fontFamily: font.regular }}>
+              {query ? 'No matching recipient' : listTab === 'saved' ? 'No saved beneficiaries yet' : 'No recent transfers yet'}
+            </Text>
           ) : (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingBottom: 4 }}>
-              {filteredBens.map((b) => (
-                <Pressable key={b.id} onPress={() => {
+            <View style={{ marginTop: 12, borderRadius: 18, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, paddingHorizontal: 14 }}>
+              {shownBens.map((b, i) => (
+                <Pressable key={b.id} accessibilityRole="button" accessibilityLabel={`${b.display_name || b.name}, ${b.bank_name}, ${b.account_number}`} onPress={() => {
                   if (b.bank_name === 'Zitch') {
                     // Resolve mutable saved aliases again so they bind to the
                     // same immutable recipient key as a manually entered send.
                     setPicked(null); setMode('zitch'); changeIdentifier(b.account_number);
                   } else setPicked(b);
-                }} style={{ alignItems: 'center', gap: 7, width: 64 }}>
-                  <Monogram text={b.initials} color={b.color} size={52} />
-                  <Text numberOfLines={1} style={{ fontSize: 11, fontFamily: font.semibold, color: c.ink2, textAlign: 'center' }}>{b.name.split(' ')[0]}</Text>
+                }} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 9, borderBottomWidth: i === shownBens.length - 1 ? 0 : 1, borderBottomColor: c.line, opacity: pressed ? 0.7 : 1 })}>
+                  <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: `${b.color || c.brand}22`, alignItems: 'center', justifyContent: 'center' }}>
+                    <Text style={{ color: b.color || c.brand, fontFamily: font.extrabold, fontSize: 13.5 }}>{b.initials}</Text>
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text numberOfLines={1} style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{b.display_name || b.name}</Text>
+                    <Text numberOfLines={1} style={{ fontSize: 12, marginTop: 2, fontFamily: font.regular, color: c.ink3, fontVariant: ['tabular-nums'] }}>{b.bank_name} · {b.account_number}</Text>
+                  </View>
+                  <ZIcon name="right" size={16} color={c.ink3} />
                 </Pressable>
               ))}
-            </ScrollView>
+            </View>
           )}
         </>
       )}
