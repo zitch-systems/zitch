@@ -9,6 +9,7 @@ const mockLocked = jest.fn();
 const mockRead = jest.fn();
 const mockPushRegistration = jest.fn();
 const mockRedirect = jest.fn();
+const mockBtn = jest.fn();
 let mockParams: Record<string, unknown> = {};
 jest.mock('expo-router', () => ({
   router: { push: jest.fn(), replace: jest.fn() },
@@ -28,7 +29,7 @@ jest.mock('@/components/design/Loading', () => ({ Loading: () => null }));
 jest.mock('@/lib/theme', () => ({ useTheme: () => ({ c: {} }), font: {} }));
 jest.mock('@/components/design/ui', () => ({
   Screen: ({ children }: { children: ReactNode }) => children,
-  Btn: () => null,
+  Btn: (props: { label: string; variant?: string }) => { mockBtn(props); return null; },
 }));
 beforeEach(() => {
   jest.clearAllMocks();
@@ -61,6 +62,16 @@ it('requests notifications only after the completed screen passes the session gu
   expect(mockRead).toHaveBeenCalledWith('UserFirstName');
   expect(mockPushRegistration).toHaveBeenCalledWith(true);
   expect(JSON.stringify(tree.toJSON())).toContain('Welcome to Zitch, Ada!');
+  act(() => tree.unmount());
+});
+
+it('always offers Go to home and Raise my limits on Welcome, never a BVN ask', async () => {
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Completed />); });
+  const buttons = mockBtn.mock.calls.map(([props]) => props);
+  expect(buttons.map((b) => b.label)).toContain('Go to home');
+  expect(buttons.find((b) => b.label === 'Raise my limits')?.variant).toBe('outline');
+  expect(buttons.map((b) => b.label)).not.toContain('Verify my BVN');
   act(() => tree.unmount());
 });
 
