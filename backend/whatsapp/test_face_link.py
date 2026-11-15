@@ -2,13 +2,14 @@
 
 Tier 2 follows Wema's partner-account-upgrade-tier2 contract: the account
 number, the customer's BVN and NIN (typed on the page, never stored raw) and a
-live face photo, in one call. No third-party liveness vendor and no PIN on the
-page. Only the bank's read-back raises the tier.
+live face photo, in one call. The page sends the straight photo with frames of
+a head turn; both are checked here (wallet/selfie.py) before the link is
+claimed or the bank sees anything. No third-party liveness vendor and no PIN
+on the page. Only the bank's read-back raises the tier.
 A link preview never reaches the camera or the bank, Android's in-app WebView is
 handed to Chrome where the camera works, and the result is sent to the chat
 automatically.
 """
-import base64
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
@@ -18,6 +19,7 @@ from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
+from wallet import selfie_fixtures as fx
 from wallet.services import get_or_create_wallet
 
 from .models import PendingAction, WhatsAppLink
@@ -31,7 +33,10 @@ CHROME_UA = ("Mozilla/5.0 (Linux; Android 14; SM-A146P) AppleWebKit/537.36 "
              "(KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36")
 WEBVIEW_UA = ("Mozilla/5.0 (Linux; Android 14; SM-A146P; wv) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Version/4.0 Chrome/130.0 Mobile Safari/537.36")
-SELFIE = base64.b64encode(b"\xff\xd8\xff\xe0 a jpeg selfie").decode()
+SELFIE = fx.selfie_b64()
+#: Two frames of the head turn (tags 1 and 2 show the nose moved across).
+TURNS = ",".join(fx.selfie_b64(tag=tag) for tag in (1, 2))
+TURNED = {1: [{"yaw": 0.74}], 2: [{"yaw": 0.7}]}
 BANK_TIER2 = {"success": True, "tier": "2", "name": "Ada Face"}
 BANK_TIER1 = {"success": True, "tier": "1", "name": "Ada Face"}
 
@@ -64,13 +69,14 @@ class FaceLinkTests(TestCase):
         self.bank = self.enterContext(patch(
             "wallet.views.wema_provider.get_kyc_status", return_value=BANK_TIER2))
         self.reply = self.enterContext(patch("whatsapp.router.reply"))
+        self.enterContext(fx.detector(TURNED))
         self.path = urlsplit(face_link(self.user, MSISDN)).path
         self.browser = Client(enforce_csrf_checks=True)
 
     def tap(self, agent=CHROME_UA, path=None, client=None):
         return (client or self.browser).get(path or self.path, secure=True, HTTP_USER_AGENT=agent)
 
-    def send(self, image=SELFIE, *, origin=ORIGIN, csrf=True, bvn=None, nin=None):
+    def send(self, image=SELFIE, *, origin=ORIGIN, csrf=True, bvn=None, nin=None, turns=TURNS):
         bvn = TEST_BVN if bvn is None else bvn
         nin = TEST_NIN if nin is None else nin
         if settings.CSRF_COOKIE_NAME not in self.browser.cookies:
@@ -78,7 +84,10 @@ class FaceLinkTests(TestCase):
         headers = {"HTTP_ORIGIN": origin, "HTTP_USER_AGENT": CHROME_UA}
         if csrf:
             headers["HTTP_X_CSRFTOKEN"] = self.browser.cookies[settings.CSRF_COOKIE_NAME].value
-        return self.browser.post(self.path, {"image": image, "bvn": bvn, "nin": nin}, secure=True, **headers)
+        data = {"image": image, "bvn": bvn, "nin": nin}
+        if turns is not None:
+            data["turns"] = turns
+        return self.browser.post(self.path, data, secure=True, **headers)
 
     def action(self):
         return PendingAction.objects.get(action_type=ACTION_TYPE)
@@ -139,7 +148,7 @@ class FaceLinkTests(TestCase):
             self.assertContains(self.tap(), "temporarily unavailable", status_code=503)
 
     # --- sending the selfie ------------------------------------------------ #
-    def test_selfie_alone_upgrades_after_the_bank_confirms(self):
+    def test_live_face_check_upgrades_after_the_bank_confirms(self):
         response = self.send()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "verified")
@@ -184,10 +193,50 @@ class FaceLinkTests(TestCase):
 
     def test_unreadable_photo_never_reaches_the_bank(self):
         response = self.send(image="not base64!")
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["status"], "retry")
+        self.assertEqual(response.json()["field"], "face")
         self.upgrade.assert_not_called()
         self.assertEqual(self.action().state, PIN)
+
+    def test_a_photo_the_bank_cannot_use_is_refused_with_one_instruction(self):
+        response = self.send(image=fx.selfie_b64(light=0.2))
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["code"], "selfie_too_dark")
+        self.assertIn("brighter place", response.json()["message"])
+        self.upgrade.assert_not_called()
+        self.assertEqual(self.action().state, PIN)
+        self.assertEqual(self.send().json()["status"], "verified")
+
+    def test_no_head_turn_means_no_bank_call_and_the_link_stays_open(self):
+        flat = ",".join(fx.selfie_b64(tag=tag) for tag in (3, 4))   # tags 3/4: face stays straight
+        response = self.send(turns=flat)
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["code"], "liveness_no_turn")
+        self.upgrade.assert_not_called()
+        self.assertEqual(self.action().state, PIN)
+        self.assertEqual(self.send().json()["status"], "verified")
+
+    def test_a_page_from_before_the_head_turn_is_asked_to_refresh(self):
+        response = self.send(turns=None)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "liveness_missing")
+        self.assertIn("Refresh", response.json()["message"])
+        self.upgrade.assert_not_called()
+
+    def test_a_wrong_nin_keeps_the_checked_photo(self):
+        self.user.nin_verified = True
+        self.user.set_nin("44444444444")
+        self.user.save()
+        response = self.send()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["field"], "ids")
+        self.upgrade.assert_not_called()
+        self.assertEqual(self.action().state, PIN)
+
+    def test_no_face_detector_means_no_camera_page(self):
+        with patch("wallet.selfie.face_checks_available", return_value=False):
+            self.assertContains(self.tap(), "temporarily unavailable", status_code=503)
 
     def test_cross_site_or_csrf_less_posts_are_refused(self):
         self.assertEqual(self.send(origin="https://evil.example").status_code, 403)

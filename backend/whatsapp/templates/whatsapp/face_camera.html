@@ -14,18 +14,31 @@
     h1 { font-size: 22px; line-height: 1.25; margin: 14px 0 6px; }
     p { margin: 6px 0; }
     .note { color: #52665c; font-size: 14px; }
-    .frame { position: relative; width: 248px; height: 248px; margin: 18px auto 8px; border-radius: 50%; overflow: hidden; background: #e8eee9; border: 4px solid #14583d; }
-    .frame video, .frame img { width: 100%; height: 100%; object-fit: cover; }
-    .frame video { transform: scaleX(-1); }
-    .frame .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; color: #52665c; font-size: 14px; }
-    button, .pick { display: block; width: 100%; min-height: 50px; border: 0; border-radius: 12px; padding: 14px; margin-top: 14px; background: #14583d; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+    .stage { position: relative; width: 100%; max-width: 330px; margin: 16px auto 6px; border-radius: 22px; overflow: hidden; background: #dfe7e1; }
+    .stage::before { content: ""; display: block; padding-top: 133.333%; } /* 3:4, also without aspect-ratio */
+    .stage video, .stage img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+    .stage video { transform: scaleX(-1); }
+    /* The oval the face fills; the light mask around it also lights the face. */
+    .oval { position: absolute; left: 14%; right: 14%; top: 8%; height: 74%; border-radius: 50%; border: 4px solid #14583d; box-shadow: 0 0 0 999px rgba(248, 250, 247, .9); transition: border-color .2s; }
+    .oval.good { border-color: #1f9d55; }
+    .oval.warn { border-color: #d97706; }
+    .hint { position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: flex; align-items: center; justify-content: center; padding: 28px; color: #52665c; font-size: 14px; }
+    .count { position: absolute; left: 0; right: 0; top: 34%; font-size: 64px; font-weight: 800; color: #14583d; }
+    .arrow { position: absolute; left: 0; right: 0; bottom: 4%; font-size: 15px; font-weight: 700; color: #14583d; animation: nudge 1s ease-in-out infinite alternate; }
+    @keyframes nudge { from { transform: translateX(10px); } to { transform: translateX(-10px); } }
+    @media (prefers-reduced-motion: reduce) { .arrow { animation: none; } .oval { transition: none; } }
+    .bar { width: 100%; max-width: 330px; height: 6px; margin: 4px auto 0; border-radius: 3px; background: #e4ece6; overflow: hidden; }
+    .bar i { display: block; height: 100%; width: 0; background: #14583d; }
+    .guide { min-height: 46px; margin: 8px 0 0; font-weight: 600; color: #14583d; }
+    button, .pick { display: block; width: 100%; min-height: 50px; border: 0; border-radius: 12px; padding: 14px; margin-top: 12px; background: #14583d; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
     button.ghost, .pick.ghost { background: #eef3ef; color: #14583d; }
     button:disabled { opacity: .6; }
     button:focus, .pick:focus-within { outline: 3px solid #acdfaa; outline-offset: 2px; }
+    .pick { position: relative; }
     .pick input { position: absolute; width: 1px; height: 1px; opacity: 0; }
     .message { background: #fff5de; border-radius: 10px; padding: 12px; margin-top: 14px; text-align: left; }
     .message.ok { background: #e6f5e8; }
-    .tips { text-align: left; color: #52665c; font-size: 14px; padding-left: 18px; margin: 10px 0 0; }
+    .tips { text-align: left; color: #52665c; font-size: 14px; padding-left: 18px; margin: 12px 0 0; }
     .ids { text-align: left; margin-top: 14px; }
     .ids label { display: block; font-size: 14px; font-weight: 600; margin-top: 10px; }
     .ids input { display: block; width: 100%; min-height: 46px; margin-top: 4px; padding: 10px 12px; border: 1px solid #c9d4cd; border-radius: 10px; font: inherit; letter-spacing: .08em; }
@@ -39,8 +52,8 @@
 <body>
 <main>
   <div class="brand">zitch</div>
-  <h1 id="title">Tier 2 · Face check</h1>
-  <p class="note" id="lead">Enter your BVN and NIN, then take a selfie in good light. Remove glasses or a face covering.</p>
+  <h1 id="title">Tier 2 · Live face check</h1>
+  <p class="note" id="lead">Enter your BVN and NIN. Then look straight at the camera and, when asked, slowly turn your head. It takes about ten seconds.</p>
 
   <div class="ids" id="ids">
     <label for="bvn">BVN</label>
@@ -51,27 +64,33 @@
     <small>11 digits, on your NIN slip or NIMC app.</small>
   </div>
 
-  <div class="frame" id="frame">
+  <div class="stage" id="stage">
     <video id="video" class="hidden" autoplay playsinline muted></video>
-    <img id="shot" class="hidden" alt="Your selfie">
+    <img id="shot" class="hidden" alt="Your straight photo">
+    <div class="oval" id="oval"></div>
     <div class="hint" id="hint">Starting your front camera…</div>
+    <div class="count hidden" id="count" aria-hidden="true"></div>
+    <div class="arrow hidden" id="arrow" aria-hidden="true">← turn slowly</div>
   </div>
+  <div class="bar hidden" id="bar"><i id="fill"></i></div>
+  <p class="guide" id="guide" role="status" aria-live="polite"></p>
 
   <form id="face" autocomplete="off">
     {% csrf_token %}
-    <button type="button" id="capture" class="hidden">Take photo</button>
+    <button type="button" id="start" class="hidden">Start face check</button>
     <label class="pick hidden" id="pick">
-      <span id="pick-label">Open camera</span>
+      <span id="pick-label">Take a photo looking straight at the camera</span>
       <input type="file" id="file" accept="image/*" capture="user">
     </label>
     <button type="button" id="send" class="hidden">Use this photo</button>
     <button type="button" id="retake" class="ghost hidden">Retake</button>
   </form>
 
-  <p class="message hidden" id="status" role="status" aria-live="polite"></p>
+  <p class="message hidden" id="status" role="alert"></p>
   <ul class="tips" id="tips">
-    <li>Hold the phone at eye level.</li>
-    <li>Your whole face should fill the circle.</li>
+    <li>Face a window or a lamp. Avoid bright light behind you.</li>
+    <li>Take off glasses, a cap or anything covering your face.</li>
+    <li>Hold the phone at eye level and keep it still.</li>
   </ul>
 
   <p class="trust">Banking services by Wema Bank Plc, licensed by the CBN. Deposits insured by NDIC. Your BVN, NIN and photo are sent only to your bank for this check and are not stored by Zitch.</p>
@@ -79,118 +98,288 @@
 </main>
 <script nonce="{{ nonce }}">
 (function () {
+  'use strict';
   var pickerOnly = {{ picker_only|yesno:"true,false" }};
-  var MAX_SIDE = 720;
-  var video = document.getElementById('video');
-  var shot = document.getElementById('shot');
-  var hint = document.getElementById('hint');
-  var capture = document.getElementById('capture');
-  var pick = document.getElementById('pick');
-  var file = document.getElementById('file');
-  var send = document.getElementById('send');
-  var retake = document.getElementById('retake');
-  var status = document.getElementById('status');
-  var stream = null;
-  var image = '';
-  var done = false;
+  // The straight photo goes to the bank (3:4, at most 1280 px); the head-turn
+  // frames are only measured here, so they are small.
+  var MAX_SIDE = 1280, TURN_SIDE = 480;
+  var BURST = 5, BURST_GAP = 120, TURN_FRAMES = 8, TURN_GAP = 260, TURN_LEAD = 700;
+  var STALE_PHOTO_MS = 10 * 60 * 1000;
+
+  function $(id) { return document.getElementById(id); }
+  var video = $('video'), shot = $('shot'), oval = $('oval'), hint = $('hint'), count = $('count');
+  var arrow = $('arrow'), bar = $('bar'), fill = $('fill'), guideText = $('guide'), statusBox = $('status');
+  var start = $('start'), pick = $('pick'), pickLabel = $('pick-label'), file = $('file');
+  var send = $('send'), retake = $('retake');
+  var stream = null, monitor = null, previous = null, run = 0;
+  var state = 'idle', image = '', turns = [], pickStep = 'straight', done = false;
 
   function show(el, on) { el.classList.toggle('hidden', !on); }
+  function guide(text) { guideText.textContent = text || ''; }
   function say(text, ok) {
-    status.textContent = text || '';
-    status.classList.toggle('ok', !!ok);
-    show(status, !!text);
+    statusBox.textContent = text || '';
+    statusBox.classList.toggle('ok', !!ok);
+    show(statusBox, !!text);
   }
-  function stop() {
-    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+  function sleep(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
+
+  // --- IDs -----------------------------------------------------------------
+  function bring(el) {
+    try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { el.scrollIntoView(); }
+  }
+  ['bvn', 'nin'].forEach(function (id) {
+    $(id).addEventListener('input', function () {
+      var digits = this.value.replace(/\D/g, '').slice(0, 11);
+      if (digits !== this.value) { this.value = digits; }
+      // Both numbers in: close the keyboard and show the camera and its button.
+      if ($('bvn').value.length === 11 && $('nin').value.length === 11) {
+        this.blur();
+        bring($('stage'));
+      } else if (id === 'bvn' && digits.length === 11) {
+        $('nin').focus();
+      }
+    });
+  });
+  function readIds() {
+    var bvn = $('bvn').value.replace(/\D/g, ''), nin = $('nin').value.replace(/\D/g, '');
+    if (bvn.length !== 11 || nin.length !== 11) {
+      say('Enter your 11-digit BVN and NIN above first.');
+      $(bvn.length !== 11 ? 'bvn' : 'nin').focus();
+      return null;
+    }
+    return { bvn: bvn, nin: nin };
   }
 
-  function toJpeg(source, width, height, mirror) {
-    var scale = Math.min(1, MAX_SIDE / Math.max(width, height));
+  // --- frames --------------------------------------------------------------
+  // The 3:4 window the customer sees (object-fit: cover), not mirrored: the
+  // bank compares it with the photo on their ID, which is not mirrored either.
+  function windowOf(width, height) {
+    if (width / height > 0.75) {
+      var w = Math.round(height * 0.75);
+      return [Math.round((width - w) / 2), 0, w, height];
+    }
+    var h = Math.round(width / 0.75);
+    return [0, Math.round((height - h) / 2), width, h];
+  }
+  function grab(maxSide) {
+    var width = video.videoWidth, height = video.videoHeight;
+    if (!width || !height) { return null; }
+    var box = windowOf(width, height);
+    var scale = Math.min(1, maxSide / Math.max(box[2], box[3]));
     var canvas = document.createElement('canvas');
-    canvas.width = Math.round(width * scale);
-    canvas.height = Math.round(height * scale);
-    var ctx = canvas.getContext('2d');
-    if (mirror) { ctx.translate(canvas.width, 0); ctx.scale(-1, 1); }
-    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.85);
+    canvas.width = Math.round(box[2] * scale);
+    canvas.height = Math.round(box[3] * scale);
+    canvas.getContext('2d').drawImage(video, box[0], box[1], box[2], box[3], 0, 0, canvas.width, canvas.height);
+    return canvas;
+  }
+  function grey(canvas, width) {
+    var height = Math.round(width * canvas.height / canvas.width);
+    var small = document.createElement('canvas');
+    small.width = width; small.height = height;
+    var ctx = small.getContext('2d');
+    ctx.drawImage(canvas, 0, 0, width, height);
+    var rgba = ctx.getImageData(0, 0, width, height).data, out = new Float32Array(width * height);
+    for (var i = 0, j = 0; i < rgba.length; i += 4, j++) {
+      out[j] = 0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2];
+    }
+    return { px: out, w: width, h: height };
+  }
+  function mean(g, x0, y0, x1, y1) {
+    var sum = 0, n = 0;
+    for (var y = Math.floor(y0 * g.h); y < Math.floor(y1 * g.h); y++) {
+      for (var x = Math.floor(x0 * g.w); x < Math.floor(x1 * g.w); x++) { sum += g.px[y * g.w + x]; n++; }
+    }
+    return n ? sum / n : 0;
+  }
+  // Fine detail in the face area; picks the steadiest frame of a burst.
+  function sharpness(canvas) {
+    var g = grey(canvas, 160), sum = 0, sq = 0, n = 0;
+    for (var y = Math.floor(0.22 * g.h); y < Math.floor(0.72 * g.h); y++) {
+      for (var x = Math.floor(0.25 * g.w); x < Math.floor(0.75 * g.w); x++) {
+        var i = y * g.w + x;
+        var lap = g.px[i - 1] + g.px[i + 1] + g.px[i - g.w] + g.px[i + g.w] - 4 * g.px[i];
+        sum += lap; sq += lap * lap; n++;
+      }
+    }
+    return n ? sq / n - (sum / n) * (sum / n) : 0;
+  }
+  function jpeg(canvas, quality) { return canvas.toDataURL('image/jpeg', quality); }
+
+  // --- live guidance while the customer lines up ------------------------------
+  function checkScene() {
+    if (state !== 'ready') { return; }
+    var frame = grab(160);
+    if (!frame) { return; }
+    var g = grey(frame, 48);
+    var face = mean(g, 0.3, 0.25, 0.7, 0.7);
+    var around = (mean(g, 0, 0, 1, 0.14) + mean(g, 0, 0.14, 0.12, 0.6) + mean(g, 0.88, 0.14, 1, 0.6)) / 3;
+    var moved = 0;
+    if (previous && previous.length === g.px.length) {
+      for (var i = 0; i < g.px.length; i++) { moved += Math.abs(g.px[i] - previous[i]); }
+      moved /= g.px.length;
+    }
+    previous = g.px;
+    var problem = '';
+    if (face < 60 && around - face > 80) { problem = 'There is bright light behind you. Turn to face the light.'; }
+    else if (face < 50) { problem = 'It is too dark here. Move to a brighter place or face a window.'; }
+    else if (face > 225) { problem = 'Too much light on your face. Move out of direct sunlight.'; }
+    else if (moved > 16) { problem = 'Hold the phone still.'; }
+    oval.className = 'oval ' + (problem ? 'warn' : 'good');
+    guide(problem || 'Put your face inside the oval, then tap Start face check.');
+  }
+  function watch(on) {
+    if (monitor) { clearInterval(monitor); monitor = null; }
+    previous = null;
+    if (on) { monitor = setInterval(checkScene, 350); }
   }
 
-  function preview(dataUrl) {
-    image = dataUrl;
-    shot.src = dataUrl;
-    show(shot, true); show(video, false); show(hint, false);
-    show(capture, false); show(pick, false);
-    show(send, true); show(retake, true);
-    say('');
+  // --- camera ----------------------------------------------------------------
+  function stopCamera() {
+    run++;
+    watch(false);
+    if (stream) { stream.getTracks().forEach(function (track) { track.stop(); }); stream = null; }
   }
-
   function usePicker(reason) {
-    stop();
-    show(video, false); show(capture, false);
-    hint.textContent = reason || 'Tap “Open camera” to take your selfie.';
+    stopCamera();
+    state = 'picker'; pickStep = 'straight'; image = ''; turns = [];
+    show(video, false); show(start, false); show(shot, false); show(oval, true);
+    pickLabel.textContent = 'Take a photo looking straight at the camera';
+    hint.textContent = reason || 'Your camera will open twice: once looking straight, once with your head turned.';
     show(hint, true); show(pick, true);
+    guide('Step 1 of 2: look straight at the camera.');
   }
-
   function startCamera() {
-    image = '';
-    show(shot, false); show(send, false); show(retake, false);
+    image = ''; turns = [];
+    show(shot, false); show(send, false); show(retake, false); show(oval, true);
     if (pickerOnly || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       return usePicker();
     }
+    state = 'starting';
     hint.textContent = 'Starting your front camera…';
     show(hint, true);
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 } }, audio: false })
-      .then(function (s) {
-        stream = s;
-        video.srcObject = s;
-        show(video, true); show(hint, false); show(capture, true); show(pick, false);
-      })
-      .catch(function () {
-        usePicker('Camera access was blocked. Tap “Open camera” to take your selfie instead.');
-      });
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false
+    }).then(function (s) {
+      stream = s;
+      video.srcObject = s;
+      show(video, true); show(hint, false); show(start, true); show(pick, false);
+      start.disabled = false;
+      state = 'ready';
+      watch(true);
+    }).catch(function () {
+      usePicker('Camera access was blocked. Tap below to take the photos with your camera instead.');
+    });
   }
 
-  capture.addEventListener('click', function () {
-    if (!video.videoWidth) return;
-    var dataUrl = toJpeg(video, video.videoWidth, video.videoHeight, true);
-    stop();
-    preview(dataUrl);
-  });
+  // --- the live face check -----------------------------------------------------
+  async function capture() {
+    if (state !== 'ready' || !readIds()) { return; }
+    var mine = ++run;
+    function stale() { return mine !== run; }  // left the page or started over
+    say(''); watch(false);
+    bring($('stage'));
+    state = 'straight'; start.disabled = true; show(start, false);
+    oval.className = 'oval good';
+    guide('Look straight at the camera and hold still.');
+    for (var n = 3; n > 0; n--) {
+      count.textContent = String(n); show(count, true);
+      await sleep(800);
+      if (stale()) { return; }
+    }
+    show(count, false);
+    var best = null, bestScore = -1;
+    for (var i = 0; i < BURST; i++) {
+      var frame = grab(MAX_SIDE);
+      if (frame) {
+        var score = sharpness(frame);
+        if (score > bestScore) { best = frame; bestScore = score; }
+      }
+      await sleep(BURST_GAP);
+      if (stale()) { return; }
+    }
+    if (!best) { return startOver('We could not use the camera. Please try again.'); }
+    image = jpeg(best, 0.92);
+    state = 'turn'; turns = [];
+    guide('Now slowly turn your head to your left, then back to the camera.');
+    show(arrow, true); show(bar, true); fill.style.width = '0%';
+    await sleep(TURN_LEAD);
+    for (var k = 0; k < TURN_FRAMES; k++) {
+      if (stale()) { return; }
+      var turned = grab(TURN_SIDE);
+      if (turned) { turns.push(jpeg(turned, 0.8)); }
+      fill.style.width = Math.round((k + 1) * 100 / TURN_FRAMES) + '%';
+      await sleep(TURN_GAP);
+    }
+    if (stale()) { return; }
+    show(arrow, false); show(bar, false);
+    stopCamera();
+    review();
+  }
+  function review() {
+    state = 'review';
+    shot.src = image;
+    show(shot, true); show(video, false); show(oval, false); show(hint, false); show(pick, false);
+    show(send, true); show(retake, true);
+    send.disabled = false; retake.disabled = false;
+    guide('Check the photo shows your whole face clearly, then tap Use this photo.');
+  }
+  function startOver(message) {
+    stopCamera();
+    image = ''; turns = [];
+    show(arrow, false); show(bar, false); show(count, false); show(send, false); show(retake, false);
+    say(message || '');
+    startCamera();
+  }
 
+  // --- camera-app fallback: one straight photo, one turned ------------------------
   file.addEventListener('change', function () {
     var chosen = file.files && file.files[0];
     file.value = '';
-    if (!chosen || !/^image\//.test(chosen.type)) return;
+    if (!chosen || !/^image\//.test(chosen.type)) { return; }
+    if (chosen.lastModified && Date.now() - chosen.lastModified > STALE_PHOTO_MS) {
+      say('Use your camera to take a new photo now. Saved photos cannot be used.');
+      return;
+    }
     var url = URL.createObjectURL(chosen);
     var img = new Image();
     img.onload = function () {
-      var dataUrl = toJpeg(img, img.naturalWidth, img.naturalHeight, false);
+      var straight = pickStep === 'straight';
+      var scale = Math.min(1, (straight ? MAX_SIDE : TURN_SIDE) / Math.max(img.naturalWidth, img.naturalHeight));
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.naturalWidth * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
       URL.revokeObjectURL(url);
-      preview(dataUrl);
+      say('');
+      if (straight) {
+        image = jpeg(canvas, 0.92);
+        shot.src = image; show(shot, true); show(hint, false); show(oval, false);
+        pickStep = 'turn';
+        pickLabel.textContent = 'Now take one with your head turned a little to the side';
+        guide('Step 2 of 2: turn your head a little to one side, then take the photo.');
+      } else {
+        turns = [jpeg(canvas, 0.8)];
+        review();
+      }
     };
     img.onerror = function () { URL.revokeObjectURL(url); say('We could not read that photo. Please take it again.'); };
     img.src = url;
   });
 
-  retake.addEventListener('click', function () { if (!done) startCamera(); });
-
-  send.addEventListener('click', async function () {
-    if (!image || send.disabled || done) return;
-    var bvn = document.getElementById('bvn').value.replace(/\D/g, '');
-    var nin = document.getElementById('nin').value.replace(/\D/g, '');
-    if (bvn.length !== 11 || nin.length !== 11) {
-      say('Enter your 11-digit BVN and NIN above.');
-      document.getElementById(bvn.length !== 11 ? 'bvn' : 'nin').focus();
-      return;
-    }
-    send.disabled = true; retake.disabled = true;
-    say('Checking with your bank. Please keep this page open…');
-    var form = document.getElementById('face');
+  // --- sending ------------------------------------------------------------------
+  async function submit() {
+    if (state !== 'review' || done || !image) { return; }
+    var ids = readIds();
+    if (!ids) { return; }
+    state = 'sending'; send.disabled = true; retake.disabled = true;
+    say('Checking your face and sending it to your bank. Please keep this page open…');
+    var form = $('face');
     var body = new URLSearchParams();
     body.set('csrfmiddlewaretoken', form.elements.csrfmiddlewaretoken.value);
     body.set('image', image.split(',')[1] || '');
-    body.set('bvn', bvn);
-    body.set('nin', nin);
+    body.set('turns', turns.map(function (frame) { return frame.split(',')[1] || ''; }).join(','));
+    body.set('bvn', ids.bvn);
+    body.set('nin', ids.nin);
     var result;
     try {
       // CORS-mode fetch keeps the Origin header without leaking this link as
@@ -205,27 +394,49 @@
       // No automatic retry: the photo may already have reached the bank.
       result = { status: 'pending', message: 'We could not confirm the result here. We will message you in WhatsApp.' };
     }
-    var idRetry = result.status === 'retry' && /BVN|NIN/.test(result.message || '');
-    if (!idRetry) { image = ''; }
     if (result.status === 'verified') {
       done = true;
-      document.getElementById('title').textContent = 'Tier 2 verification complete';
-      document.getElementById('lead').textContent = 'Your account limits have been upgraded. You can close this page and return to WhatsApp.';
-      show(send, false); show(retake, false); show(document.getElementById('tips'), false);
-      show(document.getElementById('ids'), false);
+      $('title').textContent = 'Tier 2 verification complete';
+      $('lead').textContent = 'Your account limits have been upgraded. You can close this page and return to WhatsApp.';
+      show(send, false); show(retake, false); show($('tips'), false); show($('ids'), false);
+      guide('');
       say('✅ ' + (result.message || 'Verified.'), true);
     } else if (result.status === 'pending' || result.status === 'closed') {
       done = true;
-      show(send, false); show(retake, false); show(document.getElementById('ids'), false);
+      show(send, false); show(retake, false); show($('ids'), false);
+      guide('');
       say(result.message);
+    } else if (result.field === 'ids') {
+      // The face check passed; only a number needs correcting.
+      state = 'review'; send.disabled = false; retake.disabled = false;
+      say(result.message || 'Check your BVN and NIN.');
+      $(/NIN/.test(result.message || '') ? 'nin' : 'bvn').focus();
     } else {
-      send.disabled = false; retake.disabled = false;
-      if (!idRetry) { show(send, false); }
-      say(result.message || 'Please take the photo again.');
+      image = ''; turns = [];
+      state = 'retry'; show(send, false);
+      retake.textContent = 'Try again'; retake.disabled = false; show(retake, true);
+      guide('');
+      say(result.message || 'Please take the face check again.');
+    }
+  }
+
+  start.addEventListener('click', function () { capture(); });
+  send.addEventListener('click', function () { submit(); });
+  retake.addEventListener('click', function () {
+    if (done) { return; }
+    retake.textContent = 'Retake';
+    say('');
+    startCamera();
+  });
+  document.addEventListener('visibilitychange', function () {
+    // Leaving mid-check would capture the wrong thing: start again on return.
+    if (document.hidden && (state === 'straight' || state === 'turn' || state === 'ready')) {
+      stopCamera(); state = 'paused';
+    } else if (!document.hidden && state === 'paused' && !done) {
+      startOver('');
     }
   });
-
-  window.addEventListener('pagehide', stop);
+  window.addEventListener('pagehide', stopCamera);
   startCamera();
 })();
 </script>

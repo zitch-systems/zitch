@@ -3351,8 +3351,9 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
     # The result is sent here automatically once the check finishes
     # (verification_web.notify_face_results), so the customer is not told to
     # come back and ask for it.
-    body = (("📸 *Tier 2 · Face check*\n\n"
-             "Tap *Verify face*, enter your BVN and NIN, allow camera access and take a clear selfie. "
+    body = (("📸 *Tier 2 · Live face check*\n\n"
+             "Tap *Verify face*, enter your BVN and NIN and allow camera access. Look straight at "
+             "the camera, then slowly turn your head when asked. Good light helps. "
              "We'll message you here with the result. The link expires in 15 minutes.")
             if tier == 2 else
             ("Verify your address securely. Confirm your Zitch PIN on the page, then "
