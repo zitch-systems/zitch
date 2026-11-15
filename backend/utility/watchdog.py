@@ -74,13 +74,25 @@ def check_scheduler(now=None) -> bool:
 
 
 def check_alert_outbox(now=None) -> bool:
-    """Alert when transaction alerts are waiting for their first send."""
+    """Alert when the worker has stopped picking up transaction alerts.
+
+    An alert waiting on a channel that is not set up (a WhatsApp template, an
+    SMS provider) stays ready and the worker looks at it again every minute,
+    moving its next try forward each time. That is not the worker failing, and
+    reporting it would repeat every few hours for as long as the channel stays
+    off. What is stuck is an alert the worker has not looked at for five
+    minutes: never tried and created before the cutoff, or due before it.
+    """
+    from django.db.models import Q
+
     from utility.alerts import alert
     from wallet.models import TransactionAlertDelivery as Delivery
 
     cutoff = (now or timezone.now()) - timedelta(seconds=OUTBOX_STUCK_AFTER)
     try:
-        stuck = Delivery.objects.filter(state=Delivery.READY, created__lt=cutoff)
+        stuck = Delivery.objects.filter(
+            Q(next_attempt_at__isnull=True, created__lt=cutoff) | Q(next_attempt_at__lt=cutoff),
+            state=Delivery.READY)
         count = stuck.count()
         oldest = stuck.order_by("created").values_list("created", flat=True).first()
     except Exception:  # noqa: BLE001
