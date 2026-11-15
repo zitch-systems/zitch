@@ -273,7 +273,12 @@ def menu_text() -> str:
         footer = footer.replace('"send 5k to Ada", "2k airtime".', '"check balance", "2k airtime".')
     body = MENU_HEADER + _menu_lines(transfers_live=transfers_live) + "\n\n" + footer
     block = _more_info_block()
-    return body + (f"\n\n{block}" if block else "")
+    return body + (f"\n\n{block}" if block else "") + "\n\n" + PARTNER_NOTICE
+
+
+#: Small print under the menu: who holds the money, and who regulates them.
+PARTNER_NOTICE = ("🛡️ _Banking services by Wema Bank Plc, licensed by the CBN. "
+                  "Deposits insured by NDIC._\nhttps://zitch.ng/partnership")
 UNLINKED = (
     "👋 Welcome to *Zitch* - banking right here on WhatsApp.\n\n"
     "Reply *1* to create a new account, or *2* if you already have one."
