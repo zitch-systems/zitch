@@ -183,6 +183,7 @@ class WhatsAppWorkerAlertSweepTests(TestCase):
 
         self.assertEqual([name for name, _, _ in workers], [
             "transaction-alert-outbox", "partner-bank-account-repair", "wema-recent-credits",
+            "wema-expected-deposits",
         ])
         self.assertEqual(workers[0][2][1:3], (0.25, 8))
 

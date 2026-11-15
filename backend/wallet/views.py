@@ -96,6 +96,10 @@ def wallet_account(request):
     """
     user = request.user_obj
     wallet = get_or_create_wallet(user)
+    # The customer is looking at the account they are about to pay into: watch it
+    # closely for a while so the deposit lands seconds after Wema posts it.
+    from wallet.deposit_sync import expect_deposit
+    expect_deposit(wallet=wallet)
     return ok(
         success=True,
         **{**customer_funding_account(user), **_account_setup_state(user, wallet)},

@@ -16,15 +16,16 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
 
     def test_every_deployable_service_waits_for_repository_checks(self):
         self.assertNotIn("autoDeployTrigger: commit", self.text)
-        self.assertEqual(self.text.count("autoDeployTrigger: checksPass"), 9)
+        # The API, the WhatsApp worker and the one scheduler cron.
+        self.assertEqual(self.text.count("autoDeployTrigger: checksPass"), 3)
 
     def test_only_api_generates_secret_and_all_consumers_source_it(self):
         secret_blocks = re.findall(
             r"- key: DJANGO_SECRET_KEY\n(?P<config>\s+[^\n]+)", self.text,
         )
-        self.assertEqual(len(secret_blocks), 9)
+        self.assertEqual(len(secret_blocks), 3)
         self.assertEqual(sum("generateValue: true" in row for row in secret_blocks), 1)
-        self.assertEqual(sum("fromService:" in row for row in secret_blocks), 8)
+        self.assertEqual(sum("fromService:" in row for row in secret_blocks), 2)
 
     def test_non_api_builds_wait_for_api_migrations_and_recheck_before_start(self):
         for filename in ("render.yaml", "render.frankfurt.yaml"):
@@ -34,9 +35,9 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
             self.assertEqual(builds.count("./build.sh"), 1, filename)
             self.assertEqual(builds.count(
                 "pip install -r requirements.txt && python manage.py wait_for_migrations --timeout 600 --interval 5"
-            ), 8, filename)
+            ), 2, filename)
             self.assertEqual(sum(command.startswith("python manage.py migrate --check && ")
-                                 for command in starts), 8, filename)
+                                 for command in starts), 2, filename)
             self.assertNotRegex(text, r"manage.py migrate(?:[\"\n]| &&)")
 
     def test_the_worker_receives_the_deploy_signal_itself(self):
@@ -79,7 +80,9 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
 
         for filename in ("render.yaml", "render.frankfurt.yaml"):
             text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
-            for service in ("zitch-maturities-ry6y", "zitch-reconcile-wema-ry6y"):
+            # The scheduler cron runs run_maturities and reconcile_wema, which write
+            # alerts; the worker alone sends them.
+            for service in ("zitch-reconcile-wema-ry6y",):
                 match = re.search(
                     rf"^    name: {re.escape(service)}$.*?(?=^  - type:|\Z)",
                     text,
@@ -98,7 +101,7 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
     def test_notification_writers_inherit_delivery_credentials_on_both_blueprints(self):
         for filename, suffix in (("render.yaml", "-ry6y"), ("render.frankfurt.yaml", "-ry6y")):
             text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
-            for name in ("zitch-whatsapp-worker", "zitch-maturities", "zitch-reconcile-wema"):
+            for name in ("zitch-whatsapp-worker", "zitch-reconcile-wema"):
                 block = re.search(rf"^    name: {name}{suffix}$.*?(?=^  - type:|\Z)",
                                   text, re.MULTILINE | re.DOTALL).group(0)
                 for key in ("RESEND_API_KEY", "RESEND_FROM_EMAIL", "TERMII_API_KEY",
@@ -159,17 +162,36 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
             )
 
     def test_scheduled_jobs_do_not_all_start_on_reconciliation_boundary(self):
-        """reconcile-wema runs at :00/:10/... and calls the bank.
+        """One cron runs every periodic job (utility/schedule.py).
 
-        Starting the other bank/ledger scans at :00 guaranteed avoidable DB and
-        provider bursts, including three jobs together at 06:00.
+        reconcile_wema runs on every run and calls the bank. The daily scans keep
+        their times off the hour and apart, as when they were separate crons, so
+        no run starts three of them together.
         """
+        from utility.schedule import JOBS
+
         for filename in ("render.yaml", "render.frankfurt.yaml"):
             text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
             schedules = re.findall(r'^    schedule: "([^"]+)"', text, re.MULTILINE)
-            self.assertIn("*/10 * * * *", schedules)
-            fixed_minutes = [value.split()[0] for value in schedules if not value.startswith("*/")]
-            self.assertNotIn("0", fixed_minutes, filename)
+            self.assertEqual(schedules, ["*/5 * * * *"], filename)
+            self.assertIn('startCommand: "python manage.py migrate --check && '
+                          'python manage.py run_schedule"', text, filename)
+        times = [at for job in JOBS for at in job.at]
+        self.assertNotIn(0, [minute for _hour, minute in times])
+        self.assertEqual(len(times), len(set(times)))
+
+    def test_the_scheduler_cron_carries_what_every_job_needs(self):
+        for filename in ("render.yaml", "render.frankfurt.yaml"):
+            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
+            block = re.search(r"^    name: zitch-reconcile-wema-ry6y$.*?(?=^  - type:|\Z)",
+                              text, re.MULTILINE | re.DOTALL).group(0)
+            # purge_expired_sessions must cut off at the API's own token lifetimes.
+            for key in ("TOKEN_TTL_HOURS", "ADMIN_TOKEN_TTL_HOURS", "REFRESH_ABSOLUTE_DAYS",
+                        "OPS_ALERT_EMAILS", "SENTRY_DSN", "WEMA_SOURCE_ACCOUNT"):
+                self.assertIn(f"fromService: {{type: web, name: zitch-api-ry6y, envVarKey: {key}}}",
+                              block, f"{filename} scheduler cron must inherit {key}")
+            # The scheduler decides per run whether findings fail it.
+            self.assertNotIn("WEMA_RECONCILE_FAIL_INCOMPLETE", block)
 
     def test_partnership_and_identity_configuration_cannot_diverge_between_consumers(self):
         """A worker must use the same active Partnership contract as the API."""

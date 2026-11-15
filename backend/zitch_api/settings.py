@@ -658,6 +658,18 @@ RESEND = {
 # selectable from a session that might be stolen. Unset => the admin export refuses,
 # rather than falling back to showing the record in a browser.
 COMPLIANCE_EXPORT_EMAIL = os.environ.get("COMPLIANCE_EXPORT_EMAIL", "").strip()
+# Who is emailed when a background job or money check raises an error-level alert
+# (utility/alerts.py). Comma-separated. Falls back to the back-office super admin's
+# address. With no recipient and no SENTRY_DSN, the scheduled jobs keep failing their
+# cron run on a finding, because that is then the only alarm anyone would see.
+OPS_ALERT_EMAILS = [
+    address.strip()
+    for address in (os.environ.get("OPS_ALERT_EMAILS", "").strip()
+                    or os.environ.get("DJANGO_SUPERUSER_EMAIL", "")).split(",")
+    if address.strip()
+]
+# The same alert is emailed again at most this often (it is still logged every time).
+OPS_ALERT_REPEAT_SECONDS = max(300, int(os.environ.get("OPS_ALERT_REPEAT_SECONDS", "21600") or 21600))
 # The partner bank's fee on a transfer to another bank (wallet/transfer_fees.py):
 # Wema's NIP schedule charge plus VAT, taken from the sender's own account by the
 # bank and debited by Zitch as its own "Transfer fee" row so the two balances
@@ -939,6 +951,14 @@ WHATSAPP_ALERT_RETRY_LIMIT = int(
 WEMA_DEPOSIT_SYNC_MIN_INTERVAL_SECONDS = float(
     os.environ.get("WEMA_DEPOSIT_SYNC_MIN_INTERVAL_SECONDS", "") or 15)
 WEMA_DEPOSIT_SYNC_WAIT_SECONDS = float(os.environ.get("WEMA_DEPOSIT_SYNC_WAIT_SECONDS", "") or 5)
+# A customer shown how to pay in (the app's Add money screen, the chat's account
+# details) or just given a new account number is about to send money. The worker
+# reads that account's statement every POLL_SECONDS for MINUTES afterwards, so the
+# deposit is credited and alerted seconds after Wema posts it (wallet/deposit_sync.py).
+# 0 minutes turns it off. Shares the statement readers' backoff after a refusal.
+WEMA_EXPECTED_DEPOSIT_MINUTES = float(os.environ.get("WEMA_EXPECTED_DEPOSIT_MINUTES", "") or 15)
+WEMA_EXPECTED_DEPOSIT_POLL_SECONDS = max(5.0, float(
+    os.environ.get("WEMA_EXPECTED_DEPOSIT_POLL_SECONDS", "") or 10))
 # The web service also drains the inbound queue in a bounded background thread
 # after acknowledging a webhook, so a stopped/crashed/never-created worker service
 # cannot silently swallow every reply. Rows are claimed with SELECT FOR UPDATE, so

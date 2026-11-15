@@ -2429,6 +2429,9 @@ def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to 
         # infer both from an account number.
         "Send money to it whenever you're ready, then reply *1* to see your balance.",
     )
+    from wallet.deposit_sync import expect_deposit
+
+    expect_deposit(wallet=wallet)
 
 
 def _do_add_money(user, msisdn: str) -> None:
@@ -4276,6 +4279,9 @@ def _do_account_details(user, msisdn: str) -> None:
                          and funding.get("account_number")
                          and funding.get("account_setup_state") != "partnership_unavailable")
     if account_ready:
+        from wallet.deposit_sync import expect_deposit
+
+        expect_deposit(wallet=wallet)
         accounts = funding.get("bank_accounts") or []
         if len(accounts) > 1:
             lines += [f"🔢 *{a.get('account_number')}* - {a.get('bank_name')}" for a in accounts]

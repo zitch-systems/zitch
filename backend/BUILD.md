@@ -75,8 +75,8 @@ Matured plans are paid out (principal + interest credited to the wallet) two way
   (`settle_user_maturities`), so payouts happen with no cron — even on Render's
   free tier.
 - **Sweep:** `python manage.py run_maturities` pays out *every* due plan (for
-  users who never open the app). Enable the `zitch-maturities` cron in
-  `render.yaml` once the service is on a paid Render plan (cron has no free tier).
+  users who never open the app). The scheduler cron runs it daily at 01:05 UTC
+  (`run_schedule`, see `utility/schedule.py`).
 
 Payout is idempotent per plan, so overlapping runs never double-pay.
 

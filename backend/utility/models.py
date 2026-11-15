@@ -89,3 +89,35 @@ class WemaBiller(models.Model):
 
     def __str__(self):
         return f"{self.service_id} {self.meter_type or '(unspecified)'} -> {self.package_id}"
+
+
+class ScheduledJobRun(models.Model):
+    """One run of a periodic job for one scheduled slot (utility/schedule.py).
+
+    The unique (job, slot) row is the claim: two scheduler runs that overlap can
+    never both start the same slot, a slot that failed is retried on the next
+    run until it succeeds or runs out of attempts, and a slot the cron missed
+    entirely (an outage, a deploy) is run on the next run instead of being lost.
+    """
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    STATUSES = [(RUNNING, "Running"), (SUCCEEDED, "Succeeded"), (FAILED, "Failed")]
+
+    job = models.CharField(max_length=64)
+    slot = models.DateTimeField()
+    status = models.CharField(max_length=16, choices=STATUSES, default=RUNNING)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    started = models.DateTimeField(null=True, blank=True)
+    finished = models.DateTimeField(null=True, blank=True)
+    exit_code = models.SmallIntegerField(null=True, blank=True)
+    elapsed_ms = models.PositiveIntegerField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("job", "slot"), name="uniq_scheduled_job_slot"),
+        ]
+        indexes = [models.Index(fields=("job", "-slot"), name="scheduled_job_latest")]
+
+    def __str__(self):
+        return f"{self.job} @ {self.slot:%Y-%m-%d %H:%M} {self.status}"

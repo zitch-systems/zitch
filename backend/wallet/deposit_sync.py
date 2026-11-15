@@ -15,6 +15,7 @@ shares the poll's backoff after a read the bank refused or did not answer.
 """
 import logging
 import threading
+import time
 from datetime import timedelta
 
 from django.conf import settings
@@ -160,3 +161,76 @@ def refresh_deposits_briefly(user, wait_seconds=None):
         threading.Thread(target=run, name="wema-deposit-refresh", daemon=True).start()
     pending["done"].wait(wait)
     return pending["credited"]
+
+
+#: Accounts whose owner is expecting money: wallet pk -> unix time to stop.
+#: One shared entry, so every API and worker process sees the same list.
+WATCH_KEY = "wema:expecting-deposit"
+_WATCH_LIMIT = 200
+
+
+def expect_deposit(user=None, *, wallet=None, minutes=None) -> None:
+    """Read this customer's statement every few seconds for a while.
+
+    Called when the customer has just been shown how to pay in (the app's
+    Add money screen, the chat's account details) and when a new account
+    number is issued. Their transfer then reaches the ledger, and their alert
+    goes out, within WEMA_EXPECTED_DEPOSIT_POLL_SECONDS of Wema posting it,
+    instead of waiting for the account's turn in the minute poll or the cron.
+    Never raises: the reply the customer is waiting for matters more.
+    """
+    try:
+        if wallet is None:
+            wallet = _customer_account(user)
+        if wallet is None or not getattr(wallet, "account_number", ""):
+            return
+        minutes = _setting("WEMA_EXPECTED_DEPOSIT_MINUTES", 15) if minutes is None else float(minutes)
+        if minutes <= 0:
+            return
+        now = time.time()
+        watched = {pk: until for pk, until in (cache.get(WATCH_KEY) or {}).items() if until > now}
+        watched[wallet.pk] = max(now + minutes * 60, watched.get(wallet.pk, 0))
+        if len(watched) > _WATCH_LIMIT:
+            watched = dict(sorted(watched.items(), key=lambda item: item[1])[-_WATCH_LIMIT:])
+        cache.set(WATCH_KEY, watched, timeout=int(max(watched.values()) - now) + 60)
+    except Exception:  # noqa: BLE001 - the minute poll and the cron still read it
+        log.warning("wema_expected_deposit_watch_unavailable")
+
+
+def poll_expected_deposits(max_reads=2) -> int:
+    """Read the statement of each watched account at most once per interval.
+
+    The worker calls this every couple of seconds. Most recently watched first,
+    at most ``max_reads`` accounts per call, and nothing at all while the
+    statement readers are backing off after a refused read. Returns how many
+    deposits were credited.
+    """
+    from wallet.services import wema_provisioned_wallets
+
+    try:
+        if not statement_live() or _backing_off():
+            return 0
+        now = time.time()
+        watched = cache.get(WATCH_KEY) or {}
+    except Exception:  # noqa: BLE001 - the minute poll and the cron still read them
+        return 0
+    interval = int(max(5.0, _setting("WEMA_EXPECTED_DEPOSIT_POLL_SECONDS", 10)))
+    credited = reads = 0
+    for pk in sorted((pk for pk, until in watched.items() if until > now),
+                     key=lambda pk: watched[pk], reverse=True):
+        if reads >= max_reads or _backing_off():
+            break
+        try:
+            if not cache.add(f"wema:expecting-deposit:read:{pk}", 1, timeout=interval):
+                continue
+        except Exception:  # noqa: BLE001 - without the throttle, stop for this round
+            break
+        wallet = wema_provisioned_wallets().select_related("user").filter(pk=pk).first()
+        if wallet is None:
+            continue
+        reads += 1
+        found = _read_customer_statement(wallet, wallet.user_id)
+        if found:
+            log.info("wema_expected_deposit_credited wallet=%s credits=%s", pk, found)
+        credited += found
+    return credited

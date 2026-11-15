@@ -51,6 +51,9 @@ from wallet.services import (
 
 log = logging.getLogger("wallet")
 
+#: Set for an hour after the statement probe (which spelling of `to` reaches today).
+HISTORY_PROBE_KEY = "wema:history-probe:recent"
+
 class Command(BaseCommand):
     help = "Reconcile Wema inbound deposits and unresolved payout/VAS settlement."
 
@@ -309,16 +312,30 @@ class Command(BaseCommand):
                     f"credits={digest['credits']} newest={digest['newest']} today={today}")
                 window_logged = True
 
+        def probe_due():
+            # The spelling the probe finds is remembered for six hours, so once an
+            # hour is plenty. Every run would add six statement requests, which on
+            # a five-minute schedule is over 1,700 a day for one account.
+            try:
+                return bool(cache.add(HISTORY_PROBE_KEY, True, timeout=3600))
+            except Exception:  # noqa: BLE001 - probe anyway when the cache is down
+                return True
+
         def probe_history(wallet):
-            # One account, every spelling of `to`, once per run: which of them
-            # returns today's rows. The reads that follow use the best one.
+            # One account, every spelling of `to`, at most once an hour: which of
+            # them returns today's rows. The reads that follow use the best one.
             try:
                 found = wema.probe_history_to_forms(
                     wallet.account_number, (today - timedelta(days=1)).isoformat(),
                     today.isoformat())
             except Exception:  # noqa: BLE001 - a diagnostic must not stop the sweep
                 log.exception("wema_history_probe_failed wallet=%s", wallet.pk)
-                return
+                found = []
+            if not any(entry.get("ok") for entry in found):
+                try:
+                    cache.delete(HISTORY_PROBE_KEY)   # nothing learned: probe next run
+                except Exception:  # noqa: BLE001
+                    pass
             for entry in found:
                 self.stdout.write(
                     "transhistoryV2 probe: "
@@ -339,7 +356,7 @@ class Command(BaseCommand):
 
         for wallet in wema_provisioned_wallets():
             scanned += 1
-            if scanned == 1:
+            if scanned == 1 and probe_due():
                 probe_history(wallet)
             if wallet.pk in pending_address_wallets:
                 from wallet.address_verification import refresh_address_verification

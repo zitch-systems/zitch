@@ -109,11 +109,9 @@ class WemaRenderBlueprintTests(SimpleTestCase):
         # no provider at all. zitch-reconcile-vtu is absent because it no longer
         # exists — VAS settlement moved into reconcile_wema when the retired rail was
         # removed, and the cron was deleted with it.
-        for service in (
-            "zitch-reconcile-wema-ry6y",
-            "zitch-reconcile-balances-ry6y",
-            "zitch-settlement-report-ry6y",
-        ):
+        # The scheduler cron (zitch-reconcile-wema-ry6y) runs every job that does,
+        # reconcile_balances and settlement_report included.
+        for service in ("zitch-reconcile-wema-ry6y",):
             marker = f"name: {service}\n"
             self.assertIn(marker, blueprint)
             block = blueprint.split(marker, 1)[1].split("\n  - type:", 1)[0]
