@@ -180,6 +180,15 @@ class RenderBlueprintSafetyTests(SimpleTestCase):
         self.assertNotIn(0, [minute for _hour, minute in times])
         self.assertEqual(len(times), len(set(times)))
 
+    def test_every_service_that_emails_the_operator_has_its_fallback_address(self):
+        for filename in ("render.yaml", "render.frankfurt.yaml"):
+            text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")
+            services = re.findall(r"^  - type: .*?(?=^  - type: |^databases:|\Z)", text, re.M | re.S)
+            for block in services:
+                if "- key: OPS_ALERT_EMAILS" in block:
+                    name = re.search(r"^    name: (.+)$", block, re.M).group(1)
+                    self.assertIn("- key: DJANGO_SUPERUSER_EMAIL", block, f"{filename} {name}")
+
     def test_the_scheduler_cron_carries_what_every_job_needs(self):
         for filename in ("render.yaml", "render.frankfurt.yaml"):
             text = BLUEPRINT.with_name(filename).read_text(encoding="utf-8")

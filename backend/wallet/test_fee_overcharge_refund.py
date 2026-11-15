@@ -108,3 +108,27 @@ class FeeOverchargeRefundTests(TestCase):
     def test_only_the_named_customer(self):
         self.send("11.56", "a")
         self.assertEqual(self.run_refund("--before", LATER, "--user-id", str(self.user.pk + 99))["fees"], [])
+
+    def test_a_fee_still_pending_is_refunded_and_taken_back_if_its_transfer_fails(self):
+        queued = {"success": True, "status": "PENDING"}
+        with patch("transfers.services.payout_send", return_value=queued):
+            payout = execute_payout(self.user, Decimal("1000"), "0123456789", self.bank,
+                                    "JOHN DOE", idempotency_key="p", fee=Decimal("11.56"))
+        report = self.run_refund("--before", LATER, "--apply")
+        self.assertEqual([row["fee_status"] for row in report["fees"]], [Transaction.PENDING])
+        self.assertEqual(report["summary"]["to_refund"], "0.81")
+        reverse_transfer(payout.reference)
+        self.assertEqual(self.balance(), Decimal("10000.00"))
+        self.assert_ledger_agrees()
+
+    def test_a_fee_returned_by_a_reversal_after_it_was_listed_is_not_refunded(self):
+        from wallet.management.commands.refund_fee_overcharge import Command
+
+        payout = self.send("11.56", "a")
+        fee = Transaction.objects.get(reference=fee_reference(payout.reference))
+        reverse_transfer(payout.reference)            # lands between listing and posting
+        posted = Command()._post(fee, Decimal("0.81"),
+                                 overcharge_refund_reference(fee.reference))
+        self.assertFalse(posted)
+        self.assertEqual(self.balance(), Decimal("10000.00"))
+        self.assert_ledger_agrees()

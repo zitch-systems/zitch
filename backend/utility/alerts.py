@@ -47,7 +47,6 @@ _VALUE_LIMIT = 500
 _BODY_LIMIT = 4000
 
 _lock = threading.Lock()
-_pending = []        # email threads still sending
 _sent = []           # monotonic times of this process's emails in the last hour
 _seen_locally = {}   # message digest -> monotonic time, when the shared cache is down
 
@@ -122,39 +121,77 @@ def operator_channel_configured() -> bool:
     return operator_email_configured() or sentry_active()
 
 
-def _first_in_window(message: str) -> bool:
-    """True the first time ``message`` is seen in the repeat window.
+#: Context keys that name WHICH incident an alert is about. Two alerts with the
+#: same wording but a different customer, reference or case are two incidents
+#: and are each emailed; counts (wallets=40, payouts=3) are not identity.
+_IDENTITY_KEYS = ("user_id", "user", "wallet_id", "reference", "references", "payout",
+                  "payouts_refs", "evidence_id", "evidence_ids", "case_ids", "account",
+                  "job", "sample", "dedupe")
+#: How long a send in progress holds the window, so two processes raising the
+#: same alert at once send one email. Made permanent only once a send succeeds.
+_CLAIM_SECONDS = 120
+_SEND_ATTEMPTS = 3
+#: Resend allows about two requests a second per team.
+_SEND_SPACING_SECONDS = 0.6
+_QUEUE_LIMIT = 200
 
-    Digits are folded so "all 3 fetches failed" and "all 4 fetches failed" are
-    one alert. The shared cache spreads the window across every service; without
-    it each process keeps its own.
-    """
-    from django.conf import settings
+_queue = None              # emails waiting for the sender thread
+_sender = None             # the one sender thread of this process
+_dropped = {"capped": 0}   # alerts refused by the hourly cap since the last email
 
-    repeat = int(getattr(settings, "OPS_ALERT_REPEAT_SECONDS", 21600) or 21600)
-    digest = hashlib.sha256(re.sub(r"\d+", "#", message).encode()).hexdigest()[:32]
+
+def _digest(message: str, context: dict) -> str:
+    """The incident: the wording with digits folded, plus whatever names it."""
+    identity = "|".join(f"{key}={context[key]}" for key in _IDENTITY_KEYS if key in context)
+    text = re.sub(r"\d+", "#", message) + "||" + identity
+    return hashlib.sha256(text.encode()).hexdigest()[:32]
+
+
+def _claim(digest: str, timeout: int) -> bool:
+    """Claim the window for this incident across every service (the shared
+    cache), or for this process alone when the cache is down."""
     try:
         from django.core.cache import cache
 
-        return bool(cache.add(f"ops-alert:email:{digest}", True, timeout=repeat))
+        return bool(cache.add(f"ops-alert:email:{digest}", True, timeout=timeout))
     except Exception:  # noqa: BLE001 - a cache outage must not hide an alert
         now = time.monotonic()
         with _lock:
-            last = _seen_locally.get(digest)
-            if last is not None and now - last < repeat:
+            until = _seen_locally.get(digest)
+            if until is not None and now < until:
                 return False
-            _seen_locally[digest] = now
+            _seen_locally[digest] = now + timeout
             return True
 
 
-def _under_hourly_cap() -> bool:
+def _hold(digest: str, timeout: int) -> None:
+    try:
+        from django.core.cache import cache
+
+        cache.set(f"ops-alert:email:{digest}", True, timeout=timeout)
+    except Exception:  # noqa: BLE001
+        pass
+    with _lock:
+        _seen_locally[digest] = time.monotonic() + timeout
+
+
+def _release(digest: str) -> None:
+    """A send that did not happen must not silence the next occurrence."""
+    try:
+        from django.core.cache import cache
+
+        cache.delete(f"ops-alert:email:{digest}")
+    except Exception:  # noqa: BLE001
+        pass
+    with _lock:
+        _seen_locally.pop(digest, None)
+
+
+def _cap_allows() -> bool:
     now = time.monotonic()
     with _lock:
         _sent[:] = [stamp for stamp in _sent if now - stamp < 3600]
-        if len(_sent) >= _EMAILS_PER_HOUR:
-            return False
-        _sent.append(now)
-        return True
+        return len(_sent) < _EMAILS_PER_HOUR
 
 
 def _email_body(message: str, level: str, context: dict) -> tuple:
@@ -170,48 +207,110 @@ def _email_body(message: str, level: str, context: dict) -> tuple:
               f"Time (UTC): {timezone.now():%Y-%m-%d %H:%M:%S}",
               f"The same alert is not emailed again for {repeat_hours:g} hours. "
               "Every occurrence is in the service log."]
+    with _lock:
+        capped, _dropped["capped"] = _dropped["capped"], 0
+    if capped:
+        lines.append(f"{capped} other alert(s) in the last hour were not emailed "
+                     "(hourly limit); see the service log.")
     subject = f"[Zitch {level}] {' '.join(message.split())[:110]}"
     return subject, "\n".join(lines)[:_BODY_LIMIT]
 
 
-def _email_operator(message: str, level: str, context: dict) -> None:
-    if not operator_email_configured():
-        return
-    if not _first_in_window(message) or not _under_hourly_cap():
-        return
-    recipients = operator_recipients()
-    subject, body = _email_body(message, level, context)
+def _send_one(recipients, subject, body) -> bool:
+    """Deliver to every recipient, retrying what the provider might accept later."""
+    from utility.providers import send_email
 
-    def send():
-        from utility.providers import send_email
-
-        for address in recipients:
+    delivered = False
+    for address in recipients:
+        for attempt in range(1, _SEND_ATTEMPTS + 1):
             try:
                 result = send_email(address, subject, body, timeout=10)
-                if not result.get("success") or result.get("mock"):
-                    log.warning("ops_alert_email_not_sent http_status=%s",
-                                result.get("http_status"))
-            except Exception:  # noqa: BLE001 - the log line above is the record
-                log.warning("ops_alert_email_failed")
+            except Exception:  # noqa: BLE001
+                result = {"success": False, "uncertain": True}
+            if result.get("success") and not result.get("mock"):
+                delivered = True
+                break
+            log.warning("ops_alert_email_not_sent http_status=%s attempt=%s",
+                        result.get("http_status"), attempt)
+            if not (result.get("retryable") or result.get("uncertain")):
+                break
+            time.sleep(min(10.0, 2.0 * attempt))
+        time.sleep(_SEND_SPACING_SECONDS)
+    return delivered
 
-    # Off the caller's thread: an alert raised while serving a request or moving
-    # money must not wait on the email provider. _drain() lets a short-lived
-    # command finish sending before the process exits.
-    thread = threading.Thread(target=send, name="ops-alert-email", daemon=True)
+
+def _send_queued(item) -> None:
+    from django.conf import settings
+
+    message, level, context = item
+    repeat = int(getattr(settings, "OPS_ALERT_REPEAT_SECONDS", 21600) or 21600)
+    digest = _digest(message, context)
+    if not _cap_allows():
+        with _lock:
+            _dropped["capped"] += 1
+        return                      # nothing claimed: a later occurrence still emails
+    if not _claim(digest, _CLAIM_SECONDS):
+        return                      # emailed already in this window, or being sent
+    subject, body = _email_body(message, level, context)
     with _lock:
-        _pending[:] = [t for t in _pending if t.is_alive()]
-        _pending.append(thread)
-    thread.start()
+        _sent.append(time.monotonic())
+    if _send_one(operator_recipients(), subject, body):
+        _hold(digest, repeat)
+    else:
+        _release(digest)
+        with _lock:
+            if _sent:
+                _sent.pop()
+
+
+def _sender_loop() -> None:
+    while True:
+        item = _queue.get()
+        try:
+            _send_queued(item)
+        except Exception:  # noqa: BLE001 - one bad alert must not stop the sender
+            log.warning("ops_alert_email_failed")
+        finally:
+            _queue.task_done()
+
+
+def _email_operator(message: str, level: str, context: dict) -> None:
+    """Queue the alert for this process's one sender thread.
+
+    The caller's thread only checks configuration and enqueues: no cache call,
+    no network, so an alert raised while serving a request or holding a row
+    lock never waits on Redis or the email provider.
+    """
+    global _queue, _sender
+    if not operator_email_configured():
+        return
+    import queue as queue_module
+
+    with _lock:
+        if _queue is None:
+            _queue = queue_module.Queue(maxsize=_QUEUE_LIMIT)
+        if _sender is None or not _sender.is_alive():
+            thread = threading.Thread(target=_sender_loop, name="ops-alert-email", daemon=True)
+            try:
+                thread.start()
+            except RuntimeError:            # cannot start a thread: log only
+                log.warning("ops_alert_email_thread_unavailable")
+                return
+            _sender = thread
+    try:
+        _queue.put_nowait((message, level, dict(context)))
+    except queue_module.Full:
+        with _lock:
+            _dropped["capped"] += 1
 
 
 def _drain(timeout: float = 15.0) -> None:
-    """Wait (briefly) for operator emails still being sent."""
+    """Wait (briefly) for queued operator emails before the process exits."""
+    if _queue is None or _sender is None or not _sender.is_alive():
+        return
     deadline = time.monotonic() + timeout
-    with _lock:
-        threads = list(_pending)
-        _pending.clear()
-    for thread in threads:
-        thread.join(max(0.0, deadline - time.monotonic()))
+    while _queue.unfinished_tasks and time.monotonic() < deadline:
+        time.sleep(0.05)
 
 
 atexit.register(_drain)

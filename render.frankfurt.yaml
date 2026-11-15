@@ -579,6 +579,9 @@ services:
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: SENTRY_DSN}
       - key: OPS_ALERT_EMAILS
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: OPS_ALERT_EMAILS}
+      # OPS_ALERT_EMAILS falls back to this when blank (zitch_api/settings.py).
+      - key: DJANGO_SUPERUSER_EMAIL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SUPERUSER_EMAIL}
 
   # THE SCHEDULER — every periodic job, in one cron (utility/schedule.py).
   # reconcile_wema (deposits, pending payouts and purchases) runs on every run;
@@ -613,6 +616,9 @@ services:
       # Who is emailed about findings and failed jobs.
       - key: OPS_ALERT_EMAILS
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: OPS_ALERT_EMAILS}
+      # OPS_ALERT_EMAILS falls back to this when blank (zitch_api/settings.py).
+      - key: DJANGO_SUPERUSER_EMAIL
+        fromService: {type: web, name: zitch-api-ry6y, envVarKey: DJANGO_SUPERUSER_EMAIL}
       # Partnership settings are shared with the API.
       - key: WEMA_PARTNERSHIP_MODE
         fromService: {type: web, name: zitch-api-ry6y, envVarKey: WEMA_PARTNERSHIP_MODE}

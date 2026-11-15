@@ -52,7 +52,10 @@ class Command(BaseCommand):
         before = timezone.make_aware(day)
         fees = (Transaction.objects
                 .filter(service=FEE_SERVICE, direction=Transaction.OUT,
-                        transaction_status=Transaction.SUCCESS, meta__has_key=FEE_FOR_KEY,
+                        # A Pending fee is refunded too: if its transfer later fails,
+                        # settle_transfer_fee returns the whole fee and takes this back.
+                        transaction_status__in=(Transaction.PENDING, Transaction.SUCCESS),
+                        meta__has_key=FEE_FOR_KEY,
                         amount__in=list(DOUBLE_VAT_FEES), created__lt=before)
                 .select_related("user").order_by("created"))
         if opts["user_id"]:
@@ -63,7 +66,7 @@ class Command(BaseCommand):
             refund = fee.amount - DOUBLE_VAT_FEES[fee.amount]
             reference = overcharge_refund_reference(fee.reference)
             row = {"user_id": fee.user_id, "fee_reference": fee.reference,
-                   "charged": str(fee.amount), "bank_fee": str(DOUBLE_VAT_FEES[fee.amount]),
+                   "fee_status": fee.transaction_status, "charged": str(fee.amount), "bank_fee": str(DOUBLE_VAT_FEES[fee.amount]),
                    "refund": str(refund), "refund_reference": reference}
             if Transaction.objects.filter(reference=reference).exists():
                 rows.append({**row, "already_refunded": True})
@@ -73,7 +76,8 @@ class Command(BaseCommand):
                 users.add(fee.user_id)
             rows.append(row)
 
-        total = sum(Decimal(r["refund"]) for r in rows if not r.get("already_refunded"))
+        total = sum(Decimal(r["refund"]) for r in rows
+                    if not r.get("already_refunded") and r.get("posted", True) is not False)
         summary = {"dry_run": not opts["apply"], "fees": len(rows), "to_refund": str(total)}
         if opts["apply"]:
             summary["ledger_agrees"] = {
@@ -83,8 +87,23 @@ class Command(BaseCommand):
         self.stdout.write(json.dumps({"summary": summary, "fees": rows}, indent=2))
 
     def _post(self, fee, refund, reference):
+        """Refund one fee, re-checked under the same locks settle_transfer_fee
+        takes (transfer, then fee), so a reversal landing between the listing
+        and now cannot be refunded on top of returning the whole fee."""
+        from wallet.services import _active_reversal_quarantine
+
         try:
             with transaction.atomic():
+                payout = (Transaction.objects.select_for_update()
+                          .filter(reference=(fee.meta or {}).get(FEE_FOR_KEY),
+                                  user_id=fee.user_id, direction=Transaction.OUT).first())
+                current = Transaction.objects.select_for_update().get(pk=fee.pk)
+                if (payout is None
+                        or current.transaction_status not in (Transaction.PENDING, Transaction.SUCCESS)
+                        or payout.transaction_status not in (Transaction.PENDING, Transaction.SUCCESS)
+                        or _active_reversal_quarantine(payout)
+                        or Transaction.objects.filter(reference=reference).exists()):
+                    return False
                 credit(fee.user, refund, REFUND_SERVICE, reference=reference,
                        meta={REFUND_FOR_KEY: fee.reference, "suppress_transaction_alert": True,
                              "reason": "VAT was added twice to the bank's transfer fee"})
