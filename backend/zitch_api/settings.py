@@ -951,6 +951,14 @@ WHATSAPP_ALERT_RETRY_LIMIT = int(
 WEMA_DEPOSIT_SYNC_MIN_INTERVAL_SECONDS = float(
     os.environ.get("WEMA_DEPOSIT_SYNC_MIN_INTERVAL_SECONDS", "") or 15)
 WEMA_DEPOSIT_SYNC_WAIT_SECONDS = float(os.environ.get("WEMA_DEPOSIT_SYNC_WAIT_SECONDS", "") or 5)
+# A customer shown how to pay in (the app's Add money screen, the chat's account
+# details) or just given a new account number is about to send money. The worker
+# reads that account's statement every POLL_SECONDS for MINUTES afterwards, so the
+# deposit is credited and alerted seconds after Wema posts it (wallet/deposit_sync.py).
+# 0 minutes turns it off. Shares the statement readers' backoff after a refusal.
+WEMA_EXPECTED_DEPOSIT_MINUTES = float(os.environ.get("WEMA_EXPECTED_DEPOSIT_MINUTES", "") or 15)
+WEMA_EXPECTED_DEPOSIT_POLL_SECONDS = max(5.0, float(
+    os.environ.get("WEMA_EXPECTED_DEPOSIT_POLL_SECONDS", "") or 10))
 # The web service also drains the inbound queue in a bounded background thread
 # after acknowledging a webhook, so a stopped/crashed/never-created worker service
 # cannot silently swallow every reply. Rows are claimed with SELECT FOR UPDATE, so

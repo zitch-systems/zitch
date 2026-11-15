@@ -3274,6 +3274,9 @@ def provision_wema_account(user, *, account_number: str, account_name: str = "",
             defaults={"opening_review_required": source not in {"otp", "callback"}},
         )
     log.info("wema_account_provisioned user=%s account=%s source=%s", user.id, number, source)
+    # A customer given a new account number usually pays into it at once.
+    from wallet.deposit_sync import expect_deposit
+    expect_deposit(wallet=wallet, minutes=30)
     return wallet, "provisioned"
 
 

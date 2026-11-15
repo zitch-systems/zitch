@@ -115,6 +115,7 @@ class Command(BaseCommand):
         reconcile_lock = threading.Lock()
         account_repair_lock = threading.Lock()
         credit_poll_lock = threading.Lock()
+        expected_deposit_lock = threading.Lock()
 
         def stop(*_args):
             stopped.set()
@@ -173,6 +174,22 @@ class Command(BaseCommand):
                 connections.close_all()
                 credit_poll_lock.release()
 
+        def poll_expected_deposits():
+            # Accounts whose owner was just shown how to pay in. Cheap when there
+            # are none: one cache read.
+            if not expected_deposit_lock.acquire(blocking=False):
+                return
+            try:
+                close_old_connections()
+                from wallet.deposit_sync import poll_expected_deposits as poll
+
+                poll()
+            except Exception:  # noqa: BLE001 - the minute poll and the cron still run
+                self.stderr.write("expected-deposit check failed; retrying")
+            finally:
+                connections.close_all()
+                expected_deposit_lock.release()
+
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         batch = max(1, min(int(options["batch_size"]), 200))
@@ -196,6 +213,8 @@ class Command(BaseCommand):
         next_reconcile = time.monotonic()
         next_account_repair = time.monotonic()
         next_credit_poll = time.monotonic()
+        next_expected_poll = time.monotonic()
+        expected_poll_interval = 2.0 if settings.WEMA_EXPECTED_DEPOSIT_MINUTES > 0 else 0
 
         alert_thread = None
         if not options["once"]:
@@ -232,6 +251,14 @@ class Command(BaseCommand):
                     daemon=True,
                 ).start()
                 next_credit_poll = now + credit_poll_interval
+
+            if expected_poll_interval and not options["once"] and now >= next_expected_poll:
+                threading.Thread(
+                    target=poll_expected_deposits,
+                    name="wema-expected-deposits",
+                    daemon=True,
+                ).start()
+                next_expected_poll = now + expected_poll_interval
 
             inbound, outbound = process_once(batch)
             if options["once"]:
