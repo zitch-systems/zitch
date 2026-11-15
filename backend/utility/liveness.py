@@ -2,8 +2,12 @@
 
 Initiation: https://js.prembly.com/v1/inline/widget-v3.js
 Authenticated readback: https://docs.prembly.com/docs/api-webhooks
-The bank upgrade has a separate image contract; this adapter never changes
-Wallet.bank_tier or exposes biometric images to the legacy upgrade endpoint.
+
+Used only for the new-device sign-in face check (purpose "login"), which
+confirms who is at the phone and never changes a tier. Tier 2 is the bank's
+upgrade with the live face check (wallet/face_check.py): a Prembly session
+for purpose "tier2_liveness" is refused before any provider call, so no
+session can raise the local tier without the bank's read-back.
 """
 import hmac
 import json
@@ -24,6 +28,9 @@ TIER2_LIVENESS_UNAVAILABLE = (
     "Live face verification is temporarily unavailable. Your verified identity "
     "is saved; you do not need to verify NIN after BVN. Please try again later."
 )
+TIER2_MOVED = ("Tier 2 now uses the live face check sent to your bank. Update the Zitch app "
+               "and start it from Account limits, or reply 7 in WhatsApp.")
+TIER2_PURPOSE = "tier2_liveness"
 
 
 def tier2_face_available() -> bool:
@@ -35,6 +42,11 @@ def tier2_face_available() -> bool:
 def _unavailable():
     return {"success": False, "unavailable": True, "code": "tier2_liveness_unavailable",
             "message": TIER2_LIVENESS_UNAVAILABLE}
+
+
+def _tier2_moved():
+    return {"success": False, "unavailable": True, "code": "tier2_moved_to_bank",
+            "message": TIER2_MOVED}
 
 
 def _stamp(user):
@@ -71,7 +83,9 @@ def _public(session):
                 "session": session.provider_session_id, "has_callback": "false"})}
 
 
-def start_tier2_liveness(user, purpose="tier2_liveness"):
+def start_tier2_liveness(user, purpose=TIER2_PURPOSE):
+    if purpose == TIER2_PURPOSE:
+        return _tier2_moved()
     if not tier2_face_available():
         return _unavailable()
     with transaction.atomic():
@@ -180,7 +194,9 @@ def _face_comparison_passed(data):
     return True
 
 
-def verify_tier2_liveness(user, data, *, authorize=None, purpose="tier2_liveness") -> dict:
+def verify_tier2_liveness(user, data, *, authorize=None, purpose=TIER2_PURPOSE) -> dict:
+    if purpose == TIER2_PURPOSE:
+        return _tier2_moved()
     if not tier2_face_available():
         return _unavailable()
     if any(key in data for key in ("bvn", "nin", "live_image", "liveImageOfFace", "selfie", "image")):
@@ -249,21 +265,5 @@ def verify_tier2_liveness(user, data, *, authorize=None, purpose="tier2_liveness
         current.status = "verified"
         current.verified_at = timezone.now()
         current.save(update_fields=["status", "verified_at"])
-        if purpose != "tier2_liveness":
-            # A sign-in check confirms who is at the phone; it never upgrades anyone.
-            return {"success": True, "status": "verified", "message": "Face check complete."}
-        current_user.face_verified = True
-        current_user.recompute_tier()
-        current_user.save(update_fields=["face_verified", "tier"])
-    user.refresh_from_db()
-    return {"success": True, "status": "verified", "message": "Tier 2 face verification complete."}
-
-
-def refresh_tier2_liveness(user):
-    """Explicit app/chat status checks can finish an already authorized session."""
-    if user.face_verified or not tier2_face_available():
-        return
-    pending = PremblyFaceSession.objects.filter(user=user, status="pending", purpose="tier2_liveness",
-        expires_at__gt=timezone.now()).order_by("-created").first()
-    if pending:
-        verify_tier2_liveness(user, {"session": str(pending.state)})
+    # A sign-in check confirms who is at the phone; it never upgrades anyone.
+    return {"success": True, "status": "verified", "message": "Face check complete."}

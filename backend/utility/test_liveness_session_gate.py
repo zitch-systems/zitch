@@ -18,4 +18,4 @@ class TierTwoSessionGateTests(SimpleTestCase):
                 })
                 self.assertFalse(result["success"])
                 self.assertTrue(result["unavailable"])
-                self.assertEqual(result["code"], "tier2_liveness_unavailable")
+                self.assertEqual(result["code"], "tier2_moved_to_bank")
