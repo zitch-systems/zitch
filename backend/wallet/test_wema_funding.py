@@ -394,16 +394,16 @@ class WemaWalletProvisioningTests(TestCase):
             live_image="ZmFrZQ==")
 
     @patch("utility.wema.upgrade_tier2")
-    def test_existing_account_upgrade_without_tier1_or_photo_never_reaches_wema(self, mock_upgrade):
+    def test_existing_account_upgrade_without_ids_or_photo_never_reaches_wema(self, mock_upgrade):
         wallet = Wallet.objects.get(user=self.user)
         wallet.account_number = "0123456789"
         wallet.save(update_fields=["account_number"])
-        # No verified Tier 1 identity and none typed: nothing for the bank to match.
+        # Wema's Tier 2 needs both BVN and NIN with the photo.
         r = self._post("/api/wallet/wema/upgrade-tier2/", {"live_image": "c3RpbGwtcGhvdG8="})
-        self.assertEqual(r.status_code, 409)
-        self.assertEqual(r.json()["code"], "tier1_required")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["code"], "identity_required")
         # No photo at all.
-        r = self._post("/api/wallet/wema/upgrade-tier2/", {"bvn": "22222222222"})
+        r = self._post("/api/wallet/wema/upgrade-tier2/", {"bvn": "22222222222", "nin": "12345678901"})
         self.assertEqual(r.status_code, 400)
         self.assertIn("selfie", r.json()["message"].lower())
         mock_upgrade.assert_not_called()

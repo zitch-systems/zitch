@@ -26,6 +26,11 @@
     .message { background: #fff5de; border-radius: 10px; padding: 12px; margin-top: 14px; text-align: left; }
     .message.ok { background: #e6f5e8; }
     .tips { text-align: left; color: #52665c; font-size: 14px; padding-left: 18px; margin: 10px 0 0; }
+    .ids { text-align: left; margin-top: 14px; }
+    .ids label { display: block; font-size: 14px; font-weight: 600; margin-top: 10px; }
+    .ids input { display: block; width: 100%; min-height: 46px; margin-top: 4px; padding: 10px 12px; border: 1px solid #c9d4cd; border-radius: 10px; font: inherit; letter-spacing: .08em; }
+    .ids input:focus { outline: 3px solid #acdfaa; outline-offset: 1px; border-color: #14583d; }
+    .ids small { color: #52665c; font-size: 12px; }
     .hidden { display: none !important; }
     .trust { margin-top: 22px; padding-top: 10px; border-top: 1px solid #e4e9e3; color: #7a8a82; font-size: 10px; line-height: 1.4; }
     @media (max-width: 560px) { main { margin: 0; min-height: 100dvh; border-radius: 0; } }
@@ -35,7 +40,16 @@
 <main>
   <div class="brand">zitch</div>
   <h1 id="title">Tier 2 · Face check</h1>
-  <p class="note" id="lead">Look straight at the camera in good light. Remove glasses or a face covering.</p>
+  <p class="note" id="lead">Enter your BVN and NIN, then take a selfie in good light. Remove glasses or a face covering.</p>
+
+  <div class="ids" id="ids">
+    <label for="bvn">BVN</label>
+    <input id="bvn" name="bvn" form="face" inputmode="numeric" pattern="[0-9]{11}" maxlength="11" autocomplete="off" required>
+    <small>11 digits. Dial *565*0# to get it.</small>
+    <label for="nin">NIN</label>
+    <input id="nin" name="nin" form="face" inputmode="numeric" pattern="[0-9]{11}" maxlength="11" autocomplete="off" required>
+    <small>11 digits, on your NIN slip or NIMC app.</small>
+  </div>
 
   <div class="frame" id="frame">
     <video id="video" class="hidden" autoplay playsinline muted></video>
@@ -60,7 +74,7 @@
     <li>Your whole face should fill the circle.</li>
   </ul>
 
-  <p class="trust">Banking services by Wema Bank Plc, licensed by the CBN. Deposits insured by NDIC. Your photo is sent only to your bank for this check.</p>
+  <p class="trust">Banking services by Wema Bank Plc, licensed by the CBN. Deposits insured by NDIC. Your BVN, NIN and photo are sent only to your bank for this check and are not stored by Zitch.</p>
   <noscript><p class="message">Enable JavaScript in your browser to take your selfie.</p></noscript>
 </main>
 <script nonce="{{ nonce }}">
@@ -162,12 +176,21 @@
 
   send.addEventListener('click', async function () {
     if (!image || send.disabled || done) return;
+    var bvn = document.getElementById('bvn').value.replace(/\D/g, '');
+    var nin = document.getElementById('nin').value.replace(/\D/g, '');
+    if (bvn.length !== 11 || nin.length !== 11) {
+      say('Enter your 11-digit BVN and NIN above.');
+      document.getElementById(bvn.length !== 11 ? 'bvn' : 'nin').focus();
+      return;
+    }
     send.disabled = true; retake.disabled = true;
     say('Checking with your bank. Please keep this page open…');
     var form = document.getElementById('face');
     var body = new URLSearchParams();
     body.set('csrfmiddlewaretoken', form.elements.csrfmiddlewaretoken.value);
     body.set('image', image.split(',')[1] || '');
+    body.set('bvn', bvn);
+    body.set('nin', nin);
     var result;
     try {
       // CORS-mode fetch keeps the Origin header without leaking this link as
@@ -182,20 +205,22 @@
       // No automatic retry: the photo may already have reached the bank.
       result = { status: 'pending', message: 'We could not confirm the result here. We will message you in WhatsApp.' };
     }
-    image = '';
+    var idRetry = result.status === 'retry' && /BVN|NIN/.test(result.message || '');
+    if (!idRetry) { image = ''; }
     if (result.status === 'verified') {
       done = true;
       document.getElementById('title').textContent = 'Tier 2 verification complete';
       document.getElementById('lead').textContent = 'Your account limits have been upgraded. You can close this page and return to WhatsApp.';
       show(send, false); show(retake, false); show(document.getElementById('tips'), false);
+      show(document.getElementById('ids'), false);
       say('✅ ' + (result.message || 'Verified.'), true);
     } else if (result.status === 'pending' || result.status === 'closed') {
       done = true;
-      show(send, false); show(retake, false);
+      show(send, false); show(retake, false); show(document.getElementById('ids'), false);
       say(result.message);
     } else {
       send.disabled = false; retake.disabled = false;
-      show(send, false);
+      if (!idRetry) { show(send, false); }
       say(result.message || 'Please take the photo again.');
     }
   });

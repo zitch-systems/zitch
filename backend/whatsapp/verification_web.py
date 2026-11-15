@@ -623,14 +623,18 @@ def _json(http_status, **body):
 
 @sensitive_variables("image")
 def _face_post(request, token):
-    """Send the selfie to the bank once. Retry only after an explicit refusal."""
+    """Send BVN, NIN and the selfie to the bank once (Wema Tier 2). Retry only
+    after an explicit refusal. BVN/NIN are never stored or logged raw."""
     from wallet.views import upgrade_wema_identity
 
     if (request.content_type not in ("application/x-www-form-urlencoded", "multipart/form-data")
-            or set(request.POST) - {"image", "csrfmiddlewaretoken"} or request.FILES
+            or set(request.POST) - {"image", "bvn", "nin", "csrfmiddlewaretoken"} or request.FILES
             or any(len(request.POST.getlist(k)) != 1 for k in request.POST)):
         return _json(400, status="retry", message="Take the photo using this page.")
     image = request.POST.get("image", "")
+    bvn, nin = request.POST.get("bvn", "").strip(), request.POST.get("nin", "").strip()
+    if not (re.fullmatch(r"[0-9]{11}", bvn) and re.fullmatch(r"[0-9]{11}", nin)):
+        return _json(400, status="retry", message="Enter your 11-digit BVN and NIN.")
     with transaction.atomic():
         pa, user = _face_resolve(_decode(token), lock=True)
         if pa is None or pa.payload.get("tier") != 2 or pa.state == FACE_FAILED:
@@ -644,7 +648,7 @@ def _face_post(request, token):
         if not PendingAction.objects.filter(pk=pa.pk, state__in=(PIN, READY)).update(state=FACE_PROCESSING):
             return _json(409, status="pending", message=FACE_PENDING_TEXT)
     try:
-        response = upgrade_wema_identity(user, {"live_image": image})
+        response = upgrade_wema_identity(user, {"live_image": image, "bvn": bvn, "nin": nin})
         body = json.loads(response.content)
     except Exception:  # Never log the image, identities or provider payloads.
         PendingAction.objects.filter(pk=pa.pk, state=FACE_PROCESSING).update(state=FACE_PENDING)

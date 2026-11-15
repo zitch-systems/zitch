@@ -322,14 +322,15 @@ The follow-up rails from the bundle are wired (mock-first, fail-closed):
   `upgrade_tier3` ({residentialAddress, accountNumber}) on `/account-upgrade`. Tier 3 is
   best-effort synced when the user verifies their address (`accounts.views.kyc_address`), so the
   NUBAN's bank-side limits track the user's KYC. Tier 2 is the customer's own step: the app's
-  camera module or the WhatsApp face page (`/wa/face/<token>`) captures a selfie and
-  `wallet.views.upgrade_wema_identity` sends `{accountNumber, liveImageOfFace}` with **empty**
-  `bvn`/`nin` once Tier 1 is verified (Zitch keeps only an HMAC + last4, and the bank already holds
-  the identity behind the NUBAN). A typed BVN/NIN is forwarded only when the customer enters one.
-  The local tier is raised only after `get_kyc_status` reads back Tier 2+ with a matching name;
-  a 202 is finished later by `refresh_tier2_face` (status check / WhatsApp worker), read-only.
-  **To confirm with Wema:** that `partner-account-upgrade-tier2` accepts empty `bvn`/`nin` for an
-  account already opened with a verified BVN or NIN.
+  camera module or the WhatsApp face page (`/wa/face/<token>`) captures a selfie, the customer types
+  their BVN and NIN, and `wallet.views.upgrade_wema_identity` sends Wema's full contract
+  `{accountNumber, bvn, nin, liveImageOfFace}` in one call (no name field). Zitch keeps only an
+  HMAC + last4 of each ID, so they are typed at Tier 2, checked against the hashes already verified
+  on the account, sent once and discarded (never logged or stored raw). Both are required: a
+  request without both 11-digit IDs is refused before the bank. The local tier is raised only
+  after `get_kyc_status` reads back Tier 2+ with a matching name; a 202 keeps only the ID hashes in
+  the cache and is finished later by `refresh_tier2_face` (status check / WhatsApp worker),
+  read-only.
 - **Remita** — `validate_rrr` / `pay_remita` / `remita_receipt` (`/remita-payment`).
   `POST /api/utility/validate_rrr/` + `POST /api/utility/payremita/` validate then pay an RRR
   from the user's NUBAN via `run_provider_purchase` (debit → pay → settle/refund). A timed-out

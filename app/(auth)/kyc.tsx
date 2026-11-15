@@ -304,10 +304,10 @@ const Kyc = () => {
     && !(status?.bvn_verified && status?.nin_verified);
   const hasTier1Identity = !!(status?.bvn_verified || status?.nin_verified);
   const sdkFlow = status?.tier2_face_flow === 'prembly_sdk';
-  // The bank takes the selfie on its own; the identity numbers it already holds
-  // for this account. Only an account with no verified Tier 1 identity types one.
+  // Wema's Tier 2 upgrade takes the account number, BVN, NIN and a live selfie
+  // in one request. Zitch keeps only hashes, so the customer always types both.
   const faceOnly = status?.tier2_face_rail === 'wema';
-  const askIdentity = !faceOnly || !hasTier1Identity;
+  const askIdentity = true;
   const tier2Pending = faceOnly && status?.tier2_face_pending === true;
   const needsBankUpgrade = !sdkFlow && (!!status?.bank_upgrade_required || needsUpgrade);
   const tier2Unavailable = status?.tier2_face_available === false;
@@ -949,7 +949,7 @@ const Kyc = () => {
           {status.email_verified && hasTier1Identity && (tier2Unavailable && (needsBankUpgrade || !status.face_verified)
             ? <Tier2Unavailable /> : needsBankUpgrade
             ? <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Tier 2 · Face verification"
-                sub={tier2Pending ? 'Your bank is checking your selfie' : faceOnly ? 'Take a quick selfie' : 'Confirm your identity details and take a selfie'} />
+                sub={tier2Pending ? 'Your bank is checking your selfie' : 'Enter your BVN and NIN, then take a selfie'} />
             : <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Face verification" sub="Tier 2" done={!!status.face_verified}
                 // Older servers that still report the Prembly SDK flow use the separate Tier 2 page.
                 onPress={sdkFlow ? () => router.push('/tier2') : undefined} />)}
@@ -1153,9 +1153,7 @@ const Kyc = () => {
       {method === 'upgrade' && !tier2Unavailable && (
         <View>
           <Hero icon="insurance" color={C_BVN} title="Tier 2 · Face verification"
-                sub={askIdentity
-                  ? 'Your bank requires BVN and NIN with your face verification for this upgrade. Tier 1 needs only one identity; these details complete Tier 2.'
-                  : 'Take a clear selfie with your front camera. Your bank matches it to the photo on your verified BVN or NIN — no need to type them again.'} />
+                sub="Your bank needs your BVN, NIN and a selfie together for Tier 2. The selfie is matched to your BVN and NIN photo." />
           <View style={{ marginTop: 22 }}>
             {askIdentity && <>
             <Field editable={!busy} label="Bank Verification Number (BVN)" placeholder="Enter your 11-digit BVN" keyboardType="number-pad"

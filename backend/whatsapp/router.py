@@ -3284,8 +3284,8 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
         return reply_buttons(
             msisdn,
             status + "\n\n*Upgrade to Tier 2*\n"
-            "Tier 2 is a quick selfie. Your bank matches it to your verified "
-            "BVN or NIN - no need to type them again.",
+            "Tier 2 needs your BVN, NIN and a quick selfie. Your bank matches "
+            "the selfie to your BVN and NIN.",
             [("tier2", "Upgrade to Tier 2"), ("later", "Later")],
         )
     return reply_buttons(
@@ -3352,7 +3352,7 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
     # (verification_web.notify_face_results), so the customer is not told to
     # come back and ask for it.
     body = (("📸 *Tier 2 · Face check*\n\n"
-             "Tap *Verify face*, allow camera access and take a clear selfie. "
+             "Tap *Verify face*, enter your BVN and NIN, allow camera access and take a clear selfie. "
              "We'll message you here with the result. The link expires in 15 minutes.")
             if tier == 2 else
             ("Verify your address securely. Confirm your Zitch PIN on the page, then "

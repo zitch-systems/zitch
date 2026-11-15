@@ -1,9 +1,9 @@
 """Tier 2 from WhatsApp: one tap from the chat link to a Zitch camera page.
 
-Tier 2 is a live face photo sent to the bank with the customer's account
-(partner-account-upgrade-tier2). No third-party liveness vendor, no PIN on the
-page and no BVN/NIN re-entry: the bank already holds the identity behind the
-account and matches the photo to it. Only the bank's read-back raises the tier.
+Tier 2 follows Wema's partner-account-upgrade-tier2 contract: the account
+number, the customer's BVN and NIN (typed on the page, never stored raw) and a
+live face photo, in one call. No third-party liveness vendor and no PIN on the
+page. Only the bank's read-back raises the tier.
 A link preview never reaches the camera or the bank, Android's in-app WebView is
 handed to Chrome where the camera works, and the result is sent to the chat
 automatically.
@@ -36,6 +36,8 @@ BANK_TIER2 = {"success": True, "tier": "2", "name": "Ada Face"}
 BANK_TIER1 = {"success": True, "tier": "1", "name": "Ada Face"}
 
 
+TEST_BVN, TEST_NIN = "22222222222", "33333333333"
+
 @override_settings(ZITCH_LINKS={"API_BASE": ORIGIN}, SECURE_SSL_REDIRECT=False,
                    RATELIMIT_ENABLE=False, BANK_ACCOUNT_PROVIDER="partnership",
                    WEMA_PARTNERSHIP_MODE="active")
@@ -46,6 +48,8 @@ class FaceLinkTests(TestCase):
             username="face-link", first_name="Ada", last_name="Face", phone="08011112233",
             email="face@example.test", email_verified=True, phone_verified=True,
             bvn_verified=True, tier=1)
+        self.user.set_bvn(TEST_BVN)
+        self.user.save(update_fields=["bvn_hash", "bvn_last4"])
         wallet = get_or_create_wallet(self.user)
         wallet.account_number = "1234567890"
         wallet.save()
@@ -66,13 +70,15 @@ class FaceLinkTests(TestCase):
     def tap(self, agent=CHROME_UA, path=None, client=None):
         return (client or self.browser).get(path or self.path, secure=True, HTTP_USER_AGENT=agent)
 
-    def send(self, image=SELFIE, *, origin=ORIGIN, csrf=True):
+    def send(self, image=SELFIE, *, origin=ORIGIN, csrf=True, bvn=None, nin=None):
+        bvn = TEST_BVN if bvn is None else bvn
+        nin = TEST_NIN if nin is None else nin
         if settings.CSRF_COOKIE_NAME not in self.browser.cookies:
             self.tap()
         headers = {"HTTP_ORIGIN": origin, "HTTP_USER_AGENT": CHROME_UA}
         if csrf:
             headers["HTTP_X_CSRFTOKEN"] = self.browser.cookies[settings.CSRF_COOKIE_NAME].value
-        return self.browser.post(self.path, {"image": image}, secure=True, **headers)
+        return self.browser.post(self.path, {"image": image, "bvn": bvn, "nin": nin}, secure=True, **headers)
 
     def action(self):
         return PendingAction.objects.get(action_type=ACTION_TYPE)
@@ -81,14 +87,26 @@ class FaceLinkTests(TestCase):
     def test_link_points_at_the_face_route_not_the_pin_page(self):
         self.assertTrue(self.path.startswith("/wa/face/"))
 
+    def test_missing_bvn_or_nin_is_refused_before_the_bank_and_link_stays_open(self):
+        for bvn, nin in (("", TEST_NIN), (TEST_BVN, ""), ("123", TEST_NIN)):
+            with self.subTest(bvn=bvn, nin=nin):
+                response = self.send(bvn=bvn, nin=nin)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["status"], "retry")
+                self.assertIn("BVN and NIN", response.json()["message"])
+        self.upgrade.assert_not_called()
+        self.assertEqual(self.send().status_code, 200)
+
     def test_a_tap_opens_our_camera_page_without_a_pin_or_vendor(self):
         response = self.tap()
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
         self.assertIn("getUserMedia", body)
         self.assertIn('capture="user"', body)
-        for gone in ("Prembly", "prembly", 'name="pin"', 'name="bvn"', 'name="nin"'):
+        for gone in ("Prembly", "prembly", 'name="pin"'):
             self.assertNotIn(gone, body)
+        self.assertIn('name="bvn"', body)
+        self.assertIn('name="nin"', body)
         self.assertIn("camera=(self)", response["Permissions-Policy"])
         self.assertNotIn("unsafe-inline", response["Content-Security-Policy"])
         self.upgrade.assert_not_called()
@@ -125,7 +143,7 @@ class FaceLinkTests(TestCase):
         response = self.send()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "verified")
-        self.upgrade.assert_called_once_with("1234567890", bvn="", nin="", live_image=SELFIE)
+        self.upgrade.assert_called_once_with("1234567890", bvn=TEST_BVN, nin=TEST_NIN, live_image=SELFIE)
         self.user.refresh_from_db()
         self.assertTrue(self.user.face_verified)
         self.assertEqual(self.user.tier, 2)
@@ -248,13 +266,14 @@ class FaceResultNotificationTests(TestCase):
         self.user.refresh_from_db()
         self.assertFalse(self.user.face_verified)
 
-    def test_the_chat_prompt_no_longer_asks_for_bvn_or_a_reply(self):
+    def test_the_chat_prompt_asks_for_bvn_nin_and_no_reply(self):
         from . import router
 
         with patch("whatsapp.router.send_cta_url", return_value={"success": True}) as send, \
              patch("wallet.views.tier2_face_available", return_value=True):
             router._send_web_verification(self.user, MSISDN, 2)
         body = send.call_args.args[1]
-        for gone in ("Prembly", "BVN", "reply *7*", "on-screen moves"):
+        for gone in ("Prembly", "reply *7*", "on-screen moves"):
             self.assertNotIn(gone, body)
+        self.assertIn("enter your BVN and NIN", body)
         self.assertIn("message you here with the result", body)

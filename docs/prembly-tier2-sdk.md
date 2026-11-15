@@ -1,6 +1,6 @@
 # Prembly Tier 2 SDK (retired for Tier 2)
 
-> **Retired for Tier 2.** Tier 2 is now a selfie sent to Wema with the account
+> **Retired for Tier 2.** Tier 2 is now BVN, NIN and a selfie sent to Wema with the account
 > (see `docs/wema-migration.md`, *Account tier upgrade*). Prembly is no longer
 > used for Tier 2 in the app or on WhatsApp. The session adapter below remains
 > only for the new-device sign-in check.

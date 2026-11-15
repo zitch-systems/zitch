@@ -1511,7 +1511,7 @@ def _kyc_state(user) -> dict:
         "tier2_face_rail": "wema",
         "tier2_face_flow": "wema_selfie",
         "tier2_requires_nin": False,
-        "tier2_requires_identity": not user.tier1_identity_verified,
+        "tier2_requires_identity": True,
         "tier2_face_pending": not user.face_verified and tier2_face_pending(user),
         "tier2_face_available": tier2_face_available(),
         "tier2_unavailable_reason": "" if tier2_face_available() else TIER2_FACE_UNAVAILABLE,

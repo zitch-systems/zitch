@@ -483,9 +483,10 @@ class IdentityProof(models.Model):
 
 def record_identity_proof(user: User, identity_type: str, raw_or_hash: str, *,
                           source: str, provider_reference: str = "",
-                          prehashed: bool = False, verified_name: str = "") -> IdentityProof:
+                          prehashed: bool = False, verified_name: str = "",
+                          last4: str = "") -> IdentityProof:
     identity_hash = raw_or_hash if prehashed else hash_identifier(raw_or_hash)
-    last4 = "" if prehashed else (raw_or_hash or "")[-4:]
+    last4 = last4 if prehashed else (raw_or_hash or "")[-4:]
     defaults = {"identity_last4": last4, "provider_reference": provider_reference[:128]}
     if verified_name:
         defaults["verified_name"] = " ".join(verified_name.split())[:150]
