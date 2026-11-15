@@ -3,7 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import { Loading } from '@/components/design/Loading';
-import FaceVerifyModal from '@/components/design/FaceVerifyModal';
+import FaceLivenessModal, { type FaceCapture } from '@/components/design/FaceLivenessModal';
 import AuthGuard from '@/components/AuthGuard';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Card } from '@/components/design/ui';
@@ -12,31 +12,22 @@ import { TierBadge, TierDetails, TierPill } from '@/components/design/TierRow';
 import { apiJson } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
 import { getSessionGeneration } from '@/lib/secureStore';
-import { classifyKycResponse, kycService, resolveOwnershipOtpRoute, type KycStatus } from '@/lib/services/kyc';
+import { kycService, type KycStatus } from '@/lib/services/kyc';
 import { tierLadder, type LadderTier } from '@/lib/tierLadder';
 import { useTheme, font } from '@/lib/theme';
 
-type Status = KycStatus & { tier_ladder?: LadderTier[] };
+type Status = KycStatus & { tier_ladder?: LadderTier[]; has_wema_account?: boolean };
 
-/** The only page the live face check may load (same check as kyc.tsx runPrembly). */
-const FACE_ORIGIN = 'https://sdk-live.prembly.com';
-const isTrustedFaceUrl = (url: string) => {
-  try {
-    const target = new URL(url);
-    return target.origin === FACE_ORIGIN && !target.username && !target.password;
-  } catch { return false; }
-};
-
-/** While the face page is open the server is asked this often whether it is done. */
-const POLL_MS = 3000;
 const GREEN = '#15803D';
 
-
 /** 3456 7890 123 — grouped for reading; the digits alone are sent. */
-const groupNin = (digits: string) => [digits.slice(0, 4), digits.slice(4, 8), digits.slice(8)].filter(Boolean).join(' ');
+const group = (digits: string) => [digits.slice(0, 4), digits.slice(4, 8), digits.slice(8)].filter(Boolean).join(' ');
+const digits = (value: string) => value.replace(/\D/g, '').slice(0, 11);
 
-const faceVerified = (r: Partial<Status> & { status?: unknown }) =>
-  !!r.success && r.status === 'verified' && r.face_verified === true;
+/** A Tier 2 refusal that a new live face check fixes (not a BVN/NIN problem). */
+const faceRefused = (res: { success?: boolean; pending?: boolean; code?: string }) =>
+  !res.success && !res.pending && (/^(selfie|liveness)_/.test(res.code || '')
+    || (res as { _httpStatus?: number })._httpStatus === 502);
 
 const Done = ({ label }: { label: string }) => (
   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 34 }}>
@@ -45,31 +36,33 @@ const Done = ({ label }: { label: string }) => (
   </View>
 );
 
+/**
+ * Upgrade to Tier 2 (design 72), on the bank's contract: the customer types
+ * their BVN and NIN, takes the live face check (FaceLivenessModal: a straight
+ * photo and a head turn, checked by our server), and one request sends the
+ * account, both numbers and the checked photo to the bank. Only the bank's
+ * read-back raises the tier.
+ */
 const Tier2 = () => {
   const { c, theme } = useTheme();
   const params = useLocalSearchParams<{ from?: string }>();
   const [status, setStatus] = useState<Status | null>(null);
   const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [bvn, setBvn] = useState('');
   const [nin, setNin] = useState('');
-  const [ninSent, setNinSent] = useState(false);
-  const [ninOtp, setNinOtp] = useState('');
-  const [ninTrackingId, setNinTrackingId] = useState('');
-  const [ninDestination, setNinDestination] = useState('');
-  const [faceUrl, setFaceUrl] = useState('');
-  const [faceSession, setFaceSession] = useState('');
-  const [faceOpen, setFaceOpen] = useState(false);
+  const [face, setFace] = useState<FaceCapture | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const mounted = useRef(true);
   const inFlight = useRef(false);
   const screenGeneration = useRef(getSessionGeneration()).current;
   const loadGeneration = useRef(0);
-  const pollGeneration = useRef(0);
 
   const live = useCallback(() => mounted.current && screenGeneration === getSessionGeneration(), [screenGeneration]);
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; pollGeneration.current += 1; };
+    return () => { mounted.current = false; };
   }, []);
 
   const load = useCallback(async (): Promise<Status | null> => {
@@ -88,7 +81,7 @@ const Tier2 = () => {
 
   useFocusEffect(useCallback(() => {
     void load();
-    return () => { pollGeneration.current += 1; inFlight.current = false; setBusy(false); setFaceOpen(false); };
+    return () => { inFlight.current = false; setBusy(false); setCameraOpen(false); };
   }, [load]));
 
   const begin = () => {
@@ -102,172 +95,50 @@ const Tier2 = () => {
     if (mounted.current) setBusy(false);
   };
 
-  const ninDone = !!status?.nin_verified;
-  const faceDone = !!status?.face_verified;
-  const faceUnavailable = status?.tier2_face_available === false;
-
-  // --- Step 1: NIN, with the ownership code when the server asks for one ---
-  const verifyNin = async () => {
-    if (nin.length !== 11 || !begin()) return;
-    try {
-      const res = await kycService.startNin(nin);
-      if (!live()) return;
-      if (res.pending) {
-        notify('Verification processing', res.message || 'Your NIN check is still processing. Check again shortly.', 'info');
-      } else if (res.otp_required) {
-        const challenge = resolveOwnershipOtpRoute(res);
-        if (!challenge) {
-          notify('Error', 'We could not start a secure verification challenge. Please try again.');
-        } else {
-          setNinTrackingId(challenge.trackingId);
-          setNinDestination(res.delivery || res.otp_destination || '');
-          setNinOtp('');
-          setNinSent(true);
-          notify('NIN code requested', res.message || 'Enter the verification code to finish.', 'success');
-        }
-      } else if (res.identity_review_required) {
-        notify('Verification needs review', res.message || 'Your NIN needs review.', 'info');
-        await load();
-      } else if (res.success && !res.upgrade_required) {
-        const fresh = await load();
-        if (!live()) return;
-        if (fresh?.nin_verified) { setNin(''); notify('NIN verified', undefined, 'success'); }
-        else notify('Verification submitted', fresh?.message || 'Your NIN was received. Check again shortly for the result.', 'info');
-      } else {
-        notify('Could not verify NIN', res.message || 'Check the number and try again.');
-      }
-    } catch { if (live()) notify('Error', 'Something went wrong.'); }
-    finally { end(); }
+  const finished = () => {
+    // Best effort: Tier 3 is the sign-up address; its check needs no input.
+    void apiJson(EP.kyc.address).catch(() => undefined);
+    notify('You’re now Tier 2', 'Your new limits apply right away.', 'success');
+    if (params.from === 'limits' && router.canGoBack()) router.back();
+    else router.replace('/accountlimits');
   };
 
-  const confirmNin = async () => {
-    if (ninOtp.length !== 6 || !begin()) return;
-    try {
-      const res = await kycService.confirmNin(ninTrackingId, ninOtp);
-      if (!live()) return;
-      const outcome = classifyKycResponse(res, ['nin_verified']);
-      if (outcome === 'pending') {
-        notify('Verification processing', res.message || 'Your NIN check is still processing. Check again shortly.', 'info');
-      } else if (outcome === 'review') {
-        notify('Verification needs review', res.message || 'Your NIN needs review.', 'info');
-        await load();
-      } else if (outcome === 'success' || outcome === 'unverified') {
-        const fresh = await load();
-        if (!live()) return;
-        if (fresh?.nin_verified) {
-          setNin(''); setNinOtp(''); setNinSent(false); setNinTrackingId(''); setNinDestination('');
-          notify('NIN verified', undefined, 'success');
-        } else notify('Verification submitted', fresh?.message || 'Your NIN was received. Check again shortly for the result.', 'info');
-      } else notify('Verification failed', res.message || 'Check the code and try again.');
-    } catch { if (live()) notify('Verification failed', 'Check your connection and try again.'); }
-    finally { end(); }
-  };
+  const idsDone = bvn.length === 11 && nin.length === 11;
 
-  const resendNin = async () => {
-    if (!ninSent || !begin()) return;
-    try {
-      const res = await kycService.resendNin(ninTrackingId, nin);
-      if (!live()) return;
-      const route = resolveOwnershipOtpRoute(res);
-      if (res.success && (ninTrackingId || route)) {
-        if (!ninTrackingId && route) setNinTrackingId(route.trackingId);
-        setNinOtp('');
-        setNinDestination(res.delivery || res.otp_destination || '');
-        notify('NIN code resent', res.message || 'Enter the latest verification code.', 'success');
-      } else notify('Error', res.message || 'Could not resend the NIN code');
-    } catch { if (live()) notify('Error', 'Something went wrong.'); }
-    finally { end(); }
-  };
-
-  // --- Step 2: the live face check, held in-app; the server says when it is done ---
-  const checkFace = useCallback(async (session: string, generation: number): Promise<boolean> => {
-    const res = await kycService.getLivenessStatus(session);
-    if (!live() || generation !== pollGeneration.current) return false;
-    if (faceVerified(res)) {
-      pollGeneration.current += 1;
-      setFaceOpen(false);
-      setFaceSession('');
-      setStatus((s) => (s ? { ...s, ...res } : res as Status));
-      notify('Face check complete', undefined, 'success');
-      return true;
-    }
-    if (res.status === 'failed' || res.status === 'expired') {
-      pollGeneration.current += 1;
-      setFaceOpen(false);
-      setFaceSession('');
-      notify('Face check not confirmed', res.message || 'Please start the face check again.', 'info');
-      return true;
-    }
-    return false;
-  }, [live]);
-
-  useEffect(() => {
-    if (!faceOpen || !faceSession) return undefined;
-    const generation = ++pollGeneration.current;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const tick = () => {
-      timer = setTimeout(async () => {
-        if (generation !== pollGeneration.current) return;
-        let finished = false;
-        try { finished = await checkFace(faceSession, generation); } catch { /* keep waiting */ }
-        if (!finished && generation === pollGeneration.current) tick();
-      }, POLL_MS);
-    };
-    tick();
-    return () => { if (timer) clearTimeout(timer); };
-  }, [faceOpen, faceSession, checkFace]);
-
-  const startFace = async () => {
-    if (faceUnavailable || !begin()) return;
-    try {
-      const started = await kycService.startLiveness();
-      if (!live()) return;
-      if (!started.success || !started.session || !started.url) {
-        notify('Face check', started.message || 'Could not start the face check.', 'info');
-        return;
-      }
-      if (!isTrustedFaceUrl(started.url)) {
-        notify('Face check unavailable', 'The verification link could not be confirmed.');
-        return;
-      }
-      setFaceUrl(started.url);
-      setFaceSession(started.session);
-      setFaceOpen(true);
-    } catch { if (live()) notify('Face check', 'Could not start the face check. Please try again.'); }
-    finally { end(); }
-  };
-
-  const closeFace = () => {
-    setFaceOpen(false);
-    const session = faceSession;
-    if (!session) return;
-    const generation = ++pollGeneration.current;
-    void checkFace(session, generation).catch(() => undefined);
-  };
-
-  // --- Submit: the server confirms Tier 2, then the address check is asked to start ---
   const submit = async () => {
-    if (!ninDone || !faceDone || !begin()) return;
+    if (!idsDone || !face || !begin()) return;
+    try {
+      const res = await kycService.upgradeTier2(bvn, nin, face.image, face.token);
+      if (!live()) return;
+      if (res.success) {
+        const fresh = await load();
+        if (!live()) return;
+        if (fresh?.face_verified && Number(fresh.tier) >= 2) { setBvn(''); setNin(''); setFace(null); finished(); }
+        else notify('Almost there', fresh?.message || 'Your bank is finishing your upgrade. Check again shortly.', 'info');
+      } else if (res.pending) {
+        setBvn(''); setNin(''); setFace(null);
+        notify('Your bank is checking your face', res.message || 'We’ll update your tier shortly.', 'info');
+        await load();
+      } else {
+        if (faceRefused(res)) setFace(null);
+        notify('Not upgraded yet', res.message || 'Please try again.');
+      }
+    } catch { if (live()) notify('Error', 'Check your connection and try again.'); }
+    finally { end(); }
+  };
+
+  const checkAgain = async () => {
+    if (!begin()) return;
     try {
       const fresh = await load();
-      if (!live()) return;
-      if (fresh?.nin_verified && fresh.face_verified && fresh.tier >= 2) {
-        // Best effort: Tier 3 is the sign-up address; its check needs no input.
-        void apiJson(EP.kyc.address).catch(() => undefined);
-        notify('You’re now Tier 2', 'Your new limits apply right away.', 'success');
-        if (params.from === 'limits' && router.canGoBack()) router.back();
-        else router.replace('/accountlimits');
-      } else {
-        notify('Not finished yet', fresh?.message || 'Finish both steps to submit.', 'info');
-      }
-    } catch { if (live()) notify('Error', 'Something went wrong.'); }
-    finally { end(); }
+      if (live() && fresh?.face_verified && Number(fresh.tier) >= 2) finished();
+    } finally { end(); }
   };
 
   if (!status) {
     return (
       <Screen>
-        <Header title="Upgrade to Tier 2" sub="Your NIN and a quick face check" onBack={() => router.back()} />
+        <Header title="Upgrade to Tier 2" sub="Your BVN, NIN and a live face check" onBack={() => router.back()} />
         {loadError ? (
           <Card>
             <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginBottom: 16 }}>{loadError}</Text>
@@ -280,8 +151,12 @@ const Tier2 = () => {
 
   const tint = theme === 'dark' ? 'rgba(234,251,247,0.07)' : 'rgba(6,110,102,0.06)';
   const tier2 = tierLadder(status.tier_ladder).find((t) => t.tier === 2);
-  const canSubmit = ninDone && faceDone && !busy;
-  const hint = !faceDone ? 'Finish the face check to submit.' : !ninDone ? 'Verify your NIN to submit.' : '';
+  const complete = !!status.face_verified && Number(status.tier) >= 2;
+  const unavailable = status.tier2_face_available === false;
+  const pending = !complete && status.tier2_face_pending === true;
+  const noAccount = status.has_wema_account === false;
+  const canSubmit = idsDone && !!face && !busy;
+  const hint = !idsDone ? 'Enter your BVN and NIN to submit.' : !face ? 'Take the live face check to submit.' : '';
 
   const OutlineBtn = ({ label, icon, onPress, disabled }: { label: string; icon: string; onPress: () => void; disabled?: boolean }) => (
     <Pressable
@@ -297,10 +172,18 @@ const Tier2 = () => {
     </Pressable>
   );
 
+  const Notice = ({ title, body, action }: { title: string; body: string; action?: React.ReactNode }) => (
+    <Card style={{ marginTop: 14, gap: 10 }}>
+      <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>{title}</Text>
+      <Text style={{ fontSize: 13, fontFamily: font.regular, color: c.ink2, lineHeight: 19 }}>{body}</Text>
+      {action}
+    </Card>
+  );
+
   return (
     <>
       <Screen>
-        <Header title="Upgrade to Tier 2" sub="Your NIN and a quick face check" onBack={() => router.back()} />
+        <Header title="Upgrade to Tier 2" sub="Your BVN, NIN and a live face check" onBack={() => router.back()} />
 
         {/* The same Tier 2 row as Account limits, so the two screens read alike. */}
         {tier2 ? (
@@ -315,80 +198,83 @@ const Tier2 = () => {
           </Card>
         ) : null}
 
-        <Card style={{ marginTop: 14, gap: 14 }}>
-          <StepTitle n={1} title="Your NIN" done={ninDone} />
-          {ninDone ? <Done label="Verified" /> : !ninSent ? (
-            <>
+        {complete ? (
+          <Notice title="You’re on Tier 2" body="Your face check passed and your bank confirmed the upgrade." />
+        ) : pending ? (
+          <Notice title="Your bank is checking your face"
+            body="You don’t need to do anything. We’ll update your tier as soon as your bank confirms."
+            action={<OutlineBtn label={busy ? 'Checking…' : 'Check again'} icon="scan" disabled={busy} onPress={() => void checkAgain()} />} />
+        ) : unavailable ? (
+          <Notice title="Tier 2 is temporarily unavailable"
+            body={status.tier2_unavailable_reason || 'Your verified identity is saved. Please try again later.'}
+            action={<OutlineBtn label="Contact support" icon="help" onPress={() => router.push('/support')} />} />
+        ) : noAccount ? (
+          <Notice title="Set up your account first"
+            body="Tier 2 upgrades your Zitch account at the bank. Finish setting up your account number, then come back here." />
+        ) : (
+          <>
+            <Card style={{ marginTop: 14, gap: 14 }}>
+              <StepTitle n={1} title="Your BVN and NIN" done={idsDone} />
+              <Field tint editable={!busy} label="Bank Verification Number (BVN)" placeholder="11 digits" keyboardType="number-pad"
+                value={group(bvn)} onChangeText={(v) => setBvn(digits(v))}
+                prefix={<ZIcon name="insurance" size={19} color={c.ink3} stroke={1.9} />} />
               <Field tint editable={!busy} label="National Identification Number (NIN)" placeholder="11 digits" keyboardType="number-pad"
-                value={groupNin(nin)} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))}
+                value={group(nin)} onChangeText={(v) => setNin(digits(v))}
                 prefix={<ZIcon name="card" size={19} color={c.ink3} stroke={1.9} />} />
-              <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3, marginTop: -6, lineHeight: 17 }}>We check your NIN to confirm it’s yours.</Text>
-              {nin.length === 11 && <OutlineBtn label={busy ? 'Checking…' : 'Verify NIN'} icon="shield" disabled={busy} onPress={() => void verifyNin()} />}
-            </>
-          ) : (
-            <>
-              <Text style={{ fontSize: 13, fontFamily: font.regular, color: c.ink2, lineHeight: 19 }}>
-                {`Enter the 6-digit code${ninDestination ? ` sent to ${ninDestination}` : ' sent for your NIN'}.`}
+              <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3, marginTop: -6, lineHeight: 17 }}>
+                Your bank needs both with your face check. We match them to your verified details and don’t keep them.
               </Text>
-              <Field tint editable={!busy} label="Verification code" autoComplete="sms-otp" textContentType="oneTimeCode" maxLength={6} placeholder="6-digit code" keyboardType="number-pad"
-                value={ninOtp} onChangeText={(v) => setNinOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <Pressable accessibilityRole="button" accessibilityLabel="Change NIN" disabled={busy} onPress={() => { setNinSent(false); setNinOtp(''); setNinTrackingId(''); setNinDestination(''); }} style={{ minHeight: 44, justifyContent: 'center' }}>
-                  <Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Change NIN</Text>
-                </Pressable>
-                <Pressable accessibilityRole="button" accessibilityLabel="Resend NIN code" disabled={busy} onPress={() => void resendNin()} style={{ minHeight: 44, justifyContent: 'center' }}>
-                  <Text style={{ fontSize: 12.5, color: busy ? c.ink3 : c.brand, fontFamily: font.semibold }}>Resend code</Text>
-                </Pressable>
-              </View>
-              <OutlineBtn label={busy ? 'Confirming…' : 'Confirm NIN'} icon="check" disabled={busy || ninOtp.length !== 6} onPress={() => void confirmNin()} />
-            </>
-          )}
-        </Card>
+            </Card>
 
-        <Card style={{ marginTop: 14, gap: 12 }}>
-          <StepTitle n={2} title="Face check" done={faceDone} />
-          {faceDone ? <Done label="Done" /> : (
-            <>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: 'rgba(6,110,102,0.08)', alignItems: 'center', justifyContent: 'center' }}>
-                  <ZIcon name="faceid" size={26} color={c.brand} stroke={1.7} />
+            <Card style={{ marginTop: 14, gap: 12 }}>
+              <StepTitle n={2} title="Live face check" done={!!face} />
+              {face ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Done label="Face check passed" />
+                  <Pressable accessibilityRole="button" accessibilityLabel="Take the face check again" disabled={busy}
+                    onPress={() => setCameraOpen(true)} style={{ minHeight: 44, justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Retake</Text>
+                  </Pressable>
                 </View>
-                <Text style={{ flex: 1, fontSize: 13, fontFamily: font.regular, color: c.ink2, lineHeight: 19 }}>
-                  A short selfie video. We match it to your NIN photo. It takes about a minute.
-                </Text>
-              </View>
-              {faceUnavailable ? (
-                <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3, lineHeight: 18 }}>
-                  {status.tier2_unavailable_reason || 'Face checks aren’t available right now. Please try again later.'}
-                </Text>
-              ) : null}
-              <OutlineBtn label="Start face check" icon="scan" disabled={busy || faceUnavailable} onPress={() => void startFace()} />
-            </>
-          )}
-        </Card>
+              ) : (
+                <>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                    <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: 'rgba(6,110,102,0.08)', alignItems: 'center', justifyContent: 'center' }}>
+                      <ZIcon name="faceid" size={26} color={c.brand} stroke={1.7} />
+                    </View>
+                    <Text style={{ flex: 1, fontSize: 13, fontFamily: font.regular, color: c.ink2, lineHeight: 19 }}>
+                      Look straight at the camera, then slowly turn your head. Your bank matches the photo to your BVN and NIN. About ten seconds.
+                    </Text>
+                  </View>
+                  <OutlineBtn label="Start face check" icon="scan" disabled={busy} onPress={() => setCameraOpen(true)} />
+                </>
+              )}
+            </Card>
 
-        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginTop: 14, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: tint }}>
-          <View style={{ marginTop: 1 }}><ZIcon name="home" size={17} color={c.brand} stroke={2} /></View>
-          <Text style={{ flex: 1, fontSize: 12.5, fontFamily: font.medium, color: c.ink2, lineHeight: 18 }}>
-            Your sign-up address is sent with this, so the Tier 3 check starts straight away.
-          </Text>
-        </View>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginTop: 14, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: tint }}>
+              <View style={{ marginTop: 1 }}><ZIcon name="home" size={17} color={c.brand} stroke={2} /></View>
+              <Text style={{ flex: 1, fontSize: 12.5, fontFamily: font.medium, color: c.ink2, lineHeight: 18 }}>
+                Your sign-up address is sent with this, so the Tier 3 check starts straight away.
+              </Text>
+            </View>
 
-        <View style={{ marginTop: 20 }}>
-          <Btn label={busy && ninDone && faceDone ? 'Submitting…' : 'Submit for Tier 2'} disabled={!canSubmit} onPress={() => void submit()} />
-        </View>
-        {!!hint && <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3, marginTop: 10, textAlign: 'center' }}>{hint}</Text>}
+            <View style={{ marginTop: 20 }}>
+              <Btn label={busy ? 'Submitting…' : 'Submit for Tier 2'} disabled={!canSubmit} onPress={() => void submit()} />
+            </View>
+            {!!hint && <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3, marginTop: 10, textAlign: 'center' }}>{hint}</Text>}
+          </>
+        )}
       </Screen>
-      {!!faceUrl && (
-        <FaceVerifyModal
-          url={faceUrl}
-          visible={faceOpen}
-          onClose={closeFace}
-          title="Face check"
-          subtitle="Secure verification page"
-          footer="Your video is used only for this check and is never stored by Zitch."
-        />
-      )}
+      <FaceLivenessModal
+        visible={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        onCapture={(capture) => {
+          if (!live()) return;
+          setCameraOpen(false);
+          setFace(capture);
+          notify('Face check passed', 'Now submit for Tier 2.', 'success');
+        }}
+      />
     </>
   );
 };
