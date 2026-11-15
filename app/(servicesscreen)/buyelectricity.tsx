@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { apiPost } from '@/lib/api';
@@ -7,7 +7,9 @@ import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
-import { Label, ProviderGrid, Segmented, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { DiscoRow, RecentField, ResolvedAccount } from '@/components/design/billkit';
+import { useBillRecents, refreshBillRecents } from '@/lib/recents';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -40,6 +42,7 @@ const BuyElectricity = () => {
   const [meter, setMeter] = useState('');
   const [amt, setAmt] = useState('');
   const [customerName, setCustomerName] = useState('');
+  const [customerAddress, setCustomerAddress] = useState('');
   const [validating, setValidating] = useState(false);
   const [validatedFor, setValidatedFor] = useState('');
   const [purchasedToken, setPurchasedToken] = useState('');
@@ -80,6 +83,7 @@ const BuyElectricity = () => {
       if (!isCurrentSession() || generation !== validationGeneration.current) return;
       if (response.ok && result.success === true) {
         setCustomerName(result.customer_name || result.name || 'Verified');
+        setCustomerAddress(String(result.customer_address || result.address || ''));
         setValidatedFor(requestedFor);
       } else {
         notify('Error', result.message || 'Could not verify meter number.');
@@ -97,11 +101,35 @@ const BuyElectricity = () => {
     validationGeneration.current += 1;
     setValidating(false);
     setCustomerName('');
+    setCustomerAddress('');
     setValidatedFor('');
   };
 
+  // The meter field opens with the last meter paid on this disco, and lists the
+  // others; the name and address resolve as soon as the number is complete.
+  const recents = useBillRecents();
+  const meterEdited = useRef(false);
+  const meters = recents.meters.filter((r) => r.disco === disco);
+  useEffect(() => {
+    if (meterEdited.current) return;
+    const last = recents.meters.find((r) => r.disco === disco);
+    invalidateMeter();
+    setMeter(last ? last.meter : '');
+    if (last) setMeterType(last.meter_type);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recents, disco]);
+  const attempted = useRef('');
+  useEffect(() => {
+    if (meter.length >= 10 && !verifiedCustomer && !validating && attempted.current !== validationKey) {
+      attempted.current = validationKey;
+      validateMeter();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [validationKey, verifiedCustomer, validating]);
+
   const changeDisco = (value: string) => {
     invalidateMeter();
+    meterEdited.current = false;
     setDisco(value);
   };
 
@@ -112,6 +140,7 @@ const BuyElectricity = () => {
 
   const changeMeter = (value: string) => {
     invalidateMeter();
+    meterEdited.current = true;
     setMeter(value.replace(/\D/g, '').slice(0, 13));
   };
 
@@ -149,6 +178,7 @@ const BuyElectricity = () => {
         if (result.token) setPurchasedToken(String(result.token));
         setStep(null);
         setDone(true);
+        refreshBillRecents();
         reload();
       } else if (outcome === 'pending' || outcome === 'unknown') {
         setPending(true);
@@ -216,7 +246,7 @@ const BuyElectricity = () => {
       <Header title="Electricity" onBack={() => router.back()} />
 
       <Label>Select disco</Label>
-      <ProviderGrid items={DISCOS} value={disco} onPick={changeDisco} cols={3} />
+      <DiscoRow items={DISCOS} value={disco} onPick={changeDisco} />
 
       <Segmented
         options={[{ v: 'prepaid', label: 'Prepaid' }, { v: 'postpaid', label: 'Postpaid' }]}
@@ -224,24 +254,39 @@ const BuyElectricity = () => {
         onChange={changeMeterType}
       />
 
-      <Field
+      <RecentField
         label="Meter number"
         value={meter}
         onChangeText={changeMeter}
-        keyboardType="number-pad"
+        onPick={(it) => {
+          const r = meters.find((m) => m.meter === it.value);
+          changeMeter(it.value);
+          if (r) setMeterType(r.meter_type);
+        }}
+        items={meters.slice(0, 5).map((r) => ({
+          value: r.meter,
+          sub: [DISCOS.find((d) => d.id === r.disco)?.name.replace(/ \(.*\)$/, '') + ' Electric', r.name].filter(Boolean).join(' · '),
+        }))}
+        menuTitle="Recent meter numbers"
+        anotherLabel="Use another meter number"
+        tag={meter && meters.some((r) => r.meter === meter) ? 'Last used' : undefined}
         placeholder="01234567890"
+        maxLength={13}
       />
-      <View style={{ marginTop: 8, marginBottom: 8 }}>
+      <View style={{ marginBottom: 8 }}>
         {verifiedCustomer ? (
-          <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {verifiedCustomer}</Text>
-        ) : (
-          <Btn label={validating ? 'Checking…' : 'Validate meter'} variant="outline" size="sm" full={false} onPress={validateMeter} disabled={validating || meter.length < 8} />
-        )}
+          <ResolvedAccount name={verifiedCustomer} detail={customerAddress} />
+        ) : meter.length >= 8 ? (
+          <View style={{ marginTop: 8 }}>
+            <Btn label={validating ? 'Checking…' : 'Validate meter'} variant="outline" size="sm" full={false} onPress={validateMeter} disabled={validating} />
+          </View>
+        ) : null}
       </View>
 
       <Label>Amount</Label>
       <QuickAmounts amounts={ELEC_AMOUNTS} value={amt} onPick={setAmt} />
       <Field
+        tint
         value={amt}
         onChangeText={(v) => { const normalized = normalizeAmountInput(v); if (normalized !== null) setAmt(normalized); }}
         keyboardType="decimal-pad"

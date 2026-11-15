@@ -3,8 +3,11 @@
 Each purchase: verify PIN -> atomically debit wallet (PENDING row) -> call the
 aggregator -> mark the row Successful, or refund on failure.
 """
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 import re
+
+from django.utils import timezone
 
 from common.http import (
     MIN_AIRTIME, MIN_ELECTRICITY, api, check_confirmed_price, check_daily_limit, check_send_limits, fail,
@@ -13,6 +16,7 @@ from common.http import (
 )
 from common.phones import normalize_nigerian_mobile
 from common.ratelimit import ratelimit
+from wallet.models import Transaction
 from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key, run_provider_purchase
 
 from .models import CablePlan, DataPlan
@@ -427,3 +431,74 @@ def payremita(request):
     if not isinstance(outcome, tuple):
         return outcome
     return provider_purchase_response(*outcome, success_message="Remita payment successful")
+
+
+# ---------------- RECENTS ----------------
+RECENT_DAYS = 365
+RECENT_SCAN = 400
+RECENT_KEEP = 12
+
+
+def _text(value, limit=120):
+    return str(value or "").strip()[:limit]
+
+
+@api
+@require_user
+def bill_recents(request):
+    """POST /api/utility/recents/ -> what this customer has paid for before.
+
+    The bill screens open with the last number, meter, smartcard or betting ID
+    used and list the others under it. Built only from the customer's own
+    successful bill payments of the last year, newest first and without
+    duplicates; a failed or still-pending attempt never becomes a default.
+    """
+    user = request.user_obj
+    since = timezone.now() - timedelta(days=RECENT_DAYS)
+    rows = (Transaction.objects
+            .filter(user=user, direction=Transaction.OUT,
+                    transaction_status=Transaction.SUCCESS, created__gte=since)
+            .order_by("-created")
+            .values_list("service", "meta", "created")[:RECENT_SCAN])
+    out = {"phones": [], "meters": [], "smartcards": [], "betting": [], "exam_phones": []}
+    seen = set()
+
+    def add(kind, key, item):
+        if (kind, key) in seen or len(out[kind]) >= RECENT_KEEP:
+            return
+        seen.add((kind, key))
+        out[kind].append(item)
+
+    for service, meta, created in rows:
+        meta = meta if isinstance(meta, dict) else {}
+        service = str(service or "")
+        when = created.isoformat()
+        if service.startswith(("Airtime", "Data")):
+            phone = normalize_nigerian_mobile(meta.get("phone"))
+            network = str(meta.get("network", ""))
+            if phone and network in NETWORK_NAMES:
+                add("phones", phone, {"phone": phone, "network": network, "last_used": when})
+        elif service.startswith("Electricity"):
+            meter, disco = _identifier(meta.get("meter")), str(meta.get("disco", ""))
+            if meter and disco in DISCO_NAMES:
+                meter_type = meta.get("meter_type") if meta.get("meter_type") in ("prepaid", "postpaid") else "prepaid"
+                add("meters", (disco, meter, meter_type), {
+                    "meter": meter, "disco": disco, "meter_type": meter_type,
+                    "name": _text(meta.get("customer_name") or meta.get("customer")),
+                    "address": _text(meta.get("customer_address") or meta.get("address"), 200),
+                    "last_used": when})
+        elif service.startswith("Cable"):
+            iuc, provider = _identifier(meta.get("iuc")), str(meta.get("provider", ""))
+            if iuc and provider in CABLE_NAMES:
+                add("smartcards", (provider, iuc), {
+                    "iuc": iuc, "provider": provider, "name": _text(meta.get("customer_name")),
+                    "last_used": when})
+        elif service.startswith("Betting funding"):
+            platform, user_id = _text(meta.get("platform"), 40), _text(meta.get("user_id"), 40)
+            if platform and len(user_id) >= 4:
+                add("betting", (platform, user_id), {"platform": platform, "user_id": user_id, "last_used": when})
+        elif service.startswith("Exam PIN"):
+            phone = normalize_nigerian_mobile(meta.get("phone"))
+            if phone:
+                add("exam_phones", phone, {"phone": phone, "last_used": when})
+    return ok(success=True, **out)

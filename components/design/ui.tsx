@@ -446,6 +446,7 @@ export const Field = ({
   error,
   onFocus,
   onBlur,
+  tint = false,
 }: {
   label?: string;
   value?: string;
@@ -474,8 +475,11 @@ export const Field = ({
   error?: string;
   onFocus?: () => void;
   onBlur?: () => void;
+  /** No border: the field sits on the soft brand tint and gets a teal ring while
+   *  focused (the bill screens, review Nov 2026). */
+  tint?: boolean;
 }) => {
-  const { c } = useTheme();
+  const { c, theme } = useTheme();
   const [show, setShow] = useState(false);
   const [focused, setFocused] = useState(false);
   const secure = !!secureTextEntry && !show;
@@ -494,10 +498,10 @@ export const Field = ({
           flexDirection: 'row',
           alignItems: 'center',
           gap: 10,
-          backgroundColor: c.surface,
-          borderWidth: 1,
-          borderColor: error ? c.red : focused ? c.brand : c.line,
-          borderRadius: radius.md,
+          backgroundColor: tint && !focused ? (theme === 'dark' ? 'rgba(234,251,247,0.07)' : 'rgba(6,110,102,0.07)') : c.surface,
+          borderWidth: tint ? 2 : 1,
+          borderColor: error ? c.red : focused ? c.brand : tint ? 'transparent' : c.line,
+          borderRadius: tint ? 18 : radius.md,
           paddingHorizontal: 16,
           minHeight: 56,
           paddingVertical: 12,
