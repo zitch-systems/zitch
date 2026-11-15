@@ -26,8 +26,14 @@ import {
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { transactionStatusPresentation } from '@/lib/transactionStatus';
+import { MARK_WHITE_PNG } from '@/lib/receiptArt';
 
-const MARK = require('@/assets/images/zitch-mark.png');
+// The white 3D coil the receipt PDF and the WhatsApp receipt carry (one image,
+// lib/receiptArt): drawn as it is for the header's faint ghost, and tinted to a
+// brand-teal outline for the texture over the white ticket, where white would
+// vanish. 93 x 120, the coil's own proportions.
+const COIL = { uri: MARK_WHITE_PNG };
+const COIL_RATIO = 93 / 120;
 // The code never changes within a session, so it is encoded once.
 const QR = qrPath(WHATSAPP_START_URL);
 
@@ -86,7 +92,7 @@ const Entry = ({ label, children }: { label: string; children: React.ReactNode }
   </View>
 );
 
-// The Z mark tiled faintly over the ticket, the last child so it lies over the
+// The coil tiled faintly over the ticket, the last child so it lies over the
 // rows: a crop cannot lift a clean region out of the middle, and it rides along
 // on the saved JPEG. Faint enough never to fight the amount. The reference and
 // our records are what prove a payment, not this.
@@ -95,7 +101,7 @@ const Texture = () => (
     {Array.from({ length: 12 }).map((_, row) => (
       <View key={row} style={{ flexDirection: 'row', gap: 46, marginLeft: row % 2 ? 26 : -6, height: 60 }}>
         {Array.from({ length: 7 }).map((__, col) => (
-          <Image key={col} source={MARK} resizeMode="contain" style={{ width: 16, height: 22, tintColor: C.brand }} />
+          <Image key={col} source={COIL} resizeMode="contain" style={{ width: Math.round(22 * COIL_RATIO), height: 22, tintColor: C.brand }} />
         ))}
       </View>
     ))}
@@ -263,7 +269,10 @@ const Receipt = ({
               end={{ x: 1, y: 1 }}
               style={{ height: 140, paddingHorizontal: 18, paddingTop: 18, overflow: 'hidden' }}
             >
-              <Image source={MARK} resizeMode="contain" style={{ position: 'absolute', right: -30, top: -36, width: 150, height: 206, tintColor: '#fff', opacity: 0.08 }} />
+              {/* A large ghost of the coil, cut off by the band: the white coil
+                  itself (not tinted, so its shading is kept), faded right back,
+                  as on the WhatsApp receipt. */}
+              <Image source={COIL} resizeMode="contain" style={{ position: 'absolute', right: -30, top: -36, width: Math.round(206 * COIL_RATIO), height: 206, opacity: 0.08 }} />
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <ZCoil height={36} box={27} />
