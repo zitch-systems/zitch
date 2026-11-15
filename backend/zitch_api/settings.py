@@ -823,6 +823,25 @@ WHATSAPP_FLOW = {
     # it, because it is the FIRST screen.
     "PRIVACY_SCREEN": os.environ.get("WHATSAPP_FLOW_PRIVACY_SCREEN", "").strip().lower()
                       in ("1", "true", "yes", "on"),
+    # Release 2 screens (whatsapp/release2.py). Same gate, same reason as the
+    # two above: each defaults OFF and changes nothing until it is turned on,
+    # which must only happen once `publish_flow` lists its screens among the
+    # live ones. See flow_assets/README.md, "Release 2 go-live".
+    #   DETAILS_SCREEN         SIGNUP_DETAILS / DETAILS_CHAIN (names, phone, email)
+    #   VERIFY_PASSWORD_SCREEN VERIFY_PASSWORD (SMS code + app password)
+    #   LOGIN_ONE_SCREEN       LOGIN_SCREEN / LOGIN_RETRY (email code + PIN)
+    #   BILL_FORM              BILL_SCREEN / BILL_CHAIN / BILL_AMOUNT (electricity)
+    #   MENU_FORM              MENU / TRANSFER_CHAIN / VTU_CHAIN (+ BILL_CHAIN)
+    "DETAILS_SCREEN": os.environ.get("WHATSAPP_FLOW_DETAILS_SCREEN", "").strip().lower()
+                      in ("1", "true", "yes", "on"),
+    "VERIFY_PASSWORD_SCREEN": os.environ.get("WHATSAPP_FLOW_VERIFY_PASSWORD_SCREEN", "").strip().lower()
+                              in ("1", "true", "yes", "on"),
+    "LOGIN_ONE_SCREEN": os.environ.get("WHATSAPP_FLOW_LOGIN_ONE_SCREEN", "").strip().lower()
+                        in ("1", "true", "yes", "on"),
+    "BILL_FORM": os.environ.get("WHATSAPP_FLOW_BILL_FORM", "").strip().lower()
+                 in ("1", "true", "yes", "on"),
+    "MENU_FORM": os.environ.get("WHATSAPP_FLOW_MENU_FORM", "").strip().lower()
+                 in ("1", "true", "yes", "on"),
 }
 
 # LLM intent layer for WhatsApp. Blank API_KEY => AI off (deterministic router

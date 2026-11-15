@@ -135,6 +135,32 @@ FLOW_PASSWORD_STATE = "flow_password"       # ...while the app-password page is 
 #: appears in no transcript, and is hashed before it is written anywhere. Same
 #: reason the PIN and the BVN are collected here.
 SIGNUP_PASSWORD = "SIGNUP_PASSWORD"
+#: Release 2 screens (see whatsapp/release2.py). Every one is unreachable until
+#: its WHATSAPP_FLOW flag is on, because the Flow JSON is published by hand after
+#: the code deploys and answering an unpublished screen is "Couldn't load content".
+#:
+#: SIGNUP_DETAILS is the one-page signup form (names, phone, email);
+#: DETAILS_CHAIN is its twin for the privacy-notice path, for the same routing-
+#: root reason as SIGNUP_CHAIN.
+SIGNUP_DETAILS = "SIGNUP_DETAILS"
+DETAILS_CHAIN = "DETAILS_CHAIN"
+#: The SMS code and the app password on one page.
+VERIFY_PASSWORD = "VERIFY_PASSWORD"
+#: Existing-account sign-in: the email code and the PIN on one page, and the
+#: empty twin a wrong code lands on.
+LOGIN_SCREEN = "LOGIN_SCREEN"
+LOGIN_RETRY = "LOGIN_RETRY"
+#: The menu as a form, and the chained twins of the forms it opens - the roots
+#: themselves must stay roots because the chat opens on them directly.
+MENU_SCREEN = "MENU"
+TRANSFER_CHAIN = "TRANSFER_CHAIN"
+VTU_CHAIN = "VTU_CHAIN"
+#: Pay a bill (electricity) in the secure form.
+BILL_SCREEN = "BILL_SCREEN"
+BILL_CHAIN = "BILL_CHAIN"
+BILL_AMOUNT = "BILL_AMOUNT"
+FLOW_VERIFY_PW_STATE = "flow_verify_pw"   # WaOnboarding.step while VERIFY_PASSWORD is open
+FLOW_BILL_STATE = "flow_bill"             # PendingAction.state while the bill form is open
 FLOW_FORM_STATE = "flow_transfer_form"   # PendingAction.state while the transfer form is open
 FLOW_VTU_STATE = "flow_vtu"   # ...while the airtime/data form is open (payload["vtu_step"] says which page)
 FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
@@ -199,7 +225,8 @@ def resolve_onboarding_token(token: str):
     if ob is None or ob.expired or ob.step not in (
             FLOW_PRIVACY_STATE,
             FLOW_SIGNUP_STATE, FLOW_PHONE_STATE,
-            FLOW_PHONE_CODE_STATE, FLOW_PASSWORD_STATE, FLOW_PIN_STATE):
+            FLOW_PHONE_CODE_STATE, FLOW_PASSWORD_STATE, FLOW_PIN_STATE,
+            FLOW_VERIFY_PW_STATE):
         return None
     if not hmac.compare_digest(sig, _sig(f"{_OB_PREFIX}{ob.id}:{ob.msisdn}")):
         return None
@@ -402,11 +429,35 @@ def _refresh_recorded_result(token: str, *, closing=False):
     except Exception:
         wording = ""
     message = wording if isinstance(wording, str) else ""
-    if not message:
-        message = "Payment successful - the receipt is in your chat."
-    elif "receipt" not in message.lower():
-        message += "\n\nThe receipt is in your chat."
-    return _result_screen(message, status="success")
+    return _result_screen(with_receipt_line(message or "Payment successful"), status="success")
+
+
+#: How every settled payment's outcome page ends. One sentence, always last, so
+#: the customer reads where the proof is in the same place on every receipt.
+RECEIPT_LINE = "Receipt sent to your chat."
+_OLD_RECEIPT_TAILS = (" - the receipt is in your chat.", " — the receipt is in your chat.",
+                      "\n\nThe receipt is in your chat.", "The receipt is in your chat.")
+
+
+def with_receipt_line(message) -> str:
+    """`message` rewritten to end with RECEIPT_LINE.
+
+    The executors word their success as "<what happened> - the receipt is in
+    your chat."; the approved confirm design ends every payment outcome with
+    "Receipt sent to your chat." instead. Rewritten here, at the one place
+    outcomes reach the Flow, rather than in each executor - their sentence is
+    also what the chat and the settled-outcome cache hold.
+    """
+    text = str(message or "").rstrip()
+    if text.endswith(RECEIPT_LINE):
+        return text
+    for tail in _OLD_RECEIPT_TAILS:
+        if text.endswith(tail):
+            text = text[:-len(tail)].rstrip(" -—\n")
+            break
+    if text and not text.endswith((".", "!", "?")):
+        text += "."
+    return f"{text} {RECEIPT_LINE}".strip()
 
 
 def remember_pending(pa, user) -> None:
@@ -505,10 +556,7 @@ def _refresh_pending_result(token: str):
 
     forget_pending(token, status="success" if txn.transaction_status == Transaction.SUCCESS else "failed")
     if txn.transaction_status == Transaction.SUCCESS:
-        return _result_screen(
-            "Payment successful - the receipt is in your chat.",
-            status="success",
-        )
+        return _result_screen(with_receipt_line("Payment successful"), status="success")
     return _result_screen(
         "That payment was not completed. Check your balance and the chat for reversal details.",
         status="failed",
@@ -551,7 +599,8 @@ def resolve_flow_token(token: str):
         return None
     pid, sig = parsed
     pa = PendingAction.objects.filter(id=pid).first()
-    if pa is None or pa.state not in (FLOW_PIN_STATE, FLOW_FORM_STATE, FLOW_VTU_STATE) or pa.expired:
+    if pa is None or pa.state not in (FLOW_PIN_STATE, FLOW_FORM_STATE, FLOW_VTU_STATE,
+                                      FLOW_BILL_STATE) or pa.expired:
         return None
     if not hmac.compare_digest(sig, _sig(f"{pa.id}:{pa.msisdn}")):
         return None
@@ -888,6 +937,19 @@ def _handle_flow_request(payload: dict) -> dict:
     if not isinstance(token, str) or len(token) > 128:
         return _result_screen("Invalid request. Please start again in the chat.", status="failed")
 
+    # Release 2 menu form. Its token addresses the customer's LINK, not a
+    # pending action, so a menu card works for as long as the chat link does.
+    # A form opened from it is an ordinary pending action; once one exists the
+    # session's token is translated to that action's own token and everything
+    # below - the forms, the PIN, Done - runs exactly as for a form opened from
+    # the chat.
+    from .release2 import MENU_PREFIX
+    if token.startswith(MENU_PREFIX):
+        from .release2 import handle_menu_exchange
+        handled, token = handle_menu_exchange(token, action, data)
+        if handled is not None:
+            return handled
+
     # "Done" normally ends the outcome page. If the first response was pending,
     # however, the rail may have settled after Meta rendered that page. Re-read
     # the ledger first; a terminal result is shown once, a still-pending result
@@ -922,8 +984,14 @@ def _handle_flow_request(payload: dict) -> dict:
             # the posted data - same rule as the money session's dispatch.
             if ob.step == FLOW_PRIVACY_STATE:
                 return _submit_privacy_consent(ob, data)
+            if ob.step == FLOW_SIGNUP_STATE and ob.payload.get("details_form"):
+                from .release2 import submit_signup_details_page
+                return submit_signup_details_page(ob, data)
             if ob.step == FLOW_SIGNUP_STATE:
                 return _submit_signup_details(ob, data)
+            if ob.step == FLOW_VERIFY_PW_STATE:
+                from .release2 import submit_verify_password
+                return submit_verify_password(ob, data)
             if ob.step == FLOW_PHONE_STATE:
                 return _submit_signup_phone(ob, data)
             if ob.step == FLOW_PHONE_CODE_STATE:
@@ -939,6 +1007,9 @@ def _handle_flow_request(payload: dict) -> dict:
             return _signup_phone_screen()
         if ob.step == FLOW_PHONE_CODE_STATE:
             return _signup_phone_code_screen(ob)
+        if ob.step == FLOW_VERIFY_PW_STATE:
+            from .release2 import verify_password_screen
+            return verify_password_screen(ob)
         if ob.step == FLOW_PASSWORD_STATE:
             return _signup_password_screen()
         return (_confirm_pin_screen() if ob.payload.get("flow_pin_hash")
@@ -992,6 +1063,9 @@ def _handle_flow_request(payload: dict) -> dict:
             return _transfer_form_screen()
         if pa.state == FLOW_VTU_STATE:
             return _vtu_screen_for(pa)
+        if pa.state == FLOW_BILL_STATE:
+            from .release2 import bill_screen_for
+            return bill_screen_for(pa)
         if pa.action_type == "setpin":
             return _set_pin_screen(pa)
         return _open_pin_screen(pa)
@@ -1002,10 +1076,18 @@ def _handle_flow_request(payload: dict) -> dict:
         # session, and sniffing for a field name would misroute the moment a
         # screen gains or loses one.
         pa = resolve_flow_token(token)
+        # A form opened from the menu sits on a chained twin (TRANSFER_CHAIN,
+        # VTU_CHAIN); its error re-renders must answer that twin, not the root.
+        # Read BEFORE the handler runs: _submit_vtu mutates this same payload.
+        from .release2 import on_twin
+        standing = _flow_screen(pa, "") if pa is not None else ""
         if pa is not None and pa.state == FLOW_FORM_STATE:
-            return _submit_transfer_form(token, data)
+            return on_twin(standing, _submit_transfer_form(token, data))
         if pa is not None and pa.state == FLOW_VTU_STATE:
-            return _submit_vtu(pa, data)
+            return on_twin(standing, _submit_vtu(pa, data))
+        if pa is not None and pa.state == FLOW_BILL_STATE:
+            from .release2 import submit_bill
+            return submit_bill(pa, data)
         return _submit_pin(token, data)
 
     # BACK / unknown actions: re-render the PIN screen if we can, else a terminal.
@@ -1122,6 +1204,12 @@ def _submit_privacy_consent(ob, data: dict) -> dict:
 
     ob.payload["privacy_consent_at"] = timezone.now().isoformat()
     ob.payload["privacy_consent_version"] = PRIVACY_NOTICE_VERSION
+    if details_screen_live():
+        # Release 2: the one-page details form, via its chained twin.
+        ob.payload["details_form"] = True
+        ob.payload["flow_screen"] = DETAILS_CHAIN
+        _onboard_to(ob, FLOW_SIGNUP_STATE)
+        return _signup_screen(screen=DETAILS_CHAIN)
     ob.payload["flow_screen"] = SIGNUP_CHAIN
     _onboard_to(ob, FLOW_SIGNUP_STATE)
     return _signup_screen(screen=SIGNUP_CHAIN)
@@ -1135,6 +1223,23 @@ def _submit_signup_details(ob, data: dict) -> dict:
     COLLECTED here, unverified, exactly like the chat path - the KYC ladder's
     OTP proves it later.
     """
+    error, fields = signup_details_error(data)
+    if error:
+        return _signup_screen(error=error, screen=_flow_screen(ob, SIGNUP_SCREEN))
+    ob.payload.update(fields)
+    from .router import _onboard_to
+
+    _onboard_to(ob, FLOW_PHONE_STATE)
+    return _signup_phone_screen()
+
+
+def signup_details_error(data: dict):
+    """(error, fields) for the names + email half of signup.
+
+    One validator for every page that collects them - SIGNUP_SCREEN and the
+    one-page SIGNUP_DETAILS - because two entry points must not disagree on what
+    a valid signup is. `fields` is only meaningful when `error` is "".
+    """
     import re
 
     from accounts.models import User
@@ -1143,21 +1248,30 @@ def _submit_signup_details(ob, data: dict) -> dict:
     last = str(data.get("last_name", "")).strip()[:40]
     email = str(data.get("email", "")).strip().lower()
     if len(first) < 2 or len(last) < 2:
-        return _signup_screen(error="Please enter your first and last name.",
-                              screen=_flow_screen(ob, SIGNUP_SCREEN))
+        return "Please enter your first and last name.", {}
     if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
-        return _signup_screen(error="That doesn't look like an email address.",
-                              screen=_flow_screen(ob, SIGNUP_SCREEN))
+        return "That doesn't look like an email address.", {}
     if User.objects.filter(email__iexact=email).exists():
         # Recovery looks accounts up by email; a duplicate would make reset
         # codes ambiguous - refused at entry, exactly like the chat path.
-        return _signup_screen(error="That email is already on a Zitch account - use a different one.",
-                              screen=_flow_screen(ob, SIGNUP_SCREEN))
-    ob.payload.update({"first_name": first, "last_name": last, "email": email})
-    from .router import _onboard_to
+        return "That email is already on a Zitch account - use a different one.", {}
+    return "", {"first_name": first, "last_name": last, "email": email}
 
-    _onboard_to(ob, FLOW_PHONE_STATE)
-    return _signup_phone_screen()
+
+def signup_phone_error(data: dict):
+    """(error, digits) for the account phone number, normalised to local
+    0XXXXXXXXXXX. Shared by SIGNUP_PHONE and SIGNUP_DETAILS."""
+    from accounts.models import User
+
+    digits = "".join(ch for ch in str(data.get("phone", "")) if ch.isdigit())
+    if digits.startswith("234") and len(digits) == 13:
+        digits = "0" + digits[3:]
+    if len(digits) != 11 or not digits.startswith("0"):
+        return "Enter the 11-digit number, e.g. 08012345678.", ""
+    if User.objects.filter(phone=digits).exists() or User.objects.filter(username=digits).exists():
+        return ("That number already has a Zitch account. Close this form and reply 2 "
+                "from its registered WhatsApp number to sign in securely."), ""
+    return "", digits
 
 
 def _signup_phone_screen(error: str = "") -> dict:
@@ -1168,16 +1282,9 @@ def _signup_phone_screen(error: str = "") -> dict:
 def _submit_signup_phone(ob, data: dict) -> dict:
     """The account phone number. Normalised to local 0XXXXXXXXXXX; refused with
     the reason when it is malformed or already on another account."""
-    from accounts.models import User
-
-    digits = "".join(ch for ch in str(data.get("phone", "")) if ch.isdigit())
-    if digits.startswith("234") and len(digits) == 13:
-        digits = "0" + digits[3:]
-    if len(digits) != 11 or not digits.startswith("0"):
-        return _signup_phone_screen(error="Enter the 11-digit number, e.g. 08012345678.")
-    if User.objects.filter(phone=digits).exists() or User.objects.filter(username=digits).exists():
-        return _signup_phone_screen(error="That number already has a Zitch account. Close this form and reply 2 "
-                                          "from its registered WhatsApp number to sign in securely.")
+    error, digits = signup_phone_error(data)
+    if error:
+        return _signup_phone_screen(error=error)
     ob.payload["phone"] = digits
     from .router import _local_phone, _onboard_to, send_onboarding_phone_code
 
@@ -1187,6 +1294,11 @@ def _submit_signup_phone(ob, data: dict) -> dict:
         # an attacker could reserve somebody else's phone as an account and
         # block the real owner from registering or recovering it.
         if send_onboarding_phone_code(ob):
+            if verify_password_live():
+                # Release 2: the code and the app password on one page.
+                from .release2 import open_verify_password
+
+                return open_verify_password(ob)
             _onboard_to(ob, FLOW_PHONE_CODE_STATE)
             return _signup_phone_code_screen(ob)
         return _signup_phone_screen(
@@ -1211,6 +1323,39 @@ def signup_password_live() -> bool:
     return bool((getattr(settings, "WHATSAPP_FLOW", {}) or {}).get("PASSWORD_SCREEN", False))
 
 
+def _release2_flag(name: str) -> bool:
+    """The Release 2 gates. Same contract as signup_password_live(): each screen
+    ships in pin_flow.json with this code, but Meta serves the copy published by
+    hand AFTER the deploy, so each one defaults OFF and the code behaves exactly
+    as before until an operator confirms the publish and flips the flag."""
+    return bool((getattr(settings, "WHATSAPP_FLOW", {}) or {}).get(name, False))
+
+
+def details_screen_live() -> bool:
+    """SIGNUP_DETAILS / DETAILS_CHAIN: names, phone and email on one page."""
+    return _release2_flag("DETAILS_SCREEN")
+
+
+def verify_password_live() -> bool:
+    """VERIFY_PASSWORD: the SMS code and the app password on one page."""
+    return _release2_flag("VERIFY_PASSWORD_SCREEN")
+
+
+def login_one_screen_live() -> bool:
+    """LOGIN_SCREEN / LOGIN_RETRY: the email code and the PIN on one page."""
+    return _release2_flag("LOGIN_ONE_SCREEN")
+
+
+def bill_form_live() -> bool:
+    """BILL_SCREEN / BILL_CHAIN / BILL_AMOUNT: electricity in the secure form."""
+    return _release2_flag("BILL_FORM")
+
+
+def menu_form_live() -> bool:
+    """MENU (+ TRANSFER_CHAIN / VTU_CHAIN): the menu as a form."""
+    return _release2_flag("MENU_FORM")
+
+
 def _signup_password_screen(error: str = "") -> dict:
     return {"screen": SIGNUP_PASSWORD,
             "data": {"summary": "This is the password you'll use to sign in to "
@@ -1233,20 +1378,10 @@ def _submit_signup_password(ob, data: dict) -> dict:
     string exists for the length of this function and is never logged, never put
     on a screen, and never sent to the chat.
     """
-    from accounts.models import password_rejection
     from django.contrib.auth.hashers import make_password
 
     password = str(data.get("password", ""))
-    confirm = str(data.get("confirm_password", ""))
-    if not password:
-        return _signup_password_screen(error="Please choose a password.")
-    # Mismatch first: telling someone their two entries differ is more useful
-    # than critiquing the composition of one they may have mistyped.
-    if password != confirm:
-        return _signup_password_screen(error="Those two passwords don't match. Try again.")
-    # The same rule the app's own endpoints apply - one function, so the two
-    # front doors cannot disagree about what a valid password is.
-    rejection = password_rejection(password, _ob_user_shape(ob))
+    rejection = signup_password_error(ob, data)
     if rejection:
         return _signup_password_screen(error=rejection)
     ob.payload["flow_pw_hash"] = make_password(password)
@@ -1254,6 +1389,27 @@ def _submit_signup_password(ob, data: dict) -> dict:
     ob.payload["flow_screen"] = PIN_CHAIN
     ob.save(update_fields=["payload", "step"])
     return _pin_screen(_ob_summary(ob), screen=PIN_CHAIN)
+
+
+def signup_password_error(ob, data: dict) -> str:
+    """Why the posted password pair is refused, or "" when it is acceptable.
+
+    Shared by SIGNUP_PASSWORD and the Release 2 VERIFY_PASSWORD page so the two
+    cannot disagree about what a valid app password is. Never echoes the input.
+    """
+    from accounts.models import password_rejection
+
+    password = str(data.get("password", ""))
+    confirm = str(data.get("confirm_password", ""))
+    if not password:
+        return "Please choose a password."
+    # Mismatch first: telling someone their two entries differ is more useful
+    # than critiquing the composition of one they may have mistyped.
+    if password != confirm:
+        return "Those two passwords don't match. Try again."
+    # The same rule the app's own endpoints apply - one function, so the two
+    # front doors cannot disagree about what a valid password is.
+    return password_rejection(password, _ob_user_shape(ob)) or ""
 
 
 def _ob_user_shape(ob):
@@ -1271,8 +1427,13 @@ def _ob_user_shape(ob):
 
 def _signup_to_pin(ob) -> dict:
     """The step after the phone is settled: the app password when that screen is
-    published, otherwise straight to the PIN as before."""
-    if signup_password_live() and not ob.payload.get("flow_pw_hash"):
+    published, otherwise straight to the PIN as before.
+
+    VERIFY_PASSWORD_SCREEN implies the password step: that release collects the
+    password with the SMS code, so the no-SMS branch (the phone IS the WhatsApp
+    number) must ask for it too, on the existing SIGNUP_PASSWORD page."""
+    if ((signup_password_live() or verify_password_live())
+            and not ob.payload.get("flow_pw_hash")):
         ob.step = FLOW_PASSWORD_STATE
         ob.save(update_fields=["step"])
         return _signup_password_screen()
@@ -1986,7 +2147,12 @@ def _submit_pin(token: str, data: dict) -> dict:
     # The duplicate is gone a different way - RESULT's Done now ENDS the Flow
     # through the completion envelope instead of navigating to a second screen
     # that said the same thing. See _submit_close.
-    return _hold_open(pa, summary, str(outcome), status=status or "done")
+    message = str(outcome)
+    if status == "success" and "receipt" in message.lower():
+        # Only where the executor says a receipt went to the chat - never
+        # appended to an outcome that sent none.
+        message = with_receipt_line(message)
+    return _hold_open(pa, summary, message, status=status or "done")
 
 
 # --------------------------------------------------------------------------- #
