@@ -258,7 +258,19 @@ class BankPickerTypedNameTests(TestCase):
         self.assertTrue(any("Confirm transfer" in t and "Kuda" in t for t in _out()))
 
     def test_a_name_that_is_not_a_bank_reprompts_with_honest_wording(self):
-        router.handle_inbound(MSISDN, "kud")
-        self.assertIn("exact name", _out()[-1])
+        router.handle_inbound(MSISDN, "zzzz")
+        self.assertIn("type its name", _out()[-1])
         self.pa.refresh_from_db()
         self.assertEqual(self.pa.state, "bank_pick")
+
+    def test_a_short_or_half_typed_name_that_names_one_bank_is_accepted(self):
+        """The prompt asks for the bank's name, and "kud" and "gt" are how people
+        type Kuda and GTBank. Each names one bank; the confirm card shows it."""
+        for typed, code in (("kud", "50211"), ("gt", "058")):
+            self.pa.state, self.pa.payload["bank_choices"] = "bank_pick", ["gtb", "kuda"]
+            self.pa.save()
+            with patch.object(router, "payout_resolve_account",
+                              return_value={"success": True, "name": "Ada Eze"}) as enquiry:
+                router.handle_inbound(MSISDN, typed)
+            enquiry.assert_called_once_with("0123456789", code)
+            self.pa = PendingAction.objects.get(msisdn=MSISDN)

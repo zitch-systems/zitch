@@ -1199,6 +1199,9 @@ def _announce_timeout(msisdn: str) -> bool:
     expired = PendingAction.objects.filter(
         msisdn=msisdn, expires_at__lt=timezone.now()).exclude(
             state=EXECUTING_STATE).exclude(action_type="verification_web")
+    # An unanswered question from the assistant is not a flow that timed out:
+    # nothing was started, so there is nothing to report. It just goes.
+    expired.filter(action_type="clarify").delete()
     stale = expired.order_by("-created").first()
     if stale is None:
         return False
@@ -1635,20 +1638,39 @@ def handle_inbound(msisdn: str, text: str, *, list_reply: bool = False) -> None:
     if low in ("ai on", "enable ai", "ai off", "disable ai", "ai"):
         return _do_ai_consent(link, msisdn, low)
 
+    return _route_free_text(user, msisdn, text, link=link, convo=convo)
+
+
+#: How many follow-up questions in a row the assistant may ask about one request
+#: before it stops carrying the conversation and shows the menu.
+_MAX_FOLLOW_UPS = 3
+
+
+def _route_free_text(user, msisdn: str, text: str, *, link, convo, earlier=None) -> None:
+    """A message that is no keyword: a paste, a sentence for the model, or the
+    customer's reply to a question the model asked (`earlier`, see _ask_back).
+
+    A reply is read together with the message it answers, so "1800" after "How
+    much would you like to send?" is the amount of that transfer - for the
+    deterministic parsers as one sentence, for the model as the earlier message,
+    its own question and the reply.
+    """
+    whole = f"{earlier['text']} {text}" if earlier else text
+    low = text.lower()
     # "send 5k to mum" - a saved recipient by the name the customer gave them.
     # A miss falls through on purpose; the guided form below still answers it.
-    if _start_transfer_to_saved(user, msisdn, text):
+    if _start_transfer_to_saved(user, msisdn, whole):
         return
     # Try a one-line paste: "0123456789 GTBank John Doe 5000".
-    if _start_transfer_from_paste(user, msisdn, text):
+    if _start_transfer_from_paste(user, msisdn, whole):
         return
     # Free-form text: let the AI route it (when active) - but the deterministic
     # paths above always win, so core flows never depend on the AI being up.
     if ai_active(link, convo):
-        intent = ai.extract_intent(text)
+        intent = ai.extract_intent(text, context=earlier)
         if intent:
             _record_intent(msisdn, intent)
-            if intent.get("name") != "clarify" and dispatch_intent(user, msisdn, intent, text):
+            if intent.get("name") != "clarify" and dispatch_intent(user, msisdn, intent, whole):
                 return
             # The model knowing WHY it could not act is the useful part, and we
             # were discarding it for a generic menu. "Sorry, I didn't get that"
@@ -1660,7 +1682,8 @@ def handle_inbound(msisdn: str, text: str, *, list_reply: bool = False) -> None:
             # text was refused, and the menu below is the answer.
             reason = ai.safe_reason((intent.get("input") or {}).get("reason") or "")
             if reason:
-                return reply(msisdn, f"🤔 {reason}\n\n" + menu_text())
+                return _ask_back(user, msisdn, whole, reason,
+                                 rounds=int((earlier or {}).get("rounds") or 0))
 
     # Escalation, as the LAST thing tried rather than the first.
     #
@@ -1679,11 +1702,84 @@ def handle_inbound(msisdn: str, text: str, *, list_reply: bool = False) -> None:
     # dead end below, never a route that already works nor a model that is up: the
     # AI, when active, has already had the sentence and done better with it. See
     # vas_text_intent for why the menu was promising this and then refusing it.
-    vas_intent = vas_text_intent(text)
-    if vas_intent and dispatch_intent(user, msisdn, vas_intent, text):
+    vas_intent = vas_text_intent(whole)
+    if vas_intent and dispatch_intent(user, msisdn, vas_intent, whole):
         _record_intent(msisdn, vas_intent)
         return
+    # Nothing else could read it. An account number with a bank or "send" is
+    # still a transfer, so ask for what it lacks: the amount, or which bank.
+    if _start_transfer_from_paste(user, msisdn, whole, last_resort=True):
+        return
     return reply(msisdn, "Sorry, I didn't get that.\n\n" + menu_text())
+
+
+def _ask_back(user, msisdn: str, asked_about: str, reason: str, *, rounds: int = 0) -> None:
+    """Relay the model's question, and take the next message as its answer.
+
+    Two things went wrong with "How much would you like to transfer to Centrac
+    Enterprise?". It went out with the whole menu under it, so it read as a menu;
+    and nothing remembered it was asked, so the "1800" that answered it arrived
+    with nothing to answer and was read as a stray PIN. A question now goes out on
+    its own, and for the next few minutes a reply is read together with the
+    message it answers (see _answer_question). A statement ("I can only help with
+    Zitch account actions") still gets the menu: there is nothing to answer.
+    """
+    if "?" in reason and rounds < _MAX_FOLLOW_UPS:
+        _new_flow(user, msisdn, "clarify", "answer",
+                  {"text": asked_about[-500:], "question": reason[:400], "rounds": rounds + 1})
+        return reply(msisdn, f"🤔 {reason}\n\nReply \"menu\" for options, or \"cancel\".")
+    return reply(msisdn, f"🤔 {reason}\n\n" + menu_text())
+
+
+#: Messages that are a request of their own, whatever was asked just before.
+_STANDALONE = frozenset((
+    "balance", "bal", "transfer", "send", "send money", "airtime", "data", "electricity",
+    "cable", "bill", "bills", "pay bill", "history", "transactions", "statement",
+    "savings", "loan", "loans", "verify", "kyc", "support", "account", "account number",
+    "account details", "beneficiaries", "reset pin", "change pin", "pin", "add money",
+    "fund", "deposit", "convert", "scan", "qr", "exam", "limits", "upgrade",
+))
+
+
+def _answers_the_question(text: str, earlier_text: str, question: str) -> bool:
+    """Whether a message reads as the answer to the question just asked, rather
+    than as something new. A short reply is an answer; a keyword, a long message
+    or a second account number is a request of its own."""
+    low = " ".join((text or "").lower().split())
+    if not low or low in _STANDALONE:
+        return False
+    words = low.split()
+    if len(words) > 12:
+        return False
+    digits = re.findall(r"\d{10,11}", re.sub(r"[ -]", "", low))
+    if digits and re.search(r"\d{10,11}", re.sub(r"[ -]", "", earlier_text or "")):
+        return False
+    # A bare 4-6 digit number only answers a question about an amount. Anything
+    # else it most often is, is a PIN, and that warning matters more.
+    if re.fullmatch(r"\d{4,6}", low) and not re.search(
+            r"how much|amount|naira|₦|price|cost", (question or "").lower()):
+        return False
+    # A bare menu number answers a question that offered numbered options.
+    if re.fullmatch(r"\d{1,2}", low) and not re.search(
+            rf"(?:^|\s|\(){re.escape(low)}\s*[).:-]", question or ""):
+        return False
+    return True
+
+
+def _answer_question(pa, user, msisdn: str, text: str) -> None:
+    """A message arriving while the model's question is open (see _ask_back)."""
+    payload = dict(pa.payload or {})
+    PendingAction.objects.filter(pk=pa.pk).delete()
+    earlier = {"text": str(payload.get("text") or ""),
+               "question": str(payload.get("question") or ""),
+               "rounds": int(payload.get("rounds") or 1)}
+    if not _answers_the_question(text, earlier["text"], earlier["question"]):
+        return handle_inbound(msisdn, text)
+    link = active_link_for(msisdn)
+    if link is None:
+        return _handle_unlinked(msisdn, text)
+    return _route_free_text(user, msisdn, text, link=link,
+                            convo=ConversationState.for_msisdn(msisdn), earlier=earlier)
 
 
 # --------------------------------------------------------------------------- #
@@ -5276,6 +5372,8 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if is_retired_setup(pa):
         PendingAction.objects.filter(pk=pa.pk).delete()
         return reply(msisdn, RETIRED_SETUP_MESSAGE)
+    if pa.action_type == "clarify":
+        return _answer_question(pa, user, msisdn, text)
     if pa.state == EXECUTING_STATE:
         # Authorised and in the worker's hands. Every other branch below can end
         # in _clear_actions, and clearing THIS row would delete a payment the

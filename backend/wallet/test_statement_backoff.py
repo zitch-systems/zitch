@@ -77,6 +77,33 @@ class PollBacksOffTests(TestCase):
         read.assert_called_once()
 
 
+class PollSurvivesACacheOutageTests(TestCase):
+    """With the shared cache down, every poll used to raise before reading an
+    account, and a deposit waited for the ten-minute cron."""
+
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        reconciliation._poll_local.update(next_at=0.0, cursor=0)
+        self.addCleanup(reconciliation._poll_local.update, next_at=0.0, cursor=0)
+
+    def test_the_poll_keeps_reading_on_its_own_clock(self):
+        down = RuntimeError("cache down")
+        with patch.object(reconciliation.cache, "get", side_effect=down), \
+             patch.object(reconciliation.cache, "add", side_effect=down), \
+             patch.object(reconciliation.cache, "set", side_effect=down), \
+             patch("wallet.reconciliation.wema_provisioned_wallets") as wallets, \
+             patch("wallet.reconciliation.reconcile_recent_credits",
+                   return_value=(1, "")) as read, \
+             patch("utility.alerts.alert"):
+            wallets.return_value.select_related.return_value.order_by.return_value \
+                .filter.return_value.first.return_value = type("W", (), {"pk": 7})()
+            reconciliation.poll_recent_wema_credits(60)
+            reconciliation.poll_recent_wema_credits(60)      # same interval: throttled
+        read.assert_called_once()
+        self.assertEqual(reconciliation._poll_local["cursor"], 7)
+
+
 class DefaultIntervalTests(SimpleTestCase):
     @skipIf(os.environ.get("WEMA_RECENT_CREDIT_POLL_SECONDS"), "interval set by the environment")
     def test_the_worker_polls_once_a_minute_by_default(self):

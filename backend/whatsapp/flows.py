@@ -2291,7 +2291,12 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
                       "e.g. Kuda, GTBank or OPay.")
 
     if bank is None:
-        candidates = nuban_bank_candidates(account)
+        # Popular banks first: with the rail's whole list carried, the check digit
+        # alone fits about a hundred banks, and the four named below were the
+        # alphabet's first four microfinance banks.
+        from transfers.bank_resolver import rank
+
+        candidates = rank(nuban_bank_candidates(account))
         legacy_picker = "bank_search" in data
         if len(candidates) == 1:
             bank = candidates[0]

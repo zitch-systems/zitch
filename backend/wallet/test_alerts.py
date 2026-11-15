@@ -433,7 +433,9 @@ class WhatsAppChannelAlertTests(TestCase):
         self.assertTrue(txn.meta.get("reversal_alerted"))
         self.assertTrue(txn.meta.get("whatsapp_reversal_alerted"))
 
-    def test_direct_whatsapp_exception_requires_review_for_that_outcome(self):
+    def test_direct_whatsapp_exception_is_sent_again_after_a_wait(self):
+        """An exception after the send began cannot prove the message was not
+        delivered, and used to park the alert for good. It is retried instead."""
         from .alerts import send_whatsapp_transaction_alert
 
         txn = Transaction.objects.create(
@@ -448,8 +450,9 @@ class WhatsAppChannelAlertTests(TestCase):
 
         txn.refresh_from_db()
         self.assertNotIn("whatsapp_alerted", txn.meta)
-        self.assertEqual(txn.alert_deliveries.get(channel="whatsapp").state,
-                         TransactionAlertDelivery.REVIEW)
+        row = txn.alert_deliveries.get(channel="whatsapp")
+        self.assertEqual((row.state, row.error_code),
+                         (TransactionAlertDelivery.RETRY, "outcome_unknown"))
 
         txn.transaction_status = Transaction.FAILED
         txn.save(update_fields=["transaction_status"])

@@ -306,6 +306,20 @@ def _apply_status(st: dict) -> None:
     mid, status = st.get("id", ""), st.get("status", "")
     if not mid or status not in ("sent", "delivered", "read", "failed"):
         return
+    if status == "failed":
+        # A transaction alert Meta accepted and then could not deliver, most
+        # often because the customer's 24-hour window had closed: reopen it so
+        # it goes again (as the template, for a closed window). Never allowed to
+        # break the webhook, which Meta retries for every non-200.
+        errors = st.get("errors") or []
+        first = errors[0] if errors and isinstance(errors[0], dict) else {}
+        try:
+            from wallet.alerts import whatsapp_alert_failed
+
+            if whatsapp_alert_failed(mid, first.get("code")):
+                return
+        except Exception:  # noqa: BLE001
+            logging.getLogger("whatsapp").exception("txn_alert_status_failure_unhandled")
 
     broadcast_id = None
     with db_transaction.atomic():

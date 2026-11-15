@@ -9,6 +9,7 @@ credit-reconciliation poller (ALAT has no inbound-credit webhook).
 import json
 import importlib
 from datetime import date, timedelta
+from io import StringIO
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -522,6 +523,43 @@ class WemaAsyncAccountRecoveryTests(TestCase):
         self.assertEqual(Wallet.objects.get(user=user).account_number, "")
         attempt.refresh_from_db()
         self.assertNotEqual(attempt.status, WemaProvisioningAttempt.VERIFIED)
+
+    def test_a_cache_outage_in_account_recovery_does_not_stop_the_credit_sweep(self):
+        """An uncaught cache error in the recovery step ended the whole run before
+        a single statement was read."""
+        from django.core.cache import cache as real_cache
+
+        pending, _ = make_user("08030000884", "recovery-cache@zitch.app", identity_verified=False)
+        WemaProvisioningAttempt.objects.create(
+            user=pending, tracking_id="otp-recovery-cache",
+            identity_type=WemaProvisioningAttempt.NIN,
+            identity_hash=hash_identifier("12345678904"), identity_last4="8904",
+            expires_at=timezone.now() + timedelta(minutes=10))
+        payee, _ = make_user("08030000885", "recovery-cache-payee@zitch.app")
+        wallet = Wallet.objects.get(user=payee)
+        wallet.account_number = "0155500085"
+        wallet.account_reference = wema_account_reference(payee)
+        wallet.bank_name = "Wema Bank"
+        wallet.save(update_fields=["account_number", "account_reference", "bank_name"])
+        deposit = {"referenceId": "CACHE-DOWN-DEPOSIT", "amount": "21000", "creditType": "Credit",
+                   "status": "Successfull", "date": timezone.localdate().isoformat() + "T11:52:00"}
+
+        original_add = real_cache.add
+
+        def add(key, *args, **kwargs):
+            if str(key).startswith("partner-bank-account-recovery"):
+                raise ConnectionError("cache down")
+            return original_add(key, *args, **kwargs)
+
+        with patch("utility.management.commands.reconcile_wema.cache.add", side_effect=add), \
+             patch("utility.wema.get_account_details",
+                   return_value={"success": False, "message": "Account details not found"}), \
+             patch("utility.wema.lift_debit_restriction", return_value={"success": True}), \
+             patch("utility.wema.get_transactions",
+                   return_value={"success": True, "transactions": [deposit]}):
+            call_command("reconcile_wema", "--account-recovery-limit=20",
+                         stdout=StringIO(), stderr=StringIO())
+        self.assertTrue(Transaction.objects.filter(reference="WEMA-CR-CACHE-DOWN-DEPOSIT").exists())
 
     def test_keeps_recovery_retryable_while_wema_is_still_pending(self):
         user, _ = make_user("08030000883", "still-pending@zitch.app",

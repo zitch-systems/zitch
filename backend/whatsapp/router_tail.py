@@ -1,10 +1,17 @@
+from transfers import bank_resolver  # noqa: E402 - router_tail runs inside router's globals
+
+
 
 def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
     state = pa.state
 
     if state == "amount":
-        amount = parse_amount(text)
-        if amount is None or amount < MIN_TRANSFER:
+        amount = _amount_answer(text)
+        if amount is None:
+            return _reroute_or_reprompt(
+                pa, msisdn, text,
+                f"Please enter a valid amount, at least ₦{MIN_TRANSFER:,.0f} (e.g. 5000 or 5k).")
+        if amount < MIN_TRANSFER:
             return reply(msisdn, f"Please enter a valid amount, at least ₦{MIN_TRANSFER:,.0f} (e.g. 5000 or 5k).")
         limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
         if limit_msg:
@@ -14,6 +21,14 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return reply(msisdn, f"Insufficient balance. You have {_money(_fresh_wallet_balance(user))} available. "
                                  "Enter a lower amount, or \"cancel\".")
         pa.payload["amount"] = str(amount)
+        acct = pa.payload.get("account") or ""
+        if acct:
+            # The message that opened this already gave the account and named the
+            # bank ("Transfer to access 1668720613 centrac enterprise"); only the
+            # amount was missing. Carry on from there instead of asking again.
+            return _offer_bank(pa, user, msisdn, _bank_resolution(
+                pa.payload.get("bank_query") or "", acct,
+                whole_answer=bool(pa.payload.get("bank_is_name"))))
         _touch(pa, state="account", payload=pa.payload)
         return reply(msisdn, "Enter the recipient's 10-digit account number.")
 
@@ -26,7 +41,7 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
         return reply(msisdn, "Which bank? Type the bank name (e.g. GTBank, Access, Opay).")
 
     if state == "bank":
-        matches = _match_banks(text)
+        matches = _narrow_by_account(_match_banks(text), text, pa.payload.get("account") or "")
         if not matches:
             return _reroute_or_reprompt(pa, msisdn, text,
                                        "I couldn't find that bank. Type the name again, or \"cancel\".")
@@ -50,15 +65,19 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
         try:
             idx = int(text.strip()) - 1
         except ValueError:
-            # The prompt offers "type the bank's exact name" - so an exact,
-            # unambiguous name is the bank, listed or not.
-            named = [b for b in Bank.objects.filter(active=True)
-                     if b.name.lower() == text.strip().lower()]
+            # The prompt offers "type the bank's name" - so a name that names one
+            # bank is the bank, listed or not ("gt", "first", "Access Bank").
+            named = _narrow_by_account(_match_banks(text), text, pa.payload.get("account") or "")
             if len(named) == 1:
                 return _resolve_and_confirm(pa, user, msisdn, named[0])
+            if named and not _names_another_intent(text):
+                pa.payload["bank_choices"] = [b.code for b in named[:6]]
+                _touch(pa, state="bank_pick", payload=pa.payload)
+                lines = "\n".join(f"{i + 1}  {b.name}" for i, b in enumerate(named[:6]))
+                return reply(msisdn, "Which of these? Reply with the number:\n" + lines)
             return _reroute_or_reprompt(pa, msisdn, text,
                                        "Reply with the number of the bank from the list, or type "
-                                       "its exact name - or \"cancel\".")
+                                       "its name - or \"cancel\".")
         if not (0 <= idx < len(choices)):
             return _reroute_or_reprompt(pa, msisdn, text,
                                        "That number isn't on the list. Try again, or \"cancel\".")
@@ -76,27 +95,72 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
 
 def _match_banks(text: str) -> list:
-    t = text.strip().lower()
+    """The banks an answer to "which bank?" names: the chat's bank question, the
+    pick list, the form's Bank field. Short names count ("gt", "tg", "first",
+    "access"), so do typos of them and half-typed names. See
+    transfers.bank_resolver; a sentence goes through _bank_resolution instead.
+    """
+    return bank_resolver.match_banks(text, Bank.objects.filter(active=True))
+
+
+def _bank_resolution(text: str, acct: str, *, whole_answer: bool = False):
+    """Which bank a whole message means for this account number: what its words
+    name, narrowed by the account number's check digit."""
     banks = list(Bank.objects.filter(active=True))
-    exact = [b for b in banks if b.name.lower() == t]
-    if exact:
-        return exact
-    # What people actually call them. We store one name per bank, usually the
-    # short trading name, so "Guaranty Trust Bank" off a statement matched
-    # nothing at all against "GTBank" - which reads as the bank not existing
-    # rather than as us knowing it by another name. An alias hit is exact and
-    # names one bank, so it wins outright.
-    slug = slug_for_alias(t)
-    if slug:
-        named = [b for b in banks if b.code == slug]
-        if named:
-            return named
-    # Substring, over the aliases as well as the name: it is what catches the
-    # half-typed word inside a longer sentence ("send 2k to my gtb account"),
-    # and it returns every candidate rather than choosing between them.
-    return [b for b in banks
-            if t and (t in b.name.lower() or b.name.lower() in t
-                      or any(t in a or a in t for a in aliases_for(b.code)))]
+    nuban = nuban_bank_candidates(acct, banks) if len(acct or "") == 10 else None
+    return bank_resolver.resolve(text, banks, account=acct, nuban=nuban,
+                                 whole_answer=whole_answer)
+
+
+def _narrow_by_account(matches: list, text: str, acct: str) -> list:
+    """Of the banks an answer names, the ones this account number can be at.
+
+    Only ever a narrowing: when none of them fits, the answer stands (a bank the
+    customer named is an instruction, the check digit a hint) - except that a word
+    with a second reading which DOES fit offers both ("first" with an FCMB number).
+    """
+    if not matches or len(acct or "") != 10:
+        return matches
+    fit = {b.pk for b in nuban_bank_candidates(acct)}
+    narrowed = [b for b in matches if b.pk in fit]
+    if narrowed:
+        return narrowed
+    if len(matches) == 1:
+        others = bank_resolver.alternates(text, Bank.objects.filter(active=True), fit,
+                                          bank=matches[0])
+        return matches + [b for b in others if b.pk != matches[0].pk]
+    return matches
+
+
+def _shortlist(res) -> list:
+    """The banks worth listing for the customer to pick from.
+
+    All of them when there are a few. From a long list, only when the message
+    named something (weakly - its candidates come first); otherwise the check
+    digit alone allows a tenth of a thousand banks, and an alphabetical page of
+    microfinance banks starting with "AAA Finance" is noise, not a choice. Then
+    the popular ones it allows, or nothing: ask for the name.
+    """
+    if len(res.choices) <= 6 or res.phrase:
+        return res.choices[:6]
+    return [b for b in res.choices if getattr(b, "popular", False)][:6]
+
+
+def _offer_bank(pa: PendingAction, user, msisdn: str, res) -> None:
+    """Confirm the bank the message meant, or ask which one it is."""
+    acct = pa.payload["account"]
+    if res.bank is not None:
+        return _resolve_and_confirm(pa, user, msisdn, res.bank)
+    shown = _shortlist(res)
+    if shown:
+        pa.payload["bank_choices"] = [b.code for b in shown]
+        _touch(pa, state="bank_pick", payload=pa.payload)
+        lines = "\n".join(f"{i + 1}  {b.name}" for i, b in enumerate(shown))
+        return reply(msisdn, f"Which bank is {acct} with? Reply with the number, "
+                             f"or type the bank's name:\n{lines}")
+    _touch(pa, state="bank", payload=pa.payload)
+    return reply(msisdn, f"Which bank is {acct} with? Type the bank's name "
+                         "(e.g. GTBank, Access, OPay).")
 
 
 def _bank_items(candidates=None, query: str = "") -> list:
@@ -130,7 +194,7 @@ def _bank_items(candidates=None, query: str = "") -> list:
     return [{"id": b.code, "title": b.name} for b in banks[:200]]
 
 
-def nuban_bank_candidates(account: str) -> list:
+def nuban_bank_candidates(account: str, banks=None) -> list:
     """The active banks this 10-digit NUBAN is checksum-valid for.
 
     The CBN algorithm bakes the bank code into the check digit: weights 3,7,3
@@ -144,7 +208,7 @@ def nuban_bank_candidates(account: str) -> list:
         return []
     serial, check = digits[:9], int(digits[9])
     out = []
-    for bank in Bank.objects.filter(active=True):
+    for bank in (banks if banks is not None else Bank.objects.filter(active=True)):
         code = "".join(ch for ch in (bank.bank_code or "") if ch.isdigit())
         if not code:
             continue
@@ -702,51 +766,163 @@ def _start_transfer_to_saved(user, msisdn: str, text: str) -> bool:
         return False
     row = rows[0]
     reply(msisdn, f"Paying *{row.display_name}* - {row.bank_name} {row.account_number}.")
-    return _begin_bank_transfer(user, msisdn, amount, row.account_number, row.bank_name)
+    return _begin_bank_transfer(user, msisdn, amount, row.account_number, row.bank_name,
+                                bank_is_name=True)
 
 
-def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
-    """Parse "0123456789 GTBank John Doe 5000" -> jump straight to name-enquiry.
-    Returns True if handled as a transfer paste, else False."""
+#: A message about airtime, data or a bill is not a bank transfer, whatever
+#: numbers it carries. "send 500 airtime to 08031234567 mtn" names a phone and a
+#: network; read as a paste it was a transfer to MoMo PSB on the confirm card.
+_NOT_A_TRANSFER = re.compile(
+    r"\b(?:airtime|recharge|load|top\s?-?\s?up|topup|data|bundle|electric|electricity|"
+    r"light|bill|bills|nepa|phcn|disco|power|units|token|meter|prepaid|postpaid|"
+    r"ikedc|ekedc|aedc|kedco|phed|phedc|jed|jedc|kaedco|eedc|ibedc|"
+    r"dstv|gotv|startimes|cable|smartcard|decoder|betting|bet9ja|sportybet|waec|neco|jamb)\b",
+    re.I)
+#: Words that make an account number in a message an instruction to pay it.
+_TRANSFER_VERB = re.compile(r"\b(?:send|transfer|trf|tranfer|transfar|pay|move|remit)\b", re.I)
+
+
+def _paste_parts(text: str):
+    """(account, amount) read off a one-line transfer, either possibly None.
+
+    Each must be the only one of its kind in the message. Two different account
+    or phone numbers ("call me on 08031234567, send 5k to 0123456789 gtb"), or two
+    different amounts ("send 2000 to 0123456789 gtb for 2 bags"), are not guessed
+    between: the first one used to be taken as the account and the last as the
+    amount, which made "2" the amount there. The model reads such a message; failing
+    that, the amount is asked for.
+    """
     tokens = text.split()
     # 10 digits is a NUBAN; 11 is how the app-first banks address an account -
     # Moniepoint, OPay, PalmPay and Kuda all use the customer's phone number. Only
     # matching 10 meant "12300. Moniepoint 01827364728 cravings" fell through to
     # the guided form, which reads as the assistant ignoring a complete instruction.
-    acct = next((re.sub(r"\D", "", t) for t in tokens
-                 if len(re.sub(r"\D", "", t)) in (10, 11)), None)
-    amount = None
-    for t in reversed(tokens):
-        if len(re.sub(r"\D", "", t)) >= 10:  # skip account- / phone-length tokens
+    accounts, amounts = [], []
+    for t in tokens:
+        digits = re.sub(r"\D", "", t)
+        if len(digits) in (10, 11):
+            if digits not in accounts:
+                accounts.append(digits)
+            continue
+        if len(digits) >= 10:          # longer than any account: neither
             continue
         amount = parse_amount(t)
-        if amount is not None:
-            break
-    if not acct or amount is None:
+        if amount is not None and amount not in amounts:
+            amounts.append(amount)
+    return (accounts[0] if len(accounts) == 1 else None,
+            amounts[0] if len(amounts) == 1 else None)
+
+
+def _own_account_number(user) -> str:
+    from wallet.models import Wallet
+
+    wallet = Wallet.objects.filter(user=user).only("account_number").first()
+    return "".join(ch for ch in (getattr(wallet, "account_number", "") or "") if ch.isdigit())
+
+
+def _start_transfer_from_paste(user, msisdn: str, text: str, *, last_resort: bool = False) -> bool:
+    """Parse "0123456789 GTBank John Doe 5000" -> jump straight to name-enquiry.
+
+    Read twice. First, before the model, only as a COMPLETE transfer: an account
+    number, an amount, and either a bank (named, or the only one the check digit
+    allows) or a word like "send". Anything less is the model's to read, because
+    it reads what this cannot: "four thousand naira", context, intent.
+
+    Then, with `last_resort`, after everything else has passed: an account number
+    with a bank or "send" is a transfer missing its amount, and an account number
+    with an amount is a transfer missing its bank, so ask for what is missing.
+    "Transfer to access 1668720613 centrac enterprise" used to fall through to the
+    model, whose "How much would you like to transfer?" was sent with the whole
+    menu under it and remembered nothing - so the "1800" that answered it was read
+    as a stray PIN.
+
+    Returns True if handled as a transfer paste, else False."""
+    if _NOT_A_TRANSFER.search(text):
         return False
-    return _begin_bank_transfer(user, msisdn, amount, acct, text)
+    acct, amount = _paste_parts(text)
+    if not acct or acct == _own_account_number(user):
+        return False
+    res = _bank_resolution(text, acct)
+    says_transfer = bool(_TRANSFER_VERB.search(text))
+    if not last_resort:
+        if amount is None or not (res.bank is not None or res.named or says_transfer):
+            return False
+        return _begin_bank_transfer(user, msisdn, amount, acct, text, resolution=res)
+    if amount is None:
+        if not (res.named or says_transfer):
+            return False
+        return _ask_transfer_amount(user, msisdn, acct, text)
+    # A bare "11 digits and an amount" is as likely a phone and an airtime amount.
+    if not (res.bank is not None or res.named or says_transfer or len(acct) == 10):
+        return False
+    return _begin_bank_transfer(user, msisdn, amount, acct, text, resolution=res)
 
 
-def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_query: str) -> bool:
-    """Validate then open a transfer at the bank step - shared by the paste path
-    and the LLM. Returns False only when the bank can't be matched (caller decides)."""
+#: Words that can sit beside an amount in a reply to "how much?" without
+#: changing it: "1800 naira", "make it 5k pls".
+_AMOUNT_FILLER = frozenset((
+    "naira", "ngn", "n", "pls", "please", "only", "abeg", "make", "it", "send", "just",
+    "sir", "ma", "thanks", "ok", "okay", "is", "the", "amount", "of", "about",
+))
+
+
+def _amount_answer(text: str):
+    """The amount in a reply to "how much?", or None. A bare amount, or one amount
+    among words that only frame it ("1800 naira", "make it 5k")."""
+    amount = parse_amount(text)
+    if amount is not None:
+        return amount
+    words = re.sub(r"[^\w₦.,]+", " ", (text or "").lower()).split()
+    if not words or len(words) > 6:
+        return None
+    found = [parse_amount(w) for w in words if w not in _AMOUNT_FILLER]
+    found = [a for a in found if a is not None]
+    others = [w for w in words if w not in _AMOUNT_FILLER and parse_amount(w) is None]
+    return found[0] if len(found) == 1 and not others else None
+
+
+def _ask_transfer_amount(user, msisdn: str, acct: str, bank_query: str,
+                         *, bank_is_name: bool = False) -> bool:
+    """Open a transfer that knows its account (and maybe its bank), at the amount.
+
+    The bank is resolved again once the amount arrives, from the same words, so
+    nothing here has to be right yet - but naming it in the question shows the
+    customer what was understood.
+    """
     if _blocked_from_spending(user, msisdn):
         return True
-    matches = _match_banks(bank_query)
-    # The NUBAN carries its own bank code in the check digit, so a message that
-    # names no bank is not missing anything - "send 1000 to Mutumin 2217940528"
-    # was answered with the guided form purely because `bank_query` had no bank
-    # name in it, which reads as the assistant ignoring a complete instruction.
-    # The checksum resolves it, and the name enquiry below is the real safety
-    # net either way. It also NARROWS an ambiguous name match: _match_banks does
-    # substring matching over a whole sentence, so several banks matching is
-    # common and the account number can only belong to one of them.
-    nuban = nuban_bank_candidates(acct)
-    if nuban:
-        narrowed = [b for b in matches if b.code in {c.code for c in nuban}]
-        matches = narrowed or (matches if matches else nuban)
-    if not matches:
+    res = _bank_resolution(bank_query, acct, whole_answer=bank_is_name)
+    _new_flow(user, msisdn, "transfer", "amount",
+              {"account": acct, "bank_query": str(bank_query or "")[:300],
+               "bank_is_name": bool(bank_is_name), "pin_attempts": 0})
+    where = f"{res.bank.name} {acct}" if res.bank is not None else acct
+    reply(msisdn, f"How much would you like to send to {where}? (e.g. 5000 or 5k)")
+    return True
+
+
+def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_query: str,
+                         *, bank_is_name: bool = False, resolution=None) -> bool:
+    """Validate then open a transfer at the bank step - shared by the paste path
+    and the LLM. Returns False only when there is no bank at all to send to
+    (caller decides).
+
+    `bank_query` is the whole message on the paste path and only a bank's name on
+    the others (`bank_is_name`): the model's bank_name, a saved recipient's bank.
+
+    The NUBAN carries its own bank code in the check digit, so a message that
+    names no bank is not missing anything - "send 1000 to Mutumin 2217940528" was
+    answered with the guided form purely because it had no bank name in it, which
+    reads as the assistant ignoring a complete instruction. The checksum resolves
+    it, and the name enquiry before the confirm card is the real safety net either
+    way. When neither the words nor the checksum settle it, the customer is asked
+    which bank, here in the chat, with the amount and account kept.
+    """
+    if _blocked_from_spending(user, msisdn):
+        return True
+    if not Bank.objects.filter(active=True).exists():
         return False
+    res = resolution or _bank_resolution(bank_query, acct, whole_answer=bank_is_name)
     if amount < MIN_TRANSFER:
         reply(msisdn, f"Minimum transfer is ₦{MIN_TRANSFER:,.0f}.")
         return True
@@ -759,13 +935,7 @@ def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_que
         return True
     pa = _new_flow(user, msisdn, "transfer", "bank",
                    {"amount": str(amount), "account": acct, "pin_attempts": 0})
-    if len(matches) == 1:
-        _resolve_and_confirm(pa, user, msisdn, matches[0])
-    else:
-        pa.payload["bank_choices"] = [b.code for b in matches[:6]]
-        _touch(pa, state="bank_pick", payload=pa.payload)
-        lines = "\n".join(f"{i+1}  {b.name}" for i, b in enumerate(matches[:6]))
-        reply(msisdn, "Which bank? Reply with the number:\n" + lines)
+    _offer_bank(pa, user, msisdn, res)
     return True
 
 
@@ -1968,17 +2138,24 @@ def _dispatch_intent(user, msisdn: str, name, p: dict) -> bool:
         _do_add_money(user, msisdn)
         return True
     if name == "transfer":
-        amt, acct, bank = p.get("amount"), p.get("account_number"), p.get("bank_name")
+        amt, bank = p.get("amount"), str(p.get("bank_name") or "")
+        acct = re.sub(r"\D", "", str(p.get("account_number") or ""))
         # No bank_name is no longer a reason to fall back to the guided form:
         # _begin_bank_transfer reads the bank off the account number's checksum
-        # when the message didn't name one, and only returns False when even
-        # that can't resolve it.
-        if amt and acct:
+        # when the message didn't name one, and asks in the chat when even that
+        # can't settle it. bank_name is the model's reading of the bank ("gt",
+        # "Access Bank"), so it is matched as a name, not as a sentence.
+        if acct:
             try:
-                if _begin_bank_transfer(user, msisdn, Decimal(str(amt)), re.sub(r"\D", "", str(acct)), str(bank or "")):
-                    return True
+                amount = Decimal(str(amt)) if amt not in (None, "", 0) else None
             except (InvalidOperation, TypeError):
-                pass
+                amount = None
+            if amount is not None and amount > 0:
+                if _begin_bank_transfer(user, msisdn, amount, acct, bank, bank_is_name=True):
+                    return True
+            elif amt in (None, "", 0) and len(acct) in (10, 11):
+                # The account and bank without an amount: ask only for the amount.
+                return _ask_transfer_amount(user, msisdn, acct, bank, bank_is_name=True)
         _start_transfer(user, msisdn)  # partial details -> guided flow
         return True
     if name == "buy_airtime":

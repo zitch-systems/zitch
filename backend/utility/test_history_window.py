@@ -116,6 +116,21 @@ class StatementWindowTests(_Base):
         self.assertTrue(result["empty"])
         self.assertEqual(self._asked(post), ["2026-07-27"])
 
+    def test_a_failed_account_check_on_a_quiet_window_is_an_outage_not_a_refusal(self):
+        """"No record found", then GetAccountV2 fails once. Read as a refusal, it
+        pinned next-day for an hour and every reader missed the Monday-dated
+        weekend deposits."""
+        with patch("utility.wema.requests.post", return_value=_resp(EMPTY, 400)) as post, \
+                patch("utility.wema.requests.get", return_value=_resp({"successful": False}, 503)):
+            result = wema.get_transactions("0458386712", "2026-07-19", "2026-07-20")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "history_account_visibility_unconfirmed")
+        self.assertEqual(self._asked(post), ["2026-07-27"])        # no other spelling tried
+        self.assertIsNone(cache.get(wema._HISTORY_TO_FORM_KEY))    # and nothing pinned
+        with patch("utility.wema.requests.post", return_value=_resp(OK)) as post:
+            wema.get_transactions("0458386712", "2026-07-19", "2026-07-20")
+        self.assertEqual(self._asked(post), ["2026-07-27"])        # week-ahead still first
+
     def test_an_unproven_spelling_that_says_nothing_is_checked_against_the_plain_date(self):
         # The wide request has never returned a row and now says "nothing", but the
         # plain date has rows: the bank is mishandling the spelling. Keep the rows.
