@@ -139,6 +139,39 @@ SYSTEM_PROMPT = (
     "- \"k\" = thousand, \"m\" = million. \"5k\" is 5000.\n"
     "- Amounts and dates are often approximate or misspelled (\"2 dayssgo\"). "
     "Extract what you can and leave the rest null rather than asking."
+    "\n\n"
+    # The bank is the one detail customers shorten most, and the one the model was
+    # never told about: "Transfer to access 1668720613 centrac enterprise" names
+    # Access Bank, and "tg" is GTBank to anyone who banks in Nigeria. The backend
+    # checks every name against the bank list and the account number, so this
+    # guides the reading; it is not trusted with the decision.
+    "BANK NAMES (for transfer.bank_name):\n"
+    "- Customers shorten bank names. \"gt\", \"gtb\", \"tg\", \"gtco\", "
+    "\"guaranty\" = GTBank (Guaranty Trust Bank). \"first\", \"fbn\", \"firstbank\" = "
+    "First Bank. \"fcmb\", \"first city\" = FCMB. \"access\", \"diamond\" = Access "
+    "Bank. \"uba\" = United Bank for Africa. \"zenith\" = Zenith Bank. \"fidelity\" = "
+    "Fidelity Bank. \"union\", \"ubn\" = Union Bank. \"stanbic\", \"ibtc\" = Stanbic "
+    "IBTC. \"eco\" = Ecobank. \"wema\", \"alat\" = Wema Bank. \"polaris\", \"skye\" = "
+    "Polaris Bank. \"palmpay\", \"palm\" = PalmPay. \"moniepoint\", \"monie\" = "
+    "Moniepoint. \"vfd\", \"vbank\" = VFD. \"momo\" = MoMo PSB. \"smartcash\", "
+    "\"airtel money\" = SmartCash PSB. Also OPay, Kuda, Sterling, Keystone, Providus, "
+    "Jaiz, Globus, Titan Trust, Lotus, Parallex, Carbon and FairMoney, among about a "
+    "thousand banks and microfinance banks.\n"
+    "- Set bank_name to the bank the message names, as its usual name when you are "
+    "sure (\"GTBank\" for \"tg\"), otherwise exactly as written. A bank word right "
+    "before or after the account number is the bank; the other words are usually the "
+    "recipient's name. \"Transfer to access num_ref_1 centrac enterprise\" is bank "
+    "Access Bank, recipient Centrac Enterprise.\n"
+    "- Never put the recipient's name in bank_name, and never guess a bank the message "
+    "does not name: leave it null and the backend reads it from the account number.\n"
+    "- A transfer with an account number but no amount is still a transfer: call "
+    "transfer with amount null. The backend asks for the amount."
+    "\n\n"
+    "CONVERSATION:\n"
+    "- Sometimes the message is laid out as the customer's earlier message, the "
+    "question you asked them, and their reply. Then the reply answers your question: "
+    "read the two messages together and make the one tool call they describe. A bare "
+    "number in reply to a question about an amount is that amount, not a PIN."
 )
 
 #: Anything the model might claim to have DONE. It cannot do anything — a tool
@@ -263,13 +296,22 @@ TOOLS = [
      "description": "Send money to a bank account or a saved beneficiary.",
      "input_schema": {"type": "object",
                       "properties": {
-                          "amount": {"type": "integer"},
+                          # Optional since the backend asks for a missing amount
+                          # itself: required, it made the model answer an account
+                          # number without one with a clarify, and the question
+                          # that asked for the amount was then forgotten.
+                          "amount": {"type": ["integer", "null"],
+                                     "description": "Major unit. Null when the message "
+                                                    "gives none; never guess one."},
                           "currency": {"type": "string", "default": "NGN"},
                           "beneficiary_ref": {"type": ["string", "null"]},
                           "account_number": {"type": ["string", "null"]},
-                          "bank_name": {"type": ["string", "null"]},
-                          "narration": {"type": ["string", "null"]}},
-                      "required": ["amount"]}},
+                          "bank_name": {"type": ["string", "null"],
+                                        "description": "The bank the message names, e.g. "
+                                                       "\"GTBank\" for \"tg\"/\"gt\", \"First "
+                                                       "Bank\" for \"first\". Null when none is "
+                                                       "named; never the recipient's name."},
+                          "narration": {"type": ["string", "null"]}}}},
     {"name": "buy_airtime",
      "description": "Buy airtime.",
      "input_schema": {"type": "object",
@@ -520,20 +562,36 @@ def privacy_safe_text(text: str) -> str:
     return sanitize_for_model(text)[0]
 
 
-def extract_intent(text: str) -> dict | None:
+def conversation_text(text: str, context: dict | None = None) -> str:
+    """The message as the model sees it: alone, or - when it answers a question
+    the model asked - laid out with the earlier message and that question, so a
+    reply like "1800" arrives with what it is the amount of."""
+    if not context:
+        return text
+    return (f"Customer's earlier message: {context.get('text', '')}\n"
+            f"You asked them: {context.get('question', '')}\n"
+            f"Their reply: {text}")
+
+
+def extract_intent(text: str, context: dict | None = None) -> dict | None:
     """Map a message to one tool call -> {"name", "input"}, or None to fall back
     to the deterministic router (not configured, or any error — money never
     blocks on AI).
 
+    `context` is {"text", "question"} when the message replies to a question the
+    model asked; see conversation_text.
+
     The provider is whatever the console has configured (Claude, OpenAI, Gemini,
     Grok, Groq, DeepSeek, Kimi, Qwen, or any OpenAI-compatible endpoint); llm.py
     owns the wire formats. The message is redacted before it leaves the building
-    either way — see privacy_safe_text."""
+    either way — see privacy_safe_text. The earlier message and the question go
+    through the same redaction, in one pass with the reply, so a number in any of
+    them is masked and every token maps back through one table."""
     if not llm_available():
         return None
     from . import llm
 
-    masked, mapping = sanitize_for_model(text)
+    masked, mapping = sanitize_for_model(conversation_text(text, context))
     intent = llm.call_tools(SYSTEM_PROMPT, masked, TOOLS)
     if not intent:
         return None

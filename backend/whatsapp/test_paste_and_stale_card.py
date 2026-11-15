@@ -43,7 +43,12 @@ class PastedTransferTests(TestCase):
     """
 
     def setUp(self):
+        from transfers.models import Bank
+
         self.user, _ = make_user(phone="08010000041", email="paste@zitch.test")
+        for code, name, bank_code in (("moniepoint", "Moniepoint MFB", "50515"),
+                                      ("gtb", "GTBank", "058")):
+            Bank.objects.create(code=code, name=name, bank_code=bank_code, active=True)
 
     def test_an_eleven_digit_account_is_recognised(self):
         with patch.object(router, "_begin_bank_transfer", return_value=True) as begin:
@@ -61,14 +66,35 @@ class PastedTransferTests(TestCase):
 
     def test_the_amount_is_not_taken_from_the_account_number(self):
         with patch.object(router, "_begin_bank_transfer", return_value=True) as begin:
-            router._start_transfer_from_paste(self.user, MSISDN, "01827364728 opay 2500")
+            router._start_transfer_from_paste(self.user, MSISDN, "01827364728 moniepoint 2500")
         self.assertEqual(begin.call_args.args[2], Decimal("2500"))
 
-    def test_a_message_with_no_amount_is_not_a_paste(self):
+    def test_a_number_with_no_amount_and_no_bank_is_not_a_paste(self):
+        """No bank this table knows, no amount, no "send": nothing says transfer."""
         with patch.object(router, "_begin_bank_transfer") as begin:
-            handled = router._start_transfer_from_paste(self.user, MSISDN, "01827364728 opay")
-        self.assertFalse(handled)
+            for last_resort in (False, True):
+                handled = router._start_transfer_from_paste(
+                    self.user, MSISDN, "01827364728 opay", last_resort=last_resort)
+                self.assertFalse(handled)
         begin.assert_not_called()
+
+    def test_a_number_and_a_bank_with_no_amount_asks_for_the_amount(self):
+        """A transfer missing only its amount. The model reads it first ("four
+        thousand naira" is an amount this parser cannot see); asked for last."""
+        from transfers.models import Bank
+
+        Bank.objects.create(code="opay", name="OPay", bank_code="999992", active=True)
+        self.assertFalse(router._start_transfer_from_paste(self.user, MSISDN, "01827364728 opay"))
+        with patch.object(router, "reply") as reply, \
+             patch.object(router, "_begin_bank_transfer") as begin:
+            handled = router._start_transfer_from_paste(self.user, MSISDN, "01827364728 opay",
+                                                        last_resort=True)
+        self.assertTrue(handled)
+        begin.assert_not_called()
+        self.assertIn("How much would you like to send to OPay 01827364728", reply.call_args[0][1])
+        pa = PendingAction.objects.get(msisdn=MSISDN)
+        self.assertEqual((pa.action_type, pa.state, pa.payload["account"]),
+                         ("transfer", "amount", "01827364728"))
 
 
 class StaleConfirmCardTests(TestCase):
