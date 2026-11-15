@@ -83,11 +83,21 @@ def webhook(request):
         record_webhook("whatsapp", outcome=WebhookEvent.BAD_BODY, verified=True,
                        http_status=400, remote_ip=client_ip(request))
         return JsonResponse({"success": False, "message": "Invalid payload"}, status=400)
-    if not isinstance(event, dict) or not _live_metadata_valid(event):
+    if not isinstance(event, dict):
         record_webhook("whatsapp", outcome=WebhookEvent.BAD_BODY, verified=True,
-                       http_status=400, remote_ip=client_ip(request),
-                       action="invalid_phone_number_id")
+                       http_status=400, remote_ip=client_ip(request))
         return JsonResponse({"success": False, "message": "Invalid payload"}, status=400)
+    if not _live_metadata_valid(event):
+        # Signature-verified, so genuinely from Meta - just not for this number
+        # (another number on the same app, or an account-level event with no
+        # phone metadata). Still recorded as invalid_phone_number_id for the
+        # health page, but ACKNOWLEDGED: a 4xx makes Meta retry it for days and
+        # back off the endpoint, and production logs showed these 400s
+        # interleaved with live customer traffic.
+        record_webhook("whatsapp", outcome=WebhookEvent.BAD_BODY, verified=True,
+                       http_status=200, remote_ip=client_ip(request),
+                       action="invalid_phone_number_id")
+        return JsonResponse({"success": True, "ignored": True}, status=200)
 
     # Persist commands before acknowledging. Production workers process the
     # encrypted queue; local/test mode can run that same job inline for a tight

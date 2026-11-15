@@ -917,6 +917,13 @@ WHATSAPP["ALLOW_CHAT_SIGNUP"] = env_bool("WHATSAPP_ALLOW_CHAT_SIGNUP", True)
 # guarantees. Costs webhook latency (the reply is sent before Meta gets its 200);
 # acceptable at chat volumes, and Meta tolerates slow acks far better than lost ones.
 WHATSAPP_PROCESS_INLINE = env_bool("WHATSAPP_PROCESS_INLINE", not _PROD)
+# Flow PIN submissions never run the payment on the request thread in
+# production, even when WHATSAPP_PROCESS_INLINE is on. Inline, the endpoint held
+# Meta's 10-second data-exchange for the name check, the bank call, the settle
+# wait, the receipt render AND the chat sends (~10s in production logs), so the
+# Confirm spinner ran long after the bank had already answered. Queued, the
+# endpoint answers the moment the ledger settles (see _await_settlement).
+WHATSAPP_FLOW_INLINE = env_bool("WHATSAPP_FLOW_INLINE", not _PROD)
 # How many inbound WhatsApp messages the worker processes at once. Different
 # SENDERS only — per-sender order is enforced in whatsapp.jobs._claim_inbound —
 # so this is what stops one customer's voice note or bank-rail wait from holding
