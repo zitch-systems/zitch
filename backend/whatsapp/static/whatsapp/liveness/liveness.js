@@ -42,10 +42,26 @@
 
   function now() { return (window.performance && performance.now) ? performance.now() : Date.now(); }
 
+  // Only our own self-hosted liveness files may ever be loaded as scripts or
+  // fetched as the model/WASM: same origin, under /static/whatsapp/liveness/.
+  // The URLs come from the page's own JSON block, but a script URL must never
+  // be trusted just because it was read from the DOM.
+  var ASSET_PREFIX = '/static/whatsapp/liveness/';
+  function ownAsset(src) {
+    var url;
+    try { url = new URL(String(src || ''), window.location.href); } catch (e) { return ''; }
+    if (url.origin !== window.location.origin) return '';
+    if (url.pathname.indexOf(ASSET_PREFIX) !== 0 || url.pathname.indexOf('..') !== -1) return '';
+    if (url.search || url.hash) return '';
+    return url.origin + url.pathname;
+  }
+
   function addScript(src, nonce) {
     return new Promise(function (resolve, reject) {
+      var safe = ownAsset(src);
+      if (!safe) { reject(new Error('Refusing to load an unexpected script')); return; }
       var s = document.createElement('script');
-      s.src = src;
+      s.src = safe;
       s.nonce = nonce;
       s.async = false;
       s.onload = function () { resolve(); };
@@ -58,9 +74,9 @@
     return vision.FaceLandmarker.createFromOptions(
       // An empty loader path tells MediaPipe the ModuleFactory is already
       // present (we loaded it with the page's nonce).
-      { wasmLoaderPath: '', wasmBinaryPath: assets.wasm },
+      { wasmLoaderPath: '', wasmBinaryPath: ownAsset(assets.wasm) },
       {
-        baseOptions: { modelAssetPath: assets.model, delegate: delegate },
+        baseOptions: { modelAssetPath: ownAsset(assets.model), delegate: delegate },
         runningMode: 'VIDEO',
         numFaces: 2,
         outputFaceBlendshapes: true,
