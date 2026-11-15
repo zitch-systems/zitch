@@ -1,0 +1,21 @@
+<div class="lv-stage" id="lv-stage">
+  <div class="lv-ring">
+    <div class="lv-frame" id="frame">
+      <video id="video" class="hidden" autoplay playsinline muted></video>
+      <img id="shot" class="hidden" alt="Your selfie">
+      <div class="hint" id="hint">Starting your front camera…</div>
+      <span class="lv-arrow" id="lv-arrow" aria-hidden="true"></span>
+    </div>
+  </div>
+  <div id="lv-moves" class="hidden">
+    <p class="lv-prompt" id="lv-prompt" aria-live="polite"></p>
+    <ol class="lv-chips" aria-label="Face check moves">
+      <li data-lv-step="left">Left</li>
+      <li data-lv-step="right">Right</li>
+      <li data-lv-step="smile">Smile</li>
+    </ol>
+    <p class="lv-hint hidden" id="lv-hint" role="status"></p>
+    <p class="lv-dark hidden" id="lv-dark" role="alert">Turn up your brightness — your face is too dark. Face a light if you can.</p>
+  </div>
+  <p class="lv-bright">💡 Screen at full brightness to light your face</p>
+</div>

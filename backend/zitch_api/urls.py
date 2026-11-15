@@ -18,6 +18,7 @@ from whatsapp.views import approve_handoff as whatsapp_approve_handoff
 from whatsapp.views import flow_endpoint as whatsapp_flow_endpoint
 from whatsapp.views import webhook as whatsapp_webhook
 from whatsapp.verification_web import face_page as whatsapp_face_page
+from whatsapp.liveness import app_liveness_page
 from whatsapp.verification_web import verification_page as whatsapp_verification_page
 
 
@@ -787,6 +788,9 @@ urlpatterns = [
     path("kyc/face/complete/", prembly_face_complete),
     path("wa/verify/<str:token>", whatsapp_verification_page, name="whatsapp_verification"),
     path("wa/face/<str:token>", whatsapp_face_page, name="whatsapp_face"),
+    # The app's Tier 2 liveness check, shown in a WebView: the same on-device
+    # check as the WhatsApp face page, handing the selfie back to the app.
+    path("kyc/liveness/", app_liveness_page, name="kyc_liveness"),
     # Wema/ALAT bank-called callbacks. The bank PROFILES these exact URLs, and the
     # rails do not work until it has: account creation is refused without a profiled
     # Account Creation URL, and transactions fail authentication without the

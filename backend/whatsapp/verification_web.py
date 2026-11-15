@@ -44,6 +44,7 @@ from common.http import evaluate_transaction_pin
 from common.ratelimit import ratelimit
 from utility.providers import partnership_new_business_allowed
 
+from .liveness import liveness_context, secure_camera_headers
 from .models import PendingAction, WhatsAppLink
 
 TTL_SECONDS = 15 * 60
@@ -610,7 +611,7 @@ def _face_get(request, token):
     if _android_in_app(request) and request.GET.get("stay") != "1":
         return _chrome_handoff(request, _public_origin() + request.path)
     return render(request, "whatsapp/face_camera.html", {
-        "nonce": request.verification_nonce,
+        **liveness_context(request.verification_nonce),
         "picker_only": request.GET.get("stay") == "1",
     })
 
@@ -721,18 +722,9 @@ def face_page(request, token):
             response = _face_protected(request, token)
         except (RequestDataTooBig, SuspiciousOperation, ValueError):
             response = _json(400, status="retry", message="We could not read that photo. Please take it again.")
-    response["Cache-Control"] = "no-store, private, max-age=0"
-    response["Referrer-Policy"] = "no-referrer"
-    response["X-Content-Type-Options"] = "nosniff"
-    response["X-Frame-Options"] = "DENY"
-    response["X-Robots-Tag"] = "noindex, nofollow, noarchive"
-    response["Permissions-Policy"] = "camera=(self), microphone=(), geolocation=()"
-    response["Content-Security-Policy"] = (
-        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; "
-        f"style-src 'nonce-{request.verification_nonce}'; "
-        f"script-src 'nonce-{request.verification_nonce}'; connect-src 'self'; "
-        "img-src data: blob:; media-src blob: mediastream:; object-src 'none'")
-    return response
+    # Same nonce-only CSP as before, plus 'wasm-unsafe-eval' for the on-device
+    # liveness model (self-hosted; see whatsapp/liveness.py).
+    return secure_camera_headers(response, request.verification_nonce)
 
 
 FACE_SWEEP_LIMIT = 20
