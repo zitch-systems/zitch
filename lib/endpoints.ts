@@ -43,6 +43,7 @@ export const EP = {
     nin: '/api/kyc/nin/',
     ninConfirm: '/api/kyc/nin/confirm/',
     address: '/api/kyc/address/',
+    addressSave: '/api/kyc/address/save/',
     face: '/api/kyc/face/',
     identityFaceStart: '/api/kyc/face/start/',
     identityFaceStatus: '/api/kyc/face/status/',

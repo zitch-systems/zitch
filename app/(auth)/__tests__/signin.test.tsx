@@ -209,3 +209,16 @@ describe('sign-in failure messages', () => {
     expect(notify).toHaveBeenCalledWith('Error', 'A network security check blocked this request. Please try again in a moment.');
   });
 });
+
+it('sends a new-device sign-in to the face check without storing any session', async () => {
+  const push = jest.requireMock('expo-router').router.push as jest.Mock;
+  mockPublicPost.mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: false, code: 'new_device_face_required', challenge: 'one-time' }) });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Signin />); });
+  await act(async () => { field(tree, 'Email or phone').props.onChangeText('08011112222'); });
+  await act(async () => { field(tree, 'Password').props.onChangeText('pw'); });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Sign in' }).props.onPress(); });
+  expect(push).toHaveBeenCalledWith({ pathname: '/newdevice', params: { challenge: 'one-time', id: '08011112222' } });
+  expect(mockStoreSession).not.toHaveBeenCalled();
+  act(() => tree.unmount());
+});

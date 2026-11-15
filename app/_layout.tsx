@@ -37,7 +37,7 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 // earlier account must not bounce someone off these while they create an
 // account or reset a password: none of them shows account data, and each
 // ends in a sign-in that replaces the old session.
-const OPEN_WITHOUT_SESSION = new Set(['/signin', '/register', '/otp', '/forgotpassword', '/resetpassword']);
+const OPEN_WITHOUT_SESSION = new Set(['/signin', '/newdevice', '/register', '/otp', '/forgotpassword', '/resetpassword']);
 
 const RootStack = () => {
   const { theme, c } = useTheme();

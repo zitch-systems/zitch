@@ -42,7 +42,7 @@ from wallet.services import (attach_existing_bank_account, get_or_create_wallet,
                              wema_account_reference)
 
 from .models import (
-    IdentityProof, OTP, AccessToken, PushDevice, RefreshToken, User, hash_identifier,
+    IdentityProof, LoginChallenge, OTP, AccessToken, PremblyFaceSession, PushDevice, RefreshToken, User, hash_identifier,
     password_rejection, record_identity_proof, rehydrate_verified_identity_flags,
 )
 
@@ -231,6 +231,120 @@ def _signup_contacts(data):
     return phone, email, None
 
 
+def _challenge_hash(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _new_device_challenge(user, request) -> str:
+    """A one-time challenge when this sign-in comes from a device the account has
+    never used and a face check can actually be run for it; "" otherwise.
+
+    Not challenged, and signed in as before:
+      * an account with no remembered device yet (the device it signs in from now
+        becomes its first), so existing customers are not locked out on rollout;
+      * a known device;
+      * an account a face check cannot be matched for (no verified BVN with proof,
+        or unverified contact details), or when the face provider is switched off.
+        Each of those is logged, so the gap is visible rather than silent.
+    An HTTP sign-in without the device header counts as a new device: stripping
+    one attacker-controlled header must not skip the check.
+    """
+    from accounts.models import KnownDevice
+    from common.risk import parse_device
+    from utility.liveness import _identity, tier2_face_available
+
+    devices = KnownDevice.objects.filter(user=user)
+    if not devices.exists():
+        return ""
+    device_id = parse_device(request)["id"]
+    if device_id and devices.filter(device_id=device_id).exists():
+        return ""
+    identity = _identity(user)
+    if not (identity and identity[0] == "bvn" and user.email_verified and user.phone_verified):
+        log.warning("new_device_signin_unchallengeable user=%s reason=no_bvn_face_reference", user.pk)
+        return ""
+    if not tier2_face_available():
+        log.warning("new_device_signin_unchallengeable user=%s reason=face_provider_off", user.pk)
+        return ""
+    raw = secrets.token_urlsafe(32)
+    LoginChallenge.objects.create(
+        user=user, key=_challenge_hash(raw), device_id=device_id,
+        expires_at=timezone.now() + timedelta(minutes=LoginChallenge.TTL_MINUTES))
+    # The device id is a client header: log a short fingerprint of it, never the
+    # raw text, so a crafted header cannot write into the log.
+    device_tag = hashlib.sha256(device_id.encode()).hexdigest()[:12] if device_id else "-"
+    log.warning("new_device_signin_challenged user=%s device=%s", user.pk, device_tag)
+    return raw
+
+
+def _open_challenge(request):
+    """(challenge, None) for a live challenge presented from the device that
+    signed in, or (None, refusal)."""
+    from common.risk import parse_device
+
+    raw = request.data.get("challenge")
+    refusal = fail("This sign-in has expired. Sign in again.", status=401, code="challenge_invalid")
+    if not isinstance(raw, str) or not raw.strip() or len(raw) > 200:
+        return None, refusal
+    row = LoginChallenge.objects.select_related("user").filter(key=_challenge_hash(raw.strip())).first()
+    if (row is None or row.consumed_at is not None or row.expires_at <= timezone.now()
+            or row.failed_checks >= LoginChallenge.MAX_FAILED_CHECKS or not row.user.is_active
+            or not hmac.compare_digest(row.device_id, parse_device(request)["id"])):
+        return None, refusal
+    return row, None
+
+
+@api
+@ratelimit("signin_face_start", limit=10, window=600)
+def signin_face_start(request):
+    """POST /api/signin/face/start/ {challenge} -> {session, url}: the Prembly face
+    check for a new-device sign-in, matched against the account's verified BVN."""
+    from utility.liveness import start_tier2_liveness
+
+    row, refusal = _open_challenge(request)
+    if refusal:
+        return refusal
+    result = start_tier2_liveness(row.user, purpose="login")
+    if result.get("success") and result.get("session"):
+        session = PremblyFaceSession.objects.filter(
+            user=row.user, state=result["session"], purpose="login").first()
+        LoginChallenge.objects.filter(pk=row.pk).update(face_session=session)
+    return JsonResponse(result, status=503 if result.get("unavailable") else
+                        202 if result.get("pending") else 200 if result.get("success") else 409)
+
+
+@api
+@ratelimit("signin_face_status", limit=60, window=600)
+def signin_face_status(request):
+    """POST /api/signin/face/status/ {challenge, session} -> the session (tokens)
+    once the face check for this challenge has passed; pending or failed until then."""
+    from common.risk import evaluate_login
+    from utility.liveness import verify_tier2_liveness
+
+    row, refusal = _open_challenge(request)
+    if refusal:
+        return refusal
+    session = str(request.data.get("session") or "")
+    if row.face_session_id is None or str(row.face_session.state) != session:
+        return fail("Start the face check again.", status=409, code="face_session_mismatch")
+    result = verify_tier2_liveness(row.user, {"session": session}, purpose="login")
+    if not result.get("success"):
+        if result.get("status") == "failed":
+            LoginChallenge.objects.filter(pk=row.pk).update(failed_checks=F("failed_checks") + 1)
+        return JsonResponse(result, status=503 if result.get("unavailable") else
+                            202 if result.get("pending") else 400)
+    with db_transaction.atomic():
+        current = LoginChallenge.objects.select_for_update().get(pk=row.pk)
+        if current.consumed_at is not None or current.expires_at <= timezone.now():
+            return fail("This sign-in has expired. Sign in again.", status=401, code="challenge_invalid")
+        current.consumed_at = timezone.now()
+        current.save(update_fields=["consumed_at"])
+    # Now the device is the customer's: score and remember it as any sign-in does.
+    evaluate_login(request, row.user)
+    log.warning("new_device_signin_confirmed user=%s", row.user.pk)
+    return ok(**_session_payload(row.user, request), message="Signed in")
+
+
 @ratelimit("signin", limit=10, window=300)
 @api
 def signin(request):
@@ -254,6 +368,14 @@ def signin(request):
 
     clear_login_failures("user", ident)
     get_or_create_wallet(user)
+    # A device this account has never used gets no session until a face check
+    # proves it is the customer (decided Nov 2026: every new-device sign-in).
+    # Checked before evaluate_login, which would otherwise remember the device.
+    challenge = _new_device_challenge(user, request)
+    if challenge:
+        return ok(success=False, code="new_device_face_required", challenge=challenge,
+                  face_provider="prembly",
+                  message="You're signing in on a new device. Confirm it's you with a quick face check.")
     # Score the device this sign-in came from and remember it. Deliberately does not
     # gate the sign-in: the password was correct, and refusing on a heuristic would
     # lock out customers who bought a new phone. What it buys is a durable trail from
@@ -532,6 +654,14 @@ def password_reset(request):
         # duplicate request cannot change the password or revoke the winner.
         user.tokens.all().delete()
         user.refresh_tokens.all().update(revoked_at=timezone.now())
+        # The new-device rule covers recovery too: a reset code alone must not
+        # open a session on a phone this account has never used. The password
+        # is changed either way; only the session waits for the face check.
+        challenge = _new_device_challenge(user, request)
+        if challenge:
+            return ok(success=True, code="new_device_face_required", challenge=challenge,
+                      face_provider="prembly",
+                      message="Your password is reset. You're on a new device, so confirm it's you with a quick face check.")
         payload = _session_payload(user, request)
     return ok(**payload, message="Password reset")
 
@@ -2312,6 +2442,55 @@ def kyc_liveness_status(request):
     user.refresh_from_db()
     return JsonResponse({**_kyc_state(user), **result}, status=503 if result.get("unavailable") else
                         202 if result.get("pending") else 200 if result.get("success") else 400)
+
+
+_NIGERIAN_STATES = frozenset({
+    "Abia", "Adamawa", "Akwa Ibom", "Anambra", "Bauchi", "Bayelsa", "Benue", "Borno",
+    "Cross River", "Delta", "Ebonyi", "Edo", "Ekiti", "Enugu", "FCT", "Gombe", "Imo",
+    "Jigawa", "Kaduna", "Kano", "Katsina", "Kebbi", "Kogi", "Kwara", "Lagos", "Nasarawa",
+    "Niger", "Ogun", "Ondo", "Osun", "Oyo", "Plateau", "Rivers", "Sokoto", "Taraba",
+    "Yobe", "Zamfara",
+})
+
+
+def _address_part(data, key, limit):
+    value = data.get(key)
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:limit]
+
+
+@api
+@ratelimit("kyc_address_save", limit=10, window=600)
+@require_user
+def kyc_address_save(request):
+    """POST /api/kyc/address/save/ {access_token, house_number, street, state, lga}
+
+    Keeps the address the customer gives at sign-up. Nothing is checked or
+    upgraded here: Tier 3 still needs bank evidence for this address
+    (verify_kyc_address). An address that is verified, or waiting on a review,
+    is evidence and cannot be replaced from the app.
+    """
+    data = request.data
+    house = _address_part(data, "house_number", 20)
+    street = _address_part(data, "street", 120)
+    state = _address_part(data, "state", 40)
+    lga = _address_part(data, "lga", 60)
+    if not house or not street:
+        return fail("Enter your house number and street.")
+    match = next((s for s in _NIGERIAN_STATES if s.lower() == state.lower()), "")
+    if not match:
+        return fail("Choose your state from the list.")
+    if not lga:
+        return fail("Enter your local government area.")
+    with db_transaction.atomic():
+        user = User.objects.select_for_update().get(pk=request.user_obj.pk)
+        if user.address_verified or user.address_verification_pending:
+            return fail("Your address is already with us for Tier 3. Contact Zitch Support to change it.",
+                        status=409, code="address_locked")
+        user.set_address(f"{house} {street}, {lga}, {match}")
+        user.save(update_fields=["address"])
+    return ok(success=True, message="Address saved", address=user.address)
 
 
 @api

@@ -3,15 +3,37 @@ import { View, Text, TextInput, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { publicPost } from '@/lib/api';
+import { publicPost, apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { unlockSession } from '@/lib/session';
-import { getSessionGeneration, storeSession } from '@/lib/secureStore';
+import { getSessionGeneration, storeSession, saveRefreshToken } from '@/lib/secureStore';
+import { usePinScreenProtection } from '@/lib/screenCapture';
+import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
-import { Screen, Header, Btn } from '@/components/design/ui';
+import { Screen, Header, Btn, Field } from '@/components/design/ui';
 import { Stepper } from '@/components/design/Stepper';
 import { useTheme, font } from '@/lib/theme';
 
 const OTP_LEN = 6;
+
+/** The server's password rules (accounts.models password checks), shown as chips. */
+export const passwordRules = (pw: string) => [
+  { label: '8+ characters', ok: pw.length >= 8 },
+  { label: 'A letter', ok: /[A-Za-z]/.test(pw) },
+  { label: 'A number', ok: /\d/.test(pw) },
+  { label: 'A symbol, like ! @ #', ok: /[^A-Za-z0-9]/.test(pw) },
+];
+
+const RuleChip = ({ ok, label }: { ok: boolean; label: string }) => {
+  const { c } = useTheme();
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999,
+      backgroundColor: ok ? 'rgba(0,160,26,0.08)' : c.surface2 }}>
+      <ZIcon name="check" size={12} color={ok ? '#15803D' : c.ink3} stroke={3} />
+      <Text style={{ fontSize: 11.5, fontFamily: font.semibold, color: ok ? '#15803D' : c.ink3 }}>{label}</Text>
+    </View>
+  );
+};
 
 const OTPVerification = () => {
   const { c } = useTheme();
@@ -25,6 +47,13 @@ const OTPVerification = () => {
   const mounted = useRef(true);
   const resending = useRef(false);
   const verifying = useRef(false);
+  // Once the code is verified the account exists and is signed in; the password
+  // is set on this same page instead of a separate screen.
+  const [verified, setVerified] = useState(false);
+  const [pw, setPw] = useState({ one: '', two: '' });
+  const [savingPw, setSavingPw] = useState(false);
+  const savingRef = useRef(false);
+  usePinScreenProtection(verified);
 
   useEffect(() => {
     mounted.current = true;
@@ -81,7 +110,7 @@ const OTPVerification = () => {
         if (!mounted.current || authenticatedGeneration !== getSessionGeneration()) return;
         await AsyncStorage.removeItem('otpPending'); // verification done
         if (!mounted.current || authenticatedGeneration !== getSessionGeneration()) return;
-        router.replace('/setpassword');
+        setVerified(true);
       } else {
         notify('Error', result.message || 'Failed to verify OTP');
         setOtp('');
@@ -141,6 +170,36 @@ const OTPVerification = () => {
 
   const masked = userPhone ? `${userPhone.slice(0, 4)} *** ${userPhone.slice(-4)}` : 'your phone';
 
+  const rules = passwordRules(pw.one);
+  const pwMatch = pw.one !== '' && pw.one === pw.two;
+  const pwReady = rules.every((r) => r.ok) && pwMatch;
+
+  const savePassword = async () => {
+    if (!verified || !pwReady || savingRef.current) return;
+    savingRef.current = true;
+    setSavingPw(true);
+    const generation = getSessionGeneration();
+    const current = () => mounted.current && generation === getSessionGeneration();
+    try {
+      const response = await apiPost(EP.auth.setPassword, { password: pw.one });
+      const result = await response.json().catch(() => ({}));
+      if (!current()) return;
+      if (response.ok) {
+        // Setting a password revokes the old refresh chain, ours included.
+        await saveRefreshToken(result.refresh_token || '');
+        if (!current()) return;
+        router.replace({ pathname: '/kyc', params: { onboarding: '1' } } as any);
+      } else {
+        notify('Password', result.message || 'Could not set your password');
+      }
+    } catch {
+      if (current()) notify('Error', 'Something went wrong. Please try again.');
+    } finally {
+      savingRef.current = false;
+      if (mounted.current) setSavingPw(false);
+    }
+  };
+
   const leave = (route: '/register' | '/signin') => {
     // Leaving invalidates pending responses immediately, before navigation commits.
     mounted.current = false;
@@ -165,19 +224,94 @@ const OTPVerification = () => {
     );
   }
 
+  const passwordBlock = (
+    <View style={{ marginTop: 26, gap: 14, opacity: verified ? 1 : 0.45 }}>
+      <Text style={{ fontSize: 15, fontFamily: font.extrabold, color: c.ink1 }}>Create a password</Text>
+      <Field
+        label="Password"
+        value={pw.one}
+        onChangeText={(v) => setPw((p) => ({ ...p, one: v }))}
+        secureTextEntry
+        editable={verified && !savingPw}
+        autoComplete="new-password"
+        textContentType="newPassword"
+        placeholder="At least 8 characters"
+        prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
+      />
+      <View>
+        <Field
+          label="Confirm password"
+          value={pw.two}
+          onChangeText={(v) => setPw((p) => ({ ...p, two: v }))}
+          secureTextEntry
+          editable={verified && !savingPw}
+          returnKeyType="done"
+          onSubmitEditing={() => void savePassword()}
+          autoComplete="new-password"
+          textContentType="newPassword"
+          placeholder="Type it again"
+          prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
+        />
+        {verified && pw.two.length > 0 && (
+          <Text style={{ fontSize: 12, color: pwMatch ? c.lime : c.red, marginTop: 6, marginLeft: 2, fontFamily: font.semibold }}>
+            {pwMatch ? 'Passwords match' : 'Passwords do not match'}
+          </Text>
+        )}
+      </View>
+      {verified ? (
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: -4 }}>
+          {rules.map((r) => <RuleChip key={r.label} ok={r.ok} label={r.label} />)}
+        </View>
+      ) : (
+        <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular, marginTop: -6 }}>Opens once your number is verified.</Text>
+      )}
+    </View>
+  );
+
+  if (verified) {
+    return (
+      <Screen>
+        <Stepper step={2} total={4} label="Step 2 of 4 · Phone and password" />
+        <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Verify your phone</Text>
+        <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular }}>
+          Your number is confirmed. Now set a password for your account.
+        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 22, minHeight: 56, paddingHorizontal: 16, borderRadius: 18, backgroundColor: c.surface }}>
+          <ZIcon name="phone" size={18} color={c.ink3} />
+          <Text style={{ flex: 1, fontSize: 16, fontFamily: font.semibold, color: c.ink1 }}>{masked}</Text>
+          <ZIcon name="check" size={16} color="#15803D" stroke={3} />
+          <Text style={{ fontSize: 13, fontFamily: font.bold, color: '#15803D' }}>Verified</Text>
+        </View>
+        {passwordBlock}
+        <View style={{ marginTop: 26, marginBottom: 12 }}>
+          <Btn label={savingPw ? 'Saving password…' : 'Continue'} disabled={!pwReady || savingPw} onPress={() => void savePassword()} />
+        </View>
+      </Screen>
+    );
+  }
+
   return (
     <Screen>
       <Header onBack={() => leave('/register')} />
-      <Stepper step={2} total={4} label="Step 2 of 4 · Verify phone" />
-      <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Verify your number</Text>
+      <Stepper step={2} total={4} label="Step 2 of 4 · Phone and password" />
+      <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Verify your phone</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular }}>
         Enter the {OTP_LEN}-digit SMS code sent to <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{masked}</Text>
       </Text>
+      <Pressable
+        onPress={() => leave('/register')}
+        accessibilityRole="button"
+        accessibilityLabel="Edit phone number"
+        hitSlop={8}
+        style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: 'rgba(6,110,102,0.10)' }}
+      >
+        <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand }}>Edit number</Text>
+      </Pressable>
 
       {/* The boxes are display-only; a hidden numeric TextInput captures input
           from the device keypad (and OS SMS autofill). Tapping the boxes focuses it. */}
       <Pressable onPress={() => inputRef.current?.focus()}>
-        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ flexDirection: 'row', gap: 10, marginTop: 28, marginBottom: 18 }}>
+        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ flexDirection: 'row', gap: 10, marginTop: 22, marginBottom: 18 }}>
           {Array.from({ length: OTP_LEN }).map((_, k) => (
             <View
               key={k}
@@ -215,7 +349,7 @@ const OTPVerification = () => {
           // Cover the boxes so taps focus it; invisible so only the boxes show.
           // Keep the native field visually hidden without opacity:0. Some Android
           // autofill services ignore a fully transparent OTP target after resend.
-          style={{ position: 'absolute', top: 28, left: 0, right: 0, height: 58, color: 'transparent', backgroundColor: 'transparent' }}
+          style={{ position: 'absolute', top: 22, left: 0, right: 0, height: 58, color: 'transparent', backgroundColor: 'transparent' }}
         />
       </Pressable>
 
@@ -236,7 +370,10 @@ const OTPVerification = () => {
           </Text>
         </Pressable>
       </View>
-      <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 12 }}>
+
+      {passwordBlock}
+
+      <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 22 }}>
         Already have an account?{' '}
         <Text
           accessibilityRole="link"

@@ -7,6 +7,7 @@ const AuthLayout = () => {
   return (
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: c.bg } }}>
       <Stack.Screen name="signin" />
+      <Stack.Screen name="newdevice" />
       <Stack.Screen name="forgotpassword" />
       <Stack.Screen name="resetpassword" />
       <Stack.Screen name="resetpin" />

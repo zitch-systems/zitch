@@ -13,6 +13,7 @@ import FaceLivenessModal from '@/components/design/FaceLivenessModal';
 import AuthGuard from '@/components/AuthGuard';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Tap, money } from '@/components/design/ui';
+import { AddressWaits, LaterLink, OnboardingAddress, OnboardingHeading, StepTitle, ViaOption } from '@/components/kyc/Onboarding';
 import { useTheme, font } from '@/lib/theme';
 
 type Status = {
@@ -49,6 +50,8 @@ type Status = {
   // send the customer straight to the step that works.
   identity_upgrade_required?: boolean;
   bank_upgrade_required?: boolean;
+  // The customer's address as they gave it (sign-up saves it; nothing verified).
+  address?: string;
 };
 
 type Method = 'menu' | 'email' | 'bvn' | 'nin' | 'selfie' | 'upgrade' | 'address';
@@ -84,7 +87,13 @@ const Kyc = () => {
     pending_tracking_id?: string;
     pending_otp_destination?: string;
     verify_identity?: string;
+    onboarding?: string;
   }>();
+  // Sign-up's "BVN and address" page: the same BVN flow, then the address, then
+  // the PIN set-up. Reached from the phone-and-password step.
+  const onboarding = params.onboarding === '1';
+  const title = onboarding ? undefined : 'Identity verification';
+  const toSetup = () => router.replace('/setup');
   const [status, setStatus] = useState<Status | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [statusError, setStatusError] = useState('');
@@ -119,6 +128,7 @@ const Kyc = () => {
   const [upNin, setUpNin] = useState('');
   const [upSelfie, setUpSelfie] = useState('');
   const [busy, setBusy] = useState(false);
+  const [bvnVia, setBvnVia] = useState<'sms' | 'face'>('sms');
   const [premblySession, setPremblySession] = useState('');
   const [address, setAddress] = useState<ResidentialAddress>(EMPTY_ADDRESS);
   const [addressDocument, setAddressDocument] = useState('');
@@ -249,7 +259,14 @@ const Kyc = () => {
     setBusy(false);
     spin.stopAnimation();
   };
-  const onBack = method === 'menu' ? () => router.back() : goMenu;
+  const onBack = onboarding
+    ? (method === 'bvn' && bvnSent ? () => { setBvnSent(false); setBvnOtp(''); setBvnTrackingId(''); setBvnOtpDestination(''); } : undefined)
+    : method === 'menu' ? () => router.back() : goMenu;
+  // In sign-up the BVN form is the starting point, and every route back to the
+  // menu lands on it again until the BVN is verified.
+  useEffect(() => {
+    if (onboarding && status && !status.bvn_verified && method === 'menu') setMethod('bvn');
+  }, [onboarding, status, method]);
   // Both identities are still outstanding to the BANK in this state even when
   // one is verified with us, because the upgrade request carries both.
   const needsUpgrade = !!status?.identity_upgrade_required
@@ -759,7 +776,7 @@ const Kyc = () => {
 
   if (loadingStatus || statusError || !status) {
     return <Screen>
-      <Header title="Identity verification" onBack={() => router.back()} />
+      <Header title={title} onBack={onboarding ? undefined : () => router.back()} />
       <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{statusError || 'Checking your verification status…'}</Text>
       {!!statusError && <Btn label="Try again" onPress={() => { setLoadingStatus(true); void load(); }} />}
     </Screen>;
@@ -768,7 +785,7 @@ const Kyc = () => {
   if (status?.legacy_funding_review === true || status?.account_setup_state === 'legacy_funding_review'
       || (status?.account_provider != null && status.account_provider !== 'partnership')) {
     return <Screen>
-      <Header title="Identity verification" onBack={onBack} />
+      <Header title={title} onBack={onBack} />
       <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{status.migration_message || 'Your account needs review. Contact support before adding or spending money.'}</Text>
       <View style={{ marginTop: 20 }}><Btn label="Contact support" onPress={() => router.push('/support')} /></View>
     </Screen>;
@@ -776,19 +793,24 @@ const Kyc = () => {
 
   if (status?.pending || status?.account_setup_state === 'processing') {
     return <Screen>
-      <Header title="Identity verification" onBack={() => router.back()} />
+      <Header title={title} onBack={onboarding ? undefined : () => router.back()} />
       <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 18, marginBottom: 12 }}>Verification processing</Text>
       <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{status.message || 'Your verification is being confirmed. You do not need to start again.'}</Text>
       <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void load()} /></View>
+      {onboarding && <LaterLink onPress={toSetup} />}
     </Screen>;
   }
 
   return (
     <>
     <Screen>
-      <Header title="Identity verification" onBack={onBack} />
+      <Header title={title} onBack={onBack} />
 
-      {method === 'menu' && (
+      {method === 'menu' && onboarding && status.bvn_verified && (
+        <OnboardingAddress savedAddress={status.address || ''} onDone={toSetup} />
+      )}
+
+      {method === 'menu' && !onboarding && (
         <View>
           <Text style={{ fontSize: 13.5, color: c.ink3, lineHeight: 20, marginBottom: 6, fontFamily: font.regular }}>
             Verify your identity and check the services available to your account.
@@ -884,7 +906,37 @@ const Kyc = () => {
         </View>
       )}
 
-      {method === 'bvn' && !bvnSent && (
+      {method === 'bvn' && !bvnSent && onboarding && (
+        <View>
+          <OnboardingHeading sub="Verify your BVN, then add the address where you live." />
+          <StepTitle n={1} title="Your BVN" />
+          <View style={{ marginTop: 14 }}>
+            <Field editable={!busy} label="Bank Verification Number (BVN)" placeholder="11 digits" keyboardType="number-pad" value={bvn}
+              onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <ZIcon name="help" size={14} color={c.amber} />
+              <Text style={{ flex: 1, color: c.ink3, fontSize: 12.5, fontFamily: font.regular }}>Dial *565*0# on your registered line to get your BVN.</Text>
+            </View>
+            {status.identity_face_available && (
+              <View style={{ marginTop: 16 }}>
+                <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, marginBottom: 8 }}>Verify with</Text>
+                <View accessibilityRole="radiogroup" style={{ flexDirection: 'row', gap: 10 }}>
+                  <ViaOption on={bvnVia === 'sms'} icon="chat" label="SMS code" sub="Sent to the phone on your BVN" disabled={busy} onPress={() => setBvnVia('sms')} />
+                  <ViaOption on={bvnVia === 'face'} icon="scan" label="Face check" sub="A quick selfie to match your BVN" disabled={busy} onPress={() => setBvnVia('face')} />
+                </View>
+              </View>
+            )}
+            <View style={{ height: 22 }} />
+            {status.identity_face_available && bvnVia === 'face'
+              ? <Btn label={busy ? 'Opening face check…' : 'Start face check'} icon="scan" disabled={busy || bvn.length !== 11} onPress={() => startIdentityFaceVerification({ bvn })} />
+              : <Btn label={busy ? 'Sending code…' : 'Send code'} disabled={busy || bvn.length !== 11} onPress={startBvn} />}
+          </View>
+          <AddressWaits />
+          <LaterLink onPress={toSetup} />
+        </View>
+      )}
+
+      {method === 'bvn' && !bvnSent && !onboarding && (
         <View>
           <Hero icon="insurance" color={C_BVN} title="BVN verification" sub="Enter your 11-digit BVN. We’ll send an SMS code to the phone number linked to it." />
           <View style={{ marginTop: 22 }}>

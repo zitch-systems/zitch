@@ -5,6 +5,8 @@ from . import views
 # Paths mirror the exact endpoints the Expo app calls.
 urlpatterns = [
     path("sigin/", views.signin),
+    path("signin/face/start/", views.signin_face_start),
+    path("signin/face/status/", views.signin_face_status),
     path("logout/", views.logout),
     path("token/refresh/", views.token_refresh),
     path("push/register/", views.push_register),
@@ -34,6 +36,7 @@ urlpatterns = [
     path("kyc/liveness/start/", views.kyc_liveness_start),
     path("kyc/liveness/status/", views.kyc_liveness_status),
     path("kyc/address/", views.kyc_address),
+    path("kyc/address/save/", views.kyc_address_save),
     path("kyc/id/", views.kyc_id_document),
     # TEST-ONLY: mark a user KYC-verified (WEMA_SIMULATION + SIMULATE_DEPOSIT_TOKEN only).
     path("dev/simulate-kyc/", views.simulate_kyc),

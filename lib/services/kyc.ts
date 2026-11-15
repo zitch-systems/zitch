@@ -154,6 +154,9 @@ export const kycService = {
       ...(document ? { document } : {}),
     });
   },
+  /** Keeps the sign-up address. Saving it verifies nothing (Tier 3 is separate). */
+  saveAddress: (address: { house_number: string; street: string; state: string; lga: string }) =>
+    apiJson<ApiResult<{ address?: string }>>(EP.kyc.addressSave, address),
   startIdentityFace: (identity: { bvn?: string; nin?: string }) =>
     apiJson<KycStatus & { url?: string; session?: string; expires_in?: number }>(
       EP.kyc.identityFaceStart,
