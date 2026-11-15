@@ -367,7 +367,7 @@ export const receiptHtml = ({
   .wa-qr svg { background: #fff; padding: 6px; border-radius: 10px; display: block; }
   .wa-qr div { color: ${C.muted}; font-size: 12px; font-weight: 700; margin-top: 6px; }
   .foot { padding: 22px 44px 30px; color: ${C.muted}; font-size: 13px; line-height: 1.6; text-align: center; }
-  /* Tiled Z marks over the page. position:fixed so it repeats on every printed
+  /* Tiled Z coils over the page. position:fixed so it repeats on every printed
      page; out of flow so it never moves a row; above the content so a crop
      cannot lift a clean region; faint enough not to fight the amount. */
   .wm { position: fixed; inset: 0; z-index: 2; pointer-events: none; opacity: .05;

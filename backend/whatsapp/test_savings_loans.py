@@ -108,7 +108,8 @@ class SavingsLoanFlowTests(FlowContractMixin, TestCase):
             self.savings()
         card = self.send_flow.call_args.kwargs
         self.assertEqual(card["screen"], flows.PIN_SCREEN)
-        self.assertEqual(card["cta"], "Confirm with PIN")
+        self.assertEqual(card["cta"], "Use PIN")
+        self.assertTrue(card["footer"].startswith("Available balance"))
         self.assertNotIn("zitch://", card["body"])
         self.assertNotIn("fingerprint", card["body"])
 
@@ -431,9 +432,15 @@ class SavingsLoanFlowTests(FlowContractMixin, TestCase):
         self.assertIn("contact support", self.message().lower())
         self.assertFalse(Transaction.objects.filter(reference=f"{plan.reference}-M").exists())
 
-        self.say(f"savings plan {plan.pk}")
+        # The recovery route is the 24/7 support chat; the support email line
+        # is no longer shown in the chat.
+        from django.conf import settings
+        with override_settings(ZITCH_LINKS={**settings.ZITCH_LINKS, "SUPPORT_WA": "2348000000000"}):
+            self.say(f"savings plan {plan.pk}")
         self.assertIn("payout status unconfirmed", self.message().lower())
-        self.assertIn("support@zitch.ng", self.message())
+        self.assertIn("Chat with our customer support 24/7: https://wa.me/2348000000000",
+                      self.message())
+        self.assertNotIn("support@zitch.ng", self.message())
 
         self.say("my loan")
         self.assertIn(loan.reference, self.message())

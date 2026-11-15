@@ -785,8 +785,8 @@ const Kyc = () => {
     upgradeCaptureOwner.current = bindFlow();
     setUpgradeCameraOpen(true);
   };
-  const submitUpgrade = () => submit(
-    () => kycService.upgradeTier2(askIdentity ? upBvn : '', askIdentity ? upNin : '', upSelfie),
+  const submitUpgrade = (selfie: string = upSelfie) => submit(
+    () => kycService.upgradeTier2(askIdentity ? upBvn : '', askIdentity ? upNin : '', selfie),
     askIdentity ? 'Identity verified — tier upgraded' : 'Tier 2 verified',
     askIdentity ? ['bvn_verified', 'nin_verified', 'face_verified'] : ['face_verified'],
   );
@@ -1178,14 +1178,14 @@ const Kyc = () => {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{upSelfie ? 'Selfie captured' : 'Take a selfie'}</Text>
-                  <Text style={{ fontSize: 12, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{upSelfie ? 'Tap to retake' : 'Front camera · required for verification'}</Text>
+                  <Text style={{ fontSize: 12, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{upSelfie ? 'Tap to retake' : 'Turn left, turn right, then smile'}</Text>
                 </View>
               </View>
             </Tap>
             <View style={{ height: 22 }} />
             <Btn label={busy ? 'Verifying…' : 'Finish verification'}
                  disabled={busy || (askIdentity && (upBvn.length !== 11 || upNin.length !== 11)) || !upSelfie}
-                 onPress={submitUpgrade} />
+                 onPress={() => submitUpgrade()} />
           </View>
           <Footer />
         </View>
@@ -1271,6 +1271,10 @@ const Kyc = () => {
         if (!upgradeCaptureOwner.current?.()) return;
         upgradeCaptureOwner.current = null;
         setUpgradeCameraOpen(false); setUpSelfie(image);
+        // The liveness moves passed: send the selfie with the BVN and NIN
+        // already typed, as the WhatsApp page does. Otherwise it is held for
+        // "Finish verification".
+        if (!busy && (!askIdentity || (upBvn.length === 11 && upNin.length === 11))) void submitUpgrade(image);
       }}
     />
     </>

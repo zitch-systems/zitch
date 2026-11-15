@@ -165,7 +165,7 @@ class PartnershipCustomerChatTests(TestCase):
         self.assertIsNotNone(router.vas_text_intent("2k airtime"))
 
     def test_expired_nonpayment_actions_have_contextual_restart_without_charge_claim(self):
-        restarts = {"vas_enroll": "Reply *5*", "kyc": "Reply *7*", "add_account": "Reply *5*",
+        restarts = {"vas_enroll": "Reply *6*", "kyc": "Reply *8*", "add_account": "Reply *6*",
                     "unlock": "Repeat your request", "setpin": "Reply *reset pin*"}
         for action_type, restart in restarts.items():
             with self.subTest(action_type=action_type):
@@ -194,8 +194,8 @@ class PartnershipCustomerChatTests(TestCase):
                     expires_at=timezone.now() - timedelta(seconds=1))
                 with patch.object(router, "reply"), patch.object(router, "_send_unlock") as unlock, \
                         patch.object(router, "_do_account_details") as details:
-                    router.handle_inbound(MSISDN, "6")
-                unlock.assert_called_once_with(self.user, MSISDN, "6")
+                    router.handle_inbound(MSISDN, "7")
+                unlock.assert_called_once_with(self.user, MSISDN, "7")
                 details.assert_not_called()
 
 

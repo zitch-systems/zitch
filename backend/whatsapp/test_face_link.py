@@ -7,19 +7,26 @@ page. Only the bank's read-back raises the tier.
 A link preview never reaches the camera or the bank, Android's in-app WebView is
 handed to Chrome where the camera works, and the result is sent to the chat
 automatically.
+The page runs an active liveness check (left, right, smile) on the device with a
+self-hosted model, keeps a nonce-only CSP, and falls back to a plain photo or the
+picker when the model or the camera cannot run.
 """
 import base64
+import hashlib
+import json
+import re
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import Client, TestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from wallet.services import get_or_create_wallet
 
+from .liveness import VENDORED
 from .models import PendingAction, WhatsAppLink
 from .verification_web import (ACTION_TYPE, COMPLETE, FACE_PENDING, PIN, face_link,
                                notify_face_results)
@@ -202,6 +209,129 @@ class FaceLinkTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.tier, 1)
 
+    # --- active liveness on the page ---------------------------------------- #
+    def test_csp_stays_nonce_based_with_only_wasm_compilation_added(self):
+        response = self.tap()
+        csp = response["Content-Security-Policy"]
+        nonce = re.search(r"script-src 'nonce-([^']+)' 'wasm-unsafe-eval';", csp).group(1)
+        self.assertIn(f"style-src 'nonce-{nonce}';", csp)
+        self.assertIn("connect-src 'self';", csp)
+        self.assertIn("default-src 'none';", csp)
+        for loose in ("'unsafe-inline'", "'unsafe-eval'", "'strict-dynamic'", "https:", "*", "data: 'self'"):
+            self.assertNotIn(loose, csp)
+        body = response.content.decode()
+        # Every script and stylesheet on the page carries this response's nonce.
+        for tag in re.findall(r"<(?:script|link)\b[^>]*>", body, flags=re.IGNORECASE):
+            if 'type="application/json"' in tag:
+                continue
+            self.assertIn(f'nonce="{nonce}"', tag)
+
+    def test_liveness_assets_are_self_hosted_static_files(self):
+        body = self.tap().content.decode()
+        self.assertIn('src="/static/whatsapp/liveness/liveness.js"', body)
+        self.assertIn('href="/static/whatsapp/liveness/liveness.css"', body)
+        assets = json.loads(re.search(
+            r'<script id="lv-assets" type="application/json">(.*?)</script>', body, re.S).group(1))
+        self.assertEqual(assets, {
+            "bundle": "/static/whatsapp/liveness/vision_bundle.js",
+            "loader": "/static/whatsapp/liveness/vision_wasm_internal.js",
+            "wasm": "/static/whatsapp/liveness/vision_wasm_internal.wasm",
+            "model": "/static/whatsapp/liveness/face_landmarker.task",
+        })
+        self.assertNotIn("cdn.jsdelivr", body)
+        self.assertNotIn("storage.googleapis", body)
+
+    def test_ids_come_first_then_guided_moves_not_a_take_photo_button(self):
+        body = self.tap().content.decode()
+        self.assertLess(body.index('name="bvn"'), body.index('id="check"'))
+        self.assertLess(body.index('name="nin"'), body.index('id="check"'))
+        self.assertIn('pattern="[0-9]{11}"', body)
+        for move in ('data-lv-step="left"', 'data-lv-step="right"', 'data-lv-step="smile"'):
+            self.assertIn(move, body)
+        # "Take photo" exists only as a hidden fallback, never the primary path.
+        self.assertIn('<button type="button" id="capture" class="hidden">Take photo</button>', body)
+        self.assertIn("LV.session(", body)
+        self.assertIn("submit();", body)                     # automatic once the moves pass
+        self.assertIn("💡 Screen at full brightness to light your face", body)
+        self.assertIn("Turn up your brightness", body)
+        self.assertIn("navigator.wakeLock", self._static("liveness.js"))
+        self.assertIn("✅ Tier 2 complete — Verification ongoing. We’ll confirm in WhatsApp shortly.", body)
+        self.assertIn("window.close()", body)
+        self.assertIn('href="https://wa.me/"', body)
+
+    def test_manual_capture_and_picker_remain_as_fallbacks(self):
+        body = self.tap().content.decode()
+        self.assertIn('capture="user"', body)               # blocked camera -> picker
+        self.assertIn("function manual(", body)             # no model -> plain photo
+        self.assertIn("withTimeout(engine,", body)
+        stay = self.tap(WEBVIEW_UA, path=self.path + "?stay=1").content.decode()
+        self.assertIn("var pickerOnly = true", stay)
+        self.assertNotIn("liveness.js", stay)                # WebView: picker only
+
+    def test_page_post_contract_is_unchanged(self):
+        """The page still posts image, bvn and nin only; the bank call is the same."""
+        self.assertEqual(self.send().status_code, 200)
+        self.assertEqual(self.upgrade.call_count, 1)
+
+    @staticmethod
+    def _static(name):
+        from django.contrib.staticfiles import finders
+
+        with open(finders.find("whatsapp/liveness/" + name), encoding="utf-8") as fh:
+            return fh.read()
+
+
+class LivenessAssetTests(SimpleTestCase):
+    def test_vendored_files_are_the_pinned_ones(self):
+        from django.contrib.staticfiles import finders
+
+        total = 0
+        for name, digest in VENDORED.items():
+            with self.subTest(name=name):
+                path = finders.find("whatsapp/liveness/" + name)
+                self.assertIsNotNone(path, name)
+                with open(path, "rb") as fh:
+                    data = fh.read()
+                self.assertEqual(hashlib.sha256(data).hexdigest(), digest)
+                # collectstatic's manifest would fail on a missing source map.
+                self.assertNotIn(b"sourceMappingURL", data)
+                total += len(data)
+        self.assertLess(total, 14_000_000)
+
+    def test_shared_files_are_served_as_static(self):
+        from django.contrib.staticfiles import finders
+
+        for name in ("liveness.js", "liveness.css"):
+            self.assertIsNotNone(finders.find("whatsapp/liveness/" + name))
+
+
+@override_settings(SECURE_SSL_REDIRECT=False)
+class AppLivenessPageTests(SimpleTestCase):
+    def test_page_runs_the_check_and_hands_the_frame_to_the_app(self):
+        response = self.client.get("/kyc/liveness/", secure=True)
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        csp = response["Content-Security-Policy"]
+        nonce = re.search(r"script-src 'nonce-([^']+)' 'wasm-unsafe-eval';", csp).group(1)
+        self.assertIn("connect-src 'self';", csp)
+        self.assertNotIn("'unsafe-inline'", csp)
+        self.assertNotIn("'unsafe-eval'", csp)
+        self.assertEqual(response["X-Frame-Options"], "DENY")
+        self.assertIn("camera=(self)", response["Permissions-Policy"])
+        self.assertIn("no-store", response["Cache-Control"])
+        self.assertIn(f'<script nonce="{nonce}" src="/static/whatsapp/liveness/liveness.js"></script>', body)
+        self.assertIn("ReactNativeWebView.postMessage", body)
+        self.assertIn("type: 'capture'", body)
+        self.assertIn("type: 'unavailable'", body)
+        for move in ('data-lv-step="left"', 'data-lv-step="right"', 'data-lv-step="smile"'):
+            self.assertIn(move, body)
+        # Nothing identifying and nothing submitted from here.
+        for absent in ('name="bvn"', "csrfmiddlewaretoken", "<form", "fetch("):
+            self.assertNotIn(absent, body)
+
+    def test_only_get(self):
+        self.assertEqual(self.client.post("/kyc/liveness/", secure=True).status_code, 405)
+
 
 @override_settings(ZITCH_LINKS={"API_BASE": ORIGIN}, SECURE_SSL_REDIRECT=False,
                    RATELIMIT_ENABLE=False, BANK_ACCOUNT_PROVIDER="partnership",
@@ -273,7 +403,7 @@ class FaceResultNotificationTests(TestCase):
              patch("wallet.views.tier2_face_available", return_value=True):
             router._send_web_verification(self.user, MSISDN, 2)
         body = send.call_args.args[1]
-        for gone in ("Prembly", "reply *7*", "on-screen moves"):
+        for gone in ("Prembly", "reply *8*", "on-screen moves"):
             self.assertNotIn(gone, body)
         self.assertIn("enter your BVN and NIN", body)
         self.assertIn("message you here with the result", body)

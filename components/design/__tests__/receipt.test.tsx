@@ -1,9 +1,10 @@
 import React from 'react';
 import renderer, { act, ReactTestInstance } from 'react-test-renderer';
-import { Text } from 'react-native';
+import { Image, StyleSheet, Text } from 'react-native';
 import Receipt from '../Receipt';
 import { BANK_WHATSAPP_DISPLAY, SUPPORT_EMAIL } from '@/components/configFiles/links';
-import { statusTone } from '@/lib/receipt';
+import { RECEIPT_COLORS, statusTone } from '@/lib/receipt';
+import { MARK_WHITE_PNG } from '@/lib/receiptArt';
 
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => true) }));
@@ -97,5 +98,27 @@ it('never dresses a pending transaction in success green', () => {
   const pill = tree.root.findByProps({ accessibilityLabel: 'Transaction status: Processing' });
   expect(pill.props.style.backgroundColor).toBe(statusTone('pending').bg);
   expect(texts(tree)).not.toContain('Successful');
+  act(() => tree.unmount());
+});
+
+it('marks the card with the white 3D coil, not the old flat mark', () => {
+  const tree = render({ reference: 'ZT-1', rows: [['Amount', '₦500.00']] });
+  const all = tree.root.findAllByType(Image);
+  // The old flat mark is gone from the card altogether.
+  for (const image of all) expect(JSON.stringify(image.props.source ?? '')).not.toContain('zitch-mark');
+  // The ghost and the texture are the coil the PDF carries (the header logo
+  // beside the wordmark is the ZCoil sprite, drawn separately).
+  const images = all.filter((image) => image.props.source?.uri === MARK_WHITE_PNG);
+  const flat = (image: ReactTestInstance) => StyleSheet.flatten(image.props.style);
+  // The header ghost: the white coil as it is (untinted, so its shading
+  // shows), faded right back, as on the WhatsApp receipt.
+  const ghost = images.filter((image) => flat(image).position === 'absolute');
+  expect(ghost).toHaveLength(1);
+  expect(flat(ghost[0]).tintColor).toBeUndefined();
+  expect(flat(ghost[0]).opacity).toBeLessThanOrEqual(0.08);
+  // The texture over the white ticket: the same coil as a brand-teal outline.
+  const texture = images.filter((image) => flat(image).position !== 'absolute');
+  expect(texture.length).toBeGreaterThan(10);
+  for (const image of texture) expect(flat(image).tintColor).toBe(RECEIPT_COLORS.brand);
   act(() => tree.unmount());
 });

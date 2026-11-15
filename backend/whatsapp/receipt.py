@@ -19,17 +19,21 @@ or cross, so the naira sign is built from Manrope's own N (its weight then
 matches the digits beside it) and the status marks are vectors. Nothing renders
 as tofu.
 """
+import functools
 import io
 import os
 import threading
 import time
 from collections import OrderedDict
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 _ASSETS = os.path.join(os.path.dirname(__file__), "assets")
 _FONT_DIR = os.path.join(_ASSETS, "fonts")
-_MARK_PATH = os.path.join(_ASSETS, "zitch-mark.png")
+# The 3D Z coil, the brand's logo (landing/assets/zitch-loader.v1.js, rendered
+# still at 4x and trimmed to its edges). Brand teal: see _white_coil for the
+# white version the receipts actually draw.
+_COIL_PATH = os.path.join(_ASSETS, "zitch-coil.png")
 
 # Brand teal, matching the app's receipt (lib/receipt.ts) exactly. Also used by
 # the statement below.
@@ -97,23 +101,40 @@ def _px(v: float) -> int:
     return int(round(v * SCALE))
 
 
-def _load_mark(height_px: int):
-    """The Z ribbon, scaled to `height_px`. Returns None if the asset is missing:
-    a receipt without the mark is still a valid receipt, so this never raises."""
+@functools.lru_cache(maxsize=1)
+def _white_coil():
+    """The coil in white, at the asset's full resolution, or None if the asset is
+    missing. Built once per process.
+
+    Not a flat silhouette: the coil's luminance is stretched to full range and
+    then mapped into 200..255, so the twist (the dark inner face against the
+    lit outer band) still reads on the teal header, while every part of it
+    stays light enough to sit there as white. Alpha is the coil's own.
+    """
     try:
-        mark = Image.open(_MARK_PATH).convert("RGBA")
+        coil = Image.open(_COIL_PATH).convert("RGBA")
     except (OSError, ValueError):
         return None
-    w = max(1, int(mark.width * (height_px / mark.height)))
-    return mark.resize((w, height_px), Image.LANCZOS)
+    grey = ImageOps.autocontrast(coil.convert("L")).point(lambda v: 200 + v * 55 // 255)
+    return Image.merge("RGBA", (grey, grey, grey, coil.getchannel("A")))
 
 
-def _white(img: Image.Image) -> Image.Image:
-    """A white silhouette of `img`, keeping its alpha. The mark sits on the teal
-    band, where the teal-on-teal original would disappear."""
-    solid = Image.new("RGBA", img.size, (255, 255, 255, 255))
-    solid.putalpha(img.getchannel("A"))
-    return solid
+def _load_coil(height_px: int):
+    """The white coil, scaled to `height_px`. Returns None if the asset is
+    missing: a receipt without the logo is still a valid receipt, so this never
+    raises."""
+    coil = _white_coil()
+    if coil is None:
+        return None
+    w = max(1, int(round(coil.width * (height_px / coil.height))))
+    return coil.resize((w, height_px), Image.LANCZOS)
+
+
+def _faded(img: Image.Image, opacity: float) -> Image.Image:
+    """`img` as it is, at `opacity` of its own alpha."""
+    out = img.copy()
+    out.putalpha(img.getchannel("A").point(lambda a: int(a * opacity)))
+    return out
 
 
 def _tinted(img: Image.Image, rgb, opacity: float) -> Image.Image:
@@ -442,7 +463,10 @@ def _composite_clipped(img: Image.Image, overlay: Image.Image, xy, clip=None) ->
 
 
 def _mark_texture(size, mark) -> Image.Image:
-    """The Z mark tiled faintly across the ticket, on alternate offsets.
+    """The coil tiled faintly across the ticket, on alternate offsets.
+
+    The ticket is white, so the coil goes down as a brand-teal silhouette here:
+    the white coil would vanish into it.
 
     Laid over the rows, so a crop cannot lift a clean region out of the middle
     of the document, and faint enough that it never competes with them: it is
@@ -833,21 +857,22 @@ def _draw_receipt(title: str, rows: list, ref: str, *, status: str = "Successful
     # --- the sheet ------------------------------------------------------------
     img = Image.new("RGBA", (W, H), tuple(_PAPER) + (255,))
     img.paste(_diagonal(W, band_h, _BRAND, _TEAL_800), (0, 0))
-    mark = _load_mark(_px(48))
-    big = _load_mark(_px(300))
+    mark = _load_coil(_px(48))
+    big = _load_coil(_px(300))
     if big is not None:
-        # A large ghost of the ribbon on the band's right, cut off by its edges.
-        _composite_clipped(img, _tinted(big, (255, 255, 255), 0.08),
+        # A large ghost of the coil on the band's right, cut off by its edges:
+        # the same white coil as the logo, faded right back.
+        _composite_clipped(img, _faded(big, 0.08),
                            (W - big.width + _px(26), -_px(46)), clip=(0, 0, W, band_h))
     d = ImageDraw.Draw(img)
 
-    # Header: the mark and wordmark on the left, the receipt's title on the right.
+    # Header: the white coil and the wordmark on the left, straight on the teal
+    # (no disc behind the coil), and the receipt's title on the right.
     row_mid = _px(64)
     x = left
     if mark is not None:
-        white = _white(mark)
-        img.alpha_composite(white, (int(x), int(row_mid - white.height / 2)))
-        x += white.width + _px(14)
+        img.alpha_composite(mark, (int(x), int(row_mid - mark.height / 2)))
+        x += mark.width + _px(14)
     word_base = row_mid + _cap_height(wordmark) / 2 + _px(1)
     d.text((x, word_base), "zitch", font=wordmark, fill=(255, 255, 255), anchor="ls")
     title = layout["title"]
@@ -919,7 +944,7 @@ def _draw_receipt(title: str, rows: list, ref: str, *, status: str = "Successful
         previous = kind
 
     # The texture rides over the rows, clipped to the ticket.
-    texture = _mark_texture((card_w, card_bottom - card_top), _load_mark(_px(34)))
+    texture = _mark_texture((card_w, card_bottom - card_top), _load_coil(_px(34)))
     texture.putalpha(Image.composite(texture.getchannel("A"),
                                      Image.new("L", texture.size, 0), shape))
     img.alpha_composite(texture, (margin, card_top))
@@ -966,8 +991,10 @@ def render_statement_pdf(rows: list, *, balance: str, generated: str,
     separates a chat convenience list from a document someone hands to a landlord
     or an embassy: those readers need to see WHOSE account it is and WHAT window
     it covers, and a statement that cannot say so is not evidence of anything.
-    The WhatsApp caller passes none of them and gets the compact list it always
-    got. `address` is only ever supplied when the customer asked for it.
+    The app and WhatsApp both pass holder, account and period, so the two
+    statements read the same; without them the sheet falls back to a compact
+    "transaction history". `address` is only ever supplied when the customer
+    asked for it.
     """
     reg = _font("DejaVuSans.ttf", 22)
     bold = _font("DejaVuSans-Bold.ttf", 24)
@@ -1008,10 +1035,10 @@ def render_statement_pdf(rows: list, *, balance: str, generated: str,
     d = ImageDraw.Draw(img)
 
     # --- header band ---------------------------------------------------------
-    mark = _load_mark(_px(62))
+    mark = _load_coil(_px(62))
     x = pad
     if mark:
-        img.paste(_white(mark), (x, (band_h - mark.height) // 2 - _px(8)), _white(mark))
+        img.paste(mark, (x, (band_h - mark.height) // 2 - _px(8)), mark)
         x += mark.width + _px(20)
     d.text((x, band_h // 2 - _px(38)), "zitch", font=wordmark, fill=(255, 255, 255))
     d.text((x + _px(2), band_h // 2 + _px(6)),

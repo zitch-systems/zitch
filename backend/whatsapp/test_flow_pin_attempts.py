@@ -5,7 +5,7 @@ SAME screen id. The PIN field is masked and declared min-chars/max-chars 6/6, so
 a retained six-character value is both invisible AND un-typeable: the customer
 cannot read what is in the box and cannot add a digit until they have deleted six
 characters they cannot see. The box reads as broken, and every Confirm tap spends
-another attempt from a cross-channel budget that ends in an hour-long lockout.
+another attempt from a cross-channel budget that ends in a 30-minute lockout.
 
 The module already routes the FIRST error of each masked step to a fresh twin
 (PIN_RETRY, PIN_CONFIRM_RETRY) so it arrives empty. There is no second twin — and
@@ -324,10 +324,10 @@ class SetPinAttemptsTests(TestCase):
 
 
 class EscalatedLockOffersTheResetTests(TestCase):
-    """Five wrong PINs lock the account for an hour; five more without a correct
+    """Five wrong PINs lock the account for 30 minutes; five more without a correct
     PIN in between lock it for a day. A reset clears either lock outright and is
     reachable WHILE locked, so every surface names the way out from the FIRST
-    lock — an hour is short enough to wait out, but "you can also just reset it"
+    lock — half an hour is short enough to wait out, but "you can also just reset it"
     costs nothing to say, and the customer is the one who knows whether they
     forgot the PIN or just mistyped it.
 
@@ -388,7 +388,7 @@ class EscalatedLockOffersTheResetTests(TestCase):
     def test_the_flow_names_the_reset_on_every_lock(self):
         self._lock(1)
         first = self._flow_message()
-        self.assertIn("about an hour", first)
+        self.assertIn("30 minute(s)", first)
         self.assertIn("reset pin", first)
         # The Flow is closing, so the instruction points at the chat that
         # outlives it — and asterisks are chat markdown, not Flow markup.
@@ -436,7 +436,7 @@ class EscalatedLockOffersTheResetTests(TestCase):
         with patch("whatsapp.router.reply") as sent:
             self.assertFalse(_flow_pin_ok(pa, self.user, MSISDN, "1234"))
         body = sent.call_args[0][1]
-        self.assertIn("about an hour", body)
+        self.assertIn("30 minute(s)", body)
         self.assertIn("*reset pin*", body)
         # And the payment is torn down rather than left armed against a lock.
         self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())

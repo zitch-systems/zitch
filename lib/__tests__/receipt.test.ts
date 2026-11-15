@@ -3,6 +3,7 @@ import {
   receiptStamp, senderRows, shareReceipt,
 } from '@/lib/receipt';
 import { BANK_WHATSAPP, BANK_WHATSAPP_DISPLAY, SUPPORT_EMAIL } from '@/components/configFiles/links';
+import { MARK_TEAL_PNG, MARK_WHITE_PNG } from '@/lib/receiptArt';
 
 // Dates are built with the local-time constructor on purpose: the stamp is
 // deliberately local (it is what the person holding the phone saw), so a test
@@ -288,6 +289,35 @@ describe('receiptHtml typography', () => {
 
   it('lets a long value wrap instead of colliding with its label', () => {
     expect(html).toContain('word-break: break-word');
+  });
+});
+
+// The PNG's own header: width, height and colour type (6 = RGBA).
+const pngInfo = (uri: string) => {
+  const bytes = Buffer.from(uri.replace(/^data:image\/png;base64,/, ''), 'base64');
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20), colourType: bytes[25] };
+};
+
+describe('receiptHtml logo', () => {
+  const html = receiptHtml({ title: 'T', message: 'm', rows: [['k', 'v']] });
+
+  it('puts the white coil on the teal header, beside the wordmark, with no disc behind it', () => {
+    expect(html).toContain(`<div class="brand"><img src="${MARK_WHITE_PNG}" alt=""><span class="mark">zitch</span></div>`);
+  });
+
+  it('is the 3D coil, with transparency, drawn sharp enough for print', () => {
+    const { width, height, colourType } = pngInfo(MARK_WHITE_PNG);
+    expect(colourType).toBe(6);
+    expect(height).toBeGreaterThanOrEqual(120); // shown at 40px tall
+    // The coil's proportions (455 x 584), not the old flat mark's (372 x 512).
+    expect(width / height).toBeCloseTo(455 / 584, 1);
+    expect(Math.abs(width / height - 372 / 512)).toBeGreaterThan(0.03);
+  });
+
+  it('textures the page with the same coil', () => {
+    const { width, height, colourType } = pngInfo(MARK_TEAL_PNG);
+    expect([width, height, colourType]).toEqual([160, 160, 6]);
+    expect(html).toContain(`url(${MARK_TEAL_PNG})`);
   });
 });
 
