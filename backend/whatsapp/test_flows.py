@@ -1826,7 +1826,7 @@ class BlockedIdentityIsNotRequestedTests(TestCase):
         sent, _flows = self._start_kyc()
         body = "\n".join(sent)
         self.assertIn("Upgrade to Tier 2", body)
-        self.assertIn("no additional NIN verification", body)
+        self.assertIn("no need to type them again", body)
         self.assertNotIn("open the app", body.lower())
 
     def test_the_burst_never_contradicts_itself(self):
