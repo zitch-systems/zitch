@@ -101,7 +101,7 @@ class StaleConfirmCardTests(TestCase):
     """The confirm card stays in the thread with its button live.
 
     WhatsApp cannot retract or disable a button on a delivered message, so after a
-    payment is approved by fingerprint the Flow's own "Use PIN instead" is still
+    payment is approved by fingerprint the Flow's own "Use PIN" button is still
     tappable. It used to answer "This request expired or was already completed",
     which reads as a failure on a payment that in fact succeeded.
     """

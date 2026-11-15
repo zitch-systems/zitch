@@ -296,8 +296,12 @@ class BiometricPrimaryTests(TestCase):
         # The message LEADS with the biometric approval…
         self.assertLess(body.find("fingerprint or Face ID"), body.find("api.zitch.test"))
         self.assertIn("Approve with your fingerprint", body)
-        # …and the Flow button is demoted to the fallback.
-        self.assertEqual(kwargs.get("cta"), "Use PIN instead")
+        # …and the Flow button is the PIN alternative, worded the same as for
+        # every other confirm card.
+        self.assertEqual(kwargs.get("cta"), "Use PIN")
+        # The available balance rides in the card's footer, not the body.
+        self.assertTrue(kwargs.get("footer", "").startswith("Available balance"))
+        self.assertNotIn("Available balance", body)
 
     def test_a_whatsapp_only_customer_keeps_pin_first(self):
         from unittest.mock import patch
@@ -310,10 +314,12 @@ class BiometricPrimaryTests(TestCase):
             router._arm_confirm(pa, self.user)  # noqa: SLF001
         kwargs = sent.call_args.kwargs
         body = kwargs.get("body") or sent.call_args.args[3]
-        # Summary first, the app offer second — and the default PIN CTA stands.
+        # Summary first, the app offer second — and the PIN CTA stands.
         self.assertTrue(body.startswith("Send ₦5,000.00"))
         self.assertIn("Have the Zitch app?", body)
-        self.assertEqual(kwargs.get("cta"), "")
+        self.assertEqual(kwargs.get("cta"), "Use PIN")
+        self.assertTrue(kwargs.get("footer", "").startswith("Available balance"))
+        self.assertNotIn("Available balance", body)
 
     def test_app_only_fallback_prompts_for_secure_approval(self):
         from whatsapp.router import _confirm_prompt

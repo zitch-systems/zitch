@@ -273,7 +273,7 @@ class FaceResultNotificationTests(TestCase):
              patch("wallet.views.tier2_face_available", return_value=True):
             router._send_web_verification(self.user, MSISDN, 2)
         body = send.call_args.args[1]
-        for gone in ("Prembly", "reply *7*", "on-screen moves"):
+        for gone in ("Prembly", "reply *8*", "on-screen moves"):
             self.assertNotIn(gone, body)
         self.assertIn("enter your BVN and NIN", body)
         self.assertIn("message you here with the result", body)

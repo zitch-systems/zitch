@@ -4940,7 +4940,7 @@ def _kyc_continue_after_account(user, msisdn: str, *, attempted: set[str] | None
     """Roll straight from account setup into whatever identity checks remain.
 
     Verification is meant to happen once, at signup, rather than being deferred
-    to a "reply 9" the customer never sends - and by this point the expensive
+    to a "reply 8" the customer never sends - and by this point the expensive
     parts are already done: opening the NUBAN name-matched their BVN, and its
     SMS code proved the SIM. What is normally left is the email and the second
     ID. Nothing is re-asked: _kyc_outstanding skips anything already verified,

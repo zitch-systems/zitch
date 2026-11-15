@@ -19,7 +19,7 @@ class WhatsAppExamPinTests(TestCase):
             price=Decimal("3500"), service_id="waec-registration", active=True)
 
     def test_exam_pin_is_a_numbered_menu_action(self):
-        self.assertIn("*9.*  🎓  Exam PIN", router.menu_text())
+        self.assertIn("*5.*  🎓  Exam PIN", router.menu_text())
 
     @patch.object(router, "reply")
     def test_the_guided_flow_collects_product_quantity_and_phone(self, reply):
