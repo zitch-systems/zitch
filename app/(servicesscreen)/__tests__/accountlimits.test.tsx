@@ -30,7 +30,8 @@ jest.mock('@/components/design/ui', () => {
   const ReactActual = jest.requireActual<typeof import('react')>('react');
   const { Text, View, Pressable } = jest.requireActual<typeof import('react-native')>('react-native');
   const Container = ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children);
-  return { Screen: Container, Card: Container, NText: Text, Header: () => null, Progress: () => null, money: (value: number) => `₦${value}`,
+  const Sheet = ({ open, children }: { open: boolean; children: ReactNode }) => (open ? ReactActual.createElement(View, null, children) : null);
+  return { Screen: Container, Card: Container, Sheet, NText: Text, Header: () => null, Progress: () => null, money: (value: number) => `₦${value}`,
     Btn: ({ label, onPress }: { label: string; onPress: () => void }) => ReactActual.createElement(Pressable, { accessibilityLabel: label, onPress }, ReactActual.createElement(Text, null, label)) };
 });
 
@@ -121,11 +122,9 @@ it('uses current Partnership account details and authoritative limits without in
   const output = JSON.stringify(tree.toJSON());
   expect(output).toContain('045 424 3073');
   expect(output).not.toContain('045 000 0000');
+  // Today's daily caps as two tiles, from the server; nothing invented.
   expect(output).toContain('₦123456');
   expect(output).toContain('₦65432');
-  expect(output).toContain('₦77777');
-  expect(output).toContain('₦222222');
-  expect(output).toContain('Not confirmed');
   expect(output).not.toContain('Unlimited');
   expect(output).not.toContain('Level Benefit');
   act(() => tree.unmount());
@@ -156,8 +155,33 @@ it('does not turn boolean limit values into money while retaining a confirmed ze
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
   const output = JSON.stringify(tree.toJSON());
-  expect(output.match(/Not confirmed/g)).toHaveLength(4);
-  expect(output.match(/₦0/g)).toHaveLength(2);
-  expect(output).not.toContain('₦1');
+  // The transfers tile cannot read `true` as money; the bill tile keeps a real zero.
+  expect(output.match(/Not confirmed/g)).toHaveLength(1);
+  expect(output.match(/₦0/g)).toHaveLength(1);
+  expect(output).not.toMatch(/₦(true|false)/);
+  act(() => tree.unmount());
+});
+
+it('shows the tier ladder from the server and answers Verify Tier 3 with what the server says', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? {
+    ...state, tier: 2, address: '12 Allen Avenue, Ikeja, Lagos',
+    tier_ladder: [
+      { tier: 1, name: 'Verified', per_transfer: '50000', daily_transfer: '50000', daily_bill: '20000' },
+      { tier: 2, name: 'Enhanced', per_transfer: '200000', daily_transfer: '1000000', daily_bill: '100000' },
+      { tier: 3, name: 'Premium', per_transfer: '5000000', daily_transfer: '5000000', daily_bill: '500000' },
+    ],
+  } : path === '/api/kyc/address/' ? { success: false, code: 'address_verification_unavailable', message: 'Address verification is not available yet.' }
+    : { success: true, provider: 'partnership', account_number: '0454243073', account_name: 'Current Account', has_account: true, available: true, can_fund: true, account_setup_state: 'ready' });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  let output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('Your tier');
+  expect(output).toContain('₦5000000');
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Verify Tier 3' }).props.onPress(); });
+  output = JSON.stringify(tree.toJSON());
+  // never claims an upgrade the server did not make
+  expect(output).not.toContain('now Tier 3');
+  expect(output).toContain('Address verification is not available yet.');
+  expect(output).toContain('12 Allen Avenue, Ikeja, Lagos');
   act(() => tree.unmount());
 });

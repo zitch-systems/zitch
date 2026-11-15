@@ -1326,6 +1326,18 @@ def _kyc_state(user) -> dict:
                                        "pending" if user.address_verification_pending else "not_verified"),
         **tier3_address_capability(),
         "address_verification_required": True,
+        # The customer's own address as given, so the Tier 3 step can show what
+        # will be checked. Never marks anything verified.
+        "address": user.address or "",
+        # Every tier's caps, so the app's tier ladder shows the real numbers
+        # instead of a copy that drifts from these tables.
+        "tier_ladder": [
+            {"tier": t, "name": _TIER_NAMES[t],
+             "per_transfer": str(User.TIER_LIMITS[t]),
+             "daily_transfer": str(User.DAILY_TRANSFER_LIMITS[t]),
+             "daily_bill": str(User.DAILY_BILL_LIMITS[t])}
+            for t in (1, 2, 3)
+        ],
         "account_provider": "partnership",
         "legacy_funding_review": held,
         "identity_upgrade_required": identity_upgrade_required,

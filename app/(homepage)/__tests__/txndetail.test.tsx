@@ -1,7 +1,7 @@
 import React, { type ReactNode } from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { Share } from 'react-native';
-import { notify } from '@/components/design/Notify';
+import { notify, notifyError } from '@/components/design/Notify';
 
 import TxnDetail from '@/app/(homepage)/txndetail';
 
@@ -39,7 +39,12 @@ jest.mock('expo-router', () => {
     useFocusEffect: (effect: () => void | (() => void)) => ReactActual.useEffect(effect, [effect]),
   };
 });
-jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
+jest.mock('@/components/design/Notify', () => ({ notify: jest.fn(), flash: jest.fn(), notifyError: jest.fn() }));
+const mockShareReceipt = jest.fn();
+jest.mock('@/lib/receipt', () => ({
+  ...jest.requireActual('@/lib/receipt'),
+  shareReceipt: (...args: unknown[]) => mockShareReceipt(...args),
+}));
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn().mockResolvedValue(undefined) }));
 jest.mock('@/components/design/ZIcon', () => () => null);
 jest.mock('@/lib/theme', () => ({
@@ -158,7 +163,7 @@ describe('transaction-detail pending refresh', () => {
     expect(rendered).toContain('Under review');
     expect(rendered).toContain('Do not retry');
     expect(tree.root.findByProps({ accessibilityLabel: 'Share status' })).toBeTruthy();
-    expect(tree.root.findAllByProps({ accessibilityLabel: 'Share receipt' })).toHaveLength(0);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Share as image' })).toHaveLength(0);
     act(() => tree.unmount());
   });
 
@@ -257,12 +262,23 @@ describe('transaction-detail pending refresh', () => {
 
   it('reports a receipt sharing error instead of silently ignoring it', async () => {
     mockApiJson.mockResolvedValue(transaction('SUCCESSFUL'));
-    const share = jest.spyOn(Share, 'share').mockRejectedValue(new Error('sharing unavailable'));
+    mockShareReceipt.mockRejectedValue(new Error('sharing unavailable'));
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<TxnDetail />); });
-    await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Share receipt' }).props.onPress(); });
-    expect(notify).toHaveBeenCalledWith('Could not share', 'Please try again.');
-    act(() => tree.unmount()); share.mockRestore();
+    await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Share as image' }).props.onPress(); });
+    expect(mockShareReceipt).toHaveBeenCalledWith('jpeg', expect.objectContaining({ reference: 'ZTC-POLL-1' }));
+    expect(notifyError).toHaveBeenCalledWith('Receipt', 'Could not prepare the receipt. Please try again.');
+    act(() => tree.unmount());
+  });
+
+  it('shares a settled receipt as a PDF too', async () => {
+    mockApiJson.mockResolvedValue(transaction('SUCCESSFUL'));
+    mockShareReceipt.mockResolvedValue('shared');
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+    await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Share as PDF' }).props.onPress(); });
+    expect(mockShareReceipt).toHaveBeenCalledWith('pdf', expect.objectContaining({ html: expect.stringContaining('ZTC-POLL-1') }));
+    act(() => tree.unmount());
   });
 
 });
