@@ -126,7 +126,8 @@ def _narrow_by_account(matches: list, text: str, acct: str) -> list:
     if narrowed:
         return narrowed
     if len(matches) == 1:
-        others = bank_resolver.alternates(text, Bank.objects.filter(active=True), fit)
+        others = bank_resolver.alternates(text, Bank.objects.filter(active=True), fit,
+                                          bank=matches[0])
         return matches + [b for b in others if b.pk != matches[0].pk]
     return matches
 
@@ -783,22 +784,34 @@ _TRANSFER_VERB = re.compile(r"\b(?:send|transfer|trf|tranfer|transfar|pay|move|r
 
 
 def _paste_parts(text: str):
-    """(account, amount) read off a one-line transfer, either possibly None."""
+    """(account, amount) read off a one-line transfer, either possibly None.
+
+    Each must be the only one of its kind in the message. Two different account
+    or phone numbers ("call me on 08031234567, send 5k to 0123456789 gtb"), or two
+    different amounts ("send 2000 to 0123456789 gtb for 2 bags"), are not guessed
+    between: the first one used to be taken as the account and the last as the
+    amount, which made "2" the amount there. The model reads such a message; failing
+    that, the amount is asked for.
+    """
     tokens = text.split()
     # 10 digits is a NUBAN; 11 is how the app-first banks address an account -
     # Moniepoint, OPay, PalmPay and Kuda all use the customer's phone number. Only
     # matching 10 meant "12300. Moniepoint 01827364728 cravings" fell through to
     # the guided form, which reads as the assistant ignoring a complete instruction.
-    acct = next((re.sub(r"\D", "", t) for t in tokens
-                 if len(re.sub(r"\D", "", t)) in (10, 11)), None)
-    amount = None
-    for t in reversed(tokens):
-        if len(re.sub(r"\D", "", t)) >= 10:  # skip account- / phone-length tokens
+    accounts, amounts = [], []
+    for t in tokens:
+        digits = re.sub(r"\D", "", t)
+        if len(digits) in (10, 11):
+            if digits not in accounts:
+                accounts.append(digits)
+            continue
+        if len(digits) >= 10:          # longer than any account: neither
             continue
         amount = parse_amount(t)
-        if amount is not None:
-            break
-    return acct, amount
+        if amount is not None and amount not in amounts:
+            amounts.append(amount)
+    return (accounts[0] if len(accounts) == 1 else None,
+            amounts[0] if len(amounts) == 1 else None)
 
 
 def _own_account_number(user) -> str:

@@ -171,3 +171,31 @@ class TableTests(TestCase):
         self.assertTrue(bank_resolver._within_one_edit("acess", "access"))
         self.assertTrue(bank_resolver._within_one_edit("zentih", "zenith"))   # swapped
         self.assertFalse(bank_resolver._within_one_edit("unity", "union"))
+
+
+class NamesakeTests(TestCase):
+    """Parallex Bank and Parallex MFB are two banks with two codes. Reading "bank"
+    and "mfb" as noise merged them, so "parallex mfb" paid Parallex Bank."""
+
+    def setUp(self):
+        self.bank = Bank.objects.create(code="parallex", name="Parallex Bank", bank_code="104",
+                                        popular=False, active=True, color="#000")
+        self.mfb = Bank.objects.create(code="nip090005", name="PARALLEX MFB", bank_code="090005",
+                                       popular=False, active=True, color="#000")
+
+    def test_the_kind_of_bank_decides_between_namesakes(self):
+        self.assertEqual(router._match_banks("parallex mfb"), [self.mfb])
+        self.assertEqual(router._match_banks("parallex microfinance"), [self.mfb])
+        both = router._match_banks("parallex")
+        self.assertEqual(set(both), {self.bank, self.mfb})   # offered, never merged
+
+    def test_a_sentence_names_the_mfb_and_the_mfb_is_paid(self):
+        acct = nuban_for("090005", "123456789")
+        res = router._bank_resolution(f"send 5k to {acct} parallex mfb", acct)
+        self.assertEqual(res.bank, self.mfb)
+
+    def test_the_bank_named_without_a_kind_offers_its_namesake_the_number_fits(self):
+        acct = nuban_for("090005", "123456789")
+        self.assertNotIn(self.bank, router.nuban_bank_candidates(acct))
+        res = router._bank_resolution(f"send 5k to {acct} parallex bank", acct)
+        self.assertIn(self.mfb, [res.bank] + res.choices)

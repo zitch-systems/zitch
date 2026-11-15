@@ -196,13 +196,44 @@ def _core(words) -> list[str]:
     return [w for w in words if w not in GENERIC]
 
 
+_KIND_WORDS = (("mfb", frozenset({"mfb", "microfinance", "mfbank", "mfi"})),
+               ("psb", frozenset({"psb"})),
+               ("mortgage", frozenset({"mortgage"})))
+#: The words that mark a name as each kind of institution, as people type them.
+_KIND_MARKERS = {"mfb": frozenset({"mfb", "microfinance", "bank", "bnk"}),
+                 "psb": frozenset({"psb", "bank", "bnk"}),
+                 "mortgage": frozenset({"mortgage", "bank", "bnk"}),
+                 "bank": frozenset({"bank", "bnk", "plc"})}
+
+
+def _kind(words) -> str:
+    """mfb, psb, mortgage or bank: what sort of institution a name says it is.
+
+    Kept apart from the distinctive words because two institutions can share
+    them: Parallex Bank and Parallex MFB are different banks with different codes,
+    and reading "bank" and "mfb" as noise merged them, so "parallex mfb" paid
+    Parallex Bank.
+    """
+    present = set(words)
+    for kind, marks in _KIND_WORDS:
+        if present & marks:
+            return kind
+    return "bank"
+
+
 def _name_key(name: str) -> frozenset:
-    """A bank name with its generic words dropped, as a set: "MONIEPOINT
-    MICROFINANCE BANK" and "Moniepoint MFB" are the same bank."""
+    """A bank name's distinctive words, as a set: "MONIEPOINT MICROFINANCE BANK"
+    and "Moniepoint MFB" read the same."""
     return frozenset(_core(tokens(name)))
 
 
-_CANONICAL_KEYS = {slug: {_name_key(n) for n in names} - {frozenset()}
+def _identity(name: str) -> tuple:
+    """The distinctive words and the kind: which institution a name means."""
+    words = tokens(name)
+    return frozenset(_core(words)), _kind(words)
+
+
+_CANONICAL_KEYS = {slug: {_identity(n) for n in names if _name_key(n)}
                    for slug, names in CANONICAL_NAMES.items()}
 
 
@@ -264,12 +295,19 @@ class BankIndex:
             self._index(bank)
         # Short names map to EVERY row that is that bank, by slug or by name, so
         # "gt" still finds a table that lists it as "GUARANTY TRUST BANK".
+        by_core: dict = {}
+        for bank in self.banks:
+            by_core.setdefault(_name_key(bank.name), []).append(bank)
         for nick, slug in NICKNAMES.items():
             rows = self.rows_for_slug(slug)
             if not rows:
                 continue
             for bank in rows:
-                self._add(tuple(tokens(nick)), bank, STRONG)
+                # A short name with no kind word is also every namesake of
+                # another kind: "parallex" is Parallex Bank or Parallex MFB, and
+                # the account number decides, or the customer does.
+                for namesake in by_core.get(_name_key(bank.name), [bank]):
+                    self._add(tuple(tokens(nick)), namesake, STRONG)
             if len(nick) >= 5 and " " not in nick and nick not in RISKY:
                 self._fuzzy.setdefault(nick, slug)
         for slug, (_short, names) in BANK_ALIASES.items():
@@ -283,7 +321,7 @@ class BankIndex:
         if slug not in self.slugs:
             keys = _CANONICAL_KEYS.get(slug, set())
             self.slugs[slug] = [b for b in self.banks
-                                if b.code == slug or _name_key(b.name) in keys]
+                                if b.code == slug or _identity(b.name) in keys]
         return self.slugs[slug]
 
     def _add(self, words: tuple, bank, strength: int) -> None:
@@ -300,6 +338,7 @@ class BankIndex:
         self._add(whole, bank, STRONG)
         if len(whole) > 1:
             self._add(("".join(whole),), bank, STRONG)       # "accessbank", "gtbank"
+        markers = _KIND_MARKERS[_kind(whole)]
         # "V Bank (VFD MFB)" is called both of the things it says.
         parts = [tuple(tokens(p)) for p in re.split(r"[()\[\]/,]", name)]
         for words in {whole, *[p for p in parts if p]}:
@@ -313,7 +352,7 @@ class BankIndex:
                     self._add((squashed,), bank, STRONG)      # "premiumtrust"
             elif len(core[0]) >= 3 and not core[0].isdigit() and core[0] not in _STOPWORDS:
                 self._add((core[0],), bank, WEAK)             # "aella"
-            for marker in MARKERS:
+            for marker in markers:
                 self._add((*core, marker), bank, STRONG)      # "aella mfb"
 
     def fuzzy_slug(self, word: str) -> str:
@@ -393,8 +432,10 @@ def _dedupe(banks: list) -> list:
     seen, out = set(), []
     for bank in banks:
         code = "".join(ch for ch in (bank.bank_code or "") if ch.isdigit())
-        keys = {f"code:{code}" if code else f"pk:{bank.pk}", _name_key(bank.name)}
-        keys.discard(frozenset())
+        keys = {f"code:{code}" if code else f"pk:{bank.pk}"}
+        identity = _identity(bank.name)
+        if identity[0]:
+            keys.add(identity)
         if keys & seen:
             continue
         seen |= keys
@@ -432,12 +473,27 @@ def strongest(mentions) -> tuple[int, dict, str]:
     return best, banks, " ".join(phrases)
 
 
-def alternates(text: str, banks, fitting_pks) -> list:
-    """Banks a short name could also mean that the account number fits ("first"
-    -> FCMB), for when the first reading does not."""
+def _other_readings(bank, banks, index, words, fitting_pks) -> list:
+    """Banks the customer may have meant instead of `bank`, that the account
+    number fits: another kind of institution with the same name (Parallex MFB
+    for Parallex Bank), or the second reading of a short name ("first" -> FCMB)."""
+    core = _name_key(bank.name)
+    same_name = [b for b in banks if b.pk != bank.pk and b.pk in fitting_pks
+                 and core and _name_key(b.name) == core]
+    second = [b for word in words for slug in _ALTERNATES.get(word, ())
+              for b in index.rows_for_slug(slug) if b.pk in fitting_pks]
+    return _dedupe(same_name + second)
+
+
+def alternates(text: str, banks, fitting_pks, bank=None) -> list:
+    """Banks the answer could also mean that the account number fits, for when
+    the first reading does not (see _other_readings)."""
+    banks = list(banks)
     index = BankIndex(banks)
-    return _dedupe([b for word in tokens(text) for slug in _ALTERNATES.get(word, ())
-                    for b in index.rows_for_slug(slug) if b.pk in fitting_pks])
+    if bank is None:
+        return _dedupe([b for word in tokens(text) for slug in _ALTERNATES.get(word, ())
+                        for b in index.rows_for_slug(slug) if b.pk in fitting_pks])
+    return _other_readings(bank, banks, index, tokens(text), fitting_pks)
 
 
 def match_banks(text: str, banks) -> list:
@@ -502,10 +558,9 @@ def resolve(text: str, banks, *, account: str = "", nuban=None,
         # named is an instruction, so it stands. The one exception is a word with
         # a second reading that DOES fit: "first" with an FCMB account number.
         if len(candidates) == 1:
-            alternates = [b for word in phrase.split() for slug in _ALTERNATES.get(word, ())
-                          for b in index.rows_for_slug(slug) if b.pk in nuban_pks]
-            if alternates:
-                return Resolution(choices=_dedupe(candidates + alternates),
+            others = _other_readings(candidates[0], banks, index, phrase.split(), nuban_pks)
+            if others:
+                return Resolution(choices=_dedupe(candidates + others),
                                   phrase=phrase, named=True)
             return Resolution(bank=candidates[0], phrase=phrase, named=True)
         return Resolution(choices=candidates, phrase=phrase, named=True)

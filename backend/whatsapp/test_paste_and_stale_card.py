@@ -153,3 +153,18 @@ class StaleConfirmCardTests(TestCase):
         flows.remember_settled(self.pa, "₦3,100.00 sent to ADEYEMI WILLIAM.")
         forged = f"{self.pa.pk}.deadbeefdeadbeefdeadbe"
         self.assertEqual(flows.settled_outcome(forged), "")
+
+
+class AmbiguousPasteTests(TestCase):
+    """Two account numbers, or two different amounts, are not guessed between."""
+
+    def test_two_different_amounts_leave_the_amount_open(self):
+        self.assertEqual(router._paste_parts("send 2000 to 0123456789 gtb for 2 bags"),
+                         ("0123456789", None))
+        self.assertEqual(router._paste_parts("send 5k to 0123456789 gtb 5k"), ("0123456789", Decimal("5000")))
+
+    def test_two_different_numbers_leave_the_account_open(self):
+        self.assertEqual(router._paste_parts("call 08031234567, send 5000 to 0123456789 gtb"),
+                         (None, Decimal("5000")))
+        self.assertEqual(router._paste_parts("0123456789 0123456789 gtb 5000"),
+                         ("0123456789", Decimal("5000")))
