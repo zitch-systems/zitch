@@ -3347,11 +3347,12 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
         log.warning("WhatsApp verification link unavailable tier=%s cause=%s reason=%s",
                     tier, type(exc).__name__, str(exc)[:120])
         return reply(msisdn, "The secure verification page could not open. Please try again shortly.")
+    # The result is sent here automatically once the check finishes
+    # (verification_web.notify_face_results), so the customer is not told to
+    # come back and ask for it.
     body = (("📸 *Tier 2 · Live face check*\n\n"
-             "Tap *Verify face* to open the camera check (by Prembly). Enter your BVN "
-             "when asked, allow camera access, and follow the on-screen moves.\n\n"
-             "When you're done, come back here and reply *7* to see your result. "
-             "The link expires in 15 minutes.")
+             "Tap *Verify face*, allow camera access and follow the on-screen moves. "
+             "We'll message you here with the result. The link expires in 15 minutes.")
             if tier == 2 else
             ("Verify your address securely. Confirm your Zitch PIN on the page, then "
              "enter your residential address and provide proof if requested. "

@@ -86,3 +86,76 @@ class FaceLinkTests(TestCase):
         response = Client().post(self.path, secure=True, HTTP_USER_AGENT=CHROME_UA)
         self.assertEqual(response.status_code, 405)
         self.start.assert_not_called()
+
+
+@override_settings(ZITCH_LINKS={"API_BASE": ORIGIN}, SECURE_SSL_REDIRECT=False,
+                   RATELIMIT_ENABLE=False, BANK_ACCOUNT_PROVIDER="partnership",
+                   WEMA_PARTNERSHIP_MODE="active")
+class FaceResultNotificationTests(TestCase):
+    """The customer is told the result in the chat, unprompted: no "come back
+    and reply 7". Sent once, only for a finished session, from Prembly's
+    authenticated readback (verify_tier2_liveness), never from a redirect."""
+
+    def setUp(self):
+        from datetime import timedelta
+
+        from accounts.models import PremblyFaceSession
+
+        self.user = User.objects.create(
+            username="face-result", phone="08011112244", email="result@example.test",
+            email_verified=True, phone_verified=True, bvn_verified=True, tier=1)
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = "1234567891"
+        wallet.save()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, linked_at=timezone.now())
+        self.session = PremblyFaceSession.objects.create(
+            user=self.user, widget_id="w", identity_type="bvn", identity_hash="h" * 64,
+            credential_stamp="c" * 64, status="pending",
+            expires_at=timezone.now() + timedelta(minutes=20))
+        face_link(self.user, MSISDN)
+        self.pa = PendingAction.objects.get(action_type=ACTION_TYPE)
+        self.pa.payload["face_session"] = str(self.session.state)
+        self.pa.save(update_fields=["payload"])
+
+    def _sweep(self, outcome):
+        from .verification_web import notify_face_results
+
+        def verify(user, data, **_kw):
+            if outcome:
+                type(self.session).objects.filter(pk=self.session.pk).update(status=outcome)
+            return {"success": outcome == "verified"}
+
+        with patch("utility.liveness.verify_tier2_liveness", side_effect=verify), \
+             patch("whatsapp.router.reply") as reply:
+            count = notify_face_results()
+        return count, reply
+
+    def test_a_passed_check_is_announced_once(self):
+        count, reply = self._sweep("verified")
+        self.assertEqual(count, 1)
+        self.assertIn("Tier 2 verification complete", reply.call_args.args[1])
+        count, reply = self._sweep("verified")
+        self.assertEqual(count, 0)
+        reply.assert_not_called()
+
+    def test_a_failed_check_says_so(self):
+        count, reply = self._sweep("failed")
+        self.assertEqual(count, 1)
+        self.assertIn("wasn't confirmed", reply.call_args.args[1])
+
+    def test_a_still_pending_check_sends_nothing(self):
+        count, reply = self._sweep(None)
+        self.assertEqual(count, 0)
+        reply.assert_not_called()
+
+    def test_the_chat_prompt_no_longer_asks_for_bvn_or_a_reply(self):
+        from . import router
+
+        with patch("whatsapp.router.send_cta_url", return_value={"success": True}) as send, \
+             override_settings(PREMBLY={"FACE_SDK_ENABLED": True}):
+            router._send_web_verification(self.user, MSISDN, 2)
+        body = send.call_args.args[1]
+        for gone in ("Prembly", "BVN", "reply *7*"):
+            self.assertNotIn(gone, body)
+        self.assertIn("message you here with the result", body)
