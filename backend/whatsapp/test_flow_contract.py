@@ -203,18 +203,34 @@ class FlowFileContractTests(SimpleTestCase):
             self.assertEqual(inp.get("min-chars"), 2, inp["name"])
 
     def test_the_logo_is_the_same_bytes_on_every_screen(self):
-        def srcs(node):
+        # Two images per screen by design: the Zitch logo, and the small
+        # Wema / CBN / NDIC trust strip. Each must be identical everywhere.
+        def srcs(node, alt):
             if isinstance(node, dict):
-                if node.get("type") == "Image":
+                if node.get("type") == "Image" and node.get("alt-text") == alt:
                     yield node.get("src")
                 for v in node.values():
-                    yield from srcs(v)
+                    yield from srcs(v, alt)
             elif isinstance(node, list):
                 for v in node:
-                    yield from srcs(v)
+                    yield from srcs(v, alt)
 
-        all_srcs = {s for screen in FLOW["screens"] for s in srcs(screen["layout"])}
-        self.assertEqual(len(all_srcs), 1)
+        for alt in ("Zitch", "Wema Bank, CBN and NDIC"):
+            with self.subTest(image=alt):
+                found = [s for screen in FLOW["screens"] for s in srcs(screen["layout"], alt)]
+                self.assertEqual(len(found), len(FLOW["screens"]))
+                self.assertEqual(len(set(found)), 1)
+
+    def test_every_screen_carries_the_partnership_notice(self):
+        for screen in FLOW["screens"]:
+            with self.subTest(screen=screen["id"]):
+                kinds = [c.get("type") for c in screen["layout"]["children"]]
+                self.assertIn("TextCaption", kinds)
+                link = next(c for c in screen["layout"]["children"] if c.get("type") == "EmbeddedLink")
+                self.assertEqual(link["on-click-action"],
+                                 {"name": "open_url", "url": "https://zitch.ng/partnership"})
+                # The footer button stays last: the notice sits above it.
+                self.assertIn(kinds[-1], ("Form", "Footer"))
 
 
 class BuildersMatchDeclaredKeysTests(TestCase):

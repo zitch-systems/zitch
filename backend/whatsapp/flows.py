@@ -13,6 +13,7 @@ Screen ids mirror the published Flow JSON (`flow_assets/pin_flow.json`):
 import base64
 import hashlib
 import hmac
+import contextvars
 import logging
 import re
 import time
@@ -820,12 +821,30 @@ def _check_contract(response: dict) -> dict:
     return response
 
 
+#: Absolute monotonic time by which this Flow exchange must have answered.
+#: Meta drops a data_exchange after ~10s and shows "Couldn't load content", so
+#: every wait inside one exchange (see router._await_settlement) is capped by
+#: what is LEFT of this budget, not by a fixed number of seconds of its own.
+FLOW_DEADLINE = contextvars.ContextVar("wa_flow_deadline", default=None)
+
+
+def flow_time_left() -> float | None:
+    """Seconds left before this exchange must answer, or None outside one."""
+    deadline = FLOW_DEADLINE.get()
+    return None if deadline is None else deadline - time.monotonic()
+
+
 def handle_flow_request(payload: dict) -> dict:
     """Route a decrypted Flows request to its response. Never raises - any
     unexpected shape resolves to a safe terminal screen so the endpoint always
     returns a well-formed (encryptable) reply."""
     started = time.monotonic()
-    response = _handle_flow_request(payload)
+    budget = float(getattr(settings, "WHATSAPP_FLOW_RESPONSE_BUDGET", 7.5) or 7.5)
+    token = FLOW_DEADLINE.set(started + budget)
+    try:
+        response = _handle_flow_request(payload)
+    finally:
+        FLOW_DEADLINE.reset(token)
     # SUCCESS is a reserved completion envelope. Older published flows without
     # RESULT must close cleanly instead of trying to render data on that name.
     if (response.get("screen") == SUCCESS_SCREEN
@@ -932,7 +951,7 @@ def _handle_flow_request(payload: dict) -> dict:
     if str(token).startswith(_ID_PREFIX):
         pa = resolve_identity_token(token)
         if pa is None:
-            return _success_screen("This verification expired. Reply 8 in the chat to start again.")
+            return _success_screen("This verification expired. Reply 7 in the chat to start again.")
         kind = pa.payload.get("id_kind", "BVN")
         if action == "data_exchange":
             if kind == "email":
@@ -1416,7 +1435,7 @@ def _submit_identity(pa, data: dict) -> dict:
                 _clear_actions(pa.msisdn)
                 return _success_screen(
                     "Your identity check is already complete or processing. "
-                    "Return to the chat and reply 6 to check your funding account; "
+                    "Return to the chat and reply 5 to check your funding account; "
                     "you do not need to repeat face verification.")
 
             if _send_identity_face_option(pa, pa.user, pa.msisdn, kind, number,
@@ -1496,7 +1515,7 @@ def _submit_identity(pa, data: dict) -> dict:
                           f"Check the digits and try again ({left} attempt(s) left).")
             if outcome == "stop":
                 return _success_screen(
-                    f"Too many incorrect {kind.upper()} attempts. Reply 8 in the chat to "
+                    f"Too many incorrect {kind.upper()} attempts. Reply 7 in the chat to "
                     "start again.")
             if outcome == "otp":
                 # The lookup passed and a code is on its way to the line
@@ -1527,7 +1546,7 @@ def _submit_identity(pa, data: dict) -> dict:
         log.exception("identity flow submission failed for pa=%s", pa.id)
         return _success_screen(
             "Our partner bank could not complete that verification request. "
-            "No identity was marked verified. Reply 8 to retry the partner-bank SMS step.")
+            "No identity was marked verified. Reply 7 to retry the partner-bank SMS step.")
     # The chat carries the detailed outcome (verified, or queued for review), so
     # this screen only has to close cleanly.
     return _success_screen(f"{kind.upper()} received ✅ — see the chat for what's next.")
@@ -1583,7 +1602,7 @@ def _submit_identity_otp(pa, data: dict) -> dict:
         status, message = kyc_flow_identity_otp(pa, str(data.get("number", "")))
     except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("identity otp submission failed for pa=%s", pa.id)
-        return _success_screen("Something went wrong. Reply 8 in the chat to try again.")
+        return _success_screen("Something went wrong. Reply 7 in the chat to try again.")
     if status == "retry":
         return _identity_otp_screen(pa, error=message)
     if status == "ok":
@@ -1669,7 +1688,7 @@ def _submit_account_otp(pa, data: dict) -> dict:
         status, message = account_flow_otp(pa, code)
     except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("account otp flow submission failed for pa=%s", pa.id)
-        return _success_screen("Something went wrong. Reply 6 in the chat to try again.")
+        return _success_screen("Something went wrong. Reply 5 in the chat to try again.")
     if status == "retry":
         return _account_otp_screen(pa, error=message)
     return _success_screen(message)
@@ -1719,7 +1738,7 @@ def _submit_email(pa, data: dict) -> dict:
         status, message = verdict(pa, value)
     except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("email flow submission failed for pa=%s step=%s", pa.id, step)
-        return _success_screen("Something went wrong. Reply 8 in the chat to try again.")
+        return _success_screen("Something went wrong. Reply 7 in the chat to try again.")
 
     if status == "stop":
         return _success_screen(message)

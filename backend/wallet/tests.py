@@ -1285,7 +1285,7 @@ class FirstSpendVerificationTests(TestCase):
             debit(self.user, Decimal("1000"), "transfer")
         self.assertIn("BVN", str(ctx.exception))
         # And the refusal is actionable on both surfaces.
-        self.assertIn("8", str(ctx.exception))
+        self.assertIn("*7*", str(ctx.exception))   # WhatsApp menu: 7 = Verify
         self.assertIn("app", str(ctx.exception).lower())
 
     def test_the_refusal_names_every_missing_check_not_just_the_first(self):

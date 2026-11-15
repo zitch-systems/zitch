@@ -46,11 +46,11 @@ class PartnershipCustomerChatTests(TestCase):
             with self.subTest(lifecycle=lifecycle), override_settings(
                     BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE=lifecycle):
                 menu = router.menu_text()
-                self.assertEqual("2️⃣  💸 Send money" in menu, enabled)
-                self.assertEqual("1️⃣1️⃣  📷 Scan a QR code" in menu, enabled)
+                self.assertEqual("*2.*  💸  Send money" in menu, enabled)
+                self.assertEqual("*10.*  📷  Scan a QR code" in menu, enabled)
                 self.assertEqual("send 5k to Ada" in menu, enabled)
-                self.assertIn("3️⃣  📱 Airtime / Data", menu)
-                self.assertIn("4️⃣  💡 Pay a bill", menu)
+                self.assertIn("*3.*  📱  Airtime / Data", menu)
+                self.assertIn("*4.*  💡  Pay a bill", menu)
 
     @override_settings(BANK_ACCOUNT_PROVIDER="partnership", WEMA_PARTNERSHIP_MODE="archive")
     def test_archived_transfer_option_is_refused_before_recipient_or_pin(self):
@@ -165,7 +165,7 @@ class PartnershipCustomerChatTests(TestCase):
         self.assertIsNotNone(router.vas_text_intent("2k airtime"))
 
     def test_expired_nonpayment_actions_have_contextual_restart_without_charge_claim(self):
-        restarts = {"vas_enroll": "Reply *6*", "kyc": "Reply *8*", "add_account": "Reply *6*",
+        restarts = {"vas_enroll": "Reply *5*", "kyc": "Reply *7*", "add_account": "Reply *5*",
                     "unlock": "Repeat your request", "setpin": "Reply *reset pin*"}
         for action_type, restart in restarts.items():
             with self.subTest(action_type=action_type):
@@ -194,8 +194,8 @@ class PartnershipCustomerChatTests(TestCase):
                     expires_at=timezone.now() - timedelta(seconds=1))
                 with patch.object(router, "reply"), patch.object(router, "_send_unlock") as unlock, \
                         patch.object(router, "_do_account_details") as details:
-                    router.handle_inbound(MSISDN, "7")
-                unlock.assert_called_once_with(self.user, MSISDN, "7")
+                    router.handle_inbound(MSISDN, "6")
+                unlock.assert_called_once_with(self.user, MSISDN, "6")
                 details.assert_not_called()
 
 

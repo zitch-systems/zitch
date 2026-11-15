@@ -551,7 +551,7 @@ class ChannelTests(TestCase):
     def test_add_money_menu_number_works(self):
         wallet = give_account(self.user)
         self.link()
-        self.inbound("6", "am2")
+        self.inbound("5", "am2")
         self.assertIn(wallet.account_number, self.last_reply())
 
     @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
@@ -578,7 +578,7 @@ class ChannelTests(TestCase):
         router.cache.delete(f"wema-missing-nuban:{self.user.pk}")
 
         with patch.object(router, "_send_identity_flow", return_value=True):
-            self.inbound("6", "am-missing-nuban")
+            self.inbound("5", "am-missing-nuban")
 
         reply = self.last_reply()
         self.assertIn("BVN remains verified", reply)
@@ -616,7 +616,7 @@ class ChannelTests(TestCase):
             expires_at=timezone.now() + timedelta(minutes=30),
         )
 
-        self.inbound("6", "am-missing-nuban-nin")
+        self.inbound("5", "am-missing-nuban-nin")
 
         pa = PendingAction.objects.get(msisdn=MSISDN, action_type="add_account")
         self.assertEqual(pa.state, "otp")
@@ -2576,7 +2576,7 @@ class ChatAccountSetupTests(TestCase):
         self.assertTrue(PendingAction.objects.filter(msisdn=m, action_type="add_account", state="otp").exists())
         complete.return_value = ({"success": False, "message": "This verification request has expired. Start account setup again."}, 400)
         self.inbound("00001", f"u4-{m}", msisdn=m)      # expired: flow ends, restart hinted
-        self.assertIn("Reply *6*", self.last_reply(m))
+        self.assertIn("Reply *5*", self.last_reply(m))
         self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="add_account").exists())
 
     def test_menu_lists_account_details_and_shows_them(self):
@@ -2586,7 +2586,7 @@ class ChatAccountSetupTests(TestCase):
         w.save(update_fields=["account_number", "bank_name", "account_name"])
         self.inbound("menu", "d1")
         self.assertIn("My account details", self.last_reply())
-        self.inbound("7", "d2")
+        self.inbound("6", "d2")
         r = self.last_reply()
         self.assertIn("8800112233", r)
         self.inbound("my account", "d3")
@@ -2595,7 +2595,7 @@ class ChatAccountSetupTests(TestCase):
     @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
     def test_account_details_without_nuban_points_to_setup(self, _enabled):
         self.link()
-        self.inbound("7", "d4")
+        self.inbound("6", "d4")
         self.assertIn("Add money", self.last_reply())
 
 
@@ -3370,7 +3370,7 @@ class ChatKycTests(TestCase):
     @patch("whatsapp.router.sms_live", return_value=True)
     @patch("whatsapp.router.send_sms", return_value={"success": True})
     def test_phone_step_requires_the_sms_code(self, sms, _live):
-        self.inbound("8", "k1")
+        self.inbound("7", "k1")
         self.assertIn("sent a 6-digit code by SMS", self.last_reply())
         sms.assert_called_once()
         code = re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1)
@@ -3389,7 +3389,7 @@ class ChatKycTests(TestCase):
     @patch("whatsapp.router.send_email")
     @patch("whatsapp.router.send_sms", return_value={"success": True})
     def test_email_step_sends_to_the_inbox_not_the_phone(self, sms, email, _sl, _el):
-        self.inbound("8", "e1")
+        self.inbound("7", "e1")
         self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "e2")
         # Now on email: the code went to the ADDRESS, never by SMS.
         self.assertIn("k@zitch.test", self.last_reply())
@@ -3409,7 +3409,7 @@ class ChatKycTests(TestCase):
     @patch("whatsapp.router.send_email")
     @patch("whatsapp.router.send_sms", return_value={"success": True})
     def test_full_run_reaches_tier_1(self, sms, email, bvn, nin, _sl, _el):
-        self.inbound("8", "f1")
+        self.inbound("7", "f1")
         self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "f2")
         self.inbound(re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1), "f3")
         self.assertIn("BVN", self.last_reply())
@@ -3437,7 +3437,7 @@ class ChatKycTests(TestCase):
     @patch("whatsapp.router.send_sms", return_value={"success": True})
     def test_tier1_does_not_collect_an_unrequested_second_identity(self, sms, email, bvn, nin, _sl, _el):
         """Completing Tier 1 must not silently collect or approve a second ID."""
-        self.inbound("8", "q1")
+        self.inbound("7", "q1")
         self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "q2")
         self.inbound(re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1), "q3")
         self.inbound("12345678901", "q4")     # BVN verifies
@@ -3463,7 +3463,7 @@ class ChatKycTests(TestCase):
         trusting its `success` announced a code that never left the building.
         The rail is checked BEFORE sending."""
         with patch("whatsapp.router.send_sms") as sms:
-            self.inbound("8", "n1")
+            self.inbound("7", "n1")
         sms.assert_not_called()
         r = self.last_reply()
         self.assertIn("can't send SMS codes", r)
@@ -3476,7 +3476,7 @@ class ChatKycTests(TestCase):
         self.user.phone_verified = True
         self.user.save(update_fields=["phone_verified"])
         with patch("whatsapp.router.send_email") as email:
-            self.inbound("8", "n2")
+            self.inbound("7", "n2")
         email.assert_not_called()
         self.assertIn("can't send emails", self.last_reply())
 
@@ -3492,7 +3492,7 @@ class ChatKycTests(TestCase):
         that Resend had refused outright."""
         self.user.phone_verified = True
         self.user.save(update_fields=["phone_verified"])
-        self.inbound("8", "r1")
+        self.inbound("7", "r1")
         email.assert_called_once()
         r = self.last_reply()
         self.assertIn("couldn't send the email", r)
@@ -3506,7 +3506,7 @@ class ChatKycTests(TestCase):
         """A demo deploy usually has no rails. The SAME switch app signup already
         honours makes the walkthrough possible, rather than a second mechanism."""
         with patch("whatsapp.router.send_sms", return_value={"success": True}):
-            self.inbound("8", "t1")
+            self.inbound("7", "t1")
         self.assertIn("sent a 6-digit code", self.last_reply())
         self.inbound("123456", "t2")
         self.user.refresh_from_db()
@@ -3519,7 +3519,7 @@ class ChatKycTests(TestCase):
         TEST_OTP configured" handed the same fixed code to EVERY customer, on any
         deploy where the pair was set."""
         with patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
-            self.inbound("8", "s1")           # this user is NOT the test number
+            self.inbound("7", "s1")           # this user is NOT the test number
         code = re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1)
         self.assertNotEqual(code, "123456")   # a real random code, not the fixture
         self.inbound("123456", "s2")          # the fixed code must not be accepted
@@ -3549,7 +3549,7 @@ class ChatKycTests(TestCase):
         self.user.phone_verified = True
         self.user.email_verified = True
         self.user.save()
-        self.inbound("8", "o1")
+        self.inbound("7", "o1")
         self.inbound("12345678901", "o2")
         self.assertIn("already linked to another", self.last_reply())
         self.user.refresh_from_db()
@@ -3650,7 +3650,7 @@ class LimitReferralTests(TestCase):
         self.user.bvn_verified = self.user.nin_verified = False
         self.user.save(update_fields=["bvn_verified", "nin_verified"])
         block = _upgrade_block(self.user)
-        self.assertIn("*8*", block)
+        self.assertIn("*7*", block)
         self.assertNotIn("Tier 3", block)
 
     @override_settings(ZITCH_LINKS=LINKS)
@@ -3794,6 +3794,31 @@ class AiDataShorthandTests(TestCase):
             .first()
         )
         return row.text if row else ""
+
+    def test_plan_can_be_picked_by_description_not_only_number(self):
+        """Reported: "Go with the cheapest" was answered with "Reply with a
+        plan number". A reply that describes exactly one listed plan picks it;
+        an ambiguous one still re-prompts rather than guessing."""
+        from whatsapp import router
+
+        DataPlan.objects.create(network="2", plan_type="1", name="1.5GB", validity="30 days",
+                                plan_code="glo-1.5gb", price=Decimal("1000"), active=True)
+        for reply_text, expected in (("Go with the cheapest", "glo-1.5gb"),
+                                     ("the 1k one", "glo-1.5gb"),
+                                     ("5GB", "glo-5gb"),
+                                     ("the biggest", "glo-5gb")):
+            with self.subTest(reply=reply_text):
+                PendingAction.objects.filter(msisdn=MSISDN).delete()
+                router._start_data(self.user, MSISDN)  # noqa: SLF001
+                router.handle_inbound(MSISDN, reply_text)
+                pa = PendingAction.objects.get(msisdn=MSISDN, action_type="data")
+                self.assertEqual(pa.payload.get("plan_code"), expected)
+        PendingAction.objects.filter(msisdn=MSISDN).delete()
+        router._start_data(self.user, MSISDN)  # noqa: SLF001
+        router.handle_inbound(MSISDN, "something nice")
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="data")
+        self.assertNotIn("plan_code", pa.payload)
+        self.assertIn("plan number", self.last_reply())
 
     def test_own_line_prefix_skips_phone_and_network_questions(self):
         from whatsapp import router
@@ -4222,8 +4247,8 @@ class HistoryAndCreditAlertTests(TestCase):
         return WaMessageLog.objects.filter(
             msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
 
-    def test_option_9_lists_recent_movements_newest_first(self):
-        out = self._say("9")
+    def test_option_8_lists_recent_movements_newest_first(self):
+        out = self._say("8")
         self.assertIn("50,000", out)      # the seed credit
         self.assertIn("Balance", out)
 
@@ -4250,7 +4275,7 @@ class HistoryAndCreditAlertTests(TestCase):
         balance does."""
         from whatsapp.router import _is_sensitive_read
 
-        for word in ("9", "history", "statement", "transactions"):
+        for word in ("8", "history", "statement", "transactions"):
             self.assertTrue(_is_sensitive_read(word), word)
 
     def test_a_credit_reaches_the_customer_on_whatsapp(self):
@@ -4482,7 +4507,7 @@ class IdentityNeverFallsBackToChatInProductionTests(TestCase):
 
         with patch("whatsapp.router.flows_live", return_value=True), \
              patch("whatsapp.router.send_flow", return_value={"success": False}):
-            handle_inbound(MSISDN, "8")
+            handle_inbound(MSISDN, "7")
             # Choose the SMS method on the new BVN/NIN chooser before testing
             # delivery failure. No identity form is sent by opening the chooser.
             handle_inbound(MSISDN, "bvn_sms")
@@ -4502,7 +4527,7 @@ class IdentityNeverFallsBackToChatInProductionTests(TestCase):
              patch("whatsapp.router.send_flow", return_value={"success": False}), \
              patch("whatsapp.router.email_live", return_value=True), \
              patch("whatsapp.router.send_email", return_value={"success": True}):
-            handle_inbound(MSISDN, "8")
+            handle_inbound(MSISDN, "7")
         out = self._last()
         self.assertIn("won't ask", out)
 
@@ -4512,7 +4537,7 @@ class IdentityNeverFallsBackToChatInProductionTests(TestCase):
         from whatsapp.router import handle_inbound
 
         with patch("whatsapp.router.flows_live", return_value=False):
-            handle_inbound(MSISDN, "8")
+            handle_inbound(MSISDN, "7")
         self.assertIn("Enter your 11-digit", self._last())
 
 
@@ -4595,15 +4620,17 @@ class GatedReadAliasCoverageTests(TestCase):
     """
 
     def test_every_dispatcher_alias_for_a_gated_read_is_in_the_gate(self):
-        from whatsapp.router import _SENSITIVE_READS
+        from whatsapp.router import _is_sensitive_read
 
         # Aliases the dispatcher routes to _do_account_details / balance /
         # statement. Each leaks name, phone, email, tier, account number or
-        # transaction history, so each has to trip the challenge.
+        # transaction history, so each has to trip the challenge. Menu numbers
+        # (1 balance, 6 account details, 8 history, 11 saved people) are
+        # translated through the menu list, so they are checked the same way.
         for alias in ("details", "my details", "account details", "my account",
-                      "account number", "7", "balance", "bal", "1",
-                      "statement", "history", "transactions", "9"):
-            self.assertIn(alias, _SENSITIVE_READS, f"{alias!r} is an ungated leak")
+                      "account number", "6", "balance", "bal", "1",
+                      "statement", "history", "transactions", "8", "11"):
+            self.assertTrue(_is_sensitive_read(alias), f"{alias!r} is an ungated leak")
 
 
 class BroadcastDeadLetterUnwedgesTheBroadcastTests(TestCase):
@@ -5769,14 +5796,14 @@ class SavedPeopleTests(TestCase):
     def test_the_address_book_lists_saved_people_only(self):
         self.make_row(saved=True, nickname="Mum")
         self.make_row(account_number="0999999999", bank_name="Zenith", name="A RECENT")
-        self.inbound("12", "l1")
+        self.inbound("11", "l1")
         shown = self.last_reply()
         self.assertIn("Mum", shown)
         self.assertNotIn("0999999999", shown)
 
     def test_removing_someone_takes_the_row_with_it(self):
         row = self.make_row(saved=True, nickname="Mum")
-        self.inbound("12", "m1")
+        self.inbound("11", "m1")
         self.inbound("1", "m2")
         self.inbound("2", "m3")
         self.assertFalse(Beneficiary.objects.filter(pk=row.pk).exists())

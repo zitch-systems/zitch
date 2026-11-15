@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" type="image/png" sizes="48x48" href="assets/landing-v2/favicon-48.png" />
+<link rel="apple-touch-icon" href="assets/landing-v2/apple-touch-180.png" />
+<title>Our banking partner — Zitch</title>
+<meta name="description" content="Zitch is powered by Wema Bank infrastructure. Wema Bank is licensed by the CBN and deposits are insured by the NDIC." />
+<!-- NOTE: Have compliance and Wema Bank confirm this wording and logo use before relying on it. -->
+<link rel="stylesheet" href="_ds/remotejobs44-design-system-01e971a1-a75c-46a8-961e-ce72965a5e0a/colors_and_type.css" />
+<link rel="stylesheet" href="assets/fonts-v1/fonts.css" />
+<style>
+  :root{--wrap:1080px;
+    /* ===== Zitch teal brand — overrides the design-system blue ===== */
+    --brand-50:#E6F7F4;--brand-100:#C2EDE7;--brand-200:#8FDDD4;--brand-300:#54C9BD;
+    --brand-400:#2BBAAF;--brand-500:#12A99B;--brand-600:#0FA295;--brand-700:#00847B;
+    --brand-800:#00615A;--brand-900:#043C37;--brand-950:#04221F;--brand:var(--brand-600);
+    --accent:#F5A623;--accent-light:#FBC85A;--accent-dark:#D48A0A;
+    --bg-app:#F4FAF9;--bg-section:#E9F5F2;--bg-card:#FFFFFF;
+    --border-1:#DCEDE9;--border-2:#CFE5E0;--border-3:#E9F5F2;
+    --shadow-sm-brand:0 1px 4px rgba(0,132,123,.08);
+    --shadow-md-brand:0 4px 20px rgba(0,132,123,.18);
+    --shadow-lg-brand:0 8px 32px rgba(0,132,123,.20);
+    --shadow-xl-brand:0 16px 56px rgba(0,132,123,.24);
+  }
+  [data-theme="dark"]{
+    --bg-app:#04211D;--bg-section:#062B26;--bg-card:#0A362F;
+    --border-1:#123F38;--border-2:#174B42;--border-3:#0B2E29;--brand:var(--brand-400);
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{margin:0;background:var(--bg-app);color:var(--fg-1);font-family:var(--font-body);}
+  a{color:var(--brand-700);text-decoration:none;}
+  a:hover{text-decoration:underline;}
+  svg,img{display:block;}
+  [data-lucide]{width:20px;height:20px;stroke-width:1.75;}
+  .wrap{max-width:var(--wrap);margin:0 auto;padding:0 24px;}
+
+  .brand{display:inline-flex;align-items:center;gap:11px;}
+  .brand .mark{width:34px;height:34px;border-radius:10px;object-fit:cover;display:block;flex-shrink:0;}
+  .brand .word{font-family:var(--font-display);font-weight:800;font-size:20px;letter-spacing:-.02em;color:var(--fg-1);}
+
+  header.nav{position:sticky;top:0;z-index:70;background:rgba(244,250,249,.92);backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);border-bottom:1px solid var(--border-1);}
+  .nav-in{display:flex;align-items:center;justify-content:space-between;gap:20px;height:66px;}
+  .nav-right{display:flex;align-items:center;gap:10px;}
+  .back{display:inline-flex;align-items:center;gap:7px;font-family:var(--font-display);font-weight:600;font-size:14px;color:var(--fg-2);}
+  .back:hover{color:var(--brand-700);text-decoration:none;}
+  .back [data-lucide]{width:16px;height:16px;}
+  .icon-btn{width:42px;height:42px;border-radius:11px;border:1.5px solid var(--border-2);background:transparent;color:var(--fg-2);cursor:pointer;display:grid;place-items:center;}
+  .icon-btn:hover{border-color:var(--brand-500);color:var(--brand-700);}
+
+  .title-band{border-bottom:1px solid var(--border-1);background:var(--bg-card);position:relative;overflow:hidden;}
+  .title-band::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 70% 80% at 20% -20%,rgba(15,162,149,.10),transparent 70%);pointer-events:none;}
+  .title-in{position:relative;padding:56px 0 44px;}
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-display);font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--brand-700);}
+  .title-in h1{font-family:var(--font-display);font-weight:800;font-size:clamp(32px,4.4vw,50px);letter-spacing:-.025em;line-height:1.05;color:var(--fg-1);margin:14px 0 0;}
+  .updated{display:inline-flex;align-items:center;gap:8px;margin-top:18px;font-size:13.5px;color:var(--fg-3);background:var(--bg-section);border:1px solid var(--border-1);padding:7px 14px;border-radius:999px;}
+  .updated [data-lucide]{width:15px;height:15px;color:var(--brand-600);}
+  .lead{font-size:16.5px;line-height:1.65;color:var(--fg-2);max-width:640px;margin-top:20px;}
+
+  .doc{display:grid;grid-template-columns:238px 1fr;gap:52px;padding:52px 0 80px;align-items:start;}
+  .toc{position:sticky;top:88px;}
+  .toc .h{font-family:var(--font-display);font-size:11.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-4);margin-bottom:14px;}
+  .toc ol{list-style:none;margin:0;padding:0;display:grid;gap:2px;}
+  .toc a{display:block;padding:7px 12px;border-radius:9px;font-size:13.5px;line-height:1.35;color:var(--fg-2);border-left:2px solid transparent;transition:background .15s,color .15s,border-color .15s;}
+  .toc a:hover{background:var(--bg-section);color:var(--brand-700);text-decoration:none;}
+  .toc a.active{color:var(--brand-700);background:var(--brand-50);border-left-color:var(--brand-600);font-weight:600;}
+
+  .content{max-width:720px;}
+  .content section{scroll-margin-top:88px;margin-bottom:38px;}
+  .content h2{font-family:var(--font-display);font-weight:700;font-size:22px;letter-spacing:-.01em;color:var(--fg-1);margin:0 0 14px;display:flex;gap:12px;align-items:baseline;}
+  .content h2 .num{font-size:14px;font-weight:700;color:var(--brand-600);font-variant-numeric:tabular-nums;flex-shrink:0;}
+  .content h3{font-family:var(--font-display);font-weight:700;font-size:16px;color:var(--fg-1);margin:22px 0 8px;}
+  .content p{font-size:15.5px;line-height:1.68;color:var(--fg-2);margin:0 0 14px;}
+  .content ul{margin:0 0 14px;padding-left:20px;}
+  .content li{font-size:15.5px;line-height:1.62;color:var(--fg-2);margin-bottom:8px;}
+  .content strong{color:var(--fg-1);font-weight:600;}
+  .callout{background:var(--brand-50);border:1.5px solid var(--brand-100);border-left:3px solid var(--brand-600);border-radius:12px;padding:16px 18px;margin:0 0 14px;}
+  .callout p{margin:0;color:var(--brand-800);font-size:14.5px;}
+  .ph{border-bottom:1px dotted var(--fg-4);}
+
+  footer{background:var(--brand-900);color:#93a4c4;padding:40px 0;font-size:13.5px;}
+  .foot-in{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap;}
+  .foot-links{display:flex;gap:22px;flex-wrap:wrap;}
+  .foot-links a{color:#93a4c4;}
+  .foot-links a:hover{color:#fff;text-decoration:none;}
+  .foot-in .brand .word{color:#fff;}
+
+  @media (max-width:900px){
+    .doc{grid-template-columns:1fr;gap:0;}
+    .toc{position:static;margin-bottom:36px;padding:18px 18px 8px;background:var(--bg-section);border:1px solid var(--border-1);border-radius:14px;}
+    .toc ol{grid-template-columns:1fr 1fr;gap:0 14px;}
+  }
+  @media (max-width:560px){
+    .wrap{padding:0 18px;}
+    .toc ol{grid-template-columns:1fr;}
+    .back span{display:none;}
+  }
+
+  body[data-theme="dark"] header.nav{background:rgba(5,32,28,.85);}
+  body[data-theme="dark"] .title-band{background:var(--bg-card);}
+  body[data-theme="dark"] .callout{background:rgba(15,162,149,.14);border-color:var(--brand-800);}
+  body[data-theme="dark"] .callout p{color:var(--brand-200);}
+
+  .partners{display:flex;flex-wrap:wrap;align-items:center;gap:28px;margin:8px 0 28px;}
+  .partners img{height:44px;width:auto;}
+  .partners img.cbn{height:56px;}
+  .facts{display:grid;gap:14px;margin:0 0 8px;padding:0;list-style:none;}
+  .facts li{background:var(--bg-card);border:1px solid var(--border-1);border-radius:14px;padding:16px 18px;}
+  .facts strong{display:block;margin-bottom:4px;}
+  .page{max-width:760px;margin:0 auto;padding:32px 24px 64px;}
+  .page h2{font-family:var(--font-display);margin:32px 0 10px;font-size:22px;}
+  .page p{line-height:1.65;}
+</style>
+</head>
+<body data-screen-label="Banking partner">
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="index.html"><img class="mark" src="assets/landing-v2/logo-96.webp" width="96" height="96" alt="Zitch" /><span class="word">Zitch</span></a>
+    <div class="nav-right">
+      <a class="back" href="index.html"><i data-lucide="arrow-left"></i><span>Back to site</span></a>
+      <button class="icon-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+    </div>
+  </div>
+</header>
+
+<div class="title-band">
+  <div class="wrap title-in">
+    <span class="eyebrow">Our banking partner</span>
+    <h1>Zitch, powered by Wema Bank</h1>
+    <p class="lead">Every Zitch service, in the app and on WhatsApp, is provided by Zitch and runs on Wema Bank's banking infrastructure.</p>
+  </div>
+</div>
+
+<main class="page">
+  <div class="partners" aria-label="Our partners and regulators">
+    <img src="assets/landing-v2/wema-bank.webp" alt="Wema Bank" width="223" height="44" />
+    <img class="cbn" src="assets/landing-v2/cbn.webp" alt="Central Bank of Nigeria" width="269" height="357" />
+    <img src="assets/landing-v2/ndic.webp" alt="Nigeria Deposit Insurance Corporation" width="362" height="140" />
+  </div>
+
+  <ul class="facts">
+    <li><strong>In partnership with Wema Bank</strong>Zitch works in partnership with Wema Bank Plc. Your Zitch account number is a Wema Bank account, and your money is held by Wema Bank.</li>
+    <li><strong>Licensed by the Central Bank of Nigeria</strong>Wema Bank Plc is a commercial bank licensed and regulated by the Central Bank of Nigeria (CBN).</li>
+    <li><strong>Deposits insured by the NDIC</strong>Deposits held with Wema Bank are insured by the Nigeria Deposit Insurance Corporation (NDIC), within the limits the NDIC sets.</li>
+  </ul>
+
+  <h2>Who does what</h2>
+  <p><strong>Zitch</strong> designs and runs the services you use: the Zitch app, Zitch on WhatsApp, transfers, airtime and data, bills and the rest. <strong>Wema Bank</strong> provides the banking infrastructure behind them: your account, the movement of your money, and the safekeeping of your deposits.</p>
+
+  <h2>Using Zitch on WhatsApp</h2>
+  <p>When you confirm a payment on WhatsApp, you enter your PIN in a secure WhatsApp form. The PIN is never sent to the chat. The payment is then processed on Wema Bank's infrastructure, and your receipt arrives in the chat.</p>
+
+  <h2>Questions</h2>
+  <p>Contact Zitch support at <a href="mailto:support@zitch.ng">support@zitch.ng</a>, or from WhatsApp reply <strong>menu</strong> and choose customer care.</p>
+</main>
+
+<footer>
+  <div class="wrap foot-in">
+    <a class="brand" href="index.html"><img class="mark" src="assets/landing-v2/logo-96.webp" width="96" height="96" alt="Zitch" /><span class="word">Zitch</span></a>
+    <div class="foot-links">
+      <a href="index.html">Home</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms &amp; Conditions</a>
+      <span>© 2026 Zitch. In partnership with Wema Bank. Secured by the NDIC.</span>
+    </div>
+  </div>
+</footer>
+
+<script src="https://unpkg.com/lucide@latest"></script>
+<script>
+  function drawIcons(){ if (window.lucide) lucide.createIcons(); }
+  drawIcons();
+  (function(){
+    var btn = document.getElementById('themeBtn');
+    var SUN = '<i data-lucide="sun"></i>', MOON = '<i data-lucide="moon"></i>';
+    function apply(m){ document.body.setAttribute('data-theme', m); btn.innerHTML = m==='dark'?SUN:MOON; drawIcons(); try{localStorage.setItem('zvtu-theme',m);}catch(e){} }
+    var init='light'; try{init=localStorage.getItem('zvtu-theme')||'light';}catch(e){}
+    apply(init);
+    btn.addEventListener('click', function(){ apply(document.body.getAttribute('data-theme')==='dark'?'light':'dark'); });
+  })();
+</script>
+</body>
+</html>
