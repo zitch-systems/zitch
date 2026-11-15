@@ -77,10 +77,16 @@ class OperatorEmailTests(TestCase):
         cache.clear()
         alerts_module._sent.clear()
         alerts_module._seen_locally.clear()
+        alerts_module._dropped["capped"] = 0
         patcher = mock.patch("utility.providers.send_email",
                              return_value={"success": True, "raw": {"id": "x"}})
         self.send = patcher.start()
         self.addCleanup(patcher.stop)
+        # Retry backoff and Resend spacing, without the wait.
+        real_sleep = alerts_module.time.sleep
+        sleeper = mock.patch("utility.alerts.time.sleep", side_effect=lambda _s: real_sleep(0.001))
+        sleeper.start()
+        self.addCleanup(sleeper.stop)
 
     def sent(self):
         alerts_module._drain(timeout=5)
@@ -116,13 +122,71 @@ class OperatorEmailTests(TestCase):
     def test_a_failing_email_provider_never_reaches_the_caller(self):
         self.send.side_effect = RuntimeError("resend down")
         alert("integrity_check: wallet balance diverges from ledger", level="error")
-        self.assertEqual(len(self.sent()), 1)   # tried, failed quietly
+        self.assertEqual(len(self.sent()), alerts_module._SEND_ATTEMPTS)   # retried quietly
+
+    def test_a_send_that_failed_does_not_silence_the_next_occurrence(self):
+        self.send.return_value = {"success": False, "http_status": 429, "retryable": True}
+        alert("reconcile_wema: all 40 wallet history fetches failed", level="error")
+        self.sent()
+        self.send.reset_mock()
+        self.send.return_value = {"success": True, "raw": {"id": "y"}}
+        alert("reconcile_wema: all 41 wallet history fetches failed", level="error")
+        self.assertEqual(len(self.sent()), 1)
+
+    def test_a_refusal_that_cannot_succeed_is_not_retried(self):
+        self.send.return_value = {"success": False, "http_status": 403}
+        alert("settlement_report: SHORTFALL", level="error")
+        self.assertEqual(len(self.sent()), 1)
+
+    def test_the_same_wording_about_another_customer_is_a_new_email(self):
+        alert("verified customer has no account number", level="error", user_id=101)
+        alert("verified customer has no account number", level="error", user_id=202)
+        alert("verified customer has no account number", level="error", user_id=101)
+        calls = self.sent()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("user_id: 202", calls[1].args[2])
+
+    def test_a_changed_set_of_stuck_payouts_is_a_new_email(self):
+        alert("reconcile_wema: 1 bank payout(s) still PENDING", level="error", references=["P1"])
+        alert("reconcile_wema: 3 bank payout(s) still PENDING", level="error",
+              references=["P1", "P2", "P3"])
+        self.assertEqual(len(self.sent()), 2)
+
+    def test_an_alert_the_hourly_cap_refused_is_emailed_later(self):
+        for n in range(alerts_module._EMAILS_PER_HOUR):
+            alert(f"distinct failure {'x' * n}", level="error")
+        alert("the one that hit the cap", level="error")
+        self.assertEqual(len(self.sent()), alerts_module._EMAILS_PER_HOUR)
+        alerts_module._sent.clear()          # the hour has passed
+        alert("the one that hit the cap", level="error")
+        calls = self.sent()
+        self.assertEqual(calls[-1].args[1], "[Zitch error] the one that hit the cap")
+        self.assertIn("1 other alert(s) in the last hour were not emailed", calls[-1].args[2])
+
+    def test_the_caller_never_waits_on_the_cache(self):
+        import threading
+
+        stalled = threading.Event()
+        slow = mock.Mock()
+        slow.add.side_effect = lambda *a, **k: stalled.wait(2) or True
+        with mock.patch("django.core.cache.cache", slow):
+            started = alerts_module.time.monotonic()
+            alert("integrity_check: wallet balance diverges from ledger", level="error")
+            self.assertLess(alerts_module.time.monotonic() - started, 0.5)   # Redis stalled
+            stalled.set()
+            self.sent()
+        slow.add.assert_called()             # on the sender thread, not the caller's
 
     def test_a_cache_outage_still_emails_once_per_process(self):
-        with mock.patch.object(cache, "add", side_effect=RuntimeError("redis down")):
+        # The module-level object, so the sender thread sees the outage too
+        # (Django's cache proxy is per thread).
+        down = mock.Mock(**{name: mock.Mock(side_effect=RuntimeError("redis down"))
+                            for name in ("add", "set", "delete", "get")})
+        with mock.patch("django.core.cache.cache", down):
             alert("AML cases past their 30-day NFIU filing deadline", level="error")
             alert("AML cases past their 30-day NFIU filing deadline", level="error")
-        self.assertEqual(len(self.sent()), 1)
+            self.assertEqual(len(self.sent()), 1)
+        down.add.assert_called()
 
     def test_a_flood_of_different_errors_is_capped(self):
         for n in range(alerts_module._EMAILS_PER_HOUR + 5):
