@@ -12,7 +12,7 @@ import type { FundingAccount } from '@/lib/services/wallet';
 import FaceLivenessModal from '@/components/design/FaceLivenessModal';
 import AuthGuard from '@/components/AuthGuard';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Header, Field, Btn, Tap, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Tap } from '@/components/design/ui';
 import { AddressWaits, LaterLink, OnboardingAddress, OnboardingHeading, StepTitle, ViaOption } from '@/components/kyc/Onboarding';
 import { useTheme, font } from '@/lib/theme';
 
@@ -60,11 +60,6 @@ type Method = 'menu' | 'email' | 'bvn' | 'nin' | 'selfie' | 'upgrade' | 'address
 const C_BVN = '#0FA295';
 const C_NIN = '#2D7FF9';
 const C_SELFIE = '#7A5CFF';
-
-const transactionLimitLabel = (value: unknown) => (
-  (typeof value === 'number' || (typeof value === 'string' && value.trim() !== ''))
-  && Number.isFinite(Number(value)) && Number(value) >= 0
-) ? money(Number(value)) : 'Not confirmed';
 
 const EMPTY_ADDRESS: ResidentialAddress = {
   buildingNumber: '', apartment: '', street: '', city: '', town: '', state: '',
@@ -730,8 +725,8 @@ const Kyc = () => {
     </View>
   );
 
-  const MethodCard = ({ id, icon, color, title, sub, badge, done }: { id: Method; icon: string; color: string; title: string; sub: string; badge?: string; done?: boolean }) => (
-    <Tap accessibilityLabel={`${title}, ${done ? 'Verified' : sub}`} disabled={!!done || busy} onPress={() => { if (!done) setMethod(id); }} style={{ marginTop: 12 }}>
+  const MethodCard = ({ id, icon, color, title, sub, badge, done, onPress }: { id: Method; icon: string; color: string; title: string; sub: string; badge?: string; done?: boolean; onPress?: () => void }) => (
+    <Tap accessibilityLabel={`${title}, ${done ? 'Verified' : sub}`} disabled={!!done || busy} onPress={() => { if (!done) { if (onPress) onPress(); else setMethod(id); } }} style={{ marginTop: 12 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13, padding: 15, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, ...cardShadow }}>
         <View style={{ width: 46, height: 46, borderRadius: 13, backgroundColor: color + '22', alignItems: 'center', justifyContent: 'center' }}>
           <ZIcon name={icon} size={22} color={color} stroke={1.9} />
@@ -822,12 +817,6 @@ const Kyc = () => {
                 <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Current tier</Text>
                 <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1 }}>Tier {status.tier}</Text>
               </View>
-              {status.account_provider === 'partnership' && (
-                <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Per-transaction limit</Text>
-                  <Text style={{ fontSize: 16, fontFamily: font.bold, color: c.brand, fontVariant: ['tabular-nums'] }}>{transactionLimitLabel(status.transaction_limit)}</Text>
-                </View>
-              )}
             </View>
           )}
 
@@ -853,7 +842,9 @@ const Kyc = () => {
           {status.email_verified && hasTier1Identity && (tier2Unavailable && (needsBankUpgrade || !status.face_verified)
             ? <Tier2Unavailable /> : needsBankUpgrade
             ? <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Tier 2 · Face verification" sub="Confirm your identity details and take a selfie" />
-            : <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Tier 2 · Prembly verification" done={!!status.face_verified} />)}
+            : <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Tier 2 · NIN and a face check" done={!!status.face_verified}
+                // The live face check (and the NIN beside it) has its own page now.
+                onPress={sdkFlow ? () => router.push('/tier2') : undefined} />)}
           {addressVerificationAvailable && status?.tier !== undefined && status.tier >= 2 && (addressPending
             ? <AddressPending /> : tier3Unavailable && !status.address_verified
               ? <Tier3Unavailable /> : <MethodCard id="address" icon="home" color={C_BVN} title="Address verification" sub="Tier 3" done={!!status?.address_verified} />)}
