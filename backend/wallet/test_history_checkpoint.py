@@ -346,9 +346,11 @@ class BankHistoryCheckpointTests(TestCase):
         self.assertTrue(first["backlog"])
         self.assertEqual(first["windows"], 2)
         self.assertEqual(checkpoint.last_error_code, "history_backlog")
+        recent = ((self.today - timedelta(days=1)).isoformat(), self.today.isoformat())
         self.assertEqual(
             [call.args[1:] for call in history.call_args_list],
             [
+                recent,     # a backlog reads the last two days first
                 (start.isoformat(), (start + timedelta(days=2)).isoformat()),
                 (
                     (start + timedelta(days=3)).isoformat(),
@@ -370,6 +372,7 @@ class BankHistoryCheckpointTests(TestCase):
         self.assertEqual(
             [call.args[1:] for call in history.call_args_list],
             [
+                recent,
                 (
                     (start + timedelta(days=3)).isoformat(),
                     (start + timedelta(days=5)).isoformat(),
@@ -507,3 +510,39 @@ class StuckRowDoesNotBlindTheCronTests(TestCase):
         self.assertEqual(Transaction.objects.filter(reference="WEMA-CR-TODAYS-DEPOSIT").count(), 1)
         self.assertEqual(BankHistoryCheckpoint.objects.get(wallet=self.wallet).covered_through, self.today)
 
+
+
+
+@override_settings(PAYMENT_PROVIDER="wema", WEMA_HISTORY_WINDOW_DAYS=7, WEMA_HISTORY_MAX_WINDOWS=8)
+class NewAccountOnAnOldWalletTests(TestCase):
+    """A customer who signed up months ago gets a Wema account today and funds it.
+    The cron read their history oldest first, eight weeks a run, so the deposit
+    waited for the fourth run, forty minutes or more."""
+
+    def test_todays_deposit_is_credited_on_the_first_run(self):
+        user, _ = make_user("08071110011", "new-nuban@zitch.test")
+        wallet = Wallet.objects.get(user=user)
+        wallet.account_number = "0123456710"
+        wallet.save(update_fields=["account_number"])
+        today = date(2026, 11, 14)
+        Wallet.objects.filter(pk=wallet.pk).update(
+            created=datetime.combine(today - timedelta(days=200), datetime.min.time(), tzinfo=UTC))
+        wallet.refresh_from_db()
+        BankHistoryCheckpoint.objects.create(wallet=wallet, account_number=wallet.account_number,
+                                             opening_review_required=False)
+        deposit = _credit("FIRST-DEPOSIT", "5000", transaction_date=f"{today.isoformat()}T09:30:00Z")
+
+        def statement(account, date_from, date_to):
+            start, end = date.fromisoformat(date_from), date.fromisoformat(date_to)
+            return {"success": True, "transactions": [deposit] if start <= today <= end else []}
+
+        with patch("utility.wema.get_transactions", side_effect=statement):
+            first = reconcile_account_history(wallet, today=today)
+        self.assertEqual(first["credited"], 1)
+        self.assertTrue(first["backlog"])
+        self.assertTrue(Transaction.objects.filter(reference="WEMA-CR-FIRST-DEPOSIT").exists())
+        with patch("utility.wema.get_transactions", side_effect=statement):
+            for _ in range(4):
+                reconcile_account_history(wallet, today=today)
+        self.assertEqual(Transaction.objects.filter(reference="WEMA-CR-FIRST-DEPOSIT").count(), 1)
+        self.assertEqual(BankHistoryCheckpoint.objects.get(wallet=wallet).covered_through, today)

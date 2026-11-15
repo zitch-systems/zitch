@@ -255,6 +255,15 @@ def reconcile_account_history(wallet, *, today=None, overlap_days=2, on_shape=No
     error_code = ""
     diagnostic = {}
     fetch_failed = False
+    if (today - start).days >= window_days:
+        # A long backlog - a new account number on an older wallet, or a long
+        # outage - is read oldest first, a window at a time, up to max_windows a
+        # run: a deposit made today waited for the fourth run or later. Read the
+        # last two days first. The ledger's reference guard makes the later
+        # backfill of the same rows a no-op, and coverage is not touched here.
+        recent, _recent_error = reconcile_recent_credits(
+            wallet, today - timedelta(days=1), today)
+        credited += recent
     # The first window holding a row that could not be settled yet (a Pending
     # deposit, a row without full evidence). Coverage never moves past it, so the
     # row is re-read every run until it settles. Later windows are still read and
