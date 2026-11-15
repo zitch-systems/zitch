@@ -452,7 +452,11 @@ const SendMoney = () => {
   // Recent: newest transfer first (the server's last_sent_at; older servers
   // order by first payment). Saved: the customer's own address book.
   const sentAt = (b: Beneficiary) => Date.parse(String(b.last_sent_at || '')) || 0;
-  const pool = listTab === 'saved' ? beneficiaries.filter((b) => b.saved) : [...beneficiaries].sort((x, y) => sentAt(y) - sentAt(x));
+  // Recent lists people actually paid; a saved-but-never-paid recipient belongs
+  // on the Saved tab. Older servers send no last_sent_at, so fall back to all.
+  const paid = beneficiaries.filter((b) => sentAt(b) > 0);
+  const pool = listTab === 'saved' ? beneficiaries.filter((b) => b.saved)
+    : [...(paid.length ? paid : beneficiaries)].sort((x, y) => sentAt(y) - sentAt(x));
   const q = query.trim().toLowerCase();
   const shownBens = (q ? pool.filter((b) => `${b.display_name || ''} ${b.name} ${b.account_number}`.toLowerCase().includes(q)) : pool).slice(0, listTab === 'saved' || q ? 20 : 5);
 
@@ -588,7 +592,7 @@ const SendMoney = () => {
       <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
 
       {/* Recent transfers first, saved recipients a tab away; tap one to fill the form above */}
-      {!picked && beneficiaries.length > 0 && (
+      {!picked && (
         <>
           <View style={{ height: 22 }} />
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
