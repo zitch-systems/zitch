@@ -102,3 +102,49 @@ class AlertOutboxWatchTests(TestCase):
             self.assertFalse(watchdog.check_alert_outbox())
         self.assertEqual(alert.call_args.kwargs["waiting"], 1)
 
+
+class WemaNotificationWatchTests(TestCase):
+    def setUp(self):
+        from wallet.services import credit
+        from wallet.tests import make_user
+
+        self.user, _token = make_user("08071250002", "notify@zitch.test")
+        self.credit = credit
+
+    def deposit(self, reference="WEMA-CR-1"):
+        self.credit(self.user, "100", "Deposit", reference=reference)
+
+    def notice(self, minutes_ago=1, outcome="accepted"):
+        from whatsapp.models import WebhookEvent
+
+        row = WebhookEvent.objects.create(source="wema.notify", outcome=outcome, verified=True)
+        WebhookEvent.objects.filter(pk=row.pk).update(
+            created=timezone.now() - timedelta(minutes=minutes_ago))
+
+    def test_deposits_with_no_notification_are_reported(self):
+        self.deposit()
+        with mock.patch("utility.alerts.alert") as alert:
+            self.assertFalse(watchdog.check_wema_notifications())
+        self.assertEqual(alert.call_args.kwargs["deposits_last_6h"], 1)
+        self.assertEqual(alert.call_args.kwargs["last_notification"], "never")
+
+    def test_a_recent_notification_is_healthy(self):
+        self.deposit()
+        self.notice(minutes_ago=30)
+        with mock.patch("utility.alerts.alert") as alert:
+            self.assertTrue(watchdog.check_wema_notifications())
+        alert.assert_not_called()
+
+    def test_a_refused_or_old_notification_does_not_count(self):
+        self.deposit()
+        self.notice(minutes_ago=5, outcome="rejected_ip")
+        self.notice(minutes_ago=60 * 8)
+        with mock.patch("utility.alerts.alert") as alert:
+            self.assertFalse(watchdog.check_wema_notifications())
+        self.assertIn("rejected_ip", alert.call_args.kwargs["last_notification"])
+
+    def test_no_deposits_means_nothing_to_judge(self):
+        with mock.patch("utility.alerts.alert") as alert:
+            self.assertTrue(watchdog.check_wema_notifications())
+        alert.assert_not_called()
+

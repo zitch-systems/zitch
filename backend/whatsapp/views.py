@@ -33,6 +33,32 @@ WHATSAPP_WEBHOOK_BODY_MAX = 1024 * 1024
 WHATSAPP_FLOW_BODY_MAX = 1024 * 1024
 
 
+def _parse_meta_body(raw_body: bytes):
+    """Read a webhook body as Meta writes it. Returns ``(event, problem)``.
+
+    The standard reader refuses some bodies Meta does send: a raw control
+    character inside a string (a customer's pasted text), a byte-order mark, or
+    a byte that is not UTF-8. Each is retried leniently before giving up, so the
+    customer's message still arrives. ``problem`` says, without quoting the
+    body, why a body could not be read at all.
+    """
+    try:
+        event = json.loads(raw_body)
+    except (ValueError, TypeError) as strict_error:
+        try:
+            text = raw_body.decode("utf-8-sig", errors="replace")
+            event = json.loads(text, strict=False)
+        except (ValueError, TypeError) as error:
+            position = getattr(error, "pos", None)
+            detail = type(error).__name__
+            if position is not None and position < len(text):
+                detail += f" at character {position} (code {ord(text[position])})"
+            return None, f"{detail}; strict reader: {type(strict_error).__name__}"
+    if not isinstance(event, dict):
+        return None, f"body is a JSON {type(event).__name__}, not an object"
+    return event, ""
+
+
 @csrf_exempt
 def webhook(request):
     """GET /webhooks/whatsapp  — verify handshake.
@@ -77,16 +103,20 @@ def webhook(request):
         record_webhook("whatsapp", outcome=WebhookEvent.REJECTED_SIGNATURE,
                        http_status=401, remote_ip=client_ip(request))
         return JsonResponse({"success": False, "message": "Invalid signature"}, status=401)
-    try:
-        event = json.loads(raw_body)
-    except (ValueError, TypeError):
+    event, problem = _parse_meta_body(raw_body)
+    if problem:
+        # Signature-verified, so it is Meta's own event: refusing it changes
+        # nothing (the bytes are the same on every retry) except that Meta retries
+        # it for days and backs off the endpoint, delaying live customer messages.
+        # Acknowledged, recorded, and reported with where the reader stopped (never
+        # the text: it can hold a PIN).
         record_webhook("whatsapp", outcome=WebhookEvent.BAD_BODY, verified=True,
-                       http_status=400, remote_ip=client_ip(request))
-        return JsonResponse({"success": False, "message": "Invalid payload"}, status=400)
-    if not isinstance(event, dict):
-        record_webhook("whatsapp", outcome=WebhookEvent.BAD_BODY, verified=True,
-                       http_status=400, remote_ip=client_ip(request))
-        return JsonResponse({"success": False, "message": "Invalid payload"}, status=400)
+                       http_status=200, remote_ip=client_ip(request), action="unreadable_body")
+        from utility.alerts import alert
+
+        alert("WhatsApp webhook: a signed event from Meta could not be read",
+              level="error", problem=problem, body_bytes=len(raw_body))
+        return JsonResponse({"success": True, "ignored": True}, status=200)
     if not _live_metadata_valid(event):
         # Signature-verified, so genuinely from Meta - just not for this number
         # (another number on the same app, or an account-level event with no
