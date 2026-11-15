@@ -801,6 +801,11 @@ UNKNOWN_OUTCOME_WAIT = timedelta(seconds=90)
 ROUTE_WAIT = timedelta(minutes=30)
 _CONTACT_ROUTE_REASONS = frozenset({"email_unverified", "phone_unverified", "no_push_device",
                                     "no_active_link"})
+#: A channel switched on but not set up (no SMS provider, no WhatsApp keys or
+#: template). Its alerts wait this long for the setup to be fixed, then are
+#: dropped: an alert sent days late is noise, and a pile that never sends is
+#: re-checked every minute ahead of nothing.
+CHANNEL_SETUP_WAIT = timedelta(hours=6)
 
 
 def _retry_delay(attempts: int) -> timedelta:
@@ -923,6 +928,11 @@ def _prepare_alert(pk):
         if (row.channel == "whatsapp" and row.error_code == "template_unconfigured"
                 and not (getattr(settings, "WHATSAPP", {}) or {}).get("TXN_ALERT_TEMPLATE")):
             reason = "template_unconfigured"
+        if (reason and reason.endswith("_unconfigured")
+                and row.created <= now - CHANNEL_SETUP_WAIT):
+            row.state, row.error_code = row.SKIPPED, reason
+            row.save(update_fields=["state", "error_code", "updated"])
+            return None
         if reason and reason in _CONTACT_ROUTE_REASONS and row.created <= now - ROUTE_WAIT:
             # Nothing to send it to: no verified email, no push device, no linked
             # chat. Dropped rather than re-checked every minute forever, where a

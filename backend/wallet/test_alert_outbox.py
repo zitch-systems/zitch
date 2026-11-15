@@ -321,6 +321,27 @@ class TransactionAlertOutboxTests(TestCase):
         self.assertEqual((row.state, row.error_code), (Delivery.SKIPPED, "email_unverified"))
         self.email.assert_not_called()
 
+    @override_settings(DEBUG=False, TESTING=False)
+    def test_an_alert_on_a_channel_never_set_up_is_dropped_after_six_hours(self):
+        # SMS alerts switched on with no SMS provider: they wait for the setup to
+        # be fixed, then are dropped rather than sent days late or kept forever.
+        txn = self.movement()
+        row = txn.alert_deliveries.get(channel="sms")
+        with patch("utility.providers.sms_live", return_value=False):
+            self.assertFalse(_dispatch_alert(row.pk))
+            row.refresh_from_db()
+            self.assertEqual((row.state, row.error_code), (Delivery.READY, "sms_unconfigured"))
+            Delivery.objects.filter(pk=row.pk).update(
+                created=timezone.now() - timedelta(hours=5), next_attempt_at=None)
+            self.assertFalse(_dispatch_alert(row.pk))
+            row.refresh_from_db()
+            self.assertEqual(row.state, Delivery.READY)
+            Delivery.objects.filter(pk=row.pk).update(
+                created=timezone.now() - timedelta(hours=7), next_attempt_at=None)
+            self.assertFalse(_dispatch_alert(row.pk))
+        row.refresh_from_db()
+        self.assertEqual((row.state, row.error_code), (Delivery.SKIPPED, "sms_unconfigured"))
+
     def test_the_operator_command_lists_then_requeues_alerts_that_need_review(self):
         txn = self.movement()
         row = txn.alert_deliveries.get(channel="email")
