@@ -68,16 +68,42 @@ class ReconciliationExitTests(TestCase):
         self.assertEqual(text.count("wema connection: base="), 1)
         self.assertIn(" acct_mgt=", text)
 
+        cache.delete("wema:history-probe:recent")   # the probe runs once an hour
         with patch("utility.management.commands.reconcile_wema.wema_provisioned_wallets",
                    return_value=[self.wallet]), \
              patch("utility.management.commands.reconcile_wema.reconcile_account_history",
                    return_value=report) as sweep, \
              patch("utility.management.commands.reconcile_wema.wema.probe_history_to_forms",
-                   side_effect=RuntimeError("probe broke")), \
+                   side_effect=RuntimeError("probe broke")) as broken, \
              patch("utility.alerts.alert"):
             call_command("reconcile_wema", account_recovery_limit=0,
                          stdout=StringIO(), stderr=StringIO())
-        self.assertEqual(sweep.call_count, 1)
+        self.assertEqual((broken.call_count, sweep.call_count), (1, 1))
+
+    def test_the_statement_probe_runs_at_most_once_an_hour(self):
+        found = [{"form": "week-ahead", "ok": True, "http_status": 200, "rows": 3, "credits": 1,
+                  "newest": "2026-11-16T00:00:00", "chosen": True}]
+        report = dict(credited=0, windows=1, error_code="", fetch_failed=False,
+                      backlog=False, diagnostic={})
+
+        def run(result):
+            with patch("utility.management.commands.reconcile_wema.wema_provisioned_wallets",
+                       return_value=[self.wallet]), \
+                 patch("utility.management.commands.reconcile_wema.reconcile_account_history",
+                       return_value=report), \
+                 patch("utility.management.commands.reconcile_wema.wema.probe_history_to_forms",
+                       return_value=result) as probe, \
+                 patch("utility.alerts.alert"):
+                call_command("reconcile_wema", account_recovery_limit=0,
+                             stdout=StringIO(), stderr=StringIO())
+            return probe.call_count
+
+        cache.delete("wema:history-probe:recent")
+        self.assertEqual(run(found), 1)
+        self.assertEqual(run(found), 0)          # within the hour
+        cache.delete("wema:history-probe:recent")
+        self.assertEqual(run([]), 1)             # learned nothing...
+        self.assertEqual(run(found), 1)          # ...so the next run probes again
 
     @override_settings(WEMA_RECONCILE_FAIL_INCOMPLETE=True)
     def test_opening_review_fails_after_durable_report_without_changing_balance(self):

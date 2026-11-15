@@ -7,7 +7,7 @@ plus an honest account of where the code and the wording differ.
 | Commitment (from `WHATSAPP_PAYMENTS_COMPLIANCE_QA_v1.0.md`) | Implementation |
 |---|---|
 | "SARs filed with NFIU within 30 days of detection" | `AmlCase` stamps `detected` once and derives `due`; `aml_scan` pages and goes red on any open case past it |
-| "threshold breaches (₦5M+), rapid velocity, structuring" | three rules in `compliance.services.scan_transactions`, run by the `zitch-aml-scan` cron |
+| "threshold breaches (₦5M+), rapid velocity, structuring" | three rules in `compliance.services.scan_transactions`, run daily at 05:05 UTC by the scheduler cron (`run_schedule`) |
 | "records… retained for 5+ years; audit trail immutable" | erasure pseudonymises and explicitly retains the ledger, audit log and cases |
 | "only a verification hash is retained" (BVN) | the export returns the hash's *existence*, never its value |
 
@@ -152,7 +152,7 @@ would carry a deadline of whenever someone created it, not of detection) or dele
 
 The portal SPA has no screens for any of this yet. That is the main gap: `/admin/` is
 usable but it is not an ops console, and an AML queue nobody looks at is the same as no
-queue. The `zitch-aml-scan` cron going red on an overdue case is the compensating
+queue. The `aml_scan` job alerting on an overdue case (by email to `OPS_ALERT_EMAILS` and Sentry, or by failing the scheduler run when neither is configured) is the compensating
 control until then.
 
 ## 5. Still missing

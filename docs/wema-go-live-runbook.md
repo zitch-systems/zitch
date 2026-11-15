@@ -247,17 +247,24 @@ deploy is ready.
 
 ### Step 7 — controlled smoke test (small real money)
 1. Provision a NUBAN for a test user (BVN/NIN → OTP), confirm PND is lifted.
-2. Fund it with a **small** real transfer; confirm `zitch-reconcile-wema` credits it
-   (idempotent, every 10 min).
+2. Open the app's Add money screen (or ask the chat for account details), then fund
+   it with a **small** real transfer; the worker reads a watched account every 10 s,
+   so it should be credited and alerted within seconds. The scheduler cron
+   (`run_schedule`, every 5 min) is the backstop.
 3. Send a **small** payout to a known account; confirm it settles via
    `confirm_transfer_status` on the next reconcile.
 4. Buy the smallest airtime unit; confirm it delivers.
 
 ### Step 8 — confirm the safety nets are running
-- `zitch-reconcile-wema` (*/10 min) — funding + payout settlement.
-- `zitch-reconcile-balances` (every 6 h) — ledger vs the bank's NUBAN balance.
-- `zitch-integrity-check` (daily) — ledger vs stored balance.
-- All three now page via Sentry (Step 1 set `SENTRY_DSN`).
+One cron, `zitch-reconcile-wema-ry6y`, runs `python manage.py run_schedule` every
+5 minutes (`utility/schedule.py`). `python manage.py run_schedule --list` shows
+each job's latest slot and how its run went.
+- `reconcile_wema` (every run) — funding + payout and purchase settlement.
+- `reconcile_balances` (00:05/06:05/12:05/18:05 UTC) — ledger vs the bank's NUBAN balance.
+- `integrity_check` (02:35), `aml_scan` (05:05), `settlement_report` (06:15),
+  `run_maturities` (01:05), `purge_expired_sessions` (03:45).
+- Findings are emailed to `OPS_ALERT_EMAILS` and sent to Sentry (`SENTRY_DSN`),
+  and the run stays green. With neither set, the checks fail the run as before.
 
 ### Step 9 — monitor
 - Watch `/healthz`, Sentry, and the `recon.*` AuditLog rows for the first days.
@@ -290,13 +297,19 @@ Going live is reversible in one step:
 
 ---
 
-## 5. What the crons page on
+## 5. What the scheduled jobs alert on
 
-| Cron | Pages (Sentry) when | Your move |
+Every alert below is emailed to `OPS_ALERT_EMAILS` (once per 6 h while it lasts)
+and sent to Sentry. A job that crashes is retried on the next run, and alerted
+when its attempts run out.
+
+| Job | Alerts when | Your move |
 |---|---|---|
-| `zitch-reconcile-wema` | the run crashes, or **every** gateway call in a run fails (systemic auth/outage) | Check `/wema-diagnose`; a transient blip clears next run. |
-| `zitch-reconcile-balances` | **ledger > bank** for any wallet (possible float leak / double-credit) | Investigate that user's ledger vs NUBAN immediately. `bank > ledger` is benign (unswept deposit) — not paged. |
-| `zitch-integrity-check` | stored balance ≠ ledger for any wallet | A money bug or tampering — investigate before it compounds. |
+| `reconcile_wema` | the run crashes, or **every** gateway call in a run fails (systemic auth/outage) | Check `/wema-diagnose`; a transient blip clears next run. |
+| `reconcile_balances` | **ledger > bank** (possible float leak / double-credit) or **bank > ledger** (a credit or fee the ledger lacks) | Investigate that user's ledger vs NUBAN. A bank surplus from the 13 Nov double-VAT fee is refunded with `refund_fee_overcharge`. |
+| `integrity_check` | stored balance ≠ ledger for any wallet | A money bug or tampering — investigate before it compounds. |
+| `settlement_report` | customer liability exceeds the assets held, or balances have no Wema account | See `docs/settlement-operating-model.md`. |
+| `aml_scan` | an AML case passes its 30-day filing deadline | See `docs/compliance-operations.md`. |
 
 See `docs/wema-migration.md` for the rail internals and the remaining
 verify-before-live items.

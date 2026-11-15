@@ -3,7 +3,7 @@
 The 25 July audit's second P0 was *"prove ledger-to-bank settlement … establish an
 operational settlement model, daily bank-vs-ledger reports, ownership, and alert
 thresholds."* The reports and thresholds are now code (`manage.py
-settlement_report`, the `zitch-settlement-report` cron). Ownership and the response
+settlement_report`, run daily at 06:15 UTC by the scheduler cron, `run_schedule`). Ownership and the response
 procedure are people, and they are written down here.
 
 ---
