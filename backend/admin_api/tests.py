@@ -551,6 +551,18 @@ class AdminApiFeatureTests(TestCase):
         self.post("wallet/credit", self.finance_token, body)
         self.assertEqual(Wallet.objects.get(user=self.customer).balance, Decimal("1500"))  # 1000 + 500 once
 
+    def test_wallet_credit_double_submit_across_a_bucket_boundary_credits_once(self):
+        # The fallback key is time-bucketed; two submits a moment apart either
+        # side of a boundary used to get different keys and both credit (CI).
+        from unittest.mock import patch as _patch
+
+        body = {"uid": self.customer.id, "amount": "500", "reason": "Goodwill boundary"}
+        with _patch("time.time", return_value=29.9):
+            self.post("wallet/credit", self.finance_token, body)
+        with _patch("time.time", return_value=30.1):
+            self.post("wallet/credit", self.finance_token, body)
+        self.assertEqual(Wallet.objects.get(user=self.customer).balance, Decimal("1500"))
+
     def test_wallet_credit_rejects_staff_target(self):
         # Operators can't credit a staff account (incl. their own): _get_user is
         # scoped to customers, so a staff uid is "not found".

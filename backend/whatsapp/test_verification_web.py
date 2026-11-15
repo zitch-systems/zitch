@@ -206,7 +206,9 @@ class VerificationWebTests(TestCase):
         send.assert_called_once()
         path = urlsplit(send.call_args.args[2]).path
         self.assertEqual(send.call_args.kwargs["cta"], "Verify face")
-        self.assertContains(self.get(path), "transaction PIN")
+        # Tier 2 goes straight to the camera link: no Zitch PIN page in between.
+        self.assertTrue(path.startswith("/wa/face/"))
+        self.assertNotContains(self.get(path), "transaction PIN", status_code=200)
 
     @override_settings(PREMBLY={"FACE_SDK_ENABLED": False})
     def test_worker_respects_disabled_tier2_switch(self):
