@@ -1,9 +1,12 @@
 # Prembly Tier 2 SDK (retired for Tier 2)
 
-> **Retired for Tier 2.** Tier 2 is now BVN, NIN and a selfie sent to Wema with the account
-> (see `docs/wema-migration.md`, *Account tier upgrade*). Prembly is no longer
-> used for Tier 2 in the app or on WhatsApp. The session adapter below remains
-> only for the new-device sign-in check.
+> **Retired for Tier 2.** Tier 2 is now BVN, NIN and a live face check sent to Wema with the
+> account (see `docs/tier2-live-face-check.md` and `docs/wema-migration.md`, *Account tier
+> upgrade*). Prembly is no longer used for Tier 2 in the app or on WhatsApp, and the server
+> refuses the adapter's `tier2_liveness` purpose before any provider call
+> (`tier2_moved_to_bank`), so a session cannot raise the local tier. The session adapter
+> below remains only for the new-device sign-in check (purpose `login`), which never
+> changes a tier.
 
 Tier 1 accepts a verified BVN or NIN. Tier 2 adds an authenticated, completed
 interactive face session; a BVN-verified customer does not need NIN verification.
