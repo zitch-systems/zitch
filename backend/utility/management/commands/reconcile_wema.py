@@ -227,14 +227,25 @@ class Command(BaseCommand):
                 f"partner-bank-account-recovery:{source}:{user.pk}:"
                 f"{identity_type}:{attempt_id}:{attempt_version}"
             )
-            if not cache.add(recovery_key, True, timeout=15 * 60):
+            try:
+                fresh = cache.add(recovery_key, True, timeout=15 * 60)
+            except Exception:  # noqa: BLE001 - never let it stop the credit sweep
+                # Without the cache this retry guard cannot work, and an uncaught
+                # error here ended the whole run before a single deposit was read.
+                # Recovery waits for the next run; credits do not.
+                fresh = False
+                self.stderr.write("wema_account_recovery_skipped reason=cache_unavailable")
+            if not fresh:
                 recovery_skipped += 1
                 continue
             recovery_checked += 1
             recovered, detail = attach_existing_bank_account(
                 user, using_bvn=identity_type == WemaProvisioningAttempt.BVN)
             if recovered is not None and recovered.account_number:
-                cache.delete(recovery_key)
+                try:
+                    cache.delete(recovery_key)
+                except Exception:  # noqa: BLE001 - the key expires on its own
+                    pass
                 recovered_accounts += 1
                 # Attaching an account is not evidence of OTP or identity verification.
                 self.stdout.write(

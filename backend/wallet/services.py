@@ -701,7 +701,11 @@ def attach_existing_bank_account(user, *, using_bvn: bool | None = None) -> tupl
     # Alert even for that branch, which previously bypassed the WhatsApp alert and
     # silently looped every fifteen minutes forever.
     if session and (session.status != WemaFaceSession.PENDING or session.expired):
-        if cache.add(f"wema-account-review:{user.pk}", True, timeout=60 * 60):
+        try:
+            first_report = cache.add(f"wema-account-review:{user.pk}", True, timeout=60 * 60)
+        except Exception:  # noqa: BLE001 - a cache outage must not stop the cron
+            first_report = False
+        if first_report:
             alert("Funding account requires review; no automatic recovery was performed",
                   level="error", user_id=user.pk, session_id=session.pk,
                   account_state=session.account_state,

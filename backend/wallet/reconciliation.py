@@ -139,22 +139,63 @@ def note_statement_read(error):
         pass
 
 
+#: The poll's throttle and cursor when the shared cache cannot be reached (one
+#: worker instance runs the poll), so a cache outage slows nothing down.
+_poll_local = {"next_at": 0.0, "cursor": 0}
+
+
+def _poll_due(interval_seconds) -> bool:
+    try:
+        return not cache.get(STATEMENT_BACKOFF_KEY) and bool(
+            cache.add("wema:recent-credit:poll", True, timeout=interval_seconds))
+    except Exception:  # noqa: BLE001 - a cache outage must not stop deposits
+        now = monotonic()
+        if now < _poll_local["next_at"]:
+            return False
+        _poll_local["next_at"] = now + max(1, int(interval_seconds or 1))
+        log.warning("wema_recent_credit_poll_cache_unavailable")
+        return True
+
+
+def _poll_cursor(value=None):
+    if value is not None:
+        _poll_local["cursor"] = value
+    try:
+        if value is None:
+            return cache.get("wema:recent-credit:cursor", 0)
+        cache.set("wema:recent-credit:cursor", value, timeout=None)
+    except Exception:  # noqa: BLE001 - fall back to this process's own cursor
+        pass
+    return _poll_local["cursor"]
+
+
+def _cache_add(key, timeout) -> bool:
+    try:
+        return bool(cache.add(key, True, timeout=timeout))
+    except Exception:  # noqa: BLE001 - without the cache there is no dedupe; stay quiet
+        return False
+
+
 def poll_recent_wema_credits(interval_seconds):
-    """Read one account per worker interval across instances, in wallet order."""
-    if cache.get(STATEMENT_BACKOFF_KEY) or not cache.add(
-            "wema:recent-credit:poll", True, timeout=interval_seconds):
+    """Read one account per worker interval across instances, in wallet order.
+
+    The throttle and the cursor live in the shared cache. When it is down this
+    keeps polling on its own clock instead of stopping: with every cache call
+    raising, no account was read at all, and a deposit waited for the cron.
+    """
+    if not _poll_due(interval_seconds):
         return
     wallets = wema_provisioned_wallets().select_related("user").order_by("pk")
-    cursor = cache.get("wema:recent-credit:cursor", 0)
+    cursor = _poll_cursor() or 0
     wallet = wallets.filter(pk__gt=cursor).first() or wallets.first()
     if wallet is None:
         return
-    cache.set("wema:recent-credit:cursor", wallet.pk, timeout=None)
+    _poll_cursor(wallet.pk)
     today = timezone.localdate()
     started = monotonic()
     applied, error = reconcile_recent_credits(wallet, today - timedelta(days=1), today)
     note_statement_read(error)
-    if error and cache.add(f"wema:recent-credit:error:{wallet.pk}", True, timeout=300):
+    if error and _cache_add(f"wema:recent-credit:error:{wallet.pk}", 300):
         from utility.alerts import alert
 
         alert("Wema recent credit check could not confirm account history", level="warning",
@@ -167,7 +208,7 @@ def poll_recent_wema_credits(interval_seconds):
 
         if (not WebhookEvent.objects.filter(source="wema.notify", verified=True,
                 outcome=WebhookEvent.ACCEPTED, created__gte=timezone.now() - timedelta(minutes=10)).exists()
-                and cache.add("wema:recent-credit:notification-missing", True, timeout=3600)):
+                and _cache_add("wema:recent-credit:notification-missing", 3600)):
             alert("Wema statement recovered a deposit with no recent accepted notification",
                   level="warning", wallet_id=wallet.pk)
 
@@ -214,6 +255,13 @@ def reconcile_account_history(wallet, *, today=None, overlap_days=2, on_shape=No
     error_code = ""
     diagnostic = {}
     fetch_failed = False
+    # The first window holding a row that could not be settled yet (a Pending
+    # deposit, a row without full evidence). Coverage never moves past it, so the
+    # row is re-read every run until it settles. Later windows are still read and
+    # their confirmed deposits applied: stopping at the stuck window, as this
+    # did, left the cron blind to every newer deposit on the account for as long
+    # as the one row stayed unsettled.
+    stuck = False
     while start <= today and windows < max_windows:
         end = min(today, start + timedelta(days=window_days - 1))
         result = wema.get_transactions(account_number, start.isoformat(), end.isoformat())
@@ -271,8 +319,15 @@ def reconcile_account_history(wallet, *, today=None, overlap_days=2, on_shape=No
                 log.exception("wema_history_apply_failed wallet=%s", wallet.pk)
                 window_error = "history_apply_failed"
         if window_error:
-            error_code = window_error
-            break
+            error_code = error_code or window_error
+            if window_error == "history_account_changed":
+                break
+            stuck = True
+            start = end + timedelta(days=1)
+            continue
+        if stuck:
+            start = end + timedelta(days=1)
+            continue
         with transaction.atomic():
             locked_wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
             locked = BankHistoryCheckpoint.objects.select_for_update().get(pk=checkpoint.pk)

@@ -1876,7 +1876,16 @@ def _history_note(key: str, value=None, timeout: int = 3600):
 
 def _history_window_refused(result: dict) -> bool:
     """True when the bank turned the request itself down (a 4xx that is not
-    sign-in or rate limiting), as opposed to an outage or an empty statement."""
+    sign-in or rate limiting), as opposed to an outage or an empty statement.
+
+    An empty statement whose account check then failed is an outage, not a
+    refusal, although it carries the statement's 400. Read as a refusal, one
+    failed GetAccountV2 on a quiet account moved every reader off the week-ahead
+    `to` for an hour, and those reads missed the deposits Wema dates on the next
+    business day: the weekend deposits of 14 November 2026, again.
+    """
+    if result.get("error_code") == "history_account_visibility_unconfirmed":
+        return False
     status = (result.get("diagnostic") or {}).get("http_status")
     return (isinstance(status, int) and 400 <= status < 500
             and status not in (401, 403, 408, 429))
