@@ -55,6 +55,11 @@ def existing_for_key(user, key: str) -> Transaction | None:
     if not key:
         return None
     prior = Transaction.objects.filter(user=user, idempotency_key=str(key)).first()
+    previous = str(getattr(key, "previous", "") or "")
+    if prior is None and previous:
+        # A server-derived key from the adjacent time bucket: the same spend
+        # submitted a moment earlier, just across the bucket boundary.
+        prior = Transaction.objects.filter(user=user, idempotency_key=previous).first()
     if prior is not None:
         prior._requested_idempotency_fingerprint = getattr(key, "fingerprint", "")
     return prior

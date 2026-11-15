@@ -349,9 +349,12 @@ def parse_amount(value):
 class SpendKey(str):
     """String idempotency key carrying a hashed request binding in-process."""
 
-    def __new__(cls, value: str, fingerprint: str):
+    def __new__(cls, value: str, fingerprint: str, previous: str = ""):
         obj = str.__new__(cls, value)
         obj.fingerprint = fingerprint
+        # Server-derived keys only: the same spend's key in the PREVIOUS time
+        # bucket, so a double-submit straddling a bucket boundary still dedups.
+        obj.previous = previous
         return obj
 
 
@@ -383,8 +386,15 @@ def spend_key(client_key, user, *parts, window_seconds: int = 30):
             key = "client-" + hashlib.sha256(key.encode()).hexdigest()
         return SpendKey(key, fingerprint)
     bucket = int(time.time() // max(1, window_seconds))
-    raw = "|".join([str(getattr(user, "id", user)), *[str(p) for p in parts], str(bucket)])
-    return SpendKey("auto-" + hashlib.sha256(raw.encode()).hexdigest()[:24], fingerprint)
+
+    def _auto(b):
+        raw = "|".join([str(getattr(user, "id", user)), *[str(p) for p in parts], str(b)])
+        return "auto-" + hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+    # Fixed buckets alone let two submits a moment apart land either side of a
+    # boundary and BOTH go through (seen as a double manual credit in CI).
+    # existing_for_key also consults the previous bucket's key.
+    return SpendKey(_auto(bucket), fingerprint, previous=_auto(bucket - 1))
 
 
 def idempotent_replay(prior):
