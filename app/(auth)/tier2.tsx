@@ -6,8 +6,9 @@ import { Loading } from '@/components/design/Loading';
 import FaceVerifyModal from '@/components/design/FaceVerifyModal';
 import AuthGuard from '@/components/AuthGuard';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Header, Field, Btn, Card, NText, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Card } from '@/components/design/ui';
 import { StepTitle } from '@/components/kyc/Onboarding';
+import { TierBadge, TierDetails, TierPill } from '@/components/design/TierRow';
 import { apiJson } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
 import { getSessionGeneration } from '@/lib/secureStore';
@@ -30,9 +31,6 @@ const isTrustedFaceUrl = (url: string) => {
 const POLL_MS = 3000;
 const GREEN = '#15803D';
 
-const amountLabel = (value: unknown) => (typeof value === 'string' || typeof value === 'number')
-  && String(value).trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0
-  ? money(Number(value)) : 'Not confirmed';
 
 /** 3456 7890 123 — grouped for reading; the digits alone are sent. */
 const groupNin = (digits: string) => [digits.slice(0, 4), digits.slice(4, 8), digits.slice(8)].filter(Boolean).join(' ');
@@ -304,22 +302,18 @@ const Tier2 = () => {
       <Screen>
         <Header title="Upgrade to Tier 2" sub="Your NIN and a quick face check" onBack={() => router.back()} />
 
-        <Card>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <Text style={{ fontSize: 14, fontFamily: font.extrabold, color: c.ink1 }}>Tier 2 limits</Text>
-            <View style={{ paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999, backgroundColor: 'rgba(6,110,102,0.10)' }}>
-              <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.brand }}>{`Tier ${status.tier} now`}</Text>
-            </View>
-          </View>
-          <View style={{ flexDirection: 'row', paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: tint }}>
-            {[['Per transfer', tier2?.per_transfer], ['Daily', tier2?.daily_transfer]].map(([label, value]) => (
-              <View key={label} style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11.5, fontFamily: font.semibold, color: c.ink3, letterSpacing: 0.2 }}>{label}</Text>
-                <NText style={{ fontSize: 15, marginTop: 2, fontFamily: font.extrabold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{amountLabel(value)}</NText>
+        {/* The same Tier 2 row as Account limits, so the two screens read alike. */}
+        {tier2 ? (
+          <Card>
+            <View style={{ flexDirection: 'row', gap: 14 }}>
+              <TierBadge tier={2} done={Number(status.tier) >= 2} current={Number(status.tier) === 2} />
+              <View style={{ flex: 1 }}>
+                <TierDetails t={tier2} done={Number(status.tier) >= 2}
+                  pill={<TierPill label={Number(status.tier) >= 2 ? 'Your tier' : `Tier ${status.tier} now`} tone={Number(status.tier) >= 2 ? 'current' : 'neutral'} />} />
               </View>
-            ))}
-          </View>
-        </Card>
+            </View>
+          </Card>
+        ) : null}
 
         <Card style={{ marginTop: 14, gap: 14 }}>
           <StepTitle n={1} title="Your NIN" done={ninDone} />

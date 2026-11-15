@@ -12,3 +12,10 @@ export const LADDER_FALLBACK: LadderTier[] = [
 /** The server's ladder when it sent one, else the fallback; tiers 1–3 only. */
 export const tierLadder = (fromServer?: LadderTier[] | null): LadderTier[] =>
   (fromServer?.length ? fromServer : LADDER_FALLBACK).filter((t) => t.tier >= 1 && t.tier <= 3);
+
+/** What each tier needs, as both the account-limits ladder and the Tier 2 page say it. */
+export const TIER_NEEDS: Record<number, string> = {
+  1: 'BVN, verified when you signed up',
+  2: 'Your NIN and a face check',
+  3: 'The address you gave at sign-up',
+};

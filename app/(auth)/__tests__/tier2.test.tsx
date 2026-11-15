@@ -72,7 +72,7 @@ it('shows the design copy and keeps submit off until the NIN and face check are 
   mockApiJson.mockImplementation(async (path: string) => path === EP.kyc.status ? tier1 : { success: false });
   const tree = await render();
   const out = text(tree);
-  for (const copy of ['Upgrade to Tier 2 Your NIN and a quick face check', 'Tier 2 limits', 'Tier 1 now', '₦200000', '₦1000000',
+  for (const copy of ['Upgrade to Tier 2 Your NIN and a quick face check', 'Enhanced', 'Your NIN and a face check', 'Tier 1 now', '₦200000', '₦1000000',
     'Your NIN', 'We check your NIN to confirm it’s yours.', 'Face check',
     'A short selfie video. We match it to your NIN photo. It takes about a minute.',
     'Your sign-up address is sent with this, so the Tier 3 check starts straight away.',
