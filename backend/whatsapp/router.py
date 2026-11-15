@@ -3247,7 +3247,7 @@ def _kyc_bank_upgrade_notice(user, msisdn: str) -> None:
 
 
 def _send_web_verification(user, msisdn: str, tier: int) -> None:
-    from .verification_web import start_verification
+    from .verification_web import face_link, start_verification
     from django.core.exceptions import ImproperlyConfigured
 
     if tier == 2 and settings.PREMBLY.get("FACE_SDK_ENABLED") is not True:
@@ -3270,7 +3270,8 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
             _clear_actions(msisdn)
             return reply(msisdn, capability["tier3_address_unavailable_reason"])
     try:
-        url = start_verification(user, msisdn, tier)
+        # Tier 2 goes straight to the Prembly camera: no Zitch page, no PIN.
+        url = face_link(user, msisdn) if tier == 2 else start_verification(user, msisdn, tier)
     except (ValueError, ImproperlyConfigured) as exc:
         # Two unrelated causes land here and the customer sees one message for
         # both: an account the Partnership will not serve (start_verification's
@@ -3284,12 +3285,11 @@ def _send_web_verification(user, msisdn: str, tier: int) -> None:
         log.warning("WhatsApp verification link unavailable tier=%s cause=%s reason=%s",
                     tier, type(exc).__name__, str(exc)[:120])
         return reply(msisdn, "The secure verification page could not open. Please try again shortly.")
-    body = (("Complete your Prembly live face check for Tier 2. Confirm your Zitch PIN "
-             "on the secure page, then follow the camera instructions. Your verified "
-             "identity stays saved; no additional NIN verification is needed. "
-             "Return to this page to check the result. The link expires in 15 minutes. "
-             "If the camera does not open, tap the 3 dots at the top, choose "
-             "\"Open in Chrome\", and allow camera access.")
+    body = (("📸 *Tier 2 · Live face check*\n\n"
+             "Tap *Verify face* to open the camera check (by Prembly). Enter your BVN "
+             "when asked, allow camera access, and follow the on-screen moves.\n\n"
+             "When you're done, come back here and reply *8* to see your result. "
+             "The link expires in 15 minutes.")
             if tier == 2 else
             ("Verify your address securely. Confirm your Zitch PIN on the page, then "
              "enter your residential address and provide proof if requested. "

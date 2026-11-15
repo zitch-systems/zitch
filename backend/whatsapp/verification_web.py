@@ -561,3 +561,119 @@ def verification_page(request, token):
         "object-src 'none'"
     )
     return response
+
+
+# --------------------------------------------------------------------------- #
+# Tier 2 direct face link: WhatsApp -> Prembly camera, no Zitch page, no PIN.
+# --------------------------------------------------------------------------- #
+#: Link-preview fetchers open the URL before the customer taps it. A preview
+#: must never create (and get billed for) a Prembly session.
+_PREVIEW_AGENTS = ("facebookexternalhit", "facebookcatalog", "whatsapp/", "meta-externalagent",
+                   "twitterbot", "slackbot", "telegrambot", "discordbot", "bot", "crawler", "spider")
+
+
+def _is_preview_fetch(request) -> bool:
+    agent = (request.headers.get("User-Agent") or "").lower()
+    return not agent or any(marker in agent for marker in _PREVIEW_AGENTS)
+
+
+def _android_in_app(request) -> bool:
+    """WhatsApp's in-app browser on Android is a WebView ("; wv)"), which left
+    Prembly stuck on "Please wait, opening the camera"."""
+    agent = request.headers.get("User-Agent") or ""
+    return "Android" in agent and "; wv)" in agent
+
+
+def _chrome_handoff(request, url: str):
+    """Hand the Prembly session to Chrome, where the camera works, and fall back
+    to opening it in place if the WebView cannot follow an intent link."""
+    from django.http import HttpResponse
+    from django.utils.html import escape
+
+    parts = urlsplit(url)
+    intent = (f"intent://{parts.netloc}{parts.path}?{parts.query}"
+              "#Intent;scheme=https;package=com.android.chrome;end")
+    nonce = request.verification_nonce
+    body = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>Opening camera</title><style nonce='{nonce}'>body{{font-family:sans-serif;"
+        "padding:32px;color:#14532d}a{color:#166534}</style></head><body>"
+        "<p>Opening the camera check…</p>"
+        f"<p><a href='{escape(url)}'>Tap here if it does not open</a></p>"
+        f"<script nonce='{nonce}'>"
+        f"location.href={json.dumps(intent)};"
+        f"setTimeout(function(){{location.replace({json.dumps(url)});}},1500);"
+        "</script></body></html>")
+    return HttpResponse(body)
+
+
+def _face_redirect(request, token):
+    from utility.liveness import start_tier2_liveness, tier2_face_available
+
+    claims = _decode(token)
+    pa, user = _resolve(claims)
+    if pa is None or pa.payload.get("tier") != 2:
+        return _page(request, status=410)
+    if user.face_verified and user.tier >= 2:
+        return _page(request, "face_complete")
+    if not tier2_face_available():
+        return _page(request, "unavailable", status=503, message=UNAVAILABLE)
+    if _is_preview_fetch(request):
+        # Nothing is started for a preview; the customer's own tap starts it.
+        return _page(request, "closed", status=200)
+    # start_tier2_liveness reuses a still-pending session, so repeat taps and
+    # refreshes never open (or pay for) a second one.
+    result = start_tier2_liveness(user)
+    if not result.get("success"):
+        return _page(request, "error", status=202 if result.get("pending") else 409,
+                     message=result.get("message") or UNAVAILABLE)
+    with transaction.atomic():
+        current, _current_user = _resolve(claims, lock=True)
+        if current is None:
+            return _page(request, status=410)
+        current.payload["face_session"] = result["session"]
+        current.payload["face_url"] = result["url"]
+        current.save(update_fields=["payload"])
+    if _android_in_app(request):
+        return _chrome_handoff(request, result["url"])
+    return HttpResponseRedirect(result["url"])
+
+
+@ratelimit("wa_verification_face", limit=30, window=300)
+def face_page(request, token):
+    """GET-only: check the WhatsApp-bound link and send the customer straight
+    into the Prembly camera session.
+
+    No PIN here, by design. The link is a 15-minute signed capability bound to
+    the linked WhatsApp number, the account's current login/PIN stamp and this
+    action, and the upgrade only completes when Prembly's live face matches the
+    photo on the BVN this account already verified (checked server-side in
+    utility.liveness against the stored BVN hash). Someone holding a forwarded
+    link cannot pass that, so the PIN step added friction without protection.
+    """
+    request.verification_nonce = secrets.token_urlsafe(24)
+    if request.method != "GET":
+        response = _page(request, status=405)
+        response["Allow"] = "GET"
+    elif not request.is_secure() or request.build_absolute_uri("/").rstrip("/") != _public_origin():
+        response = _page(request, status=403)
+    else:
+        response = _face_redirect(request, token)
+    response["Cache-Control"] = "no-store, private, max-age=0"
+    response["Referrer-Policy"] = "no-referrer"
+    response["X-Content-Type-Options"] = "nosniff"
+    response["X-Frame-Options"] = "DENY"
+    response["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    response["Content-Security-Policy"] = (
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; "
+        f"style-src 'nonce-{request.verification_nonce}'; "
+        f"script-src 'nonce-{request.verification_nonce}'; object-src 'none'")
+    return response
+
+
+def face_link(user, msisdn) -> str:
+    """The Tier 2 link WhatsApp sends: one tap to the Prembly camera."""
+    url = start_verification(user, msisdn, 2)
+    token = url.rstrip("/").rsplit("/", 1)[-1]
+    return _public_origin() + reverse("whatsapp_face", kwargs={"token": token})

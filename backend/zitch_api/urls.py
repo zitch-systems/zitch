@@ -17,6 +17,7 @@ from portal.pages import admin_portal, landing, prototype
 from whatsapp.views import approve_handoff as whatsapp_approve_handoff
 from whatsapp.views import flow_endpoint as whatsapp_flow_endpoint
 from whatsapp.views import webhook as whatsapp_webhook
+from whatsapp.verification_web import face_page as whatsapp_face_page
 from whatsapp.verification_web import verification_page as whatsapp_verification_page
 
 
@@ -785,6 +786,7 @@ urlpatterns = [
     path("wa/approve/<str:token>", whatsapp_approve_handoff),
     path("kyc/face/complete/", prembly_face_complete),
     path("wa/verify/<str:token>", whatsapp_verification_page, name="whatsapp_verification"),
+    path("wa/face/<str:token>", whatsapp_face_page, name="whatsapp_face"),
     # Wema/ALAT bank-called callbacks. The bank PROFILES these exact URLs, and the
     # rails do not work until it has: account creation is refused without a profiled
     # Account Creation URL, and transactions fail authentication without the
