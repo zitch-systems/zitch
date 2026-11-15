@@ -36,6 +36,9 @@ jest.mock('@/components/design/ConnectedAccounts', () => ({ ConnectedAccounts: (
 jest.mock('@/lib/theme', () => ({
   useTheme: () => ({ c: { brand: '#0FA295', brandDeep: '#08766d', ink1: '#111', ink2: '#222', ink3: '#333', line: '#ddd', surface: '#fff' } }),
   font: { bold: 'bold', extrabold: 'extrabold', regular: 'regular', semibold: 'semibold', medium: 'medium' },
+  fontA: { display: 'Sora', displaySemi: 'Sora', displayX: 'Sora', body: 'DMSans', bodyMed: 'DMSans', bodySemi: 'DMSans', bodyBold: 'DMSans' },
+  palette: { teal50: '#E6F7F4', teal700: '#00847B' },
+  ICON_COLORS: {}, iconTint: () => '#eee',
 }));
 jest.mock('@/components/design/widgets', () => {
   const ReactActual = jest.requireActual<typeof import('react')>('react');

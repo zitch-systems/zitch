@@ -92,6 +92,18 @@ const P: Record<string, (color: string) => React.ReactNode> = {
     <Rect key="c" x={14} y={14} width={7} height={7} rx={2} />,
     <Rect key="d" x={3} y={14} width={7} height={7} rx={2} />,
   ],
+  // Fixed Save on Home (Lucide piggy-bank, ISC)
+  piggy: () => [
+    <Path key="a" d="M11 17h3v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-3a3.16 3.16 0 0 0 2-2h1a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1h-1a5 5 0 0 0-2-4V3a4 4 0 0 0-3.2 1.6l-.3.4H11a6 6 0 0 0-6 6v1a5 5 0 0 0 2 4v3a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1z" />,
+    <Path key="b" d="M16 10h.01" />,
+    <Path key="c" d="M2 8v1a2 2 0 0 0 2 2h1" />,
+  ],
+  // "…": the balance card's account options
+  dots: (color: string) => [
+    <Circle key="a" cx={5} cy={12} r={1.6} fill={color} stroke="none" />,
+    <Circle key="b" cx={12} cy={12} r={1.6} fill={color} stroke="none" />,
+    <Circle key="c" cx={19} cy={12} r={1.6} fill={color} stroke="none" />,
+  ],
   search: () => [
     <Circle key="a" cx={11} cy={11} r={7} />,
     <Path key="b" d="m21 21-4.3-4.3" />,

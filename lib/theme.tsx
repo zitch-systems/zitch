@@ -7,6 +7,15 @@ import {
   Manrope_700Bold,
   Manrope_800ExtraBold,
 } from '@expo-google-fonts/manrope';
+// Home (design A) pairs Sora for headings and figures with DM Sans for text.
+// Each weight is imported on its own so only these files are bundled.
+import { Sora_600SemiBold } from '@expo-google-fonts/sora/600SemiBold';
+import { Sora_700Bold } from '@expo-google-fonts/sora/700Bold';
+import { Sora_800ExtraBold } from '@expo-google-fonts/sora/800ExtraBold';
+import { DMSans_400Regular } from '@expo-google-fonts/dm-sans/400Regular';
+import { DMSans_500Medium } from '@expo-google-fonts/dm-sans/500Medium';
+import { DMSans_600SemiBold } from '@expo-google-fonts/dm-sans/600SemiBold';
+import { DMSans_700Bold } from '@expo-google-fonts/dm-sans/700Bold';
 
 // ---- App font map (Manrope; loaded in app/_layout.tsx) ----
 // The design system (tokens.css) specifies Manrope with a default body weight
@@ -17,6 +26,13 @@ export const appFonts = {
   Manrope_600SemiBold,
   Manrope_700Bold,
   Manrope_800ExtraBold,
+  Sora_600SemiBold,
+  Sora_700Bold,
+  Sora_800ExtraBold,
+  DMSans_400Regular,
+  DMSans_500Medium,
+  DMSans_600SemiBold,
+  DMSans_700Bold,
 };
 
 // font-family by weight — RN needs the exact variant, not a numeric weight
@@ -26,6 +42,17 @@ export const font = {
   semibold: 'Manrope_600SemiBold',
   bold: 'Manrope_700Bold',
   extrabold: 'Manrope_800ExtraBold',
+};
+
+// Home design A: Sora (display) and DM Sans (body).
+export const fontA = {
+  displaySemi: 'Sora_600SemiBold',
+  display: 'Sora_700Bold',
+  displayX: 'Sora_800ExtraBold',
+  body: 'DMSans_400Regular',
+  bodyMed: 'DMSans_500Medium',
+  bodySemi: 'DMSans_600SemiBold',
+  bodyBold: 'DMSans_700Bold',
 };
 
 // ---- Brand ramp (from docs/design_handoff_zitch_revamp/assets/tokens.css) ----

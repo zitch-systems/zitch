@@ -1,0 +1,97 @@
+import React, { type ReactNode } from 'react';
+import renderer, { act } from 'react-test-renderer';
+import Home from '@/app/(homepage)/home';
+import { EP } from '@/lib/endpoints';
+
+const mockWallet = {
+  balance: 0, totalBalance: 1200, historicalBalance: 1200, fundingProvider: 'partnership',
+  firstName: 'Test', fullName: 'Test Customer', avatar: '', accountNumber: '0454243073', bankName: 'Wema Bank',
+  billPaymentsAvailable: false, transfersAvailable: false,
+  fundingMessage: 'Your account balance needs review before you can spend.',
+  txns: [] as unknown[], showBal: true, setShowBal: jest.fn(), reload: jest.fn(), linked: [], reloadLinked: jest.fn(),
+  hydrated: true, balanceLoaded: true, balanceError: '', historyError: '', loading: false,
+};
+
+jest.mock('@/lib/wallet', () => ({ useWallet: () => mockWallet, transactionParams: jest.fn() }));
+const mockApiJson = jest.fn();
+jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));
+jest.mock('expo-router', () => ({
+  router: { push: jest.fn() },
+  useFocusEffect: (callback: () => void) => {
+    const ReactActual = jest.requireActual<typeof import('react')>('react');
+    ReactActual.useEffect(callback, [callback]);
+  },
+}));
+jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn() }));
+jest.mock('expo-linear-gradient', () => {
+  const ReactActual = jest.requireActual<typeof import('react')>('react');
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+  return { LinearGradient: ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children) };
+});
+jest.mock('@/components/design/ZIcon', () => () => null);
+jest.mock('@/components/design/Brand', () => ({ Avatar: () => null }));
+jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
+jest.mock('@/components/design/SmartPaste', () => () => null);
+jest.mock('@/components/design/ConnectedAccounts', () => ({ ConnectedAccounts: () => null }));
+jest.mock('@/lib/theme', () => ({
+  useTheme: () => ({ c: { brand: '#0FA295', brandDeep: '#08766d', ink1: '#111', ink2: '#222', ink3: '#333', line: '#ddd', surface: '#fff' } }),
+  font: { bold: 'bold', extrabold: 'extrabold', regular: 'regular', semibold: 'semibold', medium: 'medium' },
+  fontA: { display: 'Sora', displaySemi: 'Sora', displayX: 'Sora', body: 'DMSans', bodyMed: 'DMSans', bodySemi: 'DMSans', bodyBold: 'DMSans' },
+  palette: { teal50: '#E6F7F4', teal700: '#00847B' },
+  ICON_COLORS: {}, iconTint: () => '#eee',
+}));
+jest.mock('@/components/design/widgets', () => {
+  const ReactActual = jest.requireActual<typeof import('react')>('react');
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+  return { Hero: ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children), SectionLabel: () => null, ServiceTile: () => null };
+});
+jest.mock('@/components/design/ui', () => {
+  const ReactActual = jest.requireActual<typeof import('react')>('react');
+  const { Text, View, Pressable } = jest.requireActual<typeof import('react-native')>('react-native');
+  const Container = ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children);
+  return { Screen: Container, Card: Container, NText: Text, Sheet: () => null, TxnRow: () => null,
+    Btn: ({ label, ...props }: any) => ReactActual.createElement(Pressable, { ...props, accessibilityLabel: label }),
+    money: (value: number) => `₦${value}`, settledTransactionTotal: () => 0 };
+});
+
+
+// Home design A: savings and loans show only when the server says they are open.
+const text = (tree: renderer.ReactTestRenderer) => JSON.stringify(tree.toJSON());
+const labels = (tree: renderer.ReactTestRenderer) =>
+  tree.root.findAll((n) => typeof n.props.accessibilityLabel === 'string' && typeof n.props.onPress === 'function')
+    .map((n) => n.props.accessibilityLabel);
+
+it('keeps savings and loans out while the server has them off', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === EP.savings.rates
+    ? { product_available: false, rates: [] } : { product_available: false });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Home />); });
+  expect(labels(tree)).toEqual(expect.arrayContaining(['Electricity', 'Save', 'Exams', 'More']));
+  expect(labels(tree)).not.toContain('Loan');
+  expect(labels(tree)).not.toContain('Fixed Save');
+  expect(text(tree)).not.toContain('Bank on WhatsApp');
+  expect(text(tree)).toContain('Zitch account');
+  act(() => tree.unmount());
+});
+
+it('shows the Loan tile and the Fixed Save card, at the best server rate, when both are open', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === EP.savings.rates
+    ? { product_available: true, rates: [{ days: 30, rate: '12.00' }, { days: 365, rate: '22.00' }] }
+    : { product_available: true });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Home />); });
+  expect(labels(tree)).toEqual(expect.arrayContaining(['Loan', 'Fixed Save']));
+  expect(labels(tree)).not.toContain('Electricity');
+  expect(text(tree)).toContain('Fixed Save · up to 22% p.a');
+  expect(text(tree)).toContain('HOT');
+  act(() => tree.unmount());
+});
+
+it('falls back to the products-off home when the lookups fail', async () => {
+  mockApiJson.mockRejectedValue(new Error('offline'));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Home />); });
+  expect(labels(tree)).toContain('Electricity');
+  expect(labels(tree)).not.toContain('Fixed Save');
+  act(() => tree.unmount());
+});
