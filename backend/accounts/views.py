@@ -270,7 +270,10 @@ def _new_device_challenge(user, request) -> str:
     LoginChallenge.objects.create(
         user=user, key=_challenge_hash(raw), device_id=device_id,
         expires_at=timezone.now() + timedelta(minutes=LoginChallenge.TTL_MINUTES))
-    log.warning("new_device_signin_challenged user=%s device=%s", user.pk, (device_id or "-")[:12])
+    # The device id is a client header: log a short fingerprint of it, never the
+    # raw text, so a crafted header cannot write into the log.
+    device_tag = hashlib.sha256(device_id.encode()).hexdigest()[:12] if device_id else "-"
+    log.warning("new_device_signin_challenged user=%s device=%s", user.pk, device_tag)
     return raw
 
 
