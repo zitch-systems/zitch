@@ -21,6 +21,9 @@ as tofu.
 """
 import io
 import os
+import threading
+import time
+from collections import OrderedDict
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
@@ -646,8 +649,102 @@ def _draw_promo(img: Image.Image, x0: int, top: int, x1: int, plan: dict, site: 
            "Scan to start", font=plan["caption"], fill=_INK_3, anchor="ms")
 
 
+#: How long a caller waits for its turn to draw before giving up. Every caller
+#: falls back without the picture (a text alert, an email without the attachment),
+#: so a long queue costs the artwork, never the alert.
+RENDER_WAIT_SECONDS = 60
+#: How long a drawn receipt is kept for the next caller asking for the same one.
+_RECENT_SECONDS = 120
+_RECENT_MAX = 8
+
+_gate = None
+_gate_lock = threading.Lock()
+_recent: "OrderedDict[tuple, tuple]" = OrderedDict()
+_recent_lock = threading.Lock()
+
+
+def _render_gate() -> threading.BoundedSemaphore:
+    """How many receipts this process draws at once.
+
+    One sheet is about 2200px wide and drawing it takes about 110 MB on top of an
+    idle worker. On 14 November three deposits were booked together. The worker
+    drew their email and WhatsApp receipts at the same time, six at once across
+    its eight alert threads, which is past the 512 MB plan. The process was
+    killed mid-send, and those nine alerts never reached the customer. One at a
+    time keeps the worker near 200 MB however many alerts are due; the queue costs
+    about a second a receipt.
+    """
+    global _gate
+    with _gate_lock:
+        if _gate is None:
+            from django.conf import settings
+
+            limit = int(getattr(settings, "RECEIPT_RENDER_CONCURRENCY", 1) or 1)
+            _gate = threading.BoundedSemaphore(max(1, limit))
+        return _gate
+
+
+def _recent_key(title, rows, ref, status):
+    if not ref:
+        return None
+    try:
+        key = (title, tuple(tuple(r) for r in rows), ref, status)
+        hash(key)
+    except TypeError:
+        return None
+    return key
+
+
+def _recall(key):
+    if key is None:
+        return None
+    with _recent_lock:
+        hit = _recent.get(key)
+        if hit is None:
+            return None
+        if hit[0] < time.monotonic():
+            _recent.pop(key, None)
+            return None
+        return hit[1]
+
+
+def _keep(key, data: bytes) -> None:
+    if key is None:
+        return
+    with _recent_lock:
+        _recent[key] = (time.monotonic() + _RECENT_SECONDS, data)
+        _recent.move_to_end(key)
+        while len(_recent) > _RECENT_MAX:
+            _recent.popitem(last=False)
+
+
 def render_receipt(title: str, rows: list, ref: str, *, status: str = "Successful") -> bytes:
     """Return JPEG bytes for a receipt titled `title` with `rows` = [(label, value)].
+
+    Drawn one at a time per process (see _render_gate), and an identical receipt
+    asked for again within two minutes is not drawn twice: a deposit's email and
+    its WhatsApp alert share one picture. Raises RuntimeError when the queue does
+    not move within RENDER_WAIT_SECONDS.
+    """
+    key = _recent_key(title, rows, ref, status)
+    data = _recall(key)
+    if data is not None:
+        return data
+    gate = _render_gate()
+    if not gate.acquire(timeout=RENDER_WAIT_SECONDS):
+        raise RuntimeError("receipt_render_busy")
+    try:
+        data = _recall(key)          # drawn by whoever held the gate before us
+        if data is None:
+            data = _draw_receipt(title, rows, ref, status=status)
+    finally:
+        gate.release()
+    _keep(key, data)
+    return data
+
+
+def _draw_receipt(title: str, rows: list, ref: str, *, status: str = "Successful") -> bytes:
+    """Draw the receipt. Call render_receipt, which queues and reuses drawings.
 
     The sheet: a teal Zitch header with the receipt's title, then a white ticket
     with the amount, the status pill and the time, a tear line, and the rows as
