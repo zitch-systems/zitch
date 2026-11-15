@@ -672,6 +672,58 @@ def face_page(request, token):
     return response
 
 
+#: How many open WhatsApp face sessions one sweep asks Prembly about. Each is
+#: one authenticated readback; anything beyond this waits for the next sweep.
+FACE_SWEEP_LIMIT = 20
+FACE_DONE_TEXT = ("✅ *Tier 2 verification complete.*\n\n"
+                  "Your face check passed and your account limits have been upgraded.")
+FACE_FAILED_TEXT = ("❌ *Your face check wasn't confirmed.*\n\n"
+                    "Nothing changed on your account. Reply *7* to try again in good light.")
+
+
+def notify_face_results(limit: int = FACE_SWEEP_LIMIT) -> int:
+    """Tell WhatsApp customers how their Prembly face check ended, unprompted.
+
+    The customer used to have to come back and reply 7 for the result. The
+    worker now asks Prembly (the same authenticated readback the status check
+    uses - a callback or redirect is never proof) about each open session that
+    was started from a WhatsApp face link, and sends the outcome once.
+    Returns how many customers were notified.
+    """
+    from accounts.models import PremblyFaceSession
+    from utility.liveness import verify_tier2_liveness
+
+    from .router import reply
+
+    since = timezone.now() - timedelta(hours=1)
+    actions = (PendingAction.objects
+               .filter(action_type=ACTION_TYPE, created__gte=since,
+                       payload__has_key="face_session")
+               .exclude(payload__has_key="face_notified")
+               .order_by("created")[:limit])
+    notified = 0
+    for pa in actions:
+        session = PremblyFaceSession.objects.filter(
+            user_id=pa.user_id, state=pa.payload.get("face_session")).select_related("user").first()
+        if session is None:
+            continue
+        if session.status == "pending":
+            verify_tier2_liveness(session.user, {"session": str(session.state)})
+            session.refresh_from_db(fields=["status"])
+        if session.status not in ("verified", "failed"):
+            continue
+        with transaction.atomic():
+            # Claim before sending so two workers never message twice.
+            current = PendingAction.objects.select_for_update().filter(pk=pa.pk).first()
+            if current is None or "face_notified" in (current.payload or {}):
+                continue
+            current.payload["face_notified"] = session.status
+            current.save(update_fields=["payload"])
+        reply(pa.msisdn, FACE_DONE_TEXT if session.status == "verified" else FACE_FAILED_TEXT)
+        notified += 1
+    return notified
+
+
 def face_link(user, msisdn) -> str:
     """The Tier 2 link WhatsApp sends: one tap to the Prembly camera."""
     url = start_verification(user, msisdn, 2)

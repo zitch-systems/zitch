@@ -202,6 +202,25 @@ class Command(BaseCommand):
                 connections.close_all()
                 expected_deposit_lock.release()
 
+        face_result_lock = threading.Lock()
+
+        def notify_face_results():
+            # Tier 2 face checks started from WhatsApp: send the result to the
+            # chat as soon as Prembly confirms it, so nobody has to come back
+            # and ask. One sweep at a time.
+            if not face_result_lock.acquire(blocking=False):
+                return
+            try:
+                close_old_connections()
+                from whatsapp.verification_web import notify_face_results as sweep
+
+                sweep()
+            except Exception:  # noqa: BLE001 - the next sweep retries
+                self.stderr.write("face result check failed; retrying")
+            finally:
+                connections.close_all()
+                face_result_lock.release()
+
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         batch = max(1, min(int(options["batch_size"]), 200))
@@ -226,6 +245,7 @@ class Command(BaseCommand):
         next_account_repair = time.monotonic()
         next_credit_poll = time.monotonic()
         next_expected_poll = time.monotonic()
+        next_face_check = time.monotonic()
         next_heartbeat = time.monotonic()
         next_scheduler_check = time.monotonic() + 300
         expected_poll_interval = 2.0 if settings.WEMA_EXPECTED_DEPOSIT_MINUTES > 0 else 0
@@ -273,6 +293,11 @@ class Command(BaseCommand):
                     daemon=True,
                 ).start()
                 next_expected_poll = now + expected_poll_interval
+
+            if not options["once"] and now >= next_face_check:
+                threading.Thread(target=notify_face_results, name="face-results",
+                                 daemon=True).start()
+                next_face_check = now + 15
 
             if not options["once"] and now >= next_heartbeat:
                 from utility.watchdog import beat_worker
