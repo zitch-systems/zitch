@@ -7,6 +7,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { Screen, Btn, Sheet, money, NText, type Txn } from '@/components/design/ui';
 import { ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
+import { ZCoil } from '@/components/design/Loading';
 import { useTheme, fontA, palette, ICON_COLORS, iconTint } from '@/lib/theme';
 import { transactionParams, useWallet } from '@/lib/wallet';
 import { transactionStatusPresentation } from '@/lib/transactionStatus';
@@ -237,6 +238,10 @@ const Home = () => {
         style={{ marginHorizontal: 20, marginTop: 16, borderRadius: 26, paddingTop: 20, paddingHorizontal: 20, paddingBottom: 20, overflow: 'hidden' }}
       >
         <View pointerEvents="none" style={{ position: 'absolute', width: 230, height: 230, right: -70, top: -110, borderRadius: 115, backgroundColor: 'rgba(92,245,235,0.14)' }} />
+        {/* the turning Zitch coil, as on the Wallet card: same size and strength */}
+        <View pointerEvents="none" style={{ position: 'absolute', right: -18, bottom: -22, opacity: 0.18 }}>
+          <ZCoil height={175} box={140} />
+        </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <Text style={{ fontSize: 11, fontFamily: fontA.displaySemi, letterSpacing: 1.1, color: 'rgba(255,255,255,0.72)' }}>AVAILABLE BALANCE</Text>
           <View style={{ flexDirection: 'row', gap: 8 }}>
