@@ -13,6 +13,12 @@ bank code, or a name that reads the same (transfers.services.bank_name_keys: "AC
 BANK" is our "Access Bank"). Reconciling the codes of those is wema_banks_sync's
 job; this command never changes a row that exists.
 
+The rail lists some banks twice: once under the six-digit NIP code and once with
+its leading zero dropped ("090832" and "90832", both 5TT MFB). Those are one
+bank, carried once, under the six-digit code. Two rail rows whose names read the
+same are also one bank: only the first is added, so the bank list never shows a
+customer the same name twice.
+
     python manage.py wema_banks_import            # list what would be added
     python manage.py wema_banks_import --apply    # add them
 """
@@ -26,6 +32,11 @@ from utility import wema
 NAME_MAX = Bank._meta.get_field("name").max_length
 CODE_MAX = Bank._meta.get_field("bank_code").max_length
 SLUG_MAX = Bank._meta.get_field("code").max_length
+
+
+def nip_code(code):
+    """The six-digit NIP code a rail code stands for: "90832" is "090832"."""
+    return code.zfill(6) if len(code) == 5 else code
 
 
 class Command(BaseCommand):
@@ -51,44 +62,56 @@ class Command(BaseCommand):
                 "Wema keys are set."))
             raise SystemExit(1)
 
-        rail, seen = [], set()
+        rail = {}       # six-digit code -> (code as listed, name), in rail order
         skipped_shape = 0
         for row in res.get("banks") or []:
             code = str(row.get("bank_code") or "").strip()
             name = " ".join(str(row.get("bank_name") or "").split())
-            if not code or not name or code in seen:
+            if not code or not name:
                 continue
             if not code.isdigit() or len(code) > CODE_MAX:
                 skipped_shape += 1
                 continue
-            seen.add(code)
-            rail.append((code, name[:NAME_MAX]))
+            key = nip_code(code)
+            listed = rail.get(key)
+            # Keep the six-digit spelling when the rail lists both.
+            if listed is None or (len(code) > len(listed[0])):
+                rail[key] = (code, name[:NAME_MAX]) if listed is None else (code, listed[1])
+        rail = list(rail.values())
         if not rail:
             self.stderr.write(self.style.ERROR("The rail returned no usable banks."))
             raise SystemExit(1)
 
-        ours_codes = {c for c in Bank.objects.values_list("bank_code", flat=True) if c}
+        ours_codes = {nip_code(c) for c in Bank.objects.values_list("bank_code", flat=True) if c}
         ours_keys = set()
         for name in Bank.objects.values_list("name", flat=True):
             ours_keys.update(k for k in bank_name_keys(name) if k)
         ours_slugs = set(Bank.objects.values_list("code", flat=True))
+        batch_keys = set()
 
-        missing = []
+        missing, same_name = [], 0
         for code, name in rail:
-            if code in ours_codes:
+            if nip_code(code) in ours_codes:
                 continue
-            if any(k and k in ours_keys for k in bank_name_keys(name)):
+            keys = [k for k in bank_name_keys(name) if k]
+            if any(k in ours_keys for k in keys):
                 continue
             slug = f"nip{code}"[:SLUG_MAX]
             if slug in ours_slugs:
                 continue
+            if any(k in batch_keys for k in keys):
+                same_name += 1          # an earlier rail row already carries this name
+                continue
+            batch_keys.update(keys)
             missing.append((slug, code, name))
 
-        carried = len(rail) - len(missing)
+        carried = len(rail) - len(missing) - same_name
         self.stdout.write(
             f"The rail lists {len(rail)} bank(s); {carried} are already carried here and "
             f"{len(missing)} are not." + (f" ({skipped_shape} row(s) with an unusable code "
-                                          "were ignored.)" if skipped_shape else ""))
+                                          "were ignored.)" if skipped_shape else "")
+            + (f" ({same_name} row(s) repeating another bank's name were left out.)"
+               if same_name else ""))
         for slug, code, name in sorted(missing, key=lambda m: m[2].lower())[:max(0, options["show"])]:
             self.stdout.write(f"  add   {code:<10} {name}")
         if len(missing) > options["show"] > 0:

@@ -86,3 +86,28 @@ class WemaBanksImportTests(TestCase):
                 call_command("wema_banks_import", stdout=out, stderr=out)
         self.assertEqual(exit_.exception.code, 1)
         self.assertIn("timeout", out.getvalue())
+
+    def test_a_code_listed_without_its_leading_zero_is_one_bank(self):
+        out, _code = _run([
+            {"bank_name": "5TT MFB", "bank_code": "090832"},
+            {"bank_name": "5TT MFB", "bank_code": "90832"},
+            {"bank_name": "BANK OF AGRICULTURE", "bank_code": "90367"},
+            {"bank_name": "BANK OF AGRICULTURE", "bank_code": "090367"},
+        ], "--apply")
+        self.assertEqual(sorted(Bank.objects.filter(code__startswith="nip")
+                                .values_list("bank_code", flat=True)), ["090367", "090832"])
+        self.assertIn("2 are not", out)
+
+    def test_a_short_code_we_already_carry_is_not_added_again(self):
+        Bank.objects.create(code="boa", name="BOA", bank_code="090367", active=True)
+        _run([{"bank_name": "Bank Of Agric", "bank_code": "90367"}], "--apply")
+        self.assertFalse(Bank.objects.filter(code="nip90367").exists())
+
+    def test_two_rail_rows_with_the_same_name_add_one_bank(self):
+        out, _code = _run([
+            {"bank_name": "ASCENSIA FINANCE COMPANY LIMITED", "bank_code": "050040"},
+            {"bank_name": "Ascensia Finance Company Limited", "bank_code": "050099"},
+        ], "--apply")
+        self.assertEqual(Bank.objects.filter(name__iexact="ascensia finance company limited").count(), 1)
+        self.assertIn("1 row(s) repeating another bank's name were left out", out)
+
